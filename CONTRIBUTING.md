@@ -45,7 +45,8 @@ $ PYTHONPATH=botorch_pyo3/python python -m pytest botorch_pyo3/tests -q
 
 Alternatively, `pip install ./botorch_pyo3` builds and installs a wheel with
 maturin. The parity tests (`test_parity.py`, the BoTorch part of
-`test_bo_loop.py`) run when BoTorch is importable and are skipped otherwise.
+`test_bo_loop.py`) run when BoTorch is importable and are skipped otherwise;
+set `BOTORCH_RS_REQUIRE_BOTORCH=1` to make a missing BoTorch an error.
 
 Lint and type-check (configuration in `botorch_pyo3/pyproject.toml`):
 

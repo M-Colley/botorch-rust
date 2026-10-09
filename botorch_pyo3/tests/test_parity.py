@@ -19,7 +19,9 @@ from typing import Any
 
 import pytest
 
-pytest.importorskip("botorch.fit")
+from helpers import importorskip_botorch
+
+importorskip_botorch()
 torch = pytest.importorskip("torch")
 
 import botorch  # noqa: E402

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import math
+import os
 import random
 from typing import Any
+
+import pytest
 
 HAS_NUMPY = importlib.util.find_spec("numpy") is not None
 HAS_TORCH = importlib.util.find_spec("torch") is not None
@@ -80,3 +84,12 @@ def assert_close(a: Any, b: Any, rtol: float = 1e-9, atol: float = 1e-12) -> Non
     assert len(fa) == len(fb)
     for u, v in zip(fa, fb, strict=True):
         assert abs(u - v) <= atol + rtol * max(abs(u), abs(v)), (u, v)
+
+
+def importorskip_botorch() -> None:
+    """Skips the calling test (module) unless BoTorch is importable. With
+    ``BOTORCH_RS_REQUIRE_BOTORCH=1`` (CI's parity job) a missing BoTorch is an
+    error instead of a skip."""
+    if os.environ.get("BOTORCH_RS_REQUIRE_BOTORCH"):
+        importlib.import_module("botorch.fit")
+    pytest.importorskip("botorch.fit")

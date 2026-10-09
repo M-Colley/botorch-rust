@@ -18,7 +18,7 @@ from botorch_rs.models import SingleTaskGP
 from botorch_rs.optim import optimize_acqf
 from botorch_rs.test_functions import Hartmann
 from botorch_rs.utils.sampling import draw_sobol_samples
-from helpers import KINDS, as_kind, flatten, to_list
+from helpers import KINDS, as_kind, flatten, importorskip_botorch, to_list
 
 D = 6
 N_INIT = 2 * (D + 1)
@@ -91,7 +91,7 @@ def test_bo_loop_steps_match_botorch() -> None:
       as good as BoTorch's median run (LogEI is multimodal late in the loop, so
       single runs of either library can end in different local maxima).
     """
-    pytest.importorskip("botorch.fit")
+    importorskip_botorch()
     torch = pytest.importorskip("torch")
     from botorch.acquisition import LogExpectedImprovement as BtLogEI
     from botorch.fit import fit_gpytorch_mll as bt_fit
