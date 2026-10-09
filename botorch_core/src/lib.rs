@@ -115,6 +115,7 @@ pub mod optim;
 pub mod posterior;
 pub mod priors;
 pub mod sampling;
+pub mod test_functions;
 pub mod transforms;
 pub mod utils;
 
@@ -141,4 +142,5 @@ pub use optim::{optimize_acqf, OptimizeAcqfOptions};
 pub use posterior::{JointPosteriorGrad, Posterior};
 pub use priors::Prior;
 pub use sampling::SobolQMCNormalSampler;
+pub use test_functions::SyntheticTestFunction;
 pub use transforms::{Normalize, OutcomeTransformChoice, Standardize};
