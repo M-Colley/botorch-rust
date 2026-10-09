@@ -113,6 +113,7 @@ pub mod models;
 pub mod posterior;
 pub mod priors;
 pub mod transforms;
+pub mod utils;
 
 /// Dense double-precision matrix (`nalgebra::DMatrix<f64>`); point sets are
 /// stored with one point per row.

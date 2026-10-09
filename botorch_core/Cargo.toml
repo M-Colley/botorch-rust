@@ -16,6 +16,7 @@ statrs.workspace = true
 rand.workspace = true
 rand_distr.workspace = true
 thiserror.workspace = true
+errorfunctions.workspace = true
 
 [dev-dependencies]
 serde.workspace = true
