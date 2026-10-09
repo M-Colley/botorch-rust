@@ -12,7 +12,8 @@
 //!   (`q = 1`).
 //! * [`monte_carlo`] — `qExpectedImprovement`, `qProbabilityOfImprovement`,
 //!   `qUpperConfidenceBound`, `qSimpleRegret` (any `q`, pending points).
-//! * [`logei`] — `qLogExpectedImprovement`.
+//! * [`logei`] — `qLogExpectedImprovement`, `qLogNoisyExpectedImprovement`.
+//! * [`utils`] — `prune_inferior_points`.
 //!
 //! Acquisition functions hold their model as an `Arc<dyn Model>` and are
 //! `Send + Sync`; pending points are stored behind a lock so that
@@ -31,16 +32,21 @@ use crate::Matrix;
 pub mod analytic;
 pub mod logei;
 pub mod monte_carlo;
+pub mod utils;
 
 pub use analytic::{
     ExpectedImprovement, LogExpectedImprovement, LogProbabilityOfImprovement, PosteriorMean,
     PosteriorStandardDeviation, ProbabilityOfImprovement, UpperConfidenceBound,
 };
-pub use logei::{QLogExpectedImprovement, QLogExpectedImprovementOptions};
+pub use logei::{
+    QLogExpectedImprovement, QLogExpectedImprovementOptions, QLogNoisyExpectedImprovement,
+    QLogNoisyExpectedImprovementOptions,
+};
 pub use monte_carlo::{
     McAcquisitionOptions, QExpectedImprovement, QProbabilityOfImprovement, QSimpleRegret,
     QUpperConfidenceBound,
 };
+pub use utils::{prune_inferior_points, prune_inferior_points_indices, PruneOptions};
 
 /// An acquisition function `α(X)` over candidate sets `X` (`q × d`, raw input
 /// space), to be maximized (BoTorch's `AcquisitionFunction`).
