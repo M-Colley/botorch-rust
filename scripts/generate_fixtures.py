@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+"""Generate the BoTorch reference fixtures used by the botorch_core parity tests.
+
+The script builds a set of BoTorch ``SingleTaskGP`` models covering the
+features implemented in ``botorch_core`` (RBF / Matern-5/2 kernels, ScaleKernel,
+Normalize with learned or explicit bounds, Standardize or no outcome transform,
+fixed noise, edge cases), sets their hyperparameters explicitly and records:
+
+* training data, transformed training data and transform statistics;
+* default (initial) and explicitly set raw hyperparameters;
+* kernel matrices and their autograd derivatives w.r.t. the raw hyperparameters;
+* the exact MLL value and its autograd gradient (priors included);
+* posteriors at test points (q = 1 batches and a joint q = 3 posterior, with
+  and without observation noise) and their autograd derivatives w.r.t. X;
+* the result of ``botorch.fit.fit_gpytorch_mll`` from the default
+  initialization (final raw hyperparameters and loss, iterations, status), plus
+  a finite-difference Hessian of the loss at the optimum to judge how well the
+  optimum is determined.
+
+Usage (from the repository root, with BoTorch, GPyTorch and PyTorch installed)::
+
+    python scripts/generate_fixtures.py [--out botorch_core/tests/fixtures]
+
+To use a source checkout of BoTorch, put it first on the path, e.g.
+``PYTHONPATH=/path/to/botorch python -P scripts/generate_fixtures.py``.
+
+The output is deterministic (fixed seeds, float64 everywhere, single thread).
+Each case is written to ``<out>/<name>.json``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import sys
+import warnings
+
+import torch
+
+torch.set_num_threads(1)
+
+import botorch  # noqa: E402
+import gpytorch  # noqa: E402
+from botorch.fit import fit_gpytorch_mll  # noqa: E402
+from botorch.models import SingleTaskGP  # noqa: E402
+from botorch.models.transforms.input import Normalize  # noqa: E402
+from botorch.models.utils.gpytorch_modules import (  # noqa: E402
+    get_covar_module_with_dim_scaled_prior,
+    get_gaussian_likelihood_with_gamma_prior,
+    get_matern_kernel_with_gamma_prior,
+)
+from botorch.optim.fit import fit_gpytorch_mll_scipy  # noqa: E402
+from gpytorch.kernels import ScaleKernel  # noqa: E402
+from gpytorch.mlls import ExactMarginalLogLikelihood  # noqa: E402
+from gpytorch.priors import GammaPrior  # noqa: E402
+
+DTYPE = torch.float64
+
+# ---------------------------------------------------------------------------
+# Case definitions
+# ---------------------------------------------------------------------------
+# Keys:
+#   d, n            input dimension and number of training points
+#   covar           "rbf" | "matern" (dim-scaled prior, BoTorch default family)
+#                   | "matern_gamma" (get_matern_kernel_with_gamma_prior)
+#                   | "rbf_scale" (ScaleKernel(dim-scaled RBF, GammaPrior(2, 0.15)))
+#   likelihood      "default" | "gamma" (get_gaussian_likelihood_with_gamma_prior)
+#   yvar            None | "random" | "zero" (fixed-noise likelihood)
+#   normalize       None | "learned" | "explicit"
+#   outcome         "standardize" (BoTorch default) | "none"
+#   x_range         range of the raw training inputs
+#   data            "smooth" | "duplicates" | "constant_y" | "identical_x"
+CASES = [
+    dict(name="rbf_d1_n5", d=1, n=5, covar="rbf"),
+    dict(name="rbf_d2_n20_normalize", d=2, n=20, covar="rbf", normalize="learned", x_range=(-3.0, 5.0)),
+    dict(name="rbf_d5_n20", d=5, n=20, covar="rbf"),
+    dict(name="matern_d1_n5", d=1, n=5, covar="matern"),
+    dict(name="matern_d2_n20", d=2, n=20, covar="matern"),
+    dict(name="matern_d5_n20_normalize", d=5, n=20, covar="matern", normalize="learned", x_range=(10.0, 12.5)),
+    dict(name="fixed_noise_rbf_d2_n20", d=2, n=20, covar="rbf", yvar="random"),
+    dict(name="fixed_noise_matern_d5_n5_normalize", d=5, n=5, covar="matern", yvar="random", normalize="learned",
+         x_range=(-1.0, 1.0)),
+    dict(name="scale_matern_gamma_d2_n20", d=2, n=20, covar="matern_gamma"),
+    dict(name="scale_rbf_d5_n20", d=5, n=20, covar="rbf_scale"),
+    dict(name="legacy_gamma_d2_n20", d=2, n=20, covar="matern_gamma", likelihood="gamma"),
+    dict(name="no_outcome_transform_d2_n20", d=2, n=20, covar="rbf", outcome="none"),
+    dict(name="explicit_bounds_d2_n20", d=2, n=20, covar="matern", normalize="explicit", x_range=(-2.0, 3.0)),
+    dict(name="n1_d2", d=2, n=1, covar="rbf"),
+    dict(name="constant_y_d2_n5", d=2, n=5, covar="rbf", data="constant_y"),
+    dict(name="duplicates_d2_n10", d=2, n=10, covar="rbf", data="duplicates"),
+    # Zero observation noise is clamped to gpytorch.settings.min_fixed_noise (1e-6).
+    dict(name="fixed_zero_noise_identical_x", d=2, n=3, covar="rbf", yvar="zero", data="identical_x"),
+]
+
+# Hyperparameter values (actual, not raw) that are set explicitly.
+SET_NOISE = 0.05
+SET_CONSTANT = 0.15
+SET_OUTPUTSCALE = 1.7
+
+
+def botorch_revision() -> str | None:
+    """Git revision of the imported BoTorch checkout (None for installed wheels)."""
+    import subprocess
+
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(botorch.__file__)))
+        out = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
+        return out.stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def tolist(t: torch.Tensor):
+    return t.detach().cpu().tolist()
+
+
+def make_data(case: dict, seed: int):
+    n, d = case["n"], case["d"]
+    lo, hi = case.get("x_range", (0.0, 1.0))
+    g = torch.Generator().manual_seed(seed)
+    kind = case.get("data", "smooth")
+    if kind == "identical_x":
+        X = torch.full((n, d), 0.3, dtype=DTYPE)
+        X[:, -1] = 0.6
+    else:
+        U = torch.rand(n, d, generator=g, dtype=DTYPE)
+        if kind == "duplicates":
+            U[3] = U[0]
+            U[7] = U[0]
+            U[5] = U[2]
+        X = lo + (hi - lo) * U
+    U = (X - lo) / (hi - lo)
+    f = torch.sin(2 * math.pi * U[:, 0]) + 0.5 * torch.cos(3.0 * U.sum(-1)) + 0.3 * U[:, -1] ** 2
+    eps = torch.randn(n, generator=g, dtype=DTYPE)
+    Y = 5.0 + 3.0 * (f + 0.1 * eps)
+    if kind in ("constant_y", "identical_x"):
+        Y = torch.full((n,), 2.5, dtype=DTYPE)
+    Yvar = None
+    yvar = case.get("yvar")
+    if yvar == "random":
+        Yvar = (0.05 + 0.3 * torch.rand(n, generator=g, dtype=DTYPE)) ** 2
+    elif yvar == "zero":
+        Yvar = torch.zeros(n, dtype=DTYPE)
+    Xtest = lo + (hi - lo) * torch.rand(6, d, generator=g, dtype=DTYPE)
+    # A training point and a point outside the training range.
+    outside = torch.full((1, d), hi + 0.25 * (hi - lo), dtype=DTYPE)
+    Xtest = torch.cat([Xtest[:5], X[:1], outside, Xtest[5:]], dim=0)
+    bounds = None
+    if case.get("normalize") == "explicit":
+        bounds = torch.stack(
+            [torch.full((d,), lo - 0.5, dtype=DTYPE), torch.full((d,), hi + 1.0, dtype=DTYPE)]
+        )
+    return X, Y.unsqueeze(-1), None if Yvar is None else Yvar.unsqueeze(-1), Xtest, bounds
+
+
+def build_model(case: dict, X, Y, Yvar, bounds) -> SingleTaskGP:
+    d = case["d"]
+    kwargs = {}
+    covar = case.get("covar", "rbf")
+    if covar == "matern":
+        kwargs["covar_module"] = get_covar_module_with_dim_scaled_prior(ard_num_dims=d, use_rbf_kernel=False)
+    elif covar == "matern_gamma":
+        kwargs["covar_module"] = get_matern_kernel_with_gamma_prior(ard_num_dims=d)
+    elif covar == "rbf_scale":
+        kwargs["covar_module"] = ScaleKernel(
+            get_covar_module_with_dim_scaled_prior(ard_num_dims=d),
+            outputscale_prior=GammaPrior(2.0, 0.15),
+        )
+    if case.get("likelihood") == "gamma":
+        kwargs["likelihood"] = get_gaussian_likelihood_with_gamma_prior()
+    normalize = case.get("normalize")
+    if normalize == "learned":
+        kwargs["input_transform"] = Normalize(d=d)
+    elif normalize == "explicit":
+        kwargs["input_transform"] = Normalize(d=d, bounds=bounds)
+    if case.get("outcome", "standardize") == "none":
+        kwargs["outcome_transform"] = None
+    return SingleTaskGP(X, Y, train_Yvar=Yvar, **kwargs)
+
+
+def named_params(model):
+    return [(name, p) for name, p in model.named_parameters()]
+
+
+def flat_params(model) -> list[float]:
+    out = []
+    for _, p in named_params(model):
+        out.extend(p.detach().reshape(-1).tolist())
+    return out
+
+
+def set_flat_params(model, flat):
+    i = 0
+    with torch.no_grad():
+        for _, p in named_params(model):
+            k = p.numel()
+            p.copy_(torch.tensor(flat[i : i + k], dtype=p.dtype).view_as(p))
+            i += k
+    assert i == len(flat)
+    model.train()  # clears GPyTorch's prediction caches
+
+
+def constraint_of(model, name: str):
+    for pname, _, constraint in model.named_parameters_and_constraints():
+        if pname == name:
+            return constraint
+    raise KeyError(name)
+
+
+def set_values(model, d: int) -> list[float]:
+    """Raw parameter vector corresponding to fixed actual hyperparameter values."""
+    lengthscale = torch.linspace(0.25, 0.9, d, dtype=DTYPE) if d > 1 else torch.tensor([0.35], dtype=DTYPE)
+    flat = []
+    for name, p in named_params(model):
+        c = constraint_of(model, name)
+        if name.endswith("raw_noise"):
+            actual = torch.full_like(p, SET_NOISE)
+        elif name.endswith("raw_constant"):
+            actual = torch.full_like(p, SET_CONSTANT)
+        elif name.endswith("raw_outputscale"):
+            actual = torch.full_like(p, SET_OUTPUTSCALE)
+        elif name.endswith("raw_lengthscale"):
+            actual = lengthscale.view_as(p)
+        else:
+            raise ValueError(name)
+        raw = actual if c is None else c.inverse_transform(actual)
+        flat.extend(raw.reshape(-1).tolist())
+    return flat
+
+
+def mll_value_and_grad(model):
+    mll = ExactMarginalLogLikelihood(model.likelihood, model)
+    mll.train()
+    model.zero_grad()
+    out = model(*model.train_inputs)
+    val = mll(out, model.train_targets, *(model.transform_inputs(X=t) for t in model.train_inputs))
+    val.backward()
+    grad = []
+    for _, p in named_params(model):
+        grad.extend(p.grad.reshape(-1).tolist())
+    model.zero_grad()
+    return val.item(), grad
+
+
+class _DenseKernel(torch.nn.Module):
+    def __init__(self, kernel):
+        super().__init__()
+        self.k = kernel
+
+    def forward(self, x1, x2):
+        return self.k(x1, x2).to_dense()
+
+
+def kernel_fixture(model, X_tf, Xtest_tf):
+    kernel = model.covar_module
+    with torch.no_grad():
+        K = kernel(X_tf).to_dense()
+        K_cross = kernel(Xtest_tf, X_tf).to_dense()
+    wrapper = _DenseKernel(kernel)
+    out = {"k_train": tolist(K), "k_test_train": tolist(K_cross), "dk_draw": {}}
+    for name, p in kernel.named_parameters():
+        def fn(t, name=name):
+            return torch.func.functional_call(wrapper, {f"k.{name}": t}, (X_tf, X_tf))
+
+        jac = torch.autograd.functional.jacobian(fn, p.detach().clone())  # n x n x shape(p)
+        jac = jac.reshape(K.shape[0], K.shape[1], -1).permute(2, 0, 1)
+        out["dk_draw"][f"covar_module.{name}"] = tolist(jac)
+    return out
+
+
+def posterior_fixture(model, Xtest, q_joint: int = 3):
+    model.eval()
+    res = {}
+    with torch.no_grad():
+        post = model.posterior(Xtest.unsqueeze(-2))
+        post_noisy = model.posterior(Xtest.unsqueeze(-2), observation_noise=True)
+        res["mean"] = tolist(post.mean.reshape(-1))
+        res["variance"] = tolist(post.variance.reshape(-1))
+        res["variance_noisy"] = tolist(post_noisy.variance.reshape(-1))
+    dmean, dvar = [], []
+    for i in range(Xtest.shape[0]):
+        x = Xtest[i : i + 1].clone().requires_grad_(True)
+        p = model.posterior(x)
+        (gm,) = torch.autograd.grad(p.mean.sum(), x)
+        x2 = Xtest[i : i + 1].clone().requires_grad_(True)
+        p2 = model.posterior(x2)
+        (gv,) = torch.autograd.grad(p2.variance.sum(), x2)
+        dmean.append(tolist(gm.reshape(-1)))
+        dvar.append(tolist(gv.reshape(-1)))
+    res["dmean_dx"] = dmean
+    res["dvariance_dx"] = dvar
+
+    Xj = Xtest[:q_joint].clone()
+    with torch.no_grad():
+        pj = model.posterior(Xj)
+        pjn = model.posterior(Xj, observation_noise=True)
+        joint = {
+            "mean": tolist(pj.mean.reshape(-1)),
+            "covariance": tolist(pj.distribution.covariance_matrix),
+            "covariance_noisy": tolist(pjn.distribution.covariance_matrix),
+        }
+
+    def mean_fn(X):
+        return model.posterior(X).mean.reshape(-1)
+
+    def cov_fn(X):
+        return model.posterior(X).distribution.covariance_matrix
+
+    joint["dmean_dx"] = tolist(torch.autograd.functional.jacobian(mean_fn, Xj))  # q x q x d
+    joint["dcov_dx"] = tolist(torch.autograd.functional.jacobian(cov_fn, Xj))  # q x q x q x d
+    res["joint"] = joint
+    return res
+
+
+def loss_grad_at(model, flat):
+    set_flat_params(model, flat)
+    val, grad = mll_value_and_grad(model)
+    return -val, [-g for g in grad]
+
+
+def fit_fixture(case, X, Y, Yvar, bounds, Xtest, seed):
+    model = build_model(case, X, Y, Yvar, bounds)
+    initial = flat_params(model)
+    mll = ExactMarginalLogLikelihood(model.likelihood, model)
+    results = []
+
+    def optimizer(mll, **kwargs):
+        res = fit_gpytorch_mll_scipy(mll, **kwargs)
+        results.append(res)
+        return res
+
+    torch.manual_seed(seed)
+    fit_gpytorch_mll(mll, optimizer=optimizer)
+    fitted = flat_params(model)
+    loss, grad = loss_grad_at(model, fitted)
+    final = results[-1]
+
+    # Finite-difference Hessian of the loss (free parameters only) at the optimum.
+    names = []
+    lower = []
+    for name, p in named_params(model):
+        c = constraint_of(model, name)
+        lb = -math.inf
+        if c is not None and not c.enforced:
+            lb = c.lower_bound.item()
+        names.extend([name] * p.numel())
+        lower.extend([lb] * p.numel())
+    free = [
+        i
+        for i, v in enumerate(fitted)
+        if not (math.isfinite(lower[i]) and v - lower[i] <= 1e-6 * max(1.0, abs(lower[i])))
+    ]
+    H = torch.zeros(len(free), len(free), dtype=DTYPE)
+    for a, i in enumerate(free):
+        h = 1e-5 * max(1.0, abs(fitted[i]))
+        xp = list(fitted)
+        xm = list(fitted)
+        xp[i] += h
+        xm[i] -= h
+        gp = torch.tensor(loss_grad_at(model, xp)[1], dtype=DTYPE)[free]
+        gm = torch.tensor(loss_grad_at(model, xm)[1], dtype=DTYPE)[free]
+        H[:, a] = (gp - gm) / (2 * h)
+    H = 0.5 * (H + H.T)
+    eig = torch.linalg.eigvalsh(H) if len(free) > 0 else torch.zeros(0, dtype=DTYPE)
+    set_flat_params(model, fitted)
+    post = posterior_fixture(model, Xtest)
+    return {
+        "initial_raw_params": initial,
+        "raw_params": fitted,
+        "loss": loss,
+        "grad": grad,
+        "fval": float(final.fval),
+        "iterations": int(final.step),
+        "status": str(final.status.name),
+        "message": str(final.message),
+        "attempts": len(results),
+        "free_indices": free,
+        "hessian_eigenvalues": tolist(eig),
+        "posterior_mean": post["mean"],
+        "posterior_variance": post["variance"],
+    }
+
+
+def generate_case(case: dict, seed: int) -> dict:
+    X, Y, Yvar, Xtest, bounds = make_data(case, seed)
+    model = build_model(case, X, Y, Yvar, bounds)
+    names = [(name, p.numel()) for name, p in named_params(model)]
+    default_raw = flat_params(model)
+
+    # Transforms (eval mode: learned bounds fixed).
+    model.eval()
+    with torch.no_grad():
+        X_tf = model.transform_inputs(X)
+        Xtest_tf = model.transform_inputs(Xtest)
+    transformed = {
+        "train_x": tolist(X_tf),
+        "train_y": tolist(model.train_targets),
+        "test_x": tolist(Xtest_tf),
+    }
+    if hasattr(model, "input_transform"):
+        transformed["normalize_offset"] = tolist(model.input_transform.offset.reshape(-1))
+        transformed["normalize_coefficient"] = tolist(model.input_transform.coefficient.reshape(-1))
+    if hasattr(model, "outcome_transform"):
+        transformed["standardize_mean"] = tolist(model.outcome_transform.means.reshape(-1))
+        transformed["standardize_std"] = tolist(model.outcome_transform.stdvs.reshape(-1))
+    if Yvar is not None:
+        transformed["train_yvar"] = tolist(model.likelihood.noise.reshape(-1))
+
+    # Explicit hyperparameters.
+    raw = set_values(model, case["d"])
+    set_flat_params(model, raw)
+    mll_value, mll_grad = mll_value_and_grad(model)
+    default_mll_value, default_mll_grad = None, None
+    model_default = build_model(case, X, Y, Yvar, bounds)
+    default_mll_value, default_mll_grad = mll_value_and_grad(model_default)
+
+    transform_derivative = []
+    for name, p in named_params(model):
+        c = constraint_of(model, name)
+        if c is None or not c.enforced:
+            transform_derivative.extend([1.0] * p.numel())
+        else:
+            r = p.detach().clone().requires_grad_(True)
+            (g,) = torch.autograd.grad(c.transform(r).sum(), r)
+            transform_derivative.extend(g.reshape(-1).tolist())
+
+    model.eval()
+    kern = kernel_fixture(model, X_tf, Xtest_tf)
+    with torch.no_grad():
+        kern["lengthscale"] = tolist(
+            (model.covar_module.base_kernel if hasattr(model.covar_module, "base_kernel") else model.covar_module)
+            .lengthscale.reshape(-1)
+        )
+        kern["outputscale"] = (
+            model.covar_module.outputscale.item() if hasattr(model.covar_module, "outputscale") else None
+        )
+        kern["likelihood_noise"] = tolist(model.likelihood.noise.reshape(-1))
+    post = posterior_fixture(model, Xtest)
+    fit = fit_fixture(case, X, Y, Yvar, bounds, Xtest, seed)
+
+    config = {
+        "d": case["d"],
+        "n": case["n"],
+        "covar": case.get("covar", "rbf"),
+        "likelihood": case.get("likelihood", "default"),
+        "yvar": case.get("yvar"),
+        "normalize": case.get("normalize"),
+        "outcome": case.get("outcome", "standardize"),
+        "bounds": None if bounds is None else tolist(bounds),
+    }
+    return {
+        "name": case["name"],
+        "versions": {
+            "botorch": botorch.__version__,
+            "botorch_revision": botorch_revision(),
+            "gpytorch": gpytorch.__version__,
+            "torch": torch.__version__,
+        },
+        "config": config,
+        "train_x": tolist(X),
+        "train_y": tolist(Y),
+        "train_yvar": None if Yvar is None else tolist(Yvar),
+        "test_x": tolist(Xtest),
+        "param_names": names,
+        "default_raw_params": default_raw,
+        "default_mll": {"value": default_mll_value, "grad": default_mll_grad},
+        "raw_params": raw,
+        "transform_derivative": transform_derivative,
+        "transformed": transformed,
+        "kernel": kern,
+        "mll": {"value": mll_value, "grad": mll_grad},
+        "posterior": post,
+        "fit": fit,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    default_out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "botorch_core", "tests", "fixtures")
+    parser.add_argument("--out", default=os.path.normpath(default_out), help="output directory")
+    parser.add_argument("--only", nargs="*", help="only generate these case names")
+    args = parser.parse_args()
+    print(f"botorch {botorch.__version__} from {botorch.__file__}", file=sys.stderr)
+    print(f"gpytorch {gpytorch.__version__}, torch {torch.__version__}", file=sys.stderr)
+    os.makedirs(args.out, exist_ok=True)
+    warnings.simplefilter("ignore")
+    for i, case in enumerate(CASES):
+        if args.only and case["name"] not in args.only:
+            continue
+        fixture = generate_case(case, seed=1000 + i)
+        path = os.path.join(args.out, f"{case['name']}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(fixture, f, indent=1)
+            f.write("\n")
+        fit = fixture["fit"]
+        print(
+            f"{case['name']:40s} mll={fixture['mll']['value']:+.6f} fit loss={fit['loss']:+.8f} "
+            f"iters={fit['iterations']} status={fit['status']} attempts={fit['attempts']} "
+            f"min eig={min(fit['hessian_eigenvalues'], default=float('nan')):.2e}",
+            file=sys.stderr,
+        )
+
+
+if __name__ == "__main__":
+    main()

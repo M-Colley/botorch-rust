@@ -67,6 +67,22 @@
 //! # Ok::<(), botorch_core::BotorchError>(())
 //! ```
 //!
+//! ## Validation
+//!
+//! `scripts/generate_fixtures.py` builds 17 BoTorch models (d ∈ {1, 2, 5},
+//! n ∈ {1, 3, 5, 10, 20}, RBF / Matérn-5/2, `ScaleKernel`, fixed noise,
+//! `Normalize` with learned or explicit bounds, with and without
+//! `Standardize`, legacy Gamma priors, degenerate data) and records reference
+//! values. `tests/parity.rs` requires agreement to a relative 1e-10 for
+//! kernels and their derivatives, transforms, MLL values and gradients,
+//! posterior means and covariances (with and without observation noise) and
+//! their input gradients. The observed errors are at most 6e-14, except
+//! 3e-12 for an MLL whose covariance has condition number ~3e6. Fitting from
+//! BoTorch's default initialization reaches BoTorch's final loss (worst excess
+//! 3.4e-7, typically ~1e-15) with the same number of L-BFGS-B iterations in 16
+//! of 17 problems. `tests/gradients.rs` checks every analytic gradient against
+//! central finite differences.
+//!
 //! ## Scope and known differences (phase 1)
 //!
 //! * Single-output `SingleTaskGP` only (an error is returned for `m > 1`);
