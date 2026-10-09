@@ -111,7 +111,7 @@ pub trait AcquisitionFunction: Send + Sync + Debug {
 
     /// Whether the acquisition function is known to be non-negative (BoTorch's
     /// `is_nonnegative`), which selects `initialize_q_batch_nonneg` in
-    /// `optimize_acqf`.
+    /// [`crate::optim::optimize_acqf`].
     fn is_nonnegative(&self) -> bool {
         false
     }

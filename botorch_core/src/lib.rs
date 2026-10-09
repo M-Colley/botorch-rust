@@ -111,6 +111,7 @@ pub mod lbfgsb;
 pub mod linalg;
 pub mod mll;
 pub mod models;
+pub mod optim;
 pub mod posterior;
 pub mod priors;
 pub mod sampling;
@@ -136,6 +137,7 @@ pub use models::{
     GaussianLikelihoodSpec, Hyperparameters, Likelihood, Model, ParameterLayout, SingleTaskGP,
     SingleTaskGPOptions,
 };
+pub use optim::{optimize_acqf, OptimizeAcqfOptions};
 pub use posterior::{JointPosteriorGrad, Posterior};
 pub use priors::Prior;
 pub use sampling::SobolQMCNormalSampler;
