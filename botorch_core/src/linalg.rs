@@ -201,6 +201,163 @@ pub fn psd_safe_cholesky_with(a: &Matrix, jitter: f64, max_tries: usize) -> Resu
     Err(BotorchError::NotPsd { jitter: jitter_new })
 }
 
+/// Reverse-mode derivative of the Cholesky factorization.
+///
+/// Given the lower-triangular factor `L` of `A = L Lᵀ` (possibly jittered)
+/// and the adjoint `L̄ = ∂f/∂L` of a scalar `f` (only its lower triangle is
+/// used), returns the symmetric adjoint `Ā` such that `df = Σ_ab Ā_ab dA_ab`
+/// for every symmetric perturbation `dA`:
+/// `Ā = sym(L⁻ᵀ Φ(Lᵀ L̄) L⁻¹)`, where `Φ` takes the lower triangle and halves
+/// the diagonal (Murray 2016, "Differentiation of the Cholesky decomposition").
+///
+/// # Panics
+/// If the shapes of `l` and `l_bar` differ or are not square.
+pub fn cholesky_backward(l: &Matrix, l_bar: &Matrix) -> Matrix {
+    let n = l.nrows();
+    assert!(
+        l.is_square() && l_bar.shape() == (n, n),
+        "cholesky_backward: shape mismatch"
+    );
+    let lbar_lower = l_bar.lower_triangle();
+    let mut phi = l.tr_mul(&lbar_lower);
+    for j in 0..n {
+        phi[(j, j)] *= 0.5;
+        for i in 0..j {
+            phi[(i, j)] = 0.0;
+        }
+    }
+    // G = L⁻ᵀ Φ L⁻¹: Y = L⁻ᵀ Φ, then Gᵀ = L⁻ᵀ Yᵀ.
+    l.tr_solve_lower_triangular_unchecked_mut(&mut phi);
+    let mut gt = phi.transpose();
+    l.tr_solve_lower_triangular_unchecked_mut(&mut gt);
+    (&gt + gt.transpose()) * 0.5
+}
+
+/// A square root `R` of a posterior covariance (`R Rᵀ = Σ`) used to map base
+/// samples to posterior samples, chosen like gpytorch's
+/// `MultivariateNormal.rsample(base_samples=...)` with
+/// `root_decomposition()`: `sqrt` for a single point, the jittered
+/// [`psd_safe_cholesky`] otherwise, and an eigendecomposition with clamped
+/// eigenvalues if the Cholesky factorization fails even with jitter.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CovarianceRoot {
+    /// A `1 × 1` covariance `v`: `R = sqrt(max(v, 0))`.
+    Scalar {
+        /// The variance `v` (unclamped).
+        variance: f64,
+        /// `sqrt(max(v, 0))`.
+        root: f64,
+    },
+    /// Lower Cholesky factor of `Σ + jitter·I`.
+    Cholesky(CholeskyFactor),
+    /// `V diag(sqrt(max(λ, 0)))` from the eigendecomposition `Σ = V Λ Vᵀ`
+    /// (gpytorch's `symeig` fallback). Not differentiable.
+    Eigen(Matrix),
+}
+
+impl CovarianceRoot {
+    /// Computes the root of the symmetric matrix `cov`.
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] for a non-square or empty matrix
+    /// and [`BotorchError::Nan`] for NaN entries.
+    pub fn new(cov: &Matrix) -> Result<Self> {
+        let n = cov.nrows();
+        if !cov.is_square() || n == 0 {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "covariance root requires a non-empty square matrix, got {}x{}",
+                cov.nrows(),
+                cov.ncols()
+            )));
+        }
+        if n == 1 {
+            let variance = cov[(0, 0)];
+            if variance.is_nan() {
+                return Err(BotorchError::Nan { count: 1, total: 1 });
+            }
+            return Ok(Self::Scalar {
+                variance,
+                root: variance.max(0.0).sqrt(),
+            });
+        }
+        match psd_safe_cholesky(cov) {
+            Ok(f) => Ok(Self::Cholesky(f)),
+            Err(BotorchError::NotPsd { .. }) => {
+                let eig = nalgebra::SymmetricEigen::new(cov.clone());
+                let mut root = eig.eigenvectors;
+                for (j, &lam) in eig.eigenvalues.iter().enumerate() {
+                    let s = lam.max(0.0).sqrt();
+                    root.column_mut(j).scale_mut(s);
+                }
+                Ok(Self::Eigen(root))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The dimension `n` of the covariance.
+    pub fn dim(&self) -> usize {
+        match self {
+            Self::Scalar { .. } => 1,
+            Self::Cholesky(f) => f.dim(),
+            Self::Eigen(r) => r.nrows(),
+        }
+    }
+
+    /// The jitter added to the diagonal (0 unless the Cholesky factorization
+    /// needed it).
+    pub fn jitter(&self) -> f64 {
+        match self {
+            Self::Cholesky(f) => f.jitter(),
+            _ => 0.0,
+        }
+    }
+
+    /// The root as a dense `n × n` matrix.
+    pub fn to_matrix(&self) -> Matrix {
+        match self {
+            Self::Scalar { root, .. } => Matrix::from_element(1, 1, *root),
+            Self::Cholesky(f) => f.l().clone(),
+            Self::Eigen(r) => r.clone(),
+        }
+    }
+
+    /// The rows `rows` of the root (`rows.len() × n`).
+    pub fn rows(&self, rows: std::ops::Range<usize>) -> Matrix {
+        match self {
+            Self::Scalar { root, .. } => Matrix::from_element(rows.len(), 1, *root),
+            Self::Cholesky(f) => f.l().rows(rows.start, rows.len()).into_owned(),
+            Self::Eigen(r) => r.rows(rows.start, rows.len()).into_owned(),
+        }
+    }
+
+    /// Reverse-mode derivative: maps the adjoint of the root (`n × n`, only
+    /// the entries of the root's sparsity pattern are used) to the symmetric
+    /// adjoint of the covariance.
+    ///
+    /// # Errors
+    /// [`BotorchError::Numerical`] for the (non-differentiable)
+    /// eigendecomposition fallback.
+    pub fn backward(&self, root_adjoint: &Matrix) -> Result<Matrix> {
+        match self {
+            Self::Scalar { variance, root } => {
+                let g = if *variance > 0.0 {
+                    root_adjoint[(0, 0)] / (2.0 * root)
+                } else {
+                    0.0
+                };
+                Ok(Matrix::from_element(1, 1, g))
+            }
+            Self::Cholesky(f) => Ok(cholesky_backward(f.l(), root_adjoint)),
+            Self::Eigen(_) => Err(BotorchError::Numerical(
+                "the posterior covariance is not positive definite even with jitter; \
+                 its eigendecomposition root is not differentiable"
+                    .into(),
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +416,55 @@ mod tests {
             psd_safe_cholesky(&b),
             Err(BotorchError::NotPsd { .. })
         ));
+    }
+
+    #[test]
+    fn cholesky_backward_matches_finite_differences() {
+        let n = 5;
+        let a = spd(n);
+        let l = psd_safe_cholesky(&a).unwrap();
+        let w = Matrix::from_fn(n, n, |i, j| ((i * 3 + j * 5) % 7) as f64 / 7.0 - 0.4);
+        let f = |m: &Matrix| psd_safe_cholesky(m).unwrap().l().component_mul(&w).sum();
+        let abar = cholesky_backward(l.l(), &w);
+        assert!((&abar - abar.transpose()).amax() < 1e-14);
+        for (i, j) in [(0usize, 0usize), (1, 0), (3, 2), (4, 4), (4, 1)] {
+            let h = 1e-6;
+            let mut e = Matrix::zeros(n, n);
+            e[(i, j)] = 1.0;
+            e[(j, i)] = 1.0;
+            let fd = (f(&(&a + &e * h)) - f(&(&a - &e * h))) / (2.0 * h);
+            let an = abar.component_mul(&e).sum();
+            assert!(
+                (fd - an).abs() < 1e-7 * an.abs().max(1.0),
+                "({i},{j}): {an} vs {fd}"
+            );
+        }
+    }
+
+    #[test]
+    fn covariance_roots() {
+        let a = spd(4);
+        let r = CovarianceRoot::new(&a).unwrap();
+        assert!(matches!(r, CovarianceRoot::Cholesky(_)));
+        let m = r.to_matrix();
+        assert!((&m * m.transpose() - &a).amax() < 1e-10);
+        assert_eq!(r.rows(1..3), m.rows(1, 2).into_owned());
+        let s = CovarianceRoot::new(&Matrix::from_element(1, 1, 4.0)).unwrap();
+        assert_eq!(s.to_matrix()[(0, 0)], 2.0);
+        assert_eq!(
+            s.backward(&Matrix::from_element(1, 1, 1.0)).unwrap()[(0, 0)],
+            0.25
+        );
+        let neg = CovarianceRoot::new(&Matrix::from_element(1, 1, -1e-18)).unwrap();
+        assert_eq!(neg.to_matrix()[(0, 0)], 0.0);
+        // Indefinite beyond the jitter: eigendecomposition fallback.
+        let b = Matrix::from_row_slice(2, 2, &[1.0, 0.0, 0.0, -1e-3]);
+        let e = CovarianceRoot::new(&b).unwrap();
+        assert!(matches!(e, CovarianceRoot::Eigen(_)));
+        let em = e.to_matrix();
+        let rec = &em * em.transpose();
+        assert!((rec[(0, 0)] - 1.0).abs() < 1e-14 && rec[(1, 1)].abs() < 1e-14);
+        assert!(e.backward(&Matrix::zeros(2, 2)).is_err());
+        assert!(CovarianceRoot::new(&Matrix::zeros(2, 3)).is_err());
     }
 }

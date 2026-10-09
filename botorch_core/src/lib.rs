@@ -113,6 +113,7 @@ pub mod mll;
 pub mod models;
 pub mod posterior;
 pub mod priors;
+pub mod sampling;
 pub mod transforms;
 pub mod utils;
 
@@ -137,4 +138,5 @@ pub use models::{
 };
 pub use posterior::{JointPosteriorGrad, Posterior};
 pub use priors::Prior;
+pub use sampling::SobolQMCNormalSampler;
 pub use transforms::{Normalize, OutcomeTransformChoice, Standardize};

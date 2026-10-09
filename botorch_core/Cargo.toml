@@ -17,6 +17,7 @@ rand.workspace = true
 rand_distr.workspace = true
 thiserror.workspace = true
 errorfunctions.workspace = true
+sobol_burley.workspace = true
 rayon.workspace = true
 
 [dev-dependencies]

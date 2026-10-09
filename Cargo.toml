@@ -19,6 +19,7 @@ rand_distr = "0.6"
 thiserror = "2"
 # Runtime dependencies (phase 2: acquisition functions and optimize_acqf).
 errorfunctions = "0.2"
+sobol_burley = "0.5"
 rayon = "1"
 # Dev dependencies (fixtures and approximate comparisons).
 serde = { version = "1", features = ["derive"] }

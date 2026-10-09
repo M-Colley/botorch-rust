@@ -10,6 +10,9 @@
 //!   `ProbabilityOfImprovement`, `LogProbabilityOfImprovement`,
 //!   `UpperConfidenceBound`, `PosteriorMean`, `PosteriorStandardDeviation`
 //!   (`q = 1`).
+//! * [`monte_carlo`] — `qExpectedImprovement`, `qProbabilityOfImprovement`,
+//!   `qUpperConfidenceBound`, `qSimpleRegret` (any `q`, pending points).
+//! * [`logei`] — `qLogExpectedImprovement`.
 //!
 //! Acquisition functions hold their model as an `Arc<dyn Model>` and are
 //! `Send + Sync`; pending points are stored behind a lock so that
@@ -26,10 +29,17 @@ use crate::models::Model;
 use crate::Matrix;
 
 pub mod analytic;
+pub mod logei;
+pub mod monte_carlo;
 
 pub use analytic::{
     ExpectedImprovement, LogExpectedImprovement, LogProbabilityOfImprovement, PosteriorMean,
     PosteriorStandardDeviation, ProbabilityOfImprovement, UpperConfidenceBound,
+};
+pub use logei::{QLogExpectedImprovement, QLogExpectedImprovementOptions};
+pub use monte_carlo::{
+    McAcquisitionOptions, QExpectedImprovement, QProbabilityOfImprovement, QSimpleRegret,
+    QUpperConfidenceBound,
 };
 
 /// An acquisition function `α(X)` over candidate sets `X` (`q × d`, raw input
@@ -126,6 +136,17 @@ pub(crate) fn check_candidates(x: &Matrix, d: usize, expected_q: Option<usize>) 
                 x.nrows()
             )));
         }
+    }
+    Ok(())
+}
+
+/// Checks the shape of pending points.
+pub(crate) fn check_pending(x_pending: &Matrix, d: usize) -> Result<()> {
+    if x_pending.ncols() != d {
+        return Err(BotorchError::DimensionMismatch(format!(
+            "Expected X_pending with {d} columns, got {}",
+            x_pending.ncols()
+        )));
     }
     Ok(())
 }
