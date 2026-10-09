@@ -1,5 +1,5 @@
 [workspace]
-members = ["botorch_core"]
+members = ["botorch_core", "botorch_pyo3"]
 resolver = "2"
 
 [workspace.package]
@@ -11,6 +11,7 @@ repository = "https://github.com/botorch-rs/botorch-rs"
 authors = ["The botorch-rs authors"]
 
 [workspace.dependencies]
+botorch_core = { path = "./botorch_core" }
 # Runtime dependencies (phase 1).
 nalgebra = "0.35"
 statrs = { version = "0.19", default-features = false }

@@ -1,0 +1,29 @@
+[package]
+name = "botorch_pyo3"
+version.workspace = true
+edition.workspace = true
+description = "Python bindings of botorch-rs (the `botorch_rs` package)"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["bayesian-optimization", "gaussian-process", "botorch", "python"]
+categories = ["science", "mathematics"]
+publish = false
+
+[lib]
+name = "_botorch_rs"
+crate-type = ["cdylib"]
+# The extension module does not link libpython (it is resolved by the
+# interpreter that imports it), so Rust test executables could not be linked;
+# the bindings are tested from Python instead (see `tests/`).
+test = false
+doctest = false
+
+[dependencies]
+botorch_core.workspace = true
+nalgebra.workspace = true
+rayon.workspace = true
+pyo3 = { version = "0.29", features = ["abi3-py311", "abi3t-py315", "extension-module"] }
+
+[build-dependencies]
+pyo3-build-config = "0.29"

@@ -1,0 +1,54 @@
+//! Python bindings of botorch-rs: the `botorch_rs._botorch_rs` extension
+//! module.
+//!
+//! This crate is a thin layer over `botorch_core`. Arrays cross the boundary
+//! as `(data, shape)` tuples of plain Python floats ([`arrays`]), so the
+//! extension depends on neither NumPy nor torch; the pure-Python
+//! `botorch_rs` package (`python/botorch_rs`) converts torch tensors, NumPy
+//! arrays and nested lists, and provides BoTorch's module layout, class names
+//! and argument handling on top of the classes defined here. Errors map onto
+//! the exception hierarchy of `botorch_rs.exceptions` ([`errors`]), and every
+//! computation runs with the GIL released ([`threads`]).
+
+use pyo3::prelude::*;
+
+mod acquisition;
+mod arrays;
+mod errors;
+mod models;
+mod optim;
+mod sampling;
+mod specs;
+mod test_functions;
+mod threads;
+mod transforms;
+
+/// The `botorch_rs._botorch_rs` extension module.
+#[pymodule]
+#[pyo3(name = "_botorch_rs")]
+fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    // Models and their components.
+    m.add_class::<models::PySingleTaskGP>()?;
+    m.add_class::<transforms::PyNormalize>()?;
+    m.add_class::<transforms::PyStandardize>()?;
+    m.add_class::<specs::PyPrior>()?;
+    m.add_class::<specs::PyGreaterThan>()?;
+    m.add_class::<specs::PyKernelSpec>()?;
+    m.add_class::<specs::PyLikelihoodSpec>()?;
+    // Acquisition functions and their optimization.
+    m.add_class::<acquisition::PyAcquisitionFunction>()?;
+    m.add_function(wrap_pyfunction!(acquisition::prune_inferior_points_py, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::optimize_acqf, m)?)?;
+    // Sampling.
+    m.add_class::<sampling::PySobolQMCNormalSampler>()?;
+    m.add_function(wrap_pyfunction!(sampling::draw_sobol_samples_py, m)?)?;
+    m.add_function(wrap_pyfunction!(sampling::draw_sobol_normal_samples_py, m)?)?;
+    // Test functions.
+    m.add_class::<test_functions::PySyntheticTestFunction>()?;
+    m.add_function(wrap_pyfunction!(test_functions::test_function_names, m)?)?;
+    // Threads.
+    m.add_function(wrap_pyfunction!(threads::set_num_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(threads::get_num_threads, m)?)?;
+    Ok(())
+}
