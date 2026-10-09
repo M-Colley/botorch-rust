@@ -1,0 +1,886 @@
+//! `SingleTaskGP`: exact single-output GP regression with BoTorch's defaults.
+//!
+//! The model mirrors `botorch.models.SingleTaskGP` for a single output
+//! (`m = 1`):
+//!
+//! * optional `Normalize` input transform (BoTorch default: none) and
+//!   `Standardize` outcome transform (BoTorch default: `Standardize`);
+//! * `ConstantMean` (initialized to zero, no prior);
+//! * covariance module from [`get_covar_module_with_dim_scaled_prior`]
+//!   (RBF, dimension-scaled LogNormal lengthscale prior) unless overridden;
+//! * homoskedastic `GaussianLikelihood` with a `LogNormal(-4, 1)` noise prior
+//!   and `GreaterThan(1e-4)` constraint, or a fixed-noise likelihood when
+//!   observation variances `train_yvar` are given.
+//!
+//! Training data are stored both in the original space and transformed; the
+//! hyperparameters are stored in BoTorch's raw parameterization. A Cholesky
+//! factorization of the training covariance and the representer weights are
+//! cached lazily and invalidated whenever the hyperparameters change.
+
+use std::ops::Range;
+use std::sync::OnceLock;
+
+use crate::constraints::GreaterThan;
+use crate::error::{BotorchError, Result};
+use crate::kernels::{
+    get_covar_module_with_dim_scaled_prior, Kernel, KernelKind, KernelSpec, ScaleKernelSpec,
+    ScaledPoints,
+};
+use crate::linalg::{psd_safe_cholesky, CholeskyFactor};
+use crate::posterior::{JointPosteriorGrad, Posterior, MIN_VARIANCE};
+use crate::priors::Prior;
+use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
+use crate::{Matrix, Vector};
+
+/// Lower bound on the inferred noise variance of BoTorch's default likelihoods.
+pub const MIN_INFERRED_NOISE_LEVEL: f64 = 1e-4;
+
+/// Minimum fixed noise variance (`gpytorch.settings.min_fixed_noise` for double
+/// precision): smaller (transformed) observation variances are clamped to it,
+/// exactly like GPyTorch's `FixedGaussianNoise`.
+pub const MIN_FIXED_NOISE: f64 = 1e-6;
+
+/// Configuration of a homoskedastic `gpytorch.likelihoods.GaussianLikelihood`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GaussianLikelihoodSpec {
+    /// Prior on the noise variance (evaluated on the actual noise).
+    pub noise_prior: Option<Prior>,
+    /// Constraint on the noise variance.
+    pub noise_constraint: GreaterThan,
+}
+
+impl GaussianLikelihoodSpec {
+    /// Initial raw noise: the constraint's initial value if present, otherwise
+    /// zero (GPyTorch's default).
+    pub fn initial_raw_noise(&self) -> f64 {
+        self.noise_constraint.initial_raw_value().unwrap_or(0.0)
+    }
+}
+
+/// BoTorch's `get_gaussian_likelihood_with_lognormal_prior` (the
+/// `SingleTaskGP` default): noise prior `LogNormal(-4, 1)` and constraint
+/// `GreaterThan(1e-4, transform=None, initial_value=prior.mode)`, with the
+/// float32 rounding BoTorch applies to these constants.
+pub fn get_gaussian_likelihood_with_lognormal_prior() -> GaussianLikelihoodSpec {
+    let prior = Prior::LogNormal {
+        loc: -4.0,
+        scale: 1.0,
+        float32: false,
+    }
+    .rounded_to_f32();
+    GaussianLikelihoodSpec {
+        noise_prior: Some(prior),
+        noise_constraint: GreaterThan::new(MIN_INFERRED_NOISE_LEVEL, None, Some(prior.mode_f32()))
+            .rounded_to_f32(),
+    }
+}
+
+/// BoTorch's legacy `get_gaussian_likelihood_with_gamma_prior`: noise prior
+/// `Gamma(1.1, 0.05)` and constraint `GreaterThan(1e-4, transform=None,
+/// initial_value=(1.1 - 1) / 0.05)`.
+pub fn get_gaussian_likelihood_with_gamma_prior() -> GaussianLikelihoodSpec {
+    let prior = Prior::Gamma {
+        concentration: 1.1,
+        rate: 0.05,
+    }
+    .rounded_to_f32();
+    GaussianLikelihoodSpec {
+        noise_prior: Some(prior),
+        noise_constraint: GreaterThan::new(MIN_INFERRED_NOISE_LEVEL, None, Some(prior.mode_f32()))
+            .rounded_to_f32(),
+    }
+}
+
+/// The likelihood of a [`SingleTaskGP`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum Likelihood {
+    /// Homoskedastic Gaussian noise with a learned noise variance.
+    Gaussian(GaussianLikelihoodSpec),
+    /// Fixed, known noise (`FixedNoiseGaussianLikelihood`).
+    FixedNoise {
+        /// Noise variances of the training points in the *transformed*
+        /// outcome space (i.e. `train_yvar / std²` under `Standardize`),
+        /// clamped from below at [`MIN_FIXED_NOISE`].
+        noise: Vector,
+    },
+}
+
+/// Layout of the flat raw-parameter vector, which follows the order of
+/// `model.named_parameters()` in BoTorch:
+/// `likelihood.noise_covar.raw_noise` (if the noise is learned),
+/// `mean_module.raw_constant`, `covar_module.raw_outputscale` (if a
+/// `ScaleKernel` is used) and the `d` raw lengthscales.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParameterLayout {
+    /// Whether a raw noise parameter is present.
+    pub has_noise: bool,
+    /// Whether a raw outputscale parameter is present.
+    pub has_outputscale: bool,
+    /// Number of lengthscales (input dimension).
+    pub dim: usize,
+}
+
+impl ParameterLayout {
+    /// Total number of raw parameters.
+    pub fn len(&self) -> usize {
+        usize::from(self.has_noise) + 1 + usize::from(self.has_outputscale) + self.dim
+    }
+
+    /// Whether the layout is empty (never true for a valid model).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Index of the raw noise, if present.
+    pub fn noise_index(&self) -> Option<usize> {
+        self.has_noise.then_some(0)
+    }
+
+    /// Index of the raw constant mean.
+    pub fn constant_index(&self) -> usize {
+        usize::from(self.has_noise)
+    }
+
+    /// Index of the raw outputscale, if present.
+    pub fn outputscale_index(&self) -> Option<usize> {
+        self.has_outputscale.then_some(self.constant_index() + 1)
+    }
+
+    /// Index range of the raw lengthscales.
+    pub fn lengthscale_range(&self) -> Range<usize> {
+        let start = self.constant_index() + 1 + usize::from(self.has_outputscale);
+        start..start + self.dim
+    }
+}
+
+/// Hyperparameters of a [`SingleTaskGP`] in BoTorch's raw parameterization.
+///
+/// With BoTorch's default (non-enforced) constraints the raw values equal the
+/// actual values; with GPyTorch's default `Positive()` constraints the actual
+/// value is `softplus(raw)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hyperparameters {
+    /// `likelihood.noise_covar.raw_noise` (`None` for fixed noise).
+    pub raw_noise: Option<f64>,
+    /// `mean_module.raw_constant` (equal to the constant mean).
+    pub raw_constant: f64,
+    /// `covar_module.raw_outputscale` (`None` without `ScaleKernel`).
+    pub raw_outputscale: Option<f64>,
+    /// `covar_module(.base_kernel).raw_lengthscale` (length `d`).
+    pub raw_lengthscale: Vector,
+}
+
+impl Hyperparameters {
+    /// The layout of [`Hyperparameters::to_vector`].
+    pub fn layout(&self) -> ParameterLayout {
+        ParameterLayout {
+            has_noise: self.raw_noise.is_some(),
+            has_outputscale: self.raw_outputscale.is_some(),
+            dim: self.raw_lengthscale.len(),
+        }
+    }
+
+    /// Flattens the parameters in BoTorch's `named_parameters()` order.
+    pub fn to_vector(&self) -> Vector {
+        let mut v = Vec::with_capacity(self.layout().len());
+        if let Some(n) = self.raw_noise {
+            v.push(n);
+        }
+        v.push(self.raw_constant);
+        if let Some(s) = self.raw_outputscale {
+            v.push(s);
+        }
+        v.extend(self.raw_lengthscale.iter());
+        Vector::from_vec(v)
+    }
+
+    /// Inverse of [`Hyperparameters::to_vector`].
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] if `values.len() != layout.len()`.
+    pub fn from_slice(layout: ParameterLayout, values: &[f64]) -> Result<Self> {
+        if values.len() != layout.len() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "expected {} raw parameters, got {}",
+                layout.len(),
+                values.len()
+            )));
+        }
+        Ok(Self {
+            raw_noise: layout.noise_index().map(|i| values[i]),
+            raw_constant: values[layout.constant_index()],
+            raw_outputscale: layout.outputscale_index().map(|i| values[i]),
+            raw_lengthscale: Vector::from_column_slice(&values[layout.lengthscale_range()]),
+        })
+    }
+}
+
+/// Options of [`SingleTaskGP::new`], mirroring the keyword arguments of
+/// BoTorch's `SingleTaskGP`.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SingleTaskGPOptions {
+    /// Observed noise variances (`n × 1`); if given, a fixed-noise likelihood
+    /// is used instead of learning a homoskedastic noise level.
+    pub train_yvar: Option<Matrix>,
+    /// Optional input transform (BoTorch default: none). A `Normalize` with
+    /// learned bounds is fitted to the training inputs.
+    pub input_transform: Option<Normalize>,
+    /// Outcome transform (BoTorch default: `Standardize`).
+    pub outcome_transform: OutcomeTransformChoice,
+    /// Kernel family of the default covariance module (ignored if
+    /// `covar_module` is given).
+    pub kernel: KernelKind,
+    /// Wrap the default covariance module in a `ScaleKernel` with BoTorch's
+    /// legacy `GammaPrior(2.0, 0.15)` outputscale prior (ignored if
+    /// `covar_module` is given).
+    pub use_scale_kernel: bool,
+    /// Full covariance-module override (BoTorch's `covar_module` argument),
+    /// e.g. [`crate::kernels::get_matern_kernel_with_gamma_prior`].
+    pub covar_module: Option<KernelSpec>,
+    /// Override of the homoskedastic likelihood (BoTorch's `likelihood`
+    /// argument), e.g. [`get_gaussian_likelihood_with_gamma_prior`]. Must be
+    /// `None` when `train_yvar` is given.
+    pub likelihood: Option<GaussianLikelihoodSpec>,
+}
+
+/// Quantities derived from the hyperparameters and cached for prediction.
+#[derive(Clone, Debug)]
+struct PredictionCache {
+    kernel: Kernel,
+    train_scaled: ScaledPoints,
+    chol: CholeskyFactor,
+    /// `K⁻¹ (y - c)` in the transformed outcome space.
+    alpha: Vector,
+}
+
+/// Exact GP regression model with BoTorch `SingleTaskGP` semantics (single
+/// output, double precision).
+#[derive(Clone, Debug)]
+pub struct SingleTaskGP {
+    train_x: Matrix,
+    train_y: Matrix,
+    train_yvar: Option<Matrix>,
+    train_x_tf: Matrix,
+    train_y_tf: Vector,
+    input_transform: Option<Normalize>,
+    outcome_transform: Option<Standardize>,
+    covar_module: KernelSpec,
+    likelihood: Likelihood,
+    hyperparameters: Hyperparameters,
+    cache: OnceLock<std::result::Result<PredictionCache, BotorchError>>,
+}
+
+fn check_finite(m: &Matrix, what: &str) -> Result<()> {
+    if m.iter().any(|v| v.is_nan()) {
+        return Err(BotorchError::InputData(format!(
+            "{what} contains NaN values."
+        )));
+    }
+    Ok(())
+}
+
+impl SingleTaskGP {
+    /// Builds a model from training inputs `train_x` (`n × d`, rows are
+    /// points) and targets `train_y` (`n × 1`).
+    ///
+    /// # Errors
+    /// * [`BotorchError::Unsupported`] if `train_y` has more than one column;
+    /// * [`BotorchError::DimensionMismatch`] for inconsistent shapes;
+    /// * [`BotorchError::InputData`] for empty data, NaN values or negative
+    ///   noise variances;
+    /// * [`BotorchError::InvalidArgument`] for inconsistent options.
+    pub fn new(train_x: Matrix, train_y: Matrix, options: SingleTaskGPOptions) -> Result<Self> {
+        let (n, d) = train_x.shape();
+        if train_y.ncols() > 1 {
+            return Err(BotorchError::Unsupported(format!(
+                "SingleTaskGP in botorch_core currently supports a single output (m = 1), got m = {}",
+                train_y.ncols()
+            )));
+        }
+        if train_y.ncols() == 0 {
+            return Err(BotorchError::DimensionMismatch(
+                "train_y must have one column".into(),
+            ));
+        }
+        if n == 0 || d == 0 {
+            return Err(BotorchError::InputData(format!(
+                "train_x must have at least one row and one column, got {n}x{d}"
+            )));
+        }
+        if train_y.nrows() != n {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "Expected X and Y to have the same number of rows (got X with {n} and Y with {}).",
+                train_y.nrows()
+            )));
+        }
+        if let Some(yvar) = &options.train_yvar {
+            if yvar.shape() != train_y.shape() {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "Expected Yvar with the same shape as Y {:?}, got {:?}.",
+                    train_y.shape(),
+                    yvar.shape()
+                )));
+            }
+            check_finite(yvar, "train_yvar")?;
+            if yvar.iter().any(|&v| v < 0.0) {
+                return Err(BotorchError::InputData(
+                    "Input data contains negative variances.".into(),
+                ));
+            }
+            if options.likelihood.is_some() {
+                return Err(BotorchError::InvalidArgument(
+                    "a custom homoskedastic likelihood cannot be combined with train_yvar".into(),
+                ));
+            }
+        }
+        check_finite(&train_x, "train_x")?;
+        check_finite(&train_y, "train_y")?;
+
+        // Input transform (fitted on the training inputs, as in train mode).
+        let input_transform = match options.input_transform {
+            Some(mut tf) => {
+                if tf.dim() != d {
+                    return Err(BotorchError::DimensionMismatch(format!(
+                        "input transform has dimension {} but train_x has {d} columns",
+                        tf.dim()
+                    )));
+                }
+                tf.fit(&train_x)?;
+                Some(tf)
+            }
+            None => None,
+        };
+        let train_x_tf = match &input_transform {
+            Some(tf) => tf.transform(&train_x)?,
+            None => train_x.clone(),
+        };
+
+        // Outcome transform.
+        let mut outcome_transform = match options.outcome_transform {
+            OutcomeTransformChoice::Default => Some(Standardize::new()),
+            OutcomeTransformChoice::None => None,
+            OutcomeTransformChoice::Standardize(s) => Some(s),
+        };
+        let (y_tf, yvar_tf) = match outcome_transform.as_mut() {
+            Some(st) => st.fit_transform(&train_y, options.train_yvar.as_ref())?,
+            None => (train_y.clone(), options.train_yvar.clone()),
+        };
+        check_finite(&train_x_tf, "transformed train_x")?;
+        check_finite(&y_tf, "transformed train_y")?;
+
+        let likelihood = match &yvar_tf {
+            Some(v) => Likelihood::FixedNoise {
+                noise: Vector::from_iterator(
+                    n,
+                    v.column(0).iter().map(|&s| s.max(MIN_FIXED_NOISE)),
+                ),
+            },
+            None => Likelihood::Gaussian(
+                options
+                    .likelihood
+                    .unwrap_or_else(get_gaussian_likelihood_with_lognormal_prior),
+            ),
+        };
+
+        let covar_module = match options.covar_module {
+            Some(spec) => spec,
+            None => {
+                let base =
+                    get_covar_module_with_dim_scaled_prior(d, options.kernel == KernelKind::Rbf);
+                if options.use_scale_kernel {
+                    base.with_scale_kernel(ScaleKernelSpec::legacy_gamma())
+                } else {
+                    base
+                }
+            }
+        };
+        if covar_module.ard_num_dims != d {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "covar_module has ard_num_dims = {} but train_x has {d} columns",
+                covar_module.ard_num_dims
+            )));
+        }
+
+        let hyperparameters = Hyperparameters {
+            raw_noise: match &likelihood {
+                Likelihood::Gaussian(spec) => Some(spec.initial_raw_noise()),
+                Likelihood::FixedNoise { .. } => None,
+            },
+            raw_constant: 0.0,
+            raw_outputscale: covar_module.initial_raw_outputscale(),
+            raw_lengthscale: Vector::from_element(d, covar_module.initial_raw_lengthscale()),
+        };
+
+        Ok(Self {
+            train_x,
+            train_y,
+            train_yvar: options.train_yvar,
+            train_x_tf,
+            train_y_tf: Vector::from_column_slice(y_tf.column(0).as_slice()),
+            input_transform,
+            outcome_transform,
+            covar_module,
+            likelihood,
+            hyperparameters,
+            cache: OnceLock::new(),
+        })
+    }
+
+    // ------------------------------------------------------------------
+    // Data and configuration accessors
+    // ------------------------------------------------------------------
+
+    /// Training inputs in the original input space (`n × d`).
+    pub fn train_inputs(&self) -> &Matrix {
+        &self.train_x
+    }
+
+    /// Training targets in the original outcome space (`n × 1`).
+    pub fn train_targets(&self) -> &Matrix {
+        &self.train_y
+    }
+
+    /// Observed noise variances in the original outcome space, if given.
+    pub fn train_yvar(&self) -> Option<&Matrix> {
+        self.train_yvar.as_ref()
+    }
+
+    /// Training inputs after the input transform (`n × d`).
+    pub fn transformed_train_inputs(&self) -> &Matrix {
+        &self.train_x_tf
+    }
+
+    /// Training targets after the outcome transform (BoTorch's
+    /// `model.train_targets`, length `n`).
+    pub fn transformed_train_targets(&self) -> &Vector {
+        &self.train_y_tf
+    }
+
+    /// Number of training points `n`.
+    pub fn num_train(&self) -> usize {
+        self.train_x.nrows()
+    }
+
+    /// Input dimension `d`.
+    pub fn dim(&self) -> usize {
+        self.train_x.ncols()
+    }
+
+    /// Number of outputs (always 1 in this version).
+    pub fn num_outputs(&self) -> usize {
+        1
+    }
+
+    /// The fitted input transform, if any.
+    pub fn input_transform(&self) -> Option<&Normalize> {
+        self.input_transform.as_ref()
+    }
+
+    /// The fitted outcome transform, if any.
+    pub fn outcome_transform(&self) -> Option<&Standardize> {
+        self.outcome_transform.as_ref()
+    }
+
+    /// The covariance-module configuration.
+    pub fn covar_module(&self) -> &KernelSpec {
+        &self.covar_module
+    }
+
+    /// The likelihood.
+    pub fn likelihood(&self) -> &Likelihood {
+        &self.likelihood
+    }
+
+    // ------------------------------------------------------------------
+    // Hyperparameters
+    // ------------------------------------------------------------------
+
+    /// The current raw hyperparameters.
+    pub fn hyperparameters(&self) -> &Hyperparameters {
+        &self.hyperparameters
+    }
+
+    /// Sets the raw hyperparameters (and invalidates cached factorizations).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] if the structure does not match the
+    /// model (noise / outputscale presence, number of lengthscales) and
+    /// [`BotorchError::InvalidArgument`] for non-finite values or values that
+    /// map to non-positive lengthscales or outputscales or to a negative noise
+    /// variance (a zero noise variance is allowed, as in GPyTorch; the
+    /// optimizer bounds keep fitted noise levels at or above `1e-4`).
+    pub fn set_hyperparameters(&mut self, hyperparameters: Hyperparameters) -> Result<()> {
+        if hyperparameters.layout() != self.parameter_layout() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "hyperparameter layout {:?} does not match the model layout {:?}",
+                hyperparameters.layout(),
+                self.parameter_layout()
+            )));
+        }
+        let values = hyperparameters.to_vector();
+        if values.iter().any(|v| !v.is_finite()) {
+            return Err(BotorchError::InvalidArgument(
+                "hyperparameters must be finite".into(),
+            ));
+        }
+        self.covar_module.build(
+            hyperparameters.raw_lengthscale.as_slice(),
+            hyperparameters.raw_outputscale,
+        )?;
+        if let (Likelihood::Gaussian(spec), Some(raw)) =
+            (&self.likelihood, hyperparameters.raw_noise)
+        {
+            let noise = spec.noise_constraint.transform(raw);
+            if noise.is_nan() || noise < 0.0 {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "noise must be non-negative, got {noise}"
+                )));
+            }
+        }
+        self.hyperparameters = hyperparameters;
+        self.cache = OnceLock::new();
+        Ok(())
+    }
+
+    /// The layout of the flat raw-parameter vector.
+    pub fn parameter_layout(&self) -> ParameterLayout {
+        ParameterLayout {
+            has_noise: matches!(self.likelihood, Likelihood::Gaussian(_)),
+            has_outputscale: self.covar_module.scale.is_some(),
+            dim: self.dim(),
+        }
+    }
+
+    /// The raw hyperparameters flattened in BoTorch's `named_parameters()` order.
+    pub fn raw_parameters(&self) -> Vector {
+        self.hyperparameters.to_vector()
+    }
+
+    /// Sets the raw hyperparameters from a flat vector (see [`ParameterLayout`]).
+    ///
+    /// # Errors
+    /// See [`SingleTaskGP::set_hyperparameters`].
+    pub fn set_raw_parameters(&mut self, values: &[f64]) -> Result<()> {
+        let h = Hyperparameters::from_slice(self.parameter_layout(), values)?;
+        self.set_hyperparameters(h)
+    }
+
+    /// BoTorch parameter names and sizes in flat-vector order, e.g.
+    /// `("covar_module.raw_lengthscale", d)`.
+    pub fn parameter_names(&self) -> Vec<(String, usize)> {
+        let layout = self.parameter_layout();
+        let mut names = Vec::new();
+        if layout.has_noise {
+            names.push(("likelihood.noise_covar.raw_noise".to_string(), 1));
+        }
+        names.push(("mean_module.raw_constant".to_string(), 1));
+        if layout.has_outputscale {
+            names.push(("covar_module.raw_outputscale".to_string(), 1));
+            names.push((
+                "covar_module.base_kernel.raw_lengthscale".to_string(),
+                layout.dim,
+            ));
+        } else {
+            names.push(("covar_module.raw_lengthscale".to_string(), layout.dim));
+        }
+        names
+    }
+
+    /// Optimizer bounds for every raw parameter in flat-vector order, as
+    /// produced by `botorch.optim.utils.get_parameters_and_bounds`
+    /// (unconstrained parameters get `(-inf, inf)`).
+    pub fn raw_parameter_bounds(&self) -> Vec<(f64, f64)> {
+        let layout = self.parameter_layout();
+        let mut bounds = Vec::with_capacity(layout.len());
+        if let Likelihood::Gaussian(spec) = &self.likelihood {
+            bounds.push(spec.noise_constraint.raw_bounds());
+        }
+        bounds.push((f64::NEG_INFINITY, f64::INFINITY));
+        if let Some(scale) = &self.covar_module.scale {
+            bounds.push(scale.outputscale_constraint.raw_bounds());
+        }
+        let ls = self.covar_module.lengthscale_constraint.raw_bounds();
+        bounds.extend(std::iter::repeat_n(ls, layout.dim));
+        bounds
+    }
+
+    /// The constant mean (in the transformed outcome space).
+    pub fn constant(&self) -> f64 {
+        self.hyperparameters.raw_constant
+    }
+
+    /// The actual lengthscales.
+    pub fn lengthscale(&self) -> Vector {
+        self.hyperparameters
+            .raw_lengthscale
+            .map(|r| self.covar_module.lengthscale_constraint.transform(r))
+    }
+
+    /// The actual outputscale, if a `ScaleKernel` is used.
+    pub fn outputscale(&self) -> Option<f64> {
+        match (
+            &self.covar_module.scale,
+            self.hyperparameters.raw_outputscale,
+        ) {
+            (Some(s), Some(raw)) => Some(s.outputscale_constraint.transform(raw)),
+            _ => None,
+        }
+    }
+
+    /// The likelihood noise variance in the transformed outcome space, like
+    /// GPyTorch's `likelihood.noise`: a single value for a homoskedastic
+    /// likelihood and one value per training point for fixed noise.
+    pub fn likelihood_noise(&self) -> Vector {
+        match &self.likelihood {
+            Likelihood::Gaussian(spec) => Vector::from_element(
+                1,
+                spec.noise_constraint.transform(
+                    self.hyperparameters
+                        .raw_noise
+                        .expect("homoskedastic models have a noise parameter"),
+                ),
+            ),
+            Likelihood::FixedNoise { noise } => noise.clone(),
+        }
+    }
+
+    /// The kernel with the current hyperparameters.
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] if the hyperparameters are invalid.
+    pub fn kernel(&self) -> Result<Kernel> {
+        self.covar_module.build(
+            self.hyperparameters.raw_lengthscale.as_slice(),
+            self.hyperparameters.raw_outputscale,
+        )
+    }
+
+    /// Mean and standard deviation of the outcome transform (`(0, 1)` without).
+    fn outcome_affine(&self) -> (f64, f64) {
+        match &self.outcome_transform {
+            Some(st) => (st.means()[0], st.stdvs()[0]),
+            None => (0.0, 1.0),
+        }
+    }
+
+    /// The observation-noise variance (transformed outcome space) added by
+    /// `posterior(.., observation_noise = true)`: the learned noise, or the
+    /// mean of the fixed training noise (BoTorch's choice for fixed-noise
+    /// models).
+    fn observation_noise_transformed(&self) -> f64 {
+        let noise = self.likelihood_noise();
+        noise.sum() / noise.len() as f64
+    }
+
+    /// The observation-noise variance in the *original* outcome space that
+    /// `posterior(x, true)` adds to the diagonal of the posterior covariance.
+    pub fn observation_noise(&self) -> f64 {
+        let (_, sd) = self.outcome_affine();
+        sd * sd * self.observation_noise_transformed()
+    }
+
+    // ------------------------------------------------------------------
+    // Prediction
+    // ------------------------------------------------------------------
+
+    fn compute_cache(&self) -> Result<PredictionCache> {
+        let kernel = self.kernel()?;
+        let train_scaled = kernel.scale_points(&self.train_x_tf);
+        let mut k = kernel.symmetric_scaled(&train_scaled);
+        let noise = self.likelihood_noise();
+        let n = self.num_train();
+        for i in 0..n {
+            k[(i, i)] += if noise.len() == 1 { noise[0] } else { noise[i] };
+        }
+        let chol = psd_safe_cholesky(&k)?;
+        let resid = self.train_y_tf.add_scalar(-self.constant());
+        let alpha = chol.solve_vec(&resid);
+        Ok(PredictionCache {
+            kernel,
+            train_scaled,
+            chol,
+            alpha,
+        })
+    }
+
+    fn cache(&self) -> Result<&PredictionCache> {
+        self.cache
+            .get_or_init(|| self.compute_cache())
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    /// The Cholesky factor of the (jittered) training covariance
+    /// `K(X, X) + noise` in the transformed space (computed lazily).
+    ///
+    /// # Errors
+    /// [`BotorchError::NotPsd`] if the factorization fails even with jitter.
+    pub fn train_cholesky(&self) -> Result<&CholeskyFactor> {
+        Ok(&self.cache()?.chol)
+    }
+
+    fn transform_inputs(&self, x: &Matrix) -> Result<Matrix> {
+        if x.ncols() != self.dim() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "Expected inputs with {} columns, got {}",
+                self.dim(),
+                x.ncols()
+            )));
+        }
+        match &self.input_transform {
+            Some(tf) => tf.transform(x),
+            None => Ok(x.clone()),
+        }
+    }
+
+    /// Chain-rule factors `∂x̃ⱼ/∂xⱼ` of the input transform.
+    fn input_jacobian(&self) -> Vector {
+        match &self.input_transform {
+            Some(tf) => tf.coefficient().map(|c| 1.0 / c),
+            None => Vector::from_element(self.dim(), 1.0),
+        }
+    }
+
+    /// Joint posterior at the `q × d` raw-space inputs `x`, in the original
+    /// outcome space. With `observation_noise`, the likelihood noise is added
+    /// to the diagonal (the mean training noise for fixed-noise models).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] for a column mismatch and
+    /// [`BotorchError::NotPsd`] if the training covariance cannot be factorized.
+    pub fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {
+        let xt = self.transform_inputs(x)?;
+        let cache = self.cache()?;
+        let q = xt.nrows();
+        let xs = cache.kernel.scale_points(&xt);
+        let kxs = cache.kernel.cross_scaled(&xs, &cache.train_scaled);
+        let mut cov = cache.kernel.symmetric_scaled(&xs);
+        let mean_tf = (&kxs * &cache.alpha).add_scalar(self.constant());
+        let mut v = kxs.transpose();
+        cache.chol.solve_lower_mut(&mut v);
+        cov.gemm_tr(-1.0, &v, &v, 1.0);
+        if observation_noise {
+            let noise = self.observation_noise_transformed();
+            for i in 0..q {
+                cov[(i, i)] += noise;
+            }
+        }
+        let (mu, sd) = self.outcome_affine();
+        Ok(Posterior {
+            mean: mean_tf.map(|m| mu + sd * m),
+            covariance: cov.map(|c| sd * c * sd),
+        })
+    }
+
+    /// Posterior mean and variance at a single raw-space point `x` (length
+    /// `d`) together with their gradients with respect to `x`, all in the
+    /// original spaces: `(mean, variance, ∂mean/∂x, ∂variance/∂x)`.
+    ///
+    /// The variance is clamped at [`MIN_VARIANCE`] like BoTorch's
+    /// `posterior.variance` (with a zero gradient when clamped).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] if `x.len() != d` and
+    /// [`BotorchError::NotPsd`] if the training covariance cannot be factorized.
+    pub fn posterior_q1_with_grad(&self, x: &[f64]) -> Result<(f64, f64, Vector, Vector)> {
+        if x.len() != self.dim() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "Expected a point with {} coordinates, got {}",
+                self.dim(),
+                x.len()
+            )));
+        }
+        let cache = self.cache()?;
+        let xt = match &self.input_transform {
+            Some(tf) => tf.transform_point(x)?,
+            None => x.to_vec(),
+        };
+        let xs = cache.kernel.scale_point(&xt);
+        let (k, dk) = cache
+            .kernel
+            .cross_with_grad_scaled(&xs, &cache.train_scaled);
+        let mean_tf = self.constant() + k.dot(&cache.alpha);
+        let dmean_tf = dk.tr_mul(&cache.alpha);
+        let v = cache.chol.solve_lower_vec(&k);
+        let var_tf = cache.kernel.prior_variance() - v.dot(&v);
+        let w = cache.chol.solve_lower_transpose_vec(&v);
+        let dvar_tf = dk.tr_mul(&w) * -2.0;
+        let jac = self.input_jacobian();
+        let (mu, sd) = self.outcome_affine();
+        let mean = mu + sd * mean_tf;
+        let dmean = dmean_tf.component_mul(&jac) * sd;
+        let var = sd * sd * var_tf;
+        if var < MIN_VARIANCE {
+            return Ok((mean, MIN_VARIANCE, dmean, Vector::zeros(self.dim())));
+        }
+        let dvar = dvar_tf.component_mul(&jac) * (sd * sd);
+        Ok((mean, var, dmean, dvar))
+    }
+
+    /// Joint posterior (without observation noise) at the `q × d` raw-space
+    /// inputs `x` with the derivatives of the mean and covariance with respect
+    /// to all `q·d` input coordinates (see [`JointPosteriorGrad`]).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] for a column mismatch and
+    /// [`BotorchError::NotPsd`] if the training covariance cannot be factorized.
+    pub fn joint_posterior_with_grad(&self, x: &Matrix) -> Result<JointPosteriorGrad> {
+        let xt = self.transform_inputs(x)?;
+        let cache = self.cache()?;
+        let (q, d) = xt.shape();
+        let n = self.num_train();
+        let kernel = &cache.kernel;
+        let xs = kernel.scale_points(&xt);
+
+        // Test-train covariances and their derivatives for every test point.
+        let mut kxs = Matrix::zeros(q, n);
+        let mut dks = Vec::with_capacity(q);
+        for p in 0..q {
+            let (k, dk) = kernel.cross_with_grad_scaled(xs.row(p), &cache.train_scaled);
+            kxs.set_row(p, &k.transpose());
+            dks.push(dk);
+        }
+        let mean_tf = (&kxs * &cache.alpha).add_scalar(self.constant());
+        let mut v = kxs.transpose(); // n × q
+        cache.chol.solve_lower_mut(&mut v);
+        let mut cov_tf = kernel.symmetric_scaled(&xs);
+        cov_tf.gemm_tr(-1.0, &v, &v, 1.0);
+        let mut w = v; // becomes K⁻¹ K(X, x*) (n × q)
+        cache.chol.solve_lower_transpose_mut(&mut w);
+
+        let jac = self.input_jacobian();
+        let (mu, sd) = self.outcome_affine();
+        let mut dmean = Vec::with_capacity(q * d);
+        let mut dcov = Vec::with_capacity(q * d);
+        for (p, dk) in dks.iter().enumerate() {
+            // Derivatives of k(x_p, x_b) with respect to x_p for all test points b.
+            let (_, dkss) = kernel.cross_with_grad_scaled(xs.row(p), &xs);
+            // dk_wᵀ: (d × q) = dkᵀ W
+            let dk_w = dk.tr_mul(&w);
+            let dk_alpha = dk.tr_mul(&cache.alpha);
+            for m in 0..d {
+                let scale = jac[m];
+                let mut dm = Vector::zeros(q);
+                dm[p] = sd * dk_alpha[m] * scale;
+                dmean.push(dm);
+                let mut dc = Matrix::zeros(q, q);
+                for b in 0..q {
+                    let g = (dkss[(b, m)] - dk_w[(m, b)]) * scale * sd * sd;
+                    if b == p {
+                        dc[(p, p)] = 2.0 * g;
+                    } else {
+                        dc[(p, b)] = g;
+                        dc[(b, p)] = g;
+                    }
+                }
+                dcov.push(dc);
+            }
+        }
+        Ok(JointPosteriorGrad {
+            mean: mean_tf.map(|v| mu + sd * v),
+            covariance: cov_tf.map(|c| sd * c * sd),
+            dmean,
+            dcov,
+        })
+    }
+}

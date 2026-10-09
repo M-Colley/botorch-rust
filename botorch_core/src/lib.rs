@@ -12,6 +12,9 @@
 //!   values in float32 before casting the model to double precision. The
 //!   BoTorch presets in this crate reproduce that rounding (see
 //!   [`Prior::rounded_to_f32`]) so that results agree to ~1e-10.
+//! * Inputs passed to a model are in the *raw* (original) input space; the
+//!   model applies its input transform. Posteriors are reported in the
+//!   *original* outcome space (un-standardized), like BoTorch's `posterior`.
 
 #![warn(missing_docs)]
 
@@ -19,6 +22,8 @@ pub mod constraints;
 pub mod error;
 pub mod kernels;
 pub mod linalg;
+pub mod models;
+pub mod posterior;
 pub mod priors;
 pub mod transforms;
 
@@ -33,5 +38,11 @@ pub use constraints::{GreaterThan, ParameterTransform};
 pub use error::{BotorchError, Result};
 pub use kernels::{Kernel, KernelKind, KernelSpec, ScaleKernelSpec};
 pub use linalg::{psd_safe_cholesky, CholeskyFactor};
+pub use models::{
+    get_gaussian_likelihood_with_gamma_prior, get_gaussian_likelihood_with_lognormal_prior,
+    GaussianLikelihoodSpec, Hyperparameters, Likelihood, ParameterLayout, SingleTaskGP,
+    SingleTaskGPOptions,
+};
+pub use posterior::{JointPosteriorGrad, Posterior};
 pub use priors::Prior;
 pub use transforms::{Normalize, OutcomeTransformChoice, Standardize};
