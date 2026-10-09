@@ -20,6 +20,7 @@ pub mod error;
 pub mod kernels;
 pub mod linalg;
 pub mod priors;
+pub mod transforms;
 
 /// Dense double-precision matrix (`nalgebra::DMatrix<f64>`); point sets are
 /// stored with one point per row.
@@ -33,3 +34,4 @@ pub use error::{BotorchError, Result};
 pub use kernels::{Kernel, KernelKind, KernelSpec, ScaleKernelSpec};
 pub use linalg::{psd_safe_cholesky, CholeskyFactor};
 pub use priors::Prior;
+pub use transforms::{Normalize, OutcomeTransformChoice, Standardize};
