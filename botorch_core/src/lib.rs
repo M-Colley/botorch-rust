@@ -185,7 +185,8 @@
 //!   one-shot acquisition functions. Restarts are independent L-BFGS-B
 //!   problems (BoTorch's default parallel mode), so `batch_limit` only chunks
 //!   the work.
-//! * Python bindings follow in phase 3.
+//! * Python bindings with BoTorch's API are provided by the `botorch_pyo3`
+//!   crate (the `botorch_rs` package; see the repository README).
 
 #![warn(missing_docs)]
 
