@@ -477,6 +477,44 @@ impl Kernel {
         })
     }
 
+    /// Contracts the hyperparameter derivatives with a symmetric weight matrix:
+    /// returns `(Σᵢⱼ Wᵢⱼ ∂Kᵢⱼ/∂ℓₘ)ₘ` and `Σᵢⱼ Wᵢⱼ ∂Kᵢⱼ/∂s` (if scaled) without
+    /// materializing the derivative matrices.
+    pub(crate) fn contract_hyper_grad(
+        &self,
+        xs: &ScaledPoints,
+        w: &Matrix,
+    ) -> (Vector, Option<f64>) {
+        let n = xs.n;
+        let d = self.dim();
+        let s = self.scale_factor();
+        let mut gl = vec![0.0; d];
+        let mut gs = 0.0;
+        let k0 = self.base_value(0.0);
+        for i in 0..n {
+            gs += w[(i, i)] * k0;
+            let a = xs.row(i);
+            for j in (i + 1)..n {
+                let b = xs.row(j);
+                let (k, g) = self.base_value_and_factor(Self::sq_dist(a, b));
+                let wij = w[(i, j)] + w[(j, i)];
+                gs += wij * k;
+                let c = wij * g;
+                for m in 0..d {
+                    let u = a[m] - b[m];
+                    gl[m] += c * u * u;
+                }
+            }
+        }
+        let gl = Vector::from_iterator(
+            d,
+            gl.iter()
+                .zip(self.lengthscale.iter())
+                .map(|(g, l)| s * g / l),
+        );
+        (gl, self.outputscale.map(|_| gs))
+    }
+
     /// Covariances `k(x, X2)` of a single point with a point set and their
     /// derivatives with respect to `x`, both on pre-scaled inputs. Row `i` of
     /// the returned `n2 × d` matrix holds `∂k(x, x2ᵢ)/∂x` (derivative with
