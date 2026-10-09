@@ -1,0 +1,29 @@
+[workspace]
+members = ["botorch_core"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0-dev"
+edition = "2021"
+description = "A Rust implementation of BoTorch"
+license = "MIT"
+repository = "https://github.com/botorch-rs/botorch-rs"
+authors = ["The botorch-rs authors"]
+
+[workspace.dependencies]
+# Runtime dependencies (phase 1).
+nalgebra = "0.35"
+statrs = { version = "0.19", default-features = false }
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng"] }
+rand_distr = "0.6"
+thiserror = "2"
+# Dev dependencies (fixtures and approximate comparisons).
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+approx = "0.5"
+# Reserved for later phases (acquisition functions / optimize_acqf):
+# errorfunctions = "0.2", sobol_burley = "0.5", rayon = "1".
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

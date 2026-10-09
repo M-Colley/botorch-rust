@@ -1,0 +1,23 @@
+[package]
+name = "botorch_core"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../README.md"
+keywords = ["bayesian-optimization", "gaussian-process", "botorch"]
+categories = ["science", "mathematics"]
+
+[dependencies]
+nalgebra.workspace = true
+statrs.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+approx.workspace = true
