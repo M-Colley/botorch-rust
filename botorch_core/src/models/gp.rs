@@ -27,6 +27,7 @@ use crate::kernels::{
     ScaledPoints,
 };
 use crate::linalg::{psd_safe_cholesky, CholeskyFactor};
+use crate::models::Model;
 use crate::posterior::{JointPosteriorGrad, Posterior, MIN_VARIANCE};
 use crate::priors::Prior;
 use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
@@ -882,5 +883,131 @@ impl SingleTaskGP {
             dmean,
             dcov,
         })
+    }
+
+    /// Marginal posterior means and variances of the rows of `x` (each row
+    /// evaluated as its own `q = 1` posterior, like a `b × 1 × d` batch in
+    /// BoTorch), in the original spaces. Variances are clamped at
+    /// [`MIN_VARIANCE`]. The values are bitwise identical to those of
+    /// [`SingleTaskGP::posterior_q1_with_grad`].
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] for a column mismatch and
+    /// [`BotorchError::NotPsd`] if the training covariance cannot be factorized.
+    pub fn posterior_marginals(&self, x: &Matrix) -> Result<(Vector, Vector)> {
+        let xt = self.transform_inputs(x)?;
+        let cache = self.cache()?;
+        let b = xt.nrows();
+        let xs = cache.kernel.scale_points(&xt);
+        let kxs = cache.kernel.cross_scaled(&xs, &cache.train_scaled);
+        let (mu, sd) = self.outcome_affine();
+        let prior = cache.kernel.prior_variance();
+        let mut mean = Vector::zeros(b);
+        let mut var = Vector::zeros(b);
+        for i in 0..b {
+            let k = kxs.row(i).transpose();
+            mean[i] = mu + sd * (self.constant() + k.dot(&cache.alpha));
+            let v = cache.chol.solve_lower_vec(&k);
+            let vi = sd * sd * (prior - v.dot(&v));
+            var[i] = if vi < MIN_VARIANCE { MIN_VARIANCE } else { vi };
+        }
+        Ok((mean, var))
+    }
+
+    /// Reverse-mode derivative of the joint posterior (without observation
+    /// noise) at the raw-space inputs `x` (`N × d`): returns
+    /// `∂s/∂x[p, ·]` for `p ∈ rows`, where
+    /// `s = ⟨mean_adjoint, μ⟩ + Σ_ab covariance_adjoint[a,b] Σ[a,b]`
+    /// (only the symmetric part of `covariance_adjoint` matters).
+    ///
+    /// This costs one posterior evaluation plus `O(|rows|·(n + N)·d)` and is
+    /// what Monte-Carlo acquisition functions use to backpropagate through
+    /// posterior samples.
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] for inconsistent shapes and
+    /// [`BotorchError::NotPsd`] if the training covariance cannot be factorized.
+    pub fn joint_posterior_vjp(
+        &self,
+        x: &Matrix,
+        rows: Range<usize>,
+        mean_adjoint: &Vector,
+        covariance_adjoint: &Matrix,
+    ) -> Result<Matrix> {
+        super::model::check_vjp_shapes(x, &rows, mean_adjoint, covariance_adjoint)?;
+        let xt = self.transform_inputs(x)?;
+        let cache = self.cache()?;
+        let d = xt.ncols();
+        let kernel = &cache.kernel;
+        let xs = kernel.scale_points(&xt);
+        let (_, sd) = self.outcome_affine();
+        // Adjoints in the transformed outcome space (symmetrized covariance adjoint).
+        let mbar = mean_adjoint * sd;
+        let abar = (covariance_adjoint + covariance_adjoint.transpose()) * (0.5 * sd * sd);
+        // W = K⁻¹ K(X_train, x) (n × N).
+        let kxs = kernel.cross_scaled(&xs, &cache.train_scaled);
+        let mut w = kxs.transpose();
+        cache.chol.solve_lower_mut(&mut w);
+        cache.chol.solve_lower_transpose_mut(&mut w);
+        let jac = self.input_jacobian();
+        let mut out = Matrix::zeros(rows.len(), d);
+        for (r, p) in rows.enumerate() {
+            let a_p = abar.column(p).into_owned();
+            // ∂/∂x_p of ⟨mbar, μ⟩ + ⟨abar, Σ⟩ =
+            //   Dk_pᵀ (mbar_p α - 2 W abar[:, p]) + 2 Σ_b abar[p, b] ∂₁k(x_p, x_b).
+            let v = &cache.alpha * mbar[p] - (&w * &a_p) * 2.0;
+            let (_, dk) = kernel.cross_with_grad_scaled(xs.row(p), &cache.train_scaled);
+            let mut g = dk.tr_mul(&v);
+            let (_, dkk) = kernel.cross_with_grad_scaled(xs.row(p), &xs);
+            g += dkk.tr_mul(&a_p) * 2.0;
+            for k in 0..d {
+                out[(r, k)] = g[k] * jac[k];
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl Model for SingleTaskGP {
+    fn dim(&self) -> usize {
+        SingleTaskGP::dim(self)
+    }
+
+    fn num_outputs(&self) -> usize {
+        SingleTaskGP::num_outputs(self)
+    }
+
+    fn train_inputs(&self) -> &Matrix {
+        SingleTaskGP::train_inputs(self)
+    }
+
+    fn train_targets(&self) -> &Matrix {
+        SingleTaskGP::train_targets(self)
+    }
+
+    fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {
+        SingleTaskGP::posterior(self, x, observation_noise)
+    }
+
+    fn posterior_marginals(&self, x: &Matrix) -> Result<(Vector, Vector)> {
+        SingleTaskGP::posterior_marginals(self, x)
+    }
+
+    fn posterior_q1_with_grad(&self, x: &[f64]) -> Result<(f64, f64, Vector, Vector)> {
+        SingleTaskGP::posterior_q1_with_grad(self, x)
+    }
+
+    fn joint_posterior_with_grad(&self, x: &Matrix) -> Result<JointPosteriorGrad> {
+        SingleTaskGP::joint_posterior_with_grad(self, x)
+    }
+
+    fn joint_posterior_vjp(
+        &self,
+        x: &Matrix,
+        rows: Range<usize>,
+        mean_adjoint: &Vector,
+        covariance_adjoint: &Matrix,
+    ) -> Result<Matrix> {
+        SingleTaskGP::joint_posterior_vjp(self, x, rows, mean_adjoint, covariance_adjoint)
     }
 }

@@ -1,12 +1,15 @@
 //! Finite-difference checks of every analytic gradient: the MLL with respect
 //! to all raw hyperparameters, kernel matrices with respect to hyperparameters
 //! and inputs, and posterior moments with respect to the (raw-space) test
-//! inputs for q = 1 and q > 1, through Normalize and Standardize.
+//! inputs for q = 1 and q > 1, through Normalize and Standardize; plus
+//! consistency of the reverse-mode posterior derivative (`joint_posterior_vjp`)
+//! with the forward-mode one and of the batched marginals with the q = 1
+//! posteriors.
 
 use botorch_core::kernels::get_matern_kernel_with_gamma_prior;
 use botorch_core::{
     get_gaussian_likelihood_with_gamma_prior, ExactMarginalLogLikelihood, Kernel, KernelKind,
-    Matrix, Normalize, OutcomeTransformChoice, SingleTaskGP, SingleTaskGPOptions, Vector,
+    Matrix, Model, Normalize, OutcomeTransformChoice, SingleTaskGP, SingleTaskGPOptions, Vector,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -334,6 +337,113 @@ fn joint_posterior_gradients_match_finite_differences() {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Forward-mode reference for the VJP: contracts `joint_posterior_with_grad`.
+fn vjp_reference(
+    model: &SingleTaskGP,
+    x: &Matrix,
+    rows: std::ops::Range<usize>,
+    mean_adj: &Vector,
+    cov_adj: &Matrix,
+) -> Matrix {
+    let d = x.ncols();
+    let g = model.joint_posterior_with_grad(x).unwrap();
+    let mut out = Matrix::zeros(rows.len(), d);
+    for (r, p) in rows.enumerate() {
+        for k in 0..d {
+            let j = p * d + k;
+            out[(r, k)] = mean_adj.dot(&g.dmean[j]) + cov_adj.component_mul(&g.dcov[j]).sum();
+        }
+    }
+    out
+}
+
+#[test]
+fn joint_posterior_vjp_matches_forward_mode() {
+    for (name, mut model) in models() {
+        let p = perturbed(&model, 9);
+        model.set_raw_parameters(&p).unwrap();
+        let n = 5;
+        let xs = test_points(&model, n, 17);
+        let mut rng = StdRng::seed_from_u64(3);
+        let mean_adj = Vector::from_fn(n, |_, _| rng.random::<f64>() - 0.5);
+        // A non-symmetric adjoint: only its symmetric part may matter.
+        let cov_adj = Matrix::from_fn(n, n, |_, _| rng.random::<f64>() - 0.5);
+        for rows in [0..n, 2..5, 0..1, 4..5, 3..3] {
+            let vjp = model
+                .joint_posterior_vjp(&xs, rows.clone(), &mean_adj, &cov_adj)
+                .unwrap();
+            let reference = vjp_reference(&model, &xs, rows.clone(), &mean_adj, &cov_adj);
+            assert_eq!(vjp.shape(), (rows.len(), xs.ncols()));
+            let scale = reference.amax().max(1e-300);
+            assert!(
+                (&vjp - &reference).amax() <= 1e-12 * scale,
+                "{name}: vjp rows {rows:?}: {vjp} vs {reference}"
+            );
+            // The trait's default implementation (forward mode) agrees as well.
+            let via_trait = <SingleTaskGP as Model>::joint_posterior_vjp(
+                &model,
+                &xs,
+                rows.clone(),
+                &mean_adj,
+                &cov_adj,
+            )
+            .unwrap();
+            assert!((&via_trait - &vjp).amax() <= 1e-12 * scale);
+        }
+    }
+}
+
+#[test]
+fn joint_posterior_vjp_validates_shapes() {
+    let (_, model) = models().remove(0);
+    let xs = test_points(&model, 3, 1);
+    let ma = Vector::zeros(3);
+    let ca = Matrix::zeros(3, 3);
+    assert!(model.joint_posterior_vjp(&xs, 0..4, &ma, &ca).is_err());
+    assert!(model
+        .joint_posterior_vjp(&xs, 0..3, &Vector::zeros(2), &ca)
+        .is_err());
+    assert!(model
+        .joint_posterior_vjp(&xs, 0..3, &ma, &Matrix::zeros(3, 2))
+        .is_err());
+}
+
+#[test]
+fn posterior_marginals_match_q1_posteriors() {
+    for (name, mut model) in models() {
+        let p = perturbed(&model, 4);
+        model.set_raw_parameters(&p).unwrap();
+        let mut xs = test_points(&model, 6, 23);
+        // Include a training point (variance clamped for tiny noise).
+        xs.set_row(5, &model.train_inputs().row(0));
+        let (mean, var) = model.posterior_marginals(&xs).unwrap();
+        let (dmean, dvar) = Model::posterior_marginals(&model, &xs).unwrap();
+        assert_eq!(mean, dmean);
+        assert_eq!(var, dvar);
+        for i in 0..xs.nrows() {
+            let x: Vec<f64> = xs.row(i).iter().copied().collect();
+            let (m, v, _, _) = model.posterior_q1_with_grad(&x).unwrap();
+            assert_eq!(m, mean[i], "{name}: mean {i}");
+            assert_eq!(v, var[i], "{name}: variance {i}");
+            let post = model.posterior(&xs.rows(i, 1).into_owned(), false).unwrap();
+            assert_close(
+                &format!("{name}: mean"),
+                mean[i],
+                post.mean[0],
+                1e-13,
+                1e-14,
+            );
+            assert_close(
+                &format!("{name}: var"),
+                var[i],
+                post.variance()[0],
+                1e-10,
+                1e-14,
+            );
         }
     }
 }

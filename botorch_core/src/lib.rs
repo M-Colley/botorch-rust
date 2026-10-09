@@ -129,7 +129,7 @@ pub use linalg::{psd_safe_cholesky, CholeskyFactor};
 pub use mll::ExactMarginalLogLikelihood;
 pub use models::{
     get_gaussian_likelihood_with_gamma_prior, get_gaussian_likelihood_with_lognormal_prior,
-    GaussianLikelihoodSpec, Hyperparameters, Likelihood, ParameterLayout, SingleTaskGP,
+    GaussianLikelihoodSpec, Hyperparameters, Likelihood, Model, ParameterLayout, SingleTaskGP,
     SingleTaskGPOptions,
 };
 pub use posterior::{JointPosteriorGrad, Posterior};
