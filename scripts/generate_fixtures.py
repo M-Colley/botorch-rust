@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Generate the BoTorch reference fixtures used by the botorch_core parity tests.
 
-The script builds a set of BoTorch ``SingleTaskGP`` models covering the
-features implemented in ``botorch_core`` (RBF / Matern-5/2 kernels, ScaleKernel,
-Normalize with learned or explicit bounds, Standardize or no outcome transform,
-fixed noise, edge cases), sets their hyperparameters explicitly and records:
+Phase 1 (GP core, ``<out>/*.json``): the script builds a set of BoTorch
+``SingleTaskGP`` models covering the features implemented in ``botorch_core``
+(RBF / Matern-5/2 kernels, ScaleKernel, Normalize with learned or explicit
+bounds, Standardize or no outcome transform, fixed noise, edge cases), sets
+their hyperparameters explicitly and records:
 
 * training data, transformed training data and transform statistics;
 * default (initial) and explicitly set raw hyperparameters;
@@ -17,9 +18,20 @@ fixed noise, edge cases), sets their hyperparameters explicitly and records:
   a finite-difference Hessian of the loss at the optimum to judge how well the
   optimum is determined.
 
+Phase 2 (acquisition functions, ``<out>/phase2/*.json``): for fixed-hyperparameter
+models, analytic acquisition values and autograd gradients (``maximize`` True and
+False, several ``best_f`` / ``beta``), MC acquisition values and gradients
+computed with explicitly recorded base samples (q = 1, 2, 3, with and without
+pending points), qLogNoisyExpectedImprovement (incremental or not, full or
+pruned baseline, and a check of ``cache_root=True`` against the plain
+computation), ``prune_inferior_points`` with recorded base samples, values of the
+synthetic test functions, and candidate generation on a fitted Hartmann-6 model
+(``gen_candidates_scipy`` from fixed initial conditions and ``optimize_acqf``
+over several seeds).
+
 Usage (from the repository root, with BoTorch, GPyTorch and PyTorch installed)::
 
-    python scripts/generate_fixtures.py [--out botorch_core/tests/fixtures]
+    python scripts/generate_fixtures.py [--out botorch_core/tests/fixtures] [--phase 1|2|all]
 
 To use a source checkout of BoTorch, put it first on the path, e.g.
 ``PYTHONPATH=/path/to/botorch python -P scripts/generate_fixtures.py``.
@@ -476,31 +488,481 @@ def generate_case(case: dict, seed: int) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Phase 2: acquisition functions, pruning, candidate generation, test functions
+# ---------------------------------------------------------------------------
+# Written to <out>/phase2/. Monte-Carlo quantities are recorded together with
+# the EXPLICIT base samples that were used (torch's Sobol engine cannot be
+# reproduced in Rust), so that the Rust implementation can be compared with
+# MC-identical samples.
+
+ACQF_CASES = [
+    dict(name="acqf_rbf_d2_n12", d=2, n=12, covar="rbf"),
+    dict(name="acqf_matern_d3_n15_normalize", d=3, n=15, covar="matern", normalize="learned", x_range=(-2.0, 3.0)),
+    dict(name="acqf_fixed_noise_rbf_d2_n10_no_outcome", d=2, n=10, covar="rbf", yvar="random", outcome="none"),
+]
+MC_SAMPLES = 128  # number of base samples of the MC parity cases
+NEI_SAMPLES = 64  # ... of the qLogNEI cases (many jointly sampled points)
+PRUNE_SAMPLES = 256  # ... of the prune_inferior_points cases
+PENDING_ROWS = [3, 7]  # rows of the test points used as pending points
+# Rows of the test points forming the candidate sets: the point outside the
+# training range (high posterior variance) first, so that improvements occur.
+CAND_ROWS = [6, 0, 1]
+
+
+def _as_float64(kw: dict, keys=("best_f", "beta", "tau")) -> dict:
+    """BoTorch stores Python-float arguments such as ``best_f`` with
+    ``torch.as_tensor``, i.e. in torch's default dtype (float32), which rounds
+    them. Passing float64 tensors (like the common ``best_f=train_Y.max()``)
+    keeps full precision; botorch_core uses the exact f64 values."""
+    return {k: torch.tensor(v, dtype=DTYPE) if k in keys else v for k, v in kw.items()}
+
+
+def _grad_eval(acqf, X):
+    """Value and autograd gradient of ``acqf`` at a single ``q x d`` candidate set."""
+    x = X.unsqueeze(0).clone().requires_grad_(True)
+    v = acqf(x)
+    (g,) = torch.autograd.grad(v.sum(), x)
+    return v.item(), tolist(g.squeeze(0))
+
+
+def _sampler_with(base_samples):
+    """A SobolQMCNormalSampler whose base samples are set explicitly (S x D)."""
+    from botorch.sampling.normal import SobolQMCNormalSampler
+
+    S, D = base_samples.shape
+    sampler = SobolQMCNormalSampler(sample_shape=torch.Size([S]), seed=0)
+    sampler.base_samples = base_samples.view(S, 1, D).clone()
+    return sampler
+
+
+def _normal_samples(D, S, seed):
+    from botorch.utils.sampling import draw_sobol_normal_samples
+
+    return draw_sobol_normal_samples(d=D, n=S, dtype=DTYPE, seed=seed)
+
+
+def acqf_fixture(case: dict, seed: int) -> dict:
+    from botorch.acquisition import analytic as an
+    from botorch.acquisition.logei import qLogExpectedImprovement, qLogNoisyExpectedImprovement
+    from botorch.acquisition.monte_carlo import (
+        qExpectedImprovement,
+        qProbabilityOfImprovement,
+        qSimpleRegret,
+        qUpperConfidenceBound,
+    )
+    from botorch.acquisition.utils import prune_inferior_points
+    from botorch.sampling.normal import SobolQMCNormalSampler
+
+    X, Y, Yvar, Xtest, bounds = make_data(case, seed)
+    model = build_model(case, X, Y, Yvar, bounds)
+    raw = set_values(model, case["d"])
+    set_flat_params(model, raw)
+    model.eval()
+    ymax, ymin, ystd = Y.max().item(), Y.min().item(), Y.std().item()
+
+    # --- analytic acquisition functions at every test point (q = 1) ---------
+    analytic_configs = [
+        ("ExpectedImprovement", dict(best_f=ymax, maximize=True)),
+        ("ExpectedImprovement", dict(best_f=ymax + 2 * ystd, maximize=True)),
+        ("ExpectedImprovement", dict(best_f=ymin, maximize=False)),
+        ("LogExpectedImprovement", dict(best_f=ymax, maximize=True)),
+        ("LogExpectedImprovement", dict(best_f=ymax + 3 * ystd, maximize=True)),
+        ("LogExpectedImprovement", dict(best_f=ymax + 1e3, maximize=True)),  # deep in the lower branch
+        ("LogExpectedImprovement", dict(best_f=1e9, maximize=True)),  # u < -1e6 asymptotic branch
+        ("LogExpectedImprovement", dict(best_f=ymin, maximize=False)),
+        ("ProbabilityOfImprovement", dict(best_f=ymax, maximize=True)),
+        ("ProbabilityOfImprovement", dict(best_f=ymin, maximize=False)),
+        ("LogProbabilityOfImprovement", dict(best_f=ymax, maximize=True)),
+        ("LogProbabilityOfImprovement", dict(best_f=ymax + 50 * ystd, maximize=True)),
+        ("LogProbabilityOfImprovement", dict(best_f=ymin, maximize=False)),
+        ("UpperConfidenceBound", dict(beta=0.2, maximize=True)),
+        ("UpperConfidenceBound", dict(beta=2.0, maximize=False)),
+        ("PosteriorMean", dict(maximize=True)),
+        ("PosteriorMean", dict(maximize=False)),
+        ("PosteriorStandardDeviation", dict(maximize=True)),
+        ("PosteriorStandardDeviation", dict(maximize=False)),
+    ]
+    analytic = []
+    for name, kw in analytic_configs:
+        acqf = getattr(an, name)(model, **_as_float64(kw))
+        vals, grads = [], []
+        for i in range(Xtest.shape[0]):
+            v, g = _grad_eval(acqf, Xtest[i : i + 1])
+            vals.append(v)
+            grads.append(g[0])
+        analytic.append({"acqf": name, **kw, "values": vals, "grads": grads})
+
+    # --- MC acquisition functions with explicit base samples ----------------
+    pending = Xtest[PENDING_ROWS]
+    mc_configs = [
+        ("qExpectedImprovement", qExpectedImprovement, dict(best_f=ymax)),
+        ("qLogExpectedImprovement", qLogExpectedImprovement, dict(best_f=ymax)),
+        ("qLogExpectedImprovement", qLogExpectedImprovement, dict(best_f=ymax + 3 * ystd)),
+        ("qLogExpectedImprovement", qLogExpectedImprovement, dict(best_f=ymax, fat=False)),
+        ("qProbabilityOfImprovement", qProbabilityOfImprovement, dict(best_f=ymax, tau=1e-3)),  # default tau
+        ("qProbabilityOfImprovement", qProbabilityOfImprovement, dict(best_f=ymax, tau=0.1)),
+        ("qUpperConfidenceBound", qUpperConfidenceBound, dict(beta=0.2)),  # beta enters via math.sqrt
+        ("qSimpleRegret", qSimpleRegret, dict()),
+    ]
+    mc = []
+    for q in (1, 2, 3):
+        Xq = Xtest[CAND_ROWS[:q]]
+        for n_p in (0, 2):
+            D = q + n_p
+            Z = _normal_samples(D, MC_SAMPLES, seed=100 + 10 * q + n_p)
+            results = []
+            for name, cls, kw in mc_configs:
+                sampler = _sampler_with(Z)
+                kw_t = _as_float64(kw, keys=("best_f", "tau"))
+                acqf = cls(model, sampler=sampler, X_pending=pending if n_p else None, **kw_t)
+                v, g = _grad_eval(acqf, Xq)
+                assert torch.equal(sampler.base_samples.view(MC_SAMPLES, D), Z), "base samples were replaced"
+                results.append({"acqf": name, **kw, "value": v, "grad": g})
+            mc.append(
+                {
+                    "q": q,
+                    "x": tolist(Xq),
+                    "x_pending": tolist(pending) if n_p else None,
+                    "base_samples": tolist(Z),
+                    "results": results,
+                }
+            )
+
+    # --- prune_inferior_points with explicit base samples --------------------
+    Xp = torch.cat([X, Xtest], dim=0)
+    psampler = SobolQMCNormalSampler(sample_shape=torch.Size([PRUNE_SAMPLES]), seed=7)
+    pruned = prune_inferior_points(model, Xp, sampler=psampler)
+    Zp = psampler.base_samples.view(PRUNE_SAMPLES, -1).clone()
+    with torch.no_grad():
+        samples = psampler(model.posterior(Xp)).squeeze(-1)
+    counts = torch.bincount(samples.argmax(dim=-1), minlength=Xp.shape[0])
+    # prune_inferior_points returns X[torch.unique(argmax)] (sorted indices).
+    indices = [int(i) for i in torch.nonzero(counts)]
+    assert torch.equal(Xp[indices], pruned)
+    prune = {
+        "x": tolist(Xp),
+        "base_samples": tolist(Zp),
+        "indices": indices,
+        "counts": tolist(counts),
+    }
+    # Pruning of the training inputs, used as the baseline below.
+    bsampler = SobolQMCNormalSampler(sample_shape=torch.Size([PRUNE_SAMPLES]), seed=11)
+    pruned_x = prune_inferior_points(model, X, sampler=bsampler)
+    with torch.no_grad():
+        bsamples = bsampler(model.posterior(X)).squeeze(-1)
+    baseline_indices = [int(i) for i in torch.nonzero(torch.bincount(bsamples.argmax(dim=-1), minlength=X.shape[0]))]
+    assert torch.equal(X[baseline_indices], pruned_x)
+    prune_baseline = {
+        "base_samples": tolist(bsampler.base_samples.view(PRUNE_SAMPLES, -1)),
+        "indices": baseline_indices,
+    }
+
+    # --- qLogNEI (cache_root=False) with explicit base samples ---------------
+    nei = []
+    nei_configs = [
+        (1, 0, True, "all"),
+        (3, 0, True, "all"),
+        (1, 2, True, "all"),
+        (3, 2, True, "all"),
+        (2, 2, False, "all"),
+        (2, 0, True, "pruned"),
+        (2, 2, True, "pruned"),
+    ]
+    for k, (q, n_p, incremental, baseline) in enumerate(nei_configs):
+        Xb = X if baseline == "all" else X[baseline_indices]
+        D = Xb.shape[0] + n_p + q
+        Z = _normal_samples(D, NEI_SAMPLES, seed=500 + k)
+        sampler = _sampler_with(Z)
+        acqf = qLogNoisyExpectedImprovement(
+            model,
+            X_baseline=Xb,
+            sampler=sampler,
+            X_pending=pending if n_p else None,
+            prune_baseline=False,
+            cache_root=False,
+            incremental=incremental,
+        )
+        Xq = Xtest[CAND_ROWS[:q]]
+        v, g = _grad_eval(acqf, Xq)
+        assert torch.equal(sampler.base_samples.view(NEI_SAMPLES, D), Z)
+        nei.append(
+            {
+                "q": q,
+                "x": tolist(Xq),
+                "x_pending": tolist(pending) if n_p else None,
+                "incremental": incremental,
+                "baseline": baseline,
+                "base_samples": tolist(Z),
+                "value": v,
+                "grad": g,
+            }
+        )
+
+    # --- cache_root=True (BoTorch's default) vs the plain computation --------
+    # The cached computation is evaluated first; its effective base samples
+    # (baseline columns from the n-dimensional draw at construction, new
+    # columns from the (n+q)-dimensional draw) are then fed to cache_root=False.
+    q = 2
+    Xq = Xtest[CAND_ROWS[:q]]
+    csampler = SobolQMCNormalSampler(sample_shape=torch.Size([NEI_SAMPLES]), seed=5)
+    acqf_c = qLogNoisyExpectedImprovement(model, X_baseline=X, sampler=csampler, prune_baseline=False, cache_root=True)
+    assert acqf_c._cache_root
+    v_c, g_c = _grad_eval(acqf_c, Xq)
+    Z_eff = csampler.base_samples.view(NEI_SAMPLES, -1).clone()
+    acqf_p = qLogNoisyExpectedImprovement(
+        model, X_baseline=X, sampler=_sampler_with(Z_eff), prune_baseline=False, cache_root=False
+    )
+    v_p, g_p = _grad_eval(acqf_p, Xq)
+    nei_cache_root = {
+        "q": q,
+        "x": tolist(Xq),
+        "base_samples": tolist(Z_eff),
+        "value_cache_root": v_c,
+        "grad_cache_root": g_c,
+        "value_plain": v_p,
+        "grad_plain": g_p,
+    }
+
+    config = {
+        "d": case["d"],
+        "n": case["n"],
+        "covar": case.get("covar", "rbf"),
+        "likelihood": case.get("likelihood", "default"),
+        "yvar": case.get("yvar"),
+        "normalize": case.get("normalize"),
+        "outcome": case.get("outcome", "standardize"),
+        "bounds": None if bounds is None else tolist(bounds),
+    }
+    return {
+        "name": case["name"],
+        "versions": {
+            "botorch": botorch.__version__,
+            "botorch_revision": botorch_revision(),
+            "gpytorch": gpytorch.__version__,
+            "torch": torch.__version__,
+        },
+        "config": config,
+        "train_x": tolist(X),
+        "train_y": tolist(Y),
+        "train_yvar": None if Yvar is None else tolist(Yvar),
+        "raw_params": raw,
+        "test_x": tolist(Xtest),
+        "analytic": analytic,
+        "mc": mc,
+        "prune": prune,
+        "prune_baseline": prune_baseline,
+        "nei": nei,
+        "nei_cache_root": nei_cache_root,
+    }
+
+
+# Test functions: (class name, constructor kwargs).
+TEST_FUNCTIONS = [
+    ("Ackley", dict(dim=2)),
+    ("Ackley", dict(dim=5)),
+    ("Beale", dict()),
+    ("Branin", dict()),
+    ("Bukin", dict()),
+    ("Cosine8", dict()),
+    ("DropWave", dict()),
+    ("DixonPrice", dict(dim=3)),
+    ("EggHolder", dict()),
+    ("Griewank", dict(dim=4)),
+    ("Hartmann", dict(dim=3)),
+    ("Hartmann", dict(dim=4)),
+    ("Hartmann", dict(dim=6)),
+    ("HolderTable", dict()),
+    ("Levy", dict(dim=4)),
+    ("Michalewicz", dict(dim=2)),
+    ("Michalewicz", dict(dim=5)),
+    ("Michalewicz", dict(dim=10)),
+    ("Powell", dict(dim=4)),
+    ("Powell", dict(dim=8)),
+    ("Rastrigin", dict(dim=3)),
+    ("Rosenbrock", dict(dim=4)),
+    ("Shekel", dict(m=5)),
+    ("Shekel", dict(m=7)),
+    ("Shekel", dict()),
+    ("SixHumpCamel", dict()),
+    ("StyblinskiTang", dict(dim=3)),
+    ("ThreeHumpCamel", dict()),
+]
+
+
+def test_functions_fixture() -> dict:
+    """Values of BoTorch's synthetic test functions.
+
+    The functions are constructed under torch's default dtype (float32), as in
+    typical BoTorch usage: constant buffers such as Hartmann's ``ALPHA`` / ``A``
+    are therefore rounded to float32 before being cast to the input dtype.
+    """
+    from botorch.test_functions import synthetic
+
+    assert torch.get_default_dtype() == torch.float32
+    g = torch.Generator().manual_seed(2024)
+    out = []
+    for name, kw in TEST_FUNCTIONS:
+        cls = getattr(synthetic, name)
+        f = cls(**kw)
+        fneg = cls(negate=True, **kw)
+        lo, hi = f.bounds[0].to(DTYPE), f.bounds[1].to(DTYPE)
+        Xr = lo + (hi - lo) * torch.rand(6, f.dim, generator=g, dtype=DTYPE)
+        try:
+            opt_value = f.optimal_value
+            opt_value_neg = fneg.optimal_value
+        except NotImplementedError:
+            opt_value = opt_value_neg = None
+        try:
+            optimizers = f.optimizers.to(DTYPE)
+        except (NotImplementedError, AttributeError):
+            optimizers = None
+        entry = {
+            "function": name,
+            "kwargs": kw,
+            "dim": f.dim,
+            "bounds": tolist(f.bounds.to(DTYPE)),
+            "is_minimization_problem": f.is_minimization_problem,
+            "is_minimization_problem_negated": fneg.is_minimization_problem,
+            "optimal_value": opt_value,
+            "optimal_value_negated": opt_value_neg,
+            "optimizers": None if optimizers is None else tolist(optimizers),
+            "x": tolist(Xr),
+            "values": tolist(f.evaluate_true(Xr)),
+            "values_negated": tolist(fneg(Xr, noise=False)),
+            "values_at_optimizers": None if optimizers is None else tolist(f.evaluate_true(optimizers)),
+        }
+        out.append(entry)
+    return {"functions": out}
+
+
+def optimize_fixture() -> dict:
+    """Candidate generation on a fitted Hartmann-6 model: L-BFGS-B from fixed
+    initial conditions (``gen_candidates_scipy``) and full ``optimize_acqf``
+    runs over several seeds (whose raw samples cannot be reproduced in Rust and
+    are compared statistically)."""
+    from botorch.acquisition.analytic import LogExpectedImprovement
+    from botorch.acquisition.logei import qLogExpectedImprovement
+    from botorch.generation.gen import gen_candidates_scipy
+    from botorch.optim.initializers import gen_batch_initial_conditions
+    from botorch.optim.optimize import optimize_acqf
+    from botorch.test_functions.synthetic import Hartmann
+    from botorch.utils.sampling import draw_sobol_samples
+
+    d = 6
+    bounds = torch.stack([torch.zeros(d, dtype=DTYPE), torch.ones(d, dtype=DTYPE)])
+    X = draw_sobol_samples(bounds=bounds, n=20, q=1, seed=0).squeeze(-2)
+    Y = -Hartmann(dim=d)(X, noise=False).unsqueeze(-1)  # maximize -Hartmann
+    model = SingleTaskGP(X, Y)
+    torch.manual_seed(0)
+    fit_gpytorch_mll(ExactMarginalLogLikelihood(model.likelihood, model))
+    model.eval()
+    raw = flat_params(model)
+    best_f = Y.max()  # a float64 tensor (a Python float would be rounded to float32)
+
+    logei = LogExpectedImprovement(model, best_f=best_f)
+    ics = gen_batch_initial_conditions(logei, bounds, q=1, num_restarts=10, raw_samples=512, options={"seed": 0})
+    cands, vals = gen_candidates_scipy(ics, logei, lower_bounds=bounds[0], upper_bounds=bounds[1])
+    runs = []
+    for s in range(10):
+        c, v = optimize_acqf(logei, bounds, q=1, num_restarts=10, raw_samples=512, options={"seed": s})
+        runs.append({"seed": s, "candidates": tolist(c), "value": v.item()})
+
+    Z = _normal_samples(2, 512, seed=11)
+    qlogei = qLogExpectedImprovement(model, best_f=best_f, sampler=_sampler_with(Z))
+    ics2 = gen_batch_initial_conditions(qlogei, bounds, q=2, num_restarts=6, raw_samples=256, options={"seed": 0})
+    cands2, vals2 = gen_candidates_scipy(ics2, qlogei, lower_bounds=bounds[0], upper_bounds=bounds[1])
+    runs2 = []
+    for s in range(20):
+        c, v = optimize_acqf(qlogei, bounds, q=2, num_restarts=10, raw_samples=512, options={"seed": s})
+        runs2.append({"seed": s, "candidates": tolist(c), "value": v.item()})
+    return {
+        "versions": {
+            "botorch": botorch.__version__,
+            "botorch_revision": botorch_revision(),
+            "gpytorch": gpytorch.__version__,
+            "torch": torch.__version__,
+        },
+        "train_x": tolist(X),
+        "train_y": tolist(Y),
+        "raw_params": raw,
+        "best_f": best_f.item(),
+        "logei": {
+            "initial_conditions": tolist(ics.squeeze(-2)),
+            "candidates": tolist(cands.squeeze(-2)),
+            "values": tolist(vals),
+            "optimize_acqf": runs,
+        },
+        "qlogei": {
+            "base_samples": tolist(Z),
+            "initial_conditions": tolist(ics2),
+            "candidates": tolist(cands2),
+            "values": tolist(vals2),
+            "optimize_acqf": runs2,
+        },
+    }
+
+
+def _write_json(path: str, obj: dict) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=1)
+        f.write("\n")
+
+
+def generate_phase2(out: str) -> None:
+    out = os.path.join(out, "phase2")
+    os.makedirs(out, exist_ok=True)
+    for i, case in enumerate(ACQF_CASES):
+        fixture = acqf_fixture(case, seed=2000 + i)
+        _write_json(os.path.join(out, f"{case['name']}.json"), fixture)
+        c = fixture["nei_cache_root"]
+        print(
+            f"{case['name']:40s} pruned {len(fixture['prune']['indices'])}/{len(fixture['prune']['x'])}; "
+            f"qLogNEI cache_root={c['value_cache_root']:+.12f} plain={c['value_plain']:+.12f} "
+            f"diff={abs(c['value_cache_root'] - c['value_plain']):.1e}",
+            file=sys.stderr,
+        )
+    _write_json(os.path.join(out, "test_functions.json"), test_functions_fixture())
+    opt = optimize_fixture()
+    _write_json(os.path.join(out, "optimize_hartmann6.json"), opt)
+    print(
+        "optimize_acqf(LogEI) values: " + ", ".join(f"{r['value']:.6f}" for r in opt["logei"]["optimize_acqf"]),
+        file=sys.stderr,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     default_out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "botorch_core", "tests", "fixtures")
     parser.add_argument("--out", default=os.path.normpath(default_out), help="output directory")
-    parser.add_argument("--only", nargs="*", help="only generate these case names")
+    parser.add_argument("--only", nargs="*", help="only generate these (phase 1) case names")
+    parser.add_argument(
+        "--phase",
+        choices=["1", "2", "all"],
+        default="all",
+        help="1: GP fixtures, 2: acquisition / optimization / test-function fixtures",
+    )
     args = parser.parse_args()
     print(f"botorch {botorch.__version__} from {botorch.__file__}", file=sys.stderr)
     print(f"gpytorch {gpytorch.__version__}, torch {torch.__version__}", file=sys.stderr)
     os.makedirs(args.out, exist_ok=True)
     warnings.simplefilter("ignore")
-    for i, case in enumerate(CASES):
-        if args.only and case["name"] not in args.only:
-            continue
-        fixture = generate_case(case, seed=1000 + i)
-        path = os.path.join(args.out, f"{case['name']}.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(fixture, f, indent=1)
-            f.write("\n")
-        fit = fixture["fit"]
-        print(
-            f"{case['name']:40s} mll={fixture['mll']['value']:+.6f} fit loss={fit['loss']:+.8f} "
-            f"iters={fit['iterations']} status={fit['status']} attempts={fit['attempts']} "
-            f"min eig={min(fit['hessian_eigenvalues'], default=float('nan')):.2e}",
-            file=sys.stderr,
-        )
+    if args.phase in ("1", "all"):
+        for i, case in enumerate(CASES):
+            if args.only and case["name"] not in args.only:
+                continue
+            fixture = generate_case(case, seed=1000 + i)
+            path = os.path.join(args.out, f"{case['name']}.json")
+            _write_json(path, fixture)
+            fit = fixture["fit"]
+            print(
+                f"{case['name']:40s} mll={fixture['mll']['value']:+.6f} fit loss={fit['loss']:+.8f} "
+                f"iters={fit['iterations']} status={fit['status']} attempts={fit['attempts']} "
+                f"min eig={min(fit['hessian_eigenvalues'], default=float('nan')):.2e}",
+                file=sys.stderr,
+            )
+    if args.phase in ("2", "all"):
+        generate_phase2(args.out)
 
 
 if __name__ == "__main__":

@@ -151,9 +151,18 @@ pub fn vector(v: &[f64]) -> Vector {
 
 /// Builds the botorch_core model corresponding to a fixture configuration.
 pub fn build_model(f: &Fixture) -> SingleTaskGP {
-    let c = &f.config;
+    build_model_from(&f.config, &f.train_x, &f.train_y, f.train_yvar.as_ref())
+}
+
+/// Builds the botorch_core model for a configuration and training data.
+pub fn build_model_from(
+    c: &Config,
+    train_x: &[Vec<f64>],
+    train_y: &[Vec<f64>],
+    train_yvar: Option<&Vec<Vec<f64>>>,
+) -> SingleTaskGP {
     let mut options = SingleTaskGPOptions {
-        train_yvar: f.train_yvar.as_ref().map(|v| matrix(v)),
+        train_yvar: train_yvar.map(|v| matrix(v)),
         ..Default::default()
     };
     match c.covar.as_str() {
@@ -181,7 +190,7 @@ pub fn build_model(f: &Fixture) -> SingleTaskGP {
     if c.outcome == "none" {
         options.outcome_transform = OutcomeTransformChoice::None;
     }
-    SingleTaskGP::new(matrix(&f.train_x), matrix(&f.train_y), options).unwrap()
+    SingleTaskGP::new(matrix(train_x), matrix(train_y), options).unwrap()
 }
 
 /// Mixed relative/normwise error: `max_i |a_i - e_i| / (|e_i| + max_j |e_j|·floor)`,
