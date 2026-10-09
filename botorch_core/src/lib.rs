@@ -102,6 +102,7 @@
 
 #![warn(missing_docs)]
 
+pub mod acquisition;
 pub mod constraints;
 pub mod error;
 pub mod fit;
@@ -122,6 +123,7 @@ pub type Matrix = nalgebra::DMatrix<f64>;
 /// Dense double-precision column vector (`nalgebra::DVector<f64>`).
 pub type Vector = nalgebra::DVector<f64>;
 
+pub use acquisition::AcquisitionFunction;
 pub use constraints::{GreaterThan, ParameterTransform};
 pub use error::{BotorchError, Result};
 pub use fit::{fit_gpytorch_mll, FitOptions, FitResult, FitStatus};
