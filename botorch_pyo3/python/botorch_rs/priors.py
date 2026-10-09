@@ -61,7 +61,7 @@ class GammaPrior(Prior):
         self,
         concentration: Any,
         rate: Any,
-        validate_args: bool | None = None,
+        validate_args: bool | None = False,
         transform: Any = None,
     ) -> None:
         _check_transform(transform)

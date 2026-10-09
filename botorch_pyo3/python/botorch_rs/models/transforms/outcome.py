@@ -34,7 +34,7 @@ class Standardize(OutcomeTransform):
         self,
         m: int,
         outputs: Any = None,
-        batch_shape: Any = None,
+        batch_shape: Any = (),
         min_stdv: float = 1e-8,
     ) -> None:
         self._m = int(m)

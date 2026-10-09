@@ -38,7 +38,7 @@ class Normalize(InputTransform):
         d: int,
         indices: Any = None,
         bounds: Any = None,
-        batch_shape: Any = None,
+        batch_shape: Any = (),
         transform_on_train: bool = True,
         transform_on_eval: bool = True,
         transform_on_fantasize: bool = True,

@@ -162,7 +162,6 @@ class Beale(SyntheticTestFunction):
 
     def __init__(
         self,
-        dim: int = 2,
         noise_std: float | None = None,
         negate: bool = False,
         bounds: list[tuple[float, float]] | None = None,
@@ -170,7 +169,7 @@ class Beale(SyntheticTestFunction):
         *,
         seed: int | None = None,
     ) -> None:
-        super().__init__(dim, noise_std, negate, bounds, dtype, seed=seed)
+        super().__init__(None, noise_std, negate, bounds, dtype, seed=seed)
 
 
 class Branin(SyntheticTestFunction):
@@ -181,7 +180,6 @@ class Branin(SyntheticTestFunction):
 
     def __init__(
         self,
-        dim: int = 2,
         noise_std: float | None = None,
         negate: bool = False,
         bounds: list[tuple[float, float]] | None = None,
@@ -189,7 +187,7 @@ class Branin(SyntheticTestFunction):
         *,
         seed: int | None = None,
     ) -> None:
-        super().__init__(dim, noise_std, negate, bounds, dtype, seed=seed)
+        super().__init__(None, noise_std, negate, bounds, dtype, seed=seed)
 
 
 class Bukin(SyntheticTestFunction):
@@ -200,7 +198,6 @@ class Bukin(SyntheticTestFunction):
 
     def __init__(
         self,
-        dim: int = 2,
         noise_std: float | None = None,
         negate: bool = False,
         bounds: list[tuple[float, float]] | None = None,
@@ -208,7 +205,7 @@ class Bukin(SyntheticTestFunction):
         *,
         seed: int | None = None,
     ) -> None:
-        super().__init__(dim, noise_std, negate, bounds, dtype, seed=seed)
+        super().__init__(None, noise_std, negate, bounds, dtype, seed=seed)
 
 
 class Cosine8(SyntheticTestFunction):
@@ -219,7 +216,6 @@ class Cosine8(SyntheticTestFunction):
 
     def __init__(
         self,
-        dim: int = 8,
         noise_std: float | None = None,
         negate: bool = False,
         bounds: list[tuple[float, float]] | None = None,
@@ -227,7 +223,7 @@ class Cosine8(SyntheticTestFunction):
         *,
         seed: int | None = None,
     ) -> None:
-        super().__init__(dim, noise_std, negate, bounds, dtype, seed=seed)
+        super().__init__(None, noise_std, negate, bounds, dtype, seed=seed)
 
 
 class DixonPrice(SyntheticTestFunction):
@@ -256,7 +252,6 @@ class DropWave(SyntheticTestFunction):
 
     def __init__(
         self,
-        dim: int = 2,
         noise_std: float | None = None,
         negate: bool = False,
         bounds: list[tuple[float, float]] | None = None,
@@ -264,7 +259,7 @@ class DropWave(SyntheticTestFunction):
         *,
         seed: int | None = None,
     ) -> None:
-        super().__init__(dim, noise_std, negate, bounds, dtype, seed=seed)
+        super().__init__(None, noise_std, negate, bounds, dtype, seed=seed)
 
 
 class EggHolder(SyntheticTestFunction):
@@ -275,7 +270,6 @@ class EggHolder(SyntheticTestFunction):
 
     def __init__(
         self,
-        dim: int = 2,
         noise_std: float | None = None,
         negate: bool = False,
         bounds: list[tuple[float, float]] | None = None,
@@ -283,7 +277,7 @@ class EggHolder(SyntheticTestFunction):
         *,
         seed: int | None = None,
     ) -> None:
-        super().__init__(dim, noise_std, negate, bounds, dtype, seed=seed)
+        super().__init__(None, noise_std, negate, bounds, dtype, seed=seed)
 
 
 class Griewank(SyntheticTestFunction):
@@ -330,7 +324,6 @@ class HolderTable(SyntheticTestFunction):
 
     def __init__(
         self,
-        dim: int = 2,
         noise_std: float | None = None,
         negate: bool = False,
         bounds: list[tuple[float, float]] | None = None,
@@ -338,7 +331,7 @@ class HolderTable(SyntheticTestFunction):
         *,
         seed: int | None = None,
     ) -> None:
-        super().__init__(dim, noise_std, negate, bounds, dtype, seed=seed)
+        super().__init__(None, noise_std, negate, bounds, dtype, seed=seed)
 
 
 class Levy(SyntheticTestFunction):
@@ -439,7 +432,6 @@ class SixHumpCamel(SyntheticTestFunction):
 
     def __init__(
         self,
-        dim: int = 2,
         noise_std: float | None = None,
         negate: bool = False,
         bounds: list[tuple[float, float]] | None = None,
@@ -447,7 +439,7 @@ class SixHumpCamel(SyntheticTestFunction):
         *,
         seed: int | None = None,
     ) -> None:
-        super().__init__(dim, noise_std, negate, bounds, dtype, seed=seed)
+        super().__init__(None, noise_std, negate, bounds, dtype, seed=seed)
 
 
 class StyblinskiTang(SyntheticTestFunction):
@@ -476,7 +468,6 @@ class ThreeHumpCamel(SyntheticTestFunction):
 
     def __init__(
         self,
-        dim: int = 2,
         noise_std: float | None = None,
         negate: bool = False,
         bounds: list[tuple[float, float]] | None = None,
@@ -484,7 +475,7 @@ class ThreeHumpCamel(SyntheticTestFunction):
         *,
         seed: int | None = None,
     ) -> None:
-        super().__init__(dim, noise_std, negate, bounds, dtype, seed=seed)
+        super().__init__(None, noise_std, negate, bounds, dtype, seed=seed)
 
 
 class Shekel(SyntheticTestFunction):

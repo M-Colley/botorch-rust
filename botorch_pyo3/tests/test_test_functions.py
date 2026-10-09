@@ -73,7 +73,10 @@ def test_hartmann(kind: str) -> None:
 
 def test_dimensions_and_bounds() -> None:
     assert tf.Ackley(dim=5).dim == 5
-    assert tf.Cosine8().dim == 8 and tf.Branin(dim=7).dim == 2  # fixed dimensions
+    assert tf.Cosine8().dim == 8 and tf.Branin().dim == 2  # fixed dimensions
+    with pytest.raises(TypeError):  # like BoTorch, no `dim` argument
+        tf.Branin(dim=2)
+    assert tf.Branin(0.5).noise_std == 0.5  # BoTorch's positional order
     assert tf.Shekel(m=5).optimal_value == pytest.approx(-10.1532)
     custom = tf.Branin(bounds=[(-4.0, 4.0), (0.0, 15.0)], dtype=None)
     assert flatten(custom.bounds) == [-4.0, 0.0, 4.0, 15.0]

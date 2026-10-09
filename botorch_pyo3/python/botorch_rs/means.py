@@ -21,7 +21,7 @@ class ConstantMean(Mean):
         self,
         constant_prior: Any = None,
         constant_constraint: Any = None,
-        batch_shape: Any = None,
+        batch_shape: Any = (),
         **kwargs: Any,
     ) -> None:
         if constant_prior is not None or constant_constraint is not None:

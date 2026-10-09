@@ -546,6 +546,72 @@ def test_input_scaling_warnings_match() -> None:
             assert bt_msgs == rs_msgs
 
 
+SIGNATURES = [
+    (BtSingleTaskGP, RsSingleTaskGP),
+    (BtNormalize, RsNormalize),
+    (botorch.models.transforms.outcome.Standardize, botorch_rs.models.transforms.Standardize),
+    (BtMLL, RsMLL),
+    (bt_fit, rs_fit),
+    (bt_optimize_acqf, rs_optimize_acqf),
+    (BtSampler, RsSampler),
+    (bt_prune, rs_prune),
+    (botorch.utils.sampling.draw_sobol_samples, botorch_rs.utils.sampling.draw_sobol_samples),
+    (
+        botorch.utils.sampling.draw_sobol_normal_samples,
+        botorch_rs.utils.sampling.draw_sobol_normal_samples,
+    ),
+    *[
+        (getattr(bt_modules, name), getattr(rs_modules, name))
+        for name in (
+            "get_covar_module_with_dim_scaled_prior",
+            "get_matern_kernel_with_gamma_prior",
+            "get_gaussian_likelihood_with_lognormal_prior",
+            "get_gaussian_likelihood_with_gamma_prior",
+        )
+    ],
+    (gpytorch.kernels.ScaleKernel, rs_kernels.ScaleKernel),
+    (gpytorch.priors.GammaPrior, rs_priors.GammaPrior),
+    (gpytorch.priors.LogNormalPrior, rs_priors.LogNormalPrior),
+    (gpytorch.likelihoods.GaussianLikelihood, botorch_rs.likelihoods.GaussianLikelihood),
+    (gpytorch.means.ConstantMean, botorch_rs.means.ConstantMean),
+    *[(getattr(bt_analytic, n), getattr(rs_analytic, n)) for n, _ in ANALYTIC],
+    *[(getattr(b, n), getattr(r, n)) for n, b, r, _ in MC],
+    (bt_logei.qLogNoisyExpectedImprovement, rs_logei.qLogNoisyExpectedImprovement),
+    *[(getattr(bt_synthetic, n), getattr(rs_synthetic, n)) for n, _ in TEST_FUNCTIONS],
+]
+
+
+@pytest.mark.parametrize(
+    "bt_obj,rs_obj", SIGNATURES, ids=[f"{r.__name__}-{i}" for i, (_, r) in enumerate(SIGNATURES)]
+)
+def test_signatures_match_botorch(bt_obj: Any, rs_obj: Any) -> None:
+    """BoTorch's parameters appear with the same names, order and (plain)
+    defaults; botorch_rs only adds keyword-only extensions."""
+    import inspect
+
+    def params(obj: Any) -> list[inspect.Parameter]:
+        sig = inspect.signature(obj.__init__ if inspect.isclass(obj) else obj)
+        return [p for p in sig.parameters.values() if p.name != "self"]
+
+    bt_params = [p for p in params(bt_obj) if p.kind not in (p.VAR_KEYWORD, p.VAR_POSITIONAL)]
+    rs_params = params(rs_obj)
+    rs_names = [p.name for p in rs_params]
+    positional = [p for p in bt_params if p.kind != p.KEYWORD_ONLY]
+    assert rs_names[: len(positional)] == [p.name for p in positional]
+    plain = (type(None), bool, int, float, str)
+    for p in bt_params:
+        assert p.name in rs_names, p.name
+        q = rs_params[rs_names.index(p.name)]
+        assert q.kind == p.kind or p.kind == p.POSITIONAL_OR_KEYWORD, p.name
+        if isinstance(p.default, plain) and p.default is not p.empty:
+            assert q.default == p.default, (p.name, p.default, q.default)
+    for q in rs_params:
+        if q.name not in [p.name for p in bt_params]:
+            assert q.kind in (q.KEYWORD_ONLY, q.VAR_KEYWORD) or "kwargs" in [
+                p.name for p in params(bt_obj)
+            ], q.name
+
+
 def test_botorch_rs_namespace() -> None:
     assert botorch_rs.SingleTaskGP is RsSingleTaskGP
     assert botorch_rs.optimize_acqf is rs_optimize_acqf

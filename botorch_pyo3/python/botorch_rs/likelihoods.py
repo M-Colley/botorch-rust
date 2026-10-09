@@ -36,7 +36,7 @@ class GaussianLikelihood(Likelihood):
         self,
         noise_prior: Prior | None = None,
         noise_constraint: Interval | None = None,
-        batch_shape: Any = None,
+        batch_shape: Any = (),
         **kwargs: Any,
     ) -> None:
         _check_batch_shape(batch_shape)

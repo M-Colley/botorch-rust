@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from botorch_rs.exceptions import BotorchTensorDimensionError, UnsupportedError
+from botorch_rs.exceptions import BotorchTensorDimensionError
 from botorch_rs.models import SingleTaskGP
 from botorch_rs.sampling import SobolQMCNormalSampler
 from botorch_rs.utils.sampling import draw_sobol_normal_samples, draw_sobol_samples
@@ -25,7 +25,7 @@ def test_sampler_construction() -> None:
         assert SobolQMCNormalSampler(torch.Size([32])).num_samples == 32
     with pytest.raises(TypeError):
         SobolQMCNormalSampler("many")
-    with pytest.raises(UnsupportedError):
+    with pytest.raises(TypeError):  # like BoTorch's signature
         SobolQMCNormalSampler(8, unknown=1)
 
 

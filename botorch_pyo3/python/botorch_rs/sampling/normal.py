@@ -47,9 +47,7 @@ class SobolQMCNormalSampler(MCSampler):
     (shape ``num_samples x q``, or BoTorch's ``num_samples x 1 x q``).
     """
 
-    def __init__(self, sample_shape: Any, seed: int | None = None, **kwargs: Any) -> None:
-        if kwargs:
-            raise UnsupportedError(f"Unsupported sampler arguments: {sorted(kwargs)}.")
+    def __init__(self, sample_shape: Any, seed: int | None = None) -> None:
         self.sample_shape = _sample_shape(sample_shape)
         self._rs = _rs.SobolQMCNormalSampler(
             math.prod(self.sample_shape), None if seed is None else int(seed)
