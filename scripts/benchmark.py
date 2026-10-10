@@ -3,41 +3,53 @@
 
 Tasks (all on the 6-dimensional Hartmann function, negated for maximization):
 
-* ``fit``: ``SingleTaskGP(X, Y)`` + ``fit_gpytorch_mll`` for n = 20, 100, 300
-  training points (a Weyl sequence in [0, 1]^6, noise-free targets), from
-  BoTorch's default initialization;
-* ``optimize_acqf`` with 10 restarts and 512 raw samples on a 50-point model
-  with fixed hyperparameters (noise 1e-3, constant 0, lengthscales 0.5):
-  ``LogExpectedImprovement`` (q = 1), ``qLogExpectedImprovement`` (q = 3, the
-  same 512 explicit base samples in both libraries) and
-  ``qLogNoisyExpectedImprovement`` (q = 1, defaults: 512 Sobol samples, pruned
-  baseline; the libraries' Sobol sequences differ);
 * ``BO loop``: 30 iterations of fitting a default ``SingleTaskGP`` and
   maximizing LogEI from the same 14-point Sobol design (the loop of
-  ``botorch_core/examples/bo_loop.rs``).
+  ``botorch_core/examples/bo_loop.rs``);
+* ``optimize_acqf`` with 10 restarts and 512 raw samples on a 50-point model
+  with fixed hyperparameters (noise 1e-3, constant 0, lengthscales 0.5):
+  ``LogExpectedImprovement`` (q = 1), the same with the linear constraint
+  ``sum(x) <= 2`` (initial conditions from the hit-and-run polytope sampler,
+  then SLSQP), ``qLogExpectedImprovement`` (q = 3, the same 512 explicit base
+  samples in both libraries) and ``qLogNoisyExpectedImprovement`` (q = 1,
+  defaults: 512 Sobol samples, pruned baseline; the libraries' Sobol
+  sequences differ);
+* ``fit``: ``SingleTaskGP(X, Y)`` + ``fit_gpytorch_mll`` for n = 20, 100, 300
+  training points (a Weyl sequence in [0, 1]^6, noise-free targets), from
+  BoTorch's default initialization.
 
 Every task is timed with one thread (``torch.set_num_threads(1)``,
 ``botorch_rs.set_num_threads(1)``) and with each library's default number of
-threads; the median over repeated runs is reported, after one warm-up run.
+threads; the median over runs with different seeds is reported, after one
+warm-up run (fast tasks are repeated within a run until it takes 0.2 s).
+``--json`` also writes all runs, the result values and the environment, the
+input of ``scripts/plot_benchmarks.py``.
 
 Usage (``scripts/develop.py`` builds the extension)::
 
     PYTHONPATH=/path/to/botorch:botorch_pyo3/python python scripts/benchmark.py [--repeats 5]
+    PYTHONPATH=... python scripts/benchmark.py --json docs/assets/benchmark.json
 
-Use ``--no-botorch`` to time botorch_rs only.
+Use ``--no-botorch`` to time botorch_rs only and ``-k`` to select tasks.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
+import json
 import math
 import os
 import platform
+import re
 import statistics
+import subprocess
 import sys
 import time
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -48,6 +60,14 @@ DT = torch.float64
 D = 6
 FIT_SIZES = (20, 100, 300)
 LOOP_ITERATIONS = 30
+
+
+@dataclass(frozen=True)
+class Task:
+    name: str  # row of the markdown tables
+    label: str  # row label of the chart
+    detail: str  # setting shown under the chart label
+    run: Callable[[int], float]  # seed -> result value (for sanity checks)
 
 
 def weyl(n: int, d: int = D) -> torch.Tensor:
@@ -68,6 +88,7 @@ class Library:
 
             self._set_threads = botorch_rs.set_num_threads
             self.default_threads = botorch_rs.get_num_threads()
+            self.version = botorch_rs.__version__
         else:
             import botorch
             from botorch import acquisition, fit, models, optim, sampling, test_functions
@@ -77,6 +98,7 @@ class Library:
             self._set_threads = torch.set_num_threads
             self.default_threads = torch.get_num_threads()
             self.file = botorch.__file__
+            self.version = botorch.__version__
         self.SingleTaskGP = models.SingleTaskGP
         self.MLL = mlls.ExactMarginalLogLikelihood
         self.fit = fit.fit_gpytorch_mll
@@ -123,22 +145,42 @@ def fixed_model(lib: Library) -> tuple[Any, torch.Tensor, torch.Tensor]:
     return model, X, Y
 
 
-def tasks(lib: Library) -> dict[str, Callable[[int], float]]:
-    """Task name -> function(seed) returning a result value (for sanity checks)."""
+def tasks(lib: Library) -> list[Task]:
+    """The benchmark tasks, in the order of the tables and the chart."""
     bounds = torch.stack([torch.zeros(D, dtype=DT), torch.ones(D, dtype=DT)])
     problem = lib.Hartmann(dim=D, negate=True, dtype=DT)
-    out: dict[str, Callable[[int], float]] = {}
+    out: list[Task] = []
 
-    for n in FIT_SIZES:
-        X = weyl(n)
+    init = botorch_rs.utils.sampling.draw_sobol_samples(bounds, n=2 * (D + 1), q=1, seed=0)
+    X0 = init.squeeze(-2)
+
+    def bo_loop(seed: int) -> float:
+        X = X0.clone()
         Y = problem(X, noise=False).unsqueeze(-1)
+        for it in range(LOOP_ITERATIONS):
+            gp = lib.SingleTaskGP(X, Y)
+            lib.fit(lib.MLL(gp.likelihood, gp))
+            acqf = lib.LogEI(gp, best_f=Y.max())
+            cand, _ = lib.optimize_acqf(
+                acqf,
+                bounds,
+                q=1,
+                num_restarts=10,
+                raw_samples=512,
+                options={"seed": 1000 * seed + it},
+            )
+            X = torch.cat([X, cand])
+            Y = torch.cat([Y, problem(cand, noise=False).unsqueeze(-1)])
+        return -Y.max().item()
 
-        def fit_task(seed: int, X: torch.Tensor = X, Y: torch.Tensor = Y) -> float:
-            model = lib.SingleTaskGP(X, Y)
-            lib.fit(lib.MLL(model.likelihood, model))
-            return lib.mll_loss(model)
-
-        out[f"fit, n = {n}"] = fit_task
+    out.append(
+        Task(
+            f"BO loop, {LOOP_ITERATIONS} iterations",
+            "Bayesian optimization",
+            f"Hartmann-6, {LOOP_ITERATIONS} iterations",
+            bo_loop,
+        )
+    )
 
     model, X50, Y50 = fixed_model(lib)
 
@@ -146,6 +188,22 @@ def tasks(lib: Library) -> dict[str, Callable[[int], float]]:
         acqf = lib.LogEI(model, best_f=Y50.max())
         _, v = lib.optimize_acqf(
             acqf, bounds, q=1, num_restarts=10, raw_samples=512, options={"seed": seed}
+        )
+        return float(v)
+
+    # sum(x) <= 2, as BoTorch's (indices, coefficients, rhs) with sum >= rhs.
+    budget = [(torch.arange(D), torch.full((D,), -1.0, dtype=DT), -2.0)]
+
+    def logei_constrained(seed: int) -> float:
+        acqf = lib.LogEI(model, best_f=Y50.max())
+        _, v = lib.optimize_acqf(
+            acqf,
+            bounds,
+            q=1,
+            num_restarts=10,
+            raw_samples=512,
+            inequality_constraints=budget,
+            options={"seed": seed},
         )
         return float(v)
 
@@ -170,46 +228,49 @@ def tasks(lib: Library) -> dict[str, Callable[[int], float]]:
         )
         return float(v)
 
-    out["optimize_acqf, LogEI, q = 1"] = logei
-    out["optimize_acqf, qLogEI, q = 3"] = qlogei
-    out["optimize_acqf, qLogNEI, q = 1"] = qlognei
+    out += [
+        Task("optimize_acqf, LogEI, q = 1", "Optimize LogEI", "q = 1, 10 restarts", logei),
+        Task(
+            "optimize_acqf, LogEI, q = 1, sum(x) <= 2",
+            "Optimize LogEI",
+            "linear constraint (SLSQP)",
+            logei_constrained,
+        ),
+        Task("optimize_acqf, qLogEI, q = 3", "Optimize qLogEI", "q = 3", qlogei),
+        Task("optimize_acqf, qLogNEI, q = 1", "Optimize qLogNEI", "q = 1", qlognei),
+    ]
 
-    init = botorch_rs.utils.sampling.draw_sobol_samples(bounds, n=2 * (D + 1), q=1, seed=0)
-    X0 = init.squeeze(-2)
-
-    def bo_loop(seed: int) -> float:
-        X = X0.clone()
+    for n in FIT_SIZES:
+        X = weyl(n)
         Y = problem(X, noise=False).unsqueeze(-1)
-        for it in range(LOOP_ITERATIONS):
-            gp = lib.SingleTaskGP(X, Y)
-            lib.fit(lib.MLL(gp.likelihood, gp))
-            acqf = lib.LogEI(gp, best_f=Y.max())
-            cand, _ = lib.optimize_acqf(
-                acqf,
-                bounds,
-                q=1,
-                num_restarts=10,
-                raw_samples=512,
-                options={"seed": 1000 * seed + it},
-            )
-            X = torch.cat([X, cand])
-            Y = torch.cat([Y, problem(cand, noise=False).unsqueeze(-1)])
-        return -Y.max().item()
 
-    out[f"BO loop, {LOOP_ITERATIONS} iterations"] = bo_loop
+        def fit_task(seed: int, X: torch.Tensor = X, Y: torch.Tensor = Y) -> float:
+            model = lib.SingleTaskGP(X, Y)
+            lib.fit(lib.MLL(model.likelihood, model))
+            return lib.mll_loss(model)
+
+        out.append(Task(f"fit, n = {n}", "Fit GP", f"n = {n}", fit_task))
     return out
 
 
-def time_task(fn: Callable[[int], float], repeats: int) -> tuple[float, float]:
-    """Median wall time over ``repeats`` runs (after a warm-up run) and the
-    median result value."""
+def time_task(
+    fn: Callable[[int], float], repeats: int, min_time: float = 0.2
+) -> tuple[list[float], list[float]]:
+    """Wall times per call and result values of ``repeats`` runs (seeds 0, 1,
+    ...), after a warm-up run. Like ``timeit``, a run of a fast task calls it
+    repeatedly with the same seed until the run takes at least ``min_time``
+    seconds, and reports the mean time per call."""
+    t = time.perf_counter()
     fn(0)
+    calls = max(1, math.ceil(min_time / (time.perf_counter() - t)))
     times, values = [], []
     for r in range(repeats):
         t = time.perf_counter()
-        values.append(fn(r))
-        times.append(time.perf_counter() - t)
-    return statistics.median(times), statistics.median(values)
+        for _ in range(calls):
+            value = fn(r)
+        times.append((time.perf_counter() - t) / calls)
+        values.append(value)
+    return times, values
 
 
 def fmt_speedup(ratio: float) -> str:
@@ -224,11 +285,62 @@ def fmt_time(seconds: float) -> str:
     return f"{seconds:.2f} s"
 
 
+def cpu_name() -> str:
+    """The processor's name: from py-cpuinfo if it is installed, else the OS."""
+    name = ""
+    try:
+        import cpuinfo  # py-cpuinfo
+
+        name = cpuinfo.get_cpu_info().get("brand_raw", "")
+    except Exception:
+        try:
+            if sys.platform == "win32":
+                import winreg
+
+                key = r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+                    name = winreg.QueryValueEx(k, "ProcessorNameString")[0]
+            elif sys.platform == "darwin":
+                name = subprocess.run(
+                    ["sysctl", "-n", "machdep.cpu.brand_string"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout
+            else:
+                with open("/proc/cpuinfo", encoding="utf-8") as f:
+                    name = next(
+                        (ln.split(":", 1)[1] for ln in f if ln.startswith("model name")), ""
+                    )
+        except Exception:
+            pass
+    name = re.sub(r"\((R|TM)\)", "", name)
+    return " ".join(name.split()) or platform.processor() or platform.machine()
+
+
+def git_revision(path: str) -> str | None:
+    """The short commit of the git checkout containing ``path``, if any."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", os.path.dirname(path), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return out.stdout.strip() or None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--repeats", type=int, default=5, help="timed runs per task")
     parser.add_argument("--loop-repeats", type=int, default=3, help="timed BO loops")
     parser.add_argument("--no-botorch", action="store_true", help="time botorch_rs only")
+    parser.add_argument("-k", default="", help="only tasks whose name contains this string")
+    parser.add_argument(
+        "--json", type=Path, help="also write all results to this JSON file (for the chart)"
+    )
     args = parser.parse_args()
     warnings.simplefilter("ignore")
 
@@ -236,35 +348,49 @@ def main() -> None:
     if not args.no_botorch:
         libs.append(Library("botorch"))
     default_threads = {lib.name: lib.default_threads for lib in libs}
+    cpu = cpu_name()
 
     print(
         f"Python {platform.python_version()}, torch {torch.__version__}, "
         f"botorch_rs {botorch_rs.__version__}"
     )
     if not args.no_botorch:
-        print(f"BoTorch from {libs[1].file}")
+        rev = git_revision(libs[1].file)
+        print(f"BoTorch {libs[1].version} from {libs[1].file}" + (f" ({rev})" if rev else ""))
     print(
-        f"{platform.platform()}, {platform.processor() or platform.machine()}, "
-        f"{os.cpu_count()} logical CPUs; default threads: "
+        f"{platform.platform()}, {cpu}, {os.cpu_count()} logical CPUs; default threads: "
         + ", ".join(f"{k} {v}" for k, v in default_threads.items())
     )
 
-    results: dict[tuple[str, str, str], tuple[float, float]] = {}
+    def selected(lib: Library) -> list[Task]:
+        return [task for task in tasks(lib) if args.k in task.name]
+
+    def repeats_of(name: str) -> int:
+        return args.loop_repeats if name.startswith("BO loop") else args.repeats
+
+    runs: dict[tuple[str, str, str], tuple[list[float], list[float]]] = {}
     for setting in ("1", "default"):
         for lib in libs:
             lib.use_threads(setting == "1")
-            for name, fn in tasks(lib).items():
-                repeats = args.loop_repeats if name.startswith("BO loop") else args.repeats
-                results[(name, lib.name, setting)] = time_task(fn, repeats)
+            for task in selected(lib):
+                runs[(task.name, lib.name, setting)] = time_task(task.run, repeats_of(task.name))
+                times = runs[(task.name, lib.name, setting)][0]
                 print(
-                    f"  {lib.name:10s} threads={setting:7s} {name:32s} "
-                    f"{fmt_time(results[(name, lib.name, setting)][0])}",
+                    f"  {lib.name:10s} threads={setting:7s} {task.name:40s} "
+                    f"{fmt_time(statistics.median(times))} "
+                    f"(max/min {max(times) / min(times):.2f})",
                     file=sys.stderr,
                 )
         for lib in libs:
             lib.use_threads(False)
 
-    names = list(tasks(libs[0]))
+    def median_time(name: str, lib: str, setting: str) -> float:
+        return statistics.median(runs[(name, lib, setting)][0])
+
+    def median_value(name: str, lib: str) -> float:
+        return statistics.median(runs[(name, lib, "1")][1])
+
+    task_list = selected(libs[0])
     rs_n, bt_n = default_threads["botorch_rs"], default_threads.get("botorch", 0)
     header = ["Task", "botorch_rs, 1 thread"]
     if not args.no_botorch:
@@ -275,15 +401,16 @@ def main() -> None:
     print()
     print("| " + " | ".join(header) + " |")
     print("|" + "---|" * len(header))
-    for name in names:
-        row = [name, fmt_time(results[(name, "botorch_rs", "1")][0])]
+    for task in task_list:
+        name = task.name
+        row = [name, fmt_time(median_time(name, "botorch_rs", "1"))]
         if not args.no_botorch:
-            rs, bt = results[(name, "botorch_rs", "1")][0], results[(name, "botorch", "1")][0]
+            rs, bt = median_time(name, "botorch_rs", "1"), median_time(name, "botorch", "1")
             row += [fmt_time(bt), fmt_speedup(bt / rs)]
-        row += [fmt_time(results[(name, "botorch_rs", "default")][0])]
+        row += [fmt_time(median_time(name, "botorch_rs", "default"))]
         if not args.no_botorch:
-            rs = results[(name, "botorch_rs", "default")][0]
-            bt = results[(name, "botorch", "default")][0]
+            rs = median_time(name, "botorch_rs", "default")
+            bt = median_time(name, "botorch", "default")
             row += [fmt_time(bt), fmt_speedup(bt / rs)]
         print("| " + " | ".join(row) + " |")
 
@@ -296,9 +423,59 @@ def main() -> None:
         print()
         print("| Task | botorch_rs | BoTorch |")
         print("|---|---|---|")
-        for name in names:
-            rs, bt = results[(name, "botorch_rs", "1")][1], results[(name, "botorch", "1")][1]
-            print(f"| {name} | {rs:.6f} | {bt:.6f} |")
+        for task in task_list:
+            rs, bt = median_value(task.name, "botorch_rs"), median_value(task.name, "botorch")
+            print(f"| {task.name} | {rs:.6f} | {bt:.6f} |")
+
+    if args.json is not None:
+        if args.no_botorch:
+            parser.error("--json needs BoTorch for the comparison")
+        has_loop = any(task.name.startswith("BO loop") for task in task_list)
+        loops = f" ({args.loop_repeats} for the BO loop)" if has_loop else ""
+        runs = f"{args.repeats} run" + ("s" if args.repeats != 1 else "")
+        meta = {
+            "subtitle": f"Hartmann-6, one thread each, median of {runs}{loops}. {cpu}.",
+            "date": datetime.date.today().isoformat(),
+            "repeats": args.repeats,
+            "loop_repeats": args.loop_repeats,
+            "python": platform.python_version(),
+            "torch": torch.__version__,
+            "botorch_rs": botorch_rs.__version__,
+            "botorch": libs[1].version,
+            "botorch_revision": git_revision(libs[1].file),
+            "platform": platform.platform(),
+            "cpu": cpu,
+            "logical_cpus": os.cpu_count(),
+            "default_threads": default_threads,
+        }
+        rows = []
+        for task in task_list:
+            name = task.name
+            rows.append(
+                {
+                    "task": name,
+                    "label": task.label,
+                    "detail": task.detail,
+                    # Single-thread medians (the chart).
+                    "botorch_rs_s": median_time(name, "botorch_rs", "1"),
+                    "botorch_s": median_time(name, "botorch", "1"),
+                    "default_threads": {
+                        "botorch_rs_s": median_time(name, "botorch_rs", "default"),
+                        "botorch_s": median_time(name, "botorch", "default"),
+                    },
+                    "values": {
+                        "botorch_rs": median_value(name, "botorch_rs"),
+                        "botorch": median_value(name, "botorch"),
+                    },
+                    "runs_s": {
+                        setting: {lib.name: runs[(name, lib.name, setting)][0] for lib in libs}
+                        for setting in ("1", "default")
+                    },
+                }
+            )
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(json.dumps({"meta": meta, "rows": rows}, indent=2) + "\n")
+        print(f"\nWrote {args.json}", file=sys.stderr)
 
 
 if __name__ == "__main__":
