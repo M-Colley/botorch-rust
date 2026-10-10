@@ -6,16 +6,37 @@
 //! *original* outcome space, exactly like BoTorch's `model.posterior(X)`.
 //! Implementations must be `Send + Sync` so that acquisition functions can
 //! share them across threads (`Arc<dyn Model>`).
+//!
+//! A model has `m = num_outputs()` outputs. Joint posteriors over `q` points
+//! are flattened in BoTorch's output-major order (index `t·q + p` for output
+//! `t` at point `p`, see [`crate::posterior`]), which for single-output
+//! models is the plain `q`-dimensional posterior. The methods come in three
+//! groups:
+//!
+//! * the joint posterior ([`Model::posterior`]) with forward-mode
+//!   ([`Model::joint_posterior_with_grad`]) and reverse-mode
+//!   ([`Model::joint_posterior_vjp`]) derivatives with respect to the inputs,
+//!   used by Monte-Carlo acquisition functions;
+//! * posteriors of individual points over all outputs, with unclamped output
+//!   covariances ([`Model::point_posteriors`],
+//!   [`Model::point_posterior_with_grad`]), used by analytic acquisition
+//!   functions of multi-output models and by posterior transforms;
+//! * single-output conveniences with BoTorch's variance clamping
+//!   ([`Model::posterior_marginals`], [`Model::posterior_q1_with_grad`]).
+//!
+//! Only the first group has to be implemented; the others have default
+//! implementations in terms of it, which models override with faster (and
+//! mutually bitwise-consistent) computations.
 
 use std::fmt::Debug;
 use std::ops::Range;
 
 use crate::error::{BotorchError, Result};
-use crate::posterior::{JointPosteriorGrad, Posterior};
+use crate::posterior::{JointPosteriorGrad, PointPosteriors, Posterior, MIN_VARIANCE};
 use crate::{Matrix, Vector};
 
-/// A single-output probabilistic model with Gaussian posteriors, as consumed
-/// by the acquisition functions of this crate.
+/// A probabilistic model with Gaussian posteriors, as consumed by the
+/// acquisition functions of this crate.
 ///
 /// Point sets are `n × d` matrices whose rows are points. Derivatives are taken
 /// with respect to the raw-space inputs.
@@ -26,46 +47,19 @@ pub trait Model: Send + Sync + Debug {
     /// Number of outputs `m` (BoTorch's `model.num_outputs`).
     fn num_outputs(&self) -> usize;
 
-    /// Training inputs in the original input space (`n × d`).
-    fn train_inputs(&self) -> &Matrix;
+    /// The batch shape of the model (BoTorch's `model.batch_shape`); empty for
+    /// unbatched models. Acquisition functions require unbatched models.
+    fn batch_shape(&self) -> &[usize] {
+        &[]
+    }
 
-    /// Training targets in the original outcome space (`n × m`).
-    fn train_targets(&self) -> &Matrix;
-
-    /// Joint posterior at the `q × d` inputs `x` (BoTorch's
-    /// `model.posterior(X, observation_noise=...)`).
+    /// Joint posterior at the `q × d` inputs `x` over all outputs (BoTorch's
+    /// `model.posterior(X, observation_noise=...)`), flattened in output-major
+    /// order.
     ///
     /// # Errors
     /// Implementation-specific (dimension mismatches, numerical failures).
     fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior>;
-
-    /// Marginal posterior means and variances of every row of `x` evaluated
-    /// independently, i.e. the posterior of a `b × 1 × d` batch in BoTorch.
-    /// Variances are clamped from below like `posterior.variance`.
-    ///
-    /// The default implementation calls [`Model::posterior`] row by row.
-    ///
-    /// # Errors
-    /// See [`Model::posterior`].
-    fn posterior_marginals(&self, x: &Matrix) -> Result<(Vector, Vector)> {
-        let b = x.nrows();
-        let mut mean = Vector::zeros(b);
-        let mut var = Vector::zeros(b);
-        for i in 0..b {
-            let p = self.posterior(&x.rows(i, 1).into_owned(), false)?;
-            mean[i] = p.mean[0];
-            var[i] = p.variance()[0];
-        }
-        Ok((mean, var))
-    }
-
-    /// Posterior mean and (clamped) variance at a single point (length `d`)
-    /// together with their gradients with respect to the point:
-    /// `(mean, variance, ∂mean/∂x, ∂variance/∂x)`.
-    ///
-    /// # Errors
-    /// See [`Model::posterior`].
-    fn posterior_q1_with_grad(&self, x: &[f64]) -> Result<(f64, f64, Vector, Vector)>;
 
     /// Joint posterior (without observation noise) at `x` with the
     /// derivatives of the mean and covariance with respect to every input
@@ -77,9 +71,11 @@ pub trait Model: Send + Sync + Debug {
 
     /// Reverse-mode derivative (vector-Jacobian product) of the joint
     /// posterior without observation noise: for the scalar
-    /// `s = ⟨mean_adjoint, μ(x)⟩ + Σ_ab covariance_adjoint[a,b] Σ(x)[a,b]`,
-    /// returns `∂s/∂x[p, k]` for the rows `p ∈ rows` (a `rows.len() × d`
-    /// matrix). Only the symmetric part of `covariance_adjoint` matters.
+    /// `s = ⟨mean_adjoint, μ(x)⟩ + Σ_ab covariance_adjoint[a,b] Σ(x)[a,b]`
+    /// (adjoints of length `n·m` and size `n·m × n·m` in the output-major
+    /// order of [`Model::posterior`], `n = x.nrows()`), returns `∂s/∂x[p, k]`
+    /// for the rows `p ∈ rows` (a `rows.len() × d` matrix). Only the symmetric
+    /// part of `covariance_adjoint` matters.
     ///
     /// This is what acquisition functions need to backpropagate through
     /// posterior samples. The default implementation contracts
@@ -96,7 +92,13 @@ pub trait Model: Send + Sync + Debug {
         mean_adjoint: &Vector,
         covariance_adjoint: &Matrix,
     ) -> Result<Matrix> {
-        check_vjp_shapes(x, &rows, mean_adjoint, covariance_adjoint)?;
+        check_vjp_shapes(
+            x,
+            &rows,
+            mean_adjoint,
+            covariance_adjoint,
+            self.num_outputs(),
+        )?;
         let d = x.ncols();
         let g = self.joint_posterior_with_grad(x)?;
         let mut out = Matrix::zeros(rows.len(), d);
@@ -109,14 +111,130 @@ pub trait Model: Send + Sync + Debug {
         }
         Ok(out)
     }
+
+    /// Posteriors of every row of `x`, each evaluated on its own (a
+    /// `b × 1 × d` batch in BoTorch), over all outputs, with *unclamped*
+    /// output covariances and without observation noise.
+    ///
+    /// The default implementation calls [`Model::posterior`] row by row.
+    ///
+    /// # Errors
+    /// See [`Model::posterior`].
+    fn point_posteriors(&self, x: &Matrix) -> Result<PointPosteriors> {
+        let b = x.nrows();
+        let m = self.num_outputs();
+        let mut mean = Matrix::zeros(b, m);
+        let mut covariance = Matrix::zeros(b, m * m);
+        for i in 0..b {
+            let p = self.posterior(&x.rows(i, 1).into_owned(), false)?;
+            check_point_posterior(&p.mean, m)?;
+            for a in 0..m {
+                mean[(i, a)] = p.mean[a];
+                for c in 0..m {
+                    covariance[(i, a * m + c)] = p.covariance[(a, c)];
+                }
+            }
+        }
+        Ok(PointPosteriors { mean, covariance })
+    }
+
+    /// The posterior at a single point (length `d`) over all outputs — mean
+    /// (length `m`) and *unclamped* output covariance (`m × m`) — together
+    /// with their derivatives with respect to the point (a
+    /// [`JointPosteriorGrad`] with `q = 1`).
+    ///
+    /// The default implementation calls [`Model::joint_posterior_with_grad`].
+    ///
+    /// # Errors
+    /// See [`Model::posterior`].
+    fn point_posterior_with_grad(&self, x: &[f64]) -> Result<JointPosteriorGrad> {
+        let g = self.joint_posterior_with_grad(&Matrix::from_row_slice(1, x.len(), x))?;
+        check_point_posterior(&g.mean, self.num_outputs())?;
+        Ok(g)
+    }
+
+    /// Marginal posterior means and variances of every row of `x` evaluated
+    /// independently (the posterior of a `b × 1 × d` batch in BoTorch) for a
+    /// *single-output* model. Variances are clamped from below like
+    /// `posterior.variance`.
+    ///
+    /// The default implementation uses [`Model::point_posteriors`].
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] for multi-output models, otherwise see
+    /// [`Model::posterior`].
+    fn posterior_marginals(&self, x: &Matrix) -> Result<(Vector, Vector)> {
+        require_single_output(self.num_outputs())?;
+        let pp = self.point_posteriors(x)?;
+        let b = pp.len();
+        Ok((
+            Vector::from_fn(b, |i, _| pp.mean[(i, 0)]),
+            Vector::from_fn(b, |i, _| clamp_variance(pp.covariance[(i, 0)])),
+        ))
+    }
+
+    /// Posterior mean and (clamped) variance of a *single-output* model at a
+    /// single point (length `d`) together with their gradients with respect
+    /// to the point: `(mean, variance, ∂mean/∂x, ∂variance/∂x)`. The gradient
+    /// of a clamped variance is zero.
+    ///
+    /// The default implementation uses [`Model::point_posterior_with_grad`].
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] for multi-output models, otherwise see
+    /// [`Model::posterior`].
+    fn posterior_q1_with_grad(&self, x: &[f64]) -> Result<(f64, f64, Vector, Vector)> {
+        require_single_output(self.num_outputs())?;
+        let g = self.point_posterior_with_grad(x)?;
+        let d = x.len();
+        let mean = g.mean[0];
+        let var = g.covariance[(0, 0)];
+        let dmean = Vector::from_fn(d, |k, _| g.dmean[k][0]);
+        if var < MIN_VARIANCE {
+            return Ok((mean, MIN_VARIANCE, dmean, Vector::zeros(d)));
+        }
+        let dvar = Vector::from_fn(d, |k, _| g.dcov[k][(0, 0)]);
+        Ok((mean, var, dmean, dvar))
+    }
 }
 
-/// Validates the arguments of [`Model::joint_posterior_vjp`].
+/// BoTorch's variance clamp (`gpytorch.settings.min_variance`).
+#[inline]
+pub(crate) fn clamp_variance(v: f64) -> f64 {
+    if v < MIN_VARIANCE {
+        MIN_VARIANCE
+    } else {
+        v
+    }
+}
+
+fn require_single_output(m: usize) -> Result<()> {
+    if m != 1 {
+        return Err(BotorchError::Unsupported(format!(
+            "this method requires a single-output model, got {m} outputs"
+        )));
+    }
+    Ok(())
+}
+
+fn check_point_posterior(mean: &Vector, m: usize) -> Result<()> {
+    if mean.len() != m {
+        return Err(BotorchError::DimensionMismatch(format!(
+            "expected a posterior over {m} outputs at one point, got {} values",
+            mean.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Validates the arguments of [`Model::joint_posterior_vjp`] for a model with
+/// `num_outputs` outputs.
 pub(crate) fn check_vjp_shapes(
     x: &Matrix,
     rows: &Range<usize>,
     mean_adjoint: &Vector,
     covariance_adjoint: &Matrix,
+    num_outputs: usize,
 ) -> Result<()> {
     let n = x.nrows();
     if rows.start > rows.end || rows.end > n {
@@ -124,9 +242,10 @@ pub(crate) fn check_vjp_shapes(
             "rows {rows:?} out of range for {n} points"
         )));
     }
-    if mean_adjoint.len() != n || covariance_adjoint.shape() != (n, n) {
+    let len = n * num_outputs;
+    if mean_adjoint.len() != len || covariance_adjoint.shape() != (len, len) {
         return Err(BotorchError::DimensionMismatch(format!(
-            "adjoints must have shapes {n} and {n}x{n}, got {} and {}x{}",
+            "adjoints must have shapes {len} and {len}x{len}, got {} and {}x{}",
             mean_adjoint.len(),
             covariance_adjoint.nrows(),
             covariance_adjoint.ncols()

@@ -227,7 +227,7 @@ pub use models::{
     SingleTaskGPOptions,
 };
 pub use optim::{optimize_acqf, OptimizeAcqfOptions};
-pub use posterior::{JointPosteriorGrad, Posterior};
+pub use posterior::{JointPosteriorGrad, PointPosteriors, Posterior};
 pub use priors::Prior;
 pub use sampling::SobolQMCNormalSampler;
 pub use test_functions::SyntheticTestFunction;

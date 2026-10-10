@@ -14,12 +14,12 @@ use botorch_core::acquisition::{
 };
 use botorch_core::sampling::SobolQMCNormalSampler;
 use botorch_core::{
-    KernelKind, Matrix, Model, Normalize, OutcomeTransformChoice, SingleTaskGP, SingleTaskGPOptions,
+    KernelKind, Matrix, Normalize, OutcomeTransformChoice, SingleTaskGP, SingleTaskGPOptions,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
-type Named = (&'static str, Arc<dyn Model>, f64, f64);
+type Named = (&'static str, Arc<SingleTaskGP>, f64, f64);
 
 fn data(seed: u64, n: usize, d: usize, lo: f64, hi: f64) -> (Matrix, Matrix) {
     let mut rng = StdRng::seed_from_u64(seed);

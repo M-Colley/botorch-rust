@@ -13,13 +13,13 @@ use botorch_core::acquisition::{
 use botorch_core::optim::{optimize_acqf, optimize_acqf_detailed, OptimizeAcqfOptions};
 use botorch_core::sampling::SobolQMCNormalSampler;
 use botorch_core::utils::sampling::draw_sobol_samples;
-use botorch_core::{BotorchError, Matrix, Model, SingleTaskGP, SingleTaskGPOptions};
+use botorch_core::{BotorchError, Matrix, SingleTaskGP, SingleTaskGPOptions};
 
 fn bounds() -> Matrix {
     Matrix::from_row_slice(2, 3, &[0.0, -1.0, 0.0, 1.0, 1.0, 2.0])
 }
 
-fn model() -> Arc<dyn Model> {
+fn model() -> Arc<SingleTaskGP> {
     let b = bounds();
     let x = draw_sobol_samples(&b, 15, 1, Some(1)).unwrap();
     let x = Matrix::from_fn(15, 3, |i, j| x[i][(0, j)]);

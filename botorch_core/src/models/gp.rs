@@ -27,8 +27,9 @@ use crate::kernels::{
     ScaledPoints,
 };
 use crate::linalg::{psd_safe_cholesky, CholeskyFactor};
+use crate::models::model::clamp_variance;
 use crate::models::Model;
-use crate::posterior::{JointPosteriorGrad, Posterior, MIN_VARIANCE};
+use crate::posterior::{JointPosteriorGrad, PointPosteriors, Posterior, MIN_VARIANCE};
 use crate::priors::Prior;
 use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
 use crate::{Matrix, Vector};
@@ -767,10 +768,10 @@ impl SingleTaskGP {
             }
         }
         let (mu, sd) = self.outcome_affine();
-        Ok(Posterior {
-            mean: mean_tf.map(|m| mu + sd * m),
-            covariance: cov.map(|c| sd * c * sd),
-        })
+        Ok(Posterior::single_output(
+            mean_tf.map(|m| mu + sd * m),
+            cov.map(|c| sd * c * sd),
+        ))
     }
 
     /// Posterior mean and variance at a single raw-space point `x` (length
@@ -784,6 +785,23 @@ impl SingleTaskGP {
     /// [`BotorchError::DimensionMismatch`] if `x.len() != d` and
     /// [`BotorchError::NotPsd`] if the training covariance cannot be factorized.
     pub fn posterior_q1_with_grad(&self, x: &[f64]) -> Result<(f64, f64, Vector, Vector)> {
+        let (mean, var, dmean, dvar) = self.posterior_q1_with_grad_unclamped(x)?;
+        if var < MIN_VARIANCE {
+            return Ok((mean, MIN_VARIANCE, dmean, Vector::zeros(self.dim())));
+        }
+        Ok((mean, var, dmean, dvar))
+    }
+
+    /// [`SingleTaskGP::posterior_q1_with_grad`] without clamping the
+    /// variance. Posterior transforms and multi-output models build on this:
+    /// BoTorch clamps the variance of the *transformed* posterior.
+    ///
+    /// # Errors
+    /// See [`SingleTaskGP::posterior_q1_with_grad`].
+    pub fn posterior_q1_with_grad_unclamped(
+        &self,
+        x: &[f64],
+    ) -> Result<(f64, f64, Vector, Vector)> {
         if x.len() != self.dim() {
             return Err(BotorchError::DimensionMismatch(format!(
                 "Expected a point with {} coordinates, got {}",
@@ -811,9 +829,6 @@ impl SingleTaskGP {
         let mean = mu + sd * mean_tf;
         let dmean = dmean_tf.component_mul(&jac) * sd;
         let var = sd * sd * var_tf;
-        if var < MIN_VARIANCE {
-            return Ok((mean, MIN_VARIANCE, dmean, Vector::zeros(self.dim())));
-        }
         let dvar = dvar_tf.component_mul(&jac) * (sd * sd);
         Ok((mean, var, dmean, dvar))
     }
@@ -882,6 +897,7 @@ impl SingleTaskGP {
             covariance: cov_tf.map(|c| sd * c * sd),
             dmean,
             dcov,
+            num_outputs: 1,
         })
     }
 
@@ -895,6 +911,16 @@ impl SingleTaskGP {
     /// [`BotorchError::DimensionMismatch`] for a column mismatch and
     /// [`BotorchError::NotPsd`] if the training covariance cannot be factorized.
     pub fn posterior_marginals(&self, x: &Matrix) -> Result<(Vector, Vector)> {
+        let (mean, var) = self.posterior_marginals_unclamped(x)?;
+        Ok((mean, var.map(clamp_variance)))
+    }
+
+    /// [`SingleTaskGP::posterior_marginals`] without clamping the variances
+    /// (bitwise identical to [`SingleTaskGP::posterior_q1_with_grad_unclamped`]).
+    ///
+    /// # Errors
+    /// See [`SingleTaskGP::posterior_marginals`].
+    pub fn posterior_marginals_unclamped(&self, x: &Matrix) -> Result<(Vector, Vector)> {
         let xt = self.transform_inputs(x)?;
         let cache = self.cache()?;
         let b = xt.nrows();
@@ -908,8 +934,7 @@ impl SingleTaskGP {
             let k = kxs.row(i).transpose();
             mean[i] = mu + sd * (self.constant() + k.dot(&cache.alpha));
             let v = cache.chol.solve_lower_vec(&k);
-            let vi = sd * sd * (prior - v.dot(&v));
-            var[i] = if vi < MIN_VARIANCE { MIN_VARIANCE } else { vi };
+            var[i] = sd * sd * (prior - v.dot(&v));
         }
         Ok((mean, var))
     }
@@ -934,7 +959,7 @@ impl SingleTaskGP {
         mean_adjoint: &Vector,
         covariance_adjoint: &Matrix,
     ) -> Result<Matrix> {
-        super::model::check_vjp_shapes(x, &rows, mean_adjoint, covariance_adjoint)?;
+        super::model::check_vjp_shapes(x, &rows, mean_adjoint, covariance_adjoint, 1)?;
         let xt = self.transform_inputs(x)?;
         let cache = self.cache()?;
         let d = xt.ncols();
@@ -977,16 +1002,27 @@ impl Model for SingleTaskGP {
         SingleTaskGP::num_outputs(self)
     }
 
-    fn train_inputs(&self) -> &Matrix {
-        SingleTaskGP::train_inputs(self)
-    }
-
-    fn train_targets(&self) -> &Matrix {
-        SingleTaskGP::train_targets(self)
-    }
-
     fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {
         SingleTaskGP::posterior(self, x, observation_noise)
+    }
+
+    fn point_posteriors(&self, x: &Matrix) -> Result<PointPosteriors> {
+        let (mean, var) = self.posterior_marginals_unclamped(x)?;
+        Ok(PointPosteriors::single_output(&mean, &var))
+    }
+
+    fn point_posterior_with_grad(&self, x: &[f64]) -> Result<JointPosteriorGrad> {
+        let (mean, var, dmean, dvar) = self.posterior_q1_with_grad_unclamped(x)?;
+        Ok(JointPosteriorGrad {
+            mean: Vector::from_element(1, mean),
+            covariance: Matrix::from_element(1, 1, var),
+            dmean: dmean.iter().map(|&g| Vector::from_element(1, g)).collect(),
+            dcov: dvar
+                .iter()
+                .map(|&g| Matrix::from_element(1, 1, g))
+                .collect(),
+            num_outputs: 1,
+        })
     }
 
     fn posterior_marginals(&self, x: &Matrix) -> Result<(Vector, Vector)> {
