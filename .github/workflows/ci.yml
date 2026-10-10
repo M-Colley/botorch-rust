@@ -126,4 +126,12 @@ jobs:
         env:
           # The parity entry must run (not skip) the BoTorch comparisons.
           BOTORCH_RS_REQUIRE_BOTORCH: ${{ matrix.parity && '1' || '' }}
-        run: python -m pytest tests -q -rs
+        run: python -m pytest tests -q -rs -m "not equivalence"
+      # The unified equivalence suite against live BoTorch (a few minutes); its
+      # terminal summary lists the worst error of every compared quantity.
+      - name: Equivalence suite (BoTorch)
+        if: matrix.parity
+        working-directory: botorch_pyo3
+        env:
+          BOTORCH_RS_REQUIRE_BOTORCH: "1"
+        run: python -m pytest tests -q -rs -m equivalence
