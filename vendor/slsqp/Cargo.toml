@@ -1,0 +1,28 @@
+# Vendored copy of the `slsqp` crate 1.0.2 (https://github.com/relf/slsqp,
+# MIT license, see LICENSE.md): Kraft's SLSQP translated from NLopt 2.10.1.
+#
+# botorch-rs patch (the only changes to the published crate):
+# * `src/slsqp.rs`: Kraft's reverse-communication routine `slsqp`, its state
+#   struct and `length_work` are visible within the crate (`pub(crate)`),
+#   and `deprecated` (`std::f64::INFINITY`) joins its allowed lints;
+# * `src/reverse.rs` (new): `minimize_kraft`, a driver with the semantics of
+#   `scipy.optimize.minimize(method="SLSQP")` (equality and inequality
+#   constraints, Kraft's own `acc` convergence test, `maxiter` major iterations,
+#   SciPy's exit modes), which BoTorch uses for constrained acquisition
+#   optimization. The crate's `minimize` (NLopt's driver) is unchanged.
+[package]
+authors = ["Remi Lafage <remi.lafage@onera.fr>"]
+name = "slsqp"
+version = "1.0.2"
+edition = "2024"
+license-file = "LICENSE.md"
+description = "SLSQP optimizer for Rust"
+readme = "README.md"
+repository = "https://github.com/relf/slsqp/"
+keywords = ["optimizer", "optimization", "constrained"]
+categories = ["algorithms", "science"]
+documentation = "https://docs.rs/slsqp"
+publish = false
+
+[dev-dependencies]
+approx = "0.5"

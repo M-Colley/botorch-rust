@@ -1,5 +1,8 @@
 [workspace]
 members = ["botorch_core", "botorch_pyo3"]
+# Vendored third-party crate (see its Cargo.toml); not linted as part of the
+# workspace.
+exclude = ["vendor/slsqp"]
 resolver = "2"
 
 [workspace.package]
