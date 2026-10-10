@@ -2,12 +2,15 @@
 //!
 //! A Rust re-implementation of [BoTorch](https://botorch.org): the
 //! Gaussian-process core (`SingleTaskGP` with BoTorch's default priors,
-//! constraints and transforms, the exact marginal log likelihood with analytic
-//! gradients, `fit_gpytorch_mll` with a port of L-BFGS-B 3.0), analytic and
-//! Monte-Carlo acquisition functions with exact gradients, `optimize_acqf`,
-//! quasi-random sampling and synthetic test functions. All computations are in
-//! double precision and are validated against BoTorch itself (see
-//! `scripts/generate_fixtures.py` and the `tests/*parity*.rs` files).
+//! constraints and transforms, single- and multi-output, batched, and
+//! `ModelListGP`; the exact marginal log likelihood with analytic gradients;
+//! `fit_gpytorch_mll` with a port of L-BFGS-B 3.0), analytic and Monte-Carlo
+//! acquisition functions with exact gradients (including
+//! `ScalarizedPosteriorTransform` and analytic constrained expected
+//! improvement), `optimize_acqf`, quasi-random sampling and synthetic test
+//! functions. All computations are in double precision and are validated
+//! against BoTorch itself (see `scripts/generate_fixtures.py` and the
+//! `tests/*parity*.rs` files).
 //!
 //! ## Conventions
 //!
@@ -29,6 +32,9 @@
 //!   BoTorch presets in this crate reproduce that rounding (see
 //!   [`Prior::rounded_to_f32`]) so that results agree to ~1e-10. The same holds
 //!   for the float32 constants of BoTorch's test functions.
+//! * Joint posteriors over `q` points and `m` outputs are flattened in
+//!   BoTorch's output-major order (index `output·q + point`, the layout of
+//!   `MultitaskMultivariateNormal` with `interleaved=False`); see [`posterior`].
 //! * Models and acquisition functions are `Send + Sync`; acquisition
 //!   functions share their model through an `Arc<dyn Model>`.
 //! * Seeds are `Option<u64>`: `Some(seed)` makes results reproducible, `None`
@@ -42,17 +48,23 @@
 //! | `model.posterior(X, observation_noise)` | [`SingleTaskGP::posterior`]`(&x, observation_noise) -> `[`Posterior`]` { mean, covariance }` |
 //! | mean/variance and their gradients for `q = 1` | [`SingleTaskGP::posterior_q1_with_grad`]`(&x) -> (mean, variance, dmean_dx, dvariance_dx)` |
 //! | joint mean/covariance and their gradients | [`SingleTaskGP::joint_posterior_with_grad`]`(&x) -> `[`JointPosteriorGrad`] (index `j = point·d + dim`); reverse mode [`SingleTaskGP::joint_posterior_vjp`] |
-//! | `botorch.models.model.Model` (what acquisition functions use) | the [`Model`] trait, implemented by [`SingleTaskGP`] |
+//! | `SingleTaskGP(train_X, train_Y)` with `m > 1` outputs and/or a batch shape | [`BatchedMultiOutputGP::multi_output`]`(train_x, train_y, `[`SingleTaskGPOptions`]`)`, [`BatchedMultiOutputGP::new`]`(train_x, train_y, batch_shape, `[`BatchedMultiOutputGPOptions`]`)` (one matrix per batch element), `From<SingleTaskGP>` |
+//! | `model.posterior(X)` over `m` outputs, batched `X` | [`Model::posterior`] -> [`Posterior`]` { mean, covariance, num_outputs }` (output-major; [`Posterior::mean_matrix`], [`Posterior::select_outputs`]); per batch element [`BatchedMultiOutputGP::posterior_at`]`(batch, &x, observation_noise)` |
+//! | `ModelListGP(*models)` | [`ModelListGP::new`]`(vec![...])` (block-diagonal joint posterior over the concatenated outputs), [`ModelListGP::posterior_at`] |
+//! | `ExactMarginalLogLikelihood` of a batched model, `SumMarginalLogLikelihood` | [`BatchedMultiOutputGP::mll_values`] (one value per element of `_aug_batch_shape`), [`BatchedMultiOutputGP::mll_values_and_grad`], [`ModelListGP::mll_values`] |
+//! | `botorch.models.model.Model` (what acquisition functions use) | the [`Model`] trait, implemented by [`SingleTaskGP`], [`BatchedMultiOutputGP`] and [`ModelListGP`] (unbatched) and [`acquisition::ScalarizedModel`]; joint multi-output posteriors with input derivatives: [`Model::joint_posterior_with_grad`], [`Model::joint_posterior_vjp`], [`Model::point_posteriors`], [`Model::point_posterior_with_grad`] |
 //! | `model.named_parameters()` | [`SingleTaskGP::hyperparameters`], [`SingleTaskGP::set_hyperparameters`], [`SingleTaskGP::raw_parameters`], [`SingleTaskGP::parameter_names`] |
 //! | `model.train_inputs`, `model.train_targets` | [`SingleTaskGP::train_inputs`], [`SingleTaskGP::train_targets`] (original space), [`SingleTaskGP::transformed_train_inputs`], [`SingleTaskGP::transformed_train_targets`] |
 //! | `model.likelihood.noise` | [`SingleTaskGP::likelihood_noise`] |
 //! | `ExactMarginalLogLikelihood(likelihood, model)` | [`ExactMarginalLogLikelihood::new`]`(&model)`, `.value()`, `.value_and_grad(&raw_params)` |
-//! | `fit_gpytorch_mll(mll)` | [`fit_gpytorch_mll`]`(&mut model, `[`FitOptions::default()`](FitOptions)`) -> `[`FitResult`] |
+//! | `fit_gpytorch_mll(mll)` | [`fit_gpytorch_mll`]`(&mut model, `[`FitOptions::default()`](FitOptions)`)` for any [`Fittable`] model: [`FitResult`] for a [`SingleTaskGP`], [`BatchedFitResult`] (per-element fits) for a [`BatchedMultiOutputGP`], `Vec<BatchedFitResult>` for a [`ModelListGP`] |
 //! | `ExpectedImprovement(model, best_f, maximize=...)`, `LogExpectedImprovement`, `ProbabilityOfImprovement`, `LogProbabilityOfImprovement` | [`acquisition::ExpectedImprovement::new`]`(model, best_f, maximize)`, [`acquisition::LogExpectedImprovement`], [`acquisition::ProbabilityOfImprovement`], [`acquisition::LogProbabilityOfImprovement`] |
 //! | `UpperConfidenceBound(model, beta, maximize=...)`, `PosteriorMean`, `PosteriorStandardDeviation` | [`acquisition::UpperConfidenceBound::new`]`(model, beta, maximize)`, [`acquisition::PosteriorMean`], [`acquisition::PosteriorStandardDeviation`] |
 //! | `qExpectedImprovement(model, best_f, sampler, X_pending=...)`, `qProbabilityOfImprovement(..., tau)`, `qUpperConfidenceBound(model, beta, ...)`, `qSimpleRegret` | [`acquisition::QExpectedImprovement::new`]`(model, best_f, `[`acquisition::McAcquisitionOptions`]` { sampler, x_pending })`, [`acquisition::QProbabilityOfImprovement`], [`acquisition::QUpperConfidenceBound`], [`acquisition::QSimpleRegret`] |
 //! | `qLogExpectedImprovement(model, best_f, sampler, X_pending, fat, tau_max, tau_relu)` | [`acquisition::QLogExpectedImprovement::new`]`(model, best_f, `[`acquisition::QLogExpectedImprovementOptions`]`)` |
 //! | `qLogNoisyExpectedImprovement(model, X_baseline, sampler, X_pending, prune_baseline, incremental, ...)` | [`acquisition::QLogNoisyExpectedImprovement::new`]`(model, &x_baseline, `[`acquisition::QLogNoisyExpectedImprovementOptions`]`)` |
+//! | `ScalarizedPosteriorTransform(weights, offset)`; `posterior_transform=...` of any acquisition function | [`acquisition::ScalarizedPosteriorTransform::new`]`(weights, offset)`; the acquisition function is given [`acquisition::ScalarizedModel::wrap`]`(model, Some(transform))` |
+//! | `LogConstrainedExpectedImprovement(model, best_f, objective_index, constraints, maximize)`, `ConstrainedExpectedImprovement` | [`acquisition::LogConstrainedExpectedImprovement::new`]`(model, best_f, objective_index, constraints, maximize)` with `constraints: Vec<(output, lower, upper)>` (`None`: unbounded), [`acquisition::ConstrainedExpectedImprovement`] |
 //! | `acqf(X)`, `torch.autograd.grad(acqf(X), X)`, `acqf(X_batch)` | [`AcquisitionFunction::forward`]`(&x)`, [`AcquisitionFunction::forward_with_grad`]`(&x) -> (value, grad)`, [`AcquisitionFunction::forward_many`]`(&[x])` (parallel) |
 //! | `acqf.set_X_pending(X_pending)` | [`AcquisitionFunction::set_x_pending`]`(Some(&x_pending))` |
 //! | `prune_inferior_points(model, X, num_samples, max_frac, sampler)` | [`acquisition::prune_inferior_points`]`(&*model, &x, &`[`acquisition::PruneOptions`]`)` |
@@ -139,12 +151,46 @@
 //! *Test functions* (`tests/test_functions_parity.rs`, 28 configurations):
 //! values, bounds, optima and optimizers agree to 3e-16.
 //!
+//! *Multi-output, batched and list models* (13 configurations: `m` = 1, 2, 3;
+//! batch shapes `3`, `2`, `2 × 2`; shared, per-batch and explicit `Normalize`;
+//! fixed noise; legacy Gamma priors; three `ModelListGP`s;
+//! `tests/multi_output_parity.rs`): hyperparameter layouts, MLL values and
+//! gradients per element, joint posteriors (with and without observation
+//! noise, batched and broadcast inputs) and their input derivatives agree to
+//! at most 5e-14. Fitting reaches BoTorch's final loss of every output and
+//! batch element (largest excess 5.5e-13) with the same number of L-BFGS-B
+//! iterations in all 36 elements. Analytic, MC and qLogNEI acquisition
+//! functions with a `ScalarizedPosteriorTransform` agree to 4e-13 (values) and
+//! 6e-13 (gradients), `prune_inferior_points` selects the same points, and
+//! both variants of the constrained expected improvement agree to 4e-12.
+//! `tests/multi_output_gradients.rs` checks the new gradients against central
+//! finite differences.
+//!
 //! ## Scope and known differences
 //!
-//! * Single-output `SingleTaskGP` only (an error is returned for `m > 1`);
-//!   RBF and Matérn-5/2 ARD kernels with optional `ScaleKernel`; LogNormal and
-//!   Gamma priors; homoskedastic and fixed-noise Gaussian likelihoods;
-//!   `Normalize` (all dimensions, `center = 0.5`) and `Standardize`.
+//! * `SingleTaskGP` (single output), [`BatchedMultiOutputGP`] (`m ≥ 1`
+//!   independent outputs, any batch shape) and [`ModelListGP`]; RBF and
+//!   Matérn-5/2 ARD kernels with optional `ScaleKernel`; LogNormal and Gamma
+//!   priors; homoskedastic and fixed-noise Gaussian likelihoods; `Normalize`
+//!   (all dimensions, `center = 0.5`) and `Standardize`.
+//! * The outputs and batch elements of a [`BatchedMultiOutputGP`] have
+//!   independent hyperparameters (BoTorch's default modules with
+//!   `batch_shape = _aug_batch_shape`); modules shared by all outputs are not
+//!   supported (BoTorch's batched fitting cannot fit them either). A
+//!   per-batch `Normalize` of a batched model with several outputs applies
+//!   each batch element's bounds to all of its outputs (BoTorch broadcasts the
+//!   per-batch bounds against the output dimension instead). Acquisition
+//!   functions require unbatched models.
+//! * Batched fits run one L-BFGS-B problem per element like BoTorch's
+//!   `fmin_l_bfgs_b_batched` (without a `maxfun` limit); a failed element is
+//!   retried on its own from prior samples (BoTorch accepts an abnormal
+//!   termination of an element and restarts all elements after a numerical
+//!   error).
+//! * [`ModelListGP`] posteriors are the exact block-diagonal concatenation of
+//!   the sub-model posteriors. BoTorch (with linear_operator 0.6.1) mixes up
+//!   the covariance blocks of multi-output sub-models in some configurations
+//!   and fails to scalarize them for `q > 1`; the fixtures evaluate these
+//!   code paths with dense covariances.
 //! * `SingleTaskGPOptions::use_scale_kernel` wraps the default kernel in a
 //!   `ScaleKernel` with BoTorch's legacy `GammaPrior(2.0, 0.15)` outputscale
 //!   prior; use [`kernels::get_matern_kernel_with_gamma_prior`] for BoTorch's
@@ -155,13 +201,14 @@
 //!   [`optim::OptimizeAcqfResult::warnings`].
 //! * `fit_gpytorch_mll` retries failed attempts from prior samples like
 //!   BoTorch, but with its own seeded random number generator.
-//! * Acquisition functions take `best_f`, `beta` and `tau` as exact `f64`
-//!   values. BoTorch stores Python floats passed for these arguments as float32
-//!   tensors (torch's default dtype), i.e. rounded to about 7 digits; the
-//!   values here equal BoTorch's when float64 tensors are passed (as with the
-//!   common `best_f=train_Y.max()`).
-//! * No `objective`, `posterior_transform` or outcome `constraints` for the
-//!   acquisition functions; qLogNEI implements the plain (`cache_root=False`)
+//! * Acquisition functions take `best_f`, `beta`, `tau` and constraint
+//!   bounds as exact `f64` values. BoTorch stores Python floats passed for
+//!   these arguments as float32 tensors (torch's default dtype), i.e. rounded
+//!   to about 7 digits; the values here equal BoTorch's when float64 tensors
+//!   are passed (as with the common `best_f=train_Y.max()`).
+//! * Posterior transforms are limited to `ScalarizedPosteriorTransform`; no
+//!   MC `objective` or outcome `constraints` for the MC acquisition
+//!   functions. qLogNEI implements the plain (`cache_root=False`)
 //!   computation, which equals BoTorch's default `cache_root=True` given the
 //!   same effective base samples (see
 //!   [`acquisition::QLogNoisyExpectedImprovement`]).

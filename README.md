@@ -61,7 +61,7 @@ balances compatibility and performance:
 
 - **Essentially the same API.** Module paths, class names, argument names,
   order and defaults follow BoTorch. Where botorch-rs cannot honor an
-  argument (an `objective`, `posterior_transform`, outcome `constraints`,
+  argument (an `objective`, outcome `constraints` of MC acquisition functions,
   linear constraints in `optimize_acqf`, ...) it raises
   `botorch_rs.exceptions.UnsupportedError`, a `NotImplementedError`, instead
   of silently ignoring it.
@@ -69,10 +69,11 @@ balances compatibility and performance:
   identical data and hyperparameters give identical posteriors, marginal
   likelihoods and acquisition values to about 1e-10 (see
   [Accuracy](#accuracy-and-parity-with-botorch)).
-- **Not a complete replacement.** botorch-rs covers the core of single-output
-  Bayesian optimization with GPs. BoTorch remains the place for multi-output
-  and multi-fidelity models, custom objectives, knowledge gradient and
-  entropy-based acquisition functions, GPUs, and everything built on autograd.
+- **Not a complete replacement.** botorch-rs covers the core of Bayesian
+  optimization with independent GPs (single- and multi-output, batched, model
+  lists). BoTorch remains the place for multi-task and multi-fidelity models,
+  custom objectives, knowledge gradient and entropy-based acquisition
+  functions, GPUs, and everything built on autograd.
 
 ## Installation
 
@@ -165,18 +166,21 @@ counterpart.
 
 | BoTorch / GPyTorch | botorch_rs | Notes |
 |---|---|---|
-| `botorch.models.SingleTaskGP` | `botorch_rs.models.SingleTaskGP` | single output (`n x d` inputs, `n x 1` targets); inferred noise or fixed `train_Yvar`; `posterior` (`mean`, `variance`, `distribution.covariance_matrix`, `rsample`, `observation_noise=True`), `train_inputs`, `train_targets`, `named_parameters`, `initialize`, `likelihood.noise`, `covar_module.lengthscale`, ... |
-| `botorch.models.transforms.Normalize`, `Standardize` | `botorch_rs.models.transforms.Normalize`, `Standardize` | learned or fixed bounds over all inputs, `center=0.5` |
+| `botorch.models.SingleTaskGP` | `botorch_rs.models.SingleTaskGP` | `batch_shape x n x d` inputs and `batch_shape x n x m` targets (`m ≥ 1` independent outputs, any batch shape: independent hyperparameters per output and batch element, BoTorch's `_aug_batch_shape`); inferred noise or fixed `train_Yvar`; `posterior(X, output_indices, observation_noise, posterior_transform)` with BoTorch's shapes (`mean`/`variance` `batch x q x m`, `MultitaskMultivariateNormal` covariance `batch x qm x qm` in BoTorch's output-major layout, batch broadcasting, `rsample`, `rsample_from_base_samples`), `train_inputs`, `train_targets`, `named_parameters`, `initialize`, `likelihood.noise`, `covar_module.lengthscale`, ... |
+| `botorch.models.ModelListGP` | `botorch_rs.models.ModelListGP` | independent single- or multi-output `SingleTaskGP`s with different training data; block-diagonal joint posterior over the concatenated outputs, `output_indices`, `posterior_transform`, `likelihood` (`LikelihoodList`), `named_parameters` |
+| `botorch.models.transforms.Normalize`, `Standardize` | `botorch_rs.models.transforms.Normalize`, `Standardize` | learned or fixed bounds over all inputs, `center=0.5`; `Standardize(m, batch_shape)`, `Normalize(d, batch_shape)` / batched bounds (single-output batched models) |
 | `botorch.models.utils.gpytorch_modules.*` | `botorch_rs.models.utils.gpytorch_modules.*` | BoTorch's default (dimension-scaled LogNormal) and legacy (Gamma) priors |
 | `gpytorch.kernels.RBFKernel`, `MaternKernel(nu=2.5)`, `ScaleKernel` | `botorch_rs.kernels.*` | ARD kernels |
 | `gpytorch.priors.LogNormalPrior`, `GammaPrior` | `botorch_rs.priors.*` | |
 | `gpytorch.constraints.GreaterThan`, `Positive` | `botorch_rs.constraints.*` | softplus or no transform |
 | `gpytorch.likelihoods.GaussianLikelihood`, `gpytorch.means.ConstantMean` | `botorch_rs.likelihoods.*`, `botorch_rs.means.*` | |
-| `gpytorch.mlls.ExactMarginalLogLikelihood` | `botorch_rs.mlls.ExactMarginalLogLikelihood` | `mll()` evaluates it on the training data |
-| `botorch.fit.fit_gpytorch_mll` | `botorch_rs.fit.fit_gpytorch_mll` | L-BFGS-B (port of L-BFGS-B 3.0 reproducing SciPy's iterates), retries from prior samples, `optimizer_kwargs={"options": {...}}`, `max_attempts` |
-| `ExpectedImprovement`, `LogExpectedImprovement`, `ProbabilityOfImprovement`, `LogProbabilityOfImprovement`, `UpperConfidenceBound`, `PosteriorMean`, `PosteriorStandardDeviation` | `botorch_rs.acquisition.*` | analytic, `q = 1`, `maximize` |
-| `qExpectedImprovement`, `qProbabilityOfImprovement`, `qUpperConfidenceBound`, `qSimpleRegret`, `qLogExpectedImprovement`, `qLogNoisyExpectedImprovement` | `botorch_rs.acquisition.*` | any `q`, `X_pending` / `set_X_pending`, baseline pruning, `incremental`, `fat`, `tau_max`, `tau_relu` |
-| `botorch.acquisition.utils.prune_inferior_points` | same path | |
+| `gpytorch.mlls.ExactMarginalLogLikelihood`, `SumMarginalLogLikelihood` | `botorch_rs.mlls.*` | `mll()` evaluates it on the training data (one value per output and batch element; the sum over a `ModelListGP`'s sub-models divided by their number) |
+| `botorch.fit.fit_gpytorch_mll` | `botorch_rs.fit.fit_gpytorch_mll` | L-BFGS-B (port of L-BFGS-B 3.0 reproducing SciPy's iterates), retries from prior samples, `optimizer_kwargs={"options": {...}}`, `max_attempts`; multi-output and batched models are fitted per element like BoTorch's batched independent fitting, `ModelListGP`s per sub-model |
+| `ExpectedImprovement`, `LogExpectedImprovement`, `ProbabilityOfImprovement`, `LogProbabilityOfImprovement`, `UpperConfidenceBound`, `PosteriorMean`, `PosteriorStandardDeviation` | `botorch_rs.acquisition.*` | analytic, `q = 1`, `maximize`, `posterior_transform` |
+| `LogConstrainedExpectedImprovement`, `ConstrainedExpectedImprovement` | `botorch_rs.acquisition.*` | analytic, `objective_index`, `constraints={i: (lower, upper)}` (`None`: unbounded), `maximize` |
+| `qExpectedImprovement`, `qProbabilityOfImprovement`, `qUpperConfidenceBound`, `qSimpleRegret`, `qLogExpectedImprovement`, `qLogNoisyExpectedImprovement` | `botorch_rs.acquisition.*` | any `q`, `X_pending` / `set_X_pending`, baseline pruning, `incremental`, `fat`, `tau_max`, `tau_relu`, `posterior_transform` |
+| `botorch.acquisition.objective.ScalarizedPosteriorTransform` | same path | `weights`, `offset`; `evaluate`, `posterior_transform(posterior)`; accepted by `model.posterior`, all acquisition functions and `prune_inferior_points` |
+| `botorch.acquisition.utils.prune_inferior_points` | same path | `posterior_transform` |
 | `acqf(X)`, `torch.autograd.grad(acqf(X), X)` | same | exact gradients computed in Rust; `acqf.value_and_grad(X)` for NumPy and lists |
 | `botorch.sampling.SobolQMCNormalSampler` | `botorch_rs.sampling.SobolQMCNormalSampler` | explicit `base_samples` supported |
 | `botorch.optim.optimize_acqf` | `botorch_rs.optim.optimize_acqf` | box bounds, `fixed_features`, `batch_initial_conditions`, `sequential`, `return_best_only`, `options` (`seed`, `batch_limit`, `init_batch_limit`, `eta`, `alpha`, `nonnegative`, `maxiter`, `maxfun`, `ftol`, `gtol`, `maxcor`, `maxls`) |
@@ -184,19 +188,20 @@ counterpart.
 | `botorch.test_functions.*` | `botorch_rs.test_functions.*` | Ackley, Beale, Branin, Bukin, Cosine8, DixonPrice, DropWave, EggHolder, Griewank, Hartmann, HolderTable, Levy, Michalewicz, Powell, Rastrigin, Rosenbrock, Shekel, SixHumpCamel, StyblinskiTang, ThreeHumpCamel |
 | `botorch.exceptions` | `botorch_rs.exceptions` | `BotorchRsError` hierarchy (also `ValueError`, `RuntimeError`, `NotImplementedError` subclasses) and BoTorch's warnings |
 
-Not available: multi-output, batched and other model classes (`ModelListGP`,
-`MultiTaskGP`, ...), `condition_on_observations` / `fantasize`, objectives,
-posterior transforms and outcome constraints, input transforms other than
-`Normalize`, other acquisition functions (knowledge gradient, entropy search,
-multi-objective), linear and nonlinear constraints and custom
-`gen_candidates` in `optimize_acqf`, and GPU execution.
+Not available: other model classes (`MultiTaskGP`, ...),
+`condition_on_observations` / `fantasize`, MC objectives and outcome
+constraints of MC acquisition functions, posterior transforms other than
+`ScalarizedPosteriorTransform`, input transforms other than `Normalize`, other
+acquisition functions (knowledge gradient, entropy search, multi-objective),
+linear and nonlinear constraints and custom `gen_candidates` in
+`optimize_acqf`, and GPU execution.
 
 ## Accuracy and parity with BoTorch
 
 Correctness is defined by agreement with BoTorch. `scripts/generate_fixtures.py`
 records reference values from BoTorch for the Rust tests, and the Python tests
-compare against BoTorch directly (`botorch_pyo3/tests/test_parity.py`, run in
-CI against the released BoTorch):
+compare against BoTorch directly (`botorch_pyo3/tests/test_parity.py` and
+`test_parity_multi_output.py`, run in CI against the released BoTorch):
 
 | Quantity | Tolerance (relative) | Observed, Rust fixtures | Observed, Python API |
 |---|---|---|---|
@@ -212,6 +217,10 @@ CI against the released BoTorch):
 | MC acquisition gradients | 1e-10 / 1e-8 | ≤ 3e-11 | ≤ 2e-14 |
 | `prune_inferior_points` | identical selection | identical | identical |
 | Synthetic test functions | 1e-12 | ≤ 3e-16 | ≤ 1e-14 |
+| Multi-output, batched and `ModelListGP` models: MLL values and gradients, joint posteriors (batched and broadcast inputs, observation noise) and their input derivatives, samples from base samples | 1e-10 / 1e-9 | ≤ 5e-14 | ≤ 3e-14 |
+| Acquisition values with a `ScalarizedPosteriorTransform` (analytic, MC, qLogNEI) | 1e-10 / 1e-9 | ≤ 4e-13 | ≤ 3e-13 |
+| Acquisition gradients with a `ScalarizedPosteriorTransform` | 1e-10 / 1e-8 | ≤ 6e-13 | ≤ 3e-11 |
+| `LogConstrainedExpectedImprovement`, `ConstrainedExpectedImprovement` values and gradients | 1e-10 / 1e-9 | ≤ 4e-12 | ≤ 9e-14 |
 
 Gradient errors are relative to the largest gradient component. The Rust
 fixtures cover 17 GP configurations (d ∈ {1, 2, 5}, n ∈ {1, …, 20}, RBF and
@@ -220,6 +229,13 @@ with and without `Standardize`, legacy Gamma priors, degenerate data) and
 three acquisition models; the Python tests cover eight model configurations,
 including custom kernels and priors built from `botorch_rs.kernels` and
 `botorch_rs.priors`.
+
+The multi-output fixtures (`--phase 4`) cover 13 configurations (`m` = 1, 2,
+3; batch shapes `3`, `2`, `2 x 2`; shared, per-batch and explicit `Normalize`;
+fixed noise; legacy Gamma priors; three `ModelListGP`s), and
+`test_parity_multi_output.py` compares a seeded grid of 15 model
+configurations with BoTorch through the Python API (the worst error per
+quantity is printed in the pytest summary).
 
 Monte-Carlo acquisition functions are compared with identical base samples.
 Fitting reaches BoTorch's final loss (required: no worse than BoTorch's +
@@ -230,7 +246,10 @@ likelihood surfaces, L-BFGS-B's relative-reduction stopping rule can end at
 points that differ by round-off along long trajectories (up to ~2e-6 in the
 loss on BO-loop data); in those cases BoTorch's own optimizer, restarted from
 botorch-rs' solution, makes no further progress (checked along the BO loop of
-`test_bo_loop.py`). `optimize_acqf` reaches BoTorch's best acquisition value
+`test_bo_loop.py`). Multi-output and batched models reach BoTorch's final loss
+of every output and batch element (largest excess 5.5e-13 on the fixtures, 1e-10
+through the Python API), with the same iteration counts for all 36 fitted
+fixture elements. `optimize_acqf` reaches BoTorch's best acquisition value
 on fixed models (LogEI and qLogEI on Hartmann-6), and started from BoTorch's
 initial conditions it reproduces BoTorch's optimized candidates to about
 1e-15.
@@ -293,10 +312,31 @@ LogEI one optimization takes about a millisecond either way.
   a seed derived from its sampler's seed, so whole BO loops are reproducible.
   `posterior.rsample` and test-function noise do use the caller's library
   (torch, NumPy) random number generator.
-- **Python floats.** `best_f`, `beta` and `tau` are used as exact float64
-  values; BoTorch stores Python floats passed for them in float32 (torch's
-  default dtype). Pass float64 tensors (e.g. `best_f=train_Y.max()`) to
-  BoTorch for bit-comparable results.
+- **Python floats.** `best_f`, `beta`, `tau` and the bounds of the
+  constrained EI are used as exact float64 values; BoTorch stores Python
+  floats passed for them in float32 (torch's default dtype). Pass float64
+  tensors (e.g. `best_f=train_Y.max()`) to BoTorch for bit-comparable results.
+- **Multi-output and batched models.** Hyperparameters are independent per
+  output and batch element (BoTorch's default modules with `batch_shape =
+  _aug_batch_shape`); custom modules must have that batch shape, and modules
+  shared by all outputs raise `UnsupportedError` (BoTorch's batched fitting
+  cannot fit them either). Fitting runs one L-BFGS-B problem per element like
+  BoTorch's `fmin_l_bfgs_b_batched` (without a `maxfun` limit; passing
+  `maxfun` warns, as in BoTorch); a failed element is retried on its own from
+  prior samples, whereas BoTorch accepts an abnormal termination of an element
+  and restarts all elements after a numerical error. A `Normalize` with a
+  batch shape is only supported for single-output batched models: for several
+  outputs BoTorch broadcasts the per-batch bounds against the output
+  dimension. `output_indices` of a multi-output `SingleTaskGP` select outputs
+  (BoTorch fails for proper subsets). Acquisition functions require unbatched
+  models.
+- **`ModelListGP` posteriors** are the block-diagonal concatenation of the
+  sub-model posteriors. With linear_operator 0.6.1, BoTorch's own result
+  mixes up the covariance blocks of multi-output sub-models in some
+  configurations (`BlockDiagLinearOperator` slicing in `separate_mtmvn`), and
+  its posterior transforms fail for `q > 1` (block indexing in
+  `scalarize_posterior`); the parity references evaluate these BoTorch code
+  paths with dense covariances.
 - **Model snapshots.** An acquisition function uses the model as it is when
   the acquisition function is created; after refitting a model, create a new
   acquisition function (the usual BO-loop pattern).
@@ -338,8 +378,9 @@ The Python parity tests run when BoTorch is importable; to test against a
 source checkout put it first on the path (`PYTHONPATH=/path/to/botorch:botorch_pyo3/python`).
 `python scripts/generate_fixtures.py` regenerates the Rust parity fixtures
 (`--phase 1` for the GP core, `--phase 2` for acquisition functions,
-optimization and test functions), and `python scripts/benchmark.py` measures
-the timings above. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+optimization and test functions, `--phase 4` for multi-output, batched and
+list models, posterior transforms and constrained EI), and
+`python scripts/benchmark.py` measures the timings above. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## License
 
