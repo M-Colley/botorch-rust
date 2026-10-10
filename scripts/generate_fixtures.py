@@ -38,9 +38,22 @@ acquisition values and gradients with a ``ScalarizedPosteriorTransform``
 (analytic, MC with explicit base samples, qLogNEI, ``prune_inferior_points``) and
 of ``LogConstrainedExpectedImprovement`` / ``ConstrainedExpectedImprovement``.
 
+Phase 4B (``<out>/phase4b/*.json``): for unbatched multi-output, single-output
+and ``ModelListGP`` models, posterior samples from explicit multi-output base
+samples, MC acquisition values and gradients with MC objectives (linear,
+generic, constrained) and outcome constraints (qEI, qPI, qSR, qUCB, qLogEI,
+qLogPF, qLogNEI with feasibility-weighted incumbents, including partly
+infeasible baselines with recorded lower-bound points),
+``prune_inferior_points`` with objectives and constraints and
+``get_infeasible_cost``; constrained candidate generation
+(``gen_candidates_scipy`` with SLSQP from fixed initial conditions and
+``optimize_acqf`` over several seeds, linear / equality / inter-point /
+nonlinear / fixed-feature constraints) and moments of hit-and-run polytope
+samples.
+
 Usage (from the repository root, with BoTorch, GPyTorch and PyTorch installed)::
 
-    python scripts/generate_fixtures.py [--out botorch_core/tests/fixtures] [--phase 1|2|4|all]
+    python scripts/generate_fixtures.py [--out botorch_core/tests/fixtures] [--phase 1|2|4|4b|all]
 
 To use a source checkout of BoTorch, put it first on the path, e.g.
 ``PYTHONPATH=/path/to/botorch python -P scripts/generate_fixtures.py``.
@@ -1554,6 +1567,663 @@ def generate_phase4(out: str) -> None:
         print(f"{case['name']:44s} {summary}", file=sys.stderr)
 
 
+# ---------------------------------------------------------------------------
+# Phase 4B: multi-output MC sampling, MC objectives, outcome constraints,
+# constrained acquisition optimization and polytope sampling
+# ---------------------------------------------------------------------------
+# Written to <out>/phase4b/. The model cases reuse the phase-4 builders
+# (explicit per-element hyperparameters). Objectives and constraints are
+# given by small specifications that the Rust tests rebuild exactly:
+#
+#   objective:  {"type": "linear", "weights": [...]}
+#               {"type": "quadratic", "a": [...], "b": [...], "c": c}
+#                   (c + sum_t a_t y_t + sum_t b_t y_t^2, a GenericMCObjective)
+#               {"type": "constrained", "objective": <quadratic spec>,
+#                "constraints": [...], "infeasible_cost": M, "eta": [...]}
+#   constraint: {"type": "linear", "weights": [...], "offset": c}
+#               {"type": "quadratic", "a": [...], "b": [...], "c": c}
+#               {"type": "probability", "index": t, "scale": s, "shift": h}
+#                   (sigmoid(s (y_t - h)), used with fat=None)
+#
+# Every MC acquisition value is computed with explicitly recorded base
+# samples of BoTorch's multi-output layout (S x N x m, flattened to
+# S x (N m)), and checked not to have been replaced by the sampler.
+
+PHASE4B_CASES = [
+    dict(name="mc_m2_rbf_d2_n12", kind="single_task", models=[dict(d=2, n=12, m=2)]),
+    dict(
+        name="mc_m3_matern_d3_n15_normalize",
+        kind="single_task",
+        models=[dict(d=3, n=15, m=3, covar="matern", normalize="shared", x_range=(-2.0, 3.0))],
+    ),
+    dict(name="mc_m1_rbf_d2_n10", kind="single_task", models=[dict(d=2, n=10, m=1)]),
+    dict(
+        name="mc_list_two_single_d2",
+        kind="model_list",
+        models=[dict(d=2, n=10, m=1), dict(d=2, n=7, m=1, normalize="shared", seed_offset=1)],
+    ),
+    dict(
+        name="mc_list_mixed_d3",
+        kind="model_list",
+        models=[dict(d=3, n=12, m=2, covar="matern"), dict(d=3, n=9, m=1, yvar=True, seed_offset=2)],
+    ),
+]
+
+P4B_MC_SAMPLES = 32
+P4B_PRUNE_SAMPLES = 128
+
+
+def p4b_objective_value(spec: dict, Y):
+    """The objective of a specification on samples ``Y`` (``... x m``)."""
+    t = spec["type"]
+    if t == "linear":
+        return (Y * torch.tensor(spec["weights"], dtype=DTYPE)).sum(-1)
+    if t == "quadratic":
+        a = torch.tensor(spec["a"], dtype=DTYPE)
+        b = torch.tensor(spec["b"], dtype=DTYPE)
+        return spec["c"] + (Y * a).sum(-1) + (Y * Y * b).sum(-1)
+    raise ValueError(t)
+
+
+def p4b_constraint(spec: dict):
+    t = spec["type"]
+    if t == "linear":
+        w = torch.tensor(spec["weights"], dtype=DTYPE)
+        return lambda Y: (Y * w).sum(-1) + spec["offset"]
+    if t == "quadratic":
+        return lambda Y: p4b_objective_value(spec, Y)
+    if t == "probability":
+        return lambda Y: torch.sigmoid(spec["scale"] * (Y[..., spec["index"]] - spec["shift"]))
+    raise ValueError(t)
+
+
+def p4b_objective(spec):
+    """The BoTorch MC objective of a specification (None for None)."""
+    from botorch.acquisition.objective import (
+        ConstrainedMCObjective,
+        GenericMCObjective,
+        LinearMCObjective,
+    )
+
+    if spec is None:
+        return None
+    t = spec["type"]
+    if t == "linear":
+        return LinearMCObjective(torch.tensor(spec["weights"], dtype=DTYPE))
+    if t == "quadratic":
+        return GenericMCObjective(lambda Y, X=None: p4b_objective_value(spec, Y))
+    if t == "constrained":
+        inner = spec["objective"]
+        return ConstrainedMCObjective(
+            objective=lambda Y, X=None: p4b_objective_value(inner, Y),
+            constraints=[p4b_constraint(c) for c in spec["constraints"]],
+            infeasible_cost=torch.tensor(spec["infeasible_cost"], dtype=DTYPE),
+            eta=torch.tensor(spec["eta"], dtype=DTYPE),
+        )
+    raise ValueError(t)
+
+
+def _sampler_mo(Z, n_points: int, m: int):
+    """A sampler with explicit multi-output base samples (``S x (N m)``, BoTorch's
+    ``S x N x m`` flattened)."""
+    from botorch.sampling.normal import SobolQMCNormalSampler
+
+    S = Z.shape[0]
+    sampler = SobolQMCNormalSampler(sample_shape=torch.Size([S]), seed=0)
+    if m == 1:
+        sampler.base_samples = Z.view(S, 1, n_points).clone()
+    else:
+        sampler.base_samples = Z.view(S, 1, n_points, m).clone()
+    return sampler
+
+
+def _check_base(sampler, Z):
+    assert torch.equal(sampler.base_samples.reshape(Z.shape[0], -1), Z), "base samples were replaced"
+
+
+class _PatchedLowerBound:
+    """Context manager making BoTorch's ``_estimate_objective_lower_bound`` use
+    given points instead of ``torch.rand`` draws."""
+
+    def __init__(self, points):
+        self.points = points
+
+    def __enter__(self):
+        import botorch.acquisition.utils as au
+
+        self._au = au
+        self._orig = au._estimate_objective_lower_bound
+        points = self.points
+
+        def patched(model, objective, posterior_transform, X):
+            return -au.get_infeasible_cost(
+                X=points, model=model, objective=objective, posterior_transform=posterior_transform
+            )
+
+        au._estimate_objective_lower_bound = patched
+        return self
+
+    def __exit__(self, *exc):
+        self._au._estimate_objective_lower_bound = self._orig
+        return False
+
+
+def p4b_specs(model, Xtest):
+    """Objective and constraint specifications adapted to a model's posterior
+    at the test points (thresholds near the medians so that feasibility is
+    mixed)."""
+    m = model.num_outputs
+    with torch.no_grad():
+        post = model.posterior(Xtest.unsqueeze(-2))
+    means = post.mean.squeeze(-2)  # n x m
+    sds = post.variance.squeeze(-2).sqrt()
+    med = means.median(dim=0).values
+    sd = sds.mean(dim=0)
+    last = m - 1
+    e_last = [0.0] * m
+    e_last[last] = 1.0
+    w = [0.7, -0.4, 0.3][:m] if m > 1 else [-1.3]
+    linear = {"type": "linear", "weights": w}
+    quadratic = {
+        "type": "quadratic",
+        "a": [1.0, -0.5, 0.25][:m],
+        "b": [-0.3, 0.2, -0.1][:m],
+        "c": 0.1,
+    }
+    # Feasible iff y_last <= median (+ shift).
+    c_lin = {"type": "linear", "weights": e_last, "offset": -float(med[last])}
+    c_loose = {"type": "linear", "weights": e_last, "offset": -float(med[last] + 3.0 * sd[last])}
+    c_tight = {"type": "linear", "weights": e_last, "offset": -float(means[:, last].min() - 0.5 * sd[last])}
+    first = 0
+    c_quad = {
+        "type": "quadratic",
+        "a": [0.0] * m,
+        "b": [1.0 if t == first else 0.0 for t in range(m)],
+        "c": -float(med[first] ** 2 + sd[first] ** 2),
+    }
+    c_prob = {"type": "probability", "index": first, "scale": 2.0, "shift": float(med[first])}
+    # Never feasible (slack well above zero) but varying with y_last.
+    c_impossible = {
+        "type": "linear",
+        "weights": [-v for v in e_last],
+        "offset": float(means[:, last].max() + 10.0 * sd[last]),
+    }
+    constrained = {
+        "type": "constrained",
+        "objective": quadratic,
+        "constraints": [c_lin],
+        "infeasible_cost": 2.5,
+        "eta": [0.1],
+    }
+    return {
+        "linear": linear,
+        "quadratic": quadratic,
+        "constrained": constrained,
+        "c_lin": c_lin,
+        "c_loose": c_loose,
+        "c_tight": c_tight,
+        "c_quad": c_quad,
+        "c_prob": c_prob,
+        "c_impossible": c_impossible,
+    }
+
+
+def p4b_best_f(model, spec, Xtest):
+    """A reference incumbent: the best objective value of the posterior mean."""
+    with torch.no_grad():
+        mean = model.posterior(Xtest.unsqueeze(-2)).mean.squeeze(-2)
+    if spec is None:
+        v = mean.squeeze(-1)
+    else:
+        v = p4b_objective_value(spec["objective"] if spec["type"] == "constrained" else spec, mean)
+    return float(v.max() - 0.3 * v.std())
+
+
+def p4b_mc(model, Xtest, specs, seed: int, dense):
+    """MC acquisition values and gradients with objectives and constraints."""
+    from botorch.acquisition.logei import qLogExpectedImprovement, qLogProbabilityOfFeasibility
+    from botorch.acquisition.monte_carlo import (
+        qExpectedImprovement,
+        qProbabilityOfImprovement,
+        qSimpleRegret,
+        qUpperConfidenceBound,
+    )
+
+    m = model.num_outputs
+    pending = Xtest[[3, 4]]
+    obj_specs = [specs["linear"], specs["quadratic"]] + ([None] if m == 1 else [])
+    out = []
+    for q, n_p in ((1, 0), (2, 0), (2, 2)):
+        Xq = Xtest[[5, 0][:q]]
+        N = q + n_p
+        Z = _normal_samples(N * m, P4B_MC_SAMPLES, seed=seed + 10 * q + n_p)
+        results = []
+
+        def run(name, cls, objective_spec, constraint_specs=None, eta=None, **kw):
+            sampler = _sampler_mo(Z, N, m)
+            extra = {}
+            if constraint_specs is not None:
+                extra["constraints"] = [p4b_constraint(c) for c in constraint_specs]
+                extra["eta"] = torch.tensor(eta, dtype=DTYPE)
+            with dense():
+                acqf = cls(
+                    model,
+                    sampler=sampler,
+                    objective=p4b_objective(objective_spec),
+                    X_pending=pending if n_p else None,
+                    **extra,
+                    **kw,
+                )
+                v, g = _grad_eval(acqf, Xq)
+            _check_base(sampler, Z)
+            entry = {
+                "acqf": name,
+                "objective": objective_spec,
+                "constraints": constraint_specs,
+                "eta": eta,
+                "value": v,
+                "grad": g,
+            }
+            for k, val in kw.items():
+                entry[k] = val.item() if isinstance(val, torch.Tensor) else val
+            results.append(entry)
+
+        for spec in obj_specs + [specs["constrained"]]:
+            best_f = torch.tensor(p4b_best_f(model, spec, Xtest), dtype=DTYPE)
+            run("qExpectedImprovement", qExpectedImprovement, spec, best_f=best_f)
+            run("qProbabilityOfImprovement", qProbabilityOfImprovement, spec, best_f=best_f,
+                tau=torch.tensor(0.1, dtype=DTYPE))
+            run("qSimpleRegret", qSimpleRegret, spec)
+            run("qUpperConfidenceBound", qUpperConfidenceBound, spec, beta=0.2)
+            if spec is None or spec["type"] != "constrained":
+                run("qLogExpectedImprovement", qLogExpectedImprovement, spec, best_f=best_f)
+                run("qLogExpectedImprovement", qLogExpectedImprovement, spec, best_f=best_f, fat=False)
+        # Outcome constraints.
+        spec = specs["linear"] if m > 1 else None
+        best_f = torch.tensor(p4b_best_f(model, spec, Xtest), dtype=DTYPE)
+        for cons, eta in (([specs["c_lin"]], [0.05]), ([specs["c_lin"], specs["c_quad"]], [0.05, 0.2])):
+            run("qExpectedImprovement", qExpectedImprovement, spec, cons, eta, best_f=best_f)
+            run("qProbabilityOfImprovement", qProbabilityOfImprovement, spec, cons, eta, best_f=best_f,
+                tau=torch.tensor(0.1, dtype=DTYPE))
+            run("qLogExpectedImprovement", qLogExpectedImprovement, spec, cons, eta, best_f=best_f)
+            run("qLogExpectedImprovement", qLogExpectedImprovement, spec, cons, eta, best_f=best_f, fat=False)
+            sampler = _sampler_mo(Z, N, m)
+            with dense():
+                pf = qLogProbabilityOfFeasibility(
+                    model,
+                    constraints=[p4b_constraint(c) for c in cons],
+                    sampler=sampler,
+                    X_pending=pending if n_p else None,
+                    eta=torch.tensor(eta, dtype=DTYPE),
+                )
+                v, g = _grad_eval(pf, Xq)
+            _check_base(sampler, Z)
+            results.append({"acqf": "qLogProbabilityOfFeasibility", "objective": None, "constraints": cons,
+                            "eta": eta, "value": v, "grad": g})
+        # A probability constraint (fat=None) next to a fat-tailed one.
+        cons = [specs["c_lin"], specs["c_prob"]]
+        sampler = _sampler_mo(Z, N, m)
+        with dense():
+            acqf = qLogExpectedImprovement(
+                model, best_f=best_f, sampler=sampler, objective=p4b_objective(spec),
+                X_pending=pending if n_p else None,
+                constraints=[p4b_constraint(c) for c in cons], eta=torch.tensor([0.05, 0.05], dtype=DTYPE),
+                fat=[True, None],
+            )
+            v, g = _grad_eval(acqf, Xq)
+        _check_base(sampler, Z)
+        results.append({"acqf": "qLogExpectedImprovement", "objective": spec, "constraints": cons,
+                        "eta": [0.05, 0.05], "fat_list": [True, None], "best_f": best_f.item(),
+                        "value": v, "grad": g})
+        out.append({"q": q, "x": tolist(Xq), "x_pending": tolist(pending) if n_p else None,
+                    "base_samples": tolist(Z), "results": results})
+    return out
+
+
+def p4b_nei(model, Xtest, Xbase, specs, seed: int, dense):
+    """qLogNEI with objectives and constraints (feasible and partly infeasible
+    baselines; for the latter BoTorch's lower bound uses recorded points)."""
+    from botorch.acquisition.logei import qLogNoisyExpectedImprovement
+
+    m = model.num_outputs
+    pending = Xtest[[3, 4]]
+    d = Xbase.shape[-1]
+    g = torch.Generator().manual_seed(seed + 77)
+    lo, hi = Xbase.min(dim=0).values, Xbase.max(dim=0).values
+    lb_points = lo + (hi - lo) * torch.rand(32, d, generator=g, dtype=DTYPE)
+    spec = specs["linear"] if m > 1 else None
+    out = []
+    configs = [
+        (None, None, 1, 0, True),
+        ([specs["c_loose"]], [0.05], 2, 2, True),
+        ([specs["c_lin"]], [0.05], 2, 2, False),
+        ([specs["c_tight"], specs["c_quad"]], [0.05, 0.2], 1, 2, True),
+    ]
+    if m > 1:
+        configs.append((None, None, 2, 0, True))
+    for k, (cons, eta, q, n_p, incremental) in enumerate(configs):
+        objective = specs["quadratic"] if (m > 1 and k == len(configs) - 1) else spec
+        N = Xbase.shape[0] + n_p + q
+        Z = _normal_samples(N * m, P4B_MC_SAMPLES, seed=seed + 100 + k)
+        sampler = _sampler_mo(Z, N, m)
+        extra = {}
+        if cons is not None:
+            extra["constraints"] = [p4b_constraint(c) for c in cons]
+            extra["eta"] = torch.tensor(eta, dtype=DTYPE)
+        Xq = Xtest[[5, 0][:q]]
+        with dense(), _PatchedLowerBound(lb_points):
+            acqf = qLogNoisyExpectedImprovement(
+                model, X_baseline=Xbase, sampler=sampler, objective=p4b_objective(objective),
+                X_pending=pending if n_p else None, prune_baseline=False, cache_root=False,
+                incremental=incremental, **extra,
+            )
+            v, gr = _grad_eval(acqf, Xq)
+            # Whether some sample had no feasible baseline point.
+            from botorch.utils.objective import compute_feasibility_indicator
+
+            infeasible_samples = 0
+            if cons is not None:
+                feas = compute_feasibility_indicator(extra["constraints"], acqf.baseline_samples)
+                infeasible_samples = int((~feas.any(dim=-1)).sum())
+        _check_base(sampler, Z)
+        out.append({"q": q, "x": tolist(Xq), "x_pending": tolist(pending) if n_p else None,
+                    "incremental": incremental, "objective": objective, "constraints": cons, "eta": eta,
+                    "base_samples": tolist(Z), "value": v, "grad": gr,
+                    "infeasible_samples": infeasible_samples})
+    return {"lower_bound_points": tolist(lb_points), "cases": out}
+
+
+def p4b_prune(model, Xtest, Xbase, specs, seed: int, dense):
+    from botorch.acquisition.utils import get_infeasible_cost, prune_inferior_points
+    from botorch.sampling.normal import SobolQMCNormalSampler
+
+    m = model.num_outputs
+    Xp = torch.cat([Xbase, Xtest], dim=0)
+    spec = specs["linear"] if m > 1 else None
+    out = []
+    impossible = specs["c_impossible"]  # never feasible
+    for k, cons in enumerate((None, [specs["c_lin"]], [specs["c_tight"], specs["c_quad"]], [impossible])):
+        for objective in ([spec, specs["quadratic"]] if k < 2 else [spec]):
+            sampler = SobolQMCNormalSampler(sample_shape=torch.Size([P4B_PRUNE_SAMPLES]), seed=seed % 1000 + k)
+            with dense():
+                pruned = prune_inferior_points(
+                    model, Xp, objective=p4b_objective(objective),
+                    constraints=None if cons is None else [p4b_constraint(c) for c in cons],
+                    sampler=sampler,
+                )
+            Zp = sampler.base_samples.reshape(P4B_PRUNE_SAMPLES, -1).clone()
+            idx = [int(torch.nonzero((Xp == row).all(dim=-1))[0]) for row in pruned]
+            out.append({"objective": objective, "constraints": cons, "base_samples": tolist(Zp),
+                        "indices": idx})
+    # get_infeasible_cost at fixed points.
+    g = torch.Generator().manual_seed(seed + 5)
+    d = Xbase.shape[-1]
+    Xc = Xbase.min(dim=0).values + (Xbase.max(dim=0).values - Xbase.min(dim=0).values) * torch.rand(
+        16, d, generator=g, dtype=DTYPE
+    )
+    costs = []
+    for objective in [spec, specs["quadratic"]]:
+        with dense():
+            mcost = get_infeasible_cost(X=Xc, model=model, objective=p4b_objective(objective))
+        costs.append({"objective": objective, "value": float(mcost.reshape(-1)[0])})
+    return {"x": tolist(Xp), "cases": out, "infeasible_cost_x": tolist(Xc), "infeasible_cost": costs}
+
+
+def p4b_samples(model, Xtest, seed: int, dense):
+    """Posterior samples from explicit multi-output base samples."""
+    X = Xtest[[5, 0, 2]]
+    with dense(), torch.no_grad():
+        post = model.posterior(X)
+        g = torch.Generator().manual_seed(seed + 3)
+        Z = torch.randn(8, *post.base_sample_shape, generator=g, dtype=DTYPE)
+        S = post.rsample_from_base_samples(torch.Size([8]), Z)
+    return {"x": tolist(X), "base_samples": tolist(Z.reshape(8, -1)), "samples": tolist(S.reshape(8, -1))}
+
+
+def p4b_generate_case(case: dict, seed: int) -> dict:
+    import contextlib
+
+    from botorch.models import ModelListGP
+
+    is_list = case["kind"] == "model_list"
+    subs = []
+    models_out = []
+    data = []
+    for cfg in case["models"]:
+        X, Y, Yvar, bounds = p4_make_data(cfg, seed + 17 * cfg.get("seed_offset", 0))
+        data.append((X, Y, Yvar, bounds))
+        sub = p4_build_model(cfg, X, Y, Yvar, bounds)
+        n_el = int(torch.Size(p4_aug_shape(cfg)).numel())
+        raw = p4_set_values(sub, n_el, cfg["d"])
+        set_flat_params(sub, raw)
+        subs.append(sub)
+        config = {
+            "d": cfg["d"], "n": cfg["n"], "m": cfg["m"], "batch_shape": [],
+            "covar": cfg.get("covar", "rbf"), "likelihood": cfg.get("likelihood", "default"),
+            "yvar": bool(cfg.get("yvar", False)), "normalize": cfg.get("normalize"),
+            "outcome": cfg.get("outcome", "standardize"),
+            "bounds": None if bounds is None else tolist(bounds),
+        }
+        models_out.append({
+            "config": config,
+            "train_x": [tolist(X)],
+            "train_y": [tolist(Y)],
+            "train_yvar": None if Yvar is None else [tolist(Yvar)],
+            "raw_params": raw,
+        })
+    model = ModelListGP(*subs) if is_list else subs[0]
+    model.eval()
+    d = case["models"][0]["d"]
+    lo, hi = case["models"][0].get("x_range", (0.0, 1.0))
+    g = torch.Generator().manual_seed(seed + 999)
+    Xtest = lo + (hi - lo) * torch.rand(5, d, generator=g, dtype=DTYPE)
+    Xtest = torch.cat([Xtest, torch.full((1, d), hi + 0.25 * (hi - lo), dtype=DTYPE)], dim=0)
+    dense = (lambda: _DenseSeparateMTMVN()) if is_list else contextlib.nullcontext
+    with dense():
+        specs = p4b_specs(model, Xtest)
+    Xbase = data[0][0]
+    return {
+        "name": case["name"],
+        "kind": case["kind"],
+        "versions": {
+            "botorch": botorch.__version__,
+            "botorch_revision": botorch_revision(),
+            "gpytorch": gpytorch.__version__,
+            "torch": torch.__version__,
+        },
+        "models": models_out,
+        "test_x": tolist(Xtest),
+        "baseline_x": tolist(Xbase),
+        "samples": p4b_samples(model, Xtest, seed, dense),
+        "mc": p4b_mc(model, Xtest, specs, seed, dense),
+        "nei": p4b_nei(model, Xtest, Xbase, specs, seed, dense),
+        "prune": p4b_prune(model, Xtest, Xbase, specs, seed, dense),
+    }
+
+
+def p4b_optimize_fixture() -> dict:
+    """Constrained acquisition optimization on a fixed-hyperparameter Hartmann-3
+    model: SLSQP from fixed initial conditions (``gen_candidates_scipy``,
+    restarts optimized jointly as in BoTorch) and ``optimize_acqf`` over several
+    seeds, for linear inequality, equality, inter-point, nonlinear and
+    fixed-feature constraints."""
+    from botorch.acquisition.analytic import LogExpectedImprovement
+    from botorch.acquisition.logei import qLogExpectedImprovement
+    from botorch.generation.gen import gen_candidates_scipy
+    from botorch.optim.initializers import gen_batch_initial_conditions
+    from botorch.optim.optimize import optimize_acqf
+    from botorch.test_functions.synthetic import Hartmann
+    from botorch.utils.sampling import draw_sobol_samples
+
+    d = 3
+    bounds = torch.stack([torch.zeros(d, dtype=DTYPE), torch.ones(d, dtype=DTYPE)])
+    X = draw_sobol_samples(bounds=bounds, n=15, q=1, seed=3).squeeze(-2)
+    Y = -Hartmann(dim=d)(X, noise=False).unsqueeze(-1)
+    model = SingleTaskGP(X, Y)
+    raw = set_values(model, d)
+    set_flat_params(model, raw)
+    model.eval()
+    best_f = Y.max()
+    logei = LogExpectedImprovement(model, best_f=best_f)
+    Z = _normal_samples(2, 64, seed=21)
+    qlogei = qLogExpectedImprovement(model, best_f=best_f, sampler=_sampler_with(Z))
+
+    def ball(x):  # 0.35^2 - ||x - 0.4||^2 >= 0
+        return 0.35**2 - ((x - 0.4) ** 2).sum(-1)
+
+    def separation(x):  # ||x_0 - x_1||^2 - 0.15 >= 0 (inter-point)
+        return ((x[0] - x[1]) ** 2).sum(-1) - 0.15
+
+    sum_le = (torch.tensor([0, 1, 2]), torch.tensor([-1.0, -1.0, -1.0], dtype=DTYPE), -1.2)
+    eq = (torch.tensor([0, 2]), torch.tensor([1.0, -1.0], dtype=DTYPE), 0.1)
+    inter = (torch.tensor([[0, 0], [1, 0]]), torch.tensor([1.0, -1.0], dtype=DTYPE), 0.2)
+    cases = [
+        dict(name="linear_ineq", acqf="logei", q=1, ineq=[sum_le]),
+        dict(name="linear_eq_ineq", acqf="logei", q=1, ineq=[sum_le], eq=[eq]),
+        dict(name="inter_point_q2", acqf="qlogei", q=2, ineq=[inter, (*sum_le[:2], -1.5)]),
+        dict(name="fixed_linear", acqf="logei", q=1, ineq=[sum_le], fixed={1: 0.25}),
+        dict(name="nonlinear_ball", acqf="logei", q=1, nonlinear=[("ball", True)]),
+        dict(name="nonlinear_interpoint_q2", acqf="qlogei", q=2, nonlinear=[("separation", False)],
+             ineq=[sum_le]),
+    ]
+    functions = {"ball": ball, "separation": separation}
+
+    def ser(cs):
+        return [[tolist(i), tolist(c), float(r)] for i, c, r in cs]
+
+    out = []
+    for case in cases:
+        acqf = logei if case["acqf"] == "logei" else qlogei
+        q = case["q"]
+        ineq = case.get("ineq")
+        eqc = case.get("eq")
+        nl = [(functions[n], intra) for n, intra in case.get("nonlinear", [])] or None
+        fixed = case.get("fixed")
+        b = 1 if nl else 4
+        # Fixed initial conditions from the constraint polytope (feasible for the
+        # linear constraints); for the ball, one feasible and one infeasible start.
+        ics = gen_batch_initial_conditions(
+            acqf, bounds, q=q, num_restarts=4, raw_samples=64, options={"seed": 0},
+            inequality_constraints=ineq, equality_constraints=eqc, fixed_features=fixed,
+        )
+        if nl is not None and case["name"] == "nonlinear_ball":
+            ics = torch.tensor([[[0.45, 0.5, 0.35]], [[0.9, 0.9, 0.1]]], dtype=DTYPE)
+        gens = []
+        for start in range(0, ics.shape[0], b):
+            chunk = ics[start:start + b]
+            cands, vals = gen_candidates_scipy(
+                chunk, acqf, lower_bounds=bounds[0], upper_bounds=bounds[1],
+                inequality_constraints=ineq, equality_constraints=eqc,
+                nonlinear_inequality_constraints=nl, fixed_features=fixed,
+            )
+            gens.append({"initial_conditions": tolist(chunk), "candidates": tolist(cands),
+                         "values": tolist(vals.reshape(-1))})
+        runs = []
+        for s in range(5):
+            kwargs = dict(
+                inequality_constraints=ineq, equality_constraints=eqc,
+                nonlinear_inequality_constraints=nl, fixed_features=fixed,
+            )
+            if nl is not None:
+                kwargs["ic_generator"] = gen_batch_initial_conditions
+            torch.manual_seed(s)
+            c, v = optimize_acqf(acqf, bounds, q=q, num_restarts=4, raw_samples=64,
+                                 options={"seed": s}, **kwargs)
+            runs.append({"seed": s, "candidates": tolist(c), "value": float(v.reshape(-1)[0])})
+        out.append({
+            "name": case["name"], "acqf": case["acqf"], "q": q,
+            "inequality_constraints": ser(ineq or []), "equality_constraints": ser(eqc or []),
+            "nonlinear": case.get("nonlinear", []),
+            "fixed_features": {str(k): v for k, v in (fixed or {}).items()},
+            "gen_candidates": gens, "optimize_acqf": runs,
+        })
+    return {
+        "versions": {
+            "botorch": botorch.__version__,
+            "botorch_revision": botorch_revision(),
+            "gpytorch": gpytorch.__version__,
+            "torch": torch.__version__,
+        },
+        "train_x": tolist(X), "train_y": tolist(Y), "raw_params": raw, "best_f": best_f.item(),
+        "qlogei_base_samples": tolist(Z),
+        "cases": out,
+    }
+
+
+def p4b_polytope_fixture() -> dict:
+    """Moments of BoTorch's hit-and-run polytope samples (compared
+    statistically) and interior points of polytopes with a unique
+    maximal-slack point."""
+    from botorch.optim.initializers import sample_q_batches_from_polytope
+    from botorch.utils.sampling import find_interior_point, get_polytope_samples
+
+    cases = []
+    bounds = torch.tensor([[0.0, -1.0, 2.0], [2.0, 1.0, 5.0]], dtype=DTYPE)
+    ineq = [(torch.tensor([0, 1]), torch.tensor([1.0, 1.0], dtype=DTYPE), 0.5),
+            (torch.tensor([0, 2]), torch.tensor([-1.0, -0.5], dtype=DTYPE), -3.5)]
+    eq = [(torch.tensor([0, 1, 2]), torch.tensor([1.0, 1.0, 1.0], dtype=DTYPE), 4.0)]
+    for name, iq, ec in (("ineq", ineq, None), ("ineq_eq", ineq, eq), ("eq", None, eq)):
+        x = get_polytope_samples(n=4000, bounds=bounds, inequality_constraints=iq, equality_constraints=ec,
+                                 seed=0, n_burnin=2000, n_thinning=10)
+        cases.append({"name": name, "bounds": tolist(bounds),
+                      "inequality_constraints": [[tolist(i), tolist(c), float(r)] for i, c, r in (iq or [])],
+                      "equality_constraints": [[tolist(i), tolist(c), float(r)] for i, c, r in (ec or [])],
+                      "n": 4000, "mean": tolist(x.mean(dim=0)), "covariance": tolist(torch.cov(x.T)),
+                      "min": tolist(x.min(dim=0).values), "max": tolist(x.max(dim=0).values)})
+    # Inter-point constraints: q-batches of the 2-d unit square with x[0, 0] - x[1, 0] >= 0.2.
+    b2 = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=DTYPE)
+    inter = [(torch.tensor([[0, 0], [1, 0]]), torch.tensor([1.0, -1.0], dtype=DTYPE), 0.2)]
+    xq = sample_q_batches_from_polytope(n=3000, q=2, bounds=b2, n_burnin=2000, n_thinning=5, seed=1,
+                                        inequality_constraints=inter)
+    flat = xq.reshape(3000, -1)
+    cases.append({"name": "inter_point_q2", "bounds": tolist(b2), "q": 2,
+                  "inequality_constraints": [[tolist(i), tolist(c), float(r)] for i, c, r in inter],
+                  "equality_constraints": [], "n": 3000, "mean": tolist(flat.mean(dim=0)),
+                  "covariance": tolist(torch.cov(flat.T)), "min": tolist(flat.min(dim=0).values),
+                  "max": tolist(flat.max(dim=0).values)})
+    # Interior points (unique maximal-slack points).
+    import numpy as np
+
+    interiors = []
+    for A, bb in (
+        (np.array([[-1.0, 0.0], [0.0, -1.0], [1.0, 0.0], [0.0, 1.0]]), np.array([0.0, 0.0, 1.0, 1.0])),
+        (np.array([[-1.0, 0.0], [0.0, -1.0], [1.0, 1.0]]), np.array([0.0, 0.0, 1.0])),
+    ):
+        x0 = find_interior_point(A=A, b=bb.reshape(-1, 1))
+        interiors.append({"a": A.tolist(), "b": bb.tolist(), "x": x0.tolist()})
+    return {
+        "versions": {
+            "botorch": botorch.__version__,
+            "botorch_revision": botorch_revision(),
+            "gpytorch": gpytorch.__version__,
+            "torch": torch.__version__,
+        },
+        "cases": cases,
+        "interior_points": interiors,
+    }
+
+
+def generate_phase4b(out: str) -> None:
+    out = os.path.join(out, "phase4b")
+    os.makedirs(out, exist_ok=True)
+    for i, case in enumerate(PHASE4B_CASES):
+        fixture = p4b_generate_case(case, seed=4500 + 41 * i)
+        _write_json(os.path.join(out, f"{case['name']}.json"), fixture)
+        nei = fixture["nei"]["cases"]
+        print(
+            f"{case['name']:36s} mc={sum(len(c['results']) for c in fixture['mc'])} "
+            f"nei infeasible samples={[c['infeasible_samples'] for c in nei]} "
+            f"prune={[len(c['indices']) for c in fixture['prune']['cases']]}",
+            file=sys.stderr,
+        )
+    opt = p4b_optimize_fixture()
+    _write_json(os.path.join(out, "optimize_constrained.json"), opt)
+    for c in opt["cases"]:
+        print(f"{c['name']:28s} optimize_acqf values: "
+              + ", ".join(f"{r['value']:.6f}" for r in c["optimize_acqf"]), file=sys.stderr)
+    _write_json(os.path.join(out, "polytope.json"), p4b_polytope_fixture())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     default_out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "botorch_core", "tests", "fixtures")
@@ -1561,11 +2231,12 @@ def main() -> None:
     parser.add_argument("--only", nargs="*", help="only generate these (phase 1) case names")
     parser.add_argument(
         "--phase",
-        choices=["1", "2", "4", "all"],
+        choices=["1", "2", "4", "4b", "all"],
         default="all",
         help=(
             "1: GP fixtures, 2: acquisition / optimization / test-function fixtures, "
-            "4: multi-output, batched and ModelListGP models, posterior transforms, constrained EI"
+            "4: multi-output, batched and ModelListGP models, posterior transforms, constrained EI, "
+            "4b: MC objectives, outcome constraints, constrained optimize_acqf, polytope sampling"
         ),
     )
     args = parser.parse_args()
@@ -1591,6 +2262,8 @@ def main() -> None:
         generate_phase2(args.out)
     if args.phase in ("4", "all"):
         generate_phase4(args.out)
+    if args.phase in ("4b", "all"):
+        generate_phase4b(args.out)
 
 
 if __name__ == "__main__":
