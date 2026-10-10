@@ -321,15 +321,8 @@ pub fn optimize_acqf_detailed(
         }
     }
     check_fixed_features(&options.fixed_features, bounds)?;
-    let sequential = options.sequential && q > 1;
-    options
-        .constraints
-        .validate(if sequential { 1 } else { q }, d)?;
-    if options.method == OptimizationMethod::Lbfgsb && !options.constraints.is_empty() {
-        return Err(BotorchError::InvalidArgument(
-            "Method L-BFGS-B cannot handle constraints.".into(),
-        ));
-    }
+    // BoTorch's order of checks: initial conditions, sequential optimization,
+    // then the constraints themselves.
     if !options.constraints.nonlinear.is_empty()
         && options.batch_initial_conditions.is_none()
         && options.ic_generator.is_none()
@@ -344,6 +337,18 @@ pub fn optimize_acqf_detailed(
     {
         return Err(BotorchError::InvalidArgument(
             "Must specify `raw_samples` when `batch_initial_conditions` is None`.".into(),
+        ));
+    }
+    let sequential = options.sequential && q > 1;
+    if sequential {
+        options.constraints.validate_sequential()?;
+    }
+    options
+        .constraints
+        .validate(if sequential { 1 } else { q }, d)?;
+    if options.method == OptimizationMethod::Lbfgsb && !options.constraints.is_empty() {
+        return Err(BotorchError::InvalidArgument(
+            "Method L-BFGS-B cannot handle constraints.".into(),
         ));
     }
     let seed = options.seed.unwrap_or_else(random_seed);
@@ -380,7 +385,6 @@ pub fn optimize_acqf_detailed(
     }
 
     // Sequential greedy optimization via pending points.
-    options.constraints.validate_sequential()?;
     if options.batch_initial_conditions.is_some() {
         return Err(BotorchError::Unsupported(
             "`batch_initial_conditions` is not supported for sequential optimization. Either \
