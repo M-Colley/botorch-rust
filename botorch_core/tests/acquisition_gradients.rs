@@ -182,6 +182,7 @@ fn mc_gradients_match_finite_differences() {
             let opts = || McAcquisitionOptions {
                 sampler: sampler(7),
                 x_pending: pending.clone(),
+                ..Default::default()
             };
             let logei = |fat: bool, bf: f64| {
                 QLogExpectedImprovement::new(

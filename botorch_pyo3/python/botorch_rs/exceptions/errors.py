@@ -50,10 +50,27 @@ class ModelFittingError(BotorchRsError, RuntimeError):
     """All attempts to fit a model failed."""
 
 
+class BotorchRuntimeError(BotorchRsError, RuntimeError):
+    """A runtime failure that BoTorch reports with a plain ``RuntimeError``
+    (e.g. objective values of the wrong shape)."""
+
+
+class CandidateGenerationError(BotorchRsError):
+    """Candidate generation failed, e.g. the optimizer produced infeasible
+    candidates."""
+
+
+class InfeasibilityError(BotorchRsError, ValueError):
+    """A set of constraints is infeasible (e.g. an empty polytope)."""
+
+
 __all__ = [
     "BotorchError",
     "BotorchRsError",
+    "BotorchRuntimeError",
     "BotorchTensorDimensionError",
+    "CandidateGenerationError",
+    "InfeasibilityError",
     "InputDataError",
     "InvalidArgumentError",
     "ModelFittingError",

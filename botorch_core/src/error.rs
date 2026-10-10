@@ -43,6 +43,18 @@ pub enum BotorchError {
     /// All model fitting attempts failed (BoTorch `ModelFittingError`).
     #[error("model fitting failed: {0}")]
     ModelFitting(String),
+    /// A runtime failure that BoTorch reports with a plain `RuntimeError`,
+    /// e.g. objective values of the wrong shape.
+    #[error("{0}")]
+    Runtime(String),
+    /// Candidate generation failed, e.g. the optimizer produced infeasible
+    /// candidates (BoTorch `CandidateGenerationError`).
+    #[error("{0}")]
+    CandidateGeneration(String),
+    /// A constraint set is infeasible, e.g. an empty polytope (BoTorch
+    /// `InfeasibilityError`).
+    #[error("{0}")]
+    Infeasibility(String),
 }
 
 /// Convenience alias for `Result<T, BotorchError>`.

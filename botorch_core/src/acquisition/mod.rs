@@ -12,16 +12,24 @@
 //!   `LogConstrainedExpectedImprovement`, `ConstrainedExpectedImprovement`
 //!   (`q = 1`).
 //! * [`monte_carlo`] — `qExpectedImprovement`, `qProbabilityOfImprovement`,
-//!   `qUpperConfidenceBound`, `qSimpleRegret` (any `q`, pending points).
-//! * [`logei`] — `qLogExpectedImprovement`, `qLogNoisyExpectedImprovement`.
+//!   `qUpperConfidenceBound`, `qSimpleRegret` (any `q`, pending points, MC
+//!   objectives, outcome constraints).
+//! * [`logei`] — `qLogExpectedImprovement`, `qLogNoisyExpectedImprovement`,
+//!   `qLogProbabilityOfFeasibility`.
 //! * [`objective`] — `ScalarizedPosteriorTransform`; acquisition functions
 //!   evaluate a model through a posterior transform when given a
 //!   [`ScalarizedModel`] (see [`ScalarizedModel::wrap`]).
-//! * [`utils`] — `prune_inferior_points`.
+//! * [`mc_objective`] — MC objectives (`IdentityMCObjective`,
+//!   `LinearMCObjective`, `GenericMCObjective`, `ConstrainedMCObjective`) on
+//!   posterior samples ([`McSamples`]); outcome constraints live in
+//!   [`crate::utils::objective`].
+//! * [`utils`] — `prune_inferior_points`, `compute_best_feasible_objective`,
+//!   `get_infeasible_cost`.
 //!
 //! Acquisition functions require unbatched models; multi-output models need
-//! a posterior transform (except for the constrained analytic acquisition
-//! functions, which read several outputs).
+//! a posterior transform or (for the MC acquisition functions) an MC
+//! objective, except for the constrained analytic acquisition functions and
+//! `qLogProbabilityOfFeasibility`, which read several outputs.
 //!
 //! Acquisition functions hold their model as an `Arc<dyn Model>` and are
 //! `Send + Sync`; pending points are stored behind a lock so that
@@ -39,6 +47,7 @@ use crate::Matrix;
 
 pub mod analytic;
 pub mod logei;
+pub mod mc_objective;
 pub mod monte_carlo;
 pub mod objective;
 pub mod utils;
@@ -50,14 +59,22 @@ pub use analytic::{
 };
 pub use logei::{
     QLogExpectedImprovement, QLogExpectedImprovementOptions, QLogNoisyExpectedImprovement,
-    QLogNoisyExpectedImprovementOptions,
+    QLogNoisyExpectedImprovementOptions, QLogProbabilityOfFeasibility,
+    QLogProbabilityOfFeasibilityOptions,
+};
+pub use mc_objective::{
+    ConstrainedMcObjective, GenericMcObjective, IdentityMcObjective, LinearMcObjective,
+    McObjective, McSamples, SamplePullback, SampleValues,
 };
 pub use monte_carlo::{
     McAcquisitionOptions, QExpectedImprovement, QProbabilityOfImprovement, QSimpleRegret,
     QUpperConfidenceBound,
 };
 pub use objective::{ScalarizedModel, ScalarizedPosteriorTransform};
-pub use utils::{prune_inferior_points, prune_inferior_points_indices, PruneOptions};
+pub use utils::{
+    compute_best_feasible_objective, estimate_objective_lower_bound, get_infeasible_cost,
+    prune_inferior_points, prune_inferior_points_indices, PruneOptions,
+};
 
 /// An acquisition function `α(X)` over candidate sets `X` (`q × d`, raw input
 /// space), to be maximized (BoTorch's `AcquisitionFunction`).

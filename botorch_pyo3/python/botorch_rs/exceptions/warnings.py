@@ -29,6 +29,10 @@ class UserInputWarning(BotorchWarning):
     """A potentially problematic argument value."""
 
 
+class SamplingWarning(BotorchWarning):
+    """A sampling-related issue (e.g. i.i.d. instead of quasi-random samples)."""
+
+
 _LEGACY_TO_LOGEI = {
     "ExpectedImprovement": "LogExpectedImprovement",
     "ConstrainedExpectedImprovement": "LogConstrainedExpectedImprovement",
@@ -56,6 +60,7 @@ __all__ = [
     "InputDataWarning",
     "NumericsWarning",
     "OptimizationWarning",
+    "SamplingWarning",
     "UserInputWarning",
     "legacy_ei_numerics_warning",
 ]

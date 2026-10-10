@@ -696,6 +696,7 @@ fn mc_acqf(
     let opts = McAcquisitionOptions {
         sampler: sampler_from(base),
         x_pending: pending.clone(),
+        ..Default::default()
     };
     match c.acqf.as_str() {
         "qExpectedImprovement" => {

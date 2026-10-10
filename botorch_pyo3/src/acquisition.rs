@@ -188,6 +188,7 @@ impl PyAcquisitionFunction {
         let options = McAcquisitionOptions {
             sampler: sampler.clone(),
             x_pending: x_pending.clone(),
+            ..Default::default()
         };
         let best_f = || require(best_f, "best_f", name);
         let inner: Arc<dyn AcquisitionFunction> = match name {
@@ -207,6 +208,7 @@ impl PyAcquisitionFunction {
                         fat,
                         tau_max,
                         tau_relu,
+                        ..Default::default()
                     },
                 )
                 .into_py_result()?,
@@ -316,11 +318,12 @@ impl PyAcquisitionFunction {
                 num_samples: prune_num_samples,
                 max_frac: prune_max_frac,
                 seed: prune_seed,
-                base_samples: None,
+                ..Default::default()
             },
             tau_max,
             tau_relu,
             incremental,
+            ..Default::default()
         };
         let acqf = threads::run(py, || {
             QLogNoisyExpectedImprovement::new(m, &x_baseline, options)
@@ -441,6 +444,7 @@ pub fn prune_inferior_points_py(
         max_frac,
         seed,
         base_samples: base_samples.map(|z| z.matrix("base_samples")).transpose()?,
+        ..Default::default()
     };
     let pruned =
         threads::run(py, || prune_inferior_points(m.as_ref(), &x, &options)).into_py_result()?;

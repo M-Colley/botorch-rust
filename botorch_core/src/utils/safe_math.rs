@@ -89,6 +89,13 @@ pub fn logexpit(x: f64) -> f64 {
     -log1pexp(-x)
 }
 
+/// Derivative of [`logexpit`], `σ(-x)`, evaluated per branch of
+/// [`log1pexp`] like PyTorch's autograd.
+#[inline]
+pub fn logexpit_grad(x: f64) -> f64 {
+    log1pexp_grad(-x)
+}
+
 /// The logistic sigmoid `1 / (1 + exp(-x))` (`torch.sigmoid`).
 #[inline]
 pub fn sigmoid(x: f64) -> f64 {
@@ -387,6 +394,19 @@ pub fn log_fatmoid(x: f64, tau: f64) -> f64 {
     fatmoid(x, tau).ln()
 }
 
+/// [`log_fatmoid`] and its derivative with respect to `x`.
+pub fn log_fatmoid_with_grad(x: f64, tau: f64) -> (f64, f64) {
+    let y = x / tau;
+    let (f, df) = if y < 0.0 {
+        let z = y - INV_SQRT_3;
+        (2.0 / 3.0 * cauchy(z), 2.0 / 3.0 * cauchy_grad(z))
+    } else {
+        let z = y + INV_SQRT_3;
+        (1.0 - 2.0 / 3.0 * cauchy(z), -(2.0 / 3.0 * cauchy_grad(z)))
+    };
+    (f.ln(), df / f / tau)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,5 +517,14 @@ mod tests {
         assert!(close(fatmoid(0.0, 1.0), 0.5, 1e-15));
         assert!(fatmoid(-1e3, 1.0) > 0.0 && fatmoid(1e3, 1.0) < 1.0);
         assert!(close(log_fatmoid(2.0, 1.0), fatmoid(2.0, 1.0).ln(), 1e-15));
+        for &x in &[-40.0, -2.0, -1e-3, 0.0, 0.7, 30.0] {
+            for &tau in &[1.0, 1e-3] {
+                let (v, g) = log_fatmoid_with_grad(x * tau, tau);
+                assert_eq!(v, log_fatmoid(x * tau, tau));
+                let fdg = fd(|t| log_fatmoid(t, tau), x * tau, tau);
+                assert!(close(g, fdg, 1e-6), "log_fatmoid' at {x}: {g} vs {fdg}");
+            }
+            assert!(close(logexpit_grad(x), fd(logexpit, x, 1.0), 1e-6), "{x}");
+        }
     }
 }

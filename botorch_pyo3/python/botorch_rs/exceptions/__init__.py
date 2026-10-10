@@ -3,7 +3,10 @@
 from botorch_rs.exceptions.errors import (
     BotorchError,
     BotorchRsError,
+    BotorchRuntimeError,
     BotorchTensorDimensionError,
+    CandidateGenerationError,
+    InfeasibilityError,
     InputDataError,
     InvalidArgumentError,
     ModelFittingError,
@@ -18,6 +21,7 @@ from botorch_rs.exceptions.warnings import (
     InputDataWarning,
     NumericsWarning,
     OptimizationWarning,
+    SamplingWarning,
     UserInputWarning,
 )
 
@@ -25,8 +29,11 @@ __all__ = [
     "BadInitialCandidatesWarning",
     "BotorchError",
     "BotorchRsError",
+    "BotorchRuntimeError",
     "BotorchTensorDimensionError",
     "BotorchWarning",
+    "CandidateGenerationError",
+    "InfeasibilityError",
     "InputDataError",
     "InputDataWarning",
     "InvalidArgumentError",
@@ -36,6 +43,7 @@ __all__ = [
     "NumericalError",
     "NumericsWarning",
     "OptimizationWarning",
+    "SamplingWarning",
     "UnsupportedError",
     "UserInputWarning",
 ]

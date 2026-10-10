@@ -43,6 +43,11 @@ pub fn to_pyerr(e: BotorchError) -> PyErr {
         e @ BotorchError::Nan { .. } => raise("NanError", PyRuntimeError::new_err, e.to_string()),
         BotorchError::Numerical(msg) => raise("NumericalError", PyRuntimeError::new_err, msg),
         BotorchError::ModelFitting(msg) => raise("ModelFittingError", PyRuntimeError::new_err, msg),
+        BotorchError::Runtime(msg) => raise("BotorchRuntimeError", PyRuntimeError::new_err, msg),
+        BotorchError::CandidateGeneration(msg) => {
+            raise("CandidateGenerationError", PyRuntimeError::new_err, msg)
+        }
+        BotorchError::Infeasibility(msg) => raise("InfeasibilityError", PyValueError::new_err, msg),
     }
 }
 

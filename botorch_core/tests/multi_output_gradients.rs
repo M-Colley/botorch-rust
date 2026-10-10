@@ -234,6 +234,7 @@ fn scalarized_acquisition_gradients_match_finite_differences() {
         let opts = || McAcquisitionOptions {
             sampler: sampler(3),
             x_pending: Some(points(2, 40)),
+            ..Default::default()
         };
         let mc: Acqfs = vec![
             (
