@@ -20,7 +20,8 @@ Tasks (all on the 6-dimensional Hartmann function, negated for maximization):
 
 Every task is timed with one thread (``torch.set_num_threads(1)``,
 ``botorch_rs.set_num_threads(1)``) and with each library's default number of
-threads; the median over repeated runs is reported, after one warm-up run.
+threads; the median over runs with different seeds is reported, after one
+warm-up run (fast tasks are repeated within a run until it takes 0.2 s).
 ``--json`` also writes all runs, the result values and the environment, the
 input of ``scripts/plot_benchmarks.py``.
 
@@ -252,14 +253,23 @@ def tasks(lib: Library) -> list[Task]:
     return out
 
 
-def time_task(fn: Callable[[int], float], repeats: int) -> tuple[list[float], list[float]]:
-    """Wall times and result values of ``repeats`` runs, after a warm-up run."""
+def time_task(
+    fn: Callable[[int], float], repeats: int, min_time: float = 0.2
+) -> tuple[list[float], list[float]]:
+    """Wall times per call and result values of ``repeats`` runs (seeds 0, 1,
+    ...), after a warm-up run. Like ``timeit``, a run of a fast task calls it
+    repeatedly with the same seed until the run takes at least ``min_time``
+    seconds, and reports the mean time per call."""
+    t = time.perf_counter()
     fn(0)
+    calls = max(1, math.ceil(min_time / (time.perf_counter() - t)))
     times, values = [], []
     for r in range(repeats):
         t = time.perf_counter()
-        values.append(fn(r))
-        times.append(time.perf_counter() - t)
+        for _ in range(calls):
+            value = fn(r)
+        times.append((time.perf_counter() - t) / calls)
+        values.append(value)
     return times, values
 
 
