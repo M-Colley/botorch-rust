@@ -578,6 +578,20 @@ SIGNATURES = [
     *[(getattr(b, n), getattr(r, n)) for n, b, r, _ in MC],
     (bt_logei.qLogNoisyExpectedImprovement, rs_logei.qLogNoisyExpectedImprovement),
     *[(getattr(bt_synthetic, n), getattr(rs_synthetic, n)) for n, _ in TEST_FUNCTIONS],
+    # Multi-output models, posterior transforms and constrained EI (phase 4).
+    (botorch.models.ModelListGP, botorch_rs.models.ModelListGP),
+    (gpytorch.mlls.SumMarginalLogLikelihood, botorch_rs.mlls.SumMarginalLogLikelihood),
+    (gpytorch.likelihoods.LikelihoodList, botorch_rs.likelihoods.LikelihoodList),
+    (
+        botorch.acquisition.objective.ScalarizedPosteriorTransform,
+        botorch_rs.acquisition.objective.ScalarizedPosteriorTransform,
+    ),
+    (bt_analytic.LogConstrainedExpectedImprovement, rs_analytic.LogConstrainedExpectedImprovement),
+    (bt_analytic.ConstrainedExpectedImprovement, rs_analytic.ConstrainedExpectedImprovement),
+    (bt_analytic.AnalyticAcquisitionFunction, rs_analytic.AnalyticAcquisitionFunction),
+    (bt_mc.MCAcquisitionFunction, rs_mc.MCAcquisitionFunction),
+    (botorch.models.SingleTaskGP.posterior, botorch_rs.models.SingleTaskGP.posterior),
+    (botorch.models.ModelListGP.posterior, botorch_rs.models.ModelListGP.posterior),
 ]
 
 
@@ -605,10 +619,14 @@ def test_signatures_match_botorch(bt_obj: Any, rs_obj: Any) -> None:
         assert q.kind == p.kind or p.kind == p.POSITIONAL_OR_KEYWORD, p.name
         if isinstance(p.default, plain) and p.default is not p.empty:
             assert q.default == p.default, (p.name, p.default, q.default)
+    bt_all = params(bt_obj)
+    for p in bt_all:
+        if p.kind == p.VAR_POSITIONAL:  # e.g. ModelListGP(*gp_models)
+            assert any(q.kind == q.VAR_POSITIONAL and q.name == p.name for q in rs_params), p.name
     for q in rs_params:
-        if q.name not in [p.name for p in bt_params]:
+        if q.name not in [p.name for p in bt_all]:
             assert q.kind in (q.KEYWORD_ONLY, q.VAR_KEYWORD) or "kwargs" in [
-                p.name for p in params(bt_obj)
+                p.name for p in bt_all
             ], q.name
 
 

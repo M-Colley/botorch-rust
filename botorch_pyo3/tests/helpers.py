@@ -93,3 +93,14 @@ def importorskip_botorch() -> None:
     if os.environ.get("BOTORCH_RS_REQUIRE_BOTORCH"):
         importlib.import_module("botorch.fit")
     pytest.importorskip("botorch.fit")
+
+
+class ParityLog:
+    """Worst observed error per compared quantity (printed in the pytest
+    terminal summary, see ``conftest.py``)."""
+
+    worst: dict[str, float] = {}
+
+    @classmethod
+    def record(cls, quantity: str, err: float) -> None:
+        cls.worst[quantity] = max(cls.worst.get(quantity, 0.0), float(err))
