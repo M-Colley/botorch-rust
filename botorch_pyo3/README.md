@@ -1,4 +1,4 @@
-# botorch-rs (Python package `botorch_rs`)
+# botorch-rust (Python package `botorch_rs`)
 
 A fast Rust implementation of [BoTorch](https://botorch.org) with essentially
 the same Python API. Typical BoTorch code runs after changing the imports:

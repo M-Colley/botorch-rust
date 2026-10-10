@@ -1,6 +1,6 @@
-# Contributing to botorch-rs
+# Contributing to botorch-rust
 
-Contributions are welcome. botorch-rs aims to reproduce BoTorch's numerics, so
+Contributions are welcome. botorch-rust aims to reproduce BoTorch's numerics, so
 every change to numerical code needs a parity test against BoTorch (see
 below), and the Python API should keep BoTorch's names, argument order and
 defaults.
@@ -64,7 +64,7 @@ $ (cd botorch_pyo3 && mypy python/botorch_rs)
 
 - Keep the Rust core free of Python concepts; the bindings only convert
   arguments and results. Release the GIL (`threads::run`) around any work.
-- New Python arguments that botorch-rs cannot honor must raise
+- New Python arguments that botorch-rust cannot honor must raise
   `UnsupportedError` rather than being ignored silently (unless BoTorch also
   ignores them).
 - Results must have the array type of the input they are computed from; do not

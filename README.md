@@ -1,16 +1,18 @@
-# botorch-rs
+# botorch-rust
 
-*botorch-rs* is a fast implementation of [BoTorch](https://botorch.org) in
+*botorch-rust* is a fast implementation of [BoTorch](https://botorch.org) in
 Rust, with Python bindings that provide essentially the same API as BoTorch.
+It is an independent project, not affiliated with or endorsed by Meta or the
+BoTorch team.
 
-## Why botorch-rs?
+## Why botorch-rust?
 
 ### Speed
 
 Bayesian optimization usually works with a few dozen to a few hundred
 observations. At that scale BoTorch's run time is dominated by overhead
 rather than arithmetic: PyTorch dispatch and autograd bookkeeping for tiny
-tensors, and Python-level loops around SciPy's optimizers. botorch-rs
+tensors, and Python-level loops around SciPy's optimizers. botorch-rust
 evaluates the same mathematics natively in double precision, with analytic
 gradients and multi-start optimizations running in parallel. A complete
 30-iteration BO loop on Hartmann-6 (model fitting plus acquisition
@@ -56,11 +58,11 @@ candidate, value = optimize_acqf(acqf, bounds=problem.bounds, q=1,
 
 ## Design philosophy
 
-Like [Rustuna](https://github.com/optuna/rustuna) for Optuna, botorch-rs
+Like [Rustuna](https://github.com/optuna/rustuna) for Optuna, botorch-rust
 balances compatibility and performance:
 
 - **Essentially the same API.** Module paths, class names, argument names,
-  order and defaults follow BoTorch. Where botorch-rs cannot honor an
+  order and defaults follow BoTorch. Where botorch-rust cannot honor an
   argument (a `post_processing_func` or custom `gen_candidates` in
   `optimize_acqf`, a multi-output objective, ...) it raises
   `botorch_rs.exceptions.UnsupportedError`, a `NotImplementedError`, instead
@@ -69,7 +71,7 @@ balances compatibility and performance:
   identical data and hyperparameters give identical posteriors, marginal
   likelihoods and acquisition values to about 1e-10 (see
   [Equivalence with BoTorch](#equivalence-with-botorch)).
-- **Not a complete replacement.** botorch-rs covers the core of Bayesian
+- **Not a complete replacement.** botorch-rust covers the core of Bayesian
   optimization with independent GPs (single- and multi-output, batched, model
   lists), MC objectives, outcome constraints and constrained acquisition
   optimization. BoTorch remains the place for multi-task and multi-fidelity
@@ -81,7 +83,7 @@ balances compatibility and performance:
 
 ### Python
 
-botorch-rs is not yet on PyPI. Install it from a source checkout (requires a
+botorch-rust is not yet on PyPI. Install it from a source checkout (requires a
 Rust toolchain, see [rustup.rs](https://rustup.rs)):
 
 ```console
@@ -96,7 +98,7 @@ extension into the source tree instead (see [Development](#development)).
 
 ```toml
 [dependencies]
-botorch_core = { git = "https://github.com/botorch-rs/botorch-rs" }
+botorch_core = { git = "https://github.com/M-Colley/botorch-rust" }
 ```
 
 ## Quickstart
@@ -195,17 +197,128 @@ counterpart.
 | `botorch.test_functions.*` | `botorch_rs.test_functions.*` | Ackley, Beale, Branin, Bukin, Cosine8, DixonPrice, DropWave, EggHolder, Griewank, Hartmann, HolderTable, Levy, Michalewicz, Powell, Rastrigin, Rosenbrock, Shekel, SixHumpCamel, StyblinskiTang, ThreeHumpCamel |
 | `botorch.exceptions` | `botorch_rs.exceptions` | `BotorchRsError` hierarchy (also `ValueError`, `RuntimeError`, `NotImplementedError` subclasses) and BoTorch's warnings |
 
-Not available: other model classes (`MultiTaskGP`, ...),
-`condition_on_observations` / `fantasize`, multi-output and learned MC
-objectives, posterior transforms other than `ScalarizedPosteriorTransform`,
-input transforms other than `Normalize`, other acquisition functions
-(knowledge gradient, entropy search, multi-objective), `post_processing_func`,
-custom `gen_candidates`, timeouts and batch-shaped fixed features in
-`optimize_acqf`, `sample_around_best`, and GPU execution.
+Everything else in BoTorch is not ported yet: see
+[What is not ported yet](#what-is-not-ported-yet).
+
+## What is not ported yet
+
+botorch-rust covers the core of Bayesian optimization with exact Gaussian
+processes, which is a small part of BoTorch: it provides **92 of the 773
+public classes and functions** defined in BoTorch's modules (12%; BoTorch main
+at da00e04). `scripts/api_coverage.py` compares the two libraries module by
+module and writes every missing class, function, parameter and method to
+[docs/api_coverage.md](docs/api_coverage.md). The main gaps:
+
+- **Models:**
+  - multi-task GPs (`MultiTaskGP`, `KroneckerMultiTaskGP`,
+    `HeterogeneousMTGP`);
+  - multi-fidelity and mixed or categorical GPs (`SingleTaskMultiFidelityGP`,
+    `MixedSingleTaskGP`);
+  - fully Bayesian and MAP SAAS models (`SaasFullyBayesianSingleTaskGP` with
+    NUTS, `get_map_saas_model`);
+  - variational GPs (`SingleTaskVariationalGP`), `HigherOrderGP` and
+    `LatentKroneckerGP`;
+  - preference learning (`PairwiseGP`);
+  - contextual and additive GPs;
+  - deterministic, ensemble and cost models;
+  - relevance pursuit, and the empirical and hierarchical model packages.
+- **Model features:**
+  - `condition_on_observations`, `fantasize`, `subset_output` and
+    `construct_inputs`;
+  - autograd through models (acquisition values do support `torch.autograd`
+    with respect to their inputs);
+  - kernels other than RBF, Matérn-5/2 and `ScaleKernel`, including BoTorch's
+    own kernels for categorical inputs, fidelities and additive structure;
+  - priors other than LogNormal and Gamma, and likelihoods other than
+    Gaussian;
+  - input transforms other than `Normalize` (`InputStandardize`, `Warp`,
+    `Round`, `AppendFeatures`, `InputPerturbation`, chained transforms, ...);
+  - outcome transforms other than `Standardize` (`Log`, `Power`, `Bilog`,
+    chained transforms, ...);
+  - GPU execution and float32 arithmetic: everything runs in float64 on the
+    CPU.
+- **Single-objective acquisition functions:**
+  - `qNoisyExpectedImprovement` and the analytic noisy EI variants;
+  - `qLowerConfidenceBound`, `qPosteriorStandardDeviation`,
+    `ScalarizedPosteriorMean`, and the analytic `LogProbabilityOfFeasibility`;
+  - knowledge gradient (`qKnowledgeGradient` and its multi-fidelity variant);
+  - entropy search (max-value entropy search, GIBBON, joint and predictive
+    entropy search) and `qMultiStepLookahead`;
+  - active learning (`qNegIntegratedPosteriorVariance`, BALD) and preference
+    learning (EUBO);
+  - risk measures (VaR, CVaR, ...) and cost-aware utilities;
+  - penalized, proximal, prior-guided, fixed-feature and decoupled wrappers,
+    multi-output acquisition functions, and pathwise Thompson sampling.
+- **Multi-objective optimization:**
+  - all multi-objective acquisition functions (`qLogNoisyExpectedHypervolumeImprovement`,
+    `qLogExpectedHypervolumeImprovement`, `qLogNParEGO`,
+    `qHypervolumeKnowledgeGradient`, `MOMF`, multi-objective entropy search,
+    ...);
+  - their objectives, risk measures, and hypervolume and Pareto utilities.
+- **Objectives and transforms:** posterior transforms other than
+  `ScalarizedPosteriorTransform`, learned and multi-output MC objectives, and
+  `get_acquisition_function` with the input constructors.
+- **Optimization and candidate generation:**
+  - `optimize_acqf_cyclic`, `optimize_acqf_list`, `optimize_acqf_mixed`
+    (also the alternating variant), `optimize_acqf_discrete` (also with local
+    search) and `optimize_acqf_homotopy`;
+  - in `optimize_acqf`: custom `gen_candidates` (`gen_candidates_torch`),
+    `post_processing_func`, `timeout_sec`, `sample_around_best` and
+    batch-shaped fixed features;
+  - initial conditions for one-shot acquisition functions;
+  - `MaxPosteriorSampling` and `BoltzmannSampling`;
+  - fitting with torch optimizers, BoTorch's closures and stopping criteria.
+- **Sampling and utilities:**
+  - samplers other than `SobolQMCNormalSampler` (`IIDNormalSampler`,
+    `StochasticSampler`, `ListSampler`, ...) and pathwise (Matheron) sampling;
+  - most of `botorch.utils`: multi-objective, probability (bivariate and
+    truncated multivariate normal, elliptical slice sampling), low-rank and
+    dataset utilities;
+  - cross-validation and `settings`.
+- **Test functions and community code:** test functions other than the 20
+  synthetic ones above (multi-objective, multi-fidelity, constrained
+  engineering problems, sensitivity analysis, ...), and everything in
+  `botorch_community`.
+
+<details>
+<summary>Coverage by area (public classes and functions)</summary>
+
+| Area | Public classes and functions | In botorch_rs | Share |
+|---|---|---|---|
+| `acquisition` | 145 | 27 | 19% |
+| `acquisition.multi_objective` | 33 | 0 | 0% |
+| `cross_validation` | 7 | 0 | 0% |
+| `exceptions` | 20 | 15 | 75% |
+| `fit` | 3 | 1 | 33% |
+| `generation` | 8 | 0 | 0% |
+| `logging` | 1 | 0 | 0% |
+| `models` | 66 | 3 | 5% |
+| `models.empirical_gps` | 36 | 0 | 0% |
+| `models.hierarchical` | 6 | 0 | 0% |
+| `models.kernels` | 19 | 0 | 0% |
+| `models.likelihoods` | 5 | 0 | 0% |
+| `models.transforms` | 35 | 4 | 11% |
+| `models.utils` | 26 | 4 | 15% |
+| `optim` | 58 | 5 | 9% |
+| `optim.closures` | 5 | 0 | 0% |
+| `optim.utils` | 14 | 0 | 0% |
+| `posteriors` | 13 | 2 | 15% |
+| `sampling` | 14 | 2 | 14% |
+| `sampling.pathwise` | 25 | 0 | 0% |
+| `settings` | 3 | 0 | 0% |
+| `test_functions` | 84 | 21 | 25% |
+| `test_utils` | 2 | 0 | 0% |
+| `utils` | 97 | 8 | 8% |
+| `utils.multi_objective` | 22 | 0 | 0% |
+| `utils.probability` | 26 | 0 | 0% |
+| **all of `botorch`** | **773** | **92** | **12%** |
+| `botorch_community` | 55 | 0 | 0% |
+
+</details>
 
 ## Equivalence with BoTorch
 
-botorch-rs is correct when it computes what BoTorch computes. Agreement is
+botorch-rust is correct when it computes what BoTorch computes. Agreement is
 tested at two levels:
 
 1. **Rust fixture tests.** `scripts/generate_fixtures.py` runs a reference
@@ -296,13 +409,13 @@ points) amplify rounding: perturbing BoTorch's own training inputs by 1e-14
 with two perturbed BoTorch twins, and reports errors scaled to the nominal
 tolerance. *Numerically singular* covariance blocks (smallest eigenvalue below
 1e-12 of the largest) make the decision whether Cholesky needs jitter depend
-on rounding: LAPACK and botorch-rs can decide differently, which moves the
+on rounding: LAPACK and botorch-rust can decide differently, which moves the
 samples along the singular directions; such evaluations are counted and only
 checked loosely. The single diverging optimization restart starts on a flat
 part of the acquisition function (log value −44) and ends in another local
 optimum (−1.7194 vs −1.7143); end to end, BoTorch's initial conditions come
 from torch's global random number generator, so its best seed can be better
-(or worse) than botorch-rs'.
+(or worse) than botorch-rust's.
 
 ### Targeted parity tests
 
@@ -356,7 +469,7 @@ is 3.4e-7 (1e-11 for the Python configurations, typically 1e-15). On flat
 likelihood surfaces, L-BFGS-B's relative-reduction stopping rule can end at
 points that differ by round-off along long trajectories (up to ~2e-6 in the
 loss on BO-loop data); in those cases BoTorch's own optimizer, restarted from
-botorch-rs' solution, makes no further progress (checked along the BO loop of
+botorch-rust's solution, makes no further progress (checked along the BO loop of
 `test_bo_loop.py`). Multi-output and batched models reach BoTorch's final loss
 of every output and batch element (largest excess 5.5e-13 on the fixtures, 1e-10
 through the Python API), with the same iteration counts for all 36 fitted
@@ -364,7 +477,7 @@ fixture elements. `optimize_acqf` reaches BoTorch's best acquisition value
 on fixed models (LogEI and qLogEI on Hartmann-6), and started from BoTorch's
 initial conditions it reproduces BoTorch's optimized candidates to about
 1e-15 (L-BFGS-B). SLSQP iterates agree with SciPy's to about 1e-9 per step:
-SciPy 1.16 and later solve the SLSQP subproblems with LAPACK, botorch-rs with
+SciPy 1.16 and later solve the SLSQP subproblems with LAPACK, botorch-rust with
 the port of Kraft's original code, so long runs on flat landscapes can end in
 different local optima, in either direction.
 
@@ -375,7 +488,7 @@ The numbers above come from BoTorch's main branch at da00e04 with GPyTorch
 on Windows 11; CI runs the Python comparisons against the latest BoTorch
 release. An earlier run against the released BoTorch 0.18.1 found two
 behaviors that differ from main, which the tests now account for: 0.18.1
-rejects SLSQP starts that violate nonlinear constraints (main and botorch-rs
+rejects SLSQP starts that violate nonlinear constraints (main and botorch-rust
 accept them), and with SciPy 1.18 it optimizes all L-BFGS-B restarts in one
 joint problem instead of one problem per restart.
 
@@ -386,7 +499,7 @@ Wall time through the Python API (`scripts/benchmark.py`; median of 5 runs,
 (22 logical CPUs, Windows 11), Python 3.13, PyTorch 2.13 on the CPU, BoTorch
 main at da00e04. "1 thread" sets `torch.set_num_threads(1)` and
 `botorch_rs.set_num_threads(1)`; otherwise each library uses its default
-(BoTorch/PyTorch: 16 threads, botorch-rs: 22).
+(BoTorch/PyTorch: 16 threads, botorch-rust: 22).
 
 | Task | botorch_rs, 1 thread | BoTorch, 1 thread | speedup | botorch_rs, 22 threads | BoTorch, 16 threads | speedup |
 |---|---|---|---|---|---|---|
@@ -404,7 +517,7 @@ and 512 raw samples on a 50-point model with fixed hyperparameters (qLogEI
 with the same 512 explicit base samples in both libraries); the BO loop is the
 loop of `examples/bo_loop.rs` (14 Sobol points, then 30 × fit + LogEI
 optimization). Both libraries reach the same results: identical fitted losses
-(to 1e-6), the same LogEI optimum, qLogEI −0.900625 (botorch-rs) vs −0.900679
+(to 1e-6), the same LogEI optimum, qLogEI −0.900625 (botorch-rust) vs −0.900679
 (BoTorch), and best Hartmann values −3.160 vs −3.106 after the loop (a single
 design; over 30 designs the loops are statistically indistinguishable, median
 −3.156 vs −3.159). Timings vary by about ±20% between runs on this laptop.
@@ -412,7 +525,7 @@ design; over 30 designs the loops are statistically indistinguishable, median
 The speedups are largest where BoTorch's per-call overhead dominates: small
 models and many cheap evaluations. Fitting cost grows as O(n³); at n = 300 the
 dense linear algebra dominates and BoTorch's optimized BLAS/LAPACK catches up
-(botorch-rs uses `nalgebra`, single-threaded). Restarts of `optimize_acqf` run
+(botorch-rust uses `nalgebra`, single-threaded). Restarts of `optimize_acqf` run
 in parallel, which pays off for the MC acquisition functions; for analytic
 LogEI one optimization takes about a millisecond either way.
 
@@ -431,7 +544,7 @@ LogEI one optimization takes about a millisecond either way.
   sequence (`sobol_burley`), not torch's `SobolEngine`: for the same seed, raw
   samples and MC base samples differ from BoTorch's (with the same
   distribution); explicit `sampler.base_samples` reproduce BoTorch exactly.
-  `torch.manual_seed` does not seed botorch-rs: use `options={"seed": ...}` in
+  `torch.manual_seed` does not seed botorch-rust: use `options={"seed": ...}` in
   `optimize_acqf` (which also seeds the random choice of initial conditions)
   and `SobolQMCNormalSampler(..., seed=...)`. qLogNEI prunes its baseline with
   a seed derived from its sampler's seed, so whole BO loops are reproducible.
@@ -499,7 +612,7 @@ LogEI one optimization takes about a millisecond either way.
   unique.
 - **Nearly singular covariances.** Whether a Cholesky factorization needs
   jitter is decided by rounding when a covariance block is numerically
-  singular (smallest eigenvalue around 1e-16 of the largest); botorch-rs and
+  singular (smallest eigenvalue around 1e-16 of the largest); botorch-rust and
   LAPACK can decide differently there, which changes Monte-Carlo samples
   along the singular directions (see [Equivalence with
   BoTorch](#equivalence-with-botorch)).
@@ -543,7 +656,9 @@ BoTorch](#equivalence-with-botorch)).
 optimization and test functions, `--phase 4` for multi-output, batched and
 list models, posterior transforms and constrained EI, `--phase 4b` for MC
 objectives, outcome constraints, constrained optimization and polytope
-sampling), and `python scripts/benchmark.py` measures the timings above. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+sampling), and `python scripts/benchmark.py` measures the timings above, and
+`python scripts/api_coverage.py` regenerates the API coverage report
+([docs/api_coverage.md](docs/api_coverage.md)). See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## License
 
@@ -555,10 +670,10 @@ Joe–Kuo direction numbers).
 
 ## Acknowledgements and citation
 
-botorch-rs re-implements algorithms designed and implemented in
+botorch-rust re-implements algorithms designed and implemented in
 [BoTorch](https://github.com/meta-pytorch/botorch) and
 [GPyTorch](https://github.com/cornellius-gp/gpytorch); its structure follows
-[Rustuna](https://github.com/optuna/rustuna). If you use botorch-rs, please
+[Rustuna](https://github.com/optuna/rustuna). If you use botorch-rust, please
 cite BoTorch:
 
 ```bibtex

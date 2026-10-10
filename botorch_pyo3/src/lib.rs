@@ -1,4 +1,4 @@
-//! Python bindings of botorch-rs: the `botorch_rs._botorch_rs` extension
+//! Python bindings of botorch-rust: the `botorch_rs._botorch_rs` extension
 //! module.
 //!
 //! This crate is a thin layer over `botorch_core`. Arrays cross the boundary

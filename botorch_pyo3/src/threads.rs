@@ -45,7 +45,7 @@ pub fn set_num_threads(num_threads: Option<usize>) -> PyResult<()> {
         Some(n) => Some(Arc::new(
             rayon::ThreadPoolBuilder::new()
                 .num_threads(n)
-                .thread_name(|i| format!("botorch-rs-{i}"))
+                .thread_name(|i| format!("botorch-rust-{i}"))
                 .build()
                 .map_err(|e| value_error(format!("cannot create a thread pool: {e}")))?,
         )),

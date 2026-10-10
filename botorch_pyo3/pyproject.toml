@@ -3,13 +3,13 @@ requires = ["maturin>=1.9.4,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "botorch-rs"
+name = "botorch-rust"
 version = "0.1.0.dev0"
 description = "A fast Rust implementation of BoTorch with the same Python API"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-authors = [{ name = "The botorch-rs authors" }]
+authors = [{ name = "The botorch-rust authors" }]
 keywords = ["bayesian-optimization", "gaussian-process", "botorch", "rust"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -30,7 +30,7 @@ test = ["pytest>=8"]
 parity = ["pytest>=8", "botorch", "numpy"]
 
 [project.urls]
-repository = "https://github.com/botorch-rs/botorch-rs"
+repository = "https://github.com/M-Colley/botorch-rust"
 botorch = "https://botorch.org"
 
 [tool.maturin]

@@ -2,7 +2,7 @@
 name = "botorch_pyo3"
 version.workspace = true
 edition.workspace = true
-description = "Python bindings of botorch-rs (the `botorch_rs` package)"
+description = "Python bindings of botorch-rust (the `botorch_rs` package)"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

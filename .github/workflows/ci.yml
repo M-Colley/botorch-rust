@@ -112,7 +112,7 @@ jobs:
       - name: Install test dependencies
         shell: bash
         run: python -m pip install pytest ${{ matrix.packages }}
-      - name: Build and install botorch-rs (maturin)
+      - name: Build and install botorch-rust (maturin)
         run: python -m pip install -v ./botorch_pyo3
       - name: Show versions
         shell: bash

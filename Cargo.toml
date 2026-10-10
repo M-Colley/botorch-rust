@@ -10,8 +10,8 @@ version = "0.1.0-dev"
 edition = "2021"
 description = "A Rust implementation of BoTorch"
 license = "MIT"
-repository = "https://github.com/botorch-rs/botorch-rs"
-authors = ["The botorch-rs authors"]
+repository = "https://github.com/M-Colley/botorch-rust"
+authors = ["The botorch-rust authors"]
 
 [workspace.dependencies]
 botorch_core = { path = "./botorch_core" }
