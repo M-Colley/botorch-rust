@@ -44,6 +44,7 @@ dependencies = [
  "nalgebra",
  "pyo3",
  "pyo3-build-config",
+ "rand",
  "rayon",
 ]
 

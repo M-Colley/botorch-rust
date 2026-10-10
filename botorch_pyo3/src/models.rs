@@ -13,7 +13,6 @@
 use std::sync::{Arc, RwLock};
 
 use botorch_core::acquisition::{ScalarizedModel, ScalarizedPosteriorTransform};
-use botorch_core::linalg::CovarianceRoot;
 use botorch_core::posterior::MIN_VARIANCE;
 use botorch_core::{
     fit_gpytorch_mll, BatchedFitResult, BatchedMultiOutputGP, BatchedMultiOutputGPOptions,
@@ -337,30 +336,19 @@ fn samples(model: &ModelRef, x: &Array, z: &Array, noise: bool, view: &View) -> 
         .par_iter()
         .enumerate()
         .map(|(b, post)| {
-            // y[p, t] for every sample: S x (q·m') in BoTorch's (p, t) order.
-            let mut y = Matrix::zeros(s, qm);
-            for t in 0..mo {
-                let block = post.covariance.view((t * q, t * q), (q, q)).into_owned();
-                let root = CovarianceRoot::new(&block)?.to_matrix();
-                for i in 0..s {
-                    let zrow = |j: usize| {
-                        let k = j * mo + t;
-                        if per_batch {
-                            z.0[(i * nb + b) * qm + k]
-                        } else {
-                            z.0[i * qm + k]
-                        }
-                    };
-                    for p in 0..q {
-                        let mut acc = post.mean[t * q + p];
-                        for j in 0..q {
-                            acc += root[(p, j)] * zrow(j);
-                        }
-                        y[(i, p * mo + t)] = acc;
-                    }
+            // The base samples of this batch (S x q·m', column p·m' + t) and the
+            // samples in BoTorch's (p, t) order.
+            let zb = Matrix::from_fn(s, qm, |i, k| {
+                if per_batch {
+                    z.0[(i * nb + b) * qm + k]
+                } else {
+                    z.0[i * qm + k]
                 }
-            }
-            Ok(y)
+            });
+            let samples = post.rsample_from_base_samples(&zb)?;
+            Ok(Matrix::from_fn(s, qm, |i, k| {
+                samples.value(i, k / mo, k % mo)
+            }))
         })
         .collect::<botorch_core::Result<Vec<Matrix>>>()
         .into_py_result()?;

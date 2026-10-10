@@ -14,9 +14,11 @@ use pyo3::prelude::*;
 
 mod acquisition;
 mod arrays;
+mod callbacks;
 mod errors;
 mod models;
 mod optim;
+mod polytope;
 mod sampling;
 mod specs;
 mod test_functions;
@@ -42,6 +44,21 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<acquisition::PyAcquisitionFunction>()?;
     m.add_function(wrap_pyfunction!(acquisition::prune_inferior_points_py, m)?)?;
     m.add_function(wrap_pyfunction!(optim::optimize_acqf, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::gen_batch_initial_conditions_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        optim::sample_q_batches_from_polytope_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(optim::evaluate_feasibility_py, m)?)?;
+    // Polytope sampling.
+    m.add_class::<polytope::PyHitAndRunPolytopeSampler>()?;
+    m.add_function(wrap_pyfunction!(polytope::get_polytope_samples_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        polytope::sparse_to_dense_constraints_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(polytope::find_interior_point_py, m)?)?;
+    m.add_function(wrap_pyfunction!(polytope::sample_polytope_py, m)?)?;
     // Sampling.
     m.add_class::<sampling::PySobolQMCNormalSampler>()?;
     m.add_function(wrap_pyfunction!(sampling::draw_sobol_samples_py, m)?)?;

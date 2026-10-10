@@ -19,12 +19,15 @@ fn current_pool() -> Option<Arc<rayon::ThreadPool>> {
     POOL.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// Runs `f` with the GIL released, on the configured thread pool.
+/// Runs `f` with the GIL released, on the configured thread pool. Python
+/// callables invoked by `f` reacquire the GIL; the first exception they raise
+/// is kept for [`crate::errors::to_pyerr`].
 pub fn run<T, F>(py: Python<'_>, f: F) -> T
 where
     F: FnOnce() -> T + Send,
     T: Send,
 {
+    crate::callbacks::clear_error();
     let pool = current_pool();
     py.detach(move || match pool {
         Some(pool) => pool.install(f),

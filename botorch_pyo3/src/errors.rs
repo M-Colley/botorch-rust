@@ -30,8 +30,13 @@ fn raise(class: &str, fallback: Fallback, msg: String) -> PyErr {
     })
 }
 
-/// Converts a core error into the corresponding Python exception.
+/// Converts a core error into the corresponding Python exception. If a
+/// Python callable raised an exception during the computation (see
+/// [`crate::callbacks`]), that exception is returned unchanged.
 pub fn to_pyerr(e: BotorchError) -> PyErr {
+    if let Some(err) = crate::callbacks::take_error() {
+        return err;
+    }
     match e {
         BotorchError::DimensionMismatch(msg) => dimension_error(msg),
         BotorchError::InputData(msg) => raise("InputDataError", PyValueError::new_err, msg),

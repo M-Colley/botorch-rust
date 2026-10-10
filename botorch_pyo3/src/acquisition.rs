@@ -5,23 +5,35 @@
 //! of it. Acquisition functions are built on a [`PyModel`] handle: the model
 //! snapshot that is current at construction (see [`crate::models`]), seen
 //! through the posterior transform if one is given.
+//!
+//! MC objectives and outcome constraints arrive as small specifications
+//! built by the Python layer: `("identity",)`, `("linear", weights)`,
+//! `("callable", objective)` (BoTorch's `objective(samples, X=X)`, evaluated
+//! through [`crate::callbacks`]) or `("constrained", objective, constraints,
+//! infeasible_cost, eta)` for an objective; a list of callables with one
+//! temperature each (and optionally BoTorch's per-constraint `fat` list) for
+//! outcome constraints.
 
 use std::sync::Arc;
 
 use botorch_core::acquisition::{
     prune_inferior_points, AcquisitionFunction, ConstrainedExpectedImprovement,
-    ExpectedImprovement, LogConstrainedExpectedImprovement, LogExpectedImprovement,
-    LogProbabilityOfImprovement, McAcquisitionOptions, OutputConstraint, PosteriorMean,
-    PosteriorStandardDeviation, ProbabilityOfImprovement, PruneOptions, QExpectedImprovement,
-    QLogExpectedImprovement, QLogExpectedImprovementOptions, QLogNoisyExpectedImprovement,
-    QLogNoisyExpectedImprovementOptions, QProbabilityOfImprovement, QSimpleRegret,
+    ConstrainedMcObjective, ExpectedImprovement, IdentityMcObjective, LinearMcObjective,
+    LogConstrainedExpectedImprovement, LogExpectedImprovement, LogProbabilityOfImprovement,
+    McAcquisitionOptions, McObjective, OutputConstraint, PosteriorMean, PosteriorStandardDeviation,
+    ProbabilityOfImprovement, PruneOptions, QExpectedImprovement, QLogExpectedImprovement,
+    QLogExpectedImprovementOptions, QLogNoisyExpectedImprovement,
+    QLogNoisyExpectedImprovementOptions, QLogProbabilityOfFeasibility,
+    QLogProbabilityOfFeasibilityOptions, QProbabilityOfImprovement, QSimpleRegret,
     QUpperConfidenceBound, UpperConfidenceBound,
 };
-use botorch_core::{Matrix, Model};
+use botorch_core::utils::objective::{McConstraint, OutcomeConstraints};
+use botorch_core::{Matrix, Model, Vector};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use crate::arrays::{matrix_out, Array, ArrayOut};
+use crate::callbacks::PyCallback;
 use crate::errors::{unsupported, value_error, IntoPyResult};
 use crate::models::PyModel;
 use crate::sampling::PySobolQMCNormalSampler;
@@ -77,6 +89,61 @@ fn sampler_of(
 /// Splits `X` (`... x q x d`) into candidate sets.
 fn candidate_sets(x: &Array) -> PyResult<(Vec<usize>, Vec<Matrix>)> {
     x.batches("X")
+}
+
+/// An MC objective from its specification (see the module documentation).
+fn objective_of(spec: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Arc<dyn McObjective>>> {
+    let Some(spec) = spec.filter(|s| !s.is_none()) else {
+        return Ok(None);
+    };
+    let kind: String = spec.get_item(0)?.extract()?;
+    let objective: Arc<dyn McObjective> = match kind.as_str() {
+        "identity" => Arc::new(IdentityMcObjective),
+        "linear" => {
+            let w: Vec<f64> = spec.get_item(1)?.extract()?;
+            Arc::new(LinearMcObjective::new(Vector::from_vec(w)).into_py_result()?)
+        }
+        "callable" => Arc::new(PyCallback::objective(spec.get_item(1)?.unbind(), true)),
+        "constrained" => {
+            let inner: Arc<dyn McObjective> =
+                Arc::new(PyCallback::objective(spec.get_item(1)?.unbind(), false));
+            let constraints: Vec<Py<PyAny>> = spec.get_item(2)?.extract()?;
+            let infeasible_cost: f64 = spec.get_item(3)?.extract()?;
+            let eta: Vec<f64> = spec.get_item(4)?.extract()?;
+            Arc::new(
+                ConstrainedMcObjective::new(
+                    inner,
+                    constraint_callbacks(constraints),
+                    infeasible_cost,
+                    eta,
+                )
+                .into_py_result()?,
+            )
+        }
+        other => return Err(unsupported(format!("Unknown MC objective {other:?}."))),
+    };
+    Ok(Some(objective))
+}
+
+fn constraint_callbacks(constraints: Vec<Py<PyAny>>) -> Vec<Arc<dyn McConstraint>> {
+    constraints
+        .into_iter()
+        .map(|c| Arc::new(PyCallback::constraint(c)) as Arc<dyn McConstraint>)
+        .collect()
+}
+
+/// Outcome constraints from callables and one temperature per constraint.
+fn constraints_of(
+    constraints: Option<Vec<Py<PyAny>>>,
+    eta: Option<Vec<f64>>,
+) -> PyResult<Option<OutcomeConstraints>> {
+    constraints
+        .map(|cs| {
+            let k = cs.len();
+            let eta = eta.unwrap_or_else(|| vec![1e-3; k]);
+            OutcomeConstraints::new(constraint_callbacks(cs), eta).into_py_result()
+        })
+        .transpose()
 }
 
 /// The analytic acquisition functions (BoTorch class names).
@@ -154,7 +221,9 @@ impl PyAcquisitionFunction {
     /// `"qProbabilityOfImprovement"` (with `best_f`, `tau`),
     /// `"qLogExpectedImprovement"` (with `best_f`, `fat`, `tau_max`,
     /// `tau_relu`), `"qUpperConfidenceBound"` (with `beta`) or
-    /// `"qSimpleRegret"`.
+    /// `"qSimpleRegret"`, with an optional MC `objective` and outcome
+    /// `constraints` (callables, one temperature `eta` each; `fat_list` is
+    /// BoTorch's per-constraint `fat` of qLogEI).
     #[staticmethod]
     #[pyo3(signature = (
         name,
@@ -167,6 +236,10 @@ impl PyAcquisitionFunction {
         fat=true,
         tau_max=1e-2,
         tau_relu=1e-6,
+        objective=None,
+        constraints=None,
+        eta=None,
+        fat_list=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn monte_carlo(
@@ -180,15 +253,22 @@ impl PyAcquisitionFunction {
         fat: bool,
         tau_max: f64,
         tau_relu: f64,
+        objective: Option<Bound<'_, PyAny>>,
+        constraints: Option<Vec<Py<PyAny>>>,
+        eta: Option<Vec<f64>>,
+        fat_list: Option<Vec<Option<bool>>>,
     ) -> PyResult<Self> {
         let name = static_name(name, &MONTE_CARLO)?;
         let m = model_of(&model);
         let sampler = sampler_of(sampler);
         let x_pending = x_pending.map(|p| p.matrix("X_pending")).transpose()?;
+        let objective = objective_of(objective.as_ref())?;
+        let constraints = constraints_of(constraints, eta)?;
         let options = McAcquisitionOptions {
             sampler: sampler.clone(),
             x_pending: x_pending.clone(),
-            ..Default::default()
+            objective: objective.clone(),
+            constraints: constraints.clone(),
         };
         let best_f = || require(best_f, "best_f", name);
         let inner: Arc<dyn AcquisitionFunction> = match name {
@@ -208,7 +288,9 @@ impl PyAcquisitionFunction {
                         fat,
                         tau_max,
                         tau_relu,
-                        ..Default::default()
+                        objective,
+                        constraints,
+                        constraint_fat: fat_list,
                     },
                 )
                 .into_py_result()?,
@@ -220,6 +302,51 @@ impl PyAcquisitionFunction {
             _ => Arc::new(QSimpleRegret::new(m, options).into_py_result()?),
         };
         Ok(Self::new_plain(inner, name))
+    }
+
+    /// `qLogProbabilityOfFeasibility(model, constraints, ...)` with outcome
+    /// constraints (callables, one temperature `eta` each).
+    #[staticmethod]
+    #[pyo3(signature = (
+        model,
+        constraints,
+        eta,
+        sampler=None,
+        x_pending=None,
+        fat=true,
+        tau_max=1e-2,
+        fat_list=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn q_log_probability_of_feasibility(
+        model: PyRef<'_, PyModel>,
+        constraints: Vec<Py<PyAny>>,
+        eta: Vec<f64>,
+        sampler: Option<PyRef<'_, PySobolQMCNormalSampler>>,
+        x_pending: Option<Array>,
+        fat: bool,
+        tau_max: f64,
+        fat_list: Option<Vec<Option<bool>>>,
+    ) -> PyResult<Self> {
+        let m = model_of(&model);
+        let constraints =
+            constraints_of(Some(constraints), Some(eta))?.expect("constraints are given");
+        let acqf = QLogProbabilityOfFeasibility::new(
+            m,
+            constraints,
+            QLogProbabilityOfFeasibilityOptions {
+                sampler: sampler_of(sampler),
+                x_pending: x_pending.map(|p| p.matrix("X_pending")).transpose()?,
+                fat,
+                tau_max,
+                constraint_fat: fat_list,
+            },
+        )
+        .into_py_result()?;
+        Ok(Self::new_plain(
+            Arc::new(acqf),
+            "qLogProbabilityOfFeasibility",
+        ))
     }
 
     /// `"LogConstrainedExpectedImprovement"` or
@@ -275,7 +402,8 @@ impl PyAcquisitionFunction {
 
     /// `qLogNoisyExpectedImprovement(model, X_baseline, ...)`; the baseline is
     /// pruned with `prune_inferior_points` (`prune_num_samples` samples,
-    /// `prune_max_frac`, seeded by `prune_seed`) if `prune_baseline`.
+    /// `prune_max_frac`, seeded by `prune_seed`, under the objective and the
+    /// constraints) if `prune_baseline`.
     #[staticmethod]
     #[pyo3(signature = (
         model,
@@ -290,6 +418,11 @@ impl PyAcquisitionFunction {
         tau_max=1e-2,
         tau_relu=1e-6,
         incremental=true,
+        objective=None,
+        constraints=None,
+        eta=None,
+        fat_list=None,
+        lower_bound_points=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn q_log_noisy_expected_improvement(
@@ -306,6 +439,11 @@ impl PyAcquisitionFunction {
         tau_max: f64,
         tau_relu: f64,
         incremental: bool,
+        objective: Option<Bound<'_, PyAny>>,
+        constraints: Option<Vec<Py<PyAny>>>,
+        eta: Option<Vec<f64>>,
+        fat_list: Option<Vec<Option<bool>>>,
+        lower_bound_points: Option<Array>,
     ) -> PyResult<Self> {
         let m = model_of(&model);
         let x_baseline = x_baseline.matrix("X_baseline")?;
@@ -323,7 +461,12 @@ impl PyAcquisitionFunction {
             tau_max,
             tau_relu,
             incremental,
-            ..Default::default()
+            objective: objective_of(objective.as_ref())?,
+            constraints: constraints_of(constraints, eta)?,
+            constraint_fat: fat_list,
+            lower_bound_points: lower_bound_points
+                .map(|p| p.matrix("lower_bound_points"))
+                .transpose()?,
         };
         let acqf = threads::run(py, || {
             QLogNoisyExpectedImprovement::new(m, &x_baseline, options)
@@ -419,15 +562,39 @@ impl PyAcquisitionFunction {
     fn full_x_baseline(&self) -> PyResult<ArrayOut> {
         Ok(matrix_out(&self.nei()?.full_x_baseline()))
     }
+
+    /// The points at which a qLogNEI estimates the lower bound of the
+    /// objective for infeasible baseline points.
+    fn lower_bound_points(&self) -> PyResult<ArrayOut> {
+        Ok(matrix_out(&self.nei()?.lower_bound_points()))
+    }
+
+    /// The lower bound of the objective that a qLogNEI used for infeasible
+    /// baseline points, if an evaluation needed it (`None` otherwise and for
+    /// other acquisition functions).
+    fn infeasible_lower_bound(&self) -> Option<f64> {
+        self.nei.as_ref().and_then(|n| n.infeasible_lower_bound())
+    }
 }
 
 /// `prune_inferior_points(model, X, num_samples, max_frac)`: the points of
-/// `X` (`n x d`) with a non-zero estimated probability of being the best.
+/// `X` (`n x d`) with a non-zero estimated probability of being the best
+/// under the MC `objective` and outcome `constraints` (callables).
 #[pyfunction]
 #[pyo3(
     name = "prune_inferior_points",
-    signature = (model, x, num_samples=2048, max_frac=1.0, seed=None, base_samples=None)
+    signature = (
+        model,
+        x,
+        num_samples=2048,
+        max_frac=1.0,
+        seed=None,
+        base_samples=None,
+        objective=None,
+        constraints=None,
+    )
 )]
+#[allow(clippy::too_many_arguments)]
 pub fn prune_inferior_points_py(
     py: Python<'_>,
     model: PyRef<'_, PyModel>,
@@ -436,6 +603,8 @@ pub fn prune_inferior_points_py(
     max_frac: f64,
     seed: Option<u64>,
     base_samples: Option<Array>,
+    objective: Option<Bound<'_, PyAny>>,
+    constraints: Option<Vec<Py<PyAny>>>,
 ) -> PyResult<ArrayOut> {
     let m = model.inner.clone();
     let x = x.matrix("X")?;
@@ -444,7 +613,8 @@ pub fn prune_inferior_points_py(
         max_frac,
         seed,
         base_samples: base_samples.map(|z| z.matrix("base_samples")).transpose()?,
-        ..Default::default()
+        objective: objective_of(objective.as_ref())?,
+        constraints: constraints.map(constraint_callbacks),
     };
     let pruned =
         threads::run(py, || prune_inferior_points(m.as_ref(), &x, &options)).into_py_result()?;

@@ -23,6 +23,7 @@ doctest = false
 botorch_core.workspace = true
 nalgebra.workspace = true
 rayon.workspace = true
+rand.workspace = true
 pyo3 = { version = "0.29", features = ["abi3-py311", "abi3t-py315", "extension-module"] }
 
 [build-dependencies]
