@@ -25,6 +25,8 @@ importorskip_botorch()
 torch = pytest.importorskip("torch")
 
 import botorch  # noqa: E402
+import botorch.optim.initializers  # noqa: E402
+import botorch.optim.parameter_constraints  # noqa: E402
 import gpytorch  # noqa: E402
 from botorch.acquisition import analytic as bt_analytic  # noqa: E402
 from botorch.acquisition import logei as bt_logei  # noqa: E402
@@ -40,6 +42,8 @@ from botorch.test_functions import synthetic as bt_synthetic  # noqa: E402
 from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL  # noqa: E402
 
 import botorch_rs  # noqa: E402
+import botorch_rs.optim.initializers  # noqa: E402
+import botorch_rs.optim.parameter_constraints  # noqa: E402
 from botorch_rs import kernels as rs_kernels  # noqa: E402
 from botorch_rs import priors as rs_priors  # noqa: E402
 from botorch_rs.acquisition import analytic as rs_analytic  # noqa: E402
@@ -592,6 +596,42 @@ SIGNATURES = [
     (bt_mc.MCAcquisitionFunction, rs_mc.MCAcquisitionFunction),
     (botorch.models.SingleTaskGP.posterior, botorch_rs.models.SingleTaskGP.posterior),
     (botorch.models.ModelListGP.posterior, botorch_rs.models.ModelListGP.posterior),
+    # MC objectives, outcome constraints and constrained optimization (phase 4B).
+    *[
+        (getattr(botorch.acquisition.objective, n), getattr(botorch_rs.acquisition.objective, n))
+        for n in ("LinearMCObjective", "GenericMCObjective", "ConstrainedMCObjective")
+    ],
+    (
+        botorch.acquisition.objective.MCAcquisitionObjective.forward,
+        botorch_rs.acquisition.objective.MCAcquisitionObjective.forward,
+    ),
+    (bt_logei.qLogProbabilityOfFeasibility, rs_logei.qLogProbabilityOfFeasibility),
+    *[
+        (getattr(botorch.optim.initializers, n), getattr(botorch_rs.optim.initializers, n))
+        for n in (
+            "gen_batch_initial_conditions",
+            "sample_q_batches_from_polytope",
+            "transform_constraints",
+        )
+    ],
+    (
+        botorch.optim.parameter_constraints.evaluate_feasibility,
+        botorch_rs.optim.parameter_constraints.evaluate_feasibility,
+    ),
+    *[
+        (getattr(botorch.utils.sampling, n), getattr(botorch_rs.utils.sampling, n))
+        for n in (
+            "get_polytope_samples",
+            "HitAndRunPolytopeSampler",
+            "find_interior_point",
+            "sample_polytope",
+            "sparse_to_dense_constraints",
+        )
+    ],
+    (
+        botorch.utils.sampling.HitAndRunPolytopeSampler.draw,
+        botorch_rs.utils.sampling.HitAndRunPolytopeSampler.draw,
+    ),
 ]
 
 

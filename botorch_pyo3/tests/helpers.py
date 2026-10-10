@@ -97,10 +97,20 @@ def importorskip_botorch() -> None:
 
 class ParityLog:
     """Worst observed error per compared quantity (printed in the pytest
-    terminal summary, see ``conftest.py``)."""
+    terminal summary, see ``conftest.py``): ``worst`` for the multi-output
+    parity tests, ``sections`` for named groups of quantities with their
+    tolerances."""
 
     worst: dict[str, float] = {}
+    sections: dict[str, dict[str, tuple[float, float | None]]] = {}
 
     @classmethod
-    def record(cls, quantity: str, err: float) -> None:
-        cls.worst[quantity] = max(cls.worst.get(quantity, 0.0), float(err))
+    def record(
+        cls, quantity: str, err: float, section: str | None = None, tol: float | None = None
+    ) -> None:
+        if section is None:
+            cls.worst[quantity] = max(cls.worst.get(quantity, 0.0), float(err))
+            return
+        entries = cls.sections.setdefault(section, {})
+        old_err, old_tol = entries.get(quantity, (0.0, None))
+        entries[quantity] = (max(old_err, float(err)), tol if tol is not None else old_tol)

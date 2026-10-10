@@ -41,6 +41,9 @@ features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "equivalence: the unified randomized equivalence suite against live BoTorch (select with `-m equivalence`)",
+]
 
 [tool.ruff]
 line-length = 100
@@ -51,7 +54,7 @@ select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["botorch_rs", "helpers"]
+known-first-party = ["botorch_rs", "helpers", "parity_helpers"]
 
 [tool.mypy]
 python_version = "3.12"
