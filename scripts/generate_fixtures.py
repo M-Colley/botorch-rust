@@ -29,9 +29,18 @@ synthetic test functions, and candidate generation on a fitted Hartmann-6 model
 (``gen_candidates_scipy`` from fixed initial conditions and ``optimize_acqf``
 over several seeds).
 
+Phase 4 (``<out>/phase4/*.json``): multi-output and batched ``SingleTaskGP`` models
+and ``ModelListGP`` models (fixed hyperparameters): per-element MLL values and
+autograd gradients, joint posteriors over all outputs in BoTorch's layout (with
+and without observation noise, batched inputs) and their derivatives with
+respect to X, BoTorch's batched independent fits, and -- for unbatched models --
+acquisition values and gradients with a ``ScalarizedPosteriorTransform``
+(analytic, MC with explicit base samples, qLogNEI, ``prune_inferior_points``) and
+of ``LogConstrainedExpectedImprovement`` / ``ConstrainedExpectedImprovement``.
+
 Usage (from the repository root, with BoTorch, GPyTorch and PyTorch installed)::
 
-    python scripts/generate_fixtures.py [--out botorch_core/tests/fixtures] [--phase 1|2|all]
+    python scripts/generate_fixtures.py [--out botorch_core/tests/fixtures] [--phase 1|2|4|all]
 
 To use a source checkout of BoTorch, put it first on the path, e.g.
 ``PYTHONPATH=/path/to/botorch python -P scripts/generate_fixtures.py``.
@@ -931,6 +940,620 @@ def generate_phase2(out: str) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 4: multi-output, batched and ModelListGP models, posterior transforms
+# and analytic constrained EI
+# ---------------------------------------------------------------------------
+# Written to <out>/phase4/. Every case is a SingleTaskGP with m >= 1 outputs
+# and an optional batch shape ("single_task") or a ModelListGP of such models
+# ("model_list"). Models with independent per-element hyperparameters are
+# built exactly like BoTorch does by default (modules with batch_shape equal
+# to the model's _aug_batch_shape). For every case the fixture records the
+# default and explicitly set raw hyperparameters, the per-element MLL values
+# and the gradient of their sum, joint posteriors over all outputs (with and
+# without observation noise, BoTorch's output-major covariance layout) and
+# their autograd derivatives with respect to X, and BoTorch's batched
+# independent fit (per-element results of fmin_l_bfgs_b_batched). Unbatched
+# cases also record acquisition values and gradients with a
+# ScalarizedPosteriorTransform (analytic, MC with explicit base samples,
+# qLogNEI, prune_inferior_points) and of LogConstrainedExpectedImprovement /
+# ConstrainedExpectedImprovement.
+
+PHASE4_CASES = [
+    # Multi-output SingleTaskGP (unbatched).
+    dict(name="mo_rbf_d2_n12_m2", kind="single_task", models=[dict(d=2, n=12, m=2)]),
+    dict(
+        name="mo_matern_d3_n15_m3_normalize",
+        kind="single_task",
+        models=[dict(d=3, n=15, m=3, covar="matern", normalize="shared", x_range=(-2.0, 3.0))],
+    ),
+    dict(name="mo_fixed_noise_d2_n10_m2", kind="single_task", models=[dict(d=2, n=10, m=2, yvar=True)]),
+    dict(
+        name="mo_no_outcome_d4_n9_m2",
+        kind="single_task",
+        models=[dict(d=4, n=9, m=2, outcome="none", normalize="explicit", x_range=(-1.0, 1.0))],
+    ),
+    dict(
+        name="mo_legacy_gamma_d2_n11_m3",
+        kind="single_task",
+        models=[dict(d=2, n=11, m=3, covar="matern_gamma", likelihood="gamma")],
+    ),
+    # Single output with a posterior transform (m = 1 scalarization).
+    dict(name="so_rbf_d2_n10", kind="single_task", models=[dict(d=2, n=10, m=1)]),
+    # Batched SingleTaskGP.
+    dict(name="batched_b3_m1_d2_n10", kind="single_task", models=[dict(d=2, n=10, m=1, batch_shape=[3])]),
+    dict(
+        name="batched_b2_m2_d2_n8_normalize",
+        kind="single_task",
+        models=[dict(d=2, n=8, m=2, batch_shape=[2], normalize="shared", x_range=(1.0, 4.0))],
+    ),
+    dict(
+        name="batched_b2x2_m1_d3_n9_normalize_per_batch",
+        kind="single_task",
+        models=[dict(d=3, n=9, m=1, batch_shape=[2, 2], normalize="per_batch", covar="matern")],
+    ),
+    dict(
+        name="batched_b2_m2_d2_n7_fixed_noise",
+        kind="single_task",
+        models=[dict(d=2, n=7, m=2, batch_shape=[2], yvar=True)],
+    ),
+    # ModelListGP.
+    dict(
+        name="list_two_single_d2",
+        kind="model_list",
+        models=[dict(d=2, n=10, m=1), dict(d=2, n=7, m=1, normalize="shared", seed_offset=1)],
+    ),
+    dict(
+        name="list_mixed_d3",
+        kind="model_list",
+        models=[dict(d=3, n=12, m=2, covar="matern"), dict(d=3, n=9, m=1, yvar=True, seed_offset=2)],
+    ),
+    dict(
+        name="list_three_kernels_d2",
+        kind="model_list",
+        models=[
+            dict(d=2, n=9, m=1, covar="rbf"),
+            dict(d=2, n=11, m=1, covar="matern", seed_offset=1),
+            dict(d=2, n=8, m=1, covar="matern_gamma", likelihood="gamma", seed_offset=2),
+        ],
+    ),
+]
+
+P4_MC_SAMPLES = 64
+P4_PRUNE_SAMPLES = 128
+
+
+def p4_aug_shape(cfg: dict) -> tuple:
+    batch = tuple(cfg.get("batch_shape", []))
+    m = cfg["m"]
+    return batch + ((m,) if m > 1 else ())
+
+
+def p4_make_data(cfg: dict, seed: int):
+    """Training data (batch_shape x n x d / x m), noise variances and bounds."""
+    n, d, m = cfg["n"], cfg["d"], cfg["m"]
+    batch = tuple(cfg.get("batch_shape", []))
+    lo, hi = cfg.get("x_range", (0.0, 1.0))
+    g = torch.Generator().manual_seed(seed)
+    U = torch.rand(*batch, n, d, generator=g, dtype=DTYPE)
+    X = lo + (hi - lo) * U
+    cols = []
+    for t in range(m):
+        f = torch.sin(2 * math.pi * U[..., 0] + 0.7 * t) + 0.5 * (1 + t) * torch.cos(3.0 * U.sum(-1))
+        f = f + 0.3 * U[..., -1] ** 2 + 0.1 * torch.randn(*batch, n, generator=g, dtype=DTYPE)
+        cols.append((2.0 + t) + (1.0 + 0.5 * t) * f)
+    Y = torch.stack(cols, dim=-1)
+    Yvar = None
+    if cfg.get("yvar"):
+        Yvar = (0.05 + 0.2 * torch.rand(*batch, n, m, generator=g, dtype=DTYPE)) ** 2
+    bounds = None
+    if cfg.get("normalize") == "explicit":
+        bounds = torch.stack([torch.full((d,), lo - 0.5, dtype=DTYPE), torch.full((d,), hi + 1.0, dtype=DTYPE)])
+    return X, Y, Yvar, bounds
+
+
+def p4_build_model(cfg: dict, X, Y, Yvar, bounds) -> SingleTaskGP:
+    d = cfg["d"]
+    aug = torch.Size(p4_aug_shape(cfg))
+    batch = torch.Size(cfg.get("batch_shape", []))
+    kwargs = {}
+    covar = cfg.get("covar", "rbf")
+    if covar == "matern":
+        kwargs["covar_module"] = get_covar_module_with_dim_scaled_prior(
+            ard_num_dims=d, use_rbf_kernel=False, batch_shape=aug
+        )
+    elif covar == "matern_gamma":
+        kwargs["covar_module"] = get_matern_kernel_with_gamma_prior(ard_num_dims=d, batch_shape=aug)
+    if cfg.get("likelihood") == "gamma":
+        kwargs["likelihood"] = get_gaussian_likelihood_with_gamma_prior(batch_shape=aug)
+    normalize = cfg.get("normalize")
+    if normalize == "shared":
+        kwargs["input_transform"] = Normalize(d=d)
+    elif normalize == "per_batch":
+        kwargs["input_transform"] = Normalize(d=d, batch_shape=batch)
+    elif normalize == "explicit":
+        kwargs["input_transform"] = Normalize(d=d, bounds=bounds)
+    if cfg.get("outcome", "standardize") == "none":
+        kwargs["outcome_transform"] = None
+    return SingleTaskGP(X, Y, train_Yvar=Yvar, **kwargs)
+
+
+def p4_set_values(model, n_elements: int, d: int) -> list[float]:
+    """Raw parameters for explicit per-element hyperparameter values."""
+    flat = []
+    for name, p in named_params(model):
+        c = constraint_of(model, name)
+        e = torch.arange(n_elements, dtype=DTYPE)
+        if name.endswith("raw_noise"):
+            actual = (0.05 * (1 + 0.3 * e)).view_as(p)
+        elif name.endswith("raw_constant"):
+            actual = (0.15 - 0.1 * e).view_as(p)
+        elif name.endswith("raw_outputscale"):
+            actual = (1.7 + 0.2 * e).view_as(p)
+        elif name.endswith("raw_lengthscale"):
+            base = torch.linspace(0.25, 0.9, d, dtype=DTYPE) if d > 1 else torch.tensor([0.35], dtype=DTYPE)
+            actual = (base.unsqueeze(0) * (1 + 0.15 * e).unsqueeze(-1)).view_as(p)
+        else:
+            raise ValueError(name)
+        raw = actual if c is None else c.inverse_transform(actual)
+        flat.extend(raw.reshape(-1).tolist())
+    return flat
+
+
+def p4_mll_values_and_grad(model):
+    """Per-element MLL values (shape _aug_batch_shape) and d sum / d raw."""
+    mll = ExactMarginalLogLikelihood(model.likelihood, model)
+    mll.train()
+    model.zero_grad()
+    out = model(*model.train_inputs)
+    val = mll(out, model.train_targets, *(model.transform_inputs(X=t) for t in model.train_inputs))
+    val.sum().backward()
+    grad = []
+    for _, p in named_params(model):
+        grad.extend(p.grad.reshape(-1).tolist())
+    model.zero_grad()
+    model.eval()
+    return val.detach().reshape(-1).tolist(), grad
+
+
+def p4_posterior(model_or_list, X, noise: bool):
+    with torch.no_grad():
+        post = model_or_list.posterior(X, observation_noise=noise)
+        mvn = post.distribution
+        return {
+            "mean": tolist(post.mean.reshape(-1)),
+            "mean_shape": list(post.mean.shape),
+            "variance": tolist(post.variance.reshape(-1)),
+            "covariance": tolist(mvn.covariance_matrix.reshape(-1)),
+            "covariance_shape": list(mvn.covariance_matrix.shape),
+        }
+
+
+def p4_posterior_grad(model_or_list, X):
+    """Autograd jacobians of the joint mean (q x m) and covariance
+    ((q m) x (q m), output-major) with respect to X (q x d)."""
+
+    def mean_fn(Z):
+        return model_or_list.posterior(Z).mean
+
+    def cov_fn(Z):
+        return model_or_list.posterior(Z).distribution.covariance_matrix
+
+    jm = torch.autograd.functional.jacobian(mean_fn, X)
+    jc = torch.autograd.functional.jacobian(cov_fn, X)
+    return {"x": tolist(X), "dmean": tolist(jm.reshape(-1)), "dcov": tolist(jc.reshape(-1))}
+
+
+def p4_fit(build, is_list: bool, seed: int):
+    """BoTorch's fit_gpytorch_mll from the default initialization, recording
+    the per-element results of the batched independent L-BFGS-B."""
+    import botorch.optim.batched_lbfgs_b as blb
+    from gpytorch.mlls import SumMarginalLogLikelihood
+
+    model = build()
+    captured = []
+    orig = blb.fmin_l_bfgs_b_batched
+
+    def wrapper(*args, **kwargs):
+        xs, fs, results = orig(*args, **kwargs)
+        captured.append(results)
+        return xs, fs, results
+
+    results = []
+
+    def optimizer(mll, **kwargs):
+        captured.clear()
+        res = fit_gpytorch_mll_scipy(mll, **kwargs)
+        per = None
+        if captured:
+            per = [
+                {"fun": float(r["fun"]), "nit": int(r["nit"]), "status": int(r["status"]), "message": str(r["message"])}
+                for r in captured[-1]
+            ]
+        results.append({"fval": float(res.fval), "step": int(res.step), "status": str(res.status.name),
+                        "message": str(res.message), "elements": per})
+        return res
+
+    blb.fmin_l_bfgs_b_batched = wrapper
+    try:
+        torch.manual_seed(seed)
+        if is_list:
+            fit_gpytorch_mll(SumMarginalLogLikelihood(model.likelihood, model), optimizer=optimizer)
+        else:
+            fit_gpytorch_mll(ExactMarginalLogLikelihood(model.likelihood, model), optimizer=optimizer)
+    finally:
+        blb.fmin_l_bfgs_b_batched = orig
+    subs = list(model.models) if is_list else [model]
+    out = []
+    for sub, res in zip(subs, results, strict=True):
+        values, _ = p4_mll_values_and_grad(sub)
+        out.append({
+            "raw_params": flat_params(sub),
+            "losses": [-v for v in values],
+            "result": res,
+        })
+    return out
+
+
+class _DenseSeparateMTMVN:
+    """Context manager that makes ``ModelListGP.posterior`` split multi-output
+    sub-model posteriors using the dense covariance.
+
+    BoTorch's ``separate_mtmvn`` slices the sub-model's lazy covariance (a
+    ``BlockDiagLinearOperator``) with ``full_covar[..., start:end, start:end]``,
+    which linear_operator (<= 0.6.1) evaluates incorrectly for block-diagonal
+    operators: it returns the leading rows and columns of *every* block instead
+    of one block, so the posterior covariance (and variance) of a ModelListGP
+    with a multi-output sub-model mixes the outputs' blocks. Slicing the dense
+    covariance yields BoTorch's intended result: the block-diagonal
+    concatenation of the sub-model posteriors (identical to BoTorch's output for
+    lists of single-output models).
+    """
+
+    def __enter__(self):
+        import botorch.models.gpytorch as gpytorch_models
+        from gpytorch.distributions import MultitaskMultivariateNormal
+
+        self._module = gpytorch_models
+        self._orig = gpytorch_models.separate_mtmvn
+        orig = self._orig
+
+        def separate(mvn):
+            dense = MultitaskMultivariateNormal(
+                mvn.mean, mvn.lazy_covariance_matrix.to_dense(), interleaved=mvn._interleaved
+            )
+            return orig(dense)
+
+        gpytorch_models.separate_mtmvn = separate
+        return self
+
+    def __exit__(self, *exc):
+        self._module.separate_mtmvn = self._orig
+        return False
+
+
+class _DenseScalarization:
+    """Context manager that makes ``ScalarizedPosteriorTransform`` scalarize a
+    ``ModelListGP`` posterior with BoTorch's general (dense) formula.
+
+    For q > 1, ``scalarize_posterior_gpytorch`` special-cases block-diagonal
+    covariances by indexing ``cov.base_linear_op``, which fails inside
+    linear_operator for ModelListGP posteriors (``AttributeError`` in
+    ``InterpolatedLinearOperator.to``), so BoTorch cannot evaluate MC
+    acquisition functions with a posterior transform on a ModelListGP. The
+    general branch of the same function computes the identical quantity
+    ``sum_t w_t^2 Sigma_t`` from the dense covariance.
+    """
+
+    def __enter__(self):
+        import botorch.acquisition.objective as objective
+        from botorch.posteriors.gpytorch import GPyTorchPosterior
+        from gpytorch.distributions import MultitaskMultivariateNormal
+
+        self._objective = objective
+        self._orig = objective.scalarize_posterior
+        orig = self._orig
+
+        def scalarize(posterior, weights, offset=0.0):
+            mvn = posterior.distribution
+            if isinstance(mvn, MultitaskMultivariateNormal) and not mvn._interleaved:
+                dense = MultitaskMultivariateNormal(mvn.mean, mvn.covariance_matrix, interleaved=False)
+                posterior = GPyTorchPosterior(dense)
+            return orig(posterior=posterior, weights=weights, offset=offset)
+
+        objective.scalarize_posterior = scalarize
+        return self
+
+    def __exit__(self, *exc):
+        self._objective.scalarize_posterior = self._orig
+        return False
+
+
+def p4_acqf(model, models_cfg, Xtest, Xbase, seed: int):
+    """Acquisition values and gradients with posterior transforms and the
+    constrained analytic acquisition functions (unbatched models)."""
+    import contextlib
+
+    from botorch.models import ModelListGP
+
+    dense = _DenseScalarization if isinstance(model, ModelListGP) else contextlib.nullcontext
+    from botorch.acquisition import analytic as an
+    from botorch.acquisition.logei import qLogExpectedImprovement, qLogNoisyExpectedImprovement
+    from botorch.acquisition.monte_carlo import (
+        qExpectedImprovement,
+        qProbabilityOfImprovement,
+        qSimpleRegret,
+        qUpperConfidenceBound,
+    )
+    from botorch.acquisition.objective import ScalarizedPosteriorTransform
+    from botorch.acquisition.utils import prune_inferior_points
+    from botorch.sampling.normal import SobolQMCNormalSampler
+
+    m = model.num_outputs
+    weights = [0.6, -0.4, 0.25][:m] if m > 1 else [-1.5]
+    offset = 0.2
+    pt = ScalarizedPosteriorTransform(torch.tensor(weights, dtype=DTYPE), offset=offset)
+    with torch.no_grad():
+        smean = model.posterior(Xtest.unsqueeze(-2), posterior_transform=pt).mean.reshape(-1)
+        sstd = model.posterior(Xtest.unsqueeze(-2), posterior_transform=pt).variance.reshape(-1).sqrt()
+    best = smean.max().item()
+    spread = sstd.mean().item()
+
+    analytic_configs = [
+        ("LogExpectedImprovement", dict(best_f=best, maximize=True)),
+        ("LogExpectedImprovement", dict(best_f=best + 4 * spread, maximize=True)),
+        ("LogExpectedImprovement", dict(best_f=smean.min().item(), maximize=False)),
+        ("ExpectedImprovement", dict(best_f=best, maximize=True)),
+        ("ProbabilityOfImprovement", dict(best_f=best, maximize=True)),
+        ("LogProbabilityOfImprovement", dict(best_f=best + 2 * spread, maximize=True)),
+        ("UpperConfidenceBound", dict(beta=0.3, maximize=True)),
+        ("UpperConfidenceBound", dict(beta=1.5, maximize=False)),
+        ("PosteriorMean", dict(maximize=True)),
+        ("PosteriorStandardDeviation", dict(maximize=False)),
+    ]
+    analytic = []
+    for name, kw in analytic_configs:
+        acqf = getattr(an, name)(model, posterior_transform=pt, **_as_float64(kw))
+        vals, grads = [], []
+        for i in range(Xtest.shape[0]):
+            v, g = _grad_eval(acqf, Xtest[i : i + 1])
+            vals.append(v)
+            grads.append(g[0])
+        analytic.append({"acqf": name, **kw, "values": vals, "grads": grads})
+
+    pending = Xtest[[3, 4]]
+    mc_configs = [
+        ("qExpectedImprovement", qExpectedImprovement, dict(best_f=best - spread)),
+        ("qLogExpectedImprovement", qLogExpectedImprovement, dict(best_f=best)),
+        ("qProbabilityOfImprovement", qProbabilityOfImprovement, dict(best_f=best, tau=0.1)),
+        ("qUpperConfidenceBound", qUpperConfidenceBound, dict(beta=0.2)),
+        ("qSimpleRegret", qSimpleRegret, dict()),
+    ]
+    mc = []
+    for q in (1, 2):
+        Xq = Xtest[[0, 5][:q]]
+        for n_p in (0, 2):
+            D = q + n_p
+            Z = _normal_samples(D, P4_MC_SAMPLES, seed=seed + 10 * q + n_p)
+            results = []
+            for name, cls, kw in mc_configs:
+                sampler = _sampler_with(Z)
+                acqf = cls(
+                    model,
+                    sampler=sampler,
+                    posterior_transform=pt,
+                    X_pending=pending if n_p else None,
+                    **_as_float64(kw, keys=("best_f", "tau")),
+                )
+                with dense():
+                    v, g = _grad_eval(acqf, Xq)
+                assert torch.equal(sampler.base_samples.view(P4_MC_SAMPLES, D), Z), "base samples were replaced"
+                results.append({"acqf": name, **kw, "value": v, "grad": g})
+            mc.append({"q": q, "x": tolist(Xq), "x_pending": tolist(pending) if n_p else None,
+                       "base_samples": tolist(Z), "results": results})
+
+    nei = []
+    for k, (q, n_p, incremental) in enumerate([(1, 0, True), (2, 2, True), (2, 2, False)]):
+        D = Xbase.shape[0] + n_p + q
+        Z = _normal_samples(D, P4_MC_SAMPLES, seed=seed + 100 + k)
+        sampler = _sampler_with(Z)
+        with dense():
+            acqf = qLogNoisyExpectedImprovement(
+                model,
+                X_baseline=Xbase,
+                sampler=sampler,
+                posterior_transform=pt,
+                X_pending=pending if n_p else None,
+                prune_baseline=False,
+                cache_root=False,
+                incremental=incremental,
+            )
+            Xq = Xtest[[0, 5][:q]]
+            v, g = _grad_eval(acqf, Xq)
+        assert torch.equal(sampler.base_samples.view(P4_MC_SAMPLES, D), Z)
+        nei.append({"q": q, "x": tolist(Xq), "x_pending": tolist(pending) if n_p else None,
+                    "incremental": incremental, "base_samples": tolist(Z), "value": v, "grad": g})
+
+    Xp = torch.cat([Xbase, Xtest], dim=0)
+    psampler = SobolQMCNormalSampler(sample_shape=torch.Size([P4_PRUNE_SAMPLES]), seed=seed % 1000)
+    with dense():
+        pruned = prune_inferior_points(model, Xp, posterior_transform=pt, sampler=psampler)
+        Zp = psampler.base_samples.view(P4_PRUNE_SAMPLES, -1).clone()
+        with torch.no_grad():
+            samples = psampler(model.posterior(Xp, posterior_transform=pt)).squeeze(-1)
+    counts = torch.bincount(samples.argmax(dim=-1), minlength=Xp.shape[0])
+    indices = [int(i) for i in torch.nonzero(counts)]
+    assert torch.equal(Xp[indices], pruned)
+    prune = {"x": tolist(Xp), "base_samples": tolist(Zp), "indices": indices}
+
+    constrained = []
+    if m >= 2:
+        with torch.no_grad():
+            post = model.posterior(Xtest.unsqueeze(-2))
+            means = post.mean.squeeze(-2)  # 6 x m
+            stds = post.variance.squeeze(-2).sqrt()
+        med = means.median(dim=0).values
+        sd = stds.mean(dim=0)
+        configs = [
+            (0, [(1, med[1].item(), None)], True),
+            (1, [(0, None, med[0].item())], True),
+            (0, [(1, (med[1] - sd[1]).item(), (med[1] + 0.5 * sd[1]).item())], False),
+            # Far in the tail: log feasibility of about -50 and below.
+            (1, [(0, (med[0] + 10 * sd[0]).item(), None)], True),
+        ]
+        if m >= 3:
+            configs.append((1, [(0, (med[0] - sd[0]).item(), None), (2, (med[2] - sd[2]).item(),
+                                                                       (med[2] + sd[2]).item())], True))
+            configs.append((2, [(1, None, med[1].item()), (0, (med[0] - 2 * sd[0]).item(), (med[0] + sd[0]).item())],
+                            False))
+        for obj, cons, maximize in configs:
+            best_obj = means[:, obj].max().item() if maximize else means[:, obj].min().item()
+            cons_bt = {
+                k: (None if lo is None else torch.tensor(lo, dtype=DTYPE), None if hi is None else torch.tensor(hi, dtype=DTYPE))
+                for k, lo, hi in cons
+            }
+            for name in ("LogConstrainedExpectedImprovement", "ConstrainedExpectedImprovement"):
+                acqf = getattr(an, name)(
+                    model,
+                    best_f=torch.tensor(best_obj, dtype=DTYPE),
+                    objective_index=obj,
+                    constraints=cons_bt,
+                    maximize=maximize,
+                )
+                vals, grads = [], []
+                for i in range(Xtest.shape[0]):
+                    v, g = _grad_eval(acqf, Xtest[i : i + 1])
+                    vals.append(v)
+                    grads.append(g[0])
+                constrained.append({
+                    "acqf": name, "best_f": best_obj, "objective_index": obj,
+                    "constraints": [[k, lo, hi] for k, lo, hi in cons], "maximize": maximize,
+                    "values": vals, "grads": grads,
+                })
+    return {
+        "weights": weights,
+        "offset": offset,
+        "analytic": analytic,
+        "mc": mc,
+        "nei": nei,
+        "prune": prune,
+        "constrained": constrained,
+    }
+
+
+def p4_generate_case(case: dict, seed: int) -> dict:
+    from botorch.models import ModelListGP
+
+    is_list = case["kind"] == "model_list"
+    data = []
+    for cfg in case["models"]:
+        data.append(p4_make_data(cfg, seed + 17 * cfg.get("seed_offset", 0)))
+
+    def build():
+        subs = [p4_build_model(cfg, *dat) for cfg, dat in zip(case["models"], data, strict=True)]
+        return ModelListGP(*subs) if is_list else subs[0]
+
+    d = case["models"][0]["d"]
+    lo, hi = case["models"][0].get("x_range", (0.0, 1.0))
+    g = torch.Generator().manual_seed(seed + 999)
+    Xtest = lo + (hi - lo) * torch.rand(5, d, generator=g, dtype=DTYPE)
+    outside = torch.full((1, d), hi + 0.25 * (hi - lo), dtype=DTYPE)
+    Xtest = torch.cat([Xtest, outside], dim=0)  # 6 x d
+
+    model = build()
+    subs = list(model.models) if is_list else [model]
+    models_out = []
+    for cfg, (X, Y, Yvar, bounds), sub in zip(case["models"], data, subs, strict=True):
+        n_el = int(torch.Size(p4_aug_shape(cfg)).numel())
+        default_raw = flat_params(sub)
+        default_values, default_grad = p4_mll_values_and_grad(sub)
+        raw = p4_set_values(sub, n_el, cfg["d"])
+        set_flat_params(sub, raw)
+        values, grad = p4_mll_values_and_grad(sub)
+        batch = list(cfg.get("batch_shape", []))
+        nb = int(torch.Size(batch).numel())
+        config = {
+            "d": cfg["d"], "n": cfg["n"], "m": cfg["m"], "batch_shape": batch,
+            "covar": cfg.get("covar", "rbf"), "likelihood": cfg.get("likelihood", "default"),
+            "yvar": bool(cfg.get("yvar", False)), "normalize": cfg.get("normalize"),
+            "outcome": cfg.get("outcome", "standardize"),
+            "bounds": None if bounds is None else tolist(bounds),
+        }
+        models_out.append({
+            "config": config,
+            "train_x": tolist(X.reshape(nb, cfg["n"], cfg["d"])),
+            "train_y": tolist(Y.reshape(nb, cfg["n"], cfg["m"])),
+            "train_yvar": None if Yvar is None else tolist(Yvar.reshape(nb, cfg["n"], cfg["m"])),
+            "param_names": [(name, p.numel()) for name, p in named_params(sub)],
+            "param_shapes": [(name, list(p.shape)) for name, p in named_params(sub)],
+            "default_raw_params": default_raw,
+            "default_mll": {"values": default_values, "grad": default_grad},
+            "raw_params": raw,
+            "mll": {"values": values, "grad": grad},
+        })
+    model.eval()
+    import contextlib
+
+    fixed = _DenseSeparateMTMVN if is_list else contextlib.nullcontext
+    with fixed():
+        posterior = p4_posterior(model, Xtest, False)
+        posterior_noisy = p4_posterior(model, Xtest, True)
+    bug_diff = None
+    if is_list:
+        # BoTorch's own (unpatched) ModelListGP posterior, for information.
+        raw_cov = torch.tensor(p4_posterior(model, Xtest, False)["covariance"], dtype=DTYPE)
+        bug_diff = (raw_cov - torch.tensor(posterior["covariance"], dtype=DTYPE)).abs().max().item()
+    out = {
+        "name": case["name"],
+        "kind": case["kind"],
+        "versions": {
+            "botorch": botorch.__version__,
+            "botorch_revision": botorch_revision(),
+            "gpytorch": gpytorch.__version__,
+            "torch": torch.__version__,
+        },
+        "models": models_out,
+        "test_x": tolist(Xtest),
+        "posterior": posterior,
+        "posterior_noisy": posterior_noisy,
+        "botorch_unpatched_list_covariance_max_abs_diff": bug_diff,
+    }
+    batch = case["models"][0].get("batch_shape", [])
+    if batch:
+        gb = torch.Generator().manual_seed(seed + 555)
+        Xb = lo + (hi - lo) * torch.rand(*batch, 3, d, generator=gb, dtype=DTYPE)
+        out["batched_x"] = tolist(Xb.reshape(-1, 3, d))
+        out["posterior_batched"] = p4_posterior(model, Xb, False)
+        Xe = lo + (hi - lo) * torch.rand(2, 1, 2, d, generator=gb, dtype=DTYPE)
+        if len(batch) == 1:
+            # Extra leading batch dimension broadcast against the model batch.
+            out["extra_batch_x"] = tolist(Xe.reshape(2, 2, d))
+            out["posterior_extra_batch"] = p4_posterior(model, Xe, False)
+    else:
+        with fixed():
+            out["posterior_grad"] = p4_posterior_grad(model, Xtest[:2].clone())
+            Xbase = data[0][0]
+            out["acqf"] = p4_acqf(model, case["models"], Xtest, Xbase, seed)
+    out["fit"] = p4_fit(build, is_list, seed)
+    return out
+
+
+def generate_phase4(out: str) -> None:
+    out = os.path.join(out, "phase4")
+    os.makedirs(out, exist_ok=True)
+    for i, case in enumerate(PHASE4_CASES):
+        fixture = p4_generate_case(case, seed=4000 + 37 * i)
+        _write_json(os.path.join(out, f"{case['name']}.json"), fixture)
+        fits = fixture["fit"]
+        summary = "; ".join(
+            f"fval={f['result']['fval']:+.8f} step={f['result']['step']} {f['result']['status']}" for f in fits
+        )
+        bug = fixture["botorch_unpatched_list_covariance_max_abs_diff"]
+        if bug is not None:
+            summary += f"; unpatched ModelListGP covariance differs by {bug:.1e}"
+        print(f"{case['name']:44s} {summary}", file=sys.stderr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     default_out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "botorch_core", "tests", "fixtures")
@@ -938,9 +1561,12 @@ def main() -> None:
     parser.add_argument("--only", nargs="*", help="only generate these (phase 1) case names")
     parser.add_argument(
         "--phase",
-        choices=["1", "2", "all"],
+        choices=["1", "2", "4", "all"],
         default="all",
-        help="1: GP fixtures, 2: acquisition / optimization / test-function fixtures",
+        help=(
+            "1: GP fixtures, 2: acquisition / optimization / test-function fixtures, "
+            "4: multi-output, batched and ModelListGP models, posterior transforms, constrained EI"
+        ),
     )
     args = parser.parse_args()
     print(f"botorch {botorch.__version__} from {botorch.__file__}", file=sys.stderr)
@@ -963,6 +1589,8 @@ def main() -> None:
             )
     if args.phase in ("2", "all"):
         generate_phase2(args.out)
+    if args.phase in ("4", "all"):
+        generate_phase4(args.out)
 
 
 if __name__ == "__main__":
