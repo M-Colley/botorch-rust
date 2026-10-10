@@ -245,3 +245,41 @@ fn zero_acquisition_values_fall_back_to_random_initial_conditions() {
     assert_eq!(res.restarts.len(), 3);
     assert_eq!(res.acq_value, 0.0);
 }
+
+#[test]
+fn optimization_method_selection() {
+    use botorch_core::optim::{LinearConstraint, OptimizationMethod, ParameterConstraints};
+
+    let m = model();
+    let best_f = m.train_targets().max();
+    let acqf = LogExpectedImprovement::new(m, best_f, true).unwrap();
+    let b = bounds();
+    // SLSQP without constraints optimizes within the bounds and reaches the
+    // L-BFGS-B optimum.
+    let slsqp = OptimizeAcqfOptions {
+        method: OptimizationMethod::Slsqp,
+        ..seeded(5)
+    };
+    let (xs, vs) = optimize_acqf(&acqf, &b, 1, 6, 128, &slsqp).unwrap();
+    let (_, vl) = optimize_acqf(&acqf, &b, 1, 6, 128, &seeded(5)).unwrap();
+    for k in 0..3 {
+        assert!(xs[(0, k)] >= b[(0, k)] && xs[(0, k)] <= b[(1, k)]);
+    }
+    assert!((vs - vl).abs() < 1e-4, "SLSQP {vs} vs L-BFGS-B {vl}");
+    // L-BFGS-B cannot handle constraints (BoTorch raises).
+    let constrained = OptimizeAcqfOptions {
+        method: OptimizationMethod::Lbfgsb,
+        constraints: ParameterConstraints {
+            inequality: vec![
+                LinearConstraint::intra_point(vec![0, 2], vec![1.0, 1.0], 0.5).unwrap(),
+            ],
+            ..Default::default()
+        },
+        ..seeded(5)
+    };
+    let err = optimize_acqf(&acqf, &b, 1, 6, 128, &constrained).unwrap_err();
+    assert!(
+        matches!(&err, BotorchError::InvalidArgument(msg) if msg == "Method L-BFGS-B cannot handle constraints."),
+        "{err}"
+    );
+}

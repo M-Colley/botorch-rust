@@ -15,8 +15,8 @@ pub use initializers::{
 };
 pub use optimize::{
     default_lbfgsb_options, gen_candidates_lbfgsb, optimize_acqf, optimize_acqf_detailed,
-    IcGenerator, IcRequest, OptimizeAcqfOptions, OptimizeAcqfResult, OptimizerStatus,
-    RestartResult,
+    IcGenerator, IcRequest, OptimizationMethod, OptimizeAcqfOptions, OptimizeAcqfResult,
+    OptimizerStatus, RestartResult,
 };
 pub use parameter_constraints::{
     evaluate_feasibility, ConstraintIndices, FnNonlinearConstraint, LinearConstraint,

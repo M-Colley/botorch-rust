@@ -110,6 +110,22 @@ impl IcGenerator {
     }
 }
 
+/// The optimizer of [`optimize_acqf`] (BoTorch's `options["method"]`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OptimizationMethod {
+    /// SLSQP if there are parameter constraints, else L-BFGS-B (BoTorch's
+    /// default).
+    #[default]
+    Auto,
+    /// SLSQP (`"SLSQP"`): chunks of `batch_limit` restarts are optimized
+    /// jointly within the bounds and the constraints.
+    Slsqp,
+    /// L-BFGS-B (`"L-BFGS-B"`): independent restarts within the bounds; not
+    /// available with parameter constraints (BoTorch raises "Method L-BFGS-B
+    /// cannot handle constraints.").
+    Lbfgsb,
+}
+
 /// Options of [`optimize_acqf`] (BoTorch's keyword arguments and `options`
 /// dictionary entries).
 #[derive(Clone, Debug)]
@@ -124,6 +140,9 @@ pub struct OptimizeAcqfOptions {
     /// SLSQP settings with constraints (`options["maxiter"]`,
     /// `options["ftol"]`; defaults 2000 and SciPy's `1e-6`).
     pub slsqp: SlsqpOptions,
+    /// The optimizer (BoTorch's `options["method"]`): by default SLSQP with
+    /// parameter constraints and L-BFGS-B without.
+    pub method: OptimizationMethod,
     /// Number of restarts optimized per chunk (`options["batch_limit"]`).
     /// Without constraints restarts are independent problems, so this only
     /// bounds the work in flight; with constraints each chunk is one SLSQP
@@ -172,6 +191,7 @@ impl Default for OptimizeAcqfOptions {
             seed: None,
             lbfgsb: default_lbfgsb_options(),
             slsqp: SlsqpOptions::default(),
+            method: OptimizationMethod::Auto,
             batch_limit: None,
             init_batch_limit: None,
             eta: DEFAULT_ETA,
@@ -305,6 +325,11 @@ pub fn optimize_acqf_detailed(
     options
         .constraints
         .validate(if sequential { 1 } else { q }, d)?;
+    if options.method == OptimizationMethod::Lbfgsb && !options.constraints.is_empty() {
+        return Err(BotorchError::InvalidArgument(
+            "Method L-BFGS-B cannot handle constraints.".into(),
+        ));
+    }
     if !options.constraints.nonlinear.is_empty()
         && options.batch_initial_conditions.is_none()
         && options.ic_generator.is_none()
@@ -442,6 +467,11 @@ fn optimize_batch(
 ) -> Result<OptimizeAcqfResult> {
     let d = bounds.ncols();
     let constrained = !options.constraints.is_empty();
+    let use_slsqp = match options.method {
+        OptimizationMethod::Auto => constrained,
+        OptimizationMethod::Slsqp => true,
+        OptimizationMethod::Lbfgsb => false,
+    };
     let provided = options.batch_initial_conditions.clone().unwrap_or_default();
     for ic in &provided {
         if ic.shape() != (q, d) {
@@ -524,7 +554,7 @@ fn optimize_batch(
             Ok(ics)
         };
     let run = |ics: &[Matrix]| -> Result<(Vec<RestartResult>, Vec<String>)> {
-        if constrained {
+        if use_slsqp {
             run_slsqp(acq_function, bounds, ics, options)
         } else {
             let rs = run_restarts(acq_function, bounds, ics, options)?;
@@ -543,7 +573,7 @@ fn optimize_batch(
     let (mut restarts, opt_warnings) = run(&ics)?;
     if !opt_warnings.is_empty() && options.retry_on_optimization_warning {
         if generate {
-            warnings.push(if constrained {
+            warnings.push(if use_slsqp {
                 format!(
                     "Optimization failed in `gen_candidates_scipy` with the following \
                      warning(s):\n{opt_warnings:?}\nTrying again with a new set of initial \
@@ -565,7 +595,7 @@ fn optimize_batch(
                 );
             }
         } else {
-            warnings.push(if constrained {
+            warnings.push(if use_slsqp {
                 format!(
                     "Optimization failed in `gen_candidates_scipy` with the following \
                      warning(s):\n{opt_warnings:?}\nBecause you specified \

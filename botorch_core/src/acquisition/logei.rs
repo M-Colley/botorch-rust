@@ -634,6 +634,14 @@ impl QLogNoisyExpectedImprovement {
         })
     }
 
+    /// The lower bound of the objective used for infeasible baseline points,
+    /// if an evaluation needed it (some sample had no feasible baseline
+    /// point; BoTorch then warns that qLogProbabilityOfFeasibility is the
+    /// better choice).
+    pub fn infeasible_lower_bound(&self) -> Option<f64> {
+        *self.lower_bound.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// The lower bound of the objective for infeasible baseline points
     /// (computed once).
     fn infeasible_value(&self) -> Result<f64> {
