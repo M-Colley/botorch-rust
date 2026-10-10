@@ -22,14 +22,31 @@
 //! BoTorch (BoTorch's own results change with the number of BLAS threads).
 //! On the parity fixtures the final losses agree with BoTorch's to 4e-7 or
 //! better, usually with identical iteration counts.
+//!
+//! [`fit_gpytorch_mll`] is generic over [`Fittable`] models:
+//!
+//! * [`SingleTaskGP`]: one L-BFGS-B problem (BoTorch's `fit_gpytorch_mll_scipy`);
+//! * [`BatchedMultiOutputGP`]: one independent L-BFGS-B problem per batch
+//!   element and output, run in parallel. This is BoTorch's batched
+//!   independent fitting (`_fit_gpytorch_mll_scipy_independent` with
+//!   `fmin_l_bfgs_b_batched`), which BoTorch uses for every model whose
+//!   `_aug_batch_shape` has more than one element: every element follows
+//!   exactly the iterates of its own L-BFGS-B problem, without a limit on the
+//!   number of function evaluations (`maxfun` is not used, as in BoTorch).
+//!   Failed elements are retried individually from prior samples (BoTorch
+//!   accepts abnormal terminations of individual elements without retrying
+//!   and restarts all elements after a numerical error);
+//! * [`ModelListGP`]: every sub-model is fitted on its own, like BoTorch's
+//!   `fit_gpytorch_mll` for a `SumMarginalLogLikelihood`.
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rayon::prelude::*;
 
 use crate::error::{BotorchError, Result};
 use crate::lbfgsb::{self, LbfgsbError, LbfgsbOptions, LbfgsbStatus};
 use crate::mll::ExactMarginalLogLikelihood;
-use crate::models::{Hyperparameters, Likelihood, SingleTaskGP};
+use crate::models::{BatchedMultiOutputGP, Hyperparameters, Likelihood, ModelListGP, SingleTaskGP};
 
 /// Options of [`fit_gpytorch_mll`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -145,17 +162,48 @@ fn sample_all_priors(
     h.to_vector().as_slice().to_vec()
 }
 
+/// Models whose hyperparameters can be fitted by [`fit_gpytorch_mll`].
+pub trait Fittable {
+    /// The summary returned by a successful fit.
+    type Output;
+
+    /// Fits the hyperparameters by maximizing the exact marginal log
+    /// likelihood (see [`fit_gpytorch_mll`]).
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] for invalid options and
+    /// [`BotorchError::ModelFitting`] if all attempts fail.
+    fn fit_mll(&mut self, options: FitOptions) -> Result<Self::Output>;
+}
+
 /// Fits the hyperparameters of `model` by maximizing the exact marginal log
 /// likelihood (BoTorch's `fit_gpytorch_mll` with `fit_gpytorch_mll_scipy`).
 ///
 /// On success the model's hyperparameters are set to the optimum. If every
 /// attempt fails, the model keeps its initial hyperparameters (BoTorch rolls
-/// the module back) and [`BotorchError::ModelFitting`] is returned.
+/// the module back) and [`BotorchError::ModelFitting`] is returned. See the
+/// [module documentation](self) for multi-output, batched and list models.
 ///
 /// # Errors
 /// [`BotorchError::InvalidArgument`] for invalid options and
 /// [`BotorchError::ModelFitting`] if all attempts fail.
-pub fn fit_gpytorch_mll(model: &mut SingleTaskGP, options: FitOptions) -> Result<FitResult> {
+pub fn fit_gpytorch_mll<M: Fittable + ?Sized>(
+    model: &mut M,
+    options: FitOptions,
+) -> Result<M::Output> {
+    model.fit_mll(options)
+}
+
+impl Fittable for SingleTaskGP {
+    type Output = FitResult;
+
+    fn fit_mll(&mut self, options: FitOptions) -> Result<FitResult> {
+        fit_single_task_gp(self, options)
+    }
+}
+
+/// The single-output fit of [`fit_gpytorch_mll`].
+fn fit_single_task_gp(model: &mut SingleTaskGP, options: FitOptions) -> Result<FitResult> {
     if options.max_attempts == 0 || options.maxcor == 0 {
         return Err(BotorchError::InvalidArgument(
             "max_attempts and maxcor must be at least 1".into(),
@@ -217,4 +265,134 @@ pub fn fit_gpytorch_mll(model: &mut SingleTaskGP, options: FitOptions) -> Result
         "All attempts to fit the model have failed ({}).",
         messages.join("; ")
     )))
+}
+
+/// Summary of a successful fit of a [`BatchedMultiOutputGP`] (BoTorch's
+/// `OptimizationResult` of the batched fit) with the results of every batch
+/// element.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchedFitResult {
+    /// Sum of the final losses of all elements (BoTorch's `fval`).
+    pub loss: f64,
+    /// Largest number of L-BFGS-B iterations of an element (BoTorch's `step`).
+    pub iterations: usize,
+    /// [`FitStatus::Success`] if every element converged, otherwise
+    /// [`FitStatus::Stopped`] (an iteration limit was reached).
+    pub status: FitStatus,
+    /// BoTorch's message (`"Batched L-BFGS-B: k/E outputs converged."`), or
+    /// the L-BFGS-B message for a model with a single element.
+    pub message: String,
+    /// The fits of the elements in row-major order of BoTorch's
+    /// `_aug_batch_shape` (batch elements, then outputs).
+    pub results: Vec<FitResult>,
+}
+
+impl Fittable for BatchedMultiOutputGP {
+    type Output = BatchedFitResult;
+
+    fn fit_mll(&mut self, options: FitOptions) -> Result<BatchedFitResult> {
+        let n_elements = self.num_elements();
+        if n_elements == 1 {
+            // BoTorch's plain (non-batched) scipy fit.
+            let r = fit_single_task_gp(&mut self.models_mut()[0], options)?;
+            return Ok(BatchedFitResult {
+                loss: r.loss,
+                iterations: r.iterations,
+                status: r.status,
+                message: r.message.clone(),
+                results: vec![r],
+            });
+        }
+        // BoTorch's fmin_l_bfgs_b_batched does not limit function evaluations.
+        let element_options = FitOptions {
+            maxfun: usize::MAX,
+            ..options
+        };
+        let initial: Vec<_> = self
+            .models()
+            .iter()
+            .map(|m| m.hyperparameters().clone())
+            .collect();
+        let outcomes: Vec<Result<FitResult>> = self
+            .models_mut()
+            .par_iter_mut()
+            .enumerate()
+            .map(|(e, model)| {
+                let o = FitOptions {
+                    seed: options.seed.wrapping_add(e as u64),
+                    ..element_options
+                };
+                fit_single_task_gp(model, o)
+            })
+            .collect();
+        let mut results = Vec::with_capacity(n_elements);
+        let mut failure = None;
+        for (e, outcome) in outcomes.into_iter().enumerate() {
+            match outcome {
+                Ok(r) => results.push(r),
+                Err(err) => {
+                    failure.get_or_insert((e, err));
+                }
+            }
+        }
+        if let Some((e, err)) = failure {
+            // Roll the whole model back, like BoTorch.
+            for (model, h) in self.models_mut().iter_mut().zip(initial) {
+                model.set_hyperparameters(h)?;
+            }
+            return Err(match err {
+                BotorchError::ModelFitting(msg) => {
+                    BotorchError::ModelFitting(format!("batch element {e}: {msg}"))
+                }
+                other => other,
+            });
+        }
+        let converged = results
+            .iter()
+            .filter(|r| r.status == FitStatus::Success)
+            .count();
+        Ok(BatchedFitResult {
+            loss: results.iter().map(|r| r.loss).sum(),
+            iterations: results.iter().map(|r| r.iterations).max().unwrap_or(0),
+            status: if converged == n_elements {
+                FitStatus::Success
+            } else {
+                FitStatus::Stopped
+            },
+            message: format!("Batched L-BFGS-B: {converged}/{n_elements} outputs converged."),
+            results,
+        })
+    }
+}
+
+impl Fittable for ModelListGP {
+    type Output = Vec<BatchedFitResult>;
+
+    /// Fits every sub-model on its own (in parallel). As with BoTorch's
+    /// sequential loop over the sub-models, if a sub-model cannot be fitted,
+    /// the preceding sub-models keep their fitted hyperparameters, the
+    /// following ones are left unchanged and the error is returned.
+    fn fit_mll(&mut self, options: FitOptions) -> Result<Vec<BatchedFitResult>> {
+        let fitted: Vec<Result<(BatchedMultiOutputGP, BatchedFitResult)>> = self
+            .models()
+            .par_iter()
+            .map(|m| {
+                let mut model = (**m).clone();
+                let r = fit_gpytorch_mll(&mut model, options)?;
+                Ok((model, r))
+            })
+            .collect();
+        let mut results = Vec::with_capacity(fitted.len());
+        for (i, outcome) in fitted.into_iter().enumerate() {
+            let (model, r) = outcome.map_err(|e| match e {
+                BotorchError::ModelFitting(msg) => {
+                    BotorchError::ModelFitting(format!("sub-model {i}: {msg}"))
+                }
+                other => other,
+            })?;
+            self.replace_model(i, model)?;
+            results.push(r);
+        }
+        Ok(results)
+    }
 }

@@ -86,6 +86,16 @@ impl Normalize {
         self.d
     }
 
+    /// A copy with the current offset and coefficient that is never refitted
+    /// (used to share bounds learned from all batch elements of a batched
+    /// model with its per-element GPs).
+    pub fn frozen(&self) -> Self {
+        Self {
+            learn_bounds: false,
+            ..self.clone()
+        }
+    }
+
     /// Whether the bounds are learned from the training data.
     pub fn learn_bounds(&self) -> bool {
         self.learn_bounds

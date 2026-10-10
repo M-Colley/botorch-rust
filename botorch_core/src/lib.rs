@@ -217,14 +217,15 @@ pub type Vector = nalgebra::DVector<f64>;
 pub use acquisition::AcquisitionFunction;
 pub use constraints::{GreaterThan, ParameterTransform};
 pub use error::{BotorchError, Result};
-pub use fit::{fit_gpytorch_mll, FitOptions, FitResult, FitStatus};
+pub use fit::{fit_gpytorch_mll, BatchedFitResult, FitOptions, FitResult, FitStatus, Fittable};
 pub use kernels::{Kernel, KernelKind, KernelSpec, ScaleKernelSpec};
 pub use linalg::{psd_safe_cholesky, CholeskyFactor};
 pub use mll::ExactMarginalLogLikelihood;
 pub use models::{
     get_gaussian_likelihood_with_gamma_prior, get_gaussian_likelihood_with_lognormal_prior,
-    GaussianLikelihoodSpec, Hyperparameters, Likelihood, Model, ParameterLayout, SingleTaskGP,
-    SingleTaskGPOptions,
+    BatchedInputTransform, BatchedMultiOutputGP, BatchedMultiOutputGPOptions,
+    GaussianLikelihoodSpec, Hyperparameters, Likelihood, Model, ModelListGP, ParameterLayout,
+    SingleTaskGP, SingleTaskGPOptions,
 };
 pub use optim::{optimize_acqf, OptimizeAcqfOptions};
 pub use posterior::{JointPosteriorGrad, PointPosteriors, Posterior};
