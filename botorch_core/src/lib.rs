@@ -253,8 +253,8 @@
 //!   iterates agree to about 1e-9 per step, and restarts started on flat parts
 //!   of the acquisition function can end in different local optima (in
 //!   either direction). Infeasible initial conditions are accepted with
-//!   nonlinear constraints, as on BoTorch's main branch (released versions up
-//!   to 0.18 reject them).
+//!   nonlinear constraints, as on BoTorch's main branch (the released 0.18.1
+//!   rejects them).
 //! * The interior point of a polytope maximizes the same slack as BoTorch's
 //!   `find_interior_point`, but the linear program is solved with `microlp`
 //!   instead of HiGHS, so a different maximizer may be returned when it is not

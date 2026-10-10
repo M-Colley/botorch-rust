@@ -403,9 +403,9 @@ def points_in(X: Any, shape: Sequence[int], seed: int, pad: float = 0.1) -> Any:
 
 def botorch_allows_infeasible_starts() -> bool:
     """Whether BoTorch's SLSQP accepts initial conditions that violate the
-    nonlinear constraints (BoTorch's main branch; released versions up to
-    0.18 raise "`batch_initial_conditions` must satisfy the non-linear
-    inequality constraints.", while botorch_rs follows main)."""
+    nonlinear constraints (BoTorch's main branch; the released 0.18.1 raises
+    "`batch_initial_conditions` must satisfy the non-linear inequality
+    constraints.", while botorch_rs follows main)."""
     import inspect
 
     from botorch.optim import parameter_constraints as pc

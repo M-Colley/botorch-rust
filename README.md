@@ -61,19 +61,21 @@ balances compatibility and performance:
 
 - **Essentially the same API.** Module paths, class names, argument names,
   order and defaults follow BoTorch. Where botorch-rs cannot honor an
-  argument (an `objective`, outcome `constraints` of MC acquisition functions,
-  linear constraints in `optimize_acqf`, ...) it raises
+  argument (a `post_processing_func` or custom `gen_candidates` in
+  `optimize_acqf`, a multi-output objective, ...) it raises
   `botorch_rs.exceptions.UnsupportedError`, a `NotImplementedError`, instead
   of silently ignoring it.
 - **The same numbers.** Every component is validated against BoTorch itself:
   identical data and hyperparameters give identical posteriors, marginal
   likelihoods and acquisition values to about 1e-10 (see
-  [Accuracy](#accuracy-and-parity-with-botorch)).
+  [Equivalence with BoTorch](#equivalence-with-botorch)).
 - **Not a complete replacement.** botorch-rs covers the core of Bayesian
   optimization with independent GPs (single- and multi-output, batched, model
-  lists). BoTorch remains the place for multi-task and multi-fidelity models,
-  custom objectives, knowledge gradient and entropy-based acquisition
-  functions, GPUs, and everything built on autograd.
+  lists), MC objectives, outcome constraints and constrained acquisition
+  optimization. BoTorch remains the place for multi-task and multi-fidelity
+  models, multi-objective optimization, knowledge gradient and entropy-based
+  acquisition functions, GPUs, and everything built on autograd through
+  models.
 
 ## Installation
 
@@ -178,30 +180,131 @@ counterpart.
 | `botorch.fit.fit_gpytorch_mll` | `botorch_rs.fit.fit_gpytorch_mll` | L-BFGS-B (port of L-BFGS-B 3.0 reproducing SciPy's iterates), retries from prior samples, `optimizer_kwargs={"options": {...}}`, `max_attempts`; multi-output and batched models are fitted per element like BoTorch's batched independent fitting, `ModelListGP`s per sub-model |
 | `ExpectedImprovement`, `LogExpectedImprovement`, `ProbabilityOfImprovement`, `LogProbabilityOfImprovement`, `UpperConfidenceBound`, `PosteriorMean`, `PosteriorStandardDeviation` | `botorch_rs.acquisition.*` | analytic, `q = 1`, `maximize`, `posterior_transform` |
 | `LogConstrainedExpectedImprovement`, `ConstrainedExpectedImprovement` | `botorch_rs.acquisition.*` | analytic, `objective_index`, `constraints={i: (lower, upper)}` (`None`: unbounded), `maximize` |
-| `qExpectedImprovement`, `qProbabilityOfImprovement`, `qUpperConfidenceBound`, `qSimpleRegret`, `qLogExpectedImprovement`, `qLogNoisyExpectedImprovement` | `botorch_rs.acquisition.*` | any `q`, `X_pending` / `set_X_pending`, baseline pruning, `incremental`, `fat`, `tau_max`, `tau_relu`, `posterior_transform` |
+| `qExpectedImprovement`, `qProbabilityOfImprovement`, `qUpperConfidenceBound`, `qSimpleRegret`, `qLogExpectedImprovement`, `qLogNoisyExpectedImprovement` | `botorch_rs.acquisition.*` | any `q`, `X_pending` / `set_X_pending`, baseline pruning, `incremental`, `fat` (also a per-constraint list), `tau_max`, `tau_relu`, `posterior_transform`, `objective`; outcome `constraints` (callables, feasible iff `<= 0`) and `eta` (a float or one per constraint) for qEI, qPI, qLogEI and qLogNEI (feasibility-weighted incumbents and BoTorch's lower bound for infeasible baselines) |
+| `qLogProbabilityOfFeasibility` | `botorch_rs.acquisition.qLogProbabilityOfFeasibility` | `constraints`, `eta`, `fat`, `tau_max`, `posterior_transform` |
+| `IdentityMCObjective`, `LinearMCObjective`, `GenericMCObjective`, `ConstrainedMCObjective`, `MCAcquisitionObjective` | `botorch_rs.acquisition.objective.*` | linear objectives are evaluated in Rust; generic objectives, `ConstrainedMCObjective` (`infeasible_cost`, `eta`), subclasses and outcome constraints are callables on torch tensors, evaluated from Rust with gradients from `torch.autograd` (requires torch); BoTorch's own objective objects are accepted too |
 | `botorch.acquisition.objective.ScalarizedPosteriorTransform` | same path | `weights`, `offset`; `evaluate`, `posterior_transform(posterior)`; accepted by `model.posterior`, all acquisition functions and `prune_inferior_points` |
-| `botorch.acquisition.utils.prune_inferior_points` | same path | `posterior_transform` |
+| `botorch.acquisition.utils.prune_inferior_points` | same path | `objective`, `posterior_transform`, `constraints`, `sampler` |
 | `acqf(X)`, `torch.autograd.grad(acqf(X), X)` | same | exact gradients computed in Rust; `acqf.value_and_grad(X)` for NumPy and lists |
 | `botorch.sampling.SobolQMCNormalSampler` | `botorch_rs.sampling.SobolQMCNormalSampler` | explicit `base_samples` supported |
-| `botorch.optim.optimize_acqf` | `botorch_rs.optim.optimize_acqf` | box bounds, `fixed_features`, `batch_initial_conditions`, `sequential`, `return_best_only`, `options` (`seed`, `batch_limit`, `init_batch_limit`, `eta`, `alpha`, `nonnegative`, `maxiter`, `maxfun`, `ftol`, `gtol`, `maxcor`, `maxls`) |
+| `botorch.optim.optimize_acqf` | `botorch_rs.optim.optimize_acqf` | box bounds, `inequality_constraints` / `equality_constraints` (BoTorch's `(indices, coefficients, rhs)`, intra- and inter-point), `nonlinear_inequality_constraints` (`(callable, is_intrapoint)`, torch callables), `fixed_features`, `batch_initial_conditions`, `ic_generator` (called with BoTorch's keyword arguments; `gen_batch_initial_conditions` runs natively), `sequential`, `return_best_only`, `options` (`seed`, `method` (`"L-BFGS-B"`, `"SLSQP"`), `batch_limit`, `init_batch_limit`, `eta`, `alpha`, `nonnegative`, `maxiter`, `maxfun`, `ftol`, `gtol`, `maxcor`, `maxls`, `n_burnin`, `n_thinning`); with constraints, SLSQP over chunks of `batch_limit` restarts, projection of infeasible results and `CandidateGenerationError` as in BoTorch |
+| `botorch.optim.initializers.gen_batch_initial_conditions`, `sample_q_batches_from_polytope`, `transform_constraints` | `botorch_rs.optim.initializers.*` | linear constraints (hit-and-run polytope sampling of the raw samples), `fixed_features`, `options` |
+| `botorch.optim.parameter_constraints.evaluate_feasibility` | same path | linear and nonlinear constraints, `tolerance` |
 | `botorch.utils.sampling.draw_sobol_samples`, `draw_sobol_normal_samples` | `botorch_rs.utils.sampling.*` | |
+| `botorch.utils.sampling.get_polytope_samples`, `HitAndRunPolytopeSampler`, `find_interior_point`, `sample_polytope`, `sparse_to_dense_constraints` | `botorch_rs.utils.sampling.*` | |
 | `botorch.test_functions.*` | `botorch_rs.test_functions.*` | Ackley, Beale, Branin, Bukin, Cosine8, DixonPrice, DropWave, EggHolder, Griewank, Hartmann, HolderTable, Levy, Michalewicz, Powell, Rastrigin, Rosenbrock, Shekel, SixHumpCamel, StyblinskiTang, ThreeHumpCamel |
 | `botorch.exceptions` | `botorch_rs.exceptions` | `BotorchRsError` hierarchy (also `ValueError`, `RuntimeError`, `NotImplementedError` subclasses) and BoTorch's warnings |
 
 Not available: other model classes (`MultiTaskGP`, ...),
-`condition_on_observations` / `fantasize`, MC objectives and outcome
-constraints of MC acquisition functions, posterior transforms other than
-`ScalarizedPosteriorTransform`, input transforms other than `Normalize`, other
-acquisition functions (knowledge gradient, entropy search, multi-objective),
-linear and nonlinear constraints and custom `gen_candidates` in
-`optimize_acqf`, and GPU execution.
+`condition_on_observations` / `fantasize`, multi-output and learned MC
+objectives, posterior transforms other than `ScalarizedPosteriorTransform`,
+input transforms other than `Normalize`, other acquisition functions
+(knowledge gradient, entropy search, multi-objective), `post_processing_func`,
+custom `gen_candidates`, timeouts and batch-shaped fixed features in
+`optimize_acqf`, `sample_around_best`, and GPU execution.
 
-## Accuracy and parity with BoTorch
+## Equivalence with BoTorch
 
-Correctness is defined by agreement with BoTorch. `scripts/generate_fixtures.py`
-records reference values from BoTorch for the Rust tests, and the Python tests
-compare against BoTorch directly (`botorch_pyo3/tests/test_parity.py` and
-`test_parity_multi_output.py`, run in CI against the released BoTorch):
+botorch-rs is correct when it computes what BoTorch computes. Agreement is
+tested at two levels:
+
+1. **Rust fixture tests.** `scripts/generate_fixtures.py` runs a reference
+   BoTorch and records inputs and results as JSON files
+   (`botorch_core/tests/fixtures/`; `--phase 1` GP core, `--phase 2`
+   acquisition functions, optimization and test functions, `--phase 4`
+   multi-output, batched and list models, posterior transforms and
+   constrained EI, `--phase 4b` MC objectives, outcome constraints,
+   constrained optimization and polytope sampling). The
+   `botorch_core/tests/*parity*.rs` tests reproduce them with the Rust core
+   alone, without Python (`cargo test`).
+2. **Live side-by-side Python tests.** The Python tests build the same models
+   in BoTorch and in botorch_rs (identical data, hyperparameters and
+   Monte-Carlo base samples) and compare the results through the public APIs:
+   `test_parity.py` (GP core, acquisition functions, optimization, test
+   functions and API signatures), `test_parity_multi_output.py`
+   (multi-output, batched and list models, posterior transforms, constrained
+   EI), `test_parity_constraints.py` (MC objectives, outcome constraints,
+   parameter constraints, polytope sampling, constrained optimization) and
+   the unified, randomized suite `test_equivalence.py`.
+
+Every parity module prints the worst error of every quantity in the pytest
+terminal summary.
+
+### Running the comparisons
+
+```console
+$ cargo test --workspace                       # Rust fixture tests
+$ python scripts/generate_fixtures.py --phase 4b  # regenerate fixtures (needs BoTorch)
+$ python scripts/develop.py                    # build the extension
+$ export BOTORCH_RS_REQUIRE_BOTORCH=1          # a missing BoTorch is an error, not a skip
+$ PYTHONPATH=/path/to/botorch:botorch_pyo3/python python -m pytest botorch_pyo3/tests -q
+$ PYTHONPATH=/path/to/botorch:botorch_pyo3/python python -m pytest botorch_pyo3/tests -q -m equivalence
+```
+
+The last command runs only the unified suite (about 3 minutes); without a
+BoTorch checkout on `PYTHONPATH`, the installed BoTorch is used (separate
+`PYTHONPATH` entries with `;` on Windows). CI's parity job runs the Python
+tests and, as a separate step, the equivalence suite against the released
+BoTorch.
+
+### The unified equivalence suite
+
+`test_equivalence.py` (pytest marker `equivalence`) draws 18 scenarios from a
+seeded generator: n ∈ {6, 10, 16} training points, d ∈ {1, …, 4} inputs,
+m ∈ {1, 2, 3} outputs, inferred or fixed noise, with and without `Normalize`
+and `Standardize`, RBF or Matérn-5/2 kernels, three input ranges, batched
+models and four `ModelListGP`s. Data, hyperparameters, test points, base
+samples and the remaining choices (q, pending points, objectives, outcome
+constraints, `eta`, `fat`, posterior transforms, parameter constraints) are
+random but seeded. For every scenario it compares initialization, MLL values
+and gradients, posteriors (joint, batched, with observation noise,
+scalarized) and samples from base samples, fits, all analytic acquisition
+functions, all Monte-Carlo acquisition functions with identity, linear,
+generic (input-dependent) and constrained objectives, posterior transforms
+and outcome constraints, `prune_inferior_points`, and `optimize_acqf` with
+and without linear (intra- and inter-point, equality) and nonlinear
+constraints; plus all synthetic test functions and random polytopes. Results
+of the last run (157 tests in 3 minutes; BoTorch main at da00e04):
+
+| Quantity | Tolerance | Worst observed |
+|---|---|---|
+| Default raw hyperparameters | 1e-12 | exact |
+| MLL values, MLL gradients | 1e-9 (relative) | 6.5e-15, 8.1e-15 |
+| Posterior mean, variance, covariance (incl. observation noise and posterior transforms) | 1e-9 | 4.2e-15, 7.7e-14, 9.4e-14 |
+| Samples from explicit base samples | 1e-9 | 6.6e-15 |
+| Fit: final loss above BoTorch's | 1e-6 | 9.6e-15 |
+| Analytic acquisition values / gradients (EI, LogEI, PI, LogPI, UCB, posterior mean and standard deviation, CEI, LogCEI) | 1e-9 / 1e-8 | 1.3e-13 / 1.2e-13 |
+| MC acquisition values / gradients (qEI, qPI, qLogEI, qSR, qUCB, qLogPF; all objectives, transforms and constraints) | 1e-9 / 1e-8, or 10× BoTorch's noise floor if larger (see below); errors scaled to the nominal tolerance | 1.2e-13 / 5.8e-13 |
+| qLogNEI values / gradients (incl. tight and infeasible baselines) | as above | 9.1e-11 / 9.5e-10 |
+| Unscaled errors of all these Monte-Carlo evaluations (values / gradients) | | 3.7e-9 / 9.3e-9 |
+| MC evaluations on numerically singular joint posteriors (jitter-dependent) | finite, 0.1 | 7 evaluations, 2.8e-3 |
+| `prune_inferior_points` | identical sets | identical |
+| `optimize_acqf` from identical initial conditions, L-BFGS-B / SLSQP (incl. nonlinear constraints) | ≥ 80% of the restarts within 1e-6 | 159 of 160 restarts; agreeing restarts within 1.7e-14 (L-BFGS-B) and 2.3e-7 (SLSQP) |
+| `optimize_acqf` end to end over 3 seeds (statistical) | best value ≥ BoTorch's median − 1e-3·max(1, \|v\|) | 8.4e-9 below; 1.1e-2 below BoTorch's best seed |
+| Returned acquisition values vs BoTorch's value at the returned candidates | 1e-9 | 1.6e-14 |
+| Infeasible results of constrained runs | none | none |
+| Test functions: values, bounds, optimal values | 1e-12, exact, 1e-15 | 2.9e-16, exact, exact |
+| Polytope samples: mean / covariance (statistical) | 0.05 range / 0.02 range² | 1.6e-2 / 3.6e-3 |
+| `find_interior_point` slack, `evaluate_feasibility`, `transform_constraints` | 1e-9, identical, identical | 2e-17, identical, identical |
+
+Two numerical effects need tolerances beyond plain rounding. *Nearly singular
+joint posteriors* (qLogNEI and pruning sample the posterior at the training
+points) amplify rounding: perturbing BoTorch's own training inputs by 1e-14
+(relative) changes its MC values by up to 4.1e-9 and gradients by up to
+4.6e-8. The suite therefore compares Monte-Carlo quantities against
+`max(1e-9, 10 × that change)` (1e-8 for gradients), measured per evaluation
+with two perturbed BoTorch twins, and reports errors scaled to the nominal
+tolerance. *Numerically singular* covariance blocks (smallest eigenvalue below
+1e-12 of the largest) make the decision whether Cholesky needs jitter depend
+on rounding: LAPACK and botorch-rs can decide differently, which moves the
+samples along the singular directions; such evaluations are counted and only
+checked loosely. The single diverging optimization restart starts on a flat
+part of the acquisition function (log value −44) and ends in another local
+optimum (−1.7194 vs −1.7143); end to end, BoTorch's initial conditions come
+from torch's global random number generator, so its best seed can be better
+(or worse) than botorch-rs'.
+
+### Targeted parity tests
 
 | Quantity | Tolerance (relative) | Observed, Rust fixtures | Observed, Python API |
 |---|---|---|---|
@@ -221,23 +324,31 @@ compare against BoTorch directly (`botorch_pyo3/tests/test_parity.py` and
 | Acquisition values with a `ScalarizedPosteriorTransform` (analytic, MC, qLogNEI) | 1e-10 / 1e-9 | ≤ 4e-13 | ≤ 3e-13 |
 | Acquisition gradients with a `ScalarizedPosteriorTransform` | 1e-10 / 1e-8 | ≤ 6e-13 | ≤ 3e-11 |
 | `LogConstrainedExpectedImprovement`, `ConstrainedExpectedImprovement` values and gradients | 1e-10 / 1e-9 | ≤ 4e-12 | ≤ 9e-14 |
+| Samples of multi-output posteriors from BoTorch's `S x q x m` base samples | 1e-10 / 1e-9 | ≤ 4e-15 | ≤ 2e-15 |
+| MC acquisition values with linear, generic and constrained objectives and outcome constraints (qEI, qPI, qLogEI incl. `fat` lists, qSR, qUCB, qLogPF) | 1e-10 / 1e-9 | ≤ 4e-13 | ≤ 2.3e-13 |
+| ... their gradients | 1e-10 / 1e-8 | ≤ 3e-13 | ≤ 3.7e-13 |
+| qLogNEI with objectives and constraints (baselines feasible, partly or entirely infeasible) values / gradients | 1e-10 / 1e-9, 1e-8 | ≤ 6e-14 / ≤ 1.5e-12 | ≤ 3.7e-11 / ≤ 2e-10 |
+| `get_infeasible_cost`; `prune_inferior_points` with objectives and constraints | 1e-10; identical | ≤ 2e-14; identical | identical |
+| SLSQP from identical initial conditions: restarts at SciPy's result (value within 1e-6) | — | 21 of 22 (errors ≤ 3.8e-7) | 48 of 50 (errors ≤ 2.3e-7; one diverging restart better in each library) |
+| Constrained `optimize_acqf` over seeds: best value below BoTorch's | 1e-4 | ≤ 4.6e-9 | ≤ 4.8e-8 |
+| Polytope samples: mean / covariance error (statistical) | 0.03 range / 0.015 (Rust), 0.01 (Python) range² | ≤ 1.3e-2 / ≤ 3.6e-3 | ≤ 1.9e-2 / ≤ 2.7e-3 |
+| `find_interior_point` (unique maximizers), `sparse_to_dense_constraints`, `transform_constraints`, `evaluate_feasibility`, error types and messages | 1e-9; identical | ≤ 1e-9 | identical |
 
 Gradient errors are relative to the largest gradient component. The Rust
 fixtures cover 17 GP configurations (d ∈ {1, 2, 5}, n ∈ {1, …, 20}, RBF and
 Matérn-5/2, `ScaleKernel`, fixed noise, learned and explicit `Normalize`,
-with and without `Standardize`, legacy Gamma priors, degenerate data) and
-three acquisition models; the Python tests cover eight model configurations,
-including custom kernels and priors built from `botorch_rs.kernels` and
-`botorch_rs.priors`.
+with and without `Standardize`, legacy Gamma priors, degenerate data), three
+acquisition models, 13 multi-output configurations (`m` = 1, 2, 3; batch
+shapes `3`, `2`, `2 x 2`; three `ModelListGP`s) and, for objectives and
+constraints, five single-output, multi-output and list models; the Python
+parity tests cover eight single-output and 15 multi-output model
+configurations, including custom kernels and priors built from
+`botorch_rs.kernels` and `botorch_rs.priors`, and six models for objectives
+and constraints. Monte-Carlo acquisition functions are compared with
+identical base samples, and Python floats that BoTorch would round to float32
+(`best_f`, `tau`, `beta`, `eta`, `infeasible_cost`) are passed as float64
+tensors.
 
-The multi-output fixtures (`--phase 4`) cover 13 configurations (`m` = 1, 2,
-3; batch shapes `3`, `2`, `2 x 2`; shared, per-batch and explicit `Normalize`;
-fixed noise; legacy Gamma priors; three `ModelListGP`s), and
-`test_parity_multi_output.py` compares a seeded grid of 15 model
-configurations with BoTorch through the Python API (the worst error per
-quantity is printed in the pytest summary).
-
-Monte-Carlo acquisition functions are compared with identical base samples.
 Fitting reaches BoTorch's final loss (required: no worse than BoTorch's +
 1e-6): from BoTorch's default initialization, 16 of 17 Rust fixture problems
 take the same number of L-BFGS-B iterations, and the largest excess observed
@@ -252,7 +363,21 @@ through the Python API), with the same iteration counts for all 36 fitted
 fixture elements. `optimize_acqf` reaches BoTorch's best acquisition value
 on fixed models (LogEI and qLogEI on Hartmann-6), and started from BoTorch's
 initial conditions it reproduces BoTorch's optimized candidates to about
-1e-15.
+1e-15 (L-BFGS-B). SLSQP iterates agree with SciPy's to about 1e-9 per step:
+SciPy 1.16 and later solve the SLSQP subproblems with LAPACK, botorch-rs with
+the port of Kraft's original code, so long runs on flat landscapes can end in
+different local optima, in either direction.
+
+### Versions checked
+
+The numbers above come from BoTorch's main branch at da00e04 with GPyTorch
+1.15.2, linear_operator 0.6.1, PyTorch 2.13 (CPU), SciPy 1.18 and Python 3.13
+on Windows 11; CI runs the Python comparisons against the latest BoTorch
+release. An earlier run against the released BoTorch 0.18.1 found two
+behaviors that differ from main, which the tests now account for: 0.18.1
+rejects SLSQP starts that violate nonlinear constraints (main and botorch-rs
+accept them), and with SciPy 1.18 it optimizes all L-BFGS-B restarts in one
+joint problem instead of one problem per restart.
 
 ## Benchmarks
 
@@ -312,10 +437,11 @@ LogEI one optimization takes about a millisecond either way.
   a seed derived from its sampler's seed, so whole BO loops are reproducible.
   `posterior.rsample` and test-function noise do use the caller's library
   (torch, NumPy) random number generator.
-- **Python floats.** `best_f`, `beta`, `tau` and the bounds of the
-  constrained EI are used as exact float64 values; BoTorch stores Python
-  floats passed for them in float32 (torch's default dtype). Pass float64
-  tensors (e.g. `best_f=train_Y.max()`) to BoTorch for bit-comparable results.
+- **Python floats.** `best_f`, `beta`, `tau`, the constraint temperatures
+  `eta`, `infeasible_cost` and the bounds of the constrained EI are used as
+  exact float64 values; BoTorch stores Python floats passed for them in
+  float32 (torch's default dtype). Pass float64 tensors (e.g.
+  `best_f=train_Y.max()`) to BoTorch for bit-comparable results.
 - **Multi-output and batched models.** Hyperparameters are independent per
   output and batch element (BoTorch's default modules with `batch_shape =
   _aug_batch_shape`); custom modules must have that batch shape, and modules
@@ -342,7 +468,41 @@ LogEI one optimization takes about a millisecond either way.
   acquisition function (the usual BO-loop pattern).
 - **qLogNEI** always uses the plain joint computation (BoTorch's
   `cache_root=False`); `cache_root` is accepted and ignored. Both agree in
-  distribution.
+  distribution; objectives and constraints are evaluated on the joint samples
+  of the baseline and the candidates, as with `cache_root=False` (this only
+  matters for callables that couple the points of a batch). When some sample
+  has no feasible baseline point, the objective's lower bound is estimated at
+  32 points drawn from a generator seeded by the sampler (BoTorch:
+  `torch.rand`); pass them explicitly with the keyword-only
+  `lower_bound_points` (`acqf.lower_bound_points` returns them). BoTorch's
+  warning that qLogProbabilityOfFeasibility is the better choice is emitted
+  at the first evaluation that needs the bound.
+- **Objectives and constraints.** Python callables (generic objectives,
+  `ConstrainedMCObjective`, outcome constraints, nonlinear parameter
+  constraints) receive float64 torch tensors of BoTorch's shapes for a single
+  candidate set (`sample_shape x 1 x q x m` samples, `1 x q x d` inputs) and
+  are called from the Rust computation (the GIL is re-acquired); an exception
+  raised by a callable propagates unchanged. Mismatched numbers of `eta` or
+  `fat` entries are reported when the acquisition function is created
+  (BoTorch: at the first evaluation), with BoTorch's messages.
+- **Constrained optimization.** SLSQP follows SciPy's driver (`ftol` 1e-6,
+  `maxiter` 2000), but solves its subproblems with the port of Kraft's code,
+  whereas SciPy 1.16 and later use LAPACK; restarts that start on flat parts
+  of the acquisition function can therefore end in different local optima
+  (in either direction). Initial conditions that violate nonlinear
+  constraints are accepted, as on BoTorch's main branch (the released 0.18.1
+  rejects them). `options={"method": "L-BFGS-B"}` with constraints
+  raises `RuntimeWarning("Method L-BFGS-B cannot handle constraints.")` like
+  BoTorch's batched L-BFGS-B path. Polytope samplers use their own random
+  streams, and `find_interior_point` solves its linear program with `microlp`
+  (BoTorch: HiGHS), which may return a different maximizer when it is not
+  unique.
+- **Nearly singular covariances.** Whether a Cholesky factorization needs
+  jitter is decided by rounding when a covariance block is numerically
+  singular (smallest eigenvalue around 1e-16 of the largest); botorch-rs and
+  LAPACK can decide differently there, which changes Monte-Carlo samples
+  along the singular directions (see [Equivalence with
+  BoTorch](#equivalence-with-botorch)).
 - **Marginal log likelihood.** `mll()` without arguments evaluates the MLL on
   the model's training data (GPyTorch: `mll(model(*model.train_inputs),
   model.train_targets)`); `mll.value_and_grad()` also returns its gradient.
@@ -376,11 +536,14 @@ $ PYTHONPATH=botorch_pyo3/python python -m pytest botorch_pyo3/tests -q
 
 The Python parity tests run when BoTorch is importable; to test against a
 source checkout put it first on the path (`PYTHONPATH=/path/to/botorch:botorch_pyo3/python`).
+`-m equivalence` selects the unified equivalence suite (see [Equivalence with
+BoTorch](#equivalence-with-botorch)).
 `python scripts/generate_fixtures.py` regenerates the Rust parity fixtures
 (`--phase 1` for the GP core, `--phase 2` for acquisition functions,
 optimization and test functions, `--phase 4` for multi-output, batched and
-list models, posterior transforms and constrained EI), and
-`python scripts/benchmark.py` measures the timings above. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+list models, posterior transforms and constrained EI, `--phase 4b` for MC
+objectives, outcome constraints, constrained optimization and polytope
+sampling), and `python scripts/benchmark.py` measures the timings above. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## License
 

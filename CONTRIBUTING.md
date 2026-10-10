@@ -31,7 +31,7 @@ fixtures recorded from BoTorch. After changing what they cover, regenerate
 them with BoTorch installed (or a source checkout on `PYTHONPATH`):
 
 ```console
-$ python scripts/generate_fixtures.py [--phase 1|2|4|all]
+$ python scripts/generate_fixtures.py [--phase 1|2|4|4b|all]
 ```
 
 ## Python
@@ -45,10 +45,12 @@ $ PYTHONPATH=botorch_pyo3/python python -m pytest botorch_pyo3/tests -q
 
 Alternatively, `pip install ./botorch_pyo3` builds and installs a wheel with
 maturin. The parity tests (`test_parity.py`, `test_parity_multi_output.py`,
-the BoTorch part of `test_bo_loop.py`) run when BoTorch is importable and are
+`test_parity_constraints.py`, the unified suite `test_equivalence.py` and the
+BoTorch part of `test_bo_loop.py`) run when BoTorch is importable and are
 skipped otherwise; set `BOTORCH_RS_REQUIRE_BOTORCH=1` to make a missing
-BoTorch an error. The worst error per quantity of the multi-output parity
-tests is printed in the pytest summary.
+BoTorch an error. `-m equivalence` runs only the unified suite (about three
+minutes). The worst error per quantity of the parity tests is printed in the
+pytest summary, with the tolerance where one applies.
 
 Lint and type-check (configuration in `botorch_pyo3/pyproject.toml`):
 
