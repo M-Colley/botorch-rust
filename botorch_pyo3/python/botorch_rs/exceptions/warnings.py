@@ -31,6 +31,7 @@ class UserInputWarning(BotorchWarning):
 
 _LEGACY_TO_LOGEI = {
     "ExpectedImprovement": "LogExpectedImprovement",
+    "ConstrainedExpectedImprovement": "LogConstrainedExpectedImprovement",
     "qExpectedImprovement": "qLogExpectedImprovement",
 }
 

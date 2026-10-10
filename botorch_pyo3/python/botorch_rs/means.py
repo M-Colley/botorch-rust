@@ -28,20 +28,17 @@ class ConstantMean(Mean):
             raise UnsupportedError(
                 "Priors and constraints on the constant mean are not supported by botorch_rs."
             )
-        _check_batch_shape(batch_shape)
+        self.batch_shape = _check_batch_shape(batch_shape)
         _check_kwargs(kwargs, "ConstantMean")
 
     @property
     def constant(self) -> Any:
-        """The constant, shape ``()``."""
-        return self._out([self._rs_model.constant], ())
+        """The constant, shape ``batch_shape``."""
+        return self._param_out(self._rs_model.constant, ())
 
     @constant.setter
     def constant(self, value: Any) -> None:
-        data = to_flat(value, "constant")[0]
-        if len(data) != 1:
-            raise ValueError("The constant mean is a single value.")
-        self._rs_model.set_constant(data[0])
+        self._rs_model.set_constant(to_flat(value, "constant"))
 
     @property
     def raw_constant(self) -> Any:

@@ -3,6 +3,8 @@
 The posterior over ``[X; X_pending]`` is sampled with fixed quasi-MC base
 samples (``SobolQMCNormalSampler``, 512 samples by default), which makes the
 acquisition functions smooth, deterministic sample-average approximations.
+With a ``posterior_transform`` (required for multi-output models), the
+scalarized posterior is sampled, as in BoTorch.
 """
 
 from __future__ import annotations
@@ -36,20 +38,33 @@ class MCAcquisitionFunction(AcquisitionFunction):
         posterior_transform: Any = None,
         X_pending: Any = None,
     ) -> None:
-        check_unsupported(objective=objective, posterior_transform=posterior_transform)
+        check_unsupported(objective=objective)
         super().__init__(model)
+        if model.num_outputs != 1:
+            if posterior_transform is None:
+                raise UnsupportedError(
+                    "Must specify an objective or a posterior transform when using "
+                    "a multi-output model."
+                )
+            if not getattr(posterior_transform, "scalarize", False):
+                raise UnsupportedError(
+                    "If using a multi-output model without an objective, "
+                    "posterior_transform must scalarize the output."
+                )
+        self.posterior_transform = posterior_transform
+        self._rs_model = self._model_handle(posterior_transform)
         if sampler is None:
             sampler = SobolQMCNormalSampler(sample_shape=(DEFAULT_MC_SAMPLES,))
         elif not isinstance(sampler, SobolQMCNormalSampler):
             raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
         self.sampler = sampler
-        self._pending = pending_arg(X_pending, model._rs.dim)
+        self._pending = pending_arg(X_pending, self._rs_model.dim)
         if X_pending is not None:
             self._pending_kind = kind_of(X_pending)
 
     def _build(self, name: str, **kwargs: Any) -> None:
         self._rs = _rs.AcquisitionFunction.monte_carlo(
-            name, self.model._rs, self.sampler._rs, self._pending, **kwargs
+            name, self._rs_model, self.sampler._rs, self._pending, **kwargs
         )
 
 

@@ -208,3 +208,44 @@ def as_float(x: Any, name: str) -> float:
 def shape_of(x: Any) -> tuple[int, ...]:
     """The shape of an array or nested list."""
     return to_flat(x)[1]
+
+
+def broadcast_shapes(*shapes: Sequence[int]) -> tuple[int, ...] | None:
+    """The numpy / torch broadcast of the shapes, or ``None`` if they are
+    incompatible."""
+    n = max((len(s) for s in shapes), default=0)
+    out = [1] * n
+    for s in shapes:
+        s = tuple(s)
+        for i, v in enumerate(s):
+            j = n - len(s) + i
+            if out[j] == 1:
+                out[j] = v
+            elif v not in (1, out[j]):
+                return None
+    return tuple(out)
+
+
+def broadcast_to(data: Sequence[float], shape: Sequence[int], target: Sequence[int]) -> list[float]:
+    """``data`` (row-major, of shape ``shape``) broadcast to ``target``."""
+    shape, target = tuple(shape), tuple(target)
+    if broadcast_shapes(shape, target) != target:
+        raise ValueError(f"A value of shape {shape} cannot be broadcast to the shape {target}.")
+    offset = len(target) - len(shape)
+    strides = [0] * len(shape)
+    s = 1
+    for i in range(len(shape) - 1, -1, -1):
+        strides[i] = 0 if shape[i] == 1 else s
+        s *= shape[i]
+    out = []
+    total = math.prod(target)
+    idx = [0] * len(target)
+    for _ in range(total):
+        flat = sum(idx[offset + i] * st for i, st in enumerate(strides))
+        out.append(float(data[flat]))
+        for k in range(len(target) - 1, -1, -1):
+            idx[k] += 1
+            if idx[k] < target[k]:
+                break
+            idx[k] = 0
+    return out

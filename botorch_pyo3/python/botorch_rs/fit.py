@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import math
+import warnings
 from typing import Any
 
 from botorch_rs.exceptions.errors import UnsupportedError
-from botorch_rs.mlls import ExactMarginalLogLikelihood, MarginalLogLikelihood
+from botorch_rs.exceptions.warnings import OptimizationWarning
+from botorch_rs.mlls import (
+    ExactMarginalLogLikelihood,
+    MarginalLogLikelihood,
+    SumMarginalLogLikelihood,
+)
 
 # scipy L-BFGS-B options understood by the fit (``optimizer_kwargs["options"]``).
 _LBFGSB_OPTIONS = {"maxiter", "maxfun", "ftol", "gtol", "maxcor", "maxls"}
@@ -24,6 +31,12 @@ def fit_gpytorch_mll(
     marginal log likelihood with L-BFGS-B (a port of L-BFGS-B 3.0 that
     reproduces scipy's iterates; BoTorch's ``fit_gpytorch_mll_scipy`` defaults).
 
+    For a model with several outputs or a batch shape, every output and batch
+    element is fitted as an independent L-BFGS-B problem (BoTorch's batched
+    independent fitting with ``fmin_l_bfgs_b_batched``, which does not use
+    ``maxfun``). For a ``SumMarginalLogLikelihood`` of a ``ModelListGP``, every
+    sub-model is fitted on its own, like BoTorch.
+
     As in BoTorch, an attempt that fails (line-search failure, a covariance
     that is not positive definite) is retried from hyperparameters sampled from
     their priors, up to ``max_attempts`` times (default 5); if all attempts
@@ -31,7 +44,8 @@ def fit_gpytorch_mll(
     hyperparameters. Hitting the iteration limit is not a failure.
 
     Args:
-        mll: An ``ExactMarginalLogLikelihood`` of a ``SingleTaskGP``.
+        mll: An ``ExactMarginalLogLikelihood`` of a ``SingleTaskGP`` or a
+            ``SumMarginalLogLikelihood`` of a ``ModelListGP``.
         closure, optimizer, closure_kwargs: Must be ``None`` (only the default
             L-BFGS-B optimizer is available).
         optimizer_kwargs: ``{"options": {...}}`` with any of scipy's L-BFGS-B
@@ -44,8 +58,26 @@ def fit_gpytorch_mll(
     Returns:
         ``mll``, in evaluation mode.
     """
+    if isinstance(mll, SumMarginalLogLikelihood):
+        mll.train()
+        results = []
+        for sub_mll in mll.mlls:
+            fit_gpytorch_mll(
+                sub_mll,
+                closure=closure,
+                optimizer=optimizer,
+                closure_kwargs=closure_kwargs,
+                optimizer_kwargs=optimizer_kwargs,
+                **kwargs,
+            )
+            results.append(sub_mll._fit_result)
+        mll._fit_result = results
+        return mll.eval()
     if not isinstance(mll, ExactMarginalLogLikelihood):
-        raise UnsupportedError("fit_gpytorch_mll requires a botorch_rs ExactMarginalLogLikelihood.")
+        raise UnsupportedError(
+            "fit_gpytorch_mll requires a botorch_rs ExactMarginalLogLikelihood or "
+            "SumMarginalLogLikelihood."
+        )
     if closure is not None or closure_kwargs is not None:
         raise UnsupportedError("Custom closures are not supported by botorch_rs.")
     if optimizer is not None:
@@ -67,6 +99,13 @@ def fit_gpytorch_mll(
         raise UnsupportedError(f"Unsupported L-BFGS-B options: {sorted(unknown)}.")
     if kwargs.pop("pick_best_of_all_attempts", False):
         raise UnsupportedError("pick_best_of_all_attempts=True is not supported by botorch_rs.")
+    batched = math.prod(mll.model._aug_batch_shape) > 1
+    if batched and "maxfun" in options:
+        warnings.warn(
+            "Unrecognized options for batched independent fitting will be ignored: ['maxfun'].",
+            OptimizationWarning,
+            stacklevel=2,
+        )
     max_attempts = int(kwargs.pop("max_attempts", 5))
     seed = kwargs.pop("seed", None)
     result = mll.model._rs.fit(
@@ -79,7 +118,7 @@ def fit_gpytorch_mll(
         max_attempts=max_attempts,
         seed=None if seed is None else int(seed),
     )
-    loss, iterations, evaluations, status, message, attempts = result
+    loss, iterations, evaluations, status, message, attempts, elements = result
     mll._fit_result = {
         "fval": loss,
         "nit": iterations,
@@ -87,6 +126,17 @@ def fit_gpytorch_mll(
         "status": status,
         "message": message,
         "attempts": attempts,
+        "elements": [
+            {
+                "fval": e[0],
+                "nit": e[1],
+                "nfev": e[2],
+                "status": e[3],
+                "message": e[4],
+                "attempts": e[5],
+            }
+            for e in elements
+        ],
     }
     return mll.eval()
 

@@ -101,7 +101,7 @@ class qLogNoisyExpectedImprovement(MCAcquisitionFunction):
         self._baseline_kind = kind_of(X_baseline)
         pending = None
         if X_pending is not None:
-            pending = pending_arg(X_pending, model._rs.dim)
+            pending = pending_arg(X_pending, self._rs_model.dim)
             self._pending_kind = kind_of(X_pending)
         self.fat = fat
         self.prune_baseline = prune_baseline
@@ -110,7 +110,7 @@ class qLogNoisyExpectedImprovement(MCAcquisitionFunction):
         self.tau_relu = tau_relu
         self.incremental = incremental
         self._rs = _rs.AcquisitionFunction.q_log_noisy_expected_improvement(
-            model._rs,
+            self._rs_model,
             baseline,
             self.sampler._rs,
             pending,

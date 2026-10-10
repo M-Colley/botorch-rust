@@ -72,12 +72,18 @@ def test_mll_gradient_matches_finite_differences() -> None:
     mll = ExactMarginalLogLikelihood(model.likelihood, model)
     theta = [0.05, 0.1, 0.4, 0.7]  # raw noise, constant, lengthscales
     value, grad = mll.value_and_grad(theta)
-    assert value == pytest.approx(model._rs.mll(theta), rel=1e-15)
+
+    def at(params: list[float]) -> float:
+        (values, shape) = model._rs.mll(params)
+        assert shape == []
+        return values[0]
+
+    assert value == pytest.approx(at(theta), rel=1e-15)
     h = 1e-6
     for i in range(len(theta)):
         up = list(theta)
         down = list(theta)
         up[i] += h
         down[i] -= h
-        fd = (model._rs.mll(up) - model._rs.mll(down)) / (2 * h)
+        fd = (at(up) - at(down)) / (2 * h)
         assert grad[i] == pytest.approx(fd, rel=1e-6, abs=1e-8)

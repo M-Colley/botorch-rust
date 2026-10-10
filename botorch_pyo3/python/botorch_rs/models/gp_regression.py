@@ -9,10 +9,10 @@ from collections.abc import Iterator
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import Pair, from_flat, from_pair, kind_of, to_flat
+from botorch_rs._arrays import Pair, broadcast_to, from_flat, from_pair, kind_of, to_flat
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.exceptions.warnings import InputDataWarning
-from botorch_rs.kernels import Kernel
+from botorch_rs.kernels import Kernel, ScaleKernel
 from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood, Likelihood
 from botorch_rs.means import ConstantMean
 from botorch_rs.models.model import Model
@@ -45,10 +45,6 @@ def _validate_tensor_args(
                 f" (got X with dimension {len(xshape)} and Y with dimension {len(yshape)})."
             )
         raise BotorchTensorDimensionError(msg)
-    if len(xshape) > 2:
-        raise UnsupportedError(
-            "Batched training data (`batch_shape x n x d`) are not supported by botorch_rs."
-        )
     if len(xshape) < 2:
         raise BotorchTensorDimensionError(
             f"Expected train_X to be an `n x d` tensor, got shape {xshape}."
@@ -60,9 +56,10 @@ def _validate_tensor_args(
         )
 
 
-def _validate_input_scaling(x: Pair, y: Pair) -> None:
+def _validate_input_scaling(x: Pair, y: Pair, n: int) -> None:
     """BoTorch's ``validate_input_scaling`` warnings for the transformed
-    training data (unit cube inputs, standardized outcomes)."""
+    training data (unit cube inputs, standardized outcomes of every output
+    and batch element; ``y`` holds the targets of every element, ``n`` each)."""
     atol = 1e-2
     if any(v < -atol or v > 1 + atol for v in x[0]):
         warnings.warn(
@@ -71,46 +68,76 @@ def _validate_input_scaling(x: Pair, y: Pair) -> None:
             InputDataWarning,
             stacklevel=3,
         )
-    values = y[0]
-    n = len(values)
-    mean = sum(values) / n
+    values = list(y[0])
+    k = len(values) // max(n, 1)
+    means, stds = [], []
+    for e in range(k):
+        col = values[e * n : (e + 1) * n]
+        mean = sum(col) / n
+        means.append(mean)
+        if n > 1:
+            stds.append(math.sqrt(sum((v - mean) ** 2 for v in col) / (n - 1)))
+
+    def fmt(v: list[float]) -> Any:
+        return v[0] if len(v) == 1 else v
+
     if n <= 1:
-        if abs(mean) > atol:
+        if max(abs(v) for v in means) > atol:
             warnings.warn(
-                f"Data (outcome observations) is not standardized (mean = {mean}). "
+                f"Data (outcome observations) is not standardized (mean = {fmt(means)}). "
                 "Please consider scaling the input to zero mean and unit variance.",
                 InputDataWarning,
                 stacklevel=3,
             )
         return
-    std = math.sqrt(sum((v - mean) ** 2 for v in values) / (n - 1))
-    if abs(mean) > atol or abs(std - 1) > atol:
+    if any(abs(v) > atol for v in means) or any(abs(s - 1) > atol for s in stds):
         warnings.warn(
-            f"Data (outcome observations) is not standardized (std = {std}, mean = {mean})."
-            "Please consider scaling the input to zero mean and unit variance.",
+            f"Data (outcome observations) is not standardized (std = {fmt(stds)}, "
+            f"mean = {fmt(means)}).Please consider scaling the input to zero mean and unit "
+            "variance.",
             InputDataWarning,
             stacklevel=3,
         )
 
 
-# Shapes of the raw parameters in BoTorch (for d inputs).
-def _param_shape(name: str, size: int) -> tuple[int, ...]:
-    if name.endswith("raw_noise"):
-        return (size,)
-    if name.endswith("raw_lengthscale"):
-        return (1, size)
-    return ()
+def _check_module_batch_shape(module: Any, aug: tuple[int, ...], what: str) -> None:
+    """A module of a multi-output or batched model must have
+    ``batch_shape = _aug_batch_shape`` (independent hyperparameters per output
+    and batch element, like BoTorch's default modules)."""
+    modules = [module]
+    if isinstance(module, ScaleKernel):
+        modules.append(module.base_kernel)
+    for mod in modules:
+        shape = tuple(getattr(mod, "batch_shape", ()))
+        if shape == aug:
+            continue
+        if aug and not shape:
+            raise UnsupportedError(
+                f"`{what}` must have batch_shape={aug} (the model's _aug_batch_shape): "
+                "botorch_rs fits independent hyperparameters for every output and batch "
+                "element, as BoTorch does with its default modules. Modules shared by all "
+                "outputs (batch_shape=()) cannot be fitted by BoTorch's batched fitting "
+                "either."
+            )
+        raise BotorchTensorDimensionError(
+            f"`{what}` has batch_shape={shape}, expected the model's _aug_batch_shape {aug}."
+        )
 
 
 class SingleTaskGP(Model):
-    r"""A single-task exact GP with BoTorch's defaults (single output).
+    r"""A single-task exact GP with BoTorch's defaults.
 
     Without ``train_Yvar`` the noise level is inferred (``GaussianLikelihood``
     with a ``LogNormal(-4, 1)`` noise prior); with ``train_Yvar`` the given
     observation noise is used. The default covariance module is an ARD RBF
     kernel with the dimension-scaled lengthscale prior of Hvarfner et al.
-    (2024), the default outcome transform is ``Standardize(m=1)`` and inputs
-    are not transformed unless ``input_transform`` is given.
+    (2024), the default outcome transform is ``Standardize(m, batch_shape)``
+    and inputs are not transformed unless ``input_transform`` is given.
+
+    Training data of shape ``batch_shape x n x d`` / ``batch_shape x n x m``
+    give ``batch_shape x m`` independent GPs (BoTorch's ``_aug_batch_shape``),
+    each with its own hyperparameters, standardization and noise; the posterior
+    of ``batch_shape x q x d`` inputs is over ``q`` points and ``m`` outputs.
 
     Example:
         >>> model = SingleTaskGP(train_X, train_Y, input_transform=Normalize(d=2))
@@ -138,12 +165,15 @@ class SingleTaskGP(Model):
         if yvar is not None and yvar[1] != y[1]:  # broadcast trailing dimensions
             reps = len(y[0]) // max(len(yvar[0]), 1)
             yvar = (yvar[0] * reps, y[1])
-        d = x[1][1]
-        m = y[1][1]
-        if m != 1:
-            raise UnsupportedError(
-                f"SingleTaskGP in botorch_rs supports a single output (m = 1), got m = {m}."
+        batch = tuple(x[1][:-2])
+        if tuple(y[1][:-2]) != batch:
+            raise BotorchTensorDimensionError(
+                f"Expected train_X and train_Y to have the same batch shape, got "
+                f"{batch} and {tuple(y[1][:-2])}."
             )
+        d = x[1][-1]
+        m = y[1][-1]
+        aug = batch + ((m,) if m > 1 else ())
         if likelihood is not None:
             if not isinstance(likelihood, GaussianLikelihood):
                 raise UnsupportedError(
@@ -154,15 +184,20 @@ class SingleTaskGP(Model):
                 raise UnsupportedError(
                     "A custom likelihood cannot be combined with `train_Yvar` in botorch_rs."
                 )
-        if covar_module is not None and not isinstance(covar_module, Kernel):
-            raise UnsupportedError(
-                "`covar_module` must be a botorch_rs kernel (RBFKernel, MaternKernel(nu=2.5) "
-                "or ScaleKernel), e.g. from botorch_rs.models.utils.gpytorch_modules."
-            )
-        if mean_module is not None and not isinstance(mean_module, ConstantMean):
-            raise UnsupportedError("Only a ConstantMean `mean_module` is supported.")
+            _check_module_batch_shape(likelihood, aug, "likelihood")
+        if covar_module is not None:
+            if not isinstance(covar_module, Kernel):
+                raise UnsupportedError(
+                    "`covar_module` must be a botorch_rs kernel (RBFKernel, MaternKernel(nu=2.5) "
+                    "or ScaleKernel), e.g. from botorch_rs.models.utils.gpytorch_modules."
+                )
+            _check_module_batch_shape(covar_module, aug, "covar_module")
+        if mean_module is not None:
+            if not isinstance(mean_module, ConstantMean):
+                raise UnsupportedError("Only a ConstantMean `mean_module` is supported.")
+            _check_module_batch_shape(mean_module, aug, "mean_module")
         if _is_default(outcome_transform):
-            ot_obj: Standardize | None = Standardize(m=1)
+            ot_obj: Standardize | None = Standardize(m=m, batch_shape=batch)
             ot_rs, std_default = None, True
         elif outcome_transform is None:
             ot_obj, ot_rs, std_default = None, None, False
@@ -171,15 +206,34 @@ class SingleTaskGP(Model):
                 raise BotorchTensorDimensionError(
                     f"The outcome transform is for m = {outcome_transform._m} outputs, got m = {m}."
                 )
+            if outcome_transform.batch_shape != batch:
+                raise RuntimeError(
+                    f"Expected Y.shape[:-2] to be {outcome_transform.batch_shape}, matching the "
+                    f"`batch_shape` argument to `Standardize`, but got Y.shape[:-2]={batch}."
+                )
             ot_obj, ot_rs, std_default = outcome_transform, outcome_transform._rs, False
         else:
             raise UnsupportedError("`outcome_transform` must be a Standardize, DEFAULT or None.")
-        if input_transform is not None and not isinstance(input_transform, Normalize):
-            raise UnsupportedError("`input_transform` must be a Normalize.")
+        if input_transform is not None:
+            if not isinstance(input_transform, Normalize):
+                raise UnsupportedError("`input_transform` must be a Normalize.")
+            tf_batch = input_transform.batch_shape
+            if tf_batch and tf_batch != batch:
+                raise BotorchTensorDimensionError(
+                    f"The input transform has batch shape {tf_batch} but the training data "
+                    f"have batch shape {batch}."
+                )
+            if tf_batch and m > 1:
+                raise UnsupportedError(
+                    "A Normalize with a batch shape is not supported for batched models with "
+                    "several outputs: BoTorch broadcasts its per-batch bounds against the "
+                    "output dimension of such models. Use Normalize(d) (bounds shared by all "
+                    "batch elements) or one output per model."
+                )
         covar = (
             covar_module
             if covar_module is not None
-            else get_covar_module_with_dim_scaled_prior(ard_num_dims=d)
+            else get_covar_module_with_dim_scaled_prior(ard_num_dims=d, batch_shape=aug)
         )
         covar_spec = covar._spec(d) if covar_module is not None else None
         self._rs = _rs.SingleTaskGP(
@@ -196,13 +250,13 @@ class SingleTaskGP(Model):
         # GP modules bound to the model's hyperparameters.
         if likelihood is None:
             likelihood = (
-                FixedNoiseGaussianLikelihood._create()
+                FixedNoiseGaussianLikelihood._create(aug)
                 if yvar is not None
-                else get_gaussian_likelihood_with_lognormal_prior()
+                else get_gaussian_likelihood_with_lognormal_prior(batch_shape=aug)
             )
         likelihood._bind(self)
         covar._bind(self)
-        mean = mean_module if mean_module is not None else ConstantMean()
+        mean = mean_module if mean_module is not None else ConstantMean(batch_shape=aug)
         mean._bind(self)
         self.likelihood: Likelihood = likelihood
         self.covar_module: Kernel = covar
@@ -219,7 +273,9 @@ class SingleTaskGP(Model):
             self.outcome_transform = ot_obj
         if covar_module is None:
             _validate_input_scaling(
-                self._rs.transformed_train_inputs(), self._rs.transformed_train_targets()
+                self._rs.transformed_train_inputs(),
+                self._rs.transformed_train_targets(),
+                self._rs.num_train,
             )
         self.training = True
 
@@ -227,20 +283,45 @@ class SingleTaskGP(Model):
 
     @property
     def num_outputs(self) -> int:
-        return 1
+        return self._rs.num_outputs
+
+    @property
+    def _num_outputs(self) -> int:
+        return self._rs.num_outputs
 
     @property
     def batch_shape(self) -> tuple[int, ...]:
-        return ()
+        """The batch shape of the training data (``train_X.shape[:-2]``)."""
+        return tuple(self._rs.batch_shape)
+
+    @property
+    def _input_batch_shape(self) -> tuple[int, ...]:
+        return self.batch_shape
+
+    @property
+    def _aug_batch_shape(self) -> tuple[int, ...]:
+        """The batch shape followed by the number of outputs if it exceeds one."""
+        return tuple(self._rs.aug_batch_shape)
 
     @property
     def train_inputs(self) -> tuple[Any]:
-        """``(train_X,)`` in the original input space."""
-        return (from_pair(self._rs.train_inputs(), self._kind),)
+        """``(train_X,)`` in the original input space; with several outputs
+        expanded to ``batch_shape x m x n x d`` like BoTorch's."""
+        data, shape = self._rs.train_inputs()
+        m = self.num_outputs
+        if m == 1:
+            return (from_flat(data, shape, self._kind),)
+        n, d = shape[-2], shape[-1]
+        block = n * d
+        expanded: list[float] = []
+        for b in range(len(data) // block):
+            expanded.extend(data[b * block : (b + 1) * block] * m)
+        return (from_flat(expanded, (*shape[:-2], m, n, d), self._kind),)
 
     @property
     def train_targets(self) -> Any:
-        """The training targets after the outcome transform, shape ``(n,)``."""
+        """The training targets after the outcome transform, shape
+        ``_aug_batch_shape x n``."""
         return from_pair(self._rs.transformed_train_targets(), self._kind)
 
     # -- modes -------------------------------------------------------------
@@ -255,6 +336,25 @@ class SingleTaskGP(Model):
 
     # -- posterior ---------------------------------------------------------
 
+    def _posterior_args(
+        self, output_indices: Any, posterior_transform: Any
+    ) -> tuple[list[int] | None, tuple[list[float], float] | None]:
+        from botorch_rs.acquisition.objective import transform_arg
+
+        m = self.num_outputs
+        oi = None
+        if output_indices is not None:
+            oi = [int(t) for t in output_indices]
+            if not oi or any(not -m <= t < m for t in oi):
+                raise BotorchTensorDimensionError(
+                    f"output_indices {list(output_indices)} are invalid for a model with "
+                    f"{m} outputs."
+                )
+            oi = [t % m for t in oi]
+            if oi == list(range(m)):
+                oi = None
+        return oi, transform_arg(posterior_transform)
+
     def posterior(
         self,
         X: Any,
@@ -264,14 +364,13 @@ class SingleTaskGP(Model):
         **kwargs: Any,
     ) -> GPyTorchPosterior:
         """The posterior at ``X`` (``batch_shape x q x d``), in the original
-        outcome space; with ``observation_noise=True`` the likelihood noise is
-        added (the mean training noise for fixed-noise models)."""
-        if output_indices is not None and list(output_indices) != [0]:
-            raise UnsupportedError("SingleTaskGP has a single output (output_indices=[0]).")
-        if posterior_transform is not None:
-            raise UnsupportedError("`posterior_transform` is not supported by botorch_rs.")
+        outcome space, over the outputs ``output_indices`` (all by default),
+        scalarized by ``posterior_transform`` if given; with
+        ``observation_noise=True`` the likelihood noise is added (the mean
+        training noise for fixed-noise models)."""
         if not isinstance(observation_noise, bool):
             raise UnsupportedError("`observation_noise` must be a bool in botorch_rs.")
+        oi, transform = self._posterior_args(output_indices, posterior_transform)
         kind = kind_of(X)
         flat = to_flat(X, "X")
         if len(flat[1]) < 2:
@@ -283,7 +382,24 @@ class SingleTaskGP(Model):
                 f"Expected X with {self._rs.dim} columns (d), got {flat[1][-1]}."
             )
         self.eval()
-        return GPyTorchPosterior(self, flat, kind, observation_noise)
+        return GPyTorchPosterior(
+            self._rs,
+            flat,
+            kind,
+            observation_noise,
+            num_outputs=self.num_outputs,
+            model_batch_shape=self.batch_shape,
+            output_indices=oi,
+            transform=transform,
+        )
+
+    def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:
+        """The model handle that acquisition functions are built on."""
+        from botorch_rs.acquisition.objective import transform_arg
+
+        return _rs.Model.from_single_task_gp(
+            self._rs, transform_arg(posterior_transform, self.num_outputs)
+        )
 
     # -- parameters --------------------------------------------------------
 
@@ -296,15 +412,20 @@ class SingleTaskGP(Model):
             offset += size
         raise AttributeError(f"The model has no parameter {suffix!r}.")
 
-    def _set_raw_param(self, suffix: str, new: list[float]) -> None:
+    def _set_raw_param(self, suffix: str, value: Any) -> None:
+        data, shape = to_flat(value, suffix)
         values = self._rs.raw_parameters()
         offset = 0
+        shapes = dict(self._rs.parameter_shapes())
         for name, size in self._rs.parameter_names():
             if name.endswith(suffix):
-                if len(new) == 1 and size > 1:
-                    new = new * size
-                if len(new) != size:
-                    raise BotorchTensorDimensionError(f"{name} has {size} values, got {len(new)}.")
+                target = tuple(shapes[name])
+                try:
+                    new = broadcast_to(data, shape, target)
+                except ValueError:
+                    raise BotorchTensorDimensionError(
+                        f"{name} has shape {target}, got a value of shape {tuple(shape)}."
+                    ) from None
                 values[offset : offset + size] = new
                 self._rs.set_raw_parameters(values)
                 return
@@ -316,10 +437,11 @@ class SingleTaskGP(Model):
         order and shapes."""
         values = self._rs.raw_parameters()
         offset = 0
-        for name, size in self._rs.parameter_names():
+        for name, shape in self._rs.parameter_shapes():
+            size = math.prod(shape)
             data = values[offset : offset + size]
             offset += size
-            yield name, from_flat(data, _param_shape(name, size), self._kind)
+            yield name, from_flat(data, tuple(shape), self._kind)
 
     def parameters(self) -> Iterator[Any]:
         for _, value in self.named_parameters():
@@ -352,8 +474,13 @@ class SingleTaskGP(Model):
         return new
 
     def __repr__(self) -> str:
+        extra = ""
+        if self.num_outputs > 1:
+            extra += f", m={self.num_outputs}"
+        if self.batch_shape:
+            extra += f", batch_shape={self.batch_shape}"
         return (
-            f"SingleTaskGP(n={self._rs.num_train}, d={self._rs.dim}, "
+            f"SingleTaskGP(n={self._rs.num_train}, d={self._rs.dim}{extra}, "
             f"covar_module={self.covar_module!r})"
         )
 

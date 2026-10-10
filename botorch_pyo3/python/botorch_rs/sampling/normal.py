@@ -39,12 +39,15 @@ class SobolQMCNormalSampler(MCSampler):
     For ``q`` jointly sampled points the base samples are a fixed
     ``num_samples x q`` matrix (``num_samples = prod(sample_shape)``), a
     deterministic function of the seed, so that MC acquisition functions are
-    smooth, deterministic sample-average approximations.
+    smooth, deterministic sample-average approximations; a posterior over
+    ``m`` outputs uses ``num_samples x (q m)`` base samples (BoTorch's
+    ``num_samples x q x m``, flattened).
 
     The Sobol sequence is Owen-scrambled (``sobol_burley``), so the samples
     differ from torch's ``SobolEngine`` for the same seed (with the same
     distribution). Explicit base samples can be assigned to ``base_samples``
-    (shape ``num_samples x q``, or BoTorch's ``num_samples x 1 x q``).
+    (shape ``num_samples x q``, BoTorch's ``num_samples x 1 x q``, or
+    ``num_samples x [1 x] q x m`` for a multi-output posterior).
     """
 
     def __init__(self, sample_shape: Any, seed: int | None = None) -> None:
@@ -79,25 +82,25 @@ class SobolQMCNormalSampler(MCSampler):
                 f"Expected base samples with {n} rows (num_samples), got shape {shape}."
             )
         non_one = [s for s in shape[1:] if s != 1]
-        if len(shape) == 1 or len(non_one) > 1:
+        if len(shape) == 1 or len(non_one) > 2:
             raise BotorchTensorDimensionError(
                 f"Base samples of shape {shape} must be `num_samples x q` (or "
-                "`num_samples x 1 x q`); batched base samples are not supported."
+                "`num_samples x 1 x q`, `num_samples x q x m`); batched base samples are "
+                "not supported."
             )
-        q = non_one[0] if non_one else 1
-        self._rs.set_base_samples((data, (n, q)))
+        self._rs.set_base_samples((data, (n, math.prod(non_one))))
         self._base_samples = value
 
     def forward(self, posterior: GPyTorchPosterior) -> Any:
-        """Posterior samples, shape ``sample_shape x batch_shape x q x 1``; the
+        """Posterior samples, shape ``sample_shape x batch_shape x q x m``; the
         same base samples are used for every batch."""
         if not isinstance(posterior, GPyTorchPosterior):
             raise UnsupportedError("The sampler requires a botorch_rs GPyTorchPosterior.")
-        q = posterior._q
-        z: Pair = self._rs.base_samples(q)
-        out = posterior._rs.posterior_samples(posterior._x, z, posterior._observation_noise)
-        shape = (*self.sample_shape, *posterior._batch, q, 1)
-        return from_flat(out[0], shape, posterior._kind)
+        q, m = posterior._q, posterior._m
+        z: Pair = self._rs.base_samples(q * m)
+        out = posterior._samples(z)
+        shape = (*self.sample_shape, *posterior._batch, q, m)
+        return from_flat(out, shape, posterior._kind)
 
     __call__ = forward
 

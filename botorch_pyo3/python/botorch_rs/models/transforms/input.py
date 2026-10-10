@@ -6,7 +6,7 @@ import warnings
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import ArrayKind, first_kind, from_flat, from_pair, to_flat
+from botorch_rs._arrays import ArrayKind, first_kind, from_pair, to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import UserInputWarning
 
@@ -29,8 +29,11 @@ class Normalize(InputTransform):
 
     With ``bounds=None`` (or ``learn_bounds=True``) the bounds are learned from
     the training inputs when the transform is used by a model (or called in
-    train mode). Only the arguments of BoTorch's ``Normalize`` that affect all
-    input dimensions with ``center=0.5`` are supported.
+    train mode). With a ``batch_shape`` (or bounds of shape
+    ``batch_shape x 2 x d``) every batch element has its own bounds;
+    otherwise one normalization is learned from all batch elements. Only the
+    arguments of BoTorch's ``Normalize`` that affect all input dimensions with
+    ``center=0.5`` are supported.
     """
 
     def __init__(
@@ -54,8 +57,6 @@ class Normalize(InputTransform):
                 raise UnsupportedError(
                     "Normalize over a subset of the inputs (`indices`) is not supported."
                 )
-        if batch_shape is not None and len(tuple(batch_shape)) > 0:
-            raise UnsupportedError("Batched transforms (batch_shape) are not supported.")
         if not (transform_on_train and transform_on_eval and transform_on_fantasize):
             raise UnsupportedError("transform_on_train/eval/fantasize=False is not supported.")
         if reverse:
@@ -70,9 +71,14 @@ class Normalize(InputTransform):
                 UserInputWarning,
                 stacklevel=2,
             )
+        shape = tuple(int(b) for b in (batch_shape or ()))
         self._kind: ArrayKind = first_kind(bounds)
         self._rs = _rs.Normalize(
-            d, to_flat(bounds, "bounds") if bounds is not None else None, learn, min_range
+            d,
+            to_flat(bounds, "bounds") if bounds is not None else None,
+            learn,
+            min_range,
+            list(shape),
         )
         self.almost_zero = almost_zero
         self.training = True
@@ -83,6 +89,11 @@ class Normalize(InputTransform):
         self._rs = fitted
         if kind.lib != "list" or self._kind.lib == "list":
             self._kind = kind
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        """The batch shape (empty for one normalization of all inputs)."""
+        return tuple(self._rs.batch_shape)
 
     @property
     def learn_bounds(self) -> bool:
@@ -98,20 +109,18 @@ class Normalize(InputTransform):
 
     @property
     def bounds(self) -> Any:
-        """The ``2 x d`` normalization bounds."""
+        """The normalization bounds, shape ``batch_shape x 2 x d``."""
         return from_pair(self._rs.bounds, self._kind)
 
     @property
     def offset(self) -> Any:
-        """The offsets (lower bounds), shape ``1 x d``."""
-        values = self._rs.offset
-        return from_flat(values, (1, len(values)), self._kind)
+        """The offsets (lower bounds), shape ``batch_shape x 1 x d``."""
+        return from_pair(self._rs.offset, self._kind)
 
     @property
     def coefficient(self) -> Any:
-        """The coefficients (ranges), shape ``1 x d``."""
-        values = self._rs.coefficient
-        return from_flat(values, (1, len(values)), self._kind)
+        """The coefficients (ranges), shape ``batch_shape x 1 x d``."""
+        return from_pair(self._rs.coefficient, self._kind)
 
     mins = offset
     ranges = coefficient
@@ -127,7 +136,7 @@ class Normalize(InputTransform):
         return from_pair(out, kind)
 
     def transform(self, X: Any) -> Any:
-        """Normalizes ``X`` (``... x d``); in train mode, learnable bounds are
+        """Normalizes ``X`` (``... x n x d``); in train mode, learnable bounds are
         first fitted to ``X``."""
         return self._apply(X, inverse=False)
 

@@ -6,7 +6,7 @@
 //! module back into the caller's array type. Keeping the extension free of
 //! NumPy / torch types is what lets the package work without either library.
 
-use botorch_core::{Matrix, Vector};
+use botorch_core::Matrix;
 use pyo3::prelude::*;
 
 use crate::errors::dimension_error;
@@ -86,11 +86,6 @@ pub fn matrix_out(m: &Matrix) -> ArrayOut {
     (data, vec![r, c])
 }
 
-/// A vector as a one-dimensional array.
-pub fn vector_out(v: &Vector) -> ArrayOut {
-    (v.as_slice().to_vec(), vec![v.len()])
-}
-
 /// Matrices of identical shape `r × c` stacked into an array of shape
 /// `(*batch, r, c)`.
 pub fn stack_out(mats: &[Matrix], batch: &[usize], r: usize, c: usize) -> ArrayOut {
@@ -103,4 +98,77 @@ pub fn stack_out(mats: &[Matrix], batch: &[usize], r: usize, c: usize) -> ArrayO
     let mut shape = batch.to_vec();
     shape.extend([r, c]);
     (data, shape)
+}
+
+/// The numpy / torch broadcast of two shapes (right-aligned; dimensions of
+/// size 1 broadcast), or `None` if they are incompatible.
+pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
+    let n = a.len().max(b.len());
+    let mut out = vec![0; n];
+    for i in 0..n {
+        let da = if i < n - a.len() {
+            1
+        } else {
+            a[i - (n - a.len())]
+        };
+        let db = if i < n - b.len() {
+            1
+        } else {
+            b[i - (n - b.len())]
+        };
+        out[i] = match (da, db) {
+            (x, y) if x == y => x,
+            (1, y) => y,
+            (x, 1) => x,
+            _ => return None,
+        };
+    }
+    Some(out)
+}
+
+/// For every element (row-major) of the broadcast shape `out`, the flat
+/// row-major index of the corresponding element of an array of shape
+/// `shape` (which must broadcast to `out`).
+pub fn broadcast_indices(shape: &[usize], out: &[usize]) -> Vec<usize> {
+    let total: usize = out.iter().product();
+    let offset = out.len() - shape.len();
+    let mut strides = vec![0; shape.len()];
+    let mut s = 1;
+    for i in (0..shape.len()).rev() {
+        strides[i] = if shape[i] == 1 { 0 } else { s };
+        s *= shape[i];
+    }
+    let mut result = Vec::with_capacity(total);
+    let mut idx = vec![0usize; out.len()];
+    for _ in 0..total {
+        let mut flat = 0;
+        for (i, &st) in strides.iter().enumerate() {
+            flat += idx[offset + i] * st;
+        }
+        result.push(flat);
+        // Increment the multi-index (row-major).
+        for k in (0..out.len()).rev() {
+            idx[k] += 1;
+            if idx[k] < out[k] {
+                break;
+            }
+            idx[k] = 0;
+        }
+    }
+    result
+}
+
+/// `data` (of shape `shape`) broadcast to `target`, or `None` if the shapes
+/// are incompatible.
+pub fn broadcast_to(data: &[f64], shape: &[usize], target: &[usize]) -> Option<Vec<f64>> {
+    let out = broadcast_shapes(shape, target)?;
+    if out != target {
+        return None;
+    }
+    Some(
+        broadcast_indices(shape, target)
+            .into_iter()
+            .map(|i| data[i])
+            .collect(),
+    )
 }

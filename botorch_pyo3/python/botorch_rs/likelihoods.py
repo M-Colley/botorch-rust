@@ -1,8 +1,10 @@
 """Gaussian likelihoods (``gpytorch.likelihoods``).
 
 A model's ``likelihood`` exposes the noise variance in the model's
-(transformed) outcome space, like GPyTorch: ``noise`` has shape ``(1,)`` for a
-homoskedastic likelihood and ``(n,)`` for fixed observation noise.
+(transformed) outcome space, like GPyTorch: ``noise`` has shape
+``batch_shape x 1`` for a homoskedastic likelihood and ``batch_shape x n`` for
+fixed observation noise, where ``batch_shape`` is the model's
+``_aug_batch_shape`` (empty for a single-output model without batch shape).
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ class GaussianLikelihood(Likelihood):
         batch_shape: Any = (),
         **kwargs: Any,
     ) -> None:
-        _check_batch_shape(batch_shape)
+        self.batch_shape = _check_batch_shape(batch_shape)
         _check_kwargs(kwargs, "GaussianLikelihood")
         _check_prior(noise_prior, "noise_prior")
         _check_constraint(noise_constraint, "noise_constraint")
@@ -55,32 +57,32 @@ class GaussianLikelihood(Likelihood):
         )
 
     @classmethod
-    def _from_spec(cls, spec: _rs.GaussianLikelihoodSpec) -> GaussianLikelihood:
+    def _from_spec(
+        cls, spec: _rs.GaussianLikelihoodSpec, batch_shape: tuple[int, ...] = ()
+    ) -> GaussianLikelihood:
         obj = cls.__new__(cls)
         obj._spec = spec
         obj.noise_prior = _prior_from_rs(spec.noise_prior)
         obj.noise_constraint = _constraint_from_rs(spec.noise_constraint)
+        obj.batch_shape = batch_shape
         return obj
 
     @property
     def noise(self) -> Any:
-        """The noise variance, shape ``(1,)``."""
-        return self._out(self._rs_model.noise, (1,))
+        """The noise variance, shape ``batch_shape x 1``."""
+        return self._param_out(self._rs_model.noise, (1,))
 
     @noise.setter
     def noise(self, value: Any) -> None:
-        data = to_flat(value, "noise")[0]
-        if len(data) != 1:
-            raise ValueError("The noise of a GaussianLikelihood is a single value.")
-        self._rs_model.set_noise(data[0])
+        self._rs_model.set_noise(to_flat(value, "noise"))
 
     @property
     def raw_noise(self) -> Any:
-        return self._out(self._model._raw_param("raw_noise"), (1,))
+        return self._param_out(self._model._raw_param("raw_noise"), (1,))
 
     @raw_noise.setter
     def raw_noise(self, value: Any) -> None:
-        self._model._set_raw_param("raw_noise", to_flat(value, "raw_noise")[0])
+        self._model._set_raw_param("raw_noise", value)
 
     @property
     def raw_noise_constraint(self) -> Interval:
@@ -99,17 +101,30 @@ class FixedNoiseGaussianLikelihood(Likelihood):
         )
 
     @classmethod
-    def _create(cls) -> FixedNoiseGaussianLikelihood:
-        return cls.__new__(cls)
+    def _create(cls, batch_shape: tuple[int, ...] = ()) -> FixedNoiseGaussianLikelihood:
+        obj = cls.__new__(cls)
+        obj.batch_shape = batch_shape
+        return obj
 
     @property
     def noise(self) -> Any:
-        """The (transformed, clamped at 1e-6) noise variances, shape ``(n,)``."""
-        values = self._rs_model.noise
-        return self._out(values, (len(values),))
+        """The (transformed, clamped at 1e-6) noise variances, shape
+        ``batch_shape x n``."""
+        return self._param_out(self._rs_model.noise, (-1,))
 
     def __repr__(self) -> str:
         return "FixedNoiseGaussianLikelihood()"
 
 
-__all__ = ["FixedNoiseGaussianLikelihood", "GaussianLikelihood", "Likelihood"]
+class LikelihoodList(Likelihood):
+    """The likelihoods of the sub-models of a ``ModelListGP``
+    (``gpytorch.likelihoods.LikelihoodList``)."""
+
+    def __init__(self, *likelihoods: Likelihood) -> None:
+        self.likelihoods = list(likelihoods)
+
+    def __repr__(self) -> str:
+        return f"LikelihoodList({', '.join(repr(lik) for lik in self.likelihoods)})"
+
+
+__all__ = ["FixedNoiseGaussianLikelihood", "GaussianLikelihood", "Likelihood", "LikelihoodList"]

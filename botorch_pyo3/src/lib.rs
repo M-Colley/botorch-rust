@@ -30,6 +30,8 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // Models and their components.
     m.add_class::<models::PySingleTaskGP>()?;
+    m.add_class::<models::PyModelListGP>()?;
+    m.add_class::<models::PyModel>()?;
     m.add_class::<transforms::PyNormalize>()?;
     m.add_class::<transforms::PyStandardize>()?;
     m.add_class::<specs::PyPrior>()?;

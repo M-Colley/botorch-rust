@@ -2,16 +2,18 @@
 //!
 //! One Python class wraps every acquisition function of `botorch_core`; the
 //! `botorch_rs.acquisition` package provides the BoTorch-named classes on top
-//! of it. An acquisition function shares the model snapshot that is current
-//! at construction (see [`crate::models`]).
+//! of it. Acquisition functions are built on a [`PyModel`] handle: the model
+//! snapshot that is current at construction (see [`crate::models`]), seen
+//! through the posterior transform if one is given.
 
 use std::sync::Arc;
 
 use botorch_core::acquisition::{
-    prune_inferior_points, AcquisitionFunction, ExpectedImprovement, LogExpectedImprovement,
-    LogProbabilityOfImprovement, McAcquisitionOptions, PosteriorMean, PosteriorStandardDeviation,
-    ProbabilityOfImprovement, PruneOptions, QExpectedImprovement, QLogExpectedImprovement,
-    QLogExpectedImprovementOptions, QLogNoisyExpectedImprovement,
+    prune_inferior_points, AcquisitionFunction, ConstrainedExpectedImprovement,
+    ExpectedImprovement, LogConstrainedExpectedImprovement, LogExpectedImprovement,
+    LogProbabilityOfImprovement, McAcquisitionOptions, OutputConstraint, PosteriorMean,
+    PosteriorStandardDeviation, ProbabilityOfImprovement, PruneOptions, QExpectedImprovement,
+    QLogExpectedImprovement, QLogExpectedImprovementOptions, QLogNoisyExpectedImprovement,
     QLogNoisyExpectedImprovementOptions, QProbabilityOfImprovement, QSimpleRegret,
     QUpperConfidenceBound, UpperConfidenceBound,
 };
@@ -21,7 +23,7 @@ use rayon::prelude::*;
 
 use crate::arrays::{matrix_out, Array, ArrayOut};
 use crate::errors::{unsupported, value_error, IntoPyResult};
-use crate::models::PySingleTaskGP;
+use crate::models::PyModel;
 use crate::sampling::PySobolQMCNormalSampler;
 use crate::threads;
 
@@ -58,8 +60,8 @@ impl PyAcquisitionFunction {
     }
 }
 
-fn model_of(model: &PySingleTaskGP) -> Arc<dyn Model> {
-    model.snapshot()
+fn model_of(model: &PyModel) -> Arc<dyn Model> {
+    model.inner.clone()
 }
 
 fn require(value: Option<f64>, name: &str, acqf: &str) -> PyResult<f64> {
@@ -117,7 +119,7 @@ impl PyAcquisitionFunction {
     #[pyo3(signature = (name, model, best_f=None, beta=None, maximize=true))]
     fn analytic(
         name: &str,
-        model: PyRef<'_, PySingleTaskGP>,
+        model: PyRef<'_, PyModel>,
         best_f: Option<f64>,
         beta: Option<f64>,
         maximize: bool,
@@ -169,7 +171,7 @@ impl PyAcquisitionFunction {
     #[allow(clippy::too_many_arguments)]
     fn monte_carlo(
         name: &str,
-        model: PyRef<'_, PySingleTaskGP>,
+        model: PyRef<'_, PyModel>,
         sampler: Option<PyRef<'_, PySobolQMCNormalSampler>>,
         x_pending: Option<Array>,
         best_f: Option<f64>,
@@ -218,6 +220,57 @@ impl PyAcquisitionFunction {
         Ok(Self::new_plain(inner, name))
     }
 
+    /// `"LogConstrainedExpectedImprovement"` or
+    /// `"ConstrainedExpectedImprovement"` (BoTorch's analytic constrained EI)
+    /// with the objective output `objective_index` and constraints
+    /// `(output index, lower, upper)` (`None`: unbounded).
+    #[staticmethod]
+    #[pyo3(signature = (name, model, best_f, objective_index, constraints, maximize=true))]
+    fn constrained(
+        name: &str,
+        model: PyRef<'_, PyModel>,
+        best_f: f64,
+        objective_index: usize,
+        constraints: Vec<OutputConstraint>,
+        maximize: bool,
+    ) -> PyResult<Self> {
+        let m = model_of(&model);
+        let (inner, name): (Arc<dyn AcquisitionFunction>, &'static str) = match name {
+            "LogConstrainedExpectedImprovement" => (
+                Arc::new(
+                    LogConstrainedExpectedImprovement::new(
+                        m,
+                        best_f,
+                        objective_index,
+                        constraints,
+                        maximize,
+                    )
+                    .into_py_result()?,
+                ),
+                "LogConstrainedExpectedImprovement",
+            ),
+            "ConstrainedExpectedImprovement" => (
+                Arc::new(
+                    ConstrainedExpectedImprovement::new(
+                        m,
+                        best_f,
+                        objective_index,
+                        constraints,
+                        maximize,
+                    )
+                    .into_py_result()?,
+                ),
+                "ConstrainedExpectedImprovement",
+            ),
+            other => {
+                return Err(unsupported(format!(
+                    "Unknown constrained acquisition function {other:?}."
+                )))
+            }
+        };
+        Ok(Self::new_plain(inner, name))
+    }
+
     /// `qLogNoisyExpectedImprovement(model, X_baseline, ...)`; the baseline is
     /// pruned with `prune_inferior_points` (`prune_num_samples` samples,
     /// `prune_max_frac`, seeded by `prune_seed`) if `prune_baseline`.
@@ -239,7 +292,7 @@ impl PyAcquisitionFunction {
     #[allow(clippy::too_many_arguments)]
     fn q_log_noisy_expected_improvement(
         py: Python<'_>,
-        model: PyRef<'_, PySingleTaskGP>,
+        model: PyRef<'_, PyModel>,
         x_baseline: Array,
         sampler: Option<PyRef<'_, PySobolQMCNormalSampler>>,
         x_pending: Option<Array>,
@@ -374,14 +427,14 @@ impl PyAcquisitionFunction {
 )]
 pub fn prune_inferior_points_py(
     py: Python<'_>,
-    model: PyRef<'_, PySingleTaskGP>,
+    model: PyRef<'_, PyModel>,
     x: Array,
     num_samples: usize,
     max_frac: f64,
     seed: Option<u64>,
     base_samples: Option<Array>,
 ) -> PyResult<ArrayOut> {
-    let m = model.snapshot();
+    let m = model.inner.clone();
     let x = x.matrix("X")?;
     let options = PruneOptions {
         num_samples,

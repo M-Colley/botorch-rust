@@ -294,10 +294,8 @@ def test_invalid_inputs(data: tuple[list, list]) -> None:
     X, Y = data
     with pytest.raises(BotorchTensorDimensionError, match="explicit output dimension"):
         SingleTaskGP(X, [y[0] for y in Y])
-    with pytest.raises(UnsupportedError):
-        SingleTaskGP([X], [Y])
-    with pytest.raises(UnsupportedError):
-        SingleTaskGP(X, [[y[0], y[0]] for y in Y])
+    with pytest.raises(BotorchTensorDimensionError):  # batch shapes differ
+        SingleTaskGP([X], [Y, Y])
     with pytest.raises(BotorchTensorDimensionError):
         SingleTaskGP(X, Y[:-1])
     with pytest.raises(InputDataError):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -23,7 +24,8 @@ class OutcomeTransform:
 
 
 class Standardize(OutcomeTransform):
-    r"""Standardizes outcomes to zero mean and unit variance (per output).
+    r"""Standardizes outcomes to zero mean and unit variance (per output and
+    batch element).
 
     Fitted in train mode (and by the model that uses it) with the column means
     and unbiased standard deviations; standard deviations below ``min_stdv``
@@ -42,9 +44,8 @@ class Standardize(OutcomeTransform):
             idx = sorted(int(o) % self._m for o in outputs)
             if idx != list(range(self._m)):
                 raise UnsupportedError("Standardizing a subset of the outputs is not supported.")
-        if batch_shape is not None and len(tuple(batch_shape)) > 0:
-            raise UnsupportedError("Batched transforms (batch_shape) are not supported.")
-        self._rs = _rs.Standardize(min_stdv)
+        self._batch_shape = tuple(int(b) for b in (batch_shape or ()))
+        self._rs = _rs.Standardize(min_stdv, list(self._batch_shape))
         self._kind: ArrayKind = LIST
         self.training = True
 
@@ -61,26 +62,42 @@ class Standardize(OutcomeTransform):
         return self._rs.min_stdv
 
     @property
+    def batch_shape(self) -> tuple[int, ...]:
+        return self._batch_shape
+
+    def _stats(self, pair: Any, fill: float) -> Any:
+        if not self._rs.is_trained:
+            shape = (*self._batch_shape, 1, self._m)
+            return from_flat([fill] * math.prod(shape), shape, self._kind)
+        return from_pair(pair, self._kind)
+
+    @property
     def means(self) -> Any:
-        """The output means, shape ``1 x m`` (empty until fitted)."""
-        values = self._rs.means
-        return from_flat(values, (1, len(values)), self._kind)
+        """The output means, shape ``batch_shape x 1 x m`` (zeros until fitted)."""
+        return self._stats(self._rs.means, 0.0)
 
     @property
     def stdvs(self) -> Any:
-        """The output standard deviations, shape ``1 x m``."""
-        values = self._rs.stdvs
-        return from_flat(values, (1, len(values)), self._kind)
+        """The output standard deviations, shape ``batch_shape x 1 x m``."""
+        return self._stats(self._rs.stdvs, 1.0)
 
     @property
     def _stdvs_sq(self) -> Any:
-        values = [s * s for s in self._rs.stdvs]
-        return from_flat(values, (1, len(values)), self._kind)
+        if not self._rs.is_trained:
+            return self._stats(None, 1.0)
+        data, shape = self._rs.stdvs
+        return from_flat([s * s for s in data], tuple(shape), self._kind)
 
-    def _check(self, shape: tuple[int, ...]) -> None:
-        if len(shape) != 2:
+    def _check(self, shape: tuple[int, ...], train: bool) -> None:
+        if len(shape) < 2:
             raise BotorchTensorDimensionError(
-                f"Expected Y with shape `n x m`, got shape {shape} (batches are not supported)."
+                f"Expected Y with shape `batch_shape x n x m`, got shape {shape}."
+            )
+        if train and tuple(shape[:-2]) != self._batch_shape:
+            raise RuntimeError(
+                f"Expected Y.shape[:-2] to be {self._batch_shape}, matching the "
+                f"`batch_shape` argument to `Standardize`, but got "
+                f"Y.shape[:-2]={tuple(shape[:-2])}."
             )
         if shape[-1] != self._m:
             raise RuntimeError(
@@ -88,11 +105,11 @@ class Standardize(OutcomeTransform):
             )
 
     def forward(self, Y: Any, Yvar: Any = None, X: Any = None) -> tuple[Any, Any]:
-        """Standardizes ``Y`` (``n x m``) and ``Yvar``; in train mode the
-        statistics are first fitted to ``Y``."""
+        """Standardizes ``Y`` (``batch_shape x n x m``) and ``Yvar``; in train
+        mode the statistics are first fitted to ``Y``."""
         kind = first_kind(Y)
         y = to_flat(Y, "Y")
-        self._check(y[1])
+        self._check(y[1], train=self.training)
         v = to_flat(Yvar, "Yvar") if Yvar is not None else None
         if self.training:
             fitted, y_tf, v_tf = self._rs.fit_transform(y, v)
@@ -104,10 +121,10 @@ class Standardize(OutcomeTransform):
     __call__ = forward
 
     def untransform(self, Y: Any, Yvar: Any = None, X: Any = None) -> tuple[Any, Any]:
-        """Un-standardizes ``Y`` (``n x m``) and ``Yvar``."""
+        """Un-standardizes ``Y`` (``... x n x m``) and ``Yvar``."""
         kind = first_kind(Y)
         y = to_flat(Y, "Y")
-        self._check(y[1])
+        self._check(y[1], train=False)
         v = to_flat(Yvar, "Yvar") if Yvar is not None else None
         y_out, v_out = self._rs.untransform(y, v)
         return from_pair(y_out, kind), (from_pair(v_out, kind) if v_out is not None else None)

@@ -250,6 +250,36 @@ impl Standardize {
         self
     }
 
+    /// A fitted standardization with the given per-output statistics (e.g.
+    /// collected from the elements of a batched model).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] if the lengths differ and
+    /// [`BotorchError::InvalidArgument`] for non-finite means or standard
+    /// deviations that are not positive.
+    pub fn fitted(means: Vec<f64>, stdvs: Vec<f64>, min_stdv: f64) -> Result<Self> {
+        if means.len() != stdvs.len() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "{} means but {} standard deviations",
+                means.len(),
+                stdvs.len()
+            )));
+        }
+        if means.iter().any(|v| !v.is_finite())
+            || stdvs.iter().any(|&s| !(s > 0.0 && s.is_finite()))
+        {
+            return Err(BotorchError::InvalidArgument(
+                "means must be finite and standard deviations positive".into(),
+            ));
+        }
+        Ok(Self {
+            means,
+            stdvs,
+            min_stdv,
+            trained: true,
+        })
+    }
+
     /// Whether the transform has been fitted.
     pub fn is_trained(&self) -> bool {
         self.trained

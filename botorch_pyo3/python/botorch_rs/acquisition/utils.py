@@ -9,11 +9,12 @@ from botorch_rs._arrays import from_pair, kind_of, to_flat
 from botorch_rs.acquisition.acquisition import check_unsupported
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.gp_regression import SingleTaskGP
+from botorch_rs.models.model_list_gp_regression import ModelListGP
 from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
 
 def prune_inferior_points(
-    model: SingleTaskGP,
+    model: SingleTaskGP | ModelListGP,
     X: Any,
     objective: Any = None,
     posterior_transform: Any = None,
@@ -28,16 +29,22 @@ def prune_inferior_points(
 
     If more than ``ceil(max_frac * n)`` points qualify, the most frequent
     maximizers are kept (BoTorch's implementation selects wrong points in that
-    case; with the default ``max_frac=1`` both agree).
+    case; with the default ``max_frac=1`` both agree). Multi-output models
+    require a scalarizing ``posterior_transform``.
     """
     check_unsupported(
         objective=objective,
-        posterior_transform=posterior_transform,
         constraints=constraints,
         marginalize_dim=marginalize_dim,
     )
-    if not isinstance(model, SingleTaskGP):
-        raise UnsupportedError("prune_inferior_points requires a botorch_rs SingleTaskGP.")
+    if not isinstance(model, (SingleTaskGP, ModelListGP)):
+        raise UnsupportedError(
+            "prune_inferior_points requires a botorch_rs SingleTaskGP or ModelListGP."
+        )
+    if model.num_outputs > 1 and posterior_transform is None:
+        raise UnsupportedError(
+            "Models with multiple outputs require an objective or posterior_transform."
+        )
     flat = to_flat(X, "X")
     n = flat[1][0] if flat[1] else 0
     base_samples = None
@@ -47,7 +54,12 @@ def prune_inferior_points(
         num_samples = sampler.num_samples
         base_samples = sampler._rs.base_samples(n) if n > 0 else None
     pruned = _rs.prune_inferior_points(
-        model._rs, flat, num_samples, float(max_frac), None, base_samples
+        model._acquisition_model(posterior_transform),
+        flat,
+        num_samples,
+        float(max_frac),
+        None,
+        base_samples,
     )
     return from_pair(pruned, kind_of(X))
 

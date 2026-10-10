@@ -15,8 +15,10 @@ from botorch_rs._arrays import (
     kind_of,
     to_flat,
 )
+from botorch_rs._botorch_rs import Model as _RsModel
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.models.gp_regression import SingleTaskGP
+from botorch_rs.models.model_list_gp_regression import ModelListGP
 
 
 def check_unsupported(**kwargs: Any) -> None:
@@ -65,12 +67,22 @@ class AcquisitionFunction:
     _log: bool = False
 
     def __init__(self, model: Any) -> None:
-        if not isinstance(model, SingleTaskGP):
+        if not isinstance(model, (SingleTaskGP, ModelListGP)):
             raise UnsupportedError(
-                "botorch_rs acquisition functions require a botorch_rs SingleTaskGP model."
+                "botorch_rs acquisition functions require a botorch_rs SingleTaskGP or "
+                "ModelListGP model."
+            )
+        if model.batch_shape:
+            raise UnsupportedError(
+                "botorch_rs acquisition functions require unbatched models, got a model with "
+                f"batch shape {model.batch_shape}."
             )
         self.model = model
         self._pending_kind: ArrayKind = model._kind
+
+    def _model_handle(self, posterior_transform: Any = None) -> _RsModel:
+        """The model seen through ``posterior_transform`` (if given)."""
+        return self.model._acquisition_model(posterior_transform)
 
     def _candidates(self, X: Any) -> tuple[Flat, ArrayKind, tuple[int, ...]]:
         """``X`` as a flat ``batch x q x d`` array, its kind and original shape."""

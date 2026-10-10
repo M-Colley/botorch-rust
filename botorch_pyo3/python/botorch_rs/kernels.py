@@ -3,7 +3,8 @@
 
 A kernel passed to a model as ``covar_module`` is bound to it: ``lengthscale``
 and ``outputscale`` then read and set the model's hyperparameters (shapes
-``1 x d`` and ``()`` as in GPyTorch).
+``batch_shape x 1 x d`` and ``batch_shape`` as in GPyTorch, where
+``batch_shape`` is the model's ``_aug_batch_shape``).
 """
 
 from __future__ import annotations
@@ -21,9 +22,14 @@ from botorch_rs.priors import Prior
 from botorch_rs.priors import _from_rs as _prior_from_rs
 
 
-def _check_batch_shape(batch_shape: Any) -> None:
-    if batch_shape is not None and len(tuple(batch_shape)) > 0:
-        raise UnsupportedError("Batched modules (batch_shape) are not supported by botorch_rs.")
+def _check_batch_shape(batch_shape: Any) -> tuple[int, ...]:
+    """A module's ``batch_shape`` as a tuple of ints."""
+    if batch_shape is None:
+        return ()
+    try:
+        return tuple(int(b) for b in batch_shape)
+    except TypeError as e:
+        raise UnsupportedError(f"Invalid batch_shape {batch_shape!r}.") from e
 
 
 def _check_prior(prior: Any, name: str) -> None:
@@ -67,7 +73,7 @@ class _StationaryKernel(Kernel):
         eps: float = 1e-6,
         **kwargs: Any,
     ) -> None:
-        _check_batch_shape(batch_shape)
+        self.batch_shape = _check_batch_shape(batch_shape)
         if active_dims is not None:
             raise UnsupportedError("`active_dims` is not supported by botorch_rs.")
         _check_kwargs(kwargs, type(self).__name__)
@@ -98,23 +104,22 @@ class _StationaryKernel(Kernel):
 
     @property
     def lengthscale(self) -> Any:
-        """The lengthscales, shape ``1 x d``."""
-        values = self._rs_model.lengthscale
-        return self._out(values, (1, len(values)))
+        """The lengthscales, shape ``batch_shape x 1 x d``."""
+        return self._param_out(self._rs_model.lengthscale, (1, -1))
 
     @lengthscale.setter
     def lengthscale(self, value: Any) -> None:
-        self._rs_model.set_lengthscale(to_flat(value, "lengthscale")[0])
+        self._rs_model.set_lengthscale(to_flat(value, "lengthscale"))
 
     @property
     def raw_lengthscale(self) -> Any:
-        """The raw lengthscales (BoTorch's parameterization), shape ``1 x d``."""
-        values = self._model._raw_param("raw_lengthscale")
-        return self._out(values, (1, len(values)))
+        """The raw lengthscales (BoTorch's parameterization), shape
+        ``batch_shape x 1 x d``."""
+        return self._param_out(self._model._raw_param("raw_lengthscale"), (1, -1))
 
     @raw_lengthscale.setter
     def raw_lengthscale(self, value: Any) -> None:
-        self._model._set_raw_param("raw_lengthscale", to_flat(value, "raw_lengthscale")[0])
+        self._model._set_raw_param("raw_lengthscale", value)
 
     @property
     def raw_lengthscale_constraint(self) -> Interval:
@@ -172,7 +177,7 @@ class ScaleKernel(Kernel):
     ) -> None:
         if not isinstance(base_kernel, _StationaryKernel):
             raise UnsupportedError("ScaleKernel supports an RBFKernel or MaternKernel base kernel.")
-        _check_batch_shape(kwargs.pop("batch_shape", None))
+        self.batch_shape = _check_batch_shape(kwargs.pop("batch_shape", None))
         _check_kwargs(kwargs, "ScaleKernel")
         _check_prior(outputscale_prior, "outputscale_prior")
         _check_constraint(outputscale_constraint, "outputscale_constraint")
@@ -196,23 +201,20 @@ class ScaleKernel(Kernel):
 
     @property
     def outputscale(self) -> Any:
-        """The outputscale, shape ``()``."""
-        return self._out([self._rs_model.outputscale], ())
+        """The outputscale, shape ``batch_shape``."""
+        return self._param_out(self._rs_model.outputscale, ())
 
     @outputscale.setter
     def outputscale(self, value: Any) -> None:
-        data = to_flat(value, "outputscale")[0]
-        if len(data) != 1:
-            raise ValueError("outputscale must be a scalar")
-        self._rs_model.set_outputscale(data[0])
+        self._rs_model.set_outputscale(to_flat(value, "outputscale"))
 
     @property
     def raw_outputscale(self) -> Any:
-        return self._out(self._model._raw_param("raw_outputscale"), ())
+        return self._param_out(self._model._raw_param("raw_outputscale"), ())
 
     @raw_outputscale.setter
     def raw_outputscale(self, value: Any) -> None:
-        self._model._set_raw_param("raw_outputscale", to_flat(value, "raw_outputscale")[0])
+        self._model._set_raw_param("raw_outputscale", value)
 
     @property
     def raw_outputscale_constraint(self) -> Interval:
@@ -222,12 +224,17 @@ class ScaleKernel(Kernel):
         return f"ScaleKernel({self.base_kernel!r})"
 
 
-def _kernel_from_spec(spec: _rs.KernelSpec, preset: Callable[[int], _rs.KernelSpec]) -> Kernel:
+def _kernel_from_spec(
+    spec: _rs.KernelSpec,
+    preset: Callable[[int], _rs.KernelSpec],
+    batch_shape: tuple[int, ...] = (),
+) -> Kernel:
     """A kernel object describing ``spec`` that builds itself with ``preset``."""
     base: _StationaryKernel
     cls = RBFKernel if spec.kind == "rbf" else MaternKernel
     base = cls(
         ard_num_dims=spec.ard_num_dims,
+        batch_shape=batch_shape,
         lengthscale_prior=_prior_from_rs(spec.lengthscale_prior),
         lengthscale_constraint=_constraint_from_rs(spec.lengthscale_constraint),
     )
@@ -243,6 +250,7 @@ def _kernel_from_spec(spec: _rs.KernelSpec, preset: Callable[[int], _rs.KernelSp
             if outputscale_constraint is not None
             else None
         ),
+        batch_shape=batch_shape,
     )
     kernel._preset = preset
     return kernel

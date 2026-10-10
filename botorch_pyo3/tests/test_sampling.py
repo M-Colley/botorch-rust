@@ -62,8 +62,8 @@ def test_explicit_base_samples() -> None:
     assert sampler.base_samples == [[[0.0, 0.0]], [[1.0, -1.0]]]
     with pytest.raises(BotorchTensorDimensionError):
         sampler.base_samples = [[0.0, 0.0]] * 3
-    with pytest.raises(BotorchTensorDimensionError):
-        sampler.base_samples = [[[0.0, 0.0], [0.0, 0.0]]] * 2
+    with pytest.raises(BotorchTensorDimensionError):  # batched base samples
+        sampler.base_samples = [[[[0.0, 0.0], [0.0, 0.0]]] * 2] * 2
 
 
 def test_draw_sobol_samples(kind: str) -> None:
