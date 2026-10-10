@@ -256,6 +256,32 @@ def list_pair(specs: Sequence[ModelSpec], seed: int) -> tuple[Any, Any, Any]:
     return lb, RsModelListGP(*rss), X0
 
 
+def perturbed_copy(model: Any, seed: int, rel: float = 1e-14) -> Any:
+    """A copy of a BoTorch model whose (transformed) training inputs are
+    perturbed by ``rel`` (relative): BoTorch's own sensitivity to rounding.
+    Monte-Carlo quantities on nearly singular joint posteriors (e.g. qLogNEI
+    over the training points) change by much more than ``rel`` under such a
+    perturbation; this "noise floor" bounds the agreement any two
+    implementations can reach."""
+    import copy
+
+    twin = copy.deepcopy(model)
+    g = torch.Generator().manual_seed(seed)
+
+    def perturb(gp: Any) -> None:
+        def noisy(X: Any) -> Any:
+            return X * (1 + rel * torch.randn(X.shape, generator=g, dtype=X.dtype))
+
+        gp.train_inputs = tuple(noisy(X) for X in gp.train_inputs)
+        if getattr(gp, "_original_train_inputs", None) is not None:
+            gp._original_train_inputs = noisy(gp._original_train_inputs)
+        gp.prediction_strategy = None
+
+    for gp in getattr(twin, "models", [twin]):
+        perturb(gp)
+    return twin
+
+
 def bt_mll_values(model: Any) -> Any:
     mll = BtMLL(model.likelihood, model)
     model.train()
@@ -288,13 +314,18 @@ def dense_model_list() -> Iterator[None]:
     import botorch.models.gpytorch as gpytorch_models
     from botorch.posteriors.gpytorch import GPyTorchPosterior
     from gpytorch.distributions import MultitaskMultivariateNormal
+    from linear_operator.operators import DenseLinearOperator
 
     orig_sep = gpytorch_models.separate_mtmvn
     orig_scal = objective.scalarize_posterior
 
+    # Dense covariances wrapped in a linear operator: a plain tensor would make
+    # torch's MultivariateNormal factorize it eagerly (without jitter).
     def separate(mvn: Any) -> Any:
         dense = MultitaskMultivariateNormal(
-            mvn.mean, mvn.lazy_covariance_matrix.to_dense(), interleaved=mvn._interleaved
+            mvn.mean,
+            DenseLinearOperator(mvn.lazy_covariance_matrix.to_dense()),
+            interleaved=mvn._interleaved,
         )
         return orig_sep(dense)
 
@@ -302,7 +333,9 @@ def dense_model_list() -> Iterator[None]:
         mvn = posterior.distribution
         if isinstance(mvn, MultitaskMultivariateNormal) and not mvn._interleaved:
             posterior = GPyTorchPosterior(
-                MultitaskMultivariateNormal(mvn.mean, mvn.covariance_matrix, interleaved=False)
+                MultitaskMultivariateNormal(
+                    mvn.mean, DenseLinearOperator(mvn.covariance_matrix), interleaved=False
+                )
             )
         return orig_scal(posterior=posterior, weights=weights, offset=offset)
 
@@ -361,3 +394,55 @@ def points_in(X: Any, shape: Sequence[int], seed: int, pad: float = 0.1) -> Any:
     span = max(hi - lo, 1e-3)
     g = torch.Generator().manual_seed(seed)
     return lo - pad * span + (1 + 2 * pad) * span * torch.rand(*shape, generator=g, dtype=DT)
+
+
+# ---------------------------------------------------------------------------
+# BoTorch version differences
+# ---------------------------------------------------------------------------
+
+
+def botorch_allows_infeasible_starts() -> bool:
+    """Whether BoTorch's SLSQP accepts initial conditions that violate the
+    nonlinear constraints (BoTorch's main branch; released versions up to
+    0.18 raise "`batch_initial_conditions` must satisfy the non-linear
+    inequality constraints.", while botorch_rs follows main)."""
+    import inspect
+
+    from botorch.optim import parameter_constraints as pc
+
+    params = inspect.signature(pc.make_scipy_nonlinear_inequality_constraints).parameters
+    return "validate_feasibility" in params
+
+
+def feasible_starts(ics: Any, nonlinear: Any, fallback: Any) -> Any:
+    """``ics`` (``b x q x d``) for both libraries: unchanged if BoTorch
+    accepts infeasible starts, else only the starts satisfying the nonlinear
+    constraints (``fallback``, a feasible ``q x d`` point, if none does)."""
+    if not nonlinear or botorch_allows_infeasible_starts():
+        return ics
+    from botorch.optim import parameter_constraints as pc
+
+    keep = pc.evaluate_feasibility(ics, nonlinear_inequality_constraints=nonlinear)
+    kept = ics[keep]
+    return kept if kept.shape[0] > 0 else fallback.unsqueeze(0)
+
+
+def feasible_start_generator(base: Any, nonlinear: Any, fallback: Any) -> Any:
+    """An ``ic_generator`` wrapping ``base`` (a library's
+    ``gen_batch_initial_conditions``) that, for BoTorch versions requiring
+    feasible starts, keeps the starts that satisfy the nonlinear constraints
+    and pads with ``fallback``. Used for both libraries alike."""
+    if botorch_allows_infeasible_starts():
+        return base
+
+    def generate(
+        acq_function: Any, bounds: Any, q: int, num_restarts: int, raw_samples: int, **kw: Any
+    ) -> Any:
+        ics = base(acq_function, bounds, q, 4 * num_restarts, raw_samples, **kw)
+        ics = feasible_starts(ics, nonlinear, fallback)[:num_restarts]
+        if ics.shape[0] < num_restarts:
+            pad = fallback.unsqueeze(0).expand(num_restarts - ics.shape[0], *fallback.shape)
+            ics = torch.cat([ics, pad.to(ics)])
+        return ics
+
+    return generate
