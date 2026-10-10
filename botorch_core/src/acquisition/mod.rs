@@ -13,7 +13,13 @@
 //! * [`monte_carlo`] — `qExpectedImprovement`, `qProbabilityOfImprovement`,
 //!   `qUpperConfidenceBound`, `qSimpleRegret` (any `q`, pending points).
 //! * [`logei`] — `qLogExpectedImprovement`, `qLogNoisyExpectedImprovement`.
+//! * [`objective`] — `ScalarizedPosteriorTransform`; acquisition functions
+//!   evaluate a model through a posterior transform when given a
+//!   [`ScalarizedModel`] (see [`ScalarizedModel::wrap`]).
 //! * [`utils`] — `prune_inferior_points`.
+//!
+//! Acquisition functions require unbatched models; multi-output models need
+//! a posterior transform.
 //!
 //! Acquisition functions hold their model as an `Arc<dyn Model>` and are
 //! `Send + Sync`; pending points are stored behind a lock so that
@@ -32,6 +38,7 @@ use crate::Matrix;
 pub mod analytic;
 pub mod logei;
 pub mod monte_carlo;
+pub mod objective;
 pub mod utils;
 
 pub use analytic::{
@@ -46,6 +53,7 @@ pub use monte_carlo::{
     McAcquisitionOptions, QExpectedImprovement, QProbabilityOfImprovement, QSimpleRegret,
     QUpperConfidenceBound,
 };
+pub use objective::{ScalarizedModel, ScalarizedPosteriorTransform};
 pub use utils::{prune_inferior_points, prune_inferior_points_indices, PruneOptions};
 
 /// An acquisition function `α(X)` over candidate sets `X` (`q × d`, raw input
@@ -120,6 +128,27 @@ pub trait AcquisitionFunction: Send + Sync + Debug {
     fn is_log(&self) -> bool {
         false
     }
+}
+
+/// Checks that `model` is unbatched and has a single output (`message` is
+/// the error for multi-output models).
+pub(crate) fn check_model(model: &dyn Model, message: &str) -> Result<()> {
+    check_unbatched(model)?;
+    if model.num_outputs() != 1 {
+        return Err(BotorchError::Unsupported(message.into()));
+    }
+    Ok(())
+}
+
+/// Checks that `model` is unbatched.
+fn check_unbatched(model: &dyn Model) -> Result<()> {
+    if !model.batch_shape().is_empty() {
+        return Err(BotorchError::Unsupported(format!(
+            "acquisition functions require unbatched models, got a model with batch shape {:?}",
+            model.batch_shape()
+        )));
+    }
+    Ok(())
 }
 
 /// Checks the shape of a candidate set.

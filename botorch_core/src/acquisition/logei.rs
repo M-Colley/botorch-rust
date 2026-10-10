@@ -22,7 +22,7 @@ use crate::acquisition::monte_carlo::{
     Reduction,
 };
 use crate::acquisition::utils::{prune_inferior_points, PruneOptions};
-use crate::acquisition::{check_candidates, check_pending, AcquisitionFunction};
+use crate::acquisition::{check_candidates, check_model, check_pending, AcquisitionFunction};
 use crate::error::{BotorchError, Result};
 use crate::linalg::CovarianceRoot;
 use crate::models::Model;
@@ -343,12 +343,10 @@ impl QLogNoisyExpectedImprovement {
         x_baseline: &Matrix,
         options: QLogNoisyExpectedImprovementOptions,
     ) -> Result<Self> {
-        if model.num_outputs() != 1 {
-            return Err(BotorchError::Unsupported(
-                "Must specify an objective or a posterior transform when using a multi-output model."
-                    .into(),
-            ));
-        }
+        check_model(
+            model.as_ref(),
+            "Must specify an objective or a posterior transform when using a multi-output model.",
+        )?;
         let d = model.dim();
         if x_baseline.ncols() != d {
             return Err(BotorchError::DimensionMismatch(format!(

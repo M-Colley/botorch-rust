@@ -1,6 +1,7 @@
 //! Utilities for acquisition functions (`botorch.acquisition.utils`):
 //! [`prune_inferior_points`].
 
+use crate::acquisition::check_model;
 use crate::error::{BotorchError, Result};
 use crate::linalg::CovarianceRoot;
 use crate::models::Model;
@@ -67,11 +68,10 @@ pub fn prune_inferior_points_indices(
             options.max_frac
         )));
     }
-    if model.num_outputs() != 1 {
-        return Err(BotorchError::Unsupported(
-            "prune_inferior_points requires a single-output model or an objective".into(),
-        ));
-    }
+    check_model(
+        model,
+        "Models with multiple outputs require an objective or posterior_transform.",
+    )?;
     let max_points = (options.max_frac * n as f64).ceil() as usize;
     let post = model.posterior(x, false)?;
     let root = CovarianceRoot::new(&post.covariance)?.to_matrix();

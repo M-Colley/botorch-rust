@@ -8,12 +8,15 @@
 //! improvement `u = (μ - best_f) / σ` (negated when `maximize` is false).
 //! Gradients are exact (chain rule through
 //! [`Model::posterior_q1_with_grad`]).
+//!
+//! Multi-output models are used through a posterior transform
+//! ([`crate::acquisition::ScalarizedModel`]).
 
 use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::acquisition::{check_candidates, AcquisitionFunction};
+use crate::acquisition::{check_candidates, check_model, AcquisitionFunction};
 use crate::error::{BotorchError, Result};
 use crate::models::Model;
 use crate::utils::probability::{erfcx, log_ndtr, log_ndtr_grad, log_phi, ndtr, phi};
@@ -151,12 +154,10 @@ fn row_matrix(g: Vector) -> Matrix {
 }
 
 fn check_single_output(model: &dyn Model) -> Result<()> {
-    if model.num_outputs() != 1 {
-        return Err(BotorchError::Unsupported(
-            "Must specify a posterior transform when using a multi-output model.".into(),
-        ));
-    }
-    Ok(())
+    check_model(
+        model,
+        "Must specify a posterior transform when using a multi-output model.",
+    )
 }
 
 fn check_best_f(best_f: f64) -> Result<()> {

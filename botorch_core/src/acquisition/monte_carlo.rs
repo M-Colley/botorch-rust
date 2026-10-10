@@ -19,7 +19,7 @@
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
-use crate::acquisition::{check_candidates, check_pending, AcquisitionFunction};
+use crate::acquisition::{check_candidates, check_model, check_pending, AcquisitionFunction};
 use crate::error::{BotorchError, Result};
 use crate::linalg::CovarianceRoot;
 use crate::models::Model;
@@ -147,12 +147,10 @@ pub(crate) type Reduction = (f64, Option<Matrix>);
 
 impl McCore {
     pub fn new(model: Arc<dyn Model>, options: McAcquisitionOptions) -> Result<Self> {
-        if model.num_outputs() != 1 {
-            return Err(BotorchError::Unsupported(
-                "Must specify an objective or a posterior transform when using a multi-output model."
-                    .into(),
-            ));
-        }
+        check_model(
+            model.as_ref(),
+            "Must specify an objective or a posterior transform when using a multi-output model.",
+        )?;
         if let Some(p) = &options.x_pending {
             check_pending(p, model.dim())?;
         }
