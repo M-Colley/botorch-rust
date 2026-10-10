@@ -8,7 +8,8 @@
 //!
 //! * [`analytic`] — `ExpectedImprovement`, `LogExpectedImprovement`,
 //!   `ProbabilityOfImprovement`, `LogProbabilityOfImprovement`,
-//!   `UpperConfidenceBound`, `PosteriorMean`, `PosteriorStandardDeviation`
+//!   `UpperConfidenceBound`, `PosteriorMean`, `PosteriorStandardDeviation`,
+//!   `LogConstrainedExpectedImprovement`, `ConstrainedExpectedImprovement`
 //!   (`q = 1`).
 //! * [`monte_carlo`] — `qExpectedImprovement`, `qProbabilityOfImprovement`,
 //!   `qUpperConfidenceBound`, `qSimpleRegret` (any `q`, pending points).
@@ -19,7 +20,8 @@
 //! * [`utils`] — `prune_inferior_points`.
 //!
 //! Acquisition functions require unbatched models; multi-output models need
-//! a posterior transform.
+//! a posterior transform (except for the constrained analytic acquisition
+//! functions, which read several outputs).
 //!
 //! Acquisition functions hold their model as an `Arc<dyn Model>` and are
 //! `Send + Sync`; pending points are stored behind a lock so that
@@ -42,7 +44,8 @@ pub mod objective;
 pub mod utils;
 
 pub use analytic::{
-    ExpectedImprovement, LogExpectedImprovement, LogProbabilityOfImprovement, PosteriorMean,
+    ConstrainedExpectedImprovement, ExpectedImprovement, LogConstrainedExpectedImprovement,
+    LogExpectedImprovement, LogProbabilityOfImprovement, OutputConstraint, PosteriorMean,
     PosteriorStandardDeviation, ProbabilityOfImprovement, UpperConfidenceBound,
 };
 pub use logei::{
@@ -141,7 +144,7 @@ pub(crate) fn check_model(model: &dyn Model, message: &str) -> Result<()> {
 }
 
 /// Checks that `model` is unbatched.
-fn check_unbatched(model: &dyn Model) -> Result<()> {
+pub(crate) fn check_unbatched(model: &dyn Model) -> Result<()> {
     if !model.batch_shape().is_empty() {
         return Err(BotorchError::Unsupported(format!(
             "acquisition functions require unbatched models, got a model with batch shape {:?}",

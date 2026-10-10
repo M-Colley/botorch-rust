@@ -10,7 +10,10 @@
 //! [`Model::posterior_q1_with_grad`]).
 //!
 //! Multi-output models are used through a posterior transform
-//! ([`crate::acquisition::ScalarizedModel`]).
+//! ([`crate::acquisition::ScalarizedModel`]). The constrained acquisition
+//! functions [`LogConstrainedExpectedImprovement`] and
+//! [`ConstrainedExpectedImprovement`] read the per-output marginals of a
+//! multi-output model directly.
 
 use std::sync::Arc;
 
@@ -19,7 +22,10 @@ use rayon::prelude::*;
 use crate::acquisition::{check_candidates, check_model, AcquisitionFunction};
 use crate::error::{BotorchError, Result};
 use crate::models::Model;
-use crate::utils::probability::{erfcx, log_ndtr, log_ndtr_grad, log_phi, ndtr, phi};
+use crate::utils::probability::{
+    erfcx, log_ndtr, log_ndtr_grad, log_phi, log_prob_normal_in, log_prob_normal_in_with_grad,
+    ndtr, phi,
+};
 use crate::utils::safe_math::log1mexp;
 use crate::{Matrix, Vector};
 
@@ -560,6 +566,477 @@ impl AcquisitionFunction for PosteriorStandardDeviation {
         let (mean, sigma, _, dsigma) = mean_sigma_with_grad(self.model.as_ref(), x)?;
         let ds = if self.maximize { dsigma } else { -dsigma };
         Ok((self.value(mean, sigma), row_matrix(ds)))
+    }
+}
+
+/// An output constraint `lower <= y_index <= upper` of the constrained
+/// analytic acquisition functions (one entry `{index: (lower, upper)}` of
+/// BoTorch's `constraints` dictionary; `None` is an unbounded side).
+pub type OutputConstraint = (usize, Option<f64>, Option<f64>);
+
+/// The preprocessed constraint bounds (BoTorch's
+/// `_preprocess_constraint_bounds`): constraints with only a lower bound, only
+/// an upper bound and both bounds, each in insertion order.
+#[derive(Clone, Debug, PartialEq)]
+struct ConstraintBounds {
+    lower: Vec<(usize, f64)>,
+    upper: Vec<(usize, f64)>,
+    both: Vec<(usize, f64, f64)>,
+}
+
+impl ConstraintBounds {
+    fn new(
+        constraints: &[OutputConstraint],
+        objective_index: Option<usize>,
+        num_outputs: usize,
+    ) -> Result<Self> {
+        if constraints.is_empty() {
+            return Err(BotorchError::InvalidArgument(
+                "There must be at least one constraint.".into(),
+            ));
+        }
+        let mut out = Self {
+            lower: Vec::new(),
+            upper: Vec::new(),
+            both: Vec::new(),
+        };
+        let mut seen = Vec::with_capacity(constraints.len());
+        for &(k, lo, hi) in constraints {
+            if Some(k) == objective_index {
+                return Err(BotorchError::InvalidArgument(
+                    "Output corresponding to objective should not be a constraint.".into(),
+                ));
+            }
+            if k >= num_outputs {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "constraint index {k} is out of range for a model with {num_outputs} outputs"
+                )));
+            }
+            if seen.contains(&k) {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "output {k} is constrained more than once"
+                )));
+            }
+            seen.push(k);
+            if lo.is_some_and(f64::is_nan) || hi.is_some_and(f64::is_nan) {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "the bounds of output {k} must not be NaN"
+                )));
+            }
+            match (lo, hi) {
+                (Some(l), Some(u)) => {
+                    if u <= l {
+                        return Err(BotorchError::InvalidArgument(
+                            "Upper bound is less than the lower bound.".into(),
+                        ));
+                    }
+                    out.both.push((k, l, u));
+                }
+                (Some(l), None) => out.lower.push((k, l)),
+                (None, Some(u)) => out.upper.push((k, u)),
+                (None, None) => {}
+            }
+        }
+        Ok(out)
+    }
+
+    /// `Σ_i log P(lower_i <= y_i <= upper_i)` for independent Gaussian
+    /// outputs (BoTorch's `compute_log_prob_feas_from_bounds`).
+    fn log_prob_feas(&self, means: &[f64], sigmas: &[f64]) -> f64 {
+        let mut total = 0.0;
+        if !self.lower.is_empty() {
+            let mut s = 0.0;
+            for &(k, l) in &self.lower {
+                s += log_ndtr(-((l - means[k]) / sigmas[k]));
+            }
+            total += s;
+        }
+        if !self.upper.is_empty() {
+            let mut s = 0.0;
+            for &(k, u) in &self.upper {
+                s += log_ndtr((u - means[k]) / sigmas[k]);
+            }
+            total += s;
+        }
+        if !self.both.is_empty() {
+            let mut s = 0.0;
+            for &(k, l, u) in &self.both {
+                let a = (l - means[k]) / sigmas[k];
+                let b = (u - means[k]) / sigmas[k];
+                s += log_prob_normal_in(a, b).unwrap_or(f64::NAN);
+            }
+            total += s;
+        }
+        total
+    }
+
+    /// [`ConstraintBounds::log_prob_feas`] and its gradient, given the
+    /// gradients of the means and standard deviations.
+    fn log_prob_feas_with_grad(&self, mo: &OutputMoments) -> (f64, Vector) {
+        let d = mo.dmean.first().map_or(0, |v| v.len());
+        let mut grad = Vector::zeros(d);
+        // ∂z/∂x for z = (c - μ)/σ: -(∂μ + z ∂σ)/σ.
+        let dz = |k: usize, z: f64| -(&mo.dmean[k] + &mo.dsigma[k] * z) / mo.sigma[k];
+        let mut total = 0.0;
+        if !self.lower.is_empty() {
+            let mut s = 0.0;
+            for &(k, l) in &self.lower {
+                let z = (l - mo.mean[k]) / mo.sigma[k];
+                s += log_ndtr(-z);
+                grad -= dz(k, z) * log_ndtr_grad(-z);
+            }
+            total += s;
+        }
+        if !self.upper.is_empty() {
+            let mut s = 0.0;
+            for &(k, u) in &self.upper {
+                let z = (u - mo.mean[k]) / mo.sigma[k];
+                s += log_ndtr(z);
+                grad += dz(k, z) * log_ndtr_grad(z);
+            }
+            total += s;
+        }
+        if !self.both.is_empty() {
+            let mut s = 0.0;
+            for &(k, l, u) in &self.both {
+                let a = (l - mo.mean[k]) / mo.sigma[k];
+                let b = (u - mo.mean[k]) / mo.sigma[k];
+                match log_prob_normal_in_with_grad(a, b) {
+                    Ok((v, ga, gb)) => {
+                        s += v;
+                        grad += dz(k, a) * ga + dz(k, b) * gb;
+                    }
+                    Err(_) => {
+                        s += f64::NAN;
+                        grad.fill(f64::NAN);
+                    }
+                }
+            }
+            total += s;
+        }
+        (total, grad)
+    }
+}
+
+/// Per-output posterior means and standard deviations at a single point
+/// (BoTorch's `_mean_and_sigma` of a multi-output posterior: every variance
+/// clamped at `1e-10`, then at `1e-12`), with gradients.
+struct OutputMoments {
+    mean: Vec<f64>,
+    sigma: Vec<f64>,
+    dmean: Vec<Vector>,
+    dsigma: Vec<Vector>,
+}
+
+/// The standard deviation of a variance, clamped like `_mean_and_sigma`.
+#[inline]
+fn clamped_sigma(var: f64) -> f64 {
+    let v = if var < crate::posterior::MIN_VARIANCE {
+        crate::posterior::MIN_VARIANCE
+    } else {
+        var
+    };
+    v.max(MIN_VAR).sqrt()
+}
+
+fn output_moments(model: &dyn Model, x: &Matrix) -> Result<OutputMoments> {
+    let point: Vec<f64> = x.row(0).iter().copied().collect();
+    let g = model.point_posterior_with_grad(&point)?;
+    let m = model.num_outputs();
+    let d = point.len();
+    let mut out = OutputMoments {
+        mean: Vec::with_capacity(m),
+        sigma: Vec::with_capacity(m),
+        dmean: Vec::with_capacity(m),
+        dsigma: Vec::with_capacity(m),
+    };
+    for t in 0..m {
+        let var = g.covariance[(t, t)];
+        let sigma = clamped_sigma(var);
+        out.mean.push(g.mean[t]);
+        out.sigma.push(sigma);
+        out.dmean.push(Vector::from_fn(d, |k, _| g.dmean[k][t]));
+        out.dsigma.push(if var >= crate::posterior::MIN_VARIANCE {
+            Vector::from_fn(d, |k, _| g.dcov[k][(t, t)] / (2.0 * sigma))
+        } else {
+            Vector::zeros(d)
+        });
+    }
+    Ok(out)
+}
+
+/// Means and clamped standard deviations of every output at every row of
+/// `xs` (each a `1 × d` candidate set), evaluated in parallel chunks.
+fn output_moments_batch<F>(model: &dyn Model, xs: &[Matrix], value: F) -> Result<Vec<f64>>
+where
+    F: Fn(&[f64], &[f64]) -> f64 + Sync,
+{
+    let d = model.dim();
+    for x in xs {
+        check_candidates(x, d, Some(1))?;
+    }
+    let m = model.num_outputs();
+    let chunks: Vec<Result<Vec<f64>>> = xs
+        .par_chunks(MARGINAL_CHUNK)
+        .map(|chunk| {
+            let stacked = Matrix::from_fn(chunk.len(), d, |i, j| chunk[i][(0, j)]);
+            let pp = model.point_posteriors(&stacked)?;
+            Ok((0..chunk.len())
+                .map(|i| {
+                    let mean: Vec<f64> = (0..m).map(|t| pp.mean[(i, t)]).collect();
+                    let sigma: Vec<f64> =
+                        (0..m).map(|t| clamped_sigma(pp.variance(i, t))).collect();
+                    value(&mean, &sigma)
+                })
+                .collect())
+        })
+        .collect();
+    let mut out = Vec::with_capacity(xs.len());
+    for c in chunks {
+        out.extend(c?);
+    }
+    Ok(out)
+}
+
+/// Shared state of the constrained analytic acquisition functions.
+#[derive(Debug, Clone)]
+struct ConstrainedCore {
+    model: Arc<dyn Model>,
+    best_f: f64,
+    objective_index: usize,
+    bounds: ConstraintBounds,
+    constraints: Vec<OutputConstraint>,
+    maximize: bool,
+}
+
+impl ConstrainedCore {
+    fn new(
+        model: Arc<dyn Model>,
+        best_f: f64,
+        objective_index: usize,
+        constraints: Vec<OutputConstraint>,
+        maximize: bool,
+    ) -> Result<Self> {
+        crate::acquisition::check_unbatched(model.as_ref())?;
+        check_best_f(best_f)?;
+        let m = model.num_outputs();
+        let bounds = ConstraintBounds::new(&constraints, Some(objective_index), m)?;
+        if objective_index >= m {
+            return Err(BotorchError::InvalidArgument(format!(
+                "objective_index {objective_index} is out of range for a model with {m} outputs"
+            )));
+        }
+        Ok(Self {
+            model,
+            best_f,
+            objective_index,
+            bounds,
+            constraints,
+            maximize,
+        })
+    }
+
+    /// The scaled improvement of the objective.
+    fn u(&self, mean: f64, sigma: f64) -> f64 {
+        let u = (mean - self.best_f) / sigma;
+        if self.maximize {
+            u
+        } else {
+            -u
+        }
+    }
+}
+
+macro_rules! constrained_common {
+    () => {
+        /// The incumbent value `best_f`.
+        pub fn best_f(&self) -> f64 {
+            self.core.best_f
+        }
+
+        /// The index of the objective output.
+        pub fn objective_index(&self) -> usize {
+            self.core.objective_index
+        }
+
+        /// The output constraints `(index, lower, upper)` in the given order.
+        pub fn constraints(&self) -> &[OutputConstraint] {
+            &self.core.constraints
+        }
+
+        /// Whether the problem is a maximization problem.
+        pub fn maximize(&self) -> bool {
+            self.core.maximize
+        }
+    };
+}
+
+/// Log Constrained Expected Improvement (BoTorch's
+/// `LogConstrainedExpectedImprovement`, Ament et al. 2023):
+/// `log EI(x) + Σ_i log P(lower_i <= y_i(x) <= upper_i)` for the objective
+/// output `objective_index` and independent Gaussian constraint outputs,
+/// with BoTorch's numerically robust `_log_ei_helper` and `log_ndtr` /
+/// `log_prob_normal_in`.
+#[derive(Debug, Clone)]
+pub struct LogConstrainedExpectedImprovement {
+    core: ConstrainedCore,
+}
+
+impl LogConstrainedExpectedImprovement {
+    /// Creates `LogConstrainedExpectedImprovement(model, best_f,
+    /// objective_index, constraints, maximize)`; `constraints` lists
+    /// `(output index, lower, upper)` with `None` for an unbounded side.
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] for no constraints, a constrained
+    /// objective, an upper bound not above the lower bound, indices out of
+    /// range, duplicates or a NaN `best_f`, and [`BotorchError::Unsupported`]
+    /// for batched models.
+    pub fn new(
+        model: Arc<dyn Model>,
+        best_f: f64,
+        objective_index: usize,
+        constraints: Vec<OutputConstraint>,
+        maximize: bool,
+    ) -> Result<Self> {
+        Ok(Self {
+            core: ConstrainedCore::new(model, best_f, objective_index, constraints, maximize)?,
+        })
+    }
+
+    constrained_common!();
+
+    fn value(&self, mean: &[f64], sigma: &[f64]) -> f64 {
+        let c = &self.core;
+        let k = c.objective_index;
+        let u = c.u(mean[k], sigma[k]);
+        log_ei_helper(u) + sigma[k].ln() + c.bounds.log_prob_feas(mean, sigma)
+    }
+}
+
+impl AcquisitionFunction for LogConstrainedExpectedImprovement {
+    fn model(&self) -> &Arc<dyn Model> {
+        &self.core.model
+    }
+
+    fn expected_q(&self) -> Option<usize> {
+        Some(1)
+    }
+
+    fn forward(&self, x: &Matrix) -> Result<f64> {
+        Ok(self.forward_many(std::slice::from_ref(x))?[0])
+    }
+
+    fn forward_many(&self, xs: &[Matrix]) -> Result<Vec<f64>> {
+        output_moments_batch(self.core.model.as_ref(), xs, |m, s| self.value(m, s))
+    }
+
+    fn forward_with_grad(&self, x: &Matrix) -> Result<(f64, Matrix)> {
+        let c = &self.core;
+        check_candidates(x, c.model.dim(), Some(1))?;
+        let mo = output_moments(c.model.as_ref(), x)?;
+        let k = c.objective_index;
+        let (u, du) = scaled_improvement(
+            mo.mean[k],
+            mo.sigma[k],
+            &mo.dmean[k],
+            &mo.dsigma[k],
+            c.best_f,
+            c.maximize,
+        );
+        let (log_pf, dlog_pf) = c.bounds.log_prob_feas_with_grad(&mo);
+        let value = log_ei_helper(u) + mo.sigma[k].ln() + log_pf;
+        let grad = du * log_ei_helper_grad(u) + &mo.dsigma[k] / mo.sigma[k] + dlog_pf;
+        Ok((value, row_matrix(grad)))
+    }
+
+    fn is_log(&self) -> bool {
+        true
+    }
+}
+
+/// Constrained Expected Improvement (BoTorch's
+/// `ConstrainedExpectedImprovement`): `EI(x) · Π_i P(lower_i <= y_i(x) <=
+/// upper_i)` for the objective output `objective_index` and independent
+/// Gaussian constraint outputs. BoTorch recommends
+/// [`LogConstrainedExpectedImprovement`] for better numerics.
+#[derive(Debug, Clone)]
+pub struct ConstrainedExpectedImprovement {
+    core: ConstrainedCore,
+}
+
+impl ConstrainedExpectedImprovement {
+    /// Creates `ConstrainedExpectedImprovement(model, best_f,
+    /// objective_index, constraints, maximize)` (see
+    /// [`LogConstrainedExpectedImprovement::new`]).
+    ///
+    /// # Errors
+    /// See [`LogConstrainedExpectedImprovement::new`].
+    pub fn new(
+        model: Arc<dyn Model>,
+        best_f: f64,
+        objective_index: usize,
+        constraints: Vec<OutputConstraint>,
+        maximize: bool,
+    ) -> Result<Self> {
+        Ok(Self {
+            core: ConstrainedCore::new(model, best_f, objective_index, constraints, maximize)?,
+        })
+    }
+
+    constrained_common!();
+
+    fn value(&self, mean: &[f64], sigma: &[f64]) -> f64 {
+        let c = &self.core;
+        let k = c.objective_index;
+        let u = c.u(mean[k], sigma[k]);
+        let ei = sigma[k] * ei_helper(u);
+        ei * c.bounds.log_prob_feas(mean, sigma).exp()
+    }
+}
+
+impl AcquisitionFunction for ConstrainedExpectedImprovement {
+    fn model(&self) -> &Arc<dyn Model> {
+        &self.core.model
+    }
+
+    fn expected_q(&self) -> Option<usize> {
+        Some(1)
+    }
+
+    fn forward(&self, x: &Matrix) -> Result<f64> {
+        Ok(self.forward_many(std::slice::from_ref(x))?[0])
+    }
+
+    fn forward_many(&self, xs: &[Matrix]) -> Result<Vec<f64>> {
+        output_moments_batch(self.core.model.as_ref(), xs, |m, s| self.value(m, s))
+    }
+
+    fn forward_with_grad(&self, x: &Matrix) -> Result<(f64, Matrix)> {
+        let c = &self.core;
+        check_candidates(x, c.model.dim(), Some(1))?;
+        let mo = output_moments(c.model.as_ref(), x)?;
+        let k = c.objective_index;
+        let (u, du) = scaled_improvement(
+            mo.mean[k],
+            mo.sigma[k],
+            &mo.dmean[k],
+            &mo.dsigma[k],
+            c.best_f,
+            c.maximize,
+        );
+        let h = ei_helper(u);
+        let ei = mo.sigma[k] * h;
+        let dei = &mo.dsigma[k] * h + du * (mo.sigma[k] * ndtr(u));
+        let (log_pf, dlog_pf) = c.bounds.log_prob_feas_with_grad(&mo);
+        let pf = log_pf.exp();
+        let value = ei * pf;
+        let grad = dei * pf + dlog_pf * (ei * pf);
+        Ok((value, row_matrix(grad)))
+    }
+
+    fn is_nonnegative(&self) -> bool {
+        true
     }
 }
 

@@ -162,6 +162,34 @@ pub fn log_prob_normal_in(a: f64, b: f64) -> Result<f64> {
     Ok(logdiffexp(log_ndtr(a), log_ndtr(b)))
 }
 
+/// [`log_prob_normal_in`] with its partial derivatives
+/// `(value, ∂/∂a, ∂/∂b)`, evaluated like PyTorch's autograd of BoTorch's
+/// expression (`logdiffexp(log_ndtr(a), log_ndtr(b))` after reflecting the
+/// interval into the left tail).
+///
+/// # Errors
+/// [`BotorchError::InvalidArgument`] unless `a < b`.
+pub fn log_prob_normal_in_with_grad(a: f64, b: f64) -> Result<(f64, f64, f64)> {
+    if a.is_nan() || b.is_nan() || a >= b {
+        return Err(BotorchError::InvalidArgument(format!(
+            "log_prob_normal_in requires a < b, got a = {a}, b = {b}"
+        )));
+    }
+    let reversed = b.abs() > a.abs();
+    let (lo, hi) = if reversed { (-b, -a) } else { (a, b) };
+    let (la, lb) = (log_ndtr(lo), log_ndtr(hi));
+    let value = logdiffexp(la, lb);
+    let shift = if lb == f64::NEG_INFINITY { 0.0 } else { lb };
+    let g = crate::utils::safe_math::log1mexp_grad(la - shift);
+    let d_lo = g * log_ndtr_grad(lo);
+    let d_hi = (1.0 - g) * log_ndtr_grad(hi);
+    if reversed {
+        Ok((value, -d_hi, -d_lo))
+    } else {
+        Ok((value, d_lo, d_hi))
+    }
+}
+
 /// Inverse of the standard normal CDF, `Φ⁻¹(p) = -√2 erfc⁻¹(2p)`, accurate in
 /// both tails (statrs' `erfc_inv`). Returns `-inf` / `+inf` at `p = 0` / `1`
 /// and NaN outside `[0, 1]`.
@@ -262,5 +290,35 @@ mod tests {
                 "{x}"
             );
         }
+        // log P(a < Z < b) and its partial derivatives, in both tails and
+        // across the reflection.
+        for &(a, b) in &[
+            (-1.0, 2.0),
+            (-3.0, 0.5),
+            (0.2, 0.4),
+            (-0.4, -0.2),
+            (30.0, 31.0),
+            (-12.0, -11.5),
+            (-50.0, 40.0),
+        ] {
+            let (v, ga, gb) = log_prob_normal_in_with_grad(a, b).unwrap();
+            assert_eq!(v, log_prob_normal_in(a, b).unwrap());
+            let h = 1e-6;
+            let fa = (log_prob_normal_in(a + h, b).unwrap()
+                - log_prob_normal_in(a - h, b).unwrap())
+                / (2.0 * h);
+            let fb = (log_prob_normal_in(a, b + h).unwrap()
+                - log_prob_normal_in(a, b - h).unwrap())
+                / (2.0 * h);
+            assert!(
+                (ga - fa).abs() <= 1e-6 * fa.abs().max(1.0),
+                "({a}, {b}): {ga} vs {fa}"
+            );
+            assert!(
+                (gb - fb).abs() <= 1e-6 * fb.abs().max(1.0),
+                "({a}, {b}): {gb} vs {fb}"
+            );
+        }
+        assert!(log_prob_normal_in_with_grad(1.0, 1.0).is_err());
     }
 }
