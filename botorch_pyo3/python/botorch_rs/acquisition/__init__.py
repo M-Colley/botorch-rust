@@ -16,6 +16,7 @@ from botorch_rs.acquisition.analytic import (
 from botorch_rs.acquisition.logei import (
     qLogExpectedImprovement,
     qLogNoisyExpectedImprovement,
+    qLogProbabilityOfFeasibility,
 )
 from botorch_rs.acquisition.monte_carlo import (
     MCAcquisitionFunction,
@@ -25,6 +26,11 @@ from botorch_rs.acquisition.monte_carlo import (
     qUpperConfidenceBound,
 )
 from botorch_rs.acquisition.objective import (
+    ConstrainedMCObjective,
+    GenericMCObjective,
+    IdentityMCObjective,
+    LinearMCObjective,
+    MCAcquisitionObjective,
     PosteriorTransform,
     ScalarizedPosteriorTransform,
 )
@@ -34,11 +40,16 @@ __all__ = [
     "AcquisitionFunction",
     "AnalyticAcquisitionFunction",
     "ConstrainedExpectedImprovement",
+    "ConstrainedMCObjective",
     "ExpectedImprovement",
+    "GenericMCObjective",
+    "IdentityMCObjective",
+    "LinearMCObjective",
     "LogConstrainedExpectedImprovement",
     "LogExpectedImprovement",
     "LogProbabilityOfImprovement",
     "MCAcquisitionFunction",
+    "MCAcquisitionObjective",
     "PosteriorMean",
     "PosteriorTransform",
     "PosteriorStandardDeviation",
@@ -49,6 +60,7 @@ __all__ = [
     "qExpectedImprovement",
     "qLogExpectedImprovement",
     "qLogNoisyExpectedImprovement",
+    "qLogProbabilityOfFeasibility",
     "qProbabilityOfImprovement",
     "qSimpleRegret",
     "qUpperConfidenceBound",

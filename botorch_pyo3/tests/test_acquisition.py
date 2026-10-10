@@ -239,10 +239,11 @@ def test_unsupported_arguments(model: SingleTaskGP) -> None:
     for kwargs in (
         {"objective": object()},
         {"posterior_transform": object()},
-        {"constraints": [object()]},
     ):
         with pytest.raises(UnsupportedError):
             qLogExpectedImprovement(model, best_f=0.0, **kwargs)
+    with pytest.raises(TypeError, match="callables"):
+        qLogExpectedImprovement(model, best_f=0.0, constraints=[object()])
     with pytest.raises(UnsupportedError):
         LogExpectedImprovement(model, best_f=0.0, posterior_transform=object())
     with pytest.raises(UnsupportedError):

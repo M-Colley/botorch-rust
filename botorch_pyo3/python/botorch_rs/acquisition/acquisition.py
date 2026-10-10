@@ -95,6 +95,9 @@ class AcquisitionFunction:
         shape3 = (1, *shape) if len(shape) == 2 else shape
         return (data, shape3), kind, shape
 
+    def _after_evaluation(self) -> None:
+        """Hook run after every evaluation (warnings of the computation)."""
+
     def forward(self, X: Any) -> Any:
         """Acquisition values at ``X`` (shape ``batch_shape``)."""
         if is_torch_tensor(X) and X.dim() >= 2:
@@ -102,9 +105,12 @@ class AcquisitionFunction:
 
             if _torch_autograd.requires_grad(X):
                 X3 = X if X.dim() > 2 else X.unsqueeze(0)
-                return _torch_autograd.evaluate(self._rs, X3)
+                out = _torch_autograd.evaluate(self._rs, X3)
+                self._after_evaluation()
+                return out
         flat, kind, _ = self._candidates(X)
         values, batch = self._rs.forward(flat)
+        self._after_evaluation()
         return from_flat(values, batch, kind)
 
     def __call__(self, X: Any) -> Any:
@@ -115,6 +121,7 @@ class AcquisitionFunction:
         respect to ``X`` (shape of ``X``) -- a botorch_rs extension."""
         flat, kind, shape = self._candidates(X)
         (values, batch), (grads, _) = self._rs.forward_with_grad(flat)
+        self._after_evaluation()
         return from_flat(values, batch, kind), from_flat(grads, shape, kind)
 
     def set_X_pending(self, X_pending: Any = None) -> None:

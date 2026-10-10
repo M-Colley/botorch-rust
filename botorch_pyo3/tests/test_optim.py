@@ -141,7 +141,11 @@ def test_options(model: SingleTaskGP) -> None:
     }
     X, value = optimize_acqf(acqf, BOUNDS, q=1, num_restarts=4, raw_samples=32, options=options)
     assert shape(X) == (1, 3) and isinstance(value, float)
-    for bad in ({"method": "SLSQP"}, {"sample_around_best": True}, {"with_grad": False}):
+    X2, value2 = optimize_acqf(
+        acqf, BOUNDS, q=1, num_restarts=4, raw_samples=32, options={**options, "method": "SLSQP"}
+    )
+    assert shape(X2) == (1, 3) and abs(float(value2) - float(value)) < 1e-4
+    for bad in ({"method": "trust-constr"}, {"sample_around_best": True}, {"with_grad": False}):
         with pytest.raises(UnsupportedError):
             optimize_acqf(acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, options=bad)
 
@@ -149,12 +153,8 @@ def test_options(model: SingleTaskGP) -> None:
 def test_unsupported_arguments(model: SingleTaskGP) -> None:
     acqf = PosteriorMean(model)
     for kwargs in (
-        {"inequality_constraints": [([0], [1.0], 0.5)]},
-        {"equality_constraints": [([0], [1.0], 0.5)]},
-        {"nonlinear_inequality_constraints": [(lambda x: x, True)]},
         {"post_processing_func": lambda x: x},
         {"gen_candidates": lambda *a: a},
-        {"ic_generator": lambda *a: a},
         {"timeout_sec": 1.0},
         {"return_full_tree": True},
         {"acq_function_sequence": [acqf, acqf]},

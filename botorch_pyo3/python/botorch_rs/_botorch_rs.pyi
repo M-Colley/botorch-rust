@@ -6,10 +6,21 @@ order and ``shape`` the dimensions. Use the BoTorch-style classes of the
 ``botorch_rs`` package instead of this module.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 Array = tuple[Sequence[float], Sequence[int]]
 ArrayOut = tuple[list[float], list[int]]
+#: An MC objective: ``("identity",)``, ``("linear", weights)``,
+#: ``("callable", f)`` with ``f(samples, X=X)`` on torch tensors, or
+#: ``("constrained", f, constraints, infeasible_cost, etas)``.
+ObjectiveSpec = tuple[Any, ...]
+#: A linear parameter constraint ``(indices, coefficients, rhs)``: 1-d indices
+#: (intra-point) or ``(point, feature)`` pairs (inter-point).
+LinearConstraint = tuple[Sequence[int] | Sequence[Sequence[int]], Sequence[float], float]
+#: A nonlinear inequality constraint ``(callable, is_intrapoint)`` with
+#: ``callable(x) >= 0`` on torch tensors.
+NonlinearConstraint = tuple[Callable[..., Any], bool]
 
 __version__: str
 
@@ -309,6 +320,21 @@ class AcquisitionFunction:
         fat: bool = True,
         tau_max: float = 1e-2,
         tau_relu: float = 1e-6,
+        objective: ObjectiveSpec | None = None,
+        constraints: Sequence[Callable[[Any], Any]] | None = None,
+        eta: Sequence[float] | None = None,
+        fat_list: Sequence[bool | None] | None = None,
+    ) -> AcquisitionFunction: ...
+    @staticmethod
+    def q_log_probability_of_feasibility(
+        model: Model,
+        constraints: Sequence[Callable[[Any], Any]],
+        eta: Sequence[float],
+        sampler: SobolQMCNormalSampler | None = None,
+        x_pending: Array | None = None,
+        fat: bool = True,
+        tau_max: float = 1e-2,
+        fat_list: Sequence[bool | None] | None = None,
     ) -> AcquisitionFunction: ...
     @staticmethod
     def constrained(
@@ -333,6 +359,11 @@ class AcquisitionFunction:
         tau_max: float = 1e-2,
         tau_relu: float = 1e-6,
         incremental: bool = True,
+        objective: ObjectiveSpec | None = None,
+        constraints: Sequence[Callable[[Any], Any]] | None = None,
+        eta: Sequence[float] | None = None,
+        fat_list: Sequence[bool | None] | None = None,
+        lower_bound_points: Array | None = None,
     ) -> AcquisitionFunction: ...
     @property
     def name(self) -> str: ...
@@ -350,6 +381,8 @@ class AcquisitionFunction:
     def set_x_pending(self, x_pending: Array | None = None) -> None: ...
     def x_baseline(self) -> ArrayOut: ...
     def full_x_baseline(self) -> ArrayOut: ...
+    def lower_bound_points(self) -> ArrayOut: ...
+    def infeasible_lower_bound(self) -> float | None: ...
 
 def prune_inferior_points(
     model: Model,
@@ -358,6 +391,8 @@ def prune_inferior_points(
     max_frac: float = 1.0,
     seed: int | None = None,
     base_samples: Array | None = None,
+    objective: ObjectiveSpec | None = None,
+    constraints: Sequence[Callable[[Any], Any]] | None = None,
 ) -> ArrayOut: ...
 def optimize_acqf(
     acq_function: AcquisitionFunction,
@@ -382,9 +417,92 @@ def optimize_acqf(
     batch_initial_conditions: Array | None = None,
     sequential: bool = False,
     retry_on_optimization_warning: bool = True,
+    inequality_constraints: Sequence[LinearConstraint] | None = None,
+    equality_constraints: Sequence[LinearConstraint] | None = None,
+    nonlinear_inequality_constraints: Sequence[NonlinearConstraint] | None = None,
+    ic_generator: Callable[[int, int, int | None], ArrayOut] | None = None,
+    native_ic_generator: bool = False,
+    method: str | None = None,
+    n_burnin: int | None = None,
+    n_thinning: int | None = None,
 ) -> tuple[ArrayOut, list[float], ArrayOut, list[float], list[tuple[str, str]]]:
     """Returns ``(candidates, acq_values, restart_candidates, restart_values,
     warnings)``."""
+
+def gen_batch_initial_conditions(
+    acq_function: AcquisitionFunction,
+    bounds: Array,
+    q: int,
+    num_restarts: int,
+    raw_samples: int,
+    *,
+    fixed_features: dict[int, float] | None = None,
+    seed: int | None = None,
+    eta: float | None = None,
+    alpha: float | None = None,
+    nonnegative: bool = False,
+    batch_limit: int | None = None,
+    inequality_constraints: Sequence[LinearConstraint] | None = None,
+    equality_constraints: Sequence[LinearConstraint] | None = None,
+    n_burnin: int | None = None,
+    n_thinning: int | None = None,
+) -> tuple[ArrayOut, bool]:
+    """Returns ``(initial_conditions, selected_randomly)``."""
+
+def sample_q_batches_from_polytope(
+    n: int,
+    q: int,
+    bounds: Array,
+    n_burnin: int,
+    n_thinning: int,
+    seed: int | None = None,
+    inequality_constraints: Sequence[LinearConstraint] | None = None,
+    equality_constraints: Sequence[LinearConstraint] | None = None,
+) -> ArrayOut: ...
+def evaluate_feasibility(
+    x: Array,
+    inequality_constraints: Sequence[LinearConstraint] | None = None,
+    equality_constraints: Sequence[LinearConstraint] | None = None,
+    nonlinear_inequality_constraints: Sequence[NonlinearConstraint] | None = None,
+    tolerance: float | None = None,
+) -> tuple[list[bool], list[int]]: ...
+def get_polytope_samples(
+    n: int,
+    bounds: Array,
+    inequality_constraints: Sequence[LinearConstraint] | None = None,
+    equality_constraints: Sequence[LinearConstraint] | None = None,
+    seed: int | None = None,
+    n_burnin: int = 10000,
+    n_thinning: int = 32,
+) -> ArrayOut: ...
+def sparse_to_dense_constraints(
+    d: int, constraints: Sequence[LinearConstraint]
+) -> tuple[ArrayOut, ArrayOut]: ...
+def find_interior_point(
+    a: Array, b: Array, a_eq: Array | None = None, b_eq: Array | None = None
+) -> list[float]: ...
+def sample_polytope(
+    a: Array,
+    b: Array,
+    x0: Array,
+    n: int = 10000,
+    n0: int = 100,
+    n_thinning: int = 1,
+    seed: int | None = None,
+) -> ArrayOut: ...
+
+class HitAndRunPolytopeSampler:
+    def __init__(
+        self,
+        inequality_constraints: tuple[Array, Array] | None = None,
+        equality_constraints: tuple[Array, Array] | None = None,
+        bounds: Array | None = None,
+        interior_point: Array | None = None,
+        n_burnin: int = 200,
+        n_thinning: int = 20,
+        seed: int | None = None,
+    ) -> None: ...
+    def draw(self, n: int = 1) -> ArrayOut: ...
 
 def draw_sobol_samples(bounds: Array, n: int, q: int, seed: int | None = None) -> ArrayOut: ...
 def draw_sobol_normal_samples(d: int, n: int, seed: int | None = None) -> ArrayOut: ...

@@ -192,6 +192,34 @@ def from_flat(data: Sequence[float], shape: Sequence[int], kind: ArrayKind) -> A
     return _unflatten(data, shape)
 
 
+def bool_array(data: Sequence[bool], shape: Sequence[int], kind: ArrayKind) -> Any:
+    """A boolean array of the given kind and shape (a bool tensor, a NumPy
+    bool array, or nested lists of bools)."""
+    shape = tuple(shape)
+    values = [bool(v) for v in data]
+    if kind.lib == "torch":
+        import torch
+
+        t = torch.tensor(values, dtype=torch.bool).reshape(shape)
+        if kind.device is not None and kind.device.type != "cpu":
+            t = t.to(kind.device)
+        return t
+    if kind.lib == "numpy":
+        import numpy as np
+
+        return np.asarray(values, dtype=bool).reshape(shape)
+    if not shape:
+        return values[0]
+
+    def build(offset: int, dims: tuple[int, ...]) -> list[Any]:
+        if len(dims) == 1:
+            return values[offset : offset + dims[0]]
+        step = math.prod(dims[1:])
+        return [build(offset + i * step, dims[1:]) for i in range(dims[0])]
+
+    return build(0, shape)
+
+
 def from_pair(pair: Pair, kind: ArrayKind) -> Any:
     """Converts a ``(data, shape)`` result of the extension."""
     return from_flat(pair[0], pair[1], kind)

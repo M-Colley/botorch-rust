@@ -4,13 +4,16 @@ Optimization*, NeurIPS 2023)."""
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_pair, kind_of, to_flat
 from botorch_rs.acquisition.acquisition import check_unsupported, pending_arg, scalar_arg
-from botorch_rs.acquisition.monte_carlo import MCAcquisitionFunction
-from botorch_rs.exceptions.errors import BotorchTensorDimensionError
+from botorch_rs.acquisition.monte_carlo import MCAcquisitionFunction, check_constrained_objective
+from botorch_rs.acquisition.objective import IdentityMCObjective, fat_arg, is_constrained_objective
+from botorch_rs.exceptions.errors import BotorchError, BotorchTensorDimensionError
+from botorch_rs.exceptions.warnings import BotorchWarning
 from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
 #: Default temperature of the smooth ReLU.
@@ -23,10 +26,27 @@ _PRUNE_SAMPLES = 2048
 _PRUNE_SEED_SALT = 0x5DEECE66D
 
 
+def _check_log_objective(objective: Any) -> None:
+    if is_constrained_objective(objective):
+        raise BotorchError(
+            "Log-Improvement should not be used with `ConstrainedMCObjective`."
+            "Please pass the `constraints` directly to the constructor of the "
+            "acquisition function."
+        )
+
+
 class qLogExpectedImprovement(MCAcquisitionFunction):
     r"""MC-based batch Log Expected Improvement: a smooth, numerically robust
     approximation of ``log E[max(max_j y_j - best_f, 0)]`` (fat-tailed
-    ``fatplus`` / ``fatmax`` by default)."""
+    ``fatplus`` / ``fatmax`` by default).
+
+    With outcome ``constraints``, the log of the smoothed feasibility
+    indicator (``log_fatmoid(-c / eta)`` with ``fat=True``, else
+    ``log(sigmoid(-c / eta))``) is added to the log-improvement of every sample
+    and point. ``fat`` may also be a list with one entry per constraint
+    (``True``, ``False``, or ``None`` for constraints that return
+    probabilities of feasibility), as in BoTorch.
+    """
 
     _log = True
 
@@ -44,18 +64,23 @@ class qLogExpectedImprovement(MCAcquisitionFunction):
         tau_max: float = TAU_MAX,
         tau_relu: float = TAU_RELU,
     ) -> None:
-        check_unsupported(constraints=constraints)
+        _check_log_objective(objective)
+        check_constrained_objective(objective, constraints)
         super().__init__(model, sampler, objective, posterior_transform, X_pending)
         self.best_f = best_f
         self.fat = fat
         self.tau_max = tau_max
         self.tau_relu = tau_relu
+        fat_bool, fat_list = fat_arg(fat)
+        kwargs = self._set_constraints(constraints, eta, fat)
         self._build(
             "qLogExpectedImprovement",
             best_f=scalar_arg(best_f, "best_f"),
-            fat=bool(fat),
+            fat=fat_bool,
             tau_max=scalar_arg(tau_max, "tau_max"),
             tau_relu=scalar_arg(tau_relu, "tau_relu"),
+            fat_list=fat_list,
+            **kwargs,
         )
 
 
@@ -69,6 +94,15 @@ class qLogNoisyExpectedImprovement(MCAcquisitionFunction):
     in distribution; the ``cache_root`` argument is accepted and ignored. The
     baseline is pruned with ``prune_inferior_points`` (2048 Sobol samples)
     seeded deterministically from the sampler's seed.
+
+    With outcome ``constraints``, the incumbent of every sample is the best
+    *feasible* baseline objective (``compute_best_feasible_objective``); if
+    some sample has no feasible baseline point, infeasible points get a lower
+    bound of the objective estimated, as in BoTorch, from the posterior at 32
+    random points of the (10% expanded) bounding box of the baseline. botorch_rs
+    seeds these points from the sampler (BoTorch draws them with ``torch.rand``);
+    they can be given explicitly with the keyword-only ``lower_bound_points``
+    (a botorch_rs extension) and are returned by :attr:`lower_bound_points`.
     """
 
     _log = True
@@ -90,8 +124,12 @@ class qLogNoisyExpectedImprovement(MCAcquisitionFunction):
         tau_relu: float = TAU_RELU,
         marginalize_dim: int | None = None,
         incremental: bool = True,
+        *,
+        lower_bound_points: Any = None,
     ) -> None:
-        check_unsupported(constraints=constraints, marginalize_dim=marginalize_dim)
+        check_unsupported(marginalize_dim=marginalize_dim)
+        _check_log_objective(objective)
+        check_constrained_objective(objective, constraints)
         super().__init__(model, sampler, objective, posterior_transform, None)
         baseline = to_flat(X_baseline, "X_baseline")
         if len(baseline[1]) != 2:
@@ -109,12 +147,20 @@ class qLogNoisyExpectedImprovement(MCAcquisitionFunction):
         self.tau_max = tau_max
         self.tau_relu = tau_relu
         self.incremental = incremental
+        self._warned_infeasible = False
+        fat_bool, fat_list = fat_arg(fat)
+        kwargs = self._set_constraints(constraints, eta, fat)
+        lb = (
+            None
+            if lower_bound_points is None
+            else to_flat(lower_bound_points, "lower_bound_points")
+        )
         self._rs = _rs.AcquisitionFunction.q_log_noisy_expected_improvement(
             self._rs_model,
             baseline,
             self.sampler._rs,
             pending,
-            fat=bool(fat),
+            fat=fat_bool,
             prune_baseline=bool(prune_baseline),
             prune_num_samples=_PRUNE_SAMPLES,
             prune_max_frac=1.0,
@@ -122,7 +168,22 @@ class qLogNoisyExpectedImprovement(MCAcquisitionFunction):
             tau_max=scalar_arg(tau_max, "tau_max"),
             tau_relu=scalar_arg(tau_relu, "tau_relu"),
             incremental=bool(incremental),
+            objective=self._objective,
+            fat_list=fat_list,
+            lower_bound_points=lb,
+            **kwargs,
         )
+
+    def _after_evaluation(self) -> None:
+        # BoTorch warns when some sample has no feasible baseline point.
+        if not self._warned_infeasible and self._rs.infeasible_lower_bound() is not None:
+            self._warned_infeasible = True
+            warnings.warn(
+                "When all training points are infeasible, it is better to use "
+                "q(Log)ProbabilityOfFeasibility.",
+                BotorchWarning,
+                stacklevel=3,
+            )
 
     @property
     def X_baseline(self) -> Any:
@@ -135,5 +196,58 @@ class qLogNoisyExpectedImprovement(MCAcquisitionFunction):
         """The (pruned) baseline points."""
         return from_pair(self._rs.x_baseline(), self._baseline_kind)
 
+    @property
+    def lower_bound_points(self) -> Any:
+        """The points at which the objective's lower bound for infeasible
+        baseline points is estimated (``k x d``)."""
+        return from_pair(self._rs.lower_bound_points(), self._baseline_kind)
 
-__all__ = ["TAU_MAX", "TAU_RELU", "qLogExpectedImprovement", "qLogNoisyExpectedImprovement"]
+
+class qLogProbabilityOfFeasibility(MCAcquisitionFunction):
+    r"""MC-based batch Log Probability of Feasibility: a smooth approximation
+    of ``log P(constraint_i(f(X)) <= 0 for all i)``, the log of the average
+    over samples of the smoothed maximum over the ``q`` points of the smoothed
+    feasibility indicators (``fat`` and ``tau_max`` as in qLogEI). The
+    ``objective`` is not used (kept for BoTorch compatibility)."""
+
+    _log = True
+
+    def __init__(
+        self,
+        model: Any,
+        constraints: Any,
+        sampler: SobolQMCNormalSampler | None = None,
+        objective: Any = None,
+        posterior_transform: Any = None,
+        X_pending: Any = None,
+        eta: Any = 1e-3,
+        fat: bool = True,
+        tau_max: float = TAU_MAX,
+    ) -> None:
+        # Like BoTorch, the objective is replaced by the identity.
+        super().__init__(model, sampler, IdentityMCObjective(), posterior_transform, X_pending)
+        self.fat = fat
+        self.tau_max = tau_max
+        fat_bool, fat_list = fat_arg(fat)
+        kwargs = self._set_constraints(constraints, eta, fat)
+        if kwargs["constraints"] is None:
+            raise TypeError("qLogProbabilityOfFeasibility requires `constraints`.")
+        self._rs = _rs.AcquisitionFunction.q_log_probability_of_feasibility(
+            self._rs_model,
+            kwargs["constraints"],
+            kwargs["eta"],
+            self.sampler._rs,
+            self._pending,
+            fat=fat_bool,
+            tau_max=scalar_arg(tau_max, "tau_max"),
+            fat_list=fat_list,
+        )
+
+
+__all__ = [
+    "TAU_MAX",
+    "TAU_RELU",
+    "qLogExpectedImprovement",
+    "qLogNoisyExpectedImprovement",
+    "qLogProbabilityOfFeasibility",
+]
