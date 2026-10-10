@@ -11,6 +11,7 @@ when the caller's arrays already come from them.
 
 from __future__ import annotations
 
+import importlib
 import math
 import sys
 from collections.abc import Sequence
@@ -173,18 +174,15 @@ def from_flat(data: Sequence[float], shape: Sequence[int], kind: ArrayKind) -> A
     """
     shape = tuple(shape)
     if kind.lib == "torch":
-        torch = _torch()
-        if torch is None:  # pragma: no cover - torch was imported for the input
-            import torch
+        # torch was imported for the input, so this is normally a dict lookup.
+        torch = _torch() or importlib.import_module("torch")
         values = data if isinstance(data, list) else list(data)
         t = torch.tensor(values, dtype=kind.dtype or torch.float64).reshape(shape)
         if kind.device is not None and kind.device.type != "cpu":
             t = t.to(kind.device)
         return t
     if kind.lib == "numpy":
-        np = _numpy()
-        if np is None:  # pragma: no cover - numpy was imported for the input
-            import numpy as np
+        np = _numpy() or importlib.import_module("numpy")
         dtype = kind.dtype or np.float64
         if not shape:
             return np.dtype(dtype).type(data[0])
