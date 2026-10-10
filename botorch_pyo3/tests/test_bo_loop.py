@@ -60,10 +60,13 @@ def bo_loop(
 
 
 def test_bo_loop_finds_the_optimum_region() -> None:
-    """Over 10 initial designs, the loop gets close to the optimum -3.32237
-    (BoTorch's loop: median -3.159 over 30 designs, see the README)."""
+    """Over 30 initial designs, the median best value is below -3.0 (the
+    optimum is -3.32237; BoTorch's loop: median -3.159 over 30 designs, see the
+    README). About one run in six ends in a local optimum above -3.0, and the
+    platforms' math libraries differ in the last bit, which changes individual
+    runs, so a median over fewer designs would fail by chance."""
     finals = []
-    for seed in range(10):
+    for seed in range(30):
         _, Y = bo_loop(seed)
         finals.append(-max(flatten(Y)))
     assert statistics.median(finals) < -3.0, finals
