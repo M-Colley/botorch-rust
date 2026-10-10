@@ -972,16 +972,34 @@ def test_optimize(acqf_pair: tuple) -> None:
             retry_on_optimization_warning=False,
             **cons,
         )
-        _, v_bt = bt_eval(bt_optimize_acqf, a_bt, bounds, **kw)
+        try:
+            _, v_bt = bt_eval(bt_optimize_acqf, a_bt, bounds, **kw)
+        except BtCandidateGenerationError:
+            # Released BoTorch versions give up when a restart ends infeasible
+            # (no projection with nonlinear constraints): compare the restarts
+            # one at a time and leave out those BoTorch gives up on.
+            v_bt = torch.full((ics.shape[0],), float("nan"), dtype=ics.dtype)
+            for i in range(ics.shape[0]):
+                one = {**kw, "num_restarts": 1, "batch_initial_conditions": ics[i : i + 1]}
+                try:
+                    v_bt[i] = bt_eval(bt_optimize_acqf, a_bt, bounds, **one)[1].reshape(-1)[0]
+                except BtCandidateGenerationError:
+                    CHECK.record(
+                        "optimize_acqf: BoTorch raised CandidateGenerationError (restarts)",
+                        1.0,
+                        None,
+                    )
         _, v_rs = rs_optimize_acqf(a_rs, bounds, **kw)
-        errs = (v_rs - v_bt).abs() / v_bt.abs().clamp_min(1.0)
+        compared = ~v_bt.isnan()
+        errs = (v_rs[compared] - v_bt[compared]).abs() / v_bt[compared].abs().clamp_min(1.0)
         agree = errs <= 1e-6
-        CHECK.check_bound(
-            f"optimize_acqf ({label}) from identical initial conditions: share of restarts "
-            "not at BoTorch's result",
-            1.0 - agree.double().mean().item(),
-            0.2,
-        )
+        if compared.any():
+            CHECK.check_bound(
+                f"optimize_acqf ({label}) from identical initial conditions: share of restarts "
+                "not at BoTorch's result",
+                1.0 - agree.double().mean().item(),
+                0.2,
+            )
         for e in errs[agree]:
             CHECK.record(
                 f"optimize_acqf ({label}) from identical initial conditions: relative value error",
