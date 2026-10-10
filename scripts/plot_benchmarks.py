@@ -92,6 +92,8 @@ def plot(rows: list[dict], meta: dict, theme: str, out: Path) -> None:
         spine.set_visible(False)
     ax.set_xlabel("Wall-clock time (log scale)", color=t["muted"], fontsize=9, labelpad=8)
 
+    # Time labels mask the gridlines behind them.
+    label_box = {"boxstyle": "square,pad=0.1", "facecolor": t["surface"], "edgecolor": "none"}
     for i, r in enumerate(rows):
         rs, bt = r["botorch_rs_s"], r["botorch_s"]
         ax.plot([rs, bt], [i, i], color=t["link"], linewidth=2.2, solid_capstyle="round", zorder=1)
@@ -110,6 +112,8 @@ def plot(rows: list[dict], meta: dict, theme: str, out: Path) -> None:
                     va="center",
                     fontsize=8.5,
                     color=t["muted"],
+                    zorder=2,
+                    bbox=label_box,
                 )
             else:
                 ax.annotate(
@@ -121,6 +125,8 @@ def plot(rows: list[dict], meta: dict, theme: str, out: Path) -> None:
                     va="bottom",
                     fontsize=8.5,
                     color=t["muted"],
+                    zorder=2,
+                    bbox=label_box,
                 )
         mid = math.sqrt(rs * bt)
         ax.annotate(
