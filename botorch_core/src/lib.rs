@@ -6,8 +6,10 @@
 //! `ModelListGP`; the exact marginal log likelihood with analytic gradients;
 //! `fit_gpytorch_mll` with a port of L-BFGS-B 3.0), analytic and Monte-Carlo
 //! acquisition functions with exact gradients (including
-//! `ScalarizedPosteriorTransform` and analytic constrained expected
-//! improvement), `optimize_acqf`, quasi-random sampling and synthetic test
+//! `ScalarizedPosteriorTransform`, MC objectives, outcome constraints and
+//! analytic constrained expected improvement), `optimize_acqf` with box,
+//! linear and nonlinear parameter constraints (SLSQP and hit-and-run polytope
+//! sampling of initial conditions), quasi-random sampling and synthetic test
 //! functions. All computations are in double precision and are validated
 //! against BoTorch itself (see `scripts/generate_fixtures.py` and the
 //! `tests/*parity*.rs` files).
@@ -65,6 +67,10 @@
 //! | `qLogNoisyExpectedImprovement(model, X_baseline, sampler, X_pending, prune_baseline, incremental, ...)` | [`acquisition::QLogNoisyExpectedImprovement::new`]`(model, &x_baseline, `[`acquisition::QLogNoisyExpectedImprovementOptions`]`)` |
 //! | `ScalarizedPosteriorTransform(weights, offset)`; `posterior_transform=...` of any acquisition function | [`acquisition::ScalarizedPosteriorTransform::new`]`(weights, offset)`; the acquisition function is given [`acquisition::ScalarizedModel::wrap`]`(model, Some(transform))` |
 //! | `LogConstrainedExpectedImprovement(model, best_f, objective_index, constraints, maximize)`, `ConstrainedExpectedImprovement` | [`acquisition::LogConstrainedExpectedImprovement::new`]`(model, best_f, objective_index, constraints, maximize)` with `constraints: Vec<(output, lower, upper)>` (`None`: unbounded), [`acquisition::ConstrainedExpectedImprovement`] |
+//! | `IdentityMCObjective`, `LinearMCObjective(weights)`, `GenericMCObjective(f)`, `ConstrainedMCObjective(objective, constraints, infeasible_cost, eta)`; `objective=` of the MC acquisition functions | [`acquisition::IdentityMcObjective`], [`acquisition::LinearMcObjective::new`], [`acquisition::GenericMcObjective::new`] (value and gradient closure), [`acquisition::ConstrainedMcObjective::new`]; any [`acquisition::McObjective`] in `McAcquisitionOptions::objective` |
+//! | `constraints=[c(Y) <= 0, ...], eta=...` of qEI, qPI, qLogEI, qLogNEI (and `fat` lists of the LogEI family) | [`utils::objective::OutcomeConstraints::new`]`(constraints, etas)` of [`utils::objective::McConstraint`]s ([`utils::objective::LinearOutcomeConstraint`], [`utils::objective::FnOutcomeConstraint`]) in `constraints` of the options; `constraint_fat` |
+//! | `qLogProbabilityOfFeasibility(model, constraints, ...)` | [`acquisition::QLogProbabilityOfFeasibility::new`]`(model, constraints, `[`acquisition::QLogProbabilityOfFeasibilityOptions`]`)` |
+//! | `compute_smoothed_feasibility_indicator`, `compute_feasibility_indicator`, `compute_best_feasible_objective`, `get_infeasible_cost` | [`utils::objective::compute_smoothed_feasibility_indicator`], [`utils::objective::compute_feasibility_indicator`], [`acquisition::compute_best_feasible_objective`], [`acquisition::get_infeasible_cost`] |
 //! | `acqf(X)`, `torch.autograd.grad(acqf(X), X)`, `acqf(X_batch)` | [`AcquisitionFunction::forward`]`(&x)`, [`AcquisitionFunction::forward_with_grad`]`(&x) -> (value, grad)`, [`AcquisitionFunction::forward_many`]`(&[x])` (parallel) |
 //! | `acqf.set_X_pending(X_pending)` | [`AcquisitionFunction::set_x_pending`]`(Some(&x_pending))` |
 //! | `prune_inferior_points(model, X, num_samples, max_frac, sampler)` | [`acquisition::prune_inferior_points`]`(&*model, &x, &`[`acquisition::PruneOptions`]`)` |
@@ -72,7 +78,11 @@
 //! | `draw_sobol_samples(bounds, n, q, seed)`, `draw_sobol_normal_samples(d, n, seed)` | [`utils::sampling::draw_sobol_samples`], [`utils::sampling::draw_sobol_normal_samples`], [`utils::sampling::SobolEngine`] |
 //! | `optimize_acqf(acq_function, bounds, q, num_restarts, raw_samples, options, fixed_features, sequential, ...)` | [`optim::optimize_acqf`]`(&acqf, &bounds, q, num_restarts, raw_samples, &`[`optim::OptimizeAcqfOptions`]`) -> (candidates, value)`; all restarts via [`optim::optimize_acqf_detailed`] |
 //! | `gen_batch_initial_conditions`, `initialize_q_batch`, `initialize_q_batch_nonneg` | [`optim::gen_batch_initial_conditions`], [`optim::initialize_q_batch`], [`optim::initialize_q_batch_nonneg`] |
-//! | `gen_candidates_scipy(initial_conditions, acqf, lower_bounds, upper_bounds)` | [`optim::gen_candidates_lbfgsb`] |
+//! | `gen_candidates_scipy(initial_conditions, acqf, lower_bounds, upper_bounds)` | [`optim::gen_candidates_lbfgsb`]; with constraints [`optim::gen_candidates_slsqp`] (one SLSQP problem per chunk of restarts) |
+//! | `optimize_acqf(..., inequality_constraints, equality_constraints, nonlinear_inequality_constraints, ic_generator, options={"method": ...})` | [`optim::OptimizeAcqfOptions`]` { constraints: `[`optim::ParameterConstraints`]` { inequality, equality, nonlinear }, ic_generator, method, .. }` with [`optim::LinearConstraint::intra_point`] / [`optim::LinearConstraint::inter_point`] and [`optim::NonlinearInequalityConstraint`]s ([`optim::FnNonlinearConstraint`]), [`optim::IcGenerator`], [`optim::OptimizationMethod`] |
+//! | `evaluate_feasibility`, `project_to_feasible_space_via_slsqp`, `transform_constraints`, `sample_q_batches_from_polytope` | [`optim::evaluate_feasibility`], [`optim::project_to_feasible_space`], [`optim::transform_constraints`], [`optim::sample_q_batches_from_polytope`] |
+//! | `get_polytope_samples`, `HitAndRunPolytopeSampler`, `find_interior_point`, `sample_polytope`, `sparse_to_dense_constraints` | [`utils::polytope::get_polytope_samples`], [`utils::polytope::HitAndRunPolytopeSampler`], [`utils::polytope::find_interior_point`] (linear program solved with `microlp`), [`utils::polytope::sample_polytope`], [`utils::polytope::sparse_to_dense_constraints`] |
+//! | `scipy.optimize.minimize(method="SLSQP")` | `slsqp::minimize_kraft` of the vendored `slsqp` crate (a SciPy-style driver) |
 //! | `botorch.test_functions.Hartmann(dim=6, noise_std=..., negate=True)` etc. | [`test_functions::SyntheticTestFunction::hartmann`]`(6)?.with_negate(true)` etc. (20 functions) |
 //! | `botorch.utils.safe_math`, `botorch.utils.probability.utils` | [`utils::safe_math`], [`utils::probability`] |
 //! | `get_covar_module_with_dim_scaled_prior`, `get_matern_kernel_with_gamma_prior` | [`kernels::get_covar_module_with_dim_scaled_prior`], [`kernels::get_matern_kernel_with_gamma_prior`] |
@@ -166,6 +176,23 @@
 //! `tests/multi_output_gradients.rs` checks the new gradients against central
 //! finite differences.
 //!
+//! *MC objectives, outcome constraints and constrained optimization* (five
+//! single-output, multi-output and list models, `--phase 4b`;
+//! `tests/objective_constraint_parity.rs`, `tests/constrained_optimize_parity.rs`):
+//! samples from multi-output base samples agree to 4e-15; MC acquisition
+//! values and gradients with linear, generic and constrained objectives and
+//! one or two outcome constraints (sigmoid, fatmoid and probability
+//! constraints) to 4e-13 and 3e-13; qLogNEI with objectives and constraints,
+//! including baselines that are infeasible in some or all samples, to 6e-14
+//! (values) and 2e-12 (gradients); `get_infeasible_cost` to 2e-14;
+//! `prune_inferior_points` selects the same points. From BoTorch's initial
+//! conditions, SLSQP reaches SciPy's optimum in 21 of 22 restarts (value
+//! errors at most 4e-7) and the best restart of every problem (shortfall at
+//! most 2.1e-8); full constrained `optimize_acqf` runs reach BoTorch's best value
+//! (shortfall at most 5e-9 over five seeds). Hit-and-run samples match
+//! BoTorch's moments statistically. `tests/objective_constraint_gradients.rs`
+//! checks the new gradients against central finite differences.
+//!
 //! ## Scope and known differences
 //!
 //! * `SingleTaskGP` (single output), [`BatchedMultiOutputGP`] (`m ≥ 1`
@@ -206,12 +233,32 @@
 //!   these arguments as float32 tensors (torch's default dtype), i.e. rounded
 //!   to about 7 digits; the values here equal BoTorch's when float64 tensors
 //!   are passed (as with the common `best_f=train_Y.max()`).
-//! * Posterior transforms are limited to `ScalarizedPosteriorTransform`; no
-//!   MC `objective` or outcome `constraints` for the MC acquisition
-//!   functions. qLogNEI implements the plain (`cache_root=False`)
-//!   computation, which equals BoTorch's default `cache_root=True` given the
-//!   same effective base samples (see
-//!   [`acquisition::QLogNoisyExpectedImprovement`]).
+//! * Posterior transforms are limited to `ScalarizedPosteriorTransform`.
+//!   qLogNEI implements the plain (`cache_root=False`) computation, which
+//!   equals BoTorch's default `cache_root=True` given the same effective base
+//!   samples (see [`acquisition::QLogNoisyExpectedImprovement`]); objectives
+//!   and constraints are therefore evaluated on the joint samples of the
+//!   baseline and the candidates, as with BoTorch's `cache_root=False`. When
+//!   some sample has no feasible baseline point, the lower bound of the
+//!   objective is estimated at points drawn from a generator seeded by the
+//!   sampler (BoTorch: `torch.rand`), or at explicit `lower_bound_points`.
+//! * Constraint temperatures `eta` and `ConstrainedMcObjective`'s
+//!   `infeasible_cost` are exact `f64` values (BoTorch stores Python floats in
+//!   float32), and mismatched numbers of temperatures or `fat` entries are
+//!   reported when the acquisition function is created (BoTorch: at the first
+//!   evaluation), with BoTorch's messages.
+//! * SLSQP follows SciPy's driver (`acc = ftol`, `maxiter = 2000` in
+//!   `optimize_acqf`), but its least-squares subproblems are solved by the
+//!   NLopt-derived port of Kraft's code, whereas SciPy >= 1.16 uses LAPACK:
+//!   iterates agree to about 1e-9 per step, and restarts started on flat parts
+//!   of the acquisition function can end in different local optima (in
+//!   either direction). Infeasible initial conditions are accepted with
+//!   nonlinear constraints, as on BoTorch's main branch (released versions up
+//!   to 0.18 reject them).
+//! * The interior point of a polytope maximizes the same slack as BoTorch's
+//!   `find_interior_point`, but the linear program is solved with `microlp`
+//!   instead of HiGHS, so a different maximizer may be returned when it is not
+//!   unique; hit-and-run chains use their own random streams.
 //! * Quasi-random numbers come from an Owen-scrambled Sobol sequence
 //!   (`sobol_burley`), not torch's `SobolEngine`, so raw samples and base
 //!   samples differ from BoTorch's for the same seed (with the same
@@ -227,11 +274,17 @@
 //!   through the eigendecomposition fallback for covariances that are not
 //!   positive definite even with jitter are not available (an error; BoTorch's
 //!   are NaN).
-//! * `optimize_acqf` supports box bounds and fixed features (scalar values);
-//!   no linear or nonlinear constraints, `post_processing_func`, timeouts or
-//!   one-shot acquisition functions. Restarts are independent L-BFGS-B
-//!   problems (BoTorch's default parallel mode), so `batch_limit` only chunks
-//!   the work.
+//! * `optimize_acqf` supports box bounds, fixed features (scalar values) and
+//!   linear and nonlinear parameter constraints; no `post_processing_func`,
+//!   timeouts or one-shot acquisition functions. Without constraints, restarts
+//!   are independent L-BFGS-B problems (BoTorch's batched fast path), so
+//!   `batch_limit` only chunks the work; with constraints, each chunk of
+//!   `batch_limit` restarts is one SLSQP problem, as in BoTorch.
+//! * Whether a nearly singular covariance block needs jitter in its Cholesky
+//!   factorization depends on rounding: in borderline cases (smallest
+//!   eigenvalue around 1e-16 of the largest) this crate and LAPACK may decide
+//!   differently, which changes the Monte-Carlo samples along the nearly
+//!   singular directions.
 //! * Python bindings with BoTorch's API are provided by the `botorch_pyo3`
 //!   crate (the `botorch_rs` package; see the repository README).
 
