@@ -1,20 +1,29 @@
 //! Acquisition-function optimization mirroring `botorch.optim.optimize_acqf`
-//! with the default `gen_candidates_scipy` (box bounds, no linear or nonlinear
-//! constraints).
+//! with the default `gen_candidates_scipy`: L-BFGS-B for box constraints and
+//! SLSQP when linear or nonlinear parameter constraints are present.
 //!
 //! * Initial conditions come from [`gen_batch_initial_conditions`]: `raw_samples`
-//!   scrambled Sobol candidate sets, Boltzmann (or non-negative) selection of
-//!   `num_restarts` starting points.
-//! * Every restart is optimized by an independent L-BFGS-B run
-//!   ([`crate::lbfgsb`], a port of L-BFGS-B 3.0 reproducing scipy's
-//!   iterates) on the negated acquisition value with exact gradients. This is
-//!   exactly BoTorch's default "parallel" path (`fmin_l_bfgs_b_batched`, used
-//!   with SciPy 1.13–1.18), where each restart is a separate problem; the
+//!   scrambled Sobol candidate sets (hit-and-run samples from the constraint
+//!   polytope with linear constraints), Boltzmann (or non-negative) selection
+//!   of `num_restarts` starting points; or from explicit
+//!   `batch_initial_conditions` / an `ic_generator` (required for nonlinear
+//!   constraints, as in BoTorch).
+//! * Without constraints, every restart is optimized by an independent
+//!   L-BFGS-B run ([`crate::lbfgsb`], a port of L-BFGS-B 3.0 reproducing
+//!   scipy's iterates) on the negated acquisition value with exact gradients.
+//!   This is exactly BoTorch's default "parallel" path (`fmin_l_bfgs_b_batched`,
+//!   used with SciPy 1.13–1.18), where each restart is a separate problem; the
 //!   restarts run in parallel with rayon. The default options are those of
 //!   `gen_candidates_scipy` on BoTorch's main branch: `maxiter = 2000`, no
 //!   limit on function evaluations (the batched driver does not check
 //!   `maxfun`) and SciPy's defaults otherwise (`maxcor = 10`,
 //!   `ftol = 2.2e-9`, `gtol = 1e-5`, `maxls = 20`).
+//! * With constraints, chunks of `batch_limit` restarts (by default all
+//!   restarts with linear constraints and a single restart with nonlinear
+//!   constraints) are optimized as one SLSQP problem each, exactly like
+//!   BoTorch ([`gen_candidates_slsqp`]); infeasible results are projected onto
+//!   the feasible set ([`project_to_feasible_space`]) and only feasible
+//!   restarts are returned as the best candidates.
 //! * The final candidates are clamped to the bounds and re-evaluated; the best
 //!   restart is returned. If a restart terminates abnormally (BoTorch's
 //!   `OptimizationWarning`), the optimization is repeated once with new
@@ -23,6 +32,8 @@
 //!   previous ones as pending points.
 
 use std::collections::BTreeMap;
+use std::fmt::Debug;
+use std::sync::Arc;
 
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::SeedableRng;
@@ -33,7 +44,13 @@ use crate::error::{BotorchError, Result};
 use crate::lbfgsb::{self, LbfgsbError, LbfgsbOptions, LbfgsbStatus};
 use crate::optim::initializers::{
     apply_fixed_features, gen_batch_initial_conditions, InitialConditionOptions, DEFAULT_ALPHA,
-    DEFAULT_ETA,
+    DEFAULT_ETA, DEFAULT_N_BURNIN, DEFAULT_N_THINNING,
+};
+use crate::optim::parameter_constraints::{
+    evaluate_feasibility, ParameterConstraints, CONSTRAINT_TOLERANCE,
+};
+use crate::optim::slsqp::{
+    clamp_to_bounds, gen_candidates_slsqp, project_to_feasible_space, SlsqpOptions,
 };
 use crate::utils::sampling::{check_bounds, random_seed};
 use crate::Matrix;
@@ -51,19 +68,67 @@ pub fn default_lbfgsb_options() -> LbfgsbOptions {
     }
 }
 
+/// What an initial-condition generator is asked for (the arguments BoTorch
+/// passes to `ic_generator`).
+pub struct IcRequest<'a> {
+    /// The acquisition function.
+    pub acq_function: &'a dyn AcquisitionFunction,
+    /// The bounds (`2 × d`).
+    pub bounds: &'a Matrix,
+    /// Points per candidate set.
+    pub q: usize,
+    /// Number of initial conditions to generate.
+    pub num_restarts: usize,
+    /// Number of raw samples.
+    pub raw_samples: usize,
+    /// The options of the optimization (fixed features, constraints, seed).
+    pub options: &'a OptimizeAcqfOptions,
+}
+
+/// The function type of an [`IcGenerator`].
+pub type IcGeneratorFn = dyn Fn(&IcRequest<'_>) -> Result<Vec<Matrix>> + Send + Sync;
+
+/// A generator of initial conditions (BoTorch's `ic_generator`), returning
+/// `num_restarts` candidate sets (`q × d`). Required with nonlinear
+/// constraints unless explicit initial conditions are given.
+#[derive(Clone)]
+pub struct IcGenerator(pub Arc<IcGeneratorFn>);
+
+impl Debug for IcGenerator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("IcGenerator")
+    }
+}
+
+impl IcGenerator {
+    /// A generator from a closure.
+    pub fn new<F>(f: F) -> Self
+    where
+        F: Fn(&IcRequest<'_>) -> Result<Vec<Matrix>> + Send + Sync + 'static,
+    {
+        Self(Arc::new(f))
+    }
+}
+
 /// Options of [`optimize_acqf`] (BoTorch's keyword arguments and `options`
-/// dictionary entries that apply without constraints).
-#[derive(Clone, Debug, PartialEq)]
+/// dictionary entries).
+#[derive(Clone, Debug)]
 pub struct OptimizeAcqfOptions {
     /// Seed of the raw Sobol samples (`options["seed"]`); it also seeds the
-    /// random selection of initial conditions, which BoTorch draws from
-    /// torch's global RNG. `None` draws a random seed.
+    /// random selection of initial conditions (which BoTorch draws from
+    /// torch's global RNG) and the polytope sampler. `None` draws a random
+    /// seed.
     pub seed: Option<u64>,
     /// L-BFGS-B settings of each restart (default [`default_lbfgsb_options`]).
     pub lbfgsb: LbfgsbOptions,
+    /// SLSQP settings with constraints (`options["maxiter"]`,
+    /// `options["ftol"]`; defaults 2000 and SciPy's `1e-6`).
+    pub slsqp: SlsqpOptions,
     /// Number of restarts optimized per chunk (`options["batch_limit"]`).
-    /// Restarts are independent problems, so this only bounds the work in
-    /// flight and does not change the result.
+    /// Without constraints restarts are independent problems, so this only
+    /// bounds the work in flight; with constraints each chunk is one SLSQP
+    /// problem (default: all restarts, or 1 with nonlinear constraints, which
+    /// require 1).
     pub batch_limit: Option<usize>,
     /// Number of raw samples evaluated per chunk (`options["init_batch_limit"]`,
     /// falling back to `batch_limit`); does not change the result.
@@ -89,6 +154,16 @@ pub struct OptimizeAcqfOptions {
     /// Repeat the optimization once with new initial conditions if a restart
     /// terminates abnormally (`retry_on_optimization_warning`, default true).
     pub retry_on_optimization_warning: bool,
+    /// Linear and nonlinear parameter constraints (`inequality_constraints`,
+    /// `equality_constraints`, `nonlinear_inequality_constraints`).
+    pub constraints: ParameterConstraints,
+    /// Burn-in steps of the polytope sampler of the initial conditions
+    /// (`options["n_burnin"]`, default 10000).
+    pub n_burnin: usize,
+    /// Thinning of the polytope sampler (`options["n_thinning"]`, default 32).
+    pub n_thinning: usize,
+    /// Generator of initial conditions (BoTorch's `ic_generator`).
+    pub ic_generator: Option<IcGenerator>,
 }
 
 impl Default for OptimizeAcqfOptions {
@@ -96,6 +171,7 @@ impl Default for OptimizeAcqfOptions {
         Self {
             seed: None,
             lbfgsb: default_lbfgsb_options(),
+            slsqp: SlsqpOptions::default(),
             batch_limit: None,
             init_batch_limit: None,
             eta: DEFAULT_ETA,
@@ -105,23 +181,42 @@ impl Default for OptimizeAcqfOptions {
             batch_initial_conditions: None,
             sequential: false,
             retry_on_optimization_warning: true,
+            constraints: ParameterConstraints::default(),
+            n_burnin: DEFAULT_N_BURNIN,
+            n_thinning: DEFAULT_N_THINNING,
+            ic_generator: None,
         }
     }
 }
 
-/// The result of one restart of [`gen_candidates_lbfgsb`].
+/// Termination of the optimizer of a restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OptimizerStatus {
+    /// L-BFGS-B (box constraints).
+    Lbfgsb(LbfgsbStatus),
+    /// SLSQP (parameter constraints) with SciPy's exit mode of the chunk's
+    /// joint problem (0: success, 9: iteration limit).
+    Slsqp(i32),
+}
+
+/// The result of one restart of [`gen_candidates_lbfgsb`] or of the SLSQP
+/// path.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RestartResult {
     /// The optimized candidate set (`q × d`), clamped to the bounds.
     pub candidates: Matrix,
     /// The acquisition value at `candidates`.
     pub acq_value: f64,
-    /// L-BFGS-B iterations.
+    /// Iterations (of the chunk's joint problem for SLSQP).
     pub iterations: usize,
-    /// Acquisition evaluations (with gradient).
+    /// Acquisition evaluations (with gradient; for SLSQP evaluations of the
+    /// chunk's joint objective).
     pub evaluations: usize,
-    /// L-BFGS-B termination reason.
-    pub status: LbfgsbStatus,
+    /// Termination reason.
+    pub status: OptimizerStatus,
+    /// Whether the candidates satisfy the parameter constraints (always true
+    /// without constraints).
+    pub feasible: bool,
 }
 
 /// Detailed result of [`optimize_acqf_detailed`].
@@ -145,9 +240,9 @@ pub struct OptimizeAcqfResult {
 }
 
 /// Optimizes `acq_function` over the box `bounds` (`2 × d`) for `q` points
-/// with `num_restarts` L-BFGS-B restarts initialized from `raw_samples` raw
-/// samples, and returns the best `q × d` candidate set and its acquisition
-/// value (BoTorch's `optimize_acqf(acq_function, bounds, q, num_restarts,
+/// with `num_restarts` restarts initialized from `raw_samples` raw samples,
+/// and returns the best `q × d` candidate set and its acquisition value
+/// (BoTorch's `optimize_acqf(acq_function, bounds, q, num_restarts,
 /// raw_samples, options, ...)`). See [`optimize_acqf_detailed`].
 ///
 /// # Errors
@@ -165,14 +260,19 @@ pub fn optimize_acqf(
 }
 
 /// [`optimize_acqf`] returning all restarts, the per-step values of
-/// sequential optimization and diagnostic messages.
+/// sequential optimization and diagnostic messages. `raw_samples = 0` means
+/// BoTorch's `raw_samples=None` (only explicit or generated initial
+/// conditions).
 ///
 /// # Errors
 /// [`BotorchError::DimensionMismatch`] / [`BotorchError::InvalidArgument`] for
-/// invalid bounds, sizes, fixed features or initial conditions;
+/// invalid bounds, sizes, fixed features, constraints or initial conditions;
 /// [`BotorchError::Unsupported`] for sequential optimization of acquisition
-/// functions without pending-point support; [`BotorchError::Numerical`] for NaN
-/// gradients; and errors of the acquisition function.
+/// functions without pending-point support or with inter-point constraints;
+/// [`BotorchError::Runtime`] for nonlinear constraints without initial
+/// conditions or generator; [`BotorchError::CandidateGeneration`] if no
+/// feasible candidates were found; [`BotorchError::Numerical`] for NaN
+/// gradients; and errors of the acquisition function and the constraints.
 pub fn optimize_acqf_detailed(
     acq_function: &dyn AcquisitionFunction,
     bounds: &Matrix,
@@ -201,6 +301,26 @@ pub fn optimize_acqf_detailed(
         }
     }
     check_fixed_features(&options.fixed_features, bounds)?;
+    let sequential = options.sequential && q > 1;
+    options
+        .constraints
+        .validate(if sequential { 1 } else { q }, d)?;
+    if !options.constraints.nonlinear.is_empty()
+        && options.batch_initial_conditions.is_none()
+        && options.ic_generator.is_none()
+    {
+        return Err(BotorchError::Runtime(
+            "`ic_generator` must be given if there are non-linear inequality constraints.".into(),
+        ));
+    }
+    if options.batch_initial_conditions.is_none()
+        && options.ic_generator.is_none()
+        && raw_samples == 0
+    {
+        return Err(BotorchError::InvalidArgument(
+            "Must specify `raw_samples` when `batch_initial_conditions` is None`.".into(),
+        ));
+    }
     let seed = options.seed.unwrap_or_else(random_seed);
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed ^ 0x6f70_7469_6d69_7a65);
     let joint_options = OptimizeAcqfOptions {
@@ -222,7 +342,7 @@ pub fn optimize_acqf_detailed(
         });
     }
 
-    if !(options.sequential && q > 1) {
+    if !sequential {
         return optimize_batch(
             acq_function,
             bounds,
@@ -235,9 +355,14 @@ pub fn optimize_acqf_detailed(
     }
 
     // Sequential greedy optimization via pending points.
+    options.constraints.validate_sequential()?;
     if options.batch_initial_conditions.is_some() {
         return Err(BotorchError::Unsupported(
-            "`batch_initial_conditions` is not supported for sequential optimization".into(),
+            "`batch_initial_conditions` is not supported for sequential optimization. Either \
+             avoid specifying `batch_initial_conditions` to use the custom initializer or use \
+             the `ic_generator` kwarg to generate initial conditions for the case of nonlinear \
+             inequality constraints."
+                .into(),
         ));
     }
     let base_pending = acq_function.x_pending();
@@ -316,6 +441,7 @@ fn optimize_batch(
     rng: &mut Xoshiro256PlusPlus,
 ) -> Result<OptimizeAcqfResult> {
     let d = bounds.ncols();
+    let constrained = !options.constraints.is_empty();
     let provided = options.batch_initial_conditions.clone().unwrap_or_default();
     for ic in &provided {
         if ic.shape() != (q, d) {
@@ -334,53 +460,104 @@ fn optimize_batch(
         nonnegative: options.nonnegative,
         batch_limit: options.init_batch_limit.or(options.batch_limit),
         fixed_features: options.fixed_features.clone(),
+        inequality_constraints: options.constraints.inequality.clone(),
+        equality_constraints: options.constraints.equality.clone(),
+        n_burnin: options.n_burnin,
+        n_thinning: options.n_thinning,
     };
+    let generate = raw_samples > 0 && required > 0;
     let mut warnings = Vec::new();
     let make_ics =
         |rng: &mut Xoshiro256PlusPlus, warnings: &mut Vec<String>| -> Result<Vec<Matrix>> {
             let mut ics = provided.clone();
-            if required > 0 {
-                if raw_samples == 0 {
-                    return Err(BotorchError::InvalidArgument(
-                        "Must specify `raw_samples` when `batch_initial_conditions` is None".into(),
-                    ));
-                }
-                let (generated, fallback) = gen_batch_initial_conditions(
-                    acq_function,
-                    bounds,
-                    q,
-                    required,
-                    raw_samples,
-                    &ic_options,
-                    rng,
-                )?;
-                if fallback {
-                    warnings.push(
-                        "Unable to find non-zero acquisition function values - initial conditions \
-                     are being selected randomly."
-                            .into(),
-                    );
-                }
+            if generate {
+                let generated = match &options.ic_generator {
+                    Some(generator) => {
+                        let request = IcRequest {
+                            acq_function,
+                            bounds,
+                            q,
+                            num_restarts: required,
+                            raw_samples,
+                            options,
+                        };
+                        let ics = (generator.0)(&request)?;
+                        for ic in &ics {
+                            if ic.shape() != (q, d) {
+                                return Err(BotorchError::DimensionMismatch(format!(
+                                    "the ic_generator returned a {}x{} initial condition, \
+                                     expected {q} x {d}",
+                                    ic.nrows(),
+                                    ic.ncols()
+                                )));
+                            }
+                        }
+                        ics
+                    }
+                    None => {
+                        let (generated, fallback) = gen_batch_initial_conditions(
+                            acq_function,
+                            bounds,
+                            q,
+                            required,
+                            raw_samples,
+                            &ic_options,
+                            rng,
+                        )?;
+                        if fallback {
+                            warnings.push(
+                                "Unable to find non-zero acquisition function values - initial \
+                                 conditions are being selected randomly."
+                                    .into(),
+                            );
+                        }
+                        generated
+                    }
+                };
                 ics.extend(generated);
+            }
+            if ics.is_empty() {
+                return Err(BotorchError::InvalidArgument(
+                    "Either `batch_initial_conditions` or `raw_samples` must be set.".into(),
+                ));
             }
             Ok(ics)
         };
-    let ics = make_ics(rng, &mut warnings)?;
-    let mut restarts = run_restarts(acq_function, bounds, &ics, options)?;
-    let abnormal = |rs: &[RestartResult]| {
-        rs.iter()
-            .any(|r| r.status == LbfgsbStatus::AbnormalLineSearch)
+    let run = |ics: &[Matrix]| -> Result<(Vec<RestartResult>, Vec<String>)> {
+        if constrained {
+            run_slsqp(acq_function, bounds, ics, options)
+        } else {
+            let rs = run_restarts(acq_function, bounds, ics, options)?;
+            let failed = rs
+                .iter()
+                .any(|r| r.status == OptimizerStatus::Lbfgsb(LbfgsbStatus::AbnormalLineSearch));
+            let ws = if failed {
+                vec!["abnormal termination in the line search".to_string()]
+            } else {
+                Vec::new()
+            };
+            Ok((rs, ws))
+        }
     };
-    if abnormal(&restarts) && options.retry_on_optimization_warning {
-        if required > 0 {
-            warnings.push(
+    let ics = make_ics(rng, &mut warnings)?;
+    let (mut restarts, opt_warnings) = run(&ics)?;
+    if !opt_warnings.is_empty() && options.retry_on_optimization_warning {
+        if generate {
+            warnings.push(if constrained {
+                format!(
+                    "Optimization failed in `gen_candidates_scipy` with the following \
+                     warning(s):\n{opt_warnings:?}\nTrying again with a new set of initial \
+                     conditions."
+                )
+            } else {
                 "Optimization failed in L-BFGS-B (abnormal termination in the line search); \
                  trying again with a new set of initial conditions."
-                    .into(),
-            );
+                    .into()
+            });
             let ics = make_ics(rng, &mut warnings)?;
-            restarts = run_restarts(acq_function, bounds, &ics, options)?;
-            if abnormal(&restarts) {
+            let (rs, ws) = run(&ics)?;
+            restarts = rs;
+            if !ws.is_empty() {
                 warnings.push(
                     "Optimization failed on the second try, after generating a new set of \
                      initial conditions."
@@ -388,12 +565,25 @@ fn optimize_batch(
                 );
             }
         } else {
-            warnings.push(
+            warnings.push(if constrained {
+                format!(
+                    "Optimization failed in `gen_candidates_scipy` with the following \
+                     warning(s):\n{opt_warnings:?}\nBecause you specified \
+                     `batch_initial_conditions` larger than required `num_restarts`, \
+                     optimization will not be retried with new initial conditions and will \
+                     proceed with the current solution. Suggested remediation: Try again with \
+                     different `batch_initial_conditions`, don't provide \
+                     `batch_initial_conditions`, or increase `num_restarts`."
+                )
+            } else {
                 "Optimization failed in L-BFGS-B (abnormal termination in the line search); \
                  not retried because all initial conditions were provided."
-                    .into(),
-            );
+                    .into()
+            });
         }
+    }
+    if constrained {
+        enforce_feasibility(acq_function, bounds, &mut restarts, options)?;
     }
     let best = best_restart(&restarts)?;
     let r = &restarts[best];
@@ -406,11 +596,104 @@ fn optimize_batch(
     })
 }
 
-/// Index of the restart with the largest (non-NaN) value.
+/// SLSQP over chunks of `batch_limit` restarts (BoTorch's constrained
+/// `_optimize_batch_candidates`); the chunks are independent problems and run
+/// in parallel. Returns the restarts and the optimization warnings.
+fn run_slsqp(
+    acq_function: &dyn AcquisitionFunction,
+    bounds: &Matrix,
+    ics: &[Matrix],
+    options: &OptimizeAcqfOptions,
+) -> Result<(Vec<RestartResult>, Vec<String>)> {
+    let nonlinear = !options.constraints.nonlinear.is_empty();
+    let batch_limit = options
+        .batch_limit
+        .unwrap_or(if nonlinear { 1 } else { ics.len() })
+        .max(1);
+    if nonlinear && batch_limit != 1 {
+        return Err(BotorchError::InvalidArgument(
+            "`batch_limit` must be 1 when non-linear inequality constraints are given.".into(),
+        ));
+    }
+    let chunks: Vec<&[Matrix]> = ics.chunks(batch_limit).collect();
+    let results = chunks
+        .par_iter()
+        .map(|c| {
+            gen_candidates_slsqp(
+                c,
+                acq_function,
+                bounds,
+                &options.fixed_features,
+                &options.constraints,
+                &options.slsqp,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut restarts = Vec::with_capacity(ics.len());
+    let mut warnings = Vec::new();
+    for r in results {
+        warnings.extend(r.warnings.iter().cloned());
+        for (candidates, acq_value) in r.candidates.into_iter().zip(r.acq_values) {
+            restarts.push(RestartResult {
+                candidates,
+                acq_value,
+                iterations: r.iterations,
+                evaluations: r.evaluations,
+                status: OptimizerStatus::Slsqp(r.mode),
+                feasible: true,
+            });
+        }
+    }
+    Ok((restarts, warnings))
+}
+
+/// BoTorch's feasibility post-processing: infeasible restarts are projected
+/// onto the feasible set (jointly) and re-evaluated; an error is raised if no
+/// restart is feasible afterwards.
+fn enforce_feasibility(
+    acq_function: &dyn AcquisitionFunction,
+    bounds: &Matrix,
+    restarts: &mut [RestartResult],
+    options: &OptimizeAcqfOptions,
+) -> Result<()> {
+    let constraints = &options.constraints;
+    for r in restarts.iter_mut() {
+        r.feasible = evaluate_feasibility(&r.candidates, constraints, CONSTRAINT_TOLERANCE)?;
+    }
+    let infeasible: Vec<usize> = (0..restarts.len())
+        .filter(|&i| !restarts[i].feasible)
+        .collect();
+    if !infeasible.is_empty() {
+        let sets: Vec<Matrix> = infeasible
+            .iter()
+            .map(|&i| restarts[i].candidates.clone())
+            .collect();
+        let projected =
+            project_to_feasible_space(&sets, bounds, constraints, &options.fixed_features)?;
+        let values = acq_function.forward_many(&projected)?;
+        for ((&i, x), v) in infeasible.iter().zip(projected).zip(values) {
+            restarts[i].feasible = evaluate_feasibility(&x, constraints, CONSTRAINT_TOLERANCE)?;
+            restarts[i].candidates = x;
+            restarts[i].acq_value = v;
+        }
+    }
+    let n_infeasible = restarts.iter().filter(|r| !r.feasible).count();
+    if n_infeasible == restarts.len() {
+        return Err(BotorchError::CandidateGeneration(format!(
+            "The optimizer produced infeasible candidates. {n_infeasible} out of {} batches of \
+             candidates were infeasible. Please make sure the constraints are satisfiable and \
+             relax them if needed. ",
+            restarts.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Index of the feasible restart with the largest (non-NaN) value.
 fn best_restart(restarts: &[RestartResult]) -> Result<usize> {
     let mut best: Option<usize> = None;
     for (i, r) in restarts.iter().enumerate() {
-        if r.acq_value.is_nan() {
+        if r.acq_value.is_nan() || !r.feasible {
             continue;
         }
         if best.is_none_or(|b| r.acq_value > restarts[b].acq_value) {
@@ -468,25 +751,6 @@ pub fn gen_candidates_lbfgsb(
         .collect()
 }
 
-/// `columnwise_clamp` with BoTorch's `raise_on_violation` check
-/// (`torch.allclose` tolerances).
-fn clamp_to_bounds(x: &mut Matrix, bounds: &Matrix) -> Result<()> {
-    for i in 0..x.nrows() {
-        for k in 0..x.ncols() {
-            let (lo, hi) = (bounds[(0, k)], bounds[(1, k)]);
-            let v = x[(i, k)];
-            let c = v.max(lo).min(hi);
-            if (v - c).abs() > 1e-8 + 1e-5 * c.abs() || v.is_nan() {
-                return Err(BotorchError::InvalidArgument(format!(
-                    "Original value(s) are out of bounds: x[{i}, {k}] = {v} not in [{lo}, {hi}]"
-                )));
-            }
-            x[(i, k)] = c;
-        }
-    }
-    Ok(())
-}
-
 fn optimize_one(
     ic: &Matrix,
     acq_function: &dyn AcquisitionFunction,
@@ -505,7 +769,7 @@ fn optimize_one(
     }
     let q = ic.nrows();
     let mut x0m = ic.clone();
-    clamp_to_bounds(&mut x0m, bounds)?;
+    clamp_to_bounds(&mut x0m, bounds, true)?;
     let nf = free.len();
     let mut x0 = Vec::with_capacity(q * nf);
     let mut lower = Vec::with_capacity(q * nf);
@@ -557,13 +821,14 @@ fn optimize_one(
         Err(LbfgsbError::InvalidInput(msg)) => return Err(BotorchError::InvalidArgument(msg)),
     };
     let mut candidates = assemble(&res.x);
-    clamp_to_bounds(&mut candidates, bounds)?;
+    clamp_to_bounds(&mut candidates, bounds, true)?;
     let acq_value = acq_function.forward(&candidates)?;
     Ok(RestartResult {
         candidates,
         acq_value,
         iterations: res.iterations,
         evaluations: res.evaluations,
-        status: res.status,
+        status: OptimizerStatus::Lbfgsb(res.status),
+        feasible: true,
     })
 }

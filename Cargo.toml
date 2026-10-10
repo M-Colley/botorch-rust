@@ -25,6 +25,11 @@ thiserror = "2"
 errorfunctions = "0.2"
 sobol_burley = "0.5"
 rayon = "1"
+# Runtime dependencies (phase 4B: constrained acquisition optimization).
+# SLSQP (Kraft) with a SciPy-style driver, vendored with a small patch.
+slsqp = { path = "./vendor/slsqp" }
+# Linear programming (interior points of constraint polytopes).
+microlp = "0.6"
 # Dev dependencies (fixtures and approximate comparisons).
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

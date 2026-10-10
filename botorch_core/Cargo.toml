@@ -19,6 +19,8 @@ thiserror.workspace = true
 errorfunctions.workspace = true
 sobol_burley.workspace = true
 rayon.workspace = true
+slsqp.workspace = true
+microlp.workspace = true
 
 [dev-dependencies]
 serde.workspace = true

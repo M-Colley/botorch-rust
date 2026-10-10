@@ -1,7 +1,9 @@
 //! Initial conditions for multi-start acquisition optimization, mirroring
 //! `botorch.optim.initializers`: [`gen_batch_initial_conditions`] draws
-//! `raw_samples` scrambled Sobol candidate sets, evaluates the acquisition
-//! function on all of them and selects `num_restarts` starting points with
+//! `raw_samples` scrambled Sobol candidate sets (or, with linear constraints,
+//! hit-and-run samples from the constraint polytope,
+//! [`sample_q_batches_from_polytope`]), evaluates the acquisition function on
+//! all of them and selects `num_restarts` starting points with
 //! [`initialize_q_batch`] (Boltzmann sampling) or
 //! [`initialize_q_batch_nonneg`] (for non-negative acquisition functions).
 
@@ -11,8 +13,16 @@ use rand::{Rng, RngExt};
 
 use crate::acquisition::AcquisitionFunction;
 use crate::error::{BotorchError, Result};
+use crate::optim::parameter_constraints::{ConstraintIndices, LinearConstraint};
+use crate::utils::polytope::get_polytope_samples;
 use crate::utils::sampling::{check_bounds, draw_sobol_samples};
 use crate::Matrix;
+
+/// Default number of burn-in steps of the polytope sampler of the initial
+/// conditions (`options.get("n_burnin", 10000)`).
+pub const DEFAULT_N_BURNIN: usize = 10_000;
+/// Default thinning of the polytope sampler (`options.get("n_thinning", 32)`).
+pub const DEFAULT_N_THINNING: usize = 32;
 
 /// Default Boltzmann temperature of [`initialize_q_batch`] and
 /// [`initialize_q_batch_nonneg`] (BoTorch's `eta=1.0`).
@@ -233,6 +243,15 @@ pub struct InitialConditionOptions {
     pub batch_limit: Option<usize>,
     /// Features fixed to given values (`fixed_features`).
     pub fixed_features: BTreeMap<usize, f64>,
+    /// Linear inequality constraints (`Σ c x ≥ rhs`): the raw samples are
+    /// drawn from the constraint polytope.
+    pub inequality_constraints: Vec<LinearConstraint>,
+    /// Linear equality constraints (`Σ c x = rhs`).
+    pub equality_constraints: Vec<LinearConstraint>,
+    /// Burn-in steps of the polytope sampler (`options["n_burnin"]`).
+    pub n_burnin: usize,
+    /// Thinning of the polytope sampler (`options["n_thinning"]`).
+    pub n_thinning: usize,
 }
 
 impl Default for InitialConditionOptions {
@@ -244,15 +263,122 @@ impl Default for InitialConditionOptions {
             nonnegative: false,
             batch_limit: None,
             fixed_features: BTreeMap::new(),
+            inequality_constraints: Vec::new(),
+            equality_constraints: Vec::new(),
+            n_burnin: DEFAULT_N_BURNIN,
+            n_thinning: DEFAULT_N_THINNING,
         }
     }
 }
 
+/// Constraints on the `q·d` flattened entries of a q-batch (BoTorch's
+/// `transform_constraints`): an intra-point constraint becomes `q`
+/// constraints, an inter-point constraint one.
+///
+/// # Errors
+/// [`BotorchError::InvalidArgument`] for feature indices out of range.
+pub fn transform_constraints(
+    constraints: &[LinearConstraint],
+    q: usize,
+    d: usize,
+) -> Result<Vec<LinearConstraint>> {
+    let mut out = Vec::new();
+    for c in constraints {
+        match c.indices() {
+            ConstraintIndices::IntraPoint(idx) => {
+                if idx.iter().any(|&k| k >= d) {
+                    return Err(BotorchError::InvalidArgument(format!(
+                        "Constraint indices cannot exceed the problem dimension d={d}."
+                    )));
+                }
+                for i in 0..q {
+                    out.push(LinearConstraint::intra_point(
+                        idx.iter().map(|&j| i * d + j).collect(),
+                        c.coefficients().to_vec(),
+                        c.rhs(),
+                    )?);
+                }
+            }
+            ConstraintIndices::InterPoint(idx) => {
+                if idx.iter().any(|&(_, k)| k >= d) {
+                    return Err(BotorchError::InvalidArgument(format!(
+                        "Constraint indices cannot exceed the problem dimension d={d}."
+                    )));
+                }
+                out.push(LinearConstraint::intra_point(
+                    idx.iter().map(|&(p, k)| p * d + k).collect(),
+                    c.coefficients().to_vec(),
+                    c.rhs(),
+                )?);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `n` q-batches (`q × d` each) sampled from the polytope given by `bounds`
+/// and linear constraints (BoTorch's `sample_q_batches_from_polytope`):
+/// `n·q` points of one hit-and-run chain, or with inter-point constraints `n`
+/// points of a chain on the `q·d`-dimensional space (thinning `n_thinning ·
+/// q`).
+///
+/// # Errors
+/// See [`get_polytope_samples`].
+#[allow(clippy::too_many_arguments)]
+pub fn sample_q_batches_from_polytope(
+    n: usize,
+    q: usize,
+    bounds: &Matrix,
+    n_burnin: usize,
+    n_thinning: usize,
+    seed: Option<u64>,
+    inequality_constraints: &[LinearConstraint],
+    equality_constraints: &[LinearConstraint],
+) -> Result<Vec<Matrix>> {
+    let d = bounds.ncols();
+    let inter_point = inequality_constraints
+        .iter()
+        .chain(equality_constraints)
+        .any(|c| c.is_inter_point());
+    let samples = if inter_point {
+        let wide = Matrix::from_fn(2, q * d, |i, j| bounds[(i, j % d)]);
+        get_polytope_samples(
+            n,
+            &wide,
+            &transform_constraints(inequality_constraints, q, d)?,
+            &transform_constraints(equality_constraints, q, d)?,
+            seed,
+            n_burnin,
+            n_thinning * q,
+        )?
+    } else {
+        get_polytope_samples(
+            n * q,
+            bounds,
+            inequality_constraints,
+            equality_constraints,
+            seed,
+            n_burnin,
+            n_thinning,
+        )?
+    };
+    Ok((0..n)
+        .map(|i| {
+            Matrix::from_fn(q, d, |p, k| {
+                let flat = (i * q + p) * d + k;
+                samples[(flat / samples.ncols(), flat % samples.ncols())]
+            })
+        })
+        .collect())
+}
+
 /// Generates `num_restarts` initial candidate sets (`q × d`) for multi-start
-/// optimization (BoTorch's `gen_batch_initial_conditions` without constraints):
+/// optimization (BoTorch's `gen_batch_initial_conditions`):
 ///
 /// 1. draw `n = raw_samples` scrambled Sobol candidate sets in `bounds`
-///    ([`draw_sobol_samples`]) and set the fixed features;
+///    ([`draw_sobol_samples`]) -- or, with linear constraints, hit-and-run
+///    samples from the constraint polytope
+///    ([`sample_q_batches_from_polytope`]) -- and set the fixed features;
 /// 2. evaluate the acquisition function on all of them (in parallel);
 /// 3. select `num_restarts` of them with [`initialize_q_batch_nonneg`] if the
 ///    acquisition function is non-negative (or `options.nonnegative`), and
@@ -302,7 +428,22 @@ pub fn gen_batch_initial_conditions<R: Rng + ?Sized>(
     let mut last = None;
     while factor < factor_max {
         let n = raw_samples * factor;
-        let mut x_rnd = draw_sobol_samples(bounds, n, q, seed)?;
+        let mut x_rnd = if options.inequality_constraints.is_empty()
+            && options.equality_constraints.is_empty()
+        {
+            draw_sobol_samples(bounds, n, q, seed)?
+        } else {
+            sample_q_batches_from_polytope(
+                n,
+                q,
+                bounds,
+                options.n_burnin,
+                options.n_thinning,
+                seed,
+                &options.inequality_constraints,
+                &options.equality_constraints,
+            )?
+        };
         for x in &mut x_rnd {
             apply_fixed_features(x, &options.fixed_features);
         }

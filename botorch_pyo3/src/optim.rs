@@ -111,6 +111,7 @@ pub fn optimize_acqf(
         batch_initial_conditions: ics,
         sequential,
         retry_on_optimization_warning,
+        ..Default::default()
     };
     let acqf = &acq_function.inner;
     let result = threads::run(py, || {
