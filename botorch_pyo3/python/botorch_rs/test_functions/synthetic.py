@@ -19,6 +19,7 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import ArrayKind, from_pair, kind_from_dtype, kind_of, to_flat
+from botorch_rs.test_functions.base import BaseTestProblem
 
 
 def _bounds_arg(bounds: Any) -> Any:
@@ -35,15 +36,10 @@ def _bounds_arg(bounds: Any) -> Any:
     return (lower + upper, (2, d))
 
 
-class BaseTestProblem:
-    """Base class of the test problems."""
-
-    num_objectives = 1
-
-
 class SyntheticTestFunction(BaseTestProblem):
     """Base class of the synthetic test functions."""
 
+    num_objectives = 1
     _name: str = ""
     _fixed_dim: int | None = None
 

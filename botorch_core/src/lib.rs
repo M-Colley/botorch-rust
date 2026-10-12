@@ -84,6 +84,7 @@
 //! | `get_polytope_samples`, `HitAndRunPolytopeSampler`, `find_interior_point`, `sample_polytope`, `sparse_to_dense_constraints` | [`utils::polytope::get_polytope_samples`], [`utils::polytope::HitAndRunPolytopeSampler`], [`utils::polytope::find_interior_point`] (linear program solved with `microlp`), [`utils::polytope::sample_polytope`], [`utils::polytope::sparse_to_dense_constraints`] |
 //! | `scipy.optimize.minimize(method="SLSQP")` | `slsqp::minimize_kraft` of the vendored `slsqp` crate (a SciPy-style driver) |
 //! | `botorch.test_functions.Hartmann(dim=6, noise_std=..., negate=True)` etc. | [`test_functions::SyntheticTestFunction::hartmann`]`(6)?.with_negate(true)` etc. (20 functions) |
+//! | `botorch.test_functions.DTLZ2(dim=6, num_objectives=3, noise_std=[...], negate=True)` etc. (`multi_objective`, `multi_objective_multi_fidelity`) | [`test_functions::MultiObjectiveTestProblem::new`]`(`[`test_functions::MultiObjectiveKind::Dtlz2`]`, Some(6), Some(3))?.with_negate(true)` etc. (30 problems): `evaluate_true`, `forward`, `evaluate_slack`, `is_feasible`, `ref_point`, `max_hv`, `gen_pareto_front` |
 //! | `botorch.utils.safe_math`, `botorch.utils.probability.utils` | [`utils::safe_math`], [`utils::probability`] |
 //! | `get_covar_module_with_dim_scaled_prior`, `get_matern_kernel_with_gamma_prior` | [`kernels::get_covar_module_with_dim_scaled_prior`], [`kernels::get_matern_kernel_with_gamma_prior`] |
 //! | `get_gaussian_likelihood_with_lognormal_prior`, `..._with_gamma_prior` | [`get_gaussian_likelihood_with_lognormal_prior`], [`get_gaussian_likelihood_with_gamma_prior`] |
@@ -160,6 +161,15 @@
 //!
 //! *Test functions* (`tests/test_functions_parity.rs`, 28 configurations):
 //! values, bounds, optima and optimizers agree to 3e-16.
+//!
+//! *Multi-objective test problems* (`tests/mo_test_functions_parity.rs`, all 30
+//! problems in 52 configurations, at random points and at the corners of the
+//! domain): objectives, constraint slacks and the deterministic Pareto fronts
+//! agree to 7e-16 (Penicillin: relative to BoTorch's own sensitivity to
+//! rounding, observed exact), reference points exactly and maximum
+//! hypervolumes to the last bit; ten problems implement the corrected
+//! definitions of BoTorch pull requests (see
+//! [`test_functions::MultiObjectiveKind::deviation`]).
 //!
 //! *Multi-output, batched and list models* (13 configurations: `m` = 1, 2, 3;
 //! batch shapes `3`, `2`, `2 × 2`; shared, per-batch and explicit `Normalize`;
@@ -332,4 +342,5 @@ pub use posterior::{JointPosteriorGrad, PointPosteriors, Posterior};
 pub use priors::Prior;
 pub use sampling::SobolQMCNormalSampler;
 pub use test_functions::SyntheticTestFunction;
+pub use test_functions::{MultiObjectiveKind, MultiObjectiveTestProblem};
 pub use transforms::{Normalize, OutcomeTransformChoice, Standardize};

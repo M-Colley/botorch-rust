@@ -1,5 +1,7 @@
-//! Synthetic test functions for optimization benchmarks
-//! (`botorch.test_functions.synthetic`, unconstrained functions).
+//! Test functions for optimization benchmarks: the unconstrained synthetic
+//! functions of `botorch.test_functions.synthetic` and the multi-objective
+//! problems of `botorch.test_functions.multi_objective` and
+//! `multi_objective_multi_fidelity` ([`MultiObjectiveTestProblem`]).
 //!
 //! A [`SyntheticTestFunction`] has BoTorch's semantics:
 //! [`SyntheticTestFunction::evaluate_true`] returns the noiseless function
@@ -12,6 +14,8 @@
 //! dtype (float32) — Hartmann's `ALPHA` and `A`, Shekel's `C` — are rounded
 //! to float32 exactly as in BoTorch, so that values agree to round-off.
 
+pub mod multi_objective;
 mod synthetic;
 
+pub use multi_objective::{MultiObjectiveKind, MultiObjectiveTestProblem, NoiseStd};
 pub use synthetic::{SyntheticTestFunction, TestFunctionKind};
