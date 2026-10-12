@@ -91,6 +91,9 @@
 //! | `IdentityMCMultiOutputObjective`, `WeightedMCMultiOutputObjective`, `GenericMCMultiOutputObjective`, `FeasibilityWeightedMCMultiOutputObjective` | [`acquisition::multi_objective::IdentityMcMultiOutputObjective`], [`acquisition::multi_objective::WeightedMcMultiOutputObjective`], [`acquisition::multi_objective::GenericMcMultiOutputObjective`], [`acquisition::multi_objective::FeasibilityWeightedMcMultiOutputObjective`] (any [`acquisition::multi_objective::McMultiOutputObjective`]) |
 //! | `prune_inferior_points_multi_objective`, `get_default_partitioning_alpha`, `compute_subset_indices` | [`acquisition::multi_objective::prune_inferior_points_multi_objective`], [`acquisition::multi_objective::get_default_partitioning_alpha`], [`acquisition::multi_objective::compute_subset_indices`] |
 //! | `optimize_acqf_list(acq_function_list, bounds, num_restarts, raw_samples, options, fixed_features_list, ...)` | [`optim::optimize_acqf_list`]`(&[&acqf, ...], &bounds, num_restarts, raw_samples, &options, fixed_features_list)` |
+//! | `draw_matheron_paths(model, sample_shape)`, `draw_kernel_feature_paths`, `gaussian_update`, `get_matheron_path_model` (`botorch.sampling.pathwise`) | [`sampling::pathwise::draw_matheron_paths`]`(&*model, num_samples, &`[`sampling::pathwise::MatheronPathOptions`]`)` (seeded or explicit [`sampling::pathwise::MatheronPathDraws`]), [`sampling::pathwise::draw_kernel_feature_paths`], [`sampling::pathwise::gaussian_update`], [`sampling::pathwise::get_matheron_path_model`] |
+//! | `sample_optimal_points`, `random_search_optimizer`, `compute_sample_box_decomposition` | [`acquisition::multi_objective::sample_optimal_points`], [`acquisition::multi_objective::random_search_optimizer`], [`acquisition::multi_objective::compute_sample_box_decomposition`] |
+//! | `qLowerBoundMultiObjectiveMaxValueEntropySearch`, `qLowerBoundMultiObjectiveJointEntropySearch(model, pareto_sets, pareto_fronts, hypercell_bounds, X_pending, estimation_type)`, `qMultiObjectivePredictiveEntropySearch(model, pareto_sets, maximize, ...)` | [`acquisition::multi_objective::QLowerBoundMultiObjectiveMaxValueEntropySearch`], [`acquisition::multi_objective::QLowerBoundMultiObjectiveJointEntropySearch`] ([`acquisition::multi_objective::EstimationType`] `"0"`, `"LB"`, `"LB2"`, `"MC"`), [`acquisition::multi_objective::QMultiObjectivePredictiveEntropySearch`] |
 //! | `botorch.utils.safe_math`, `botorch.utils.probability.utils` | [`utils::safe_math`], [`utils::probability`] |
 //! | `get_covar_module_with_dim_scaled_prior`, `get_matern_kernel_with_gamma_prior` | [`kernels::get_covar_module_with_dim_scaled_prior`], [`kernels::get_matern_kernel_with_gamma_prior`] |
 //! | `get_gaussian_likelihood_with_lognormal_prior`, `..._with_gamma_prior` | [`get_gaussian_likelihood_with_lognormal_prior`], [`get_gaussian_likelihood_with_gamma_prior`] |
@@ -208,6 +211,18 @@
 //! (shortfall at most 5e-9 over five seeds). Hit-and-run samples match
 //! BoTorch's moments statistically. `tests/objective_constraint_gradients.rs`
 //! checks the new gradients against central finite differences.
+//!
+//! *Pathwise sampling and information-theoretic multi-objective acquisition
+//! functions* (five models, `--phase 5c-entropy`; `tests/mo_entropy_parity.rs`,
+//! `tests/mo_entropy_properties.rs`): given BoTorch's random numbers, Matheron
+//! paths, prior paths and their gradients agree to 3e-15, sampled Pareto sets
+//! and box decompositions are identical, MES and JES values and gradients
+//! agree to 3e-13 or within ten times BoTorch's own sensitivity to rounding
+//! (the entropy estimates are differences of entropies), and PES agrees step
+//! by step with BoTorch's EP (factors to 1e-10 relative to their sensitivity
+//! to last-bit differences of `exp`); see
+//! [`acquisition::multi_objective::QMultiObjectivePredictiveEntropySearch`]
+//! for its deviations.
 //!
 //! ## Scope and known differences
 //!
