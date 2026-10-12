@@ -30,7 +30,7 @@ use botorch_core::{BotorchError, Matrix};
 use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
 
-use crate::arrays::{matrix_out, Array, ArrayOut};
+use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
 use crate::errors::{dimension_error, to_pyerr, value_error};
 use crate::threads;
 
@@ -85,6 +85,12 @@ fn lub_out(l: &LocalUpperBounds) -> (ArrayOut, ArrayOut) {
         (l.upper_bounds().to_vec(), vec![n, m]),
         (l.defining_points().to_vec(), vec![n, m, m]),
     )
+}
+
+/// [`lub_out`] as buffers.
+fn lub_buf(l: &LocalUpperBounds) -> (ArrayBuf, ArrayBuf) {
+    let (u, z) = lub_out(l);
+    (u.into(), z.into())
 }
 
 /// `U` (`n x m`) and `Z` (`n x m x m`) as [`LocalUpperBounds`].
@@ -291,12 +297,12 @@ impl PyBoxDecomposition {
 
     /// `compute_hypervolume()`: shape `batch_shape`; `None` before outcomes
     /// are given (BoTorch's scalar zero).
-    fn compute_hypervolume(&self, py: Python<'_>) -> Option<ArrayOut> {
+    fn compute_hypervolume(&self, py: Python<'_>) -> Option<ArrayBuf> {
         self.with(py, |d| {
             let d = d.get();
             d.pareto_y()?;
             let shape = d.batch_shape().map(<[usize]>::to_vec).unwrap_or_default();
-            Some((d.compute_hypervolume(), shape))
+            Some(ArrayBuf(d.compute_hypervolume(), shape))
         })
     }
 
@@ -308,18 +314,22 @@ impl PyBoxDecomposition {
 
     /// `get_hypercell_bounds()` (`2 x (batch) x num_cells x m`), `None`
     /// before outcomes are given.
-    fn get_hypercell_bounds(&self, py: Python<'_>) -> Option<ArrayOut> {
-        self.with(py, |d| d.get().get_hypercell_bounds().map(cells_out))
+    fn get_hypercell_bounds(&self, py: Python<'_>) -> Option<ArrayBuf> {
+        self.with(py, |d| {
+            d.get().get_hypercell_bounds().map(|c| cells_out(c).into())
+        })
     }
 
     /// `pareto_Y`, `None` before outcomes are given.
-    fn pareto_y(&self, py: Python<'_>) -> Option<ArrayOut> {
-        self.with(py, |d| d.get().pareto_y().as_ref().map(batch_out))
+    fn pareto_y(&self, py: Python<'_>) -> Option<ArrayBuf> {
+        self.with(py, |d| {
+            d.get().pareto_y().as_ref().map(|p| batch_out(p).into())
+        })
     }
 
     /// `Y`, `None` before outcomes are given.
-    fn y(&self, py: Python<'_>) -> Option<ArrayOut> {
-        self.with(py, |d| d.get().y().map(batch_out))
+    fn y(&self, py: Python<'_>) -> Option<ArrayBuf> {
+        self.with(py, |d| d.get().y().map(|p| batch_out(p).into()))
     }
 
     /// The reference point.
@@ -351,8 +361,8 @@ impl PyBoxDecomposition {
 
     /// The local upper bounds `(U, Z)` of a fast partitioning (more than two
     /// outcomes, non-empty frontier), else `None`.
-    fn local_upper_bounds(&self, py: Python<'_>) -> Option<(ArrayOut, ArrayOut)> {
-        self.with(py, |d| d.local_upper_bounds().map(lub_out))
+    fn local_upper_bounds(&self, py: Python<'_>) -> Option<(ArrayBuf, ArrayBuf)> {
+        self.with(py, |d| d.local_upper_bounds().map(lub_buf))
     }
 }
 
@@ -378,7 +388,7 @@ pub fn pad_batch_pareto_frontier_py(
     ref_point: Array,
     is_pareto: bool,
     feasibility_mask: Option<Vec<bool>>,
-) -> PyResult<ArrayOut> {
+) -> PyResult<ArrayBuf> {
     let points = point_batch(&y, "Y")?;
     let out = threads::run(py, || {
         pad_batch_pareto_frontier(
@@ -388,7 +398,7 @@ pub fn pad_batch_pareto_frontier_py(
             feasibility_mask.as_deref(),
         )
     });
-    Ok(batch_out(&mo_result(out)?))
+    Ok(batch_out(&mo_result(out)?).into())
 }
 
 /// `compute_local_upper_bounds(U, Z, z)`: the new `(U, Z)`.
@@ -398,9 +408,9 @@ pub fn compute_local_upper_bounds_py(
     u: Array,
     z: Array,
     point: Vec<f64>,
-) -> PyResult<(ArrayOut, ArrayOut)> {
+) -> PyResult<(ArrayBuf, ArrayBuf)> {
     let lub = lub_in(&u, &z)?;
-    Ok(lub_out(&mo_result(compute_local_upper_bounds(
+    Ok(lub_buf(&mo_result(compute_local_upper_bounds(
         &lub, &point,
     ))?))
 }
@@ -413,21 +423,19 @@ pub fn update_local_upper_bounds_incremental_py(
     new_pareto_y: Array,
     u: Array,
     z: Array,
-) -> PyResult<(ArrayOut, ArrayOut)> {
+) -> PyResult<(ArrayBuf, ArrayBuf)> {
     let points = point_batch(&new_pareto_y, "new_pareto_Y")?;
     let lub = lub_in(&u, &z)?;
     let out = threads::run(py, || update_local_upper_bounds_incremental(&points, &lub));
-    Ok(lub_out(&mo_result(out)?))
+    Ok(lub_buf(&mo_result(out)?))
 }
 
 /// `get_partition_bounds(Z, U, ref_point)`: `2 x num_cells x m`.
 #[pyfunction]
 #[pyo3(name = "get_partition_bounds")]
-pub fn get_partition_bounds_py(z: Array, u: Array, ref_point: Vec<f64>) -> PyResult<ArrayOut> {
+pub fn get_partition_bounds_py(z: Array, u: Array, ref_point: Vec<f64>) -> PyResult<ArrayBuf> {
     let lub = lub_in(&u, &z)?;
-    Ok(cells_out(&mo_result(get_partition_bounds(
-        &lub, &ref_point,
-    ))?))
+    Ok(cells_out(&mo_result(get_partition_bounds(&lub, &ref_point))?).into())
 }
 
 /// `compute_non_dominated_hypercell_bounds_2d(pareto_Y_sorted, ref_point)`.
@@ -436,10 +444,10 @@ pub fn get_partition_bounds_py(z: Array, u: Array, ref_point: Vec<f64>) -> PyRes
 pub fn compute_non_dominated_hypercell_bounds_2d_py(
     pareto_y_sorted: Array,
     ref_point: Array,
-) -> PyResult<ArrayOut> {
+) -> PyResult<ArrayBuf> {
     let points = point_batch(&pareto_y_sorted, "pareto_Y_sorted")?;
     let cells = compute_non_dominated_hypercell_bounds_2d(&points, &ref_point.0);
-    Ok(cells_out(&mo_result(cells)?))
+    Ok(cells_out(&mo_result(cells)?).into())
 }
 
 /// `compute_dominated_hypercell_bounds_2d(pareto_Y_sorted, ref_point)`.
@@ -448,10 +456,10 @@ pub fn compute_non_dominated_hypercell_bounds_2d_py(
 pub fn compute_dominated_hypercell_bounds_2d_py(
     pareto_y_sorted: Array,
     ref_point: Array,
-) -> PyResult<ArrayOut> {
+) -> PyResult<ArrayBuf> {
     let points = point_batch(&pareto_y_sorted, "pareto_Y_sorted")?;
     let cells = compute_dominated_hypercell_bounds_2d(&points, &ref_point.0);
-    Ok(cells_out(&mo_result(cells)?))
+    Ok(cells_out(&mo_result(cells)?).into())
 }
 
 /// The augmented Chebyshev scalarization (`get_chebyshev_scalarization`).
@@ -493,14 +501,14 @@ impl PyChebyshevScalarization {
     }
 
     /// The scalarized values of `y` (`... x m`), shape `...`.
-    fn evaluate(&self, py: Python<'_>, y: Array) -> PyResult<ArrayOut> {
+    fn evaluate(&self, py: Python<'_>, y: Array) -> PyResult<ArrayBuf> {
         let (batch, _) = self.rows(&y)?;
         let values = threads::run(py, || self.inner.evaluate_rows(&y.0));
-        Ok((values, batch))
+        Ok(ArrayBuf(values, batch))
     }
 
     /// The values and their gradients with respect to `y`.
-    fn evaluate_with_grad(&self, py: Python<'_>, y: Array) -> PyResult<(ArrayOut, ArrayOut)> {
+    fn evaluate_with_grad(&self, py: Python<'_>, y: Array) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let (batch, m) = self.rows(&y)?;
         let (values, grads) = threads::run(py, || {
             let mut grads = vec![0.0; y.0.len()];
@@ -511,7 +519,7 @@ impl PyChebyshevScalarization {
                     .collect::<Vec<f64>>();
             (values, grads)
         });
-        Ok(((values, batch), (grads, y.1)))
+        Ok((ArrayBuf(values, batch), ArrayBuf(grads, y.1)))
     }
 
     /// The weights.
@@ -547,9 +555,9 @@ pub fn sample_simplex_py(
     n: usize,
     qmc: bool,
     seed: Option<u64>,
-) -> PyResult<ArrayOut> {
+) -> PyResult<ArrayBuf> {
     let x = threads::run(py, || sample_simplex(d, n, qmc, seed)).map_err(to_pyerr)?;
-    Ok(matrix_out(&x))
+    Ok(matrix_out(&x).into())
 }
 
 /// `sample_hypersphere(d, n, qmc, seed)`: `n x d`.
@@ -561,26 +569,26 @@ pub fn sample_hypersphere_py(
     n: usize,
     qmc: bool,
     seed: Option<u64>,
-) -> PyResult<ArrayOut> {
+) -> PyResult<ArrayBuf> {
     let x = threads::run(py, || sample_hypersphere(d, n, qmc, seed)).map_err(to_pyerr)?;
-    Ok(matrix_out(&x))
+    Ok(matrix_out(&x).into())
 }
 
 /// The simplex points of `sample_simplex` from uniform samples
 /// (`n x (d - 1)`).
 #[pyfunction]
 #[pyo3(name = "simplex_from_uniform")]
-pub fn simplex_from_uniform_py(u: Array) -> PyResult<ArrayOut> {
+pub fn simplex_from_uniform_py(u: Array) -> PyResult<ArrayBuf> {
     let u: Matrix = u.matrix("u")?;
-    Ok(matrix_out(&simplex_from_uniform(&u)))
+    Ok(matrix_out(&simplex_from_uniform(&u)).into())
 }
 
 /// The sphere points of `sample_hypersphere` from normal samples (`n x d`).
 #[pyfunction]
 #[pyo3(name = "hypersphere_from_normal")]
-pub fn hypersphere_from_normal_py(z: Array) -> PyResult<ArrayOut> {
+pub fn hypersphere_from_normal_py(z: Array) -> PyResult<ArrayBuf> {
     let z: Matrix = z.matrix("z")?;
-    Ok(matrix_out(&hypersphere_from_normal(&z)))
+    Ok(matrix_out(&hypersphere_from_normal(&z)).into())
 }
 
 /// Registers the classes and functions of this module.

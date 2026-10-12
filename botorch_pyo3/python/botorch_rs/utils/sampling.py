@@ -44,11 +44,11 @@ def draw_sobol_samples(
         # Like BoTorch, consecutive draws fill `batch_shape x n` and are then
         # permuted to `n x batch_shape`.
         row = math.prod(shape[1:])
-        out = [0.0] * len(data)
-        for b in range(nb):
-            for i in range(n):
-                src, dst = (b * n + i) * row, (i * nb + b) * row
-                out[dst : dst + row] = data[src : src + row]
+        out = data[:0]
+        for i in range(n):
+            for b in range(nb):
+                src = (b * n + i) * row
+                out.extend(data[src : src + row])
         data = out
     return from_flat(data, (n, *batch, *shape[1:]), first_kind(bounds))
 

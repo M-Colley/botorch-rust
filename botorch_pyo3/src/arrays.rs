@@ -5,14 +5,18 @@
 //! tensors and NumPy arrays as an `array.array('d')`, a float64 buffer of the
 //! standard library that [`Array`] reads with one memcpy through the buffer
 //! protocol, and the values of nested lists and of arrays with a few values
-//! as a `list[float]`, which is cheaper for a few values. Results
-//! ([`ArrayOut`]) come back as lists of floats, which the Python layer
-//! converts back into the caller's array type. Keeping the extension free of
-//! NumPy / torch types is what lets the package work without either library.
+//! as a `list[float]`, which is cheaper for a few values. Results whose size
+//! grows with the inputs ([`ArrayBuf`]) come back as `array.array('d')` too
+//! (as lists up to [`LIST_MAX`] values), small results of fixed size
+//! ([`ArrayOut`]: bounds, hyperparameters, ...) as lists. The Python layer
+//! converts both forms back into the caller's array type. Keeping the
+//! extension free of NumPy / torch types is what lets the package work without
+//! either library.
 
 use botorch_core::Matrix;
-use pyo3::buffer::PyUntypedBuffer;
+use pyo3::buffer::{PyBuffer, PyUntypedBuffer};
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyList, PyTuple};
 
 use crate::errors::dimension_error;
@@ -46,8 +50,64 @@ pub fn float_data(obj: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
     obj.extract()
 }
 
-/// An array returned to Python: `(data, shape)` in row-major order.
+/// An array returned to Python: `(data, shape)` in row-major order, with
+/// `data` a list of floats (for small results; see [`ArrayBuf`]).
 pub type ArrayOut = (Vec<f64>, Vec<usize>);
+
+/// An array returned to Python like [`ArrayOut`], but with `data` an
+/// `array.array('d')` if it has more than [`LIST_MAX`] values: they are
+/// copied with one memcpy instead of being converted into a Python float
+/// each. For results whose size grows with the inputs (`(values,
+/// shape).into()` converts an [`ArrayOut`]).
+pub struct ArrayBuf(pub Vec<f64>, pub Vec<usize>);
+
+/// Results with at most this many values are returned as lists, which are
+/// cheaper than a buffer for a few values.
+pub const LIST_MAX: usize = 16;
+
+impl From<ArrayOut> for ArrayBuf {
+    fn from((data, shape): ArrayOut) -> Self {
+        Self(data, shape)
+    }
+}
+
+impl<'py> IntoPyObject<'py> for ArrayBuf {
+    type Target = PyTuple;
+    type Output = Bound<'py, PyTuple>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
+        (float_values(py, &self.0)?, self.1).into_pyobject(py)
+    }
+}
+
+/// `values` for Python: a list of floats for at most [`LIST_MAX`] values,
+/// else an `array.array('d')` ([`float_buffer`]).
+pub fn float_values<'py>(py: Python<'py>, values: &[f64]) -> PyResult<Bound<'py, PyAny>> {
+    if values.len() <= LIST_MAX {
+        Ok(PyList::new(py, values)?.into_any())
+    } else {
+        float_buffer(py, values)
+    }
+}
+
+/// `values` as a new `array.array('d')`, filled with one memcpy through the
+/// buffer protocol.
+pub fn float_buffer<'py>(py: Python<'py>, values: &[f64]) -> PyResult<Bound<'py, PyAny>> {
+    static ZERO: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    let zero = ZERO.get_or_try_init(py, || -> PyResult<_> {
+        let array = py.import("array")?.getattr("array")?;
+        Ok(array.call1(("d", (0.0,)))?.unbind())
+    })?;
+    // `array('d', [0.0]) * n` allocates the array without a Python float per
+    // value; the prototype itself is never modified.
+    let out = zero.bind(py).mul(values.len())?;
+    // (An empty array exports an unaligned dummy pointer.)
+    if !values.is_empty() {
+        PyBuffer::<f64>::get(&out)?.copy_from_slice(py, values)?;
+    }
+    Ok(out)
+}
 
 impl Array {
     fn validate(&self, name: &str) -> PyResult<()> {

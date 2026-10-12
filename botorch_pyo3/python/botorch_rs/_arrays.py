@@ -6,8 +6,8 @@ row-major order and the shape. For torch tensors and NumPy arrays with more
 than a few values, ``data`` is an ``array.array('d')`` (a float64 buffer of the
 standard library, filled by torch or NumPy with one copy and read by the
 extension with one memcpy); for nested lists and small arrays it is a list of
-numbers, which is cheaper for a few values. Results are returned with the
-type of the array they were computed from: torch
+numbers, which is cheaper for a few values. Results come back in either form
+and are returned with the type of the array they were computed from: torch
 tensors (same floating dtype -- float64 unless a different floating dtype was
 passed -- and device), NumPy arrays, or nested lists of floats. Returned
 arrays never share memory with ``data``. torch and NumPy are never imported by
@@ -35,7 +35,8 @@ Flat = tuple[FloatData, tuple[int, ...]]
 Pair = tuple[Sequence[float], Sequence[int]]
 
 #: Tensors and NumPy arrays with at most this many values are passed as lists
-#: (``tolist()``), which is faster than a buffer for a few values.
+#: (``tolist()``), which is faster than a buffer for a few values; the
+#: extension returns results of up to 16 values as lists for the same reason.
 _TORCH_LIST_MAX = 128
 _NUMPY_LIST_MAX = 32
 #: Buffers with at most this many values become tensors through a list.

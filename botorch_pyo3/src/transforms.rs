@@ -8,7 +8,7 @@
 use botorch_core::{BatchedInputTransform, Matrix, Normalize, Standardize};
 use pyo3::prelude::*;
 
-use crate::arrays::{broadcast_indices, broadcast_shapes, matrix_out, Array, ArrayOut};
+use crate::arrays::{broadcast_indices, broadcast_shapes, matrix_out, Array, ArrayBuf, ArrayOut};
 use crate::errors::{dimension_error, value_error, IntoPyResult};
 
 /// The row-major product of a shape (1 for the empty shape).
@@ -111,7 +111,7 @@ impl PyNormalize {
         (data, shape)
     }
 
-    fn apply(&self, x: &Array, inverse: bool) -> PyResult<ArrayOut> {
+    fn apply(&self, x: &Array, inverse: bool) -> PyResult<ArrayBuf> {
         let (xbatch, mats) = split_batches(x, "X")
             .map_err(|_| dimension_error("`X` must have at least 2 dimensions (`... x n x d`)."))?;
         let out_batch = broadcast_shapes(&xbatch, &self.batch_shape).ok_or_else(|| {
@@ -137,7 +137,7 @@ impl PyNormalize {
         }
         let mut shape = out_batch;
         shape.extend([n, self.d()]);
-        Ok((data, shape))
+        Ok(ArrayBuf(data, shape))
     }
 }
 
@@ -300,12 +300,12 @@ impl PyNormalize {
     }
 
     /// Normalizes the points `X` (`... x n x d`) with the current bounds.
-    fn transform(&self, x: Array) -> PyResult<ArrayOut> {
+    fn transform(&self, x: Array) -> PyResult<ArrayBuf> {
         self.apply(&x, false)
     }
 
     /// Inverts the normalization of `X` (`... x n x d`).
-    fn untransform(&self, x: Array) -> PyResult<ArrayOut> {
+    fn untransform(&self, x: Array) -> PyResult<ArrayBuf> {
         self.apply(&x, true)
     }
 }
@@ -360,7 +360,7 @@ impl PyStandardize {
         y: &Array,
         yvar: Option<&Array>,
         f: F,
-    ) -> PyResult<(ArrayOut, Option<ArrayOut>)>
+    ) -> PyResult<(ArrayBuf, Option<ArrayBuf>)>
     where
         F: Fn(
             &Standardize,
@@ -401,8 +401,8 @@ impl PyStandardize {
         }
         let mut shape = out_batch;
         shape.extend([n, m]);
-        let vout = yvs.map(|_| (vdata, shape.clone()));
-        Ok(((data, shape), vout))
+        let vout = yvs.map(|_| ArrayBuf(vdata, shape.clone()));
+        Ok((ArrayBuf(data, shape), vout))
     }
 }
 
@@ -476,7 +476,7 @@ impl PyStandardize {
         &self,
         y: Array,
         yvar: Option<Array>,
-    ) -> PyResult<(Self, ArrayOut, Option<ArrayOut>)> {
+    ) -> PyResult<(Self, ArrayBuf, Option<ArrayBuf>)> {
         let (ybatch, ys) = split_batches(&y, "Y")?;
         if ybatch != self.batch_shape {
             return Err(dimension_error(format!(
@@ -504,26 +504,26 @@ impl PyStandardize {
             inner.push(st);
         }
         let shape = y.1.clone();
-        let vout = yvar.map(|_| (vdata, shape.clone()));
+        let vout = yvar.map(|_| ArrayBuf(vdata, shape.clone()));
         Ok((
             Self {
                 inner,
                 batch_shape: self.batch_shape.clone(),
             },
-            (data, shape),
+            ArrayBuf(data, shape),
             vout,
         ))
     }
 
     /// Standardizes `Y` (`... x n x m`) and `Yvar` with the fitted statistics.
     #[pyo3(signature = (y, yvar=None))]
-    fn transform(&self, y: Array, yvar: Option<Array>) -> PyResult<(ArrayOut, Option<ArrayOut>)> {
+    fn transform(&self, y: Array, yvar: Option<Array>) -> PyResult<(ArrayBuf, Option<ArrayBuf>)> {
         self.map(&y, yvar.as_ref(), |s, y, v| s.transform(y, v))
     }
 
     /// Un-standardizes `Y` (`... x n x m`) and `Yvar`.
     #[pyo3(signature = (y, yvar=None))]
-    fn untransform(&self, y: Array, yvar: Option<Array>) -> PyResult<(ArrayOut, Option<ArrayOut>)> {
+    fn untransform(&self, y: Array, yvar: Option<Array>) -> PyResult<(ArrayBuf, Option<ArrayBuf>)> {
         self.map(&y, yvar.as_ref(), |s, y, v| s.untransform(y, v))
     }
 }

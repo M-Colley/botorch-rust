@@ -8,7 +8,7 @@ use botorch_core::utils::sampling::{draw_sobol_normal_samples, draw_sobol_sample
 use botorch_core::SobolQMCNormalSampler;
 use pyo3::prelude::*;
 
-use crate::arrays::{matrix_out, stack_out, Array, ArrayOut};
+use crate::arrays::{matrix_out, stack_out, Array, ArrayBuf};
 use crate::errors::{value_error, IntoPyResult};
 use crate::threads;
 
@@ -49,12 +49,12 @@ impl PySobolQMCNormalSampler {
     }
 
     /// The base samples (`num_samples x dim`) for `dim` jointly sampled points.
-    fn base_samples(&self, dim: usize) -> PyResult<ArrayOut> {
+    fn base_samples(&self, dim: usize) -> PyResult<ArrayBuf> {
         if dim == 0 {
             return Err(value_error("dim must be positive"));
         }
         let z = self.inner.base_samples(dim).into_py_result()?;
-        Ok(matrix_out(&z))
+        Ok(matrix_out(&z).into())
     }
 
     /// Installs explicit base samples (`num_samples x dim`) for `dim` jointly
@@ -75,11 +75,11 @@ pub fn draw_sobol_samples_py(
     n: usize,
     q: usize,
     seed: Option<u64>,
-) -> PyResult<ArrayOut> {
+) -> PyResult<ArrayBuf> {
     let bounds = bounds.matrix("bounds")?;
     let d = bounds.ncols();
     let batches = threads::run(py, || draw_sobol_samples(&bounds, n, q, seed)).into_py_result()?;
-    Ok(stack_out(&batches, &[n], q, d))
+    Ok(stack_out(&batches, &[n], q, d).into())
 }
 
 /// `draw_sobol_normal_samples(d, n, seed)`: `n x d` quasi-random standard
@@ -91,7 +91,7 @@ pub fn draw_sobol_normal_samples_py(
     d: usize,
     n: usize,
     seed: Option<u64>,
-) -> PyResult<ArrayOut> {
+) -> PyResult<ArrayBuf> {
     let z = threads::run(py, || draw_sobol_normal_samples(d, n, seed)).into_py_result()?;
-    Ok(matrix_out(&z))
+    Ok(matrix_out(&z).into())
 }
