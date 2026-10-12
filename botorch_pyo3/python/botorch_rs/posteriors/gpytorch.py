@@ -10,6 +10,10 @@ A posterior over ``m > 1`` outputs is BoTorch's ``GPyTorchPosterior`` of a
 ``variance`` have shape ``batch_shape x q x m`` and the covariance matrix is
 ``batch_shape x (q m) x (q m)`` over the output-major flattening (index
 ``t * q + p`` for output ``t`` at point ``p``); outputs are independent.
+
+With a one-to-many input transform (``InputPerturbation`` with ``n_w``
+perturbations), ``q`` counts the ``q_in * n_w`` posterior points of ``q_in``
+inputs, as in BoTorch.
 """
 
 from __future__ import annotations
@@ -77,8 +81,10 @@ class GPyTorchPosterior(Posterior):
         model_batch_shape: tuple[int, ...] = (),
         output_indices: list[int] | None = None,
         transform: tuple[list[float], float] | None = None,
+        points_per_input: int = 1,
     ) -> None:
         self._rs = source
+        self._points_per_input = points_per_input
         self._x = X
         self._kind = kind
         self._observation_noise = observation_noise
@@ -93,7 +99,7 @@ class GPyTorchPosterior(Posterior):
                 f"original_batch_shape={tuple(model_batch_shape)}."
             )
         self._batch = batch
-        self._q = shape[-2]
+        self._q = shape[-2] * points_per_input
         selected = len(output_indices) if output_indices is not None else num_outputs
         if transform is not None and len(transform[0]) != selected:
             raise RuntimeError(

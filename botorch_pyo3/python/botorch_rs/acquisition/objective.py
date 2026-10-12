@@ -99,6 +99,7 @@ class ScalarizedPosteriorTransform(PosteriorTransform):
             model_batch_shape=posterior._batch,
             output_indices=posterior._output_indices,
             transform=(self._weights, self._offset),
+            points_per_input=posterior._points_per_input,
         )
 
     def __repr__(self) -> str:

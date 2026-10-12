@@ -86,6 +86,14 @@ impl ModelRef {
         }
     }
 
+    /// Posterior points per input point (`n_w` with an `InputPerturbation`).
+    fn points_per_input(&self) -> usize {
+        match self {
+            ModelRef::Gp(m) => m.points_per_input(),
+            ModelRef::List(l) => l.points_per_input(),
+        }
+    }
+
     fn posterior_at(&self, b: usize, x: &Matrix, noise: bool) -> botorch_core::Result<Posterior> {
         match self {
             ModelRef::Gp(m) => m.posterior_at(b, x, noise),
@@ -206,7 +214,9 @@ fn check_dim(x: &Array, d: usize) -> PyResult<()> {
 }
 
 /// Marginal posterior means and (clamped) variances at every point of `x`
-/// (`... x q x d`): two arrays of shape `out_batch x q x m'`.
+/// (`... x q x d`): two arrays of shape `out_batch x q·k x m'` for `k`
+/// posterior points per input (BoTorch's `q * n_w` points with an
+/// `InputPerturbation`, point-major).
 fn marginals(
     model: &ModelRef,
     x: &Array,
@@ -217,10 +227,12 @@ fn marginals(
     let (xbatch, mats) = x.batches("X")?;
     let bc = broadcast(&xbatch, &model.batch_shape())?;
     let q = x.1[x.1.len() - 2];
+    let k = model.points_per_input();
+    let qk = q * k;
     let mo = view.num_outputs;
     let nout = bc.x_index.len();
-    let mut mean = vec![0.0; nout * q * mo];
-    let mut var = vec![0.0; nout * q * mo];
+    let mut mean = vec![0.0; nout * qk * mo];
+    let mut var = vec![0.0; nout * qk * mo];
     // Group the output elements by model batch element and evaluate all of
     // their points at once, in parallel chunks.
     let nmb = numel(&model.batch_shape());
@@ -243,20 +255,21 @@ fn marginals(
             .collect::<botorch_core::Result<Vec<_>>>()
             .into_py_result()?;
         for (part, &s) in parts.iter().zip(&starts) {
+            // `k` posterior points per stacked input row.
             for i in 0..part.len() {
-                let r = s + i;
-                let (o, p) = (outs[r / q], r % q);
+                let r = s + i / k;
+                let (o, p) = (outs[r / q], (r % q) * k + i % k);
                 for t in 0..mo {
-                    let k = (o * q + p) * mo + t;
-                    mean[k] = part.mean[(i, t)];
+                    let idx = (o * qk + p) * mo + t;
+                    mean[idx] = part.mean[(i, t)];
                     let v = part.variance(i, t);
-                    var[k] = if v < MIN_VARIANCE { MIN_VARIANCE } else { v };
+                    var[idx] = if v < MIN_VARIANCE { MIN_VARIANCE } else { v };
                 }
             }
         }
     }
     let mut shape = bc.shape;
-    shape.extend([q, mo]);
+    shape.extend([qk, mo]);
     Ok((mean, var, shape))
 }
 
@@ -311,10 +324,11 @@ fn joint_out(shape: Vec<usize>, posts: &[Posterior], q: usize, mo: usize) -> (Ar
 /// `p·m' + t` (BoTorch's `S x q x m` base samples flattened); every output
 /// uses the root of its own `q x q` covariance block, as GPyTorch does for
 /// BoTorch's block-diagonal multi-output posteriors. Returns `S x out_batch x
-/// q x m'`.
+/// q x m'`, where `q` counts the posterior points (`k` per input point with a
+/// one-to-many input transform).
 fn samples(model: &ModelRef, x: &Array, z: &Array, noise: bool, view: &View) -> PyResult<ArrayBuf> {
     let (shape, posts) = joints(model, x, noise, view)?;
-    let q = x.1[x.1.len() - 2];
+    let q = x.1[x.1.len() - 2] * model.points_per_input();
     let mo = view.num_outputs;
     let nb = posts.len();
     let qm = q * mo;
@@ -500,9 +514,11 @@ impl PySingleTaskGP {
         standardize_by_default=true,
         covar_module=None,
         likelihood=None,
+        input_chain=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         train_x: Array,
         train_y: Array,
         train_yvar: Option<Array>,
@@ -511,6 +527,7 @@ impl PySingleTaskGP {
         standardize_by_default: bool,
         covar_module: Option<PyRef<'_, PyKernelSpec>>,
         likelihood: Option<PyRef<'_, PyLikelihoodSpec>>,
+        input_chain: Option<Vec<Bound<'_, PyAny>>>,
     ) -> PyResult<Self> {
         let (batch, xs) = train_x.batches("train_X")?;
         let (ybatch, ys) = train_y.batches("train_Y")?;
@@ -554,9 +571,15 @@ impl PySingleTaskGP {
             outcome_transform: outcome,
             covar_module: covar_module.map(|c| c.inner),
             likelihood: likelihood.map(|l| l.inner),
+            input_chain: input_chain
+                .as_deref()
+                .map(crate::input_perturbation::chain_of)
+                .transpose()?,
             ..Default::default()
         };
-        let model = BatchedMultiOutputGP::new(xs, ys, batch, options).into_py_result()?;
+        // (A perturbation function is called while the chain is fitted.)
+        let model = threads::run(py, || BatchedMultiOutputGP::new(xs, ys, batch, options))
+            .into_py_result()?;
         Ok(Self {
             inner: RwLock::new(Arc::new(model)),
         })
@@ -675,6 +698,22 @@ impl PySingleTaskGP {
             })
             .unwrap_or(false);
         Some(PyNormalize::fitted(tf, learn, m.batch_shape()))
+    }
+
+    /// The fitted steps of a chained (or one-to-many) input transform, if
+    /// any: a `Normalize` per normalization step and the number of
+    /// perturbations `n_w` per `InputPerturbation`.
+    fn input_chain_state(&self, py: Python<'_>) -> PyResult<Option<Vec<Py<PyAny>>>> {
+        self.snapshot()
+            .input_chain()
+            .map(|c| crate::input_perturbation::chain_state(py, c))
+            .transpose()
+    }
+
+    /// Posterior points per input point (`n_w` with an `InputPerturbation`).
+    #[getter]
+    fn points_per_input(&self) -> usize {
+        self.snapshot().points_per_input()
     }
 
     /// The fitted outcome transform, if any (statistics of shape
@@ -885,7 +924,7 @@ impl PySingleTaskGP {
     ) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let model = self.model_ref();
         let view = View::new(model.num_outputs(), output_indices, transform)?;
-        let q = x.1.get(x.1.len().wrapping_sub(2)).copied().unwrap_or(0);
+        let q = x.1.get(x.1.len().wrapping_sub(2)).copied().unwrap_or(0) * model.points_per_input();
         let mo = view.num_outputs;
         let (shape, posts) = threads::run(py, || joints(&model, &x, observation_noise, &view))?;
         Ok(joint_out(shape, &posts, q, mo))
@@ -1020,6 +1059,12 @@ impl PyModelListGP {
         self.inner.batch_shape().to_vec()
     }
 
+    /// Posterior points per input point (`n_w` with an `InputPerturbation`).
+    #[getter]
+    fn points_per_input(&self) -> usize {
+        self.inner.points_per_input()
+    }
+
     /// See `SingleTaskGP.posterior_marginals`.
     #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None))]
     fn posterior_marginals(
@@ -1049,7 +1094,7 @@ impl PyModelListGP {
     ) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let model = ModelRef::List(self.inner.clone());
         let view = View::new(model.num_outputs(), output_indices, transform)?;
-        let q = x.1.get(x.1.len().wrapping_sub(2)).copied().unwrap_or(0);
+        let q = x.1.get(x.1.len().wrapping_sub(2)).copied().unwrap_or(0) * model.points_per_input();
         let mo = view.num_outputs;
         let (shape, posts) = threads::run(py, || joints(&model, &x, observation_noise, &view))?;
         Ok(joint_out(shape, &posts, q, mo))
@@ -1138,5 +1183,11 @@ impl PyModel {
     #[getter]
     fn batch_shape(&self) -> Vec<usize> {
         self.inner.batch_shape().to_vec()
+    }
+
+    /// Posterior points per input point (`n_w` with an `InputPerturbation`).
+    #[getter]
+    fn points_per_input(&self) -> usize {
+        self.inner.points_per_input()
     }
 }
