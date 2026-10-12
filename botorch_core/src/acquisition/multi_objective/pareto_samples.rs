@@ -401,6 +401,50 @@ pub fn sample_optimal_points(
     )
 }
 
+/// The path model of sample `i` of [`sample_optimal_points`]: from
+/// `options.draws[i]` or from stream `2i` of `seed`.
+fn sample_path(
+    model: &dyn Model,
+    i: usize,
+    seed: u64,
+    options: &SampleOptimalPointsOptions,
+) -> Result<MatheronPathModel> {
+    let path_options = MatheronPathOptions {
+        num_features: options.num_features,
+        seed: Some(derive_seed(seed, 2 * i as u64)),
+        draws: options.draws.as_ref().map(|dr| dr[i].clone()),
+    };
+    get_matheron_path_model(model, 1, &path_options)
+}
+
+/// The posterior sample paths whose optima [`sample_optimal_points`] and
+/// [`sample_optimal_points_with`] find: one Matheron path model of all
+/// outputs per sample, from `options.draws` or `options.seed` (the same
+/// paths for the same options), drawn in parallel.
+///
+/// # Errors
+/// [`BotorchError::DimensionMismatch`] for explicit draws of the wrong
+/// length and the errors of [`get_matheron_path_model`].
+pub fn sample_optimal_point_paths(
+    model: &dyn Model,
+    num_samples: usize,
+    options: &SampleOptimalPointsOptions,
+) -> Result<Vec<MatheronPathModel>> {
+    if let Some(dr) = &options.draws {
+        if dr.len() != num_samples {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "expected path draws for {num_samples} samples, got {}",
+                dr.len()
+            )));
+        }
+    }
+    let seed = options.seed.unwrap_or_else(random_seed);
+    (0..num_samples)
+        .into_par_iter()
+        .map(|i| sample_path(model, i, seed, options))
+        .collect()
+}
+
 /// [`sample_optimal_points`] with a custom `optimizer`, called with the path
 /// model of sample `i` and `i` (BoTorch's `optimizer` argument; it must
 /// return `num_points × d` inputs and `num_points × M` outputs). The paths
@@ -446,12 +490,7 @@ where
     let results = (0..num_samples)
         .into_par_iter()
         .map(|i| {
-            let path_options = MatheronPathOptions {
-                num_features: options.num_features,
-                seed: Some(derive_seed(seed, 2 * i as u64)),
-                draws: options.draws.as_ref().map(|dr| dr[i].clone()),
-            };
-            let path = get_matheron_path_model(model, 1, &path_options)?;
+            let path = sample_path(model, i, seed, options)?;
             let (ps, pf) = optimizer(&path, i)?;
             if ps.shape() != (num_points, d) || pf.shape() != (num_points, m) {
                 return Err(BotorchError::DimensionMismatch(format!(
@@ -608,7 +647,17 @@ mod tests {
         let (ps1, pf1) = pool
             .install(|| sample_optimal_points(&model, &bounds, 3, 4, true, &options))
             .unwrap();
-        assert_eq!((ps1, pf1), (ps, pf));
+        assert_eq!((ps1, pf1), (ps.clone(), pf.clone()));
+        // The optima are those of the paths of `sample_optimal_point_paths`.
+        let paths = sample_optimal_point_paths(&model, 3, &options).unwrap();
+        for (i, path) in paths.iter().enumerate() {
+            assert_eq!(path.forward(&ps[i]).unwrap(), pf[i]);
+        }
+        let (_, pf2) = sample_optimal_points_with(&model, &bounds, 3, 4, &options, |p, i| {
+            Ok((ps[i].clone(), p.forward(&ps[i])?))
+        })
+        .unwrap();
+        assert_eq!(pf2, pf);
         let single = BatchedMultiOutputGP::multi_output(
             Matrix::from_row_slice(2, 1, &[0.0, 1.0]),
             Matrix::from_row_slice(2, 1, &[0.0, 1.0]),

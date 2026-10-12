@@ -93,9 +93,9 @@ pub use objective::{
 };
 pub use parego::{QLogNParEGO, QLogNParEGOOptions};
 pub use pareto_samples::{
-    compute_sample_box_decomposition, random_search_optimizer, sample_optimal_points,
-    sample_optimal_points_with, RandomSearchOptions, SampleOptimalPointsOptions,
-    SamplePartitioning,
+    compute_sample_box_decomposition, random_search_optimizer, sample_optimal_point_paths,
+    sample_optimal_points, sample_optimal_points_with, RandomSearchOptions,
+    SampleOptimalPointsOptions, SamplePartitioning,
 };
 pub use predictive_entropy_search::{
     augment_factors_with_cached_factors, compute_log_determinant, initialize_predictive_matrices,
