@@ -142,4 +142,16 @@ class AcquisitionFunction:
         return f"{type(self).__name__}()"
 
 
-__all__ = ["AcquisitionFunction"]
+class OneShotAcquisitionFunction(AcquisitionFunction):
+    """Base class of the one-shot acquisition functions (e.g. the hypervolume
+    knowledge gradient), whose candidate sets are augmented by auxiliary
+    points that ``optimize_acqf`` optimizes jointly with the candidates."""
+
+    def get_augmented_q_batch_size(self, q: int) -> int:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def extract_candidates(self, X_full: Any) -> Any:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+
+__all__ = ["AcquisitionFunction", "OneShotAcquisitionFunction"]

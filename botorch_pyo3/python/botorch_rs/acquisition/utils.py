@@ -6,6 +6,10 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_pair, kind_of, to_flat
+from botorch_rs.acquisition._fidelity import (
+    expand_trace_observations,
+    project_to_target_fidelity,
+)
 from botorch_rs.acquisition.acquisition import check_unsupported
 from botorch_rs.acquisition.objective import constraints_arg, objective_arg
 from botorch_rs.exceptions.errors import UnsupportedError
@@ -74,4 +78,8 @@ def prune_inferior_points(
     return from_pair(pruned, kind_of(X))
 
 
-__all__ = ["prune_inferior_points"]
+__all__ = [
+    "expand_trace_observations",
+    "project_to_target_fidelity",
+    "prune_inferior_points",
+]

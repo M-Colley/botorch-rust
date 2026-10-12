@@ -27,6 +27,9 @@
 //! * [`hypervolume`] — the inclusion–exclusion over the subsets of the
 //!   candidates (`compute_subset_indices`, `SubsetIndexCachingMixin`) and the
 //!   hypervolume improvement of MC samples with exact gradients.
+//! * [`hypervolume_knowledge_gradient`] — [`QHypervolumeKnowledgeGradient`]
+//!   (qHVKG, one-shot, decoupled evaluations, cost-aware) and
+//!   [`QMultiFidelityHypervolumeKnowledgeGradient`].
 //!
 //! The MC acquisition functions sample the joint posterior of the candidates
 //! (and pending or baseline points) over all model outputs with BoTorch's
@@ -54,6 +57,7 @@ use crate::Matrix;
 pub mod analytic;
 mod entropy_linalg;
 pub mod hypervolume;
+pub mod hypervolume_knowledge_gradient;
 pub mod joint_entropy_search;
 pub mod logei;
 pub mod max_value_entropy_search;
@@ -67,6 +71,11 @@ pub mod utils;
 
 pub use analytic::ExpectedHypervolumeImprovement;
 pub use hypervolume::{compute_subset_indices, HypercellBounds, SubsetIndexCache, Subsets};
+pub use hypervolume_knowledge_gradient::{
+    split_hvkg_fantasy_points, HypervolumeValueFunction, QHypervolumeKnowledgeGradient,
+    QHypervolumeKnowledgeGradientOptions, QMultiFidelityHypervolumeKnowledgeGradient,
+    QMultiFidelityHypervolumeKnowledgeGradientOptions,
+};
 pub use joint_entropy_search::{
     compute_entropy_monte_carlo, compute_entropy_noiseless, compute_entropy_upper_bound,
     compute_entropy_with_grad, ConditionedOutput, EntropyGradient, EntropyStatistics,
