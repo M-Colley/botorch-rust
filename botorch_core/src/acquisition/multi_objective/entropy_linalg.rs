@@ -1,6 +1,8 @@
 //! Small dense matrix routines with the semantics of the torch functions
 //! that the entropy-search acquisition functions use: `torch.logdet` and
-//! `torch.linalg.inv` (LU with partial pivoting).
+//! `torch.linalg.inv` (LU with partial pivoting), `torch.linalg.cholesky_ex`
+//! (a Cholesky factorization that reports the failing leading minor instead
+//! of raising, like LAPACK's `potrf`) and `torch.cholesky_inverse`.
 
 use crate::Matrix;
 
@@ -106,6 +108,68 @@ impl Lu {
     }
 }
 
+/// `torch.linalg.cholesky_ex(a)`: the lower Cholesky factor and LAPACK's
+/// `info` (0 on success, else the order of the first leading minor that is
+/// not positive definite). On failure at column `j`, the factor holds the
+/// finished columns, the failing pivot `a_jj - Σ l_jk²` and the remaining
+/// lower entries of `a` (the unblocked `potf2` state); the strict upper
+/// triangle is zero, as torch returns it.
+pub(crate) fn cholesky_ex(a: &Matrix) -> (Matrix, usize) {
+    let n = a.nrows();
+    let mut l = a.lower_triangle();
+    for j in 0..n {
+        let mut ajj = l[(j, j)];
+        for k in 0..j {
+            ajj -= l[(j, k)] * l[(j, k)];
+        }
+        if ajj <= 0.0 || ajj.is_nan() {
+            l[(j, j)] = ajj;
+            return (l, j + 1);
+        }
+        let ljj = ajj.sqrt();
+        l[(j, j)] = ljj;
+        for i in (j + 1)..n {
+            let mut s = l[(i, j)];
+            for k in 0..j {
+                s -= l[(i, k)] * l[(j, k)];
+            }
+            l[(i, j)] = s / ljj;
+        }
+    }
+    (l, 0)
+}
+
+/// `torch.cholesky_inverse(l)`: `(L Lᵀ)⁻¹` from a lower factor, computed as
+/// `L⁻ᵀ L⁻¹` (LAPACK's `potri`) and symmetric by construction.
+pub(crate) fn cholesky_inverse(l: &Matrix) -> Matrix {
+    let n = l.nrows();
+    // L⁻¹ by forward substitution.
+    let mut inv = Matrix::zeros(n, n);
+    for j in 0..n {
+        inv[(j, j)] = 1.0 / l[(j, j)];
+        for i in (j + 1)..n {
+            let mut s = 0.0;
+            for k in j..i {
+                s += l[(i, k)] * inv[(k, j)];
+            }
+            inv[(i, j)] = -s / l[(i, i)];
+        }
+    }
+    let mut out = Matrix::zeros(n, n);
+    for i in 0..n {
+        for j in 0..=i {
+            // (L⁻ᵀ L⁻¹)_ij = Σ_k L⁻¹_ki L⁻¹_kj over k ≥ max(i, j) = i.
+            let mut s = 0.0;
+            for k in i..n {
+                s += inv[(k, i)] * inv[(k, j)];
+            }
+            out[(i, j)] = s;
+            out[(j, i)] = s;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,16 +182,26 @@ mod tests {
     }
 
     #[test]
-    fn lu_logdet_and_inverse() {
+    fn lu_logdet_inverse_and_cholesky() {
         let a = spd(5);
         let det = a.clone().determinant();
-        let lu = Lu::new(&a);
-        assert!((lu.logdet() - det.ln()).abs() < 1e-12);
-        assert!((&a * lu.inverse() - Matrix::identity(5, 5)).amax() < 1e-12);
-        // A negative determinant gives NaN, a singular matrix -inf.
+        assert!((Lu::new(&a).logdet() - det.ln()).abs() < 1e-12);
+        let inv = Lu::new(&a).inverse();
+        assert!((&a * &inv - Matrix::identity(5, 5)).amax() < 1e-12);
+        let (l, info) = cholesky_ex(&a);
+        assert_eq!(info, 0);
+        assert!((&l * l.transpose() - &a).amax() < 1e-12);
+        assert!((cholesky_inverse(&l) - &inv).amax() < 1e-10);
+        // A negative determinant gives NaN, a singular matrix -inf / None.
         let neg = Matrix::from_row_slice(2, 2, &[0.0, 1.0, 1.0, 0.0]);
         assert!(Lu::new(&neg).logdet().is_nan());
         let sing = Matrix::from_row_slice(2, 2, &[1.0, 2.0, 2.0, 4.0]);
         assert_eq!(Lu::new(&sing).logdet(), f64::NEG_INFINITY);
+        // Cholesky failure at the second leading minor.
+        let bad = Matrix::from_row_slice(3, 3, &[1.0, 2.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        let (lb, info) = cholesky_ex(&bad);
+        assert_eq!(info, 2);
+        assert_eq!(lb[(1, 1)], 1.0 - 4.0);
+        assert_eq!(lb[(2, 2)], 1.0);
     }
 }

@@ -22,6 +22,8 @@
 //! * [`joint_entropy_search`] —
 //!   [`QLowerBoundMultiObjectiveJointEntropySearch`] and the entropy
 //!   estimators of both (`"0"`, `"LB"`, `"LB2"`, `"MC"`).
+//! * [`predictive_entropy_search`] —
+//!   [`QMultiObjectivePredictiveEntropySearch`] (expectation propagation).
 //! * [`hypervolume`] — the inclusion–exclusion over the subsets of the
 //!   candidates (`compute_subset_indices`, `SubsetIndexCachingMixin`) and the
 //!   hypervolume improvement of MC samples with exact gradients.
@@ -60,6 +62,7 @@ mod nehvi;
 pub mod objective;
 pub mod parego;
 pub mod pareto_samples;
+pub mod predictive_entropy_search;
 pub mod utils;
 
 pub use analytic::ExpectedHypervolumeImprovement;
@@ -93,6 +96,12 @@ pub use pareto_samples::{
     compute_sample_box_decomposition, random_search_optimizer, sample_optimal_points,
     sample_optimal_points_with, RandomSearchOptions, SampleOptimalPointsOptions,
     SamplePartitioning,
+};
+pub use predictive_entropy_search::{
+    augment_factors_with_cached_factors, compute_log_determinant, initialize_predictive_matrices,
+    log_cdf_robust, safe_update_omega, update_damping, update_damping_when_converged,
+    update_marginals, update_omega, EpFactors, EpSummary, OmegaInputs, PredictiveMatrices,
+    QMultiObjectivePredictiveEntropySearch, QMultiObjectivePredictiveEntropySearchOptions,
 };
 pub use utils::{
     get_default_partitioning_alpha, prune_inferior_points_multi_objective,
