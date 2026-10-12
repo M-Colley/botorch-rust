@@ -334,7 +334,10 @@ def test_acquisition_with_risk_measures(kind: str) -> None:
     # Without the risk measure the objective values do not match X.
     with pytest.raises(RuntimeError, match="q-batch shape"):
         qSimpleRegret(model)(X)
-    # Outcome constraints are not supported with one-to-many transforms.
+    # Outcome constraints (callables on torch tensors) are not supported
+    # with one-to-many transforms.
+    if not HAS_TORCH:
+        return
     with pytest.raises(UnsupportedError, match="input perturbations"):
         qLogNoisyExpectedImprovement(
             model,
