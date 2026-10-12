@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::error::{BotorchError, Result};
 use crate::models::batched::{block_diagonal, block_diagonal_grad};
-use crate::models::model::check_vjp_shapes;
+use crate::models::model::check_vjp_shapes_expanded;
 use crate::models::{BatchedMultiOutputGP, Model, SingleTaskGP};
 use crate::posterior::{JointPosteriorGrad, PointPosteriors, Posterior};
 use crate::{Matrix, Vector};
@@ -64,6 +64,14 @@ impl ModelListGP {
                     "all sub-models must have the same batch shape: model 0 has {batch:?}, \
                      model {i} has {:?}",
                     m.batch_shape()
+                )));
+            }
+            if m.points_per_input() != first.points_per_input() {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "all sub-models must map an input to the same number of posterior points \
+                     (one-to-many input transforms): model 0 has {}, model {i} has {}",
+                    first.points_per_input(),
+                    m.points_per_input()
                 )));
             }
         }
@@ -125,6 +133,12 @@ impl ModelListGP {
     /// The common batch shape of the sub-models.
     pub fn batch_shape(&self) -> &[usize] {
         self.models[0].batch_shape()
+    }
+
+    /// The common number of posterior points per input point (see
+    /// [`Model::points_per_input`]).
+    pub fn points_per_input(&self) -> usize {
+        self.models[0].points_per_input()
     }
 
     /// The range of list outputs that belong to sub-model `index`.
@@ -238,6 +252,10 @@ impl Model for ModelListGP {
         ModelListGP::batch_shape(self)
     }
 
+    fn points_per_input(&self) -> usize {
+        ModelListGP::points_per_input(self)
+    }
+
     fn output_gps(&self) -> Option<Vec<&SingleTaskGP>> {
         let mut out = Vec::with_capacity(self.num_outputs);
         for m in &self.models {
@@ -269,8 +287,16 @@ impl Model for ModelListGP {
         covariance_adjoint: &Matrix,
     ) -> Result<Matrix> {
         self.require_unbatched()?;
-        check_vjp_shapes(x, &rows, mean_adjoint, covariance_adjoint, self.num_outputs)?;
-        let q = x.nrows();
+        let k = self.points_per_input();
+        check_vjp_shapes_expanded(
+            x,
+            &rows,
+            mean_adjoint,
+            covariance_adjoint,
+            self.num_outputs,
+            k,
+        )?;
+        let q = x.nrows() * k;
         let mut out = Matrix::zeros(rows.len(), x.ncols());
         let mut o = 0;
         for m in &self.models {
@@ -285,6 +311,14 @@ impl Model for ModelListGP {
 
     fn point_posteriors(&self, x: &Matrix) -> Result<PointPosteriors> {
         self.require_unbatched()?;
+        if self.points_per_input() != 1 {
+            return Err(BotorchError::Unsupported(format!(
+                "this evaluates every input point on its own, which requires one posterior \
+                 point per input; the sub-models' one-to-many input transforms \
+                 (InputPerturbation) give {}",
+                self.points_per_input()
+            )));
+        }
         self.point_posteriors_at(0, x, false)
     }
 

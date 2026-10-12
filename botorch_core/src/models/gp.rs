@@ -31,6 +31,7 @@ use crate::models::model::clamp_variance;
 use crate::models::Model;
 use crate::posterior::{JointPosteriorGrad, PointPosteriors, Posterior, MIN_VARIANCE};
 use crate::priors::Prior;
+use crate::transforms::input::{ChainedInputTransform, InputTape};
 use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
 use crate::{Matrix, Vector};
 
@@ -227,6 +228,12 @@ pub struct SingleTaskGPOptions {
     /// Optional input transform (BoTorch default: none). A `Normalize` with
     /// learned bounds is fitted to the training inputs.
     pub input_transform: Option<Normalize>,
+    /// A general input transform (BoTorch's `ChainedInputTransform` or
+    /// `InputPerturbation`, see [`crate::transforms::input`]) instead of
+    /// `input_transform`: fitted and applied to the training inputs in train
+    /// mode, applied to the points of every posterior in eval mode (possibly
+    /// one-to-many).
+    pub input_chain: Option<ChainedInputTransform>,
     /// Outcome transform (BoTorch default: `Standardize`).
     pub outcome_transform: OutcomeTransformChoice,
     /// Kernel family of the default covariance module (ignored if
@@ -265,6 +272,7 @@ pub struct SingleTaskGP {
     train_x_tf: Matrix,
     train_y_tf: Vector,
     input_transform: Option<Normalize>,
+    input_chain: Option<ChainedInputTransform>,
     outcome_transform: Option<Standardize>,
     covar_module: KernelSpec,
     likelihood: Likelihood,
@@ -352,9 +360,22 @@ impl SingleTaskGP {
             }
             None => None,
         };
-        let train_x_tf = match &input_transform {
-            Some(tf) => tf.transform(&train_x)?,
-            None => train_x.clone(),
+        let input_chain = match options.input_chain {
+            Some(mut chain) => {
+                if input_transform.is_some() {
+                    return Err(BotorchError::InvalidArgument(
+                        "input_transform and input_chain cannot both be given".into(),
+                    ));
+                }
+                chain.fit(&train_x)?;
+                Some(chain)
+            }
+            None => None,
+        };
+        let train_x_tf = match (&input_transform, &input_chain) {
+            (Some(tf), _) => tf.transform(&train_x)?,
+            (None, Some(chain)) => chain.preprocess(&train_x)?,
+            (None, None) => train_x.clone(),
         };
 
         // Outcome transform.
@@ -420,6 +441,7 @@ impl SingleTaskGP {
             train_x_tf,
             train_y_tf: Vector::from_column_slice(y_tf.column(0).as_slice()),
             input_transform,
+            input_chain,
             outcome_transform,
             covar_module,
             likelihood,
@@ -476,6 +498,31 @@ impl SingleTaskGP {
     /// The fitted input transform, if any.
     pub fn input_transform(&self) -> Option<&Normalize> {
         self.input_transform.as_ref()
+    }
+
+    /// The fitted general input transform (`ChainedInputTransform` /
+    /// `InputPerturbation`), if any.
+    pub fn input_chain(&self) -> Option<&ChainedInputTransform> {
+        self.input_chain.as_ref()
+    }
+
+    /// The number of posterior points per input point (`n_w` of a one-to-many
+    /// input transform, else 1; see [`Model::points_per_input`]).
+    pub fn points_per_input(&self) -> usize {
+        self.input_chain
+            .as_ref()
+            .map_or(1, ChainedInputTransform::points_per_input)
+    }
+
+    /// Errors unless every input maps to a single posterior point.
+    fn require_one_point_per_input(&self) -> Result<()> {
+        let k = self.points_per_input();
+        if k != 1 {
+            return Err(BotorchError::Unsupported(format!(
+                "this evaluates every input point on its own, which requires one posterior                  point per input; the model's one-to-many input transform (InputPerturbation)                  gives {k}"
+            )));
+        }
+        Ok(())
     }
 
     /// The fitted outcome transform, if any.
@@ -729,10 +776,29 @@ impl SingleTaskGP {
                 x.ncols()
             )));
         }
+        if let Some(chain) = &self.input_chain {
+            return chain.transform(x);
+        }
         match &self.input_transform {
             Some(tf) => tf.transform(x),
             None => Ok(x.clone()),
         }
+    }
+
+    /// The transformed inputs of a general input transform with the record
+    /// of their derivatives (`None` without one).
+    fn chain_tape(&self, x: &Matrix) -> Result<Option<(Matrix, InputTape)>> {
+        let Some(chain) = &self.input_chain else {
+            return Ok(None);
+        };
+        if x.ncols() != self.dim() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "Expected inputs with {} columns, got {}",
+                self.dim(),
+                x.ncols()
+            )));
+        }
+        chain.transform_with_tape(x).map(Some)
     }
 
     /// Chain-rule factors `∂x̃ⱼ/∂xⱼ` of the input transform.
@@ -809,12 +875,34 @@ impl SingleTaskGP {
                 x.len()
             )));
         }
-        let cache = self.cache()?;
+        if let Some((xt, tape)) = self.chain_tape(&Matrix::from_row_slice(1, x.len(), x))? {
+            self.require_one_point_per_input()?;
+            let xt: Vec<f64> = xt.row(0).iter().copied().collect();
+            let (mean, var, dmean, dvar) = self.q1_transformed(&xt, None)?;
+            let pull = |g: &Vector| -> Result<Vector> {
+                let raw = tape.backward(0..1, &Matrix::from_row_slice(1, g.len(), g.as_slice()))?;
+                Ok(raw.row(0).transpose())
+            };
+            return Ok((mean, var, pull(&dmean)?, pull(&dvar)?));
+        }
         let xt = match &self.input_transform {
             Some(tf) => tf.transform_point(x)?,
             None => x.to_vec(),
         };
-        let xs = cache.kernel.scale_point(&xt);
+        let jac = self.input_jacobian();
+        self.q1_transformed(&xt, Some(&jac))
+    }
+
+    /// The posterior and its gradient at a transformed point `xt`; the
+    /// gradients are with respect to `xt`, scaled by `jac` per dimension if
+    /// given (the chain rule of `Normalize`).
+    fn q1_transformed(
+        &self,
+        xt: &[f64],
+        jac: Option<&Vector>,
+    ) -> Result<(f64, f64, Vector, Vector)> {
+        let cache = self.cache()?;
+        let xs = cache.kernel.scale_point(xt);
         let (k, dk) = cache
             .kernel
             .cross_with_grad_scaled(&xs, &cache.train_scaled);
@@ -824,12 +912,16 @@ impl SingleTaskGP {
         let var_tf = cache.kernel.prior_variance() - v.dot(&v);
         let w = cache.chol.solve_lower_transpose_vec(&v);
         let dvar_tf = dk.tr_mul(&w) * -2.0;
-        let jac = self.input_jacobian();
         let (mu, sd) = self.outcome_affine();
         let mean = mu + sd * mean_tf;
-        let dmean = dmean_tf.component_mul(&jac) * sd;
         let var = sd * sd * var_tf;
-        let dvar = dvar_tf.component_mul(&jac) * (sd * sd);
+        let (dmean, dvar) = match jac {
+            Some(jac) => (
+                dmean_tf.component_mul(jac) * sd,
+                dvar_tf.component_mul(jac) * (sd * sd),
+            ),
+            None => (dmean_tf * sd, dvar_tf * (sd * sd)),
+        };
         Ok((mean, var, dmean, dvar))
     }
 
@@ -841,12 +933,55 @@ impl SingleTaskGP {
     /// [`BotorchError::DimensionMismatch`] for a column mismatch and
     /// [`BotorchError::NotPsd`] if the training covariance cannot be factorized.
     pub fn joint_posterior_with_grad(&self, x: &Matrix) -> Result<JointPosteriorGrad> {
+        if let Some((xt, tape)) = self.chain_tape(x)? {
+            // Derivatives with respect to the transformed points, then the
+            // chain rule through the Jacobians of the transform.
+            let g = self.joint_with_grad_transformed(&xt, None)?;
+            let jacs = tape.jacobians()?;
+            let (q, d) = x.shape();
+            let k = tape.points_per_input();
+            let len = g.mean.len();
+            let mut dmean = vec![Vector::zeros(len); q * d];
+            let mut dcov = vec![Matrix::zeros(len, len); q * d];
+            for i in 0..q {
+                for w in 0..k {
+                    let r = i * k + w;
+                    for l in 0..d {
+                        for j in 0..d {
+                            let f = jacs[r][(l, j)];
+                            if f != 0.0 {
+                                dmean[i * d + j].axpy(f, &g.dmean[r * d + l], 1.0);
+                                dcov[i * d + j] += &g.dcov[r * d + l] * f;
+                            }
+                        }
+                    }
+                }
+            }
+            return Ok(JointPosteriorGrad {
+                mean: g.mean,
+                covariance: g.covariance,
+                dmean,
+                dcov,
+                num_outputs: 1,
+            });
+        }
         let xt = self.transform_inputs(x)?;
+        let jac = self.input_jacobian();
+        self.joint_with_grad_transformed(&xt, Some(&jac))
+    }
+
+    /// The joint posterior at transformed points `xt` with derivatives with
+    /// respect to `xt`, scaled by `jac` per dimension if given.
+    fn joint_with_grad_transformed(
+        &self,
+        xt: &Matrix,
+        jac: Option<&Vector>,
+    ) -> Result<JointPosteriorGrad> {
         let cache = self.cache()?;
         let (q, d) = xt.shape();
         let n = self.num_train();
         let kernel = &cache.kernel;
-        let xs = kernel.scale_points(&xt);
+        let xs = kernel.scale_points(xt);
 
         // Test-train covariances and their derivatives for every test point.
         let mut kxs = Matrix::zeros(q, n);
@@ -864,7 +999,6 @@ impl SingleTaskGP {
         let mut w = v; // becomes K⁻¹ K(X, x*) (n × q)
         cache.chol.solve_lower_transpose_mut(&mut w);
 
-        let jac = self.input_jacobian();
         let (mu, sd) = self.outcome_affine();
         let mut dmean = Vec::with_capacity(q * d);
         let mut dcov = Vec::with_capacity(q * d);
@@ -875,7 +1009,7 @@ impl SingleTaskGP {
             let dk_w = dk.tr_mul(&w);
             let dk_alpha = dk.tr_mul(&cache.alpha);
             for m in 0..d {
-                let scale = jac[m];
+                let scale = jac.map_or(1.0, |j| j[m]);
                 let mut dm = Vector::zeros(q);
                 dm[p] = sd * dk_alpha[m] * scale;
                 dmean.push(dm);
@@ -921,6 +1055,8 @@ impl SingleTaskGP {
     /// # Errors
     /// See [`SingleTaskGP::posterior_marginals`].
     pub fn posterior_marginals_unclamped(&self, x: &Matrix) -> Result<(Vector, Vector)> {
+        // With a one-to-many input transform: the marginals of all `b·n_w`
+        // transformed points.
         let xt = self.transform_inputs(x)?;
         let cache = self.cache()?;
         let b = xt.nrows();
@@ -959,12 +1095,39 @@ impl SingleTaskGP {
         mean_adjoint: &Vector,
         covariance_adjoint: &Matrix,
     ) -> Result<Matrix> {
-        super::model::check_vjp_shapes(x, &rows, mean_adjoint, covariance_adjoint, 1)?;
+        super::model::check_vjp_shapes_expanded(
+            x,
+            &rows,
+            mean_adjoint,
+            covariance_adjoint,
+            1,
+            self.points_per_input(),
+        )?;
+        if let Some((xt, tape)) = self.chain_tape(x)? {
+            let k = tape.points_per_input();
+            let rows_tf = rows.start * k..rows.end * k;
+            let g = self.vjp_transformed(&xt, rows_tf, mean_adjoint, covariance_adjoint, None)?;
+            return tape.backward(rows, &g);
+        }
         let xt = self.transform_inputs(x)?;
+        let jac = self.input_jacobian();
+        self.vjp_transformed(&xt, rows, mean_adjoint, covariance_adjoint, Some(&jac))
+    }
+
+    /// [`SingleTaskGP::joint_posterior_vjp`] at transformed points `xt`, with
+    /// derivatives with respect to `xt` scaled by `jac` per dimension if given.
+    fn vjp_transformed(
+        &self,
+        xt: &Matrix,
+        rows: Range<usize>,
+        mean_adjoint: &Vector,
+        covariance_adjoint: &Matrix,
+        jac: Option<&Vector>,
+    ) -> Result<Matrix> {
         let cache = self.cache()?;
         let d = xt.ncols();
         let kernel = &cache.kernel;
-        let xs = kernel.scale_points(&xt);
+        let xs = kernel.scale_points(xt);
         let (_, sd) = self.outcome_affine();
         // Adjoints in the transformed outcome space (symmetrized covariance adjoint).
         let mbar = mean_adjoint * sd;
@@ -974,7 +1137,6 @@ impl SingleTaskGP {
         let mut w = kxs.transpose();
         cache.chol.solve_lower_mut(&mut w);
         cache.chol.solve_lower_transpose_mut(&mut w);
-        let jac = self.input_jacobian();
         let mut out = Matrix::zeros(rows.len(), d);
         for (r, p) in rows.enumerate() {
             let a_p = abar.column(p).into_owned();
@@ -986,7 +1148,10 @@ impl SingleTaskGP {
             let (_, dkk) = kernel.cross_with_grad_scaled(xs.row(p), &xs);
             g += dkk.tr_mul(&a_p) * 2.0;
             for k in 0..d {
-                out[(r, k)] = g[k] * jac[k];
+                out[(r, k)] = match jac {
+                    Some(jac) => g[k] * jac[k],
+                    None => g[k],
+                };
             }
         }
         Ok(out)
@@ -1018,7 +1183,7 @@ impl SingleTaskGP {
             scaled,
             v,
             w,
-            n: xb.nrows(),
+            n: xt.nrows(),
         })
     }
 
@@ -1067,7 +1232,7 @@ impl SingleTaskGP {
         cross_adjoint: &Matrix,
         covariance_adjoint: &Matrix,
     ) -> Result<Matrix> {
-        let q = x.nrows();
+        let q = x.nrows() * self.points_per_input();
         if mean_adjoint.len() != q
             || cross_adjoint.shape() != (q, baseline.n)
             || covariance_adjoint.shape() != (q, q)
@@ -1078,11 +1243,45 @@ impl SingleTaskGP {
                 baseline.n, baseline.n
             )));
         }
+        if let Some((xt, tape)) = self.chain_tape(x)? {
+            let g = self.cross_vjp_transformed(
+                baseline,
+                &xt,
+                mean_adjoint,
+                cross_adjoint,
+                covariance_adjoint,
+                None,
+            )?;
+            return tape.backward(0..x.nrows(), &g);
+        }
         let xt = self.transform_inputs(x)?;
+        let jac = self.input_jacobian();
+        self.cross_vjp_transformed(
+            baseline,
+            &xt,
+            mean_adjoint,
+            cross_adjoint,
+            covariance_adjoint,
+            Some(&jac),
+        )
+    }
+
+    /// [`SingleTaskGP::cross_posterior_vjp`] at transformed points `xt`, with
+    /// derivatives with respect to `xt` scaled by `jac` if given.
+    fn cross_vjp_transformed(
+        &self,
+        baseline: &BaselineCache,
+        xt: &Matrix,
+        mean_adjoint: &Vector,
+        cross_adjoint: &Matrix,
+        covariance_adjoint: &Matrix,
+        jac: Option<&Vector>,
+    ) -> Result<Matrix> {
+        let q = xt.nrows();
         let cache = self.cache()?;
         let d = xt.ncols();
         let kernel = &cache.kernel;
-        let xs = kernel.scale_points(&xt);
+        let xs = kernel.scale_points(xt);
         let (_, sd) = self.outcome_affine();
         let mbar = mean_adjoint * sd;
         let cbar = cross_adjoint * (sd * sd);
@@ -1091,7 +1290,6 @@ impl SingleTaskGP {
         let mut w = kernel.cross_scaled(&xs, &cache.train_scaled).transpose();
         cache.chol.solve_lower_mut(&mut w);
         cache.chol.solve_lower_transpose_mut(&mut w);
-        let jac = self.input_jacobian();
         let mut out = Matrix::zeros(q, d);
         for p in 0..q {
             let d_p = dbar.column(p).into_owned();
@@ -1106,7 +1304,10 @@ impl SingleTaskGP {
             let (_, dkb) = kernel.cross_with_grad_scaled(xs.row(p), &baseline.scaled);
             g += dkb.tr_mul(&c_p);
             for k in 0..d {
-                out[(p, k)] = g[k] * jac[k];
+                out[(p, k)] = match jac {
+                    Some(jac) => g[k] * jac[k],
+                    None => g[k],
+                };
             }
         }
         Ok(out)
@@ -1161,11 +1362,16 @@ impl Model for SingleTaskGP {
         Some(vec![self])
     }
 
+    fn points_per_input(&self) -> usize {
+        SingleTaskGP::points_per_input(self)
+    }
+
     fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {
         SingleTaskGP::posterior(self, x, observation_noise)
     }
 
     fn point_posteriors(&self, x: &Matrix) -> Result<PointPosteriors> {
+        self.require_one_point_per_input()?;
         let (mean, var) = self.posterior_marginals_unclamped(x)?;
         Ok(PointPosteriors::single_output(&mean, &var))
     }
