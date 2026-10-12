@@ -27,8 +27,7 @@ from botorch_rs.sampling import SobolQMCNormalSampler
 from botorch_rs.test_functions.multi_objective import BraninCurrin
 from botorch_rs.utils.multi_objective.box_decompositions import DominatedPartitioning
 from botorch_rs.utils.sampling import draw_sobol_samples
-from helpers import KINDS, as_kind, flatten, importorskip_botorch, to_list
-from parity_helpers import Checker
+from helpers import KINDS, ParityLog, as_kind, flatten, importorskip_botorch, to_list
 
 D, M, Q = 2, 2, 2
 N_INIT = 2 * (D + 1)
@@ -36,7 +35,7 @@ ITERATIONS = 6
 SEEDS = range(4)
 BOUNDS = [[0.0] * D, [1.0] * D]
 SETTINGS = {"num_restarts": 4, "raw_samples": 128, "sequential": True}
-CHECK = Checker("multi-objective BO loop (BraninCurrin, hypervolume)")
+SECTION = "multi-objective BO loop (BraninCurrin, hypervolume)"
 MAX_HV = BraninCurrin(negate=True).max_hv
 
 
@@ -172,9 +171,19 @@ def test_mobo_loop_matches_botorch_statistically() -> None:
         assert rs[0] == pytest.approx(bt[0], rel=1e-12)
         assert bt[-1] > bt[0] and rs[-1] > rs[0], (rs, bt)
         shortfall = (bt[-1] - rs[-1]) / max_hv
-        CHECK.record("final hypervolume shortfall vs BoTorch (per run, / max HV)", shortfall, 0.1)
+        ParityLog.record(
+            "final hypervolume shortfall vs BoTorch (per run, / max HV)",
+            shortfall,
+            section=SECTION,
+            tol=0.1,
+        )
         assert shortfall <= 0.1, (seed, rs, bt)
         shortfalls.append(shortfall)
     median = statistics.median(shortfalls)
-    CHECK.record("final hypervolume shortfall vs BoTorch (median, / max HV)", median, 0.02)
+    ParityLog.record(
+        "final hypervolume shortfall vs BoTorch (median, / max HV)",
+        median,
+        section=SECTION,
+        tol=0.02,
+    )
     assert median <= 0.02, shortfalls
