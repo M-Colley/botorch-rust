@@ -113,8 +113,9 @@ impl EhviCore {
             Some(p) => vstack(&[x, p], d),
             None => x.clone(),
         };
-        let n = x_full.nrows();
         let js = JointSamples::new(self.mc.model.as_ref(), x_full, &self.mc.sampler)?;
+        // All posterior points (`n_w` per input with a one-to-many transform).
+        let n = js.num_points();
         let samples = js.samples(0..n);
         let r = self
             .mc

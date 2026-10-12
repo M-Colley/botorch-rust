@@ -30,6 +30,7 @@ from botorch_rs.acquisition.monte_carlo import (
     qSimpleRegret,
     qUpperConfidenceBound,
 )
+from botorch_rs.acquisition.multioutput_acquisition import MultiOutputAcquisitionFunction
 from botorch_rs.acquisition.objective import (
     ConstrainedMCObjective,
     GenericMCObjective,
@@ -58,6 +59,7 @@ __all__ = [
     "LogProbabilityOfImprovement",
     "MCAcquisitionFunction",
     "MCAcquisitionObjective",
+    "MultiOutputAcquisitionFunction",
     "PosteriorMean",
     "PosteriorTransform",
     "PosteriorStandardDeviation",

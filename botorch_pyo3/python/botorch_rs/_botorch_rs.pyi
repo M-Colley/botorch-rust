@@ -20,8 +20,9 @@ ArrayOut = tuple[list[float], list[int]]
 ArrayBuf = tuple[list[float] | array[float], list[int]]
 BoolBuf = tuple[list[bool] | bytes, list[int]]
 #: An MC objective: ``("identity",)``, ``("linear", weights)``,
-#: ``("callable", f)`` with ``f(samples, X=X)`` on torch tensors, or
-#: ``("constrained", f, constraints, infeasible_cost, etas)``.
+#: ``("callable", f)`` with ``f(samples, X=X)`` on torch tensors,
+#: ``("constrained", f, constraints, infeasible_cost, etas)`` or
+#: ``("native", RiskMeasure)``.
 ObjectiveSpec = tuple[Any, ...]
 #: A linear parameter constraint ``(indices, coefficients, rhs)``: 1-d indices
 #: (intra-point) or ``(point, feature)`` pairs (inter-point).
@@ -176,8 +177,12 @@ class SingleTaskGP:
         standardize_by_default: bool = True,
         covar_module: KernelSpec | None = None,
         likelihood: GaussianLikelihoodSpec | None = None,
+        input_chain: Sequence[Normalize | InputPerturbation] | None = None,
     ) -> None: ...
     def copy(self) -> SingleTaskGP: ...
+    @property
+    def points_per_input(self) -> int: ...
+    def input_chain_state(self) -> list[Normalize | int | None] | None: ...
     @property
     def dim(self) -> int: ...
     @property
@@ -258,6 +263,8 @@ class SingleTaskGP:
 class ModelListGP:
     def __init__(self, models: Sequence[SingleTaskGP]) -> None: ...
     @property
+    def points_per_input(self) -> int: ...
+    @property
     def dim(self) -> int: ...
     @property
     def num_outputs(self) -> int: ...
@@ -287,6 +294,8 @@ class ModelListGP:
     ) -> ArrayBuf: ...
 
 class Model:
+    @property
+    def points_per_input(self) -> int: ...
     @staticmethod
     def from_single_task_gp(model: SingleTaskGP, transform: Transform | None = None) -> Model: ...
     @staticmethod
@@ -773,6 +782,147 @@ def prune_inferior_points_multi_objective(
     seed: int | None = None,
     base_samples: Array | None = None,
 ) -> ArrayBuf: ...
+
+# -- robust and multi-fidelity multi-objective optimization ----------------------
+
+class InputPerturbation:
+    def __init__(
+        self,
+        perturbation_set: Array | None = None,
+        perturbation_function: Callable[[Any], Any] | None = None,
+        bounds: Array | None = None,
+        indices: Sequence[int] | None = None,
+        multiplicative: bool = False,
+        transform_on_train: bool = False,
+        transform_on_eval: bool = True,
+        transform_on_fantasize: bool = False,
+    ) -> None: ...
+    @property
+    def n_w(self) -> int | None: ...
+    @property
+    def perturbation_set(self) -> ArrayOut | None: ...
+    @property
+    def bounds(self) -> ArrayOut | None: ...
+    @property
+    def indices(self) -> list[int] | None: ...
+    @property
+    def multiplicative(self) -> bool: ...
+    @property
+    def transform_on_train(self) -> bool: ...
+    @property
+    def transform_on_eval(self) -> bool: ...
+    @property
+    def transform_on_fantasize(self) -> bool: ...
+    def transform(self, x: Array) -> ArrayBuf: ...
+
+class RiskMeasure:
+    @staticmethod
+    def cvar(alpha: float, n_w: int, preprocessing: ObjectiveSpec | None = None) -> RiskMeasure: ...
+    @staticmethod
+    def var(alpha: float, n_w: int, preprocessing: ObjectiveSpec | None = None) -> RiskMeasure: ...
+    @staticmethod
+    def worst_case(n_w: int, preprocessing: ObjectiveSpec | None = None) -> RiskMeasure: ...
+    @staticmethod
+    def expectation(n_w: int, preprocessing: ObjectiveSpec | None = None) -> RiskMeasure: ...
+    @staticmethod
+    def mars(
+        alpha: float,
+        n_w: int,
+        chebyshev_weights: Sequence[float],
+        baseline_y: Array | None = None,
+        ref_point: Sequence[float] | None = None,
+        preprocessing: MultiOutputObjectiveSpec | None = None,
+    ) -> RiskMeasure: ...
+    def with_chebyshev_weights(self, weights: Sequence[float]) -> RiskMeasure: ...
+    def with_baseline_y(self, baseline_y: Array) -> RiskMeasure: ...
+    def with_baseline_from_samples(self, y_samples: Array) -> RiskMeasure: ...
+    def with_baseline_from_model(self, model: Model, x_baseline: Array) -> RiskMeasure: ...
+    @property
+    def chebyshev_weights(self) -> list[float]: ...
+    @property
+    def baseline_y(self) -> ArrayOut | None: ...
+    @property
+    def normalization_bounds(self) -> ArrayOut | None: ...
+    def forward(self, samples: Array) -> ArrayBuf: ...
+    def vjp(self, samples: Array, adjoint: Array) -> ArrayBuf: ...
+
+class MultiOutputRiskMeasure:
+    @staticmethod
+    def mvar(
+        n_w: int,
+        alpha: float,
+        expectation: bool = False,
+        preprocessing: MultiOutputObjectiveSpec | None = None,
+        pad_to_n_w: bool = False,
+        filter_dominated: bool = True,
+        use_counting: bool = False,
+    ) -> MultiOutputRiskMeasure: ...
+    @staticmethod
+    def independent_cvar(
+        alpha: float, n_w: int, preprocessing: MultiOutputObjectiveSpec | None = None
+    ) -> MultiOutputRiskMeasure: ...
+    @staticmethod
+    def independent_var(
+        alpha: float, n_w: int, preprocessing: MultiOutputObjectiveSpec | None = None
+    ) -> MultiOutputRiskMeasure: ...
+    @staticmethod
+    def worst_case(
+        n_w: int, preprocessing: MultiOutputObjectiveSpec | None = None
+    ) -> MultiOutputRiskMeasure: ...
+    @staticmethod
+    def expectation(
+        n_w: int, preprocessing: MultiOutputObjectiveSpec | None = None
+    ) -> MultiOutputRiskMeasure: ...
+    def objective(self) -> MultiOutputObjective: ...
+    def mvar_set(self, y: Array, use_counting: bool) -> list[ArrayOut]: ...
+    def forward(self, samples: Array) -> ArrayBuf: ...
+    def vjp(self, samples: Array, adjoint: Array) -> ArrayBuf: ...
+
+def mars_y_normalization_bounds(y: Array, ref_point: Sequence[float] | None = None) -> ArrayOut: ...
+def momf(
+    model: Model,
+    ref_point: Sequence[float],
+    cells: Array,
+    sampler: SobolQMCNormalSampler | None = None,
+    x_pending: Array | None = None,
+    objective: MultiOutputObjectiveSpec | None = None,
+    constraints: Sequence[Callable[[Any], Any]] | None = None,
+    eta: Sequence[float] | None = None,
+    cost_call: Callable[[Any], Any] | None = None,
+) -> AcquisitionFunction: ...
+
+class MultiOutputAcquisitionFunction:
+    @staticmethod
+    def posterior_mean(
+        model: Model, weights: Sequence[float] | None = None
+    ) -> MultiOutputAcquisitionFunction: ...
+    @staticmethod
+    def wrapper(acqfs: Sequence[AcquisitionFunction]) -> MultiOutputAcquisitionFunction: ...
+    @property
+    def num_outputs(self) -> int: ...
+    @property
+    def dim(self) -> int: ...
+    def forward(self, x: Array) -> ArrayBuf: ...
+
+def optimize_with_nsgaii(
+    bounds: Array,
+    num_objectives: int,
+    acqf: MultiOutputAcquisitionFunction | None = None,
+    evaluate: Callable[[Array], tuple[Array, Array | None]] | None = None,
+    q: int | None = None,
+    ref_point: Sequence[float] | None = None,
+    inequality_constraints: Sequence[tuple[Sequence[int], Sequence[float], float]] = ...,
+    population_size: int = 250,
+    max_gen: int | None = None,
+    seed: int | None = None,
+    fixed_features: Sequence[tuple[int, float]] = ...,
+    max_attempts: int = 2,
+    discrete_choices: Sequence[tuple[int, Sequence[float]]] = ...,
+) -> tuple[ArrayBuf, ArrayBuf, list[str], int]: ...
+def nsga2_non_dominated_fronts(
+    f: Array, n_stop_if_ranked: int | None = None
+) -> list[list[int]]: ...
+def nsga2_crowding_distance(f: Array) -> list[float]: ...
 
 # Fantasy models, cost models and the hypervolume knowledge gradient.
 

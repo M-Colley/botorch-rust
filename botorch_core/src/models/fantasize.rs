@@ -301,6 +301,7 @@ impl BatchedMultiOutputGP {
     ) -> Result<BatchedMultiOutputGP> {
         let (m, d) = (self.num_outputs(), self.dim());
         let k = x.nrows();
+        self.model(0, 0).require_no_perturbation("fantasize")?;
         if x.ncols() != d {
             return Err(BotorchError::DimensionMismatch(format!(
                 "Expected X with {d} columns (d), got {}",

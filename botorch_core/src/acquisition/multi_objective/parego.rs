@@ -55,7 +55,12 @@ impl McObjective for ChebyshevMcObjective {
         with_grad: bool,
     ) -> Result<SampleValues> {
         let out = self.objective.evaluate(samples, x, with_grad)?;
-        check_values(&out.values, samples)?;
+        check_values(
+            &out.values,
+            samples,
+            x,
+            self.objective.verify_output_shape(),
+        )?;
         let (n, k, s) = (
             out.values.num_points(),
             out.values.num_outputs(),

@@ -127,8 +127,9 @@ class ModelListGP(Model):
                 f"Expected X to be `batch_shape x q x d` with d = {d}, got shape {flat[1]}."
             )
         self.eval()
+        rs_list = self._rs_list()
         return GPyTorchPosterior(
-            self._rs_list(),
+            rs_list,
             flat,
             kind,
             observation_noise,
@@ -136,6 +137,7 @@ class ModelListGP(Model):
             model_batch_shape=self.batch_shape,
             output_indices=oi,
             transform=transform_arg(posterior_transform),
+            points_per_input=rs_list.points_per_input,
         )
 
     def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:

@@ -65,14 +65,31 @@ pub trait McMultiOutputObjective: Send + Sync + Debug {
     fn is_pointwise(&self) -> bool {
         false
     }
+
+    /// BoTorch's `_verify_output_shape`: whether the values have one point
+    /// per input `X` (default `true`). Set-valued objectives such as `MVaR`
+    /// return several points per input and opt out.
+    fn verify_output_shape(&self) -> bool {
+        true
+    }
 }
 
-/// Checks that an objective returned values for the `n` points of the
-/// samples (BoTorch's q-batch check of `MCAcquisitionObjective.__call__`).
-pub(crate) fn check_values(values: &McSamples, samples: &McSamples) -> Result<()> {
-    if values.num_points() != samples.num_points() || values.num_samples() != samples.num_samples()
+/// Checks the values of an objective (BoTorch's q-batch check of
+/// `MCAcquisitionObjective.__call__`): one set of values per MC sample and,
+/// if `verify` (the objective's [`McMultiOutputObjective::verify_output_shape`]),
+/// one point per input `x` (per sample point without `x`). With a one-to-many
+/// input transform the samples have `n_w` points per input, which risk
+/// measures reduce.
+pub(crate) fn check_values(
+    values: &McSamples,
+    samples: &McSamples,
+    x: Option<&Matrix>,
+    verify: bool,
+) -> Result<()> {
+    let expected = x.map_or(samples.num_points(), |x| x.nrows());
+    if values.num_samples() != samples.num_samples() || (verify && values.num_points() != expected)
     {
-        return Err(q_batch_mismatch(values.num_points(), samples.num_points()));
+        return Err(q_batch_mismatch(values.num_points(), expected));
     }
     Ok(())
 }
@@ -665,7 +682,7 @@ impl McMultiOutputObjective for FeasibilityWeightedMcMultiOutputObjective {
             return Ok(weighted);
         };
         let out = objective.evaluate(&weighted.values, x, with_grad)?;
-        check_values(&out.values, samples)?;
+        check_values(&out.values, samples, x, objective.verify_output_shape())?;
         let pullback: Option<SamplePullback> = match (weighted.pullback, out.pullback) {
             (Some(inner), Some(outer)) => Some(Box::new(move |bar: &Matrix| {
                 let (mid, xbar) = outer(bar)?;
@@ -682,6 +699,12 @@ impl McMultiOutputObjective for FeasibilityWeightedMcMultiOutputObjective {
 
     fn is_pointwise(&self) -> bool {
         self.objective.as_ref().is_none_or(|o| o.is_pointwise())
+    }
+
+    fn verify_output_shape(&self) -> bool {
+        self.objective
+            .as_ref()
+            .is_none_or(|o| o.verify_output_shape())
     }
 }
 

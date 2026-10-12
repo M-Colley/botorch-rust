@@ -103,22 +103,29 @@ pub fn prune_inferior_points_indices(
         ));
     }
     let max_points = (options.max_frac * n as f64).ceil() as usize;
+    // The posterior points (`n·n_w` with a one-to-many input transform).
+    let np = n * model.points_per_input();
+    if options.constraints.as_ref().is_some_and(|c| !c.is_empty()) && np != n {
+        return Err(BotorchError::Unsupported(
+            "Outcome constraints are not supported with one-to-many input transforms.".into(),
+        ));
+    }
     let base = match &options.base_samples {
         Some(z) => {
-            if z.ncols() != n * m || z.nrows() == 0 {
+            if z.ncols() != np * m || z.nrows() == 0 {
                 return Err(BotorchError::DimensionMismatch(format!(
-                    "base samples must have {} columns ({n} points x {m} outputs), got {}x{}",
-                    n * m,
+                    "base samples must have {} columns ({np} points x {m} outputs), got {}x{}",
+                    np * m,
                     z.nrows(),
                     z.ncols()
                 )));
             }
             z.clone()
         }
-        None => draw_sobol_normal_samples(n * m, options.num_samples, options.seed)?,
+        None => draw_sobol_normal_samples(np * m, options.num_samples, options.seed)?,
     };
     let js = JointSamples::with_base_samples(model, x.clone(), Arc::new(base))?;
-    let samples = js.samples(0..n);
+    let samples = js.samples(0..np);
     let mut obj = match &options.objective {
         Some(o) => {
             let v = o.evaluate(&samples, Some(x), false)?.values;
@@ -130,7 +137,12 @@ pub fn prune_inferior_points_indices(
             }
             v
         }
-        None => samples.data().clone(),
+        None => {
+            if np != n {
+                return Err(crate::acquisition::mc_objective::q_batch_mismatch(np, n));
+            }
+            samples.data().clone()
+        }
     };
     if let Some(constraints) = options.constraints.as_ref().filter(|c| !c.is_empty()) {
         let feasible = compute_feasibility_indicator(constraints, &samples)?;

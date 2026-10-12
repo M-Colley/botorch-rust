@@ -18,14 +18,18 @@ mod callbacks;
 mod errors;
 mod fantasize;
 mod hvkg;
+mod input_perturbation;
 mod mo_acquisition;
 mod mo_entropy;
 mod mo_test_functions;
 mod models;
+mod momf;
 mod multi_objective;
+mod nsga2;
 mod optim;
 mod pathwise;
 mod polytope;
+mod risk_measures;
 mod sampling;
 mod specs;
 mod test_functions;
@@ -86,6 +90,12 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     multi_objective::register(m)?;
     // Multi-objective acquisition functions.
     mo_acquisition::register(m)?;
+    // Robust and multi-fidelity multi-objective optimization: input
+    // perturbations, risk measures, MOMF, NSGA-II.
+    input_perturbation::register(m)?;
+    risk_measures::register(m)?;
+    momf::register(m)?;
+    nsga2::register(m)?;
     // Fantasy models, cost models and the hypervolume knowledge gradient.
     fantasize::register(m)?;
     hvkg::register(m)?;

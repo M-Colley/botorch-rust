@@ -56,6 +56,19 @@ pub struct PyMultiOutputObjective {
     constraint_idcs: Vec<usize>,
 }
 
+impl PyMultiOutputObjective {
+    /// A multi-output objective evaluated in Rust (e.g. a multi-output risk
+    /// measure of [`crate::risk_measures`]).
+    pub(crate) fn from_objective(inner: Arc<dyn McMultiOutputObjective>) -> Self {
+        Self {
+            inner,
+            infeasible_cost: Vec::new(),
+            objective_idcs: Vec::new(),
+            constraint_idcs: Vec::new(),
+        }
+    }
+}
+
 #[pymethods]
 impl PyMultiOutputObjective {
     /// `FeasibilityWeightedMCMultiOutputObjective(model, X_baseline,
@@ -152,7 +165,7 @@ pub(crate) fn mo_objective_of(
 }
 
 /// Hypercell bounds of shape `2 x num_cells x m`.
-fn cells_of(cells: &Array) -> PyResult<HypercellBounds> {
+pub(crate) fn cells_of(cells: &Array) -> PyResult<HypercellBounds> {
     let (nc, m) = match cells.1.as_slice() {
         [2, nc, m] => (*nc, *m),
         s => {

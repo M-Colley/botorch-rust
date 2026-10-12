@@ -64,6 +64,20 @@ pub trait Model: Send + Sync + Debug {
         None
     }
 
+    /// The number of posterior points per input point: `n_w` for a model
+    /// with a one-to-many input transform (BoTorch's `InputPerturbation`,
+    /// see [`crate::transforms::input`]), 1 otherwise (the default).
+    ///
+    /// The posterior of `q` points is then over `q·n_w` points, point-major
+    /// (point `i·n_w + w` is perturbation `w` of input `i`); the adjoints of
+    /// [`Model::joint_posterior_vjp`] have that size while `rows` and the
+    /// result refer to the `q` inputs. Methods that evaluate every input on
+    /// its own ([`Model::point_posteriors`] and the single-point methods)
+    /// require one point per input.
+    fn points_per_input(&self) -> usize {
+        1
+    }
+
     /// Joint posterior at the `q × d` inputs `x` over all outputs (BoTorch's
     /// `model.posterior(X, observation_noise=...)`), flattened in output-major
     /// order.
@@ -103,12 +117,13 @@ pub trait Model: Send + Sync + Debug {
         mean_adjoint: &Vector,
         covariance_adjoint: &Matrix,
     ) -> Result<Matrix> {
-        check_vjp_shapes(
+        check_vjp_shapes_expanded(
             x,
             &rows,
             mean_adjoint,
             covariance_adjoint,
             self.num_outputs(),
+            self.points_per_input(),
         )?;
         let d = x.ncols();
         let g = self.joint_posterior_with_grad(x)?;
@@ -239,7 +254,9 @@ fn check_point_posterior(mean: &Vector, m: usize) -> Result<()> {
 }
 
 /// Validates the arguments of [`Model::joint_posterior_vjp`] for a model with
-/// `num_outputs` outputs.
+/// `num_outputs` outputs and one posterior point per input (the models of
+/// this crate use [`check_vjp_shapes_expanded`]).
+#[allow(dead_code)]
 pub(crate) fn check_vjp_shapes(
     x: &Matrix,
     rows: &Range<usize>,
@@ -247,13 +264,26 @@ pub(crate) fn check_vjp_shapes(
     covariance_adjoint: &Matrix,
     num_outputs: usize,
 ) -> Result<()> {
+    check_vjp_shapes_expanded(x, rows, mean_adjoint, covariance_adjoint, num_outputs, 1)
+}
+
+/// [`check_vjp_shapes`] for a model with `points_per_input` posterior points
+/// per input (see [`Model::points_per_input`]).
+pub(crate) fn check_vjp_shapes_expanded(
+    x: &Matrix,
+    rows: &Range<usize>,
+    mean_adjoint: &Vector,
+    covariance_adjoint: &Matrix,
+    num_outputs: usize,
+    points_per_input: usize,
+) -> Result<()> {
     let n = x.nrows();
     if rows.start > rows.end || rows.end > n {
         return Err(BotorchError::DimensionMismatch(format!(
             "rows {rows:?} out of range for {n} points"
         )));
     }
-    let len = n * num_outputs;
+    let len = n * points_per_input * num_outputs;
     if mean_adjoint.len() != len || covariance_adjoint.shape() != (len, len) {
         return Err(BotorchError::DimensionMismatch(format!(
             "adjoints must have shapes {len} and {len}x{len}, got {} and {}x{}",

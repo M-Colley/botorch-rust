@@ -16,7 +16,14 @@ from botorch_rs.kernels import Kernel, ScaleKernel
 from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood, Likelihood
 from botorch_rs.means import ConstantMean
 from botorch_rs.models.model import Model
-from botorch_rs.models.transforms.input import Normalize
+from botorch_rs.models.transforms.input import (
+    ChainedInputTransform,
+    InputPerturbation,
+    InputTransform,
+    Normalize,
+    apply_chain_state,
+    chain_steps,
+)
 from botorch_rs.models.transforms.outcome import Standardize
 from botorch_rs.models.utils.gpytorch_modules import (
     get_covar_module_with_dim_scaled_prior,
@@ -132,7 +139,11 @@ class SingleTaskGP(Model):
     observation noise is used. The default covariance module is an ARD RBF
     kernel with the dimension-scaled lengthscale prior of Hvarfner et al.
     (2024), the default outcome transform is ``Standardize(m, batch_shape)``
-    and inputs are not transformed unless ``input_transform`` is given.
+    and inputs are not transformed unless ``input_transform`` is given
+    (``Normalize``, ``InputPerturbation`` or a ``ChainedInputTransform`` of
+    them). With an ``InputPerturbation`` (``n_w`` perturbations), the
+    posterior of ``q`` inputs is over the ``q * n_w`` perturbed points, as in
+    BoTorch.
 
     Training data of shape ``batch_shape x n x d`` / ``batch_shape x n x m``
     give ``batch_shape x m`` independent GPs (BoTorch's ``_aug_batch_shape``),
@@ -155,7 +166,7 @@ class SingleTaskGP(Model):
         covar_module: Kernel | None = None,
         mean_module: ConstantMean | None = None,
         outcome_transform: Any = DEFAULT,
-        input_transform: Normalize | None = None,
+        input_transform: InputTransform | None = None,
     ) -> None:
         kind = kind_of(train_X)
         x = to_flat(train_X, "train_X")
@@ -214,9 +225,15 @@ class SingleTaskGP(Model):
             ot_obj, ot_rs, std_default = outcome_transform, outcome_transform._rs, False
         else:
             raise UnsupportedError("`outcome_transform` must be a Standardize, DEFAULT or None.")
-        if input_transform is not None:
+        chain: list[Any] | None = None
+        if isinstance(input_transform, (InputPerturbation, ChainedInputTransform)):
+            chain = chain_steps(input_transform, d)
+        elif input_transform is not None:
             if not isinstance(input_transform, Normalize):
-                raise UnsupportedError("`input_transform` must be a Normalize.")
+                raise UnsupportedError(
+                    "`input_transform` must be a Normalize, an InputPerturbation or a "
+                    "ChainedInputTransform of them."
+                )
             tf_batch = input_transform.batch_shape
             if tf_batch and tf_batch != batch:
                 raise BotorchTensorDimensionError(
@@ -240,11 +257,12 @@ class SingleTaskGP(Model):
             x,
             y,
             yvar,
-            input_transform._rs if input_transform is not None else None,
+            input_transform._rs if isinstance(input_transform, Normalize) else None,
             ot_rs,
             std_default,
             covar_spec,
             likelihood._spec if likelihood is not None else None,
+            input_chain=chain,
         )
         self._kind = kind
         # GP modules bound to the model's hyperparameters.
@@ -261,10 +279,15 @@ class SingleTaskGP(Model):
         self.likelihood: Likelihood = likelihood
         self.covar_module: Kernel = covar
         self.mean_module: ConstantMean = mean
-        if input_transform is not None:
+        if isinstance(input_transform, Normalize):
             fitted_input = self._rs.input_transform()
             assert fitted_input is not None
             input_transform._set_fitted(fitted_input, kind)
+            self.input_transform: InputTransform = input_transform
+        elif input_transform is not None:
+            state = self._rs.input_chain_state()
+            assert state is not None
+            apply_chain_state(input_transform, state, kind)
             self.input_transform = input_transform
         if ot_obj is not None:
             fitted_outcome = self._rs.outcome_transform()
@@ -391,6 +414,7 @@ class SingleTaskGP(Model):
             model_batch_shape=self.batch_shape,
             output_indices=oi,
             transform=transform,
+            points_per_input=self._rs.points_per_input,
         )
 
     def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:

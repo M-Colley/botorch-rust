@@ -279,6 +279,10 @@ impl Model for ScalarizedModel {
         self.model.batch_shape()
     }
 
+    fn points_per_input(&self) -> usize {
+        self.model.points_per_input()
+    }
+
     fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {
         let p = self.model.posterior(x, observation_noise)?;
         self.transform.transform_posterior(&p)
@@ -296,7 +300,14 @@ impl Model for ScalarizedModel {
         mean_adjoint: &Vector,
         covariance_adjoint: &Matrix,
     ) -> Result<Matrix> {
-        crate::models::model::check_vjp_shapes(x, &rows, mean_adjoint, covariance_adjoint, 1)?;
+        crate::models::model::check_vjp_shapes_expanded(
+            x,
+            &rows,
+            mean_adjoint,
+            covariance_adjoint,
+            1,
+            self.model.points_per_input(),
+        )?;
         let (ma, ca) = self.transform.pull_back(mean_adjoint, covariance_adjoint);
         self.model.joint_posterior_vjp(x, rows, &ma, &ca)
     }

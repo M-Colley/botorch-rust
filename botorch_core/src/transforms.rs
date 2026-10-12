@@ -1,6 +1,9 @@
 //! Input and outcome transforms mirroring
 //! `botorch.models.transforms.input.Normalize` and
-//! `botorch.models.transforms.outcome.Standardize`.
+//! `botorch.models.transforms.outcome.Standardize`; `InputPerturbation` and
+//! `ChainedInputTransform` are in [`input`].
+
+pub mod input;
 
 use crate::error::{BotorchError, Result};
 use crate::{Matrix, Vector};

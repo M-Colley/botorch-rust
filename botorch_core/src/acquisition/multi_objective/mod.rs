@@ -24,6 +24,11 @@
 //!   estimators of both (`"0"`, `"LB"`, `"LB2"`, `"MC"`).
 //! * [`predictive_entropy_search`] —
 //!   [`QMultiObjectivePredictiveEntropySearch`] (expectation propagation).
+//! * [`multi_fidelity`] — [`multi_fidelity::Momf`] (qEHVI weighted by the
+//!   inverse cost of the candidates).
+//! * [`multi_output_risk_measures`] — multi-output risk measures (`MVaR`,
+//!   `MARS`, `IndependentCVaR`, ...) for robust multi-objective
+//!   optimization with an `InputPerturbation`.
 //! * [`hypervolume`] — the inclusion–exclusion over the subsets of the
 //!   candidates (`compute_subset_indices`, `SubsetIndexCachingMixin`) and the
 //!   hypervolume improvement of MC samples with exact gradients.
@@ -46,6 +51,7 @@ use std::sync::Arc;
 
 use crate::acquisition::check_unbatched;
 use crate::acquisition::mc_objective::McSamples;
+use crate::acquisition::monte_carlo::check_constraints_one_to_one;
 use crate::acquisition::multi_objective::hypervolume::{log_qehvi, qehvi, LogSettings};
 use crate::acquisition::multi_objective::objective::check_values;
 use crate::error::{BotorchError, Result};
@@ -62,6 +68,8 @@ pub mod joint_entropy_search;
 pub mod logei;
 pub mod max_value_entropy_search;
 pub mod monte_carlo;
+pub mod multi_fidelity;
+pub mod multi_output_risk_measures;
 mod nehvi;
 pub mod objective;
 pub mod parego;
@@ -179,6 +187,9 @@ impl MoMcCore {
         fat: bool,
     ) -> Result<Self> {
         check_unbatched(model.as_ref())?;
+        if constraints.is_some() {
+            check_constraints_one_to_one(model.as_ref())?;
+        }
         Ok(Self {
             model,
             sampler: mo_sampler_or_default(sampler)?,
@@ -202,7 +213,12 @@ impl MoMcCore {
         with_grad: bool,
     ) -> Result<SampleReduction> {
         let out = self.objective.evaluate(samples, Some(x), with_grad)?;
-        check_values(&out.values, samples)?;
+        check_values(
+            &out.values,
+            samples,
+            Some(x),
+            self.objective.verify_output_shape(),
+        )?;
         if out.values.num_outputs() != cells.num_outcomes() {
             return Err(BotorchError::DimensionMismatch(format!(
                 "The objective has {} outputs but the box decomposition (reference point) has \
@@ -221,7 +237,9 @@ impl MoMcCore {
             )?),
             None => None,
         };
-        let subsets = self.subsets.get(samples.num_points());
+        // BoTorch's `q_out = obj.shape[-2]`: the points of the objective
+        // values (several per input for set-valued objectives such as MVaR).
+        let subsets = self.subsets.get(out.values.num_points());
         let w = feas.as_ref().map(|f| &f.values);
         let r = match reduction {
             Reduction::Linear => qehvi(&out.values, w, cells, &subsets, with_grad),

@@ -64,16 +64,43 @@ fn rows(m: &Matrix) -> Vec<f64> {
     out
 }
 
-/// Values of shape `(S, 1, n)` (row-major) as an `n × S` matrix.
+/// Values of shape `(S, 1, n')` (row-major) as an `n' × S` matrix; `n'` is
+/// the number of sample points `n`, or fewer for an objective that reduces
+/// the `n_w` points per input of a one-to-many input transform (a risk
+/// measure; the acquisition function checks `n'` against `X`).
 fn values_matrix(values: &[f64], s: usize, n: usize) -> Result<Matrix> {
-    if values.len() != s * n {
+    if s == 0 || !values.len().is_multiple_of(s) || values.len() / s > n {
         return Err(BotorchError::Runtime(format!(
             "The q-batch shape of the objective values does not agree with the q-batch shape \
              of X: expected {s} x {n} values, got {}.",
             values.len()
         )));
     }
+    let n = values.len() / s;
     Ok(Matrix::from_fn(n, s, |p, c| values[c * n + p]))
+}
+
+/// The input adjoint returned by the bridge as an `x_rows × d` matrix (`X`
+/// has fewer rows than the samples have points with a one-to-many input
+/// transform: one per input point).
+fn input_adjoint(
+    xbar: Option<Vec<f64>>,
+    x_rows: usize,
+    d: Option<usize>,
+) -> Result<Option<Matrix>> {
+    match (xbar, d) {
+        (Some(v), Some(d)) => {
+            if v.len() != x_rows * d {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "the input gradient has {} values, expected {}",
+                    v.len(),
+                    x_rows * d
+                )));
+            }
+            Ok(Some(Matrix::from_row_slice(x_rows, d, &v)))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// An `n × S` adjoint as a row-major `(S, 1, n)` list.
@@ -128,6 +155,16 @@ impl PyCallback {
         }
     }
 
+    /// A preprocessing function of a multi-output risk measure (BoTorch's
+    /// `preprocessing_function`), called as `f(samples)`.
+    pub fn mo_preprocessing(callable: Py<PyAny>) -> Self {
+        Self {
+            callable,
+            kind: "mo_objective",
+            pass_x: false,
+        }
+    }
+
     fn call_mo(
         &self,
         samples: &McSamples,
@@ -139,9 +176,15 @@ impl PyCallback {
             samples.num_points(),
             samples.num_outputs(),
         );
-        let x_arg: Option<(Vec<f64>, usize)> = x.map(|x| (rows(x), x.ncols()));
+        let x_arg: Option<(Vec<f64>, usize)> = if self.pass_x {
+            x.map(|x| (rows(x), x.ncols()))
+        } else {
+            None
+        };
         let d = x_arg.as_ref().map(|(_, d)| *d);
-        let (values, mo, handle) = Python::attach(|py| -> PyResult<(Vec<f64>, usize, Py<PyAny>)> {
+        let x_rows = x.map_or(0, |x| x.nrows());
+        type Forward = (Vec<f64>, usize, usize, Py<PyAny>);
+        let (values, nv, mo, handle) = Python::attach(|py| -> PyResult<Forward> {
             let bridge = py.import(BRIDGE)?;
             let x_arg = match &x_arg {
                 Some((data, d)) => Some((float_values(py, data)?, *d)),
@@ -155,16 +198,18 @@ impl PyCallback {
                     (s, n, m),
                     x_arg,
                     with_grad,
+                    self.pass_x,
                 ),
             )?;
-            let (values, mo, handle): (Bound<'_, PyAny>, usize, Py<PyAny>) = res.extract()?;
-            Ok((float_data(&values)?, mo, handle))
+            let (values, nv, mo, handle): (Bound<'_, PyAny>, usize, usize, Py<PyAny>) =
+                res.extract()?;
+            Ok((float_data(&values)?, nv, mo, handle))
         })
         .map_err(callback_error)?;
-        let values = McSamples::from_row_major(&values, s, n, mo)?;
+        let values = McSamples::from_row_major(&values, s, nv, mo)?;
         let pullback: Option<SamplePullback> = if with_grad {
             Some(Box::new(move |bar: &Matrix| {
-                let adjoint = McSamples::new(bar.clone(), n, mo)?.to_row_major();
+                let adjoint = McSamples::new(bar.clone(), nv, mo)?.to_row_major();
                 let (sbar, xbar) = Python::attach(|py| -> PyResult<(Vec<f64>, Option<Vec<f64>>)> {
                     let bridge = py.import(BRIDGE)?;
                     let adjoint = float_values(py, &adjoint)?;
@@ -178,20 +223,7 @@ impl PyCallback {
                 })
                 .map_err(callback_error)?;
                 let sbar = McSamples::from_row_major(&sbar, s, n, m)?.into_data();
-                let xbar = match (xbar, d) {
-                    (Some(v), Some(d)) if v.len() == n * d => {
-                        Some(Matrix::from_row_slice(n, d, &v))
-                    }
-                    (Some(v), Some(d)) => {
-                        return Err(BotorchError::DimensionMismatch(format!(
-                            "the input gradient has {} values, expected {}",
-                            v.len(),
-                            n * d
-                        )))
-                    }
-                    _ => None,
-                };
-                Ok((sbar, xbar))
+                Ok((sbar, input_adjoint(xbar, x_rows, d)?))
             }))
         } else {
             None
@@ -216,6 +248,7 @@ impl PyCallback {
             None
         };
         let d = x_arg.as_ref().map(|(_, d)| *d);
+        let x_rows = x.map_or(0, |x| x.nrows());
         let (values, handle) = Python::attach(|py| -> PyResult<(Vec<f64>, Py<PyAny>)> {
             let bridge = py.import(BRIDGE)?;
             let x_arg = match &x_arg {
@@ -253,20 +286,7 @@ impl PyCallback {
                 })
                 .map_err(callback_error)?;
                 let sbar = McSamples::from_row_major(&sbar, s, n, m)?.into_data();
-                let xbar = match (xbar, d) {
-                    (Some(v), Some(d)) => {
-                        if v.len() != n * d {
-                            return Err(BotorchError::DimensionMismatch(format!(
-                                "the input gradient has {} values, expected {}",
-                                v.len(),
-                                n * d
-                            )));
-                        }
-                        Some(Matrix::from_row_slice(n, d, &v))
-                    }
-                    _ => None,
-                };
-                Ok((sbar, xbar))
+                Ok((sbar, input_adjoint(xbar, x_rows, d)?))
             }))
         } else {
             None

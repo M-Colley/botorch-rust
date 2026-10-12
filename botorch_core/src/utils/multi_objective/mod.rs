@@ -2,8 +2,8 @@
 //! Pareto dominance ([`pareto`]), hypervolumes ([`hypervolume`]), box
 //! decompositions of the dominated and non-dominated space
 //! ([`box_decompositions`]) and the augmented Chebyshev scalarization
-//! ([`scalarization`]). `botorch.utils.multi_objective.optimize` (NSGA-II via
-//! pymoo) is not ported.
+//! ([`scalarization`]); `optimize_with_nsgaii` with an NSGA-II that follows
+//! pymoo's defaults ([`optimize`]).
 //!
 //! | BoTorch | botorch_core |
 //! |---|---|
@@ -52,6 +52,7 @@
 
 pub mod box_decompositions;
 pub mod hypervolume;
+pub mod optimize;
 pub mod pareto;
 pub mod scalarization;
 
