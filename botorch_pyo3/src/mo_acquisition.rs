@@ -111,7 +111,7 @@ impl PyMultiOutputObjective {
 
 /// A multi-output objective from its specification (see the module
 /// documentation).
-fn mo_objective_of(
+pub(crate) fn mo_objective_of(
     spec: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<Arc<dyn McMultiOutputObjective>>> {
     let Some(spec) = spec.filter(|s| !s.is_none()) else {

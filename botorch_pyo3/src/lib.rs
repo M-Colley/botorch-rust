@@ -16,6 +16,8 @@ mod acquisition;
 mod arrays;
 mod callbacks;
 mod errors;
+mod fantasize;
+mod hvkg;
 mod mo_acquisition;
 mod mo_test_functions;
 mod models;
@@ -82,5 +84,8 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     multi_objective::register(m)?;
     // Multi-objective acquisition functions.
     mo_acquisition::register(m)?;
+    // Fantasy models, cost models and the hypervolume knowledge gradient.
+    fantasize::register(m)?;
+    hvkg::register(m)?;
     Ok(())
 }

@@ -426,6 +426,13 @@ pub struct PySingleTaskGP {
 }
 
 impl PySingleTaskGP {
+    /// A handle on `model` (e.g. a conditioned or fantasy model).
+    pub(crate) fn from_model(model: BatchedMultiOutputGP) -> Self {
+        Self {
+            inner: RwLock::new(Arc::new(model)),
+        }
+    }
+
     /// The current model.
     pub fn snapshot(&self) -> Arc<BatchedMultiOutputGP> {
         self.inner.read().unwrap_or_else(|e| e.into_inner()).clone()

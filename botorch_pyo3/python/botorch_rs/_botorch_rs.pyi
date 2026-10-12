@@ -306,6 +306,8 @@ class SobolQMCNormalSampler:
     def seed(self) -> int: ...
     def base_samples(self, dim: int) -> ArrayBuf: ...
     def set_base_samples(self, base_samples: Array) -> None: ...
+    def __deepcopy__(self, memo: Any) -> SobolQMCNormalSampler: ...
+    def __copy__(self) -> SobolQMCNormalSampler: ...
 
 class AcquisitionFunction:
     @staticmethod
@@ -433,6 +435,10 @@ def optimize_acqf(
     method: str | None = None,
     n_burnin: int | None = None,
     n_thinning: int | None = None,
+    frac_random: float | None = None,
+    num_inner_restarts: int | None = None,
+    raw_inner_samples: int | None = None,
+    one_shot_eta: float | None = None,
 ) -> tuple[ArrayOut, list[float], ArrayOut, list[float], list[tuple[str, str]]]:
     """Returns ``(candidates, acq_values, restart_candidates, restart_values,
     warnings)``."""
@@ -454,6 +460,7 @@ def gen_batch_initial_conditions(
     equality_constraints: Sequence[LinearConstraint] | None = None,
     n_burnin: int | None = None,
     n_thinning: int | None = None,
+    fixed_x_fantasies: Array | None = None,
 ) -> tuple[ArrayOut, bool]:
     """Returns ``(initial_conditions, selected_randomly)``."""
 
@@ -765,4 +772,129 @@ def prune_inferior_points_multi_objective(
     max_frac: float = 1.0,
     seed: int | None = None,
     base_samples: Array | None = None,
+) -> ArrayBuf: ...
+
+# Fantasy models, cost models and the hypervolume knowledge gradient.
+
+#: An evaluation mask ``(data, shape)`` (``n x m`` booleans).
+Mask = tuple[Sequence[bool], Sequence[int]]
+#: A projection: ``None`` (identity), ``("target", [(column, value), ...])``
+#: or ``("callable", f)`` with ``f(X)`` on torch tensors.
+ProjectionSpec = tuple[Any, ...]
+
+def condition_on_observations(
+    model: SingleTaskGP, x: Array, y: Array, noise: Array | None = None
+) -> SingleTaskGP: ...
+def fantasize(
+    model: SingleTaskGP,
+    x: Array,
+    sampler: SobolQMCNormalSampler,
+    observation_noise: Array | None = None,
+) -> SingleTaskGP: ...
+def model_list_condition_on_observations(
+    models: Sequence[SingleTaskGP], xs: Sequence[Array], y: Array, noise: Array | None = None
+) -> list[SingleTaskGP]: ...
+def model_list_fantasize(
+    models: Sequence[SingleTaskGP],
+    x: Array,
+    samplers: Sequence[SobolQMCNormalSampler],
+    shared: bool,
+    observation_noise: Array | None = None,
+    evaluation_mask: Mask | None = None,
+) -> list[SingleTaskGP]: ...
+
+class CostModel:
+    @staticmethod
+    def affine(
+        fidelity_weights: Sequence[tuple[int, float]] | None = None, fixed_cost: float = 0.01
+    ) -> CostModel: ...
+    @staticmethod
+    def fixed(fixed_cost: Sequence[float]) -> CostModel: ...
+    @staticmethod
+    def posterior_mean(model: Model) -> CostModel: ...
+    @staticmethod
+    def callable(f: Callable[..., Any], num_outputs: int) -> CostModel: ...
+    @property
+    def num_outputs(self) -> int: ...
+    def forward(self, x: Array) -> ArrayBuf: ...
+    def backward(self, x: Array, cost_bar: Array) -> ArrayBuf: ...
+
+class CostAwareUtility:
+    @staticmethod
+    def inverse_cost_weighted(
+        cost_model: CostModel,
+        use_mean: bool = True,
+        cost_objective: Callable[..., Any] | None = None,
+        log: bool = False,
+    ) -> CostAwareUtility: ...
+    @staticmethod
+    def generic(cost: Callable[..., Any]) -> CostAwareUtility: ...
+    @property
+    def log(self) -> bool | None: ...
+    def forward(
+        self,
+        x: Array,
+        deltas: Array,
+        evaluation_mask: Mask | None = None,
+        adjoint: Array | None = None,
+    ) -> tuple[ArrayBuf, tuple[ArrayBuf, ArrayBuf] | None]: ...
+
+class HvkgState:
+    def set_x_pending(self, x_pending: Array | None = None, mask: Mask | None = None) -> None: ...
+    def x_pending_evaluation_mask(self) -> BoolBuf | None: ...
+    def construct_evaluation_mask(self, q: int) -> BoolBuf | None: ...
+    def gen_one_shot_initial_conditions(
+        self,
+        bounds: Array,
+        q: int,
+        num_restarts: int,
+        raw_samples: int,
+        *,
+        fixed_features: dict[int, float] | None = None,
+        inequality_constraints: Sequence[LinearConstraint] | None = None,
+        equality_constraints: Sequence[LinearConstraint] | None = None,
+        seed: int | None = None,
+        eta: float | None = None,
+        alpha: float | None = None,
+        batch_limit: int | None = None,
+        init_batch_limit: int | None = None,
+        maxiter: int | None = None,
+        frac_random: float | None = None,
+        num_inner_restarts: int | None = None,
+        raw_inner_samples: int | None = None,
+        one_shot_eta: float | None = None,
+    ) -> tuple[ArrayBuf, list[str]]: ...
+
+def q_hypervolume_knowledge_gradient(
+    model: Model,
+    ref_point: Sequence[float],
+    num_fantasies: int = 8,
+    num_pareto: int = 10,
+    samplers: Sequence[SobolQMCNormalSampler] | None = None,
+    objective: MultiOutputObjectiveSpec | None = None,
+    inner_sampler: SobolQMCNormalSampler | None = None,
+    x_evaluation_mask: Mask | None = None,
+    x_pending: Array | None = None,
+    x_pending_evaluation_mask: Mask | None = None,
+    current_value: float | None = None,
+    use_posterior_mean: bool = True,
+    cost_aware_utility: CostAwareUtility | None = None,
+    log: bool = False,
+    target_fidelities: Sequence[tuple[int, float]] | None = None,
+    project: ProjectionSpec | None = None,
+) -> tuple[AcquisitionFunction, HvkgState]: ...
+def hv_value_function(
+    model: Model,
+    ref_point: Sequence[float],
+    objective: MultiOutputObjectiveSpec | None = None,
+    sampler: SobolQMCNormalSampler | None = None,
+    use_posterior_mean: bool = False,
+    log: bool = False,
+    project: ProjectionSpec | None = None,
+) -> AcquisitionFunction: ...
+def project_to_target_fidelity(
+    x: Array, target_fidelities: Sequence[tuple[int, float]], d: int
+) -> ArrayBuf: ...
+def expand_trace_observations(
+    x: Array, fidelity_dims: Sequence[int] | None = None, num_trace_obs: int = 0
 ) -> ArrayBuf: ...

@@ -13,9 +13,10 @@ use std::sync::Arc;
 
 use botorch_core::optim::{
     default_lbfgsb_options, evaluate_feasibility, gen_batch_initial_conditions,
-    optimize_acqf_detailed, sample_q_batches_from_polytope, IcGenerator, InitialConditionOptions,
-    LinearConstraint, NonlinearInequalityConstraint, OptimizationMethod, OptimizeAcqfOptions,
-    ParameterConstraints, SlsqpOptions, CONSTRAINT_TOLERANCE,
+    gen_batch_initial_conditions_with_fantasies, optimize_acqf_detailed,
+    sample_q_batches_from_polytope, IcGenerator, InitialConditionOptions, LinearConstraint,
+    NonlinearInequalityConstraint, OneShotInitialConditionOptions, OptimizationMethod,
+    OptimizeAcqfOptions, ParameterConstraints, SlsqpOptions, CONSTRAINT_TOLERANCE,
 };
 use botorch_core::Matrix;
 use pyo3::prelude::*;
@@ -174,6 +175,10 @@ fn native_ic_generator() -> IcGenerator {
     method=None,
     n_burnin=None,
     n_thinning=None,
+    frac_random=None,
+    num_inner_restarts=None,
+    raw_inner_samples=None,
+    one_shot_eta=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn optimize_acqf(
@@ -207,6 +212,10 @@ pub fn optimize_acqf(
     method: Option<&str>,
     n_burnin: Option<usize>,
     n_thinning: Option<usize>,
+    frac_random: Option<f64>,
+    num_inner_restarts: Option<usize>,
+    raw_inner_samples: Option<usize>,
+    one_shot_eta: Option<f64>,
 ) -> PyResult<OptimizeOut> {
     let bounds = bounds.matrix("bounds")?;
     let d = bounds.ncols();
@@ -268,7 +277,12 @@ pub fn optimize_acqf(
         n_burnin: n_burnin.unwrap_or(defaults.n_burnin),
         n_thinning: n_thinning.unwrap_or(defaults.n_thinning),
         ic_generator,
-        one_shot: Default::default(),
+        one_shot: OneShotInitialConditionOptions {
+            frac_random: frac_random.unwrap_or(defaults.one_shot.frac_random),
+            num_inner_restarts: num_inner_restarts.unwrap_or(defaults.one_shot.num_inner_restarts),
+            raw_inner_samples: raw_inner_samples.unwrap_or(defaults.one_shot.raw_inner_samples),
+            eta: one_shot_eta,
+        },
     };
     let acqf = &acq_function.inner;
     let result = threads::run(py, || {
@@ -324,6 +338,7 @@ pub fn optimize_acqf(
     equality_constraints=None,
     n_burnin=None,
     n_thinning=None,
+    fixed_x_fantasies=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn gen_batch_initial_conditions_py(
@@ -343,9 +358,13 @@ pub fn gen_batch_initial_conditions_py(
     equality_constraints: Option<Vec<LinearArg<'_>>>,
     n_burnin: Option<usize>,
     n_thinning: Option<usize>,
+    fixed_x_fantasies: Option<Array>,
 ) -> PyResult<(ArrayOut, bool)> {
     let bounds = bounds.matrix("bounds")?;
     let d = bounds.ncols();
+    let fantasies = fixed_x_fantasies
+        .map(|f| f.matrix("fixed_X_fantasies"))
+        .transpose()?;
     let defaults = InitialConditionOptions::default();
     let options = InitialConditionOptions {
         seed,
@@ -365,18 +384,20 @@ pub fn gen_batch_initial_conditions_py(
             .seed
             .unwrap_or_else(botorch_core::utils::sampling::random_seed);
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed ^ 0x6f70_7469_6d69_7a65);
-        gen_batch_initial_conditions(
+        gen_batch_initial_conditions_with_fantasies(
             acqf.as_ref(),
             &bounds,
             q,
             num_restarts,
             raw_samples,
             &options,
+            fantasies.as_ref(),
             &mut rng,
         )
     })
     .into_py_result()?;
-    Ok((stack_out(&ics, &[ics.len()], q, d), fallback))
+    let rows = ics.first().map_or(q, |m| m.nrows());
+    Ok((stack_out(&ics, &[ics.len()], rows, d), fallback))
 }
 
 /// BoTorch's `sample_q_batches_from_polytope`: `n x q x d` samples of the

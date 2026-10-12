@@ -64,12 +64,18 @@ class InfeasibilityError(BotorchRsError, ValueError):
     """A set of constraints is infeasible (e.g. an empty polytope)."""
 
 
+class DeprecationError(BotorchRsError):
+    """A deprecated argument or behavior (e.g. a boolean
+    ``observation_noise`` of ``fantasize``)."""
+
+
 __all__ = [
     "BotorchError",
     "BotorchRsError",
     "BotorchRuntimeError",
     "BotorchTensorDimensionError",
     "CandidateGenerationError",
+    "DeprecationError",
     "InfeasibilityError",
     "InputDataError",
     "InvalidArgumentError",

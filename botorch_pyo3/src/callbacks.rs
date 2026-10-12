@@ -391,3 +391,158 @@ pub fn ic_generator(generate: Py<PyAny>) -> IcGenerator {
             .collect())
     })
 }
+
+/// A Python callable of torch tensors evaluated through the bridge
+/// (`call_tensor_function` / `tensor_function_vjp`), e.g. the `project` of a
+/// multi-fidelity acquisition function, the cost of a
+/// `GenericCostAwareUtility` or a cost model given as a callable.
+#[derive(Debug)]
+pub struct PyTensorFunction {
+    callable: Py<PyAny>,
+}
+
+/// The outputs of a [`PyTensorFunction`]: the values (row-major) with their
+/// shape and, with gradients, the handle of the autograd graph.
+type TensorOutput = (Vec<f64>, Vec<usize>, Option<Py<PyAny>>);
+
+impl PyTensorFunction {
+    /// The callable `f`.
+    pub fn new(callable: Py<PyAny>) -> Self {
+        Self { callable }
+    }
+
+    /// `f(*args)` for arguments given as `(row-major data, shape)`.
+    fn call(&self, args: &[(Vec<f64>, Vec<usize>)], with_grad: bool) -> Result<TensorOutput> {
+        Python::attach(|py| -> PyResult<TensorOutput> {
+            let bridge = py.import(BRIDGE)?;
+            let py_args = args
+                .iter()
+                .map(|(data, shape)| Ok((float_values(py, data)?, shape.clone())))
+                .collect::<PyResult<Vec<_>>>()?;
+            let res = bridge.call_method1(
+                "call_tensor_function",
+                (self.callable.bind(py), py_args, with_grad),
+            )?;
+            let (values, shape, handle): (Bound<'_, PyAny>, Vec<usize>, Option<Py<PyAny>>) =
+                res.extract()?;
+            Ok((float_data(&values)?, shape, handle))
+        })
+        .map_err(callback_error)
+    }
+
+    /// The adjoints of the arguments for the adjoint of the outputs.
+    fn vjp(handle: &Py<PyAny>, adjoint: &[f64]) -> Result<Vec<Vec<f64>>> {
+        Python::attach(|py| -> PyResult<Vec<Vec<f64>>> {
+            let bridge = py.import(BRIDGE)?;
+            let res = bridge.call_method1(
+                "tensor_function_vjp",
+                (handle.bind(py), float_values(py, adjoint)?),
+            )?;
+            let grads: Vec<Bound<'_, PyAny>> = res.extract()?;
+            grads.iter().map(float_data).collect()
+        })
+        .map_err(callback_error)
+    }
+}
+
+/// A projection `project(X)` of the points of a candidate set (BoTorch's
+/// `project` argument), called with `1 x q x d` tensors.
+#[derive(Debug)]
+pub struct PyProjection(pub PyTensorFunction);
+
+impl botorch_core::acquisition::fidelity::InputProjection for PyProjection {
+    fn project(&self, x: &Matrix) -> Result<Matrix> {
+        let d = x.ncols();
+        let (values, shape, _) = self.0.call(&[(rows(x), vec![1, x.nrows(), d])], false)?;
+        let cols = *shape.last().unwrap_or(&0);
+        if cols != d || values.len() % d.max(1) != 0 {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "the projection returned a tensor of shape {shape:?}, expected `1 x q' x {d}`"
+            )));
+        }
+        Ok(Matrix::from_row_slice(values.len() / d, d, &values))
+    }
+
+    fn backward(&self, x: &Matrix, out_bar: &Matrix) -> Result<Matrix> {
+        let d = x.ncols();
+        let (_, _, handle) = self.0.call(&[(rows(x), vec![1, x.nrows(), d])], true)?;
+        let handle = handle.expect("gradient requested");
+        let grads = PyTensorFunction::vjp(&handle, &rows(out_bar))?;
+        Ok(Matrix::from_row_slice(x.nrows(), d, &grads[0]))
+    }
+}
+
+/// BoTorch's `GenericCostAwareUtility(cost)`: `cost(X, deltas)` with `X` of
+/// shape `1 x q x d` and `deltas` of shape `n_f x 1`, returning `n_f x 1`
+/// utilities.
+pub fn generic_cost_utility(
+    callable: Py<PyAny>,
+) -> botorch_core::acquisition::cost_aware::GenericCostAwareUtility {
+    use botorch_core::acquisition::cost_aware::{GenericCostAwareUtility, UtilityValues};
+    let f = PyTensorFunction::new(callable);
+    GenericCostAwareUtility::new(move |x: &Matrix, deltas: &[f64], with_grad: bool| {
+        let (q, d) = x.shape();
+        let n_f = deltas.len();
+        let (values, _, handle) = f.call(
+            &[(rows(x), vec![1, q, d]), (deltas.to_vec(), vec![n_f, 1])],
+            with_grad,
+        )?;
+        if values.len() != n_f {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "the cost-aware utility returned {} values for {n_f} improvements",
+                values.len()
+            )));
+        }
+        let pullback = handle.map(|h| {
+            Box::new(move |vbar: &[f64]| {
+                let grads = PyTensorFunction::vjp(&h, vbar)?;
+                Ok((grads[1].clone(), Matrix::from_row_slice(q, d, &grads[0])))
+            }) as botorch_core::acquisition::cost_aware::UtilityPullback
+        });
+        Ok(UtilityValues { values, pullback })
+    })
+}
+
+/// A cost model given as a callable of `1 x q x d` tensors returning
+/// `1 x q x m` costs (e.g. BoTorch's `GenericDeterministicModel`).
+#[derive(Debug)]
+pub struct PyCostModel {
+    f: PyTensorFunction,
+    num_outputs: usize,
+}
+
+impl PyCostModel {
+    /// The cost model `callable` with `num_outputs` outputs.
+    pub fn new(callable: Py<PyAny>, num_outputs: usize) -> Self {
+        Self {
+            f: PyTensorFunction::new(callable),
+            num_outputs,
+        }
+    }
+}
+
+impl botorch_core::models::cost::CostModel for PyCostModel {
+    fn num_outputs(&self) -> usize {
+        self.num_outputs
+    }
+
+    fn forward(&self, x: &Matrix) -> Result<Matrix> {
+        let (q, d) = x.shape();
+        let (values, _, _) = self.f.call(&[(rows(x), vec![1, q, d])], false)?;
+        if values.len() != q * self.num_outputs {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "the cost model returned {} values, expected {q} x {}",
+                values.len(),
+                self.num_outputs
+            )));
+        }
+        Ok(Matrix::from_row_slice(q, self.num_outputs, &values))
+    }
+
+    fn backward(&self, x: &Matrix, cost_bar: &Matrix) -> Result<Matrix> {
+        let (q, d) = x.shape();
+        let (_, _, handle) = self.f.call(&[(rows(x), vec![1, q, d])], true)?;
+        let grads = PyTensorFunction::vjp(&handle.expect("gradient requested"), &rows(cost_bar))?;
+        Ok(Matrix::from_row_slice(q, d, &grads[0]))
+    }
+}

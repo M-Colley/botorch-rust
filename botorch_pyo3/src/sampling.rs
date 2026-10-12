@@ -63,6 +63,20 @@ impl PySobolQMCNormalSampler {
         let z = base_samples.matrix("base_samples")?;
         self.inner.set_base_samples(z).into_py_result()
     }
+
+    /// An independent copy with the same seed and base samples (e.g.
+    /// `qHypervolumeKnowledgeGradient.cost_sampler`).
+    fn __deepcopy__(&self, _memo: &Bound<'_, PyAny>) -> Self {
+        Self {
+            inner: Arc::new(self.inner.as_ref().clone()),
+        }
+    }
+
+    fn __copy__(&self) -> Self {
+        Self {
+            inner: Arc::new(self.inner.as_ref().clone()),
+        }
+    }
 }
 
 /// `draw_sobol_samples(bounds, n, q, seed)`: `n` scrambled Sobol `q`-batches
