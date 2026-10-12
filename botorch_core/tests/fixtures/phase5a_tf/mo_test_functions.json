@@ -284,6 +284,7 @@
    ],
    "slack": null,
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": 59.36011874867746,
     "values": [
@@ -650,7 +651,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DH1",
@@ -1178,7 +1180,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DH2",
@@ -1534,7 +1537,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DH3",
@@ -1890,7 +1894,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DH3",
@@ -2452,7 +2457,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DH4",
@@ -2809,6 +2815,7 @@
    ],
    "slack": null,
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": 0.9815500000000001,
     "values": [
@@ -3438,6 +3445,7 @@
    ],
    "slack": null,
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": 0.9815500000000001,
     "values": [
@@ -3928,6 +3936,7 @@
    ],
    "slack": null,
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": 159999.75,
     "values": [
@@ -4659,6 +4668,7 @@
    ],
    "slack": null,
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": 63999999.875,
     "values": [
@@ -5555,6 +5565,7 @@
    ],
    "slack": null,
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": 25599999999.9375,
     "values": [
@@ -5991,7 +6002,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DTLZ2",
@@ -6348,7 +6360,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DTLZ2",
@@ -6978,7 +6991,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DTLZ2",
@@ -7844,7 +7858,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DTLZ3",
@@ -8373,7 +8388,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DTLZ3",
@@ -9003,7 +9019,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DTLZ4",
@@ -9499,6 +9516,7 @@
    ],
    "slack": null,
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": 0.4246018366025519,
     "values": [
@@ -10262,6 +10280,7 @@
    ],
    "slack": null,
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": 0.8074012244017015,
     "values": [
@@ -10921,7 +10940,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DTLZ5",
@@ -11551,7 +11571,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DTLZ5",
@@ -12282,7 +12303,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DTLZ7",
@@ -12777,7 +12799,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DTLZ7",
@@ -13407,7 +13430,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "DTLZ7",
@@ -14172,7 +14196,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "GMM",
@@ -14455,6 +14480,7 @@
    ],
    "slack": null,
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": null,
     "values": [
@@ -14865,6 +14891,7 @@
    ],
    "slack": null,
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": null,
     "values": [
@@ -15338,6 +15365,7 @@
    ],
    "slack": null,
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": null,
     "values": [
@@ -16275,7 +16303,209 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": [
+    [
+     1.2967404927621828e-12,
+     1.9184653865522705e-13,
+     0.0
+    ],
+    [
+     3.3217872896784684e-13,
+     1.0658141036401503e-13,
+     0.0
+    ],
+    [
+     2.185751579730777e-16,
+     6.661338147750939e-16,
+     0.0
+    ],
+    [
+     1.474376176702208e-13,
+     1.7763568394002505e-13,
+     0.0
+    ],
+    [
+     2.220446049250313e-13,
+     5.861977570020827e-14,
+     0.0
+    ],
+    [
+     3.7125857943465235e-13,
+     1.4921397450962104e-13,
+     0.0
+    ],
+    [
+     5.471179065352771e-13,
+     1.9895196601282805e-13,
+     0.0
+    ],
+    [
+     1.0658141036401503e-12,
+     2.2026824808563106e-13,
+     0.0
+    ],
+    [
+     1.3660184094987926e-12,
+     2.2737367544323206e-13,
+     0.0
+    ],
+    [
+     3.881339694089547e-12,
+     3.055333763768431e-13,
+     0.0
+    ],
+    [
+     3.8902214782865485e-13,
+     2.984279490192421e-13,
+     0.0
+    ],
+    [
+     8.633094239485217e-13,
+     1.2789769243681803e-13,
+     0.0
+    ],
+    [
+     1.3358203432289883e-12,
+     1.6342482922482304e-13,
+     0.0
+    ],
+    [
+     2.9025670755800093e-12,
+     2.6290081223123707e-13,
+     0.0
+    ],
+    [
+     1.6479873021779667e-15,
+     1.9984014443252818e-15,
+     0.0
+    ],
+    [
+     8.15347789284715e-13,
+     2.2026824808563106e-13,
+     0.0
+    ],
+    [
+     1.9024781749976682e-12,
+     3.623767952376511e-13,
+     0.0
+    ],
+    [
+     2.433608869978343e-13,
+     1.5631940186722204e-13,
+     0.0
+    ],
+    [
+     1.1759482276829658e-12,
+     2.1316282072803006e-13,
+     0.0
+    ],
+    [
+     2.2551405187698492e-17,
+     1.3322676295501878e-15,
+     0.0
+    ],
+    [
+     8.843592524954147e-12,
+     6.359357485052897e-13,
+     0.0
+    ],
+    [
+     0.0,
+     2.8189256484623115e-18,
+     0.0
+    ],
+    [
+     2.2595258997171186e-12,
+     1.9184653865522705e-13,
+     0.0
+    ],
+    [
+     1.3877787807814457e-17,
+     1.1102230246251565e-16,
+     0.0
+    ],
+    [
+     0.0,
+     3.0357660829594124e-18,
+     0.0
+    ],
+    [
+     0.0,
+     3.0357660829594124e-18,
+     0.0
+    ],
+    [
+     4.476419235288631e-13,
+     1.9184653865522705e-13,
+     0.0
+    ],
+    [
+     2.949029909160572e-16,
+     4.440892098500626e-16,
+     0.0
+    ],
+    [
+     2.498001805406602e-16,
+     6.661338147750939e-16,
+     0.0
+    ],
+    [
+     1.3877787807814457e-17,
+     1.1102230246251565e-15,
+     0.0
+    ],
+    [
+     3.8163916471489756e-17,
+     1.1102230246251565e-15,
+     0.0
+    ],
+    [
+     1.8752360775309285e-15,
+     1.4210854715202004e-14,
+     0.0
+    ],
+    [
+     6.491340798220335e-10,
+     2.6695090582506964e-11,
+     0.0
+    ],
+    [
+     2.255973186038318e-12,
+     4.263256414560601e-13,
+     0.0
+    ],
+    [
+     1.6413537196058314e-12,
+     3.126388037344441e-13,
+     0.0
+    ],
+    [
+     1.5187850976872141e-12,
+     3.552713678800501e-13,
+     0.0
+    ],
+    [
+     1.0634373381890327e-09,
+     3.552713678800501e-13,
+     0.0
+    ],
+    [
+     1.2860823517257813e-12,
+     2.984279490192421e-13,
+     0.0
+    ],
+    [
+     1.4459544672718039e-12,
+     3.410605131648481e-13,
+     0.0
+    ],
+    [
+     4.2810199829546036e-13,
+     3.268496584496461e-13,
+     0.0
+    ]
+   ]
   },
   {
    "name": "ToyRobust",
@@ -16511,7 +16741,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "VehicleSafety",
@@ -17104,7 +17335,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "ZDT1",
@@ -17592,6 +17824,7 @@
      ]
     ]
    },
+   "sensitivity": null,
    "pareto_fronts_negated": {
     "1": [
      [
@@ -18531,6 +18764,7 @@
      ]
     ]
    },
+   "sensitivity": null,
    "pareto_fronts_negated": {
     "1": [
      [
@@ -19298,6 +19532,7 @@
      ]
     ]
    },
+   "sensitivity": null,
    "pareto_fronts_negated": {
     "1": [
      [
@@ -19991,6 +20226,7 @@
      ]
     ]
    },
+   "sensitivity": null,
    "pareto_fronts_negated": {
     "1": [
      [
@@ -21049,6 +21285,7 @@
      ]
     ]
    },
+   "sensitivity": null,
    "pareto_fronts_negated": {
     "1": [
      [
@@ -22115,7 +22352,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "BNH",
@@ -22476,7 +22714,8 @@
      37.3
     ]
    ],
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "CONSTR",
@@ -22837,7 +23076,8 @@
      84.0
     ]
    ],
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "ConstrainedBraninCurrin",
@@ -23179,6 +23419,7 @@
     ]
    ],
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": 608.4004237022673,
     "values": [
@@ -23756,6 +23997,7 @@
     ]
    ],
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": 0.3996406303723544,
     "values": [
@@ -24658,6 +24900,7 @@
     ]
    ],
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": 0.3996406303723544,
     "values": [
@@ -25749,6 +25992,7 @@
     ]
    ],
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": 0.3996406303723544,
     "values": [
@@ -26728,7 +26972,8 @@
      228420.00000000003
     ]
    ],
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "MW7",
@@ -27091,7 +27336,8 @@
      -0.05687499999999979
     ]
    ],
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "MW7",
@@ -27748,7 +27994,8 @@
      4.9275
     ]
    ],
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "OSY",
@@ -28565,7 +28812,8 @@
      0.0
     ]
    ],
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "SRN",
@@ -28927,6 +29175,7 @@
     ]
    ],
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": null,
     "values": [
@@ -29779,6 +30028,7 @@
     ]
    ],
    "pareto_fronts": null,
+   "sensitivity": null,
    "botorch": {
     "max_hv": null,
     "values": [
@@ -30459,7 +30709,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   },
   {
    "name": "MOMFPark",
@@ -30985,7 +31236,8 @@
     ]
    ],
    "slack": null,
-   "pareto_fronts": null
+   "pareto_fronts": null,
+   "sensitivity": null
   }
  ]
 }

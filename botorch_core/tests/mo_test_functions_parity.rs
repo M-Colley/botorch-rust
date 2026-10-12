@@ -53,6 +53,9 @@ struct Entry {
     slack: Option<Vec<Vec<f64>>>,
     pareto_fronts: Option<BTreeMap<String, Vec<Vec<f64>>>>,
     pareto_fronts_negated: Option<BTreeMap<String, Vec<Vec<f64>>>>,
+    /// Penicillin: BoTorch's own largest change of each value when the inputs
+    /// are perturbed by one unit in the last place.
+    sensitivity: Option<Vec<Vec<f64>>>,
     botorch: Option<BotorchMain>,
 }
 
@@ -80,9 +83,15 @@ struct Sampling {
 }
 
 /// Tolerance (relative, per output column) of values and slacks: rounding
-/// only (the Penicillin simulation accumulates it over up to 2500 steps, see
-/// `penicillin.rs`).
+/// only. Penicillin's explicit Euler simulation is ill-conditioned (perturbing
+/// the inputs by one unit in the last place changes BoTorch's own values by up
+/// to 8e-11 at the fixture points and 7e-4 at random points), so ulp-level
+/// differences between math libraries (exp, expm1, pow) are amplified: its
+/// values are compared with `max(TOL, NOISE_FLOOR_FACTOR × BoTorch's own
+/// change)`, per value (see `noise_floor_err`).
 const TOL: f64 = 1e-12;
+/// Multiple of BoTorch's sensitivity to rounding allowed for Penicillin.
+const NOISE_FLOOR_FACTOR: f64 = 10.0;
 /// Tolerance of constants computed from closed forms (`max_hv`).
 const TOL_CONST: f64 = 1e-15;
 
@@ -132,6 +141,31 @@ fn col_rel_err(actual: &[f64], expected: &[Vec<f64>]) -> f64 {
         .fold(0.0, f64::max)
 }
 
+/// For values with a known sensitivity to rounding (`sens`, absolute): the
+/// worst ratio of the error to `max(TOL, NOISE_FLOOR_FACTOR × sens)`, both
+/// relative like [`col_rel_err`], scaled to `TOL` (so that it is at most `TOL`
+/// if all values are within their tolerances).
+fn noise_floor_err(actual: &[f64], expected: &[Vec<f64>], sens: &[Vec<f64>]) -> f64 {
+    let width = expected[0].len();
+    let (flat, flat_sens) = (flatten(expected), flatten(sens));
+    let mut worst: f64 = 0.0;
+    for j in 0..width {
+        let scale = flat
+            .iter()
+            .skip(j)
+            .step_by(width)
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        let floor = if scale > 0.0 { scale } else { 1.0 };
+        for i in (j..flat.len()).step_by(width) {
+            let denom = flat[i].abs() + floor;
+            let err = (actual[i] - flat[i]).abs() / denom;
+            let tol = TOL.max(NOISE_FLOOR_FACTOR * flat_sens[i] / denom);
+            worst = worst.max(err / tol * TOL);
+        }
+    }
+    worst
+}
+
 fn rel(a: f64, e: f64) -> f64 {
     (a - e).abs() / e.abs().max(f64::MIN_POSITIVE)
 }
@@ -165,14 +199,19 @@ fn parity_mo_test_functions() {
         let x = flatten(&e.x);
         let d = e.dim;
         let v = p.evaluate_true_rows(&x, d).unwrap();
-        r.check(&label, "values", col_rel_err(&v, &e.values), TOL);
         let vn = neg.forward_rows(&x, d, false).unwrap();
-        r.check(
-            &label,
-            "values (negate)",
-            col_rel_err(&vn, &e.values_negated),
-            TOL,
-        );
+        if let Some(sens) = &e.sensitivity {
+            // Penicillin: relative to BoTorch's own sensitivity to rounding.
+            r.check(&label, "values (raw)", col_rel_err(&v, &e.values), f64::MAX);
+            let err = noise_floor_err(&v, &e.values, sens);
+            r.check(&label, "values (scaled to noise floor)", err, TOL);
+            let err = noise_floor_err(&vn, &e.values_negated, sens);
+            r.check(&label, "values (negate, scaled)", err, TOL);
+        } else {
+            r.check(&label, "values", col_rel_err(&v, &e.values), TOL);
+            let err = col_rel_err(&vn, &e.values_negated);
+            r.check(&label, "values (negate)", err, TOL);
+        }
         match &e.slack {
             Some(expected) => {
                 let c = p.evaluate_slack_true_rows(&x, d).unwrap();

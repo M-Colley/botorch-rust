@@ -9,7 +9,10 @@ Written to ``<out>/phase5a_tf/`` by ``generate_fixtures.py --phase 5a-tf``:
   ``evaluate_true``, of ``forward(X, noise=False)`` with ``negate=True`` and of
   ``evaluate_slack_true`` at random points and at points on the boundary of
   the domain (corners); for Penicillin also at points whose simulation runs
-  long. The deterministic Pareto fronts (ZDT) are included as well.
+  long, together with BoTorch's own sensitivity to perturbations of the
+  inputs by one unit in the last place (``sensitivity``; the simulation is
+  ill-conditioned). The deterministic Pareto fronts (ZDT) are included as
+  well.
 * ``sampling.json``: BoTorch's ``sample_simplex`` and ``sample_hypersphere``
   (``qmc=True``) together with the Sobol and normal draws they transform, which
   are the generators of the DTLZ Pareto fronts.
@@ -135,6 +138,25 @@ def long_penicillin_runs(problem: Any, g: torch.Generator, n: int = 8) -> torch.
     return X[torch.argsort(t, descending=True)[:n]]
 
 
+def rounding_sensitivity(problem: Any, X: torch.Tensor, g: torch.Generator, k: int = 8) -> Any:
+    """BoTorch's own sensitivity to rounding: the largest absolute change of
+    each output over ``k`` perturbations of every input by -1, 0 or +1 units
+    in the last place (kept within the bounds). Penicillin's explicit Euler
+    simulation is ill-conditioned, so that ulp-level differences of exp,
+    expm1 and pow between math libraries can change its outputs far more than
+    rounding errors of the closed-form problems."""
+    lo, hi = problem.bounds[0].to(DT), problem.bounds[1].to(DT)
+    y = problem.evaluate_true(X)
+    sens = torch.zeros_like(y)
+    for _ in range(k):
+        step = torch.randint(-1, 2, X.shape, generator=g).to(DT)
+        Xp = torch.where(step > 0, torch.nextafter(X, X + 1), X)
+        Xp = torch.where(step < 0, torch.nextafter(X, X - 1), Xp)
+        Xp = torch.minimum(torch.maximum(Xp, lo), hi)
+        sens = torch.maximum(sens, (problem.evaluate_true(Xp) - y).abs())
+    return tolist(sens)
+
+
 def _finite(name: str, what: str, t: torch.Tensor) -> None:
     if not bool(torch.isfinite(t).all()):
         raise RuntimeError(f"{name}: non-finite {what} (JSON cannot represent them)")
@@ -188,6 +210,7 @@ def case_fixture(ref: Any, name: str, kwargs: dict[str, int], seed: int) -> dict
         "values_negated": tolist(negated(X, noise=False)),
         "slack": None,
         "pareto_fronts": None,
+        "sensitivity": rounding_sensitivity(corrected, X, g) if name == "Penicillin" else None,
     }
     if hasattr(corrected, "evaluate_slack_true"):
         slack = corrected.evaluate_slack_true(X)
