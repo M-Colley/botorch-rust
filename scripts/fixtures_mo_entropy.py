@@ -72,7 +72,6 @@ from __future__ import annotations
 import contextlib
 import functools
 import inspect
-import json
 import os
 import sys
 import warnings
@@ -110,7 +109,11 @@ MODEL_CASES = [
             dict(d=2, n=7, m=1, covar="matern", normalize="shared", seed_offset=1),
         ],
     ),
-    dict(name="m1_scale_d2_n8", kind="single_task", models=[dict(d=2, n=8, m=1, covar="matern_gamma")]),
+    dict(
+        name="m1_scale_d2_n8",
+        kind="single_task",
+        models=[dict(d=2, n=8, m=1, covar="matern_gamma")],
+    ),
     dict(name="m2_fixed_noise_d2_n8", kind="single_task", models=[dict(d=2, n=8, m=2, yvar=True)]),
 ]
 
@@ -269,14 +272,17 @@ def paths_fixture(model: Any, ms: list[int], X: torch.Tensor, seed: int) -> dict
         update_weights.extend([w] if m == 1 else [w[..., t, :] for t in range(m)])
     # The prior paths with the outcome transform (draw_kernel_feature_paths).
     torch.manual_seed(seed + 1)
-    prior = draw_kernel_feature_paths(model, sample_shape=torch.Size([PATH_SAMPLES]), num_features=PATH_FEATURES)
+    prior = draw_kernel_feature_paths(
+        model, sample_shape=torch.Size([PATH_SAMPLES]), num_features=PATH_FEATURES
+    )
     prior_draws = []
     for sub in matheron_models(prior):
         freq, weight = sub.feature_map.weight.detach(), sub.weight.detach()
         if freq.ndim == 2:
             freq, weight = freq.unsqueeze(0), weight.unsqueeze(-2)
         prior_draws.extend(
-            {"frequencies": enc(freq[t]), "weights": enc(weight[..., t, :])} for t in range(freq.shape[0])
+            {"frequencies": enc(freq[t]), "weights": enc(weight[..., t, :])}
+            for t in range(freq.shape[0])
         )
     with torch.no_grad():
         prior_vals = per_output(prior(X), ms)
@@ -364,7 +370,9 @@ def boxes_fixture(pf: torch.Tensor) -> list[dict]:
     return out
 
 
-def acqf_fixture(model: Any, X: torch.Tensor, ps: torch.Tensor, pf: torch.Tensor, seed: int) -> list[dict]:
+def acqf_fixture(
+    model: Any, X: torch.Tensor, ps: torch.Tensor, pf: torch.Tensor, seed: int
+) -> list[dict]:
     from botorch.acquisition.multi_objective.joint_entropy_search import (
         qLowerBoundMultiObjectiveJointEntropySearch,
     )
@@ -394,7 +402,12 @@ def acqf_fixture(model: Any, X: torch.Tensor, ps: torch.Tensor, pf: torch.Tensor
                 }
 
                 def evaluate(
-                    m: Any, name: str = acqf_name, est: str = est, Xp: Any = Xp, Xt: Any = Xt, q: int = q
+                    m: Any,
+                    name: str = acqf_name,
+                    est: str = est,
+                    Xp: Any = Xp,
+                    Xt: Any = Xt,
+                    q: int = q,
                 ) -> Any:
                     torch.manual_seed(seed + q)
                     with mo.dense_model_list():
@@ -441,6 +454,18 @@ def finite_rel_err(a: torch.Tensor, e: torch.Tensor, atol: float = 0.0) -> float
     return _mo().rel_err(a[mask], e[mask], atol=atol)
 
 
+def recording(orig: Any, log: list[torch.Tensor]) -> Any:
+    """``orig`` (BoTorch's ``_update_damping_when_converged``) recording the
+    damping factors it returns in ``log``."""
+
+    def converged(*args: Any, **kwargs: Any) -> Any:
+        res = orig(*args, **kwargs)
+        log.append(res[0].detach().clone())
+        return res
+
+    return converged
+
+
 def pes_fixture(model: Any, X: torch.Tensor, ps: torch.Tensor, seed: int) -> list[dict]:
     from botorch.acquisition.multi_objective import predictive_entropy_search as bt_pes
 
@@ -465,13 +490,7 @@ def pes_fixture(model: Any, X: torch.Tensor, ps: torch.Tensor, seed: int) -> lis
             noise = ulp_noise(seed + 11 * twin) if twin >= 3 else contextlib.nullcontext()
             log: list[torch.Tensor] = []
             orig = bt_pes._update_damping_when_converged
-
-            def converged(*args: Any, **kwargs: Any) -> Any:
-                res = orig(*args, **kwargs)
-                log.append(res[0].detach().clone())
-                return res
-
-            bt_pes._update_damping_when_converged = converged
+            bt_pes._update_damping_when_converged = recording(orig, log)
             try:
                 with mo.dense_model_list(), noise:
                     # The raw training inputs (see the module documentation).
@@ -506,7 +525,8 @@ def pes_fixture(model: Any, X: torch.Tensor, ps: torch.Tensor, seed: int) -> lis
                     "grad": max(finite_rel_err(r[1], gr, atol=1e-14) for r in results[1:]),
                     "omega": max(
                         finite_rel_err(
-                            r[2]._omega_f_nat_cov[..., N:, :, :, :], acqf._omega_f_nat_cov[..., N:, :, :, :]
+                            r[2]._omega_f_nat_cov[..., N:, :, :, :],
+                            acqf._omega_f_nat_cov[..., N:, :, :, :],
                         )
                         for r in results[1:]
                     ),
@@ -527,7 +547,12 @@ def ep_steps_fixture(model: Any, ps: torch.Tensor, maximize: bool, seed: int) ->
     from botorch.acquisition.multi_objective import predictive_entropy_search as bt_pes
 
     steps: list[dict] = []
-    names = ("_update_omega", "_update_marginals", "_update_damping", "_update_damping_when_converged")
+    names = (
+        "_update_omega",
+        "_update_marginals",
+        "_update_damping",
+        "_update_damping_when_converged",
+    )
     origs = {name: getattr(bt_pes, name) for name in names}
 
     def record(name: str) -> Any:
@@ -536,7 +561,9 @@ def ep_steps_fixture(model: Any, ps: torch.Tensor, maximize: bool, seed: int) ->
                 return origs[name](*args, **kwargs)
             if name == "_update_omega":
                 steps.append({})
-            inputs = {k: (v.detach().clone() if torch.is_tensor(v) else v) for k, v in kwargs.items()}
+            inputs = {
+                k: (v.detach().clone() if torch.is_tensor(v) else v) for k, v in kwargs.items()
+            }
             out = origs[name](*args, **kwargs)
             if len(steps) <= EP_STEPS:
                 steps[-1][name] = {"inputs": inputs, "outputs": out}
@@ -563,7 +590,9 @@ def ep_steps_fixture(model: Any, ps: torch.Tensor, maximize: bool, seed: int) ->
         floor_cov = torch.zeros_like(new_cov)
         for twin in (1, 2):
             with ulp_noise(seed + 13 * twin):
-                tm, tc = origs["_update_omega"](**{k: (v.clone() if torch.is_tensor(v) else v) for k, v in kw.items()})
+                tm, tc = origs["_update_omega"](
+                    **{k: (v.clone() if torch.is_tensor(v) else v) for k, v in kw.items()}
+                )
             floor_mean = torch.maximum(floor_mean, (tm - new_mean).abs())
             floor_cov = torch.maximum(floor_cov, (tc - new_cov).abs())
         mg = step["_update_marginals"]
@@ -643,7 +672,9 @@ def model_fixture(case: dict, seed: int) -> dict:
     fixture["acqf"] = acqf_fixture(model, Xtrain, ps, pf, seed + 30)
     fixture["pes"] = pes_fixture(model, Xtrain, ps, seed + 40)
     if case["name"] in EP_STEP_CASES:
-        fixture["ep_steps"] = [ep_steps_fixture(model, ps, maximize, seed + 50) for maximize in (True, False)]
+        fixture["ep_steps"] = [
+            ep_steps_fixture(model, ps, maximize, seed + 50) for maximize in (True, False)
+        ]
     return fixture
 
 
@@ -664,16 +695,19 @@ def estimators_fixture(seed: int) -> dict:
         mean = (torch.rand(b, P, q, 1, m, generator=g, dtype=DT) - 0.5).requires_grad_(True)
         var = (0.2 + torch.rand(b, P, q, 1, m, generator=g, dtype=DT)).requires_grad_(True)
         noise = (0.05 + 0.2 * torch.rand(b, P, q, 1, m, generator=g, dtype=DT)).requires_grad_(True)
-        samples = (2.0 * torch.rand(S, b, P, q, 1, m, generator=g, dtype=DT) - 1.0).requires_grad_(True)
+        samples = (2.0 * torch.rand(S, b, P, q, 1, m, generator=g, dtype=DT) - 1.0).requires_grad_(
+            True
+        )
         lp = (-1.0 - torch.rand(S, b, P, q, generator=g, dtype=DT)).requires_grad_(True)
         results = {}
-        for name, fn in (
-            ("0", lambda: jes._compute_entropy_noiseless(hb, mean, var, noise)),
-            ("LB", lambda: jes._compute_entropy_upper_bound(hb, mean, var, noise, only_diagonal=False)),
-            ("LB2", lambda: jes._compute_entropy_upper_bound(hb, mean, var, noise, only_diagonal=True)),
-            ("MC", lambda: jes._compute_entropy_monte_carlo(hb, mean, var, noise, samples, lp)),
-        ):
-            h = fn()
+        args = (hb, mean, var, noise)
+        for name in ("0", "LB", "LB2", "MC"):
+            if name == "0":
+                h = jes._compute_entropy_noiseless(*args)
+            elif name == "MC":
+                h = jes._compute_entropy_monte_carlo(*args, samples, lp)
+            else:
+                h = jes._compute_entropy_upper_bound(*args, only_diagonal=name == "LB2")
             inputs = [mean, var, noise] + ([samples, lp] if name == "MC" else [])
             grads = torch.autograd.grad(h.sum(), inputs)
             results[name] = {
