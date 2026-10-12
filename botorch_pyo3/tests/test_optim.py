@@ -156,7 +156,6 @@ def test_unsupported_arguments(model: SingleTaskGP) -> None:
         {"post_processing_func": lambda x: x},
         {"gen_candidates": lambda *a: a},
         {"timeout_sec": 1.0},
-        {"return_full_tree": True},
         {"acq_function_sequence": [acqf, acqf]},
         {"unknown_ic_kwarg": 1},
     ):
@@ -164,6 +163,10 @@ def test_unsupported_arguments(model: SingleTaskGP) -> None:
             optimize_acqf(acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, **kwargs)
     with pytest.raises(UnsupportedError):
         optimize_acqf(lambda X: X, BOUNDS, q=1, num_restarts=2, raw_samples=8)
+    # As in BoTorch, return_full_tree only applies to one-shot acquisition
+    # functions (see test_mo_hvkg.py).
+    X, _ = optimize_acqf(acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, return_full_tree=True)
+    assert shape(X) == (1, 3)
     with pytest.raises(BotorchRsError):  # analytic acquisition functions need q = 1
         optimize_acqf(acqf, BOUNDS, q=2, num_restarts=2, raw_samples=8)
 

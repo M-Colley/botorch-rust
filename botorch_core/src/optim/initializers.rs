@@ -405,7 +405,47 @@ pub fn gen_batch_initial_conditions<R: Rng + ?Sized>(
     options: &InitialConditionOptions,
     rng: &mut R,
 ) -> Result<(Vec<Matrix>, bool)> {
+    gen_batch_initial_conditions_with_fantasies(
+        acq_function,
+        bounds,
+        q,
+        num_restarts,
+        raw_samples,
+        options,
+        None,
+        rng,
+    )
+}
+
+/// [`gen_batch_initial_conditions`] with BoTorch's `fixed_X_fantasies`: the
+/// fixed points (`k × d`, e.g. the fantasy designs of a one-shot acquisition
+/// function) are appended to every raw candidate set before it is evaluated,
+/// so the initial conditions are `(q + k) × d`.
+///
+/// # Errors
+/// See [`gen_batch_initial_conditions`]; [`BotorchError::DimensionMismatch`]
+/// if the fixed points do not have `d` columns (BoTorch's message).
+#[allow(clippy::too_many_arguments)]
+pub fn gen_batch_initial_conditions_with_fantasies<R: Rng + ?Sized>(
+    acq_function: &dyn AcquisitionFunction,
+    bounds: &Matrix,
+    q: usize,
+    num_restarts: usize,
+    raw_samples: usize,
+    options: &InitialConditionOptions,
+    fixed_x_fantasies: Option<&Matrix>,
+    rng: &mut R,
+) -> Result<(Vec<Matrix>, bool)> {
     let d = check_bounds(bounds)?;
+    if let Some(f) = fixed_x_fantasies {
+        if f.ncols() != d {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "`fixed_X_fantasies` and `bounds` must both have the same trailing \
+                 dimension `d`, but have {} and {d}, respectively.",
+                f.ncols()
+            )));
+        }
+    }
     if d != acq_function.dim() {
         return Err(BotorchError::DimensionMismatch(format!(
             "bounds have {d} columns but the acquisition function has d = {}",
@@ -446,6 +486,12 @@ pub fn gen_batch_initial_conditions<R: Rng + ?Sized>(
         };
         for x in &mut x_rnd {
             apply_fixed_features(x, &options.fixed_features);
+            if let Some(f) = fixed_x_fantasies {
+                let mut full = Matrix::zeros(q + f.nrows(), d);
+                full.rows_mut(0, q).copy_from(x);
+                full.rows_mut(q, f.nrows()).copy_from(f);
+                *x = full;
+            }
         }
         let chunk = options.batch_limit.unwrap_or(n).max(1);
         let mut acq_vals = Vec::with_capacity(n);
