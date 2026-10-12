@@ -30,6 +30,7 @@ mod dtlz;
 mod engineering;
 mod gmm;
 mod multi_fidelity;
+mod penicillin;
 mod toy_robust;
 mod zdt;
 
@@ -72,6 +73,8 @@ pub enum MultiObjectiveKind {
     Dtlz7,
     /// `GMM`: `M ∈ {2, 3, 4}` Gaussian mixtures on `[0, 1]^2`.
     Gmm,
+    /// `Penicillin`: a fermentation simulator, 7 inputs and 3 objectives.
+    Penicillin,
     /// `ToyRobust`: a one-dimensional problem with two objectives.
     ToyRobust,
     /// `VehicleSafety`: 5 inputs, 3 objectives (Tanabe & Ishibuchi, 2020).
@@ -92,7 +95,7 @@ pub enum MultiObjectiveKind {
 
 impl MultiObjectiveKind {
     /// All problems, in the order of BoTorch's modules.
-    pub const ALL: [MultiObjectiveKind; 20] = [
+    pub const ALL: [MultiObjectiveKind; 21] = [
         Self::BraninCurrin,
         Self::Dh1,
         Self::Dh2,
@@ -105,6 +108,7 @@ impl MultiObjectiveKind {
         Self::Dtlz5,
         Self::Dtlz7,
         Self::Gmm,
+        Self::Penicillin,
         Self::ToyRobust,
         Self::VehicleSafety,
         Self::Zdt1,
@@ -130,6 +134,7 @@ impl MultiObjectiveKind {
             Self::Dtlz5 => "DTLZ5",
             Self::Dtlz7 => "DTLZ7",
             Self::Gmm => "GMM",
+            Self::Penicillin => "Penicillin",
             Self::ToyRobust => "ToyRobust",
             Self::VehicleSafety => "VehicleSafety",
             Self::Zdt1 => "ZDT1",
@@ -169,7 +174,7 @@ impl MultiObjectiveKind {
             Self::BraninCurrin | Self::Gmm => Some(2),
             Self::ToyRobust => Some(1),
             Self::VehicleSafety => Some(5),
-            Self::CarSideImpact => Some(7),
+            Self::CarSideImpact | Self::Penicillin => Some(7),
             Self::MomfBraninCurrin => Some(3),
             Self::MomfPark => Some(5),
             _ => None,
@@ -196,7 +201,7 @@ impl MultiObjectiveKind {
     pub fn fixed_num_objectives(self) -> Option<usize> {
         match self {
             _ if self.has_num_objectives_argument() => None,
-            Self::VehicleSafety => Some(3),
+            Self::VehicleSafety | Self::Penicillin => Some(3),
             Self::CarSideImpact => Some(4),
             _ => Some(2),
         }
@@ -342,6 +347,8 @@ impl NoiseStd {
 
 /// Points per evaluation from which evaluations run in parallel (rayon).
 const PARALLEL_MIN_POINTS: usize = 4096;
+/// The same for the (much more expensive) Penicillin simulation.
+const PARALLEL_MIN_POINTS_SIMULATION: usize = 32;
 
 /// A multi-objective test problem (BoTorch's `MultiObjectiveTestProblem`,
 /// constrained or not) with bounds, optional negation and observation noise.
@@ -566,7 +573,11 @@ impl MultiObjectiveTestProblem {
         F: Fn(&[f64], &mut [f64]) + Sync + Send,
     {
         let mut out = vec![0.0; n * width];
-        if n >= PARALLEL_MIN_POINTS {
+        let min_points = match self.kind {
+            MultiObjectiveKind::Penicillin => PARALLEL_MIN_POINTS_SIMULATION,
+            _ => PARALLEL_MIN_POINTS,
+        };
+        if n >= min_points {
             out.par_chunks_mut(width)
                 .zip(x.par_chunks(self.dim))
                 .for_each(|(o, xi)| f(xi, o));
@@ -599,6 +610,7 @@ impl MultiObjectiveTestProblem {
             K::Zdt2 => zdt::zdt2(x, out),
             K::Zdt3 => zdt::zdt3(x, out),
             K::Gmm => gmm::evaluate(x, self.num_objectives, out),
+            K::Penicillin => penicillin::evaluate(x, out),
             K::ToyRobust => toy_robust::evaluate(self.component.as_ref().expect("Levy"), x, out),
             K::VehicleSafety => engineering::vehicle_safety(x, out),
             K::CarSideImpact => engineering::car_side_impact(x, out),
@@ -819,6 +831,15 @@ fn default_bounds(kind: MultiObjectiveKind, dim: usize) -> Vec<(f64, f64)> {
         K::Dtlz1 | K::Dtlz2 | K::Dtlz3 | K::Dtlz4 | K::Dtlz5 | K::Dtlz7 => vec![(0.0, 1.0); dim],
         K::Zdt1 | K::Zdt2 | K::Zdt3 | K::Gmm => vec![(0.0, 1.0); dim],
         K::ToyRobust => vec![(0.0, 0.7)],
+        K::Penicillin => vec![
+            (60.0, 120.0),
+            (0.05, 18.0),
+            (293.0, 303.0),
+            (0.05, 18.0),
+            (0.01, 0.5),
+            (500.0, 700.0),
+            (5.0, 6.5),
+        ],
         K::VehicleSafety => vec![(1.0, 3.0); 5],
         K::CarSideImpact => vec![
             (0.5, 1.5),
@@ -856,6 +877,7 @@ fn raw_ref_point(kind: MultiObjectiveKind, m: usize) -> Vec<f64> {
         K::Zdt1 | K::Zdt2 | K::Zdt3 => vec![11.0, 11.0],
         K::Gmm => gmm::REF_POINT[..m].to_vec(),
         K::ToyRobust => vec![-6.1397, -8.1942],
+        K::Penicillin => vec![25.935, 57.612, 935.5],
         K::VehicleSafety => vec![1864.72022, 11.81993945, 0.2903999384],
         K::CarSideImpact => vec![45.4872, 4.5114, 13.3394, 10.3942],
         K::MomfBraninCurrin | K::MomfPark => vec![0.0, 0.0],
@@ -886,6 +908,7 @@ fn max_hv(kind: MultiObjectiveKind, dim: usize, m: usize) -> Option<f64> {
         K::Zdt2 => Some(120.0 + 1.0 / 3.0),
         K::Zdt3 => Some(128.778_116_130_690_76),
         K::Gmm | K::ToyRobust => None,
+        K::Penicillin => Some(2183455.909507436),
         K::VehicleSafety => Some(246.81607081187002),
         K::CarSideImpact => Some(484.72654347642793),
         K::MomfBraninCurrin => Some(0.5235514158034145),
