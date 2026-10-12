@@ -1,0 +1,223 @@
+name: Release
+
+# Builds the `botorch-rust` wheels (abi3: one wheel per platform for CPython
+# 3.11 and later) and the sdist with maturin, checks the native wheels, and
+# attaches everything to a GitHub Release for tags `v*`. A manual run
+# (workflow_dispatch) builds and checks the same files and keeps them as
+# workflow artifacts only.
+#
+# Before tagging `vX.Y.Z`, set the version in `botorch_pyo3/pyproject.toml`
+# (`X.Y.Z`, PEP 440, e.g. `0.1.0`, `0.2.0rc1`) and in the workspace
+# `Cargo.toml` (`X.Y.Z`, SemVer, e.g. `0.2.0-rc1`); the `version` job checks
+# that they agree with the tag.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Check the version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Package and crate versions (and the tag)
+        shell: python
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          import os, re, sys, tomllib
+
+          with open("botorch_pyo3/pyproject.toml", "rb") as f:
+              py_version = tomllib.load(f)["project"]["version"]
+          with open("Cargo.toml", "rb") as f:
+              rust_version = tomllib.load(f)["workspace"]["package"]["version"]
+          print(f"pyproject {py_version}, Cargo {rust_version}")
+
+          def pep440(semver: str) -> str:
+              """`0.2.0-rc1` -> `0.2.0rc1`, `0.1.0-dev` -> `0.1.0.dev0`."""
+              base, _, pre = semver.partition("-")
+              if not pre:
+                  return base
+              m = re.fullmatch(r"(alpha|a|beta|b|rc|dev)\.?(\d*)", pre)
+              if not m:
+                  sys.exit(f"unsupported pre-release {pre!r} in Cargo.toml")
+              kind = {"alpha": "a", "beta": "b"}.get(m[1], m[1])
+              num = m[2] or "0"
+              return f"{base}.dev{num}" if kind == "dev" else f"{base}{kind}{num}"
+
+          if pep440(rust_version) != py_version:
+              sys.exit(f"Cargo.toml ({rust_version}) and pyproject.toml ({py_version}) disagree")
+          if os.environ["REF_TYPE"] == "tag":
+              tag = os.environ["REF_NAME"].removeprefix("v")
+              if tag not in (py_version, rust_version):
+                  sys.exit(f"tag v{tag} does not match the package version {py_version}")
+
+  wheels:
+    name: Wheel (${{ matrix.label }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: manylinux x86_64
+            os: ubuntu-latest
+            target: x86_64
+            manylinux: auto
+          - label: manylinux aarch64
+            os: ubuntu-latest
+            target: aarch64
+            manylinux: auto
+          - label: windows x86_64
+            os: windows-latest
+            target: x64
+          - label: macos arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - label: macos x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A Python >= 3.11 for maturin's abi3 build configuration (Linux builds
+      # run in the manylinux containers, which have their own).
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Build the wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: v1.14.1
+          working-directory: botorch_pyo3
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --locked --out dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: botorch_pyo3/dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: Source distribution
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the sdist
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: v1.14.1
+          working-directory: botorch_pyo3
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdist
+          path: botorch_pyo3/dist/*.tar.gz
+          if-no-files-found: error
+
+  # Installs the native wheels (without NumPy or torch, as most users of the
+  # wheels will not need a Rust toolchain) on the oldest and the newest
+  # supported Python and runs the test suite on nested lists.
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    needs: wheels
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheel-*
+          path: wheels
+          merge-multiple: true
+      - name: Install the wheel
+        shell: bash
+        run: |
+          ls wheels
+          python -m pip install pytest
+          python -m pip install --no-index --find-links wheels botorch-rust
+          python -c "import botorch_rs, sys; print(botorch_rs.__version__, botorch_rs.__file__); assert 'site-packages' in botorch_rs.__file__"
+      - name: Tests (nested lists)
+        working-directory: botorch_pyo3
+        run: python -m pytest tests -q -rs -m "not equivalence" -p no:cacheprovider
+
+  release:
+    name: GitHub Release
+    if: github.ref_type == 'tag'
+    needs: [wheels, sdist, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          ls -l dist
+          flags=""
+          # Pre-releases (a, b, rc, dev) are marked as such.
+          if echo "$TAG" | grep -Eq '(a|b|rc|dev|alpha|beta)[0-9]*$|-'; then flags="--prerelease"; fi
+          gh release create "$TAG" dist/* --repo "$REPO" --title "botorch-rust $TAG" \
+            --generate-notes --verify-tag $flags
+
+  # Publishing to PyPI is disabled until the project exists there. To enable
+  # it with trusted publishing (no API token):
+  #   1. On pypi.org, add a "pending publisher" for the project `botorch-rust`:
+  #      owner `M-Colley`, repository `botorch-rust`, workflow `release.yml`,
+  #      environment `pypi`.
+  #   2. In the repository settings, create the environment `pypi` (optionally
+  #      with required reviewers).
+  #   3. Uncomment the job below. It runs for tags after the GitHub Release.
+  #
+  # pypi:
+  #   name: Publish to PyPI
+  #   if: github.ref_type == 'tag'
+  #   needs: release
+  #   runs-on: ubuntu-latest
+  #   environment:
+  #     name: pypi
+  #     url: https://pypi.org/p/botorch-rust
+  #   permissions:
+  #     id-token: write
+  #   steps:
+  #     - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+  #       with:
+  #         path: dist
+  #         merge-multiple: true
+  #     - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
