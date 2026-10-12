@@ -22,10 +22,11 @@ known differences. Numbers come from BoTorch main at da00e04 (the released
 
 ## What is not ported yet (changes)
 
-- Under **Models**, "deterministic, ensemble and cost models" becomes
-  "deterministic models other than `MatheronPathModel` (`GenericDeterministicModel`,
-  `AffineDeterministicModel`, `PosteriorMeanModel`, `FixedSingleSampleModel`),
-  ensemble and cost models".
+- Under **Models**, "deterministic and ensemble models, and cost models other
+  than ..." becomes "deterministic models other than `MatheronPathModel`
+  (`GenericDeterministicModel`, `AffineDeterministicModel`,
+  `PosteriorMeanModel`, `FixedSingleSampleModel`), ensemble models, and cost
+  models other than ...".
 - Under **Single-objective acquisition functions**, "pathwise Thompson
   sampling" stays (the single-objective `qMaxValueEntropy`, GIBBON,
   `qJointEntropySearch` and `qPredictiveEntropySearch` are not ported), but
@@ -41,9 +42,10 @@ known differences. Numbers come from BoTorch main at da00e04 (the released
   transforms of `botorch.sampling.pathwise.utils` (they are part of the paths
   computed in Rust); constructing `GeneralizedLinearPath` or `MatheronPath`
   objects from feature maps and weights (paths come from the samplers)".
-- Coverage (`scripts/api_coverage.py`): 186 of 773 public classes and
-  functions (24%, from 165); `acquisition.multi_objective` 23 of 33 (70%),
-  `models` 5 of 66, `sampling.pathwise` 11 of 25 (44%).
+- Coverage (`scripts/api_coverage.py`, after merging main with the HVKG
+  work): 199 of 773 public classes and functions (26%, from 178);
+  `acquisition.multi_objective` 25 of 33 (76%), `models` 7 of 66,
+  `sampling.pathwise` 11 of 25 (44%).
 
 ## Equivalence with BoTorch (new section)
 
