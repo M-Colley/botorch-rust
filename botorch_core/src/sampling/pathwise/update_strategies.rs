@@ -3,9 +3,11 @@
 use std::sync::Arc;
 
 use crate::error::{BotorchError, Result};
-use crate::models::{Likelihood, SingleTaskGP};
+use crate::models::{Likelihood, Model, SingleTaskGP};
 use crate::sampling::pathwise::features::KernelEvaluationMap;
 use crate::sampling::pathwise::paths::GeneralizedLinearPath;
+use crate::sampling::pathwise::prior_samplers::model_gps;
+use crate::sampling::pathwise::utils::{derive_seed, noise_draws};
 use crate::Matrix;
 
 /// The Gaussian pathwise update of an exact GP (BoTorch's `gaussian_update`
@@ -68,4 +70,24 @@ pub fn gaussian_update(
         gp.input_transform().cloned(),
         None,
     )
+}
+
+/// The standard normal noise draws of the Gaussian updates of every output
+/// of `model` (`num_samples × n` each, `n` the output's number of training
+/// points), from the streams of `seed` that
+/// [`crate::sampling::pathwise::matheron_path_draws`] uses: for the same
+/// seed they are the `noise` of its draws, so that the [`gaussian_update`]s
+/// of the prior paths of [`crate::sampling::pathwise::draw_kernel_feature_paths`]
+/// with the same seed give the paths of
+/// [`crate::sampling::pathwise::draw_matheron_paths`].
+///
+/// # Errors
+/// [`BotorchError::Unsupported`] for batched models or models without
+/// independent exact GP outputs.
+pub fn draw_update_noise(model: &dyn Model, num_samples: usize, seed: u64) -> Result<Vec<Matrix>> {
+    Ok(model_gps(model)?
+        .iter()
+        .enumerate()
+        .map(|(t, gp)| noise_draws(num_samples, gp.num_train(), derive_seed(seed, t as u64)))
+        .collect())
 }

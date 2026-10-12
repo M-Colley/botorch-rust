@@ -44,6 +44,23 @@ impl Default for MatheronPathOptions {
     }
 }
 
+/// The random numbers of the paths of every output of `model`: the
+/// explicit draws of `options` (checked) or draws from `options.seed`
+/// (output `t` from stream `t`; a random seed if `None`).
+///
+/// # Errors
+/// [`BotorchError::Unsupported`] for batched models or models without
+/// independent exact GP outputs, [`BotorchError::DimensionMismatch`] for
+/// explicit draws of the wrong shapes or number, and errors of
+/// [`MatheronPathDraws::sample`].
+pub fn matheron_path_draws(
+    model: &dyn Model,
+    num_samples: usize,
+    options: &MatheronPathOptions,
+) -> Result<Vec<MatheronPathDraws>> {
+    output_draws(&model_gps(model)?, num_samples, options)
+}
+
 /// The draws of every output GP: explicit ones (checked) or drawn from the
 /// seed.
 pub(crate) fn output_draws(
@@ -492,5 +509,47 @@ mod tests {
         let many = get_matheron_path_model(&a, 3, &options).unwrap();
         assert!(many.forward(&x).is_err());
         assert_eq!(many.forward_samples(&x).unwrap().len(), 3);
+    }
+
+    /// The prior paths and the Gaussian updates with the noise of the same
+    /// seed are the prior and update paths of the Matheron paths.
+    #[test]
+    fn matheron_paths_are_prior_plus_update() {
+        use crate::sampling::pathwise::{
+            draw_kernel_feature_paths, draw_update_noise, gaussian_update,
+        };
+        let g = gp(7, KernelKind::Matern52, true, false);
+        let options = MatheronPathOptions {
+            num_features: 32,
+            seed: Some(3),
+            draws: None,
+        };
+        let paths = draw_matheron_paths(&g, 4, &options).unwrap();
+        let prior = draw_kernel_feature_paths(&g, 4, &options).unwrap();
+        let noise = draw_update_noise(&g, 4, 3).unwrap();
+        assert_eq!(
+            noise[0],
+            matheron_path_draws(&g, 4, &options).unwrap()[0].noise
+        );
+        let draws = matheron_path_draws(&g, 4, &options).unwrap();
+        let prior_t = kernel_feature_path(
+            &g,
+            draws[0].frequencies.clone(),
+            draws[0].weights.clone(),
+            false,
+        )
+        .unwrap();
+        let train = g.transformed_train_inputs().clone();
+        let values = prior_t.forward_transformed(&train);
+        let update = gaussian_update(&g, &values, &noise[0]).unwrap();
+        let x = Matrix::from_row_slice(2, 2, &[0.3, 0.1, -0.5, 1.2]);
+        let untransform = OutcomeUntransform::of(&g).expect("standardized outcomes");
+        let joined = &prior_t.forward(&x).unwrap()[0] + &update.forward(&x).unwrap()[0];
+        let expected = joined.map(|v| untransform.apply(v));
+        assert!((&paths.forward(&x).unwrap()[0] - &expected).amax() < 1e-12);
+        // `draw_kernel_feature_paths` has the outcome transform.
+        let p = prior.forward(&x).unwrap();
+        let pt = prior_t.forward(&x).unwrap()[0].map(|v| untransform.apply(v));
+        assert!((&p[0] - &pt).amax() < 1e-12);
     }
 }

@@ -88,9 +88,9 @@ pub use paths::{
     GeneralizedLinearPath, PathDict, PathGradients, PathJoin, PathList, PathValues, SamplePath,
 };
 pub use posterior_samplers::{
-    draw_matheron_paths, get_matheron_path_model, MatheronPath, MatheronPathModel,
-    MatheronPathOptions,
+    draw_matheron_paths, get_matheron_path_model, matheron_path_draws, MatheronPath,
+    MatheronPathModel, MatheronPathOptions,
 };
-pub use prior_samplers::draw_kernel_feature_paths;
-pub use update_strategies::gaussian_update;
+pub use prior_samplers::{draw_kernel_feature_paths, kernel_feature_path};
+pub use update_strategies::{draw_update_noise, gaussian_update};
 pub use utils::{MatheronPathDraws, OutcomeUntransform};

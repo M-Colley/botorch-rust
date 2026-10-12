@@ -58,6 +58,14 @@ pub(crate) fn derive_seed(seed: u64, stream: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// The standard normal noise draws (`num_samples × n`) of the paths of one
+/// output whose draws come from `seed` (stream 3, i.i.d. from a seeded
+/// Xoshiro256++ generator).
+pub(crate) fn noise_draws(num_samples: usize, n: usize, seed: u64) -> Matrix {
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(derive_seed(seed, 3));
+    Matrix::from_fn(num_samples, n, |_, _| rng.sample(StandardNormal))
+}
+
 /// Checks that the number of Fourier features is even (BoTorch's message).
 pub(crate) fn check_num_features(num_features: usize) -> Result<()> {
     if num_features == 0 || num_features % 2 == 1 {
@@ -149,8 +157,7 @@ impl MatheronPathDraws {
         let frequencies = draw_fourier_frequencies(kind, d, num_features, seed)?;
         let weights =
             draw_sobol_normal_samples(num_features, num_samples, Some(derive_seed(seed, 2)))?;
-        let mut rng = Xoshiro256PlusPlus::seed_from_u64(derive_seed(seed, 3));
-        let noise = Matrix::from_fn(num_samples, n, |_, _| rng.sample(StandardNormal));
+        let noise = noise_draws(num_samples, n, seed);
         Ok(Self {
             frequencies,
             weights,
