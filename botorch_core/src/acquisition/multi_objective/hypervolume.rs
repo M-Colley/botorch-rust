@@ -459,6 +459,11 @@ fn qehvi_sample(
             for k in 0..nc {
                 let l = &lower[k * m..(k + 1) * m];
                 let u = &upper[k * m..(k + 1) * m];
+                if l.iter().zip(u).all(|(a, b)| a == b) {
+                    // An empty cell (e.g. one padding a per-sample
+                    // decomposition): zero area and zero gradient.
+                    continue;
+                }
                 for j in 0..m {
                     let (o, go) = minimum_grad_a(overlap[j], u[j]);
                     let raw = o - l[j];
@@ -579,17 +584,27 @@ pub fn log_qehvi(
     }
 }
 
-/// `logsumexp` of two values and its gradient (BoTorch's `logplusexp`).
+/// BoTorch's `logplusexp(a, b)` (`logsumexp` of two values) and its
+/// gradient. `logplusexp(-inf, b) = b` with gradient `(0, 1)` for finite `b`
+/// exactly, which saves the transcendental functions of the first term of
+/// every chain.
 #[inline]
 fn logplusexp_grad(a: f64, b: f64) -> (f64, f64, f64) {
+    if a == f64::NEG_INFINITY && b.is_finite() {
+        return (b, 0.0, 1.0);
+    }
     let (v, g) = logsumexp_with_grad(&[a, b]);
     (v, g[0], g[1])
 }
 
 /// BoTorch's `logdiffexp(log_a, log_b) = log_b + log1mexp(log_a - shift)`
-/// with `shift = log_b` (`0` if `log_b = -inf`) and its gradients.
+/// with `shift = log_b` (`0` if `log_b = -inf`) and its gradients;
+/// `logdiffexp(-inf, b) = b` exactly.
 #[inline]
 fn logdiffexp_grad(log_a: f64, log_b: f64) -> (f64, f64, f64) {
+    if log_a == f64::NEG_INFINITY && log_b.is_finite() {
+        return (log_b, 0.0, 1.0);
+    }
     let is_inf = log_b == f64::NEG_INFINITY;
     let shift = if is_inf { 0.0 } else { log_b };
     let x = log_a - shift;
@@ -617,6 +632,12 @@ fn smooth_min_grad(x: &[f64], fat: bool, tau: f64, scratch: &mut [f64], grad: &m
 }
 
 /// The log hypervolume improvement of one sample and its gradients.
+///
+/// Cells with an empty side (`log(u - l) = -inf`, e.g. the zero cells that
+/// pad per-sample decompositions) have a log area of `-inf` with zero
+/// gradient and are skipped, which leaves the `logsumexp` over the cells
+/// unchanged; only if every cell is empty are all of them processed (to
+/// reproduce BoTorch's conventions for an all-`-inf` reduction).
 #[allow(clippy::too_many_arguments)]
 fn log_qehvi_sample(
     y: &[f64],
@@ -630,15 +651,26 @@ fn log_qehvi_sample(
     st: LogSettings,
     with_grad: bool,
 ) -> SampleResult {
+    let mut cells: Vec<usize> = (0..nc)
+        .filter(|&k| {
+            log_lengths[k * m..(k + 1) * m]
+                .iter()
+                .all(|&c| c != f64::NEG_INFINITY)
+        })
+        .collect();
+    if cells.is_empty() {
+        cells = (0..nc).collect();
+    }
+    let nl = cells.len();
     let nsub = subsets.len();
     // 1) The smooth log-improvement of every point over every cell's lower
-    //    bound, L[k, p, j], and its derivative.
-    let mut lim = vec![0.0; nc * q * m];
-    let mut dlim = vec![0.0; if with_grad { nc * q * m } else { 0 }];
-    for k in 0..nc {
+    //    bound, L[k, p, j], and its derivative (k indexes the processed cells).
+    let mut lim = vec![0.0; nl * q * m];
+    let mut dlim = vec![0.0; if with_grad { nl * q * m } else { 0 }];
+    for (k, &c) in cells.iter().enumerate() {
         for p in 0..q {
             for j in 0..m {
-                let z = y[j * q + p] - lower[k * m + j];
+                let z = y[j * q + p] - lower[c * m + j];
                 let (v, d) = if st.fat {
                     log_fatplus_with_grad(z, st.tau_relu)
                 } else {
@@ -653,11 +685,11 @@ fn log_qehvi_sample(
         }
     }
     // 2) Log areas per cell and subset; local derivatives of the log area of
-    //    (k, J) with respect to L[k, p, j] for p ∈ J (coefficients `coef`,
+    //    (k, J) with respect to L[k, p, j] for p in J (coefficients `coef`,
     //    one per cell, subset member and outcome).
     let total = subsets.total_members();
-    let mut log_area = vec![0.0; nc * nsub];
-    let mut coef = vec![0.0; if with_grad { nc * total * m } else { 0 }];
+    let mut log_area = vec![0.0; nl * nsub];
+    let mut coef = vec![0.0; if with_grad { nl * total * m } else { 0 }];
     let mut vals = vec![0.0; q];
     let mut scratch = vec![0.0; q.max(2)];
     let mut gmin = vec![0.0; q.max(2)];
@@ -667,10 +699,11 @@ fn log_qehvi_sample(
         let set = subsets.subset(g);
         let off = subsets.starts[g];
         let w_sum = log_w.map_or(0.0, |lw| set.iter().map(|&p| lw[p]).sum::<f64>());
-        for k in 0..nc {
+        for (k, &c) in cells.iter().enumerate() {
             let mut acc = 0.0;
             for j in 0..m {
-                // min over the subset members.
+                // The minimum over the subset members (the fatmin of a single
+                // value is the value).
                 let a = if set.len() == 1 {
                     gmin[0] = 1.0;
                     lim[(k * q + set[0]) * m + j]
@@ -687,9 +720,9 @@ fn log_qehvi_sample(
                         &mut gmin[..e],
                     )
                 };
-                // smooth minimum with the log cell length.
+                // The smooth minimum with the log cell length.
                 pair[0] = a;
-                pair[1] = log_lengths[k * m + j];
+                pair[1] = log_lengths[c * m + j];
                 let b = smooth_min_grad(&pair, st.fat, st.tau_max, &mut scratch[..2], &mut gpair);
                 acc += b;
                 if with_grad {
@@ -704,20 +737,28 @@ fn log_qehvi_sample(
     // 3) - 6) Per cell: logsumexp over the subsets of every size, the chains
     //    of logplusexp for odd and even sizes, logdiffexp; then logsumexp
     //    over the cells.
-    let mut d_cells = vec![0.0; nc];
-    // Per cell and size: (weights of the subsets, chain weights).
-    let mut lse_w = vec![0.0; if with_grad { nc * nsub } else { 0 }];
-    let mut chain_w = vec![(0.0, 0.0); if with_grad { nc * q } else { 0 }];
-    let mut diff_w = vec![(0.0, 0.0); if with_grad { nc } else { 0 }];
-    for k in 0..nc {
+    let mut d_cells = vec![0.0; nl];
+    let mut lse_w = vec![0.0; if with_grad { nl * nsub } else { 0 }];
+    let mut chain_w = vec![(0.0, 0.0); if with_grad { nl * q } else { 0 }];
+    let mut diff_w = vec![(0.0, 0.0); if with_grad { nl } else { 0 }];
+    for k in 0..nl {
         let la = &log_area[k * nsub..(k + 1) * nsub];
         let mut acc = [f64::NEG_INFINITY; 2];
         for i in 1..=q {
             let r = subsets.of_size(i);
-            let (lse, w) = logsumexp_with_grad(&la[r.clone()]);
-            if with_grad {
-                lse_w[k * nsub + r.start..k * nsub + r.end].copy_from_slice(&w);
-            }
+            // The logsumexp of a single value is the value (weight 1).
+            let lse = if r.len() == 1 {
+                if with_grad {
+                    lse_w[k * nsub + r.start] = 1.0;
+                }
+                la[r.start]
+            } else {
+                let (lse, w) = logsumexp_with_grad(&la[r.clone()]);
+                if with_grad {
+                    lse_w[k * nsub + r.start..k * nsub + r.end].copy_from_slice(&w);
+                }
+                lse
+            };
             let par = i % 2;
             let (v, w0, w1) = logplusexp_grad(acc[par], lse);
             acc[par] = v;
@@ -743,7 +784,7 @@ fn log_qehvi_sample(
     let mut gy = vec![0.0; m * q];
     let mut gw = vec![0.0; if log_w.is_some() { q } else { 0 }];
     let mut dl = vec![0.0; q * m];
-    for k in 0..nc {
+    for k in 0..nl {
         let dd = wk[k];
         if dd == 0.0 {
             continue;
