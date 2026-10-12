@@ -60,7 +60,7 @@ def partitioning_cells(partitioning: Any) -> Flat:
             "botorch_rs supports unbatched box decompositions (hypercell bounds of shape "
             f"`2 x num_cells x m`), got hypercell bounds of shape {tuple(shape)}."
         )
-    return [float(v) for v in data], tuple(shape)
+    return data, tuple(shape)
 
 
 class MultiObjectiveAnalyticAcquisitionFunction(AcquisitionFunction):

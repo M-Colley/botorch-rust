@@ -34,7 +34,7 @@ use pyo3::prelude::*;
 use crate::acquisition::{
     constraint_callbacks, constraints_of, model_of, sampler_of, PyAcquisitionFunction,
 };
-use crate::arrays::{matrix_out, Array, ArrayOut};
+use crate::arrays::{matrix_out, Array, ArrayBuf};
 use crate::callbacks::PyCallback;
 use crate::errors::{dimension_error, unsupported, IntoPyResult};
 use crate::models::PyModel;
@@ -271,21 +271,21 @@ pub struct PyNehvi {
 #[pymethods]
 impl PyNehvi {
     /// The observed (pruned) baseline (`_X_baseline`).
-    fn x_baseline(&self) -> ArrayOut {
-        matrix_out(&nehvi_call!(self, a => a.x_baseline()))
+    fn x_baseline(&self) -> ArrayBuf {
+        matrix_out(&nehvi_call!(self, a => a.x_baseline())).into()
     }
 
     /// The baseline and the cached pending points (`X_baseline`).
-    fn x_baseline_and_pending(&self) -> ArrayOut {
-        matrix_out(&nehvi_call!(self, a => a.x_baseline_and_pending()))
+    fn x_baseline_and_pending(&self) -> ArrayBuf {
+        matrix_out(&nehvi_call!(self, a => a.x_baseline_and_pending())).into()
     }
 
     /// The hypercell bounds under every MC sample (`2 x S x num_cells x m`).
-    fn cell_bounds(&self) -> ArrayOut {
+    fn cell_bounds(&self) -> ArrayBuf {
         let c = nehvi_call!(self, a => a.cell_bounds());
         let mut data = c.lower().to_vec();
         data.extend_from_slice(c.upper());
-        (data, vec![2, c.batches(), c.num_cells(), c.num_outcomes()])
+        ArrayBuf(data, vec![2, c.batches(), c.num_cells(), c.num_outcomes()])
     }
 
     /// `_prev_nehvi`.
@@ -294,20 +294,25 @@ impl PyNehvi {
     }
 
     /// `_hypervolumes` (one per MC sample).
-    fn hypervolumes(&self) -> Vec<f64> {
-        nehvi_call!(self, a => a.hypervolumes())
+    fn hypervolumes(&self) -> ArrayBuf {
+        let hvs = nehvi_call!(self, a => a.hypervolumes());
+        let n = hvs.len();
+        ArrayBuf(hvs, vec![n])
     }
 
     /// `_baseline_hvs` (non-incremental NEHVI), else `None`.
-    fn baseline_hvs(&self) -> Option<Vec<f64>> {
-        nehvi_call!(self, a => a.baseline_hvs())
+    fn baseline_hvs(&self) -> Option<ArrayBuf> {
+        nehvi_call!(self, a => a.baseline_hvs()).map(|hvs| {
+            let n = hvs.len();
+            ArrayBuf(hvs, vec![n])
+        })
     }
 
     /// The base samples of the cached points (`S x N m`), if any.
-    fn base_samples(&self) -> Option<ArrayOut> {
+    fn base_samples(&self) -> Option<ArrayBuf> {
         nehvi_call!(self, a => a.base_samples())
             .as_ref()
-            .map(matrix_out)
+            .map(|z| matrix_out(z).into())
     }
 }
 
@@ -500,7 +505,7 @@ pub fn q_log_nparego(
     tau_relu: f64,
     tau_max: f64,
     incremental: bool,
-) -> PyResult<(PyAcquisitionFunction, Vec<f64>, ArrayOut)> {
+) -> PyResult<(PyAcquisitionFunction, Vec<f64>, ArrayBuf)> {
     let m = model_of(&model);
     let x_baseline = x_baseline.matrix("X_baseline")?;
     let options = QLogNParEGOOptions {
@@ -523,7 +528,7 @@ pub fn q_log_nparego(
     };
     let a = threads::run(py, || QLogNParEGO::new(m, &x_baseline, options)).into_py_result()?;
     let weights = a.scalarization_weights().to_vec();
-    let y_baseline = matrix_out(a.y_baseline());
+    let y_baseline = ArrayBuf::from(matrix_out(a.y_baseline()));
     let nei = Arc::clone(a.log_nei());
     Ok((
         PyAcquisitionFunction::with_nei(Arc::new(a), nei, "qLogNParEGO"),
@@ -562,7 +567,7 @@ pub fn prune_inferior_points_multi_objective_py(
     max_frac: f64,
     seed: Option<u64>,
     base_samples: Option<Array>,
-) -> PyResult<ArrayOut> {
+) -> PyResult<ArrayBuf> {
     let m = model_of(&model);
     let x = x.matrix("X")?;
     let options = PruneMultiObjectiveOptions {
@@ -577,7 +582,7 @@ pub fn prune_inferior_points_multi_objective_py(
         prune_inferior_points_multi_objective(m.as_ref(), &x, &ref_point, &options)
     })
     .into_py_result()?;
-    Ok(matrix_out(&pruned))
+    Ok(matrix_out(&pruned).into())
 }
 
 /// Registers the classes and functions of this module.

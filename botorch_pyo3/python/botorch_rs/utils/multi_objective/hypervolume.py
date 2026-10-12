@@ -273,8 +273,7 @@ class NoisyExpectedHypervolumeMixin:
     @property
     def _hypervolumes(self) -> Any:
         """The hypervolume of the cached points under every MC sample."""
-        hvs = self._rs_nehvi.hypervolumes()
-        return from_flat(hvs, (len(hvs),), self._baseline_kind)
+        return from_pair(self._rs_nehvi.hypervolumes(), self._baseline_kind)
 
     @property
     def _baseline_hvs(self) -> Any:
@@ -283,7 +282,7 @@ class NoisyExpectedHypervolumeMixin:
         hvs = self._rs_nehvi.baseline_hvs()
         if hvs is None:
             raise AttributeError("_baseline_hvs is only computed for non-incremental NEHVI.")
-        return from_flat(hvs, (len(hvs),), self._baseline_kind)
+        return from_pair(hvs, self._baseline_kind)
 
     @property
     def _prev_nehvi(self) -> Any:
