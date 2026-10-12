@@ -10,7 +10,8 @@ adjoint of the outputs back and the vector-Jacobian product is computed with
 
 Layouts (row-major): posterior samples ``S x 1 x n x m`` (BoTorch's
 ``sample_shape x batch_shape x q x m`` for one candidate set), inputs
-``1 x n x d``, objective and constraint values ``S x 1 x n``.
+``1 x n x d``, objective and constraint values ``S x 1 x n``, values of
+multi-output objectives ``S x 1 x n x m'``.
 """
 
 from __future__ import annotations
@@ -69,6 +70,39 @@ def forward(
     values = out.detach().reshape(-1).tolist()
     handle = (out, Y, X) if with_grad else None
     return values, handle
+
+
+def forward_mo(
+    fn: Any,
+    samples: list[float],
+    shape: tuple[int, int, int],
+    x: tuple[list[float], int] | None,
+    with_grad: bool,
+) -> tuple[list[float], int, Any]:
+    """Evaluates a multi-output objective ``fn(samples, X=X)`` on posterior
+    samples; returns the values (``S x n x m'``, row-major), ``m'`` and a
+    handle for :func:`backward`."""
+    torch = _torch()
+    s, n, m = shape
+    Y = torch.tensor(samples, dtype=torch.float64).reshape(s, 1, n, m)
+    X = None
+    if x is not None:
+        data, d = x
+        X = torch.tensor(data, dtype=torch.float64).reshape(1, n, d)
+    if with_grad:
+        Y.requires_grad_(True)
+        if X is not None:
+            X.requires_grad_(True)
+    with torch.enable_grad() if with_grad else torch.no_grad():
+        out = torch.as_tensor(fn(Y, X=X), dtype=torch.float64)
+    if out.dim() < 2 or out.shape[-2] != n or out.numel() % (s * n) != 0:
+        raise RuntimeError(
+            f"The multi-output objective returned values of shape {tuple(out.shape)}, "
+            f"expected {(s, 1, n)} x m' (`sample_shape x batch_shape x q x m'`)."
+        )
+    values = out.detach().reshape(-1).tolist()
+    handle = (out, Y, X) if with_grad else None
+    return values, out.numel() // (s * n), handle
 
 
 def backward(handle: Any, adjoint: list[float]) -> tuple[list[float], list[float] | None]:

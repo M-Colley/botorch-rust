@@ -172,7 +172,7 @@ impl Default for QLogNParEGOOptions {
 /// the objective values of the posterior mean at the baseline.
 #[derive(Debug)]
 pub struct QLogNParEGO {
-    inner: QLogNoisyExpectedImprovement,
+    inner: Arc<QLogNoisyExpectedImprovement>,
     weights: Vec<f64>,
     y_baseline: Matrix,
     scalarization: ChebyshevScalarization,
@@ -234,7 +234,7 @@ impl QLogNParEGO {
             },
         )?;
         Ok(Self {
-            inner,
+            inner: Arc::new(inner),
             weights,
             y_baseline,
             scalarization,
@@ -257,8 +257,8 @@ impl QLogNParEGO {
         &self.scalarization
     }
 
-    /// The underlying qLogNEI.
-    pub fn log_nei(&self) -> &QLogNoisyExpectedImprovement {
+    /// The underlying qLogNEI (of the scalarized objective).
+    pub fn log_nei(&self) -> &Arc<QLogNoisyExpectedImprovement> {
         &self.inner
     }
 }

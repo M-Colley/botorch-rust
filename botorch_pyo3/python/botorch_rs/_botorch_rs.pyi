@@ -660,3 +660,103 @@ class MultiObjectiveTestProblem:
     def gen_pareto_front(self, n: int, seed: int | None = None) -> ArrayOut: ...
 
 def multi_objective_problem_names() -> list[str]: ...
+
+# -- multi-objective acquisition functions -------------------------------------
+
+#: A multi-output objective: ``("identity", outcomes)``, ``("weighted",
+#: weights, outcomes)``, ``("callable", f)`` with ``f(samples, X=X)`` on torch
+#: tensors, or ``("native", MultiOutputObjective)``.
+MultiOutputObjectiveSpec = tuple[Any, ...]
+
+class MultiOutputObjective:
+    @staticmethod
+    def feasibility_weighted(
+        model: Model,
+        x_baseline: Array,
+        constraint_idcs: Sequence[int],
+        objective: MultiOutputObjectiveSpec | None = None,
+    ) -> MultiOutputObjective: ...
+    @property
+    def infeasible_cost(self) -> list[float]: ...
+    @property
+    def objective_idcs(self) -> list[int]: ...
+    @property
+    def constraint_idcs(self) -> list[int]: ...
+
+class NehviState:
+    def x_baseline(self) -> ArrayOut: ...
+    def x_baseline_and_pending(self) -> ArrayOut: ...
+    def cell_bounds(self) -> ArrayOut: ...
+    def prev_nehvi(self) -> float: ...
+    def hypervolumes(self) -> list[float]: ...
+    def baseline_hvs(self) -> list[float] | None: ...
+    def base_samples(self) -> ArrayOut | None: ...
+
+def q_expected_hypervolume_improvement(
+    log: bool,
+    model: Model,
+    ref_point: Sequence[float],
+    cells: Array,
+    sampler: SobolQMCNormalSampler | None = None,
+    x_pending: Array | None = None,
+    objective: MultiOutputObjectiveSpec | None = None,
+    constraints: Sequence[Callable[[Any], Any]] | None = None,
+    eta: Sequence[float] | None = None,
+    fat: bool = False,
+    tau_relu: float = 1e-6,
+    tau_max: float = 1e-2,
+) -> AcquisitionFunction: ...
+def q_noisy_expected_hypervolume_improvement(
+    log: bool,
+    model: Model,
+    ref_point: Sequence[float],
+    x_baseline: Array,
+    sampler: SobolQMCNormalSampler | None = None,
+    x_pending: Array | None = None,
+    objective: MultiOutputObjectiveSpec | None = None,
+    constraints: Sequence[Callable[[Any], Any]] | None = None,
+    eta: Sequence[float] | None = None,
+    fat: bool = False,
+    prune_baseline: bool = False,
+    prune_num_samples: int = 2048,
+    prune_seed: int | None = None,
+    alpha: float = 0.0,
+    cache_pending: bool = True,
+    max_iep: int = 0,
+    incremental_nehvi: bool = True,
+    cache_root: bool = True,
+    tau_relu: float = 1e-6,
+    tau_max: float = 1e-3,
+) -> tuple[AcquisitionFunction, NehviState]: ...
+def expected_hypervolume_improvement(
+    model: Model, ref_point: Sequence[float], cells: Array, pareto_y: Array
+) -> AcquisitionFunction: ...
+def q_log_nparego(
+    model: Model,
+    x_baseline: Array,
+    scalarization_weights: Sequence[float] | None = None,
+    weights_seed: int | None = None,
+    sampler: SobolQMCNormalSampler | None = None,
+    objective: MultiOutputObjectiveSpec | None = None,
+    constraints: Sequence[Callable[[Any], Any]] | None = None,
+    eta: Sequence[float] | None = None,
+    x_pending: Array | None = None,
+    fat: bool = True,
+    prune_baseline: bool = False,
+    prune_num_samples: int = 2048,
+    prune_seed: int | None = None,
+    tau_relu: float = 1e-6,
+    tau_max: float = 1e-2,
+    incremental: bool = True,
+) -> tuple[AcquisitionFunction, list[float], ArrayOut]: ...
+def prune_inferior_points_multi_objective(
+    model: Model,
+    x: Array,
+    ref_point: Sequence[float],
+    objective: MultiOutputObjectiveSpec | None = None,
+    constraints: Sequence[Callable[[Any], Any]] | None = None,
+    num_samples: int = 2048,
+    max_frac: float = 1.0,
+    seed: int | None = None,
+    base_samples: Array | None = None,
+) -> ArrayOut: ...

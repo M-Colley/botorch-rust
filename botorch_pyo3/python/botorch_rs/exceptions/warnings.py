@@ -37,6 +37,8 @@ _LEGACY_TO_LOGEI = {
     "ExpectedImprovement": "LogExpectedImprovement",
     "ConstrainedExpectedImprovement": "LogConstrainedExpectedImprovement",
     "qExpectedImprovement": "qLogExpectedImprovement",
+    "qExpectedHypervolumeImprovement": "qLogExpectedHypervolumeImprovement",
+    "qNoisyExpectedHypervolumeImprovement": "qLogNoisyExpectedHypervolumeImprovement",
 }
 
 
