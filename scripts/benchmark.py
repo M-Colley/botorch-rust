@@ -18,6 +18,22 @@ Tasks (all on the 6-dimensional Hartmann function, negated for maximization):
   training points (a Weyl sequence in [0, 1]^6, noise-free targets), from
   BoTorch's default initialization.
 
+Multi-objective tasks (objectives negated for maximization):
+
+* ``MOBO loop``: 20 iterations of BoTorch's qLogNEHVI tutorial on
+  BraninCurrin (the loop of ``botorch_core/examples/mobo_loop.rs``): fitting a
+  two-output ``SingleTaskGP`` with ``Normalize`` from the same 6-point Sobol
+  design and maximizing qLogNEHVI (128 Sobol samples, pruned baseline) for
+  q = 2 candidates with ``sequential=True``, 10 restarts and 512 raw samples;
+  the result is the final hypervolume;
+* ``optimize_acqf`` with 10 restarts and 512 raw samples on 30-point
+  DTLZ2 models (d = 6, a Weyl sequence, fixed hyperparameters as above):
+  ``qLogNoisyExpectedHypervolumeImprovement`` (m = 2, q = 2,
+  ``sequential=True``, 128 Sobol samples; the libraries' Sobol sequences
+  differ) and ``qLogExpectedHypervolumeImprovement`` (m = 3, q = 2, the same
+  128 explicit base samples in both libraries, the partitioning of the
+  posterior mean at the training points).
+
 Every task is timed with one thread (``torch.set_num_threads(1)``,
 ``botorch_rs.set_num_threads(1)``) and with each library's default number of
 threads; the median over runs with different seeds is reported, after one
@@ -60,6 +76,7 @@ DT = torch.float64
 D = 6
 FIT_SIZES = (20, 100, 300)
 LOOP_ITERATIONS = 30
+MOBO_ITERATIONS = 20
 
 
 @dataclass(frozen=True)
@@ -84,6 +101,10 @@ class Library:
         self.name = name
         if name == "botorch_rs":
             from botorch_rs import acquisition, fit, mlls, models, optim, sampling, test_functions
+            from botorch_rs.acquisition import multi_objective as mo_acquisition
+            from botorch_rs.models.transforms.input import Normalize
+            from botorch_rs.test_functions import multi_objective as mo_problems
+            from botorch_rs.utils.multi_objective import box_decompositions
             from botorch_rs.utils.sampling import draw_sobol_samples
 
             self._set_threads = botorch_rs.set_num_threads
@@ -92,6 +113,10 @@ class Library:
         else:
             import botorch
             from botorch import acquisition, fit, models, optim, sampling, test_functions
+            from botorch.acquisition import multi_objective as mo_acquisition
+            from botorch.models.transforms.input import Normalize
+            from botorch.test_functions import multi_objective as mo_problems
+            from botorch.utils.multi_objective import box_decompositions
             from botorch.utils.sampling import draw_sobol_samples
             from gpytorch import mlls
 
@@ -109,6 +134,13 @@ class Library:
         self.optimize_acqf = optim.optimize_acqf
         self.Hartmann = test_functions.Hartmann
         self.draw_sobol_samples = draw_sobol_samples
+        self.qLogNEHVI = mo_acquisition.qLogNoisyExpectedHypervolumeImprovement
+        self.qLogEHVI = mo_acquisition.qLogExpectedHypervolumeImprovement
+        self.BraninCurrin = mo_problems.BraninCurrin
+        self.DTLZ2 = mo_problems.DTLZ2
+        self.FastNondominatedPartitioning = box_decompositions.FastNondominatedPartitioning
+        self.DominatedPartitioning = box_decompositions.DominatedPartitioning
+        self.Normalize = Normalize
 
     def use_threads(self, single: bool) -> None:
         """One thread, or the library's default number of threads."""
@@ -250,7 +282,114 @@ def tasks(lib: Library) -> list[Task]:
             return lib.mll_loss(model)
 
         out.append(Task(f"fit, n = {n}", "Fit GP", f"n = {n}", fit_task))
-    return out
+    return out + multi_objective_tasks(lib)
+
+
+def mo_model(lib: Library, m: int, n: int) -> tuple[Any, torch.Tensor, torch.Tensor]:
+    """An m-output SingleTaskGP on DTLZ2 (d = 6) with fixed hyperparameters
+    (the values of :func:`fixed_model` for every output) and the reference
+    point."""
+    problem = lib.DTLZ2(dim=D, num_objectives=m, negate=True)
+    X = weyl(n)
+    model = lib.SingleTaskGP(X, problem(X, noise=False))
+    model.initialize(
+        **{
+            "likelihood.noise_covar.raw_noise": torch.full((m, 1), 1e-3, dtype=DT),
+            "mean_module.raw_constant": torch.zeros(m, dtype=DT),
+            "covar_module.raw_lengthscale": torch.full((m, 1, D), 0.5, dtype=DT),
+        }
+    )
+    model.eval()
+    return model, X, torch.as_tensor(problem.ref_point, dtype=DT)
+
+
+def multi_objective_tasks(lib: Library) -> list[Task]:
+    """The multi-objective tasks (see the module documentation)."""
+    bounds = torch.stack([torch.zeros(D, dtype=DT), torch.ones(D, dtype=DT)])
+    bounds2 = bounds[:, :2]
+    branin_currin = lib.BraninCurrin(negate=True)
+    ref_bc = torch.as_tensor(branin_currin.ref_point, dtype=DT)
+    X0 = botorch_rs.utils.sampling.draw_sobol_samples(bounds2, n=6, q=1, seed=0).squeeze(-2)
+
+    def hypervolume(Y: torch.Tensor) -> float:
+        hv = lib.DominatedPartitioning(ref_point=ref_bc, Y=Y).compute_hypervolume()
+        return float(torch.as_tensor(hv).reshape(-1)[0])
+
+    def mobo_loop(seed: int) -> float:
+        X = X0.clone()
+        Y = torch.as_tensor(branin_currin(X, noise=False), dtype=DT)
+        for it in range(MOBO_ITERATIONS):
+            gp = lib.SingleTaskGP(X, Y, input_transform=lib.Normalize(d=2, bounds=bounds2))
+            lib.fit(lib.MLL(gp.likelihood, gp))
+            acqf = lib.qLogNEHVI(
+                gp,
+                ref_point=ref_bc,
+                X_baseline=X,
+                prune_baseline=True,
+                sampler=lib.Sampler(sample_shape=torch.Size([128]), seed=1000 * seed + it),
+            )
+            cand, _ = lib.optimize_acqf(
+                acqf,
+                bounds2,
+                q=2,
+                num_restarts=10,
+                raw_samples=512,
+                sequential=True,
+                options={"seed": 1000 * seed + it},
+            )
+            X = torch.cat([X, cand])
+            Y = torch.cat([Y, torch.as_tensor(branin_currin(cand, noise=False), dtype=DT)])
+        return hypervolume(Y)
+
+    model2, X2, ref2 = mo_model(lib, 2, 30)
+
+    def qlognehvi(seed: int) -> float:
+        sampler = lib.Sampler(sample_shape=torch.Size([128]), seed=0)
+        acqf = lib.qLogNEHVI(model2, ref_point=ref2, X_baseline=X2, sampler=sampler)
+        _, v = lib.optimize_acqf(
+            acqf,
+            bounds,
+            q=2,
+            num_restarts=10,
+            raw_samples=512,
+            sequential=True,
+            options={"seed": seed},
+        )
+        return float(torch.as_tensor(v).sum())
+
+    model3, X3, ref3 = mo_model(lib, 3, 30)
+    with torch.no_grad():
+        mean3 = torch.as_tensor(model3.posterior(X3).mean, dtype=DT)
+    partitioning3 = lib.FastNondominatedPartitioning(ref_point=ref3, Y=mean3)
+    # Identical base samples (q x m = 6 values per sample) in both libraries.
+    Z3 = torch.randn(128, 6, dtype=DT, generator=torch.Generator().manual_seed(0))
+
+    def qlogehvi(seed: int) -> float:
+        sampler = lib.Sampler(sample_shape=torch.Size([128]), seed=0)
+        sampler.base_samples = Z3.view(128, 1, 2, 3).clone()
+        acqf = lib.qLogEHVI(model3, ref_point=ref3, partitioning=partitioning3, sampler=sampler)
+        _, v = lib.optimize_acqf(
+            acqf, bounds, q=2, num_restarts=10, raw_samples=512, options={"seed": seed}
+        )
+        return float(v)
+
+    return [
+        Task(
+            f"MOBO loop, qLogNEHVI, {MOBO_ITERATIONS} iterations",
+            "Multi-objective BO",
+            f"BraninCurrin, qLogNEHVI, {MOBO_ITERATIONS} iterations",
+            mobo_loop,
+        ),
+        Task(
+            "optimize_acqf, qLogNEHVI, m = 2, q = 2",
+            "Optimize qLogNEHVI",
+            "m = 2, q = 2 sequential",
+            qlognehvi,
+        ),
+        Task(
+            "optimize_acqf, qLogEHVI, m = 3, q = 2", "Optimize qLogEHVI", "m = 3, q = 2", qlogehvi
+        ),
+    ]
 
 
 def time_task(
@@ -366,7 +505,7 @@ def main() -> None:
         return [task for task in tasks(lib) if args.k in task.name]
 
     def repeats_of(name: str) -> int:
-        return args.loop_repeats if name.startswith("BO loop") else args.repeats
+        return args.loop_repeats if name.startswith(("BO loop", "MOBO loop")) else args.repeats
 
     runs: dict[tuple[str, str, str], tuple[list[float], list[float]]] = {}
     for setting in ("1", "default"):
@@ -430,7 +569,7 @@ def main() -> None:
     if args.json is not None:
         if args.no_botorch:
             parser.error("--json needs BoTorch for the comparison")
-        has_loop = any(task.name.startswith("BO loop") for task in task_list)
+        has_loop = any(task.name.startswith(("BO loop", "MOBO loop")) for task in task_list)
         loops = f" ({args.loop_repeats} for the BO loop)" if has_loop else ""
         n_runs = f"{args.repeats} run" + ("s" if args.repeats != 1 else "")
         meta = {

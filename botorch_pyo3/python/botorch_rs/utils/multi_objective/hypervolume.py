@@ -1,11 +1,14 @@
 """Hypervolume utilities (``botorch.utils.multi_objective.hypervolume``):
-``Hypervolume``, ``infer_reference_point`` and
-``get_hypervolume_maximizing_subset``.
+``Hypervolume``, ``infer_reference_point``,
+``get_hypervolume_maximizing_subset`` and the mixins of the noisy
+hypervolume acquisition functions (``SubsetIndexCachingMixin``,
+``compute_subset_indices``, ``NoisyExpectedHypervolumeMixin``).
 
 ``Hypervolume`` is BoTorch's dimension-sweep algorithm (Fonseca et al.,
 2006) ported line by line to Rust, so float64 results are BoTorch's.
 Inputs of other floating dtypes (e.g. float32) are computed in float64. The
-NEHVI mixins of BoTorch's module belong to the acquisition functions.
+NEHVI computations of the mixins run in Rust inside the acquisition
+functions; the mixins expose their state.
 
 References:
     C. M. Fonseca, L. Paquete, and M. Lopez-Ibanez. An improved
@@ -19,6 +22,8 @@ from __future__ import annotations
 
 import math
 import random
+import sys
+from itertools import combinations
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -173,9 +178,125 @@ def get_hypervolume_maximizing_subset(n: int, Y: Any, ref_point: Any) -> tuple[A
     return from_pair(subset, kind), long_array(indices, kind)
 
 
+def compute_subset_indices(q: int, device: Any = None) -> dict[str, Any]:
+    r"""Compute all ``2^q - 1`` distinct non-empty subsets of ``{0, ..., q - 1}``.
+
+    Args:
+        q: An integer defining the set ``{0, ..., q - 1}`` whose subsets to
+            compute.
+        device: The torch device of the result (a torch tensor is returned if
+            a device is given or torch has been imported).
+
+    Returns:
+        A dict that maps ``"q_choose_i"`` to all size-``i`` subsets (a
+        ``(q choose i) x i`` int64 array, or nested lists without torch), in
+        the order of ``itertools.combinations``.
+    """
+    torch = sys.modules.get("torch")
+    if torch is None and device is not None:
+        import torch
+    out: dict[str, Any] = {}
+    for i in range(1, q + 1):
+        subsets = [list(c) for c in combinations(range(q), i)]
+        if torch is not None:
+            out[f"q_choose_{i}"] = torch.tensor(subsets, dtype=torch.long, device=device)
+        else:
+            out[f"q_choose_{i}"] = subsets
+    return out
+
+
+class SubsetIndexCachingMixin:
+    """A mixin that adds q-subset index computations and caching."""
+
+    def __init__(self) -> None:
+        """Initializes the class with ``q_out = -1`` and no subset indices."""
+        self.q_out: int = -1
+        self.q_subset_indices: dict[str, Any] = {}
+
+    def compute_q_subset_indices(self, q_out: int, device: Any = None) -> dict[str, Any]:
+        r"""Returns and caches a dict of the subsets of ``{0, ..., q_out - 1}``
+        (recomputed only when ``q_out`` changes).
+
+        Args:
+            q_out: The batch size of the objectives.
+            device: The torch device of the indices.
+
+        Returns:
+            A dict that maps ``"q_choose_i"`` to all size-``i`` subsets.
+        """
+        if q_out != self.q_out:
+            self.q_subset_indices = compute_subset_indices(q_out, device=device)
+            self.q_out = q_out
+        return self.q_subset_indices
+
+
+class NoisyExpectedHypervolumeMixin:
+    r"""The state of the noisy hypervolume acquisition functions (qNEHVI and
+    qLogNEHVI): the box decompositions of the Pareto fronts of the baseline
+    under every MC sample, and cached pending points.
+
+    The decompositions, base samples and hypervolumes live in the Rust
+    acquisition function; this mixin exposes them with BoTorch's attribute
+    names (read-only).
+    """
+
+    _rs_nehvi: Any
+    _baseline_kind: Any
+
+    @property
+    def X_baseline(self) -> Any:
+        r"""``X_baseline`` augmented with the pending points cached in the box
+        decompositions."""
+        return from_pair(self._rs_nehvi.x_baseline_and_pending(), self._baseline_kind)
+
+    @property
+    def _X_baseline(self) -> Any:
+        """The observed (pruned) baseline."""
+        return from_pair(self._rs_nehvi.x_baseline(), self._baseline_kind)
+
+    def _nehvi_cells(self, which: int) -> Any:
+        data, shape = self._rs_nehvi.cell_bounds()
+        half = len(data) // 2
+        return from_flat(data[which * half : (which + 1) * half], shape[1:], self._baseline_kind)
+
+    @property
+    def cell_lower_bounds(self) -> Any:
+        """The lower vertices of the hypercells under every MC sample
+        (``sample_shape x num_cells x m``, padded with empty cells)."""
+        return self._nehvi_cells(0)
+
+    @property
+    def cell_upper_bounds(self) -> Any:
+        """The upper vertices of the hypercells under every MC sample."""
+        return self._nehvi_cells(1)
+
+    @property
+    def _hypervolumes(self) -> Any:
+        """The hypervolume of the cached points under every MC sample."""
+        return from_pair(self._rs_nehvi.hypervolumes(), self._baseline_kind)
+
+    @property
+    def _baseline_hvs(self) -> Any:
+        """The hypervolume of the observed baseline under every MC sample
+        (non-incremental NEHVI only)."""
+        hvs = self._rs_nehvi.baseline_hvs()
+        if hvs is None:
+            raise AttributeError("_baseline_hvs is only computed for non-incremental NEHVI.")
+        return from_pair(hvs, self._baseline_kind)
+
+    @property
+    def _prev_nehvi(self) -> Any:
+        """The expected hypervolume improvement of the cached pending points
+        (non-incremental NEHVI; zero otherwise)."""
+        return from_flat([self._rs_nehvi.prev_nehvi()], (), self._baseline_kind)
+
+
 __all__ = [
     "MIN_Y_RANGE",
     "Hypervolume",
+    "NoisyExpectedHypervolumeMixin",
+    "SubsetIndexCachingMixin",
+    "compute_subset_indices",
     "get_hypervolume_maximizing_subset",
     "infer_reference_point",
 ]

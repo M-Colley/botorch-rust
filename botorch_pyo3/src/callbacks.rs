@@ -1,7 +1,8 @@
 //! Python callables used by the Rust core: generic MC objectives and outcome
 //! constraints of acquisition functions (BoTorch's `GenericMCObjective`,
-//! `ConstrainedMCObjective` and `constraints` callables), nonlinear parameter
-//! constraints of `optimize_acqf` and initial-condition generators.
+//! `ConstrainedMCObjective`, multi-output objectives and `constraints`
+//! callables), nonlinear parameter constraints of `optimize_acqf` and
+//! initial-condition generators.
 //!
 //! The callables operate on torch tensors, exactly as in BoTorch. Every call
 //! goes through the pure-Python module `botorch_rs._torch_bridge`: the Rust
@@ -18,6 +19,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use botorch_core::acquisition::multi_objective::{McMultiOutputObjective, MultiOutputValues};
 use botorch_core::acquisition::{McObjective, McSamples, SamplePullback, SampleValues};
 use botorch_core::optim::{IcGenerator, IcRequest, NonlinearInequalityConstraint};
 use botorch_core::utils::objective::McConstraint;
@@ -116,6 +118,87 @@ impl PyCallback {
         }
     }
 
+    /// A multi-output MC objective (BoTorch's `MCMultiOutputObjective`)
+    /// called as `f(samples, X=X)`, returning `S x 1 x n x m'` values.
+    pub fn mo_objective(callable: Py<PyAny>) -> Self {
+        Self {
+            callable,
+            kind: "mo_objective",
+            pass_x: true,
+        }
+    }
+
+    fn call_mo(
+        &self,
+        samples: &McSamples,
+        x: Option<&Matrix>,
+        with_grad: bool,
+    ) -> Result<MultiOutputValues> {
+        let (s, n, m) = (
+            samples.num_samples(),
+            samples.num_points(),
+            samples.num_outputs(),
+        );
+        let x_arg: Option<(Vec<f64>, usize)> = x.map(|x| (rows(x), x.ncols()));
+        let d = x_arg.as_ref().map(|(_, d)| *d);
+        let (values, mo, handle) = Python::attach(|py| -> PyResult<(Vec<f64>, usize, Py<PyAny>)> {
+            let bridge = py.import(BRIDGE)?;
+            let x_arg = match &x_arg {
+                Some((data, d)) => Some((float_values(py, data)?, *d)),
+                None => None,
+            };
+            let res = bridge.call_method1(
+                "forward_mo",
+                (
+                    self.callable.bind(py),
+                    float_values(py, &samples.to_row_major())?,
+                    (s, n, m),
+                    x_arg,
+                    with_grad,
+                ),
+            )?;
+            let (values, mo, handle): (Bound<'_, PyAny>, usize, Py<PyAny>) = res.extract()?;
+            Ok((float_data(&values)?, mo, handle))
+        })
+        .map_err(callback_error)?;
+        let values = McSamples::from_row_major(&values, s, n, mo)?;
+        let pullback: Option<SamplePullback> = if with_grad {
+            Some(Box::new(move |bar: &Matrix| {
+                let adjoint = McSamples::new(bar.clone(), n, mo)?.to_row_major();
+                let (sbar, xbar) = Python::attach(|py| -> PyResult<(Vec<f64>, Option<Vec<f64>>)> {
+                    let bridge = py.import(BRIDGE)?;
+                    let adjoint = float_values(py, &adjoint)?;
+                    let res = bridge.call_method1("backward", (handle, adjoint))?;
+                    let (sbar, xbar): (Bound<'_, PyAny>, Option<Bound<'_, PyAny>>) =
+                        res.extract()?;
+                    Ok((
+                        float_data(&sbar)?,
+                        xbar.map(|x| float_data(&x)).transpose()?,
+                    ))
+                })
+                .map_err(callback_error)?;
+                let sbar = McSamples::from_row_major(&sbar, s, n, m)?.into_data();
+                let xbar = match (xbar, d) {
+                    (Some(v), Some(d)) if v.len() == n * d => {
+                        Some(Matrix::from_row_slice(n, d, &v))
+                    }
+                    (Some(v), Some(d)) => {
+                        return Err(BotorchError::DimensionMismatch(format!(
+                            "the input gradient has {} values, expected {}",
+                            v.len(),
+                            n * d
+                        )))
+                    }
+                    _ => None,
+                };
+                Ok((sbar, xbar))
+            }))
+        } else {
+            None
+        };
+        Ok(MultiOutputValues { values, pullback })
+    }
+
     fn call(
         &self,
         samples: &McSamples,
@@ -200,6 +283,17 @@ impl McObjective for PyCallback {
         with_grad: bool,
     ) -> Result<SampleValues> {
         self.call(samples, x, with_grad)
+    }
+}
+
+impl McMultiOutputObjective for PyCallback {
+    fn evaluate(
+        &self,
+        samples: &McSamples,
+        x: Option<&Matrix>,
+        with_grad: bool,
+    ) -> Result<MultiOutputValues> {
+        self.call_mo(samples, x, with_grad)
     }
 }
 

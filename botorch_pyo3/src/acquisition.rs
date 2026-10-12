@@ -54,10 +54,24 @@ pub struct PyAcquisitionFunction {
 }
 
 impl PyAcquisitionFunction {
-    fn new_plain(inner: Arc<dyn AcquisitionFunction>, name: &'static str) -> Self {
+    pub(crate) fn new_plain(inner: Arc<dyn AcquisitionFunction>, name: &'static str) -> Self {
         Self {
             inner,
             nei: None,
+            name,
+        }
+    }
+
+    /// An acquisition function built on a qLogNEI (whose baseline accessors
+    /// it exposes), e.g. qLogNParEGO.
+    pub(crate) fn with_nei(
+        inner: Arc<dyn AcquisitionFunction>,
+        nei: Arc<QLogNoisyExpectedImprovement>,
+        name: &'static str,
+    ) -> Self {
+        Self {
+            inner,
+            nei: Some(nei),
             name,
         }
     }
@@ -72,7 +86,7 @@ impl PyAcquisitionFunction {
     }
 }
 
-fn model_of(model: &PyModel) -> Arc<dyn Model> {
+pub(crate) fn model_of(model: &PyModel) -> Arc<dyn Model> {
     model.inner.clone()
 }
 
@@ -80,7 +94,7 @@ fn require(value: Option<f64>, name: &str, acqf: &str) -> PyResult<f64> {
     value.ok_or_else(|| value_error(format!("{acqf} requires `{name}`.")))
 }
 
-fn sampler_of(
+pub(crate) fn sampler_of(
     sampler: Option<PyRef<'_, PySobolQMCNormalSampler>>,
 ) -> Option<Arc<botorch_core::SobolQMCNormalSampler>> {
     sampler.map(|s| Arc::clone(&s.inner))
@@ -125,7 +139,7 @@ fn objective_of(spec: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Arc<dyn McOb
     Ok(Some(objective))
 }
 
-fn constraint_callbacks(constraints: Vec<Py<PyAny>>) -> Vec<Arc<dyn McConstraint>> {
+pub(crate) fn constraint_callbacks(constraints: Vec<Py<PyAny>>) -> Vec<Arc<dyn McConstraint>> {
     constraints
         .into_iter()
         .map(|c| Arc::new(PyCallback::constraint(c)) as Arc<dyn McConstraint>)
@@ -133,7 +147,7 @@ fn constraint_callbacks(constraints: Vec<Py<PyAny>>) -> Vec<Arc<dyn McConstraint
 }
 
 /// Outcome constraints from callables and one temperature per constraint.
-fn constraints_of(
+pub(crate) fn constraints_of(
     constraints: Option<Vec<Py<PyAny>>>,
     eta: Option<Vec<f64>>,
 ) -> PyResult<Option<OutcomeConstraints>> {

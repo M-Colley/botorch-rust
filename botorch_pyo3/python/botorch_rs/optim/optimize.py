@@ -8,8 +8,12 @@ from typing import Any
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import Flat, as_float, first_kind, from_flat, from_pair, to_flat
 from botorch_rs.acquisition.acquisition import AcquisitionFunction, check_unsupported
-from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
-from botorch_rs.exceptions.warnings import BadInitialCandidatesWarning
+from botorch_rs.exceptions.errors import (
+    BotorchTensorDimensionError,
+    CandidateGenerationError,
+    UnsupportedError,
+)
+from botorch_rs.exceptions.warnings import BadInitialCandidatesWarning, OptimizationWarning
 from botorch_rs.optim.parameter_constraints import (
     linear_constraints_arg,
     nonlinear_constraints_arg,
@@ -286,4 +290,181 @@ def optimize_acqf(
     return X, (values if return_acq_values else None)
 
 
-__all__ = ["optimize_acqf"]
+def _concat_rows(parts: list[Any], kind: Any) -> Any:
+    """Arrays of shape ``k_i x d`` stacked to ``(sum k_i) x d`` (array type
+    ``kind``)."""
+    data: list[float] = []
+    rows, d = 0, 0
+    for p in parts:
+        flat, shape = to_flat(p, "X")
+        data.extend(flat)
+        rows += shape[0]
+        d = shape[1]
+    return from_flat(data, (rows, d), kind)
+
+
+def _optimize_acqf_mixed_q1(
+    acq_function: AcquisitionFunction,
+    bounds: Any,
+    num_restarts: int,
+    raw_samples: int | None,
+    fixed_features_list: list[dict[int, Any]],
+    options: dict[str, Any] | None,
+    inequality_constraints: Any,
+    equality_constraints: Any,
+    nonlinear_inequality_constraints: Any,
+    ic_generator: Any,
+    ic_gen_kwargs: dict[str, Any],
+    retry_on_optimization_warning: bool,
+) -> tuple[Any, Any]:
+    """BoTorch's ``optimize_acqf_mixed`` for ``q = 1``: the best restart over
+    all ``fixed_features_list`` (fixed features for which candidate
+    generation fails are skipped)."""
+    candidates, values = [], []
+    failures = 0
+    for fixed_features in fixed_features_list:
+        try:
+            X, v = optimize_acqf(
+                acq_function=acq_function,
+                bounds=bounds,
+                q=1,
+                num_restarts=num_restarts,
+                raw_samples=raw_samples,
+                options=options or {},
+                inequality_constraints=inequality_constraints,
+                equality_constraints=equality_constraints,
+                nonlinear_inequality_constraints=nonlinear_inequality_constraints,
+                fixed_features=fixed_features,
+                ic_generator=ic_generator,
+                return_best_only=False,
+                retry_on_optimization_warning=retry_on_optimization_warning,
+                return_acq_values=True,
+                **ic_gen_kwargs,
+            )
+        except CandidateGenerationError:
+            failures += 1
+            continue
+        candidates.append(X)
+        values.append(v)
+    if not candidates:
+        raise CandidateGenerationError("Candidate generation failed for all `fixed_features`.")
+    if failures > 0:
+        warnings.warn(
+            f"Candidate generation failed for {failures} "
+            "combinations of `fixed_features`. To suppress this warning, make "
+            "sure all equality/inequality constraints can be satisfied by all "
+            "`fixed_features` in `fixed_features_list`.",
+            OptimizationWarning,
+            stacklevel=3,
+        )
+    # torch.max(dim=-1) per fixed features, then torch.argmax over them
+    # (the first maximum on ties).
+    best_batch, best_idx, best_value = 0, 0, float("-inf")
+    for b, v in enumerate(values):
+        flat, _ = to_flat(v, "acquisition values")
+        top = max(range(len(flat)), key=lambda i: (flat[i], -i))
+        if b == 0 or flat[top] > best_value:
+            best_batch, best_idx, best_value = b, top, flat[top]
+    kind = first_kind(bounds)
+    flat_x, shape = to_flat(candidates[best_batch], "X")
+    d = shape[-1]
+    candidate = from_flat(flat_x[best_idx * d : (best_idx + 1) * d], (1, d), kind)
+    return candidate, from_flat([best_value], (), kind)
+
+
+def optimize_acqf_list(
+    acq_function_list: list[AcquisitionFunction],
+    bounds: Any,
+    num_restarts: int,
+    raw_samples: int | None = None,
+    options: dict[str, Any] | None = None,
+    inequality_constraints: list[tuple[Any, Any, float]] | None = None,
+    equality_constraints: list[tuple[Any, Any, float]] | None = None,
+    nonlinear_inequality_constraints: list[tuple[Any, bool]] | None = None,
+    fixed_features: dict[int, Any] | None = None,
+    fixed_features_list: list[dict[int, Any]] | None = None,
+    post_processing_func: Any = None,
+    ic_generator: Any = None,
+    ic_gen_kwargs: dict[str, Any] | None = None,
+    return_acq_values: bool = True,
+    retry_on_optimization_warning: bool = True,
+) -> tuple[Any, Any]:
+    r"""Generate a list of candidates from a list of acquisition functions
+    (BoTorch's ``optimize_acqf_list``).
+
+    The acquisition functions are optimized in sequence for ``q = 1`` with
+    :func:`optimize_acqf`, each with the previous candidates (appended to the
+    first acquisition function's pending points) set as ``X_pending``; this
+    is also known as sequential greedy optimization. With
+    ``fixed_features_list``, every step is BoTorch's ``optimize_acqf_mixed``
+    for ``q = 1``: the best restart over all fixed features.
+
+    Returns:
+        ``(candidates, acq_values)``: a ``q x d`` array of candidates (one per
+        acquisition function) and their ``q`` acquisition values, each
+        conditional on the previous candidates (``None`` with
+        ``return_acq_values=False``).
+    """
+    if fixed_features and fixed_features_list:
+        raise ValueError(
+            "\u00c8ither `fixed_feature` or `fixed_features_list` can be provided, not both."
+        )
+    if not acq_function_list:
+        raise ValueError("acq_function_list must be non-empty.")
+    check_unsupported(post_processing_func=post_processing_func)
+    kind = first_kind(bounds)
+    candidate_list: list[Any] = []
+    acq_value_list: list[float] = []
+    candidates: Any = None
+    base_X_pending = acq_function_list[0].X_pending
+    for acq_function in acq_function_list:
+        if candidate_list:
+            acq_function.set_X_pending(
+                _concat_rows([base_X_pending, candidates], kind)
+                if base_X_pending is not None
+                else candidates
+            )
+        if fixed_features_list:
+            candidate, acq_value = _optimize_acqf_mixed_q1(
+                acq_function,
+                bounds,
+                num_restarts,
+                raw_samples,
+                fixed_features_list,
+                options,
+                inequality_constraints,
+                equality_constraints,
+                nonlinear_inequality_constraints,
+                ic_generator,
+                ic_gen_kwargs or {},
+                retry_on_optimization_warning,
+            )
+        else:
+            ic_gen_kwargs = ic_gen_kwargs or {}
+            candidate, acq_value = optimize_acqf(
+                acq_function=acq_function,
+                bounds=bounds,
+                q=1,
+                num_restarts=num_restarts,
+                raw_samples=raw_samples,
+                options=options or {},
+                inequality_constraints=inequality_constraints,
+                equality_constraints=equality_constraints,
+                nonlinear_inequality_constraints=nonlinear_inequality_constraints,
+                fixed_features=fixed_features,
+                return_best_only=True,
+                sequential=False,
+                ic_generator=ic_generator,
+                retry_on_optimization_warning=retry_on_optimization_warning,
+                **ic_gen_kwargs,
+            )
+        candidate_list.append(candidate)
+        if return_acq_values:
+            acq_value_list.append(float(to_flat(acq_value, "acq_value")[0][0]))
+        candidates = _concat_rows(candidate_list, kind)
+    if not return_acq_values:
+        return candidates, None
+    return candidates, from_flat(acq_value_list, (len(acq_value_list),), kind)
+
+
+__all__ = ["optimize_acqf", "optimize_acqf_list"]

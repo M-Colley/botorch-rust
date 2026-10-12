@@ -79,6 +79,39 @@ def forward(
     return values, handle
 
 
+def forward_mo(
+    fn: Any,
+    samples: Sequence[float],
+    shape: tuple[int, int, int],
+    x: tuple[Sequence[float], int] | None,
+    with_grad: bool,
+) -> tuple[FloatData, int, Any]:
+    """Evaluates a multi-output objective ``fn(samples, X=X)`` on posterior
+    samples; returns the values (``S x n x m'``, row-major), ``m'`` and a
+    handle for :func:`backward`."""
+    torch = _torch()
+    s, n, m = shape
+    Y = from_flat(samples, (s, 1, n, m), _float64())
+    X = None
+    if x is not None:
+        data, d = x
+        X = from_flat(data, (1, n, d), _float64())
+    if with_grad:
+        Y.requires_grad_(True)
+        if X is not None:
+            X.requires_grad_(True)
+    with torch.enable_grad() if with_grad else torch.no_grad():
+        out = torch.as_tensor(fn(Y, X=X), dtype=torch.float64)
+    if out.dim() < 2 or out.shape[-2] != n or out.numel() % (s * n) != 0:
+        raise RuntimeError(
+            f"The multi-output objective returned values of shape {tuple(out.shape)}, "
+            f"expected {(s, 1, n)} x m' (`sample_shape x batch_shape x q x m'`)."
+        )
+    values = to_flat(out, "objective")[0]
+    handle = (out, Y, X) if with_grad else None
+    return values, out.numel() // (s * n), handle
+
+
 def backward(handle: Any, adjoint: Sequence[float]) -> tuple[FloatData, FloatData | None]:
     """The vector-Jacobian product of :func:`forward`'s values with the
     adjoint (``S x n``): the adjoints of the samples (``S x 1 x n x m``) and,

@@ -2,10 +2,12 @@
 //! [`optimize_acqf`] with multi-start L-BFGS-B (box constraints) or SLSQP
 //! (linear and nonlinear parameter constraints), the initialization
 //! heuristics of `botorch.optim.initializers` and the constraint handling of
-//! `botorch.optim.parameter_constraints`.
+//! `botorch.optim.parameter_constraints`; [`optimize_acqf_list`] for lists of
+//! acquisition functions.
 
 pub mod initializers;
 pub mod optimize;
+pub mod optimize_list;
 pub mod parameter_constraints;
 pub mod slsqp;
 
@@ -18,6 +20,7 @@ pub use optimize::{
     IcGenerator, IcRequest, OptimizationMethod, OptimizeAcqfOptions, OptimizeAcqfResult,
     OptimizerStatus, RestartResult,
 };
+pub use optimize_list::{optimize_acqf_list, OptimizeAcqfListResult};
 pub use parameter_constraints::{
     evaluate_feasibility, ConstraintIndices, FnNonlinearConstraint, LinearConstraint,
     NonlinearInequalityConstraint, ParameterConstraints, CONSTRAINT_TOLERANCE,

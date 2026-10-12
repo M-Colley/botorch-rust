@@ -505,3 +505,79 @@ fn fits_are_independent_per_element() {
     assert!(err.is_err());
     assert_eq!(gp2.raw_parameters(), initial);
 }
+
+/// The posterior of new points jointly with a cached point set equals the
+/// corresponding blocks of the joint posterior, and its reverse-mode
+/// derivative matches central differences (every output GP of a
+/// multi-output model and a model list).
+#[test]
+fn cross_posteriors_match_joint_posteriors() {
+    let mo = multi_output();
+    let list = model_list();
+    let models: [&dyn Model; 2] = [&mo, &list];
+    for model in models {
+        let gps = model.output_gps().expect("independent exact GPs");
+        assert_eq!(gps.len(), model.num_outputs());
+        let b = points(4, 3);
+        let x = points(3, 5);
+        let mut joint_x = Matrix::zeros(7, 2);
+        joint_x.rows_mut(0, 4).copy_from(&b);
+        joint_x.rows_mut(4, 3).copy_from(&x);
+        for g in gps {
+            let cache = g.baseline_cache(&b).unwrap();
+            assert_eq!(cache.len(), 4);
+            let cp = g.cross_posterior(&cache, &x).unwrap();
+            let post = g.posterior(&joint_x, false).unwrap();
+            for p in 0..3 {
+                assert!((cp.mean[p] - post.mean[4 + p]).abs() < 1e-12);
+                for k in 0..4 {
+                    assert!((cp.cross[(p, k)] - post.covariance[(4 + p, k)]).abs() < 1e-12);
+                }
+                for k in 0..3 {
+                    assert!(
+                        (cp.covariance[(p, k)] - post.covariance[(4 + p, 4 + k)]).abs() < 1e-12
+                    );
+                }
+            }
+            // ⟨a, μ⟩ + ⟨C, Σ(x, B)⟩ + ⟨D, Σ(x, x)⟩ and its gradient.
+            let a = Vector::from_fn(3, |i, _| 0.3 - 0.2 * i as f64);
+            let c = Matrix::from_fn(3, 4, |i, j| 0.1 * (i as f64) - 0.05 * j as f64 + 0.2);
+            let d = Matrix::from_fn(3, 3, |i, j| 0.4 - 0.1 * (i + 2 * j) as f64);
+            let f = |x: &Matrix| {
+                let cp = g.cross_posterior(&cache, x).unwrap();
+                a.dot(&cp.mean)
+                    + c.component_mul(&cp.cross).sum()
+                    + d.component_mul(&cp.covariance).sum()
+            };
+            let grad = g.cross_posterior_vjp(&cache, &x, &a, &c, &d).unwrap();
+            let h = 1e-6;
+            for p in 0..3 {
+                for k in 0..2 {
+                    let mut xp = x.clone();
+                    xp[(p, k)] += h;
+                    let mut xm = x.clone();
+                    xm[(p, k)] -= h;
+                    let fd = (f(&xp) - f(&xm)) / (2.0 * h);
+                    assert!(
+                        (fd - grad[(p, k)]).abs() < 1e-6 * fd.abs().max(1.0),
+                        "({p},{k}): {} vs {fd}",
+                        grad[(p, k)]
+                    );
+                }
+            }
+            assert!(g
+                .cross_posterior_vjp(&cache, &x, &a, &Matrix::zeros(3, 2), &d)
+                .is_err());
+        }
+    }
+    // Batched models have no independent output GPs for acquisition functions.
+    let (x, y) = data(9, 8, 2, 1);
+    let batched = BatchedMultiOutputGP::new(
+        vec![x.clone(), x],
+        vec![y.clone(), y],
+        vec![2],
+        BatchedMultiOutputGPOptions::default(),
+    )
+    .unwrap();
+    assert!(batched.output_gps().is_none());
+}

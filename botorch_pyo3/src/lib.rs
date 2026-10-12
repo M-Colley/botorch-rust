@@ -16,6 +16,7 @@ mod acquisition;
 mod arrays;
 mod callbacks;
 mod errors;
+mod mo_acquisition;
 mod mo_test_functions;
 mod models;
 mod multi_objective;
@@ -79,5 +80,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(threads::get_num_threads, m)?)?;
     // Multi-objective utilities, `sample_simplex` and `sample_hypersphere`.
     multi_objective::register(m)?;
+    // Multi-objective acquisition functions.
+    mo_acquisition::register(m)?;
     Ok(())
 }

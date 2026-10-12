@@ -11,9 +11,16 @@
 //!   for visually examining diversity maintenance behavior in a decision
 //!   space.* GECCO 2011 (the 0.1 scale of [`infer_reference_point`]).
 //!
-//! The NEHVI mixins of BoTorch's module (`SubsetIndexCachingMixin`,
-//! `compute_subset_indices`, `NoisyExpectedHypervolumeMixin`) belong to the
-//! acquisition functions and are not part of this module.
+//! The NEHVI mixins of BoTorch's module belong to the acquisition functions:
+//! `compute_subset_indices` and `SubsetIndexCachingMixin` are re-exported
+//! here from [`crate::acquisition::multi_objective::hypervolume`];
+//! `NoisyExpectedHypervolumeMixin` is the shared machinery of
+//! [`crate::acquisition::multi_objective::QNoisyExpectedHypervolumeImprovement`]
+//! and [`crate::acquisition::multi_objective::QLogNoisyExpectedHypervolumeImprovement`].
+
+pub use crate::acquisition::multi_objective::hypervolume::{
+    compute_subset_indices, SubsetIndexCache,
+};
 
 use rayon::prelude::*;
 
