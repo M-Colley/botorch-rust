@@ -19,7 +19,15 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import first_kind, from_pair, is_torch_tensor, kind_of, to_flat
+from botorch_rs._arrays import (
+    ArrayKind,
+    first_kind,
+    from_flat,
+    from_pair,
+    is_torch_tensor,
+    kind_of,
+    to_flat,
+)
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.utils.multi_objective._common import shape_repr
 
@@ -36,13 +44,10 @@ def _autograd_function() -> Any:
         class _ChebyshevValue(torch.autograd.Function):
             @staticmethod
             def forward(ctx: Any, Y: Any, scalarization: Any) -> Any:  # type: ignore[override]
-                flat = Y.detach().reshape(-1).cpu().tolist()
-                (values, vshape), (grads, _) = scalarization.evaluate_with_grad(
-                    (flat, tuple(Y.shape))
-                )
-                grad = torch.tensor(grads, dtype=Y.dtype).reshape(Y.shape).to(Y.device)
-                ctx.save_for_backward(grad)
-                return torch.tensor(values, dtype=Y.dtype).reshape(tuple(vshape)).to(Y.device)
+                kind = ArrayKind("torch", Y.dtype, Y.device)
+                (values, vshape), (grads, _) = scalarization.evaluate_with_grad(to_flat(Y, "Y"))
+                ctx.save_for_backward(from_flat(grads, tuple(Y.shape), kind))
+                return from_flat(values, tuple(vshape), kind)
 
             @staticmethod
             def backward(ctx: Any, grad_output: Any) -> tuple[Any, None]:  # type: ignore[override]

@@ -5,11 +5,13 @@
 //!
 //! The callables operate on torch tensors, exactly as in BoTorch. Every call
 //! goes through the pure-Python module `botorch_rs._torch_bridge`: the Rust
-//! side passes posterior samples (and inputs) as flat lists, the bridge builds
-//! tensors that require gradients, evaluates the callable and keeps the
-//! autograd graph in an opaque handle; the reverse pass hands the adjoint of
-//! the outputs back to the bridge, which computes the vector-Jacobian product
-//! with `torch.autograd.grad`. Calls acquire the GIL (they come from worker
+//! side passes posterior samples (and inputs) as flat float64 buffers
+//! (`array.array('d')`; lists for a few values, see [`crate::arrays`]), the
+//! bridge builds tensors that require gradients, evaluates the callable and
+//! keeps the autograd graph in an opaque handle; the reverse pass hands the
+//! adjoint of the outputs back to the bridge, which computes the
+//! vector-Jacobian product with `torch.autograd.grad`. Values and gradients
+//! come back the same way. Calls acquire the GIL (they come from worker
 //! threads while the GIL is released). A Python exception raised by a callable
 //! is kept and re-raised unchanged when the Rust computation returns (see
 //! [`take_error`]).
@@ -22,7 +24,7 @@ use botorch_core::utils::objective::McConstraint;
 use botorch_core::{BotorchError, Matrix, Result};
 use pyo3::prelude::*;
 
-use crate::arrays::Array;
+use crate::arrays::{float_data, float_values, Array};
 
 /// The first Python exception raised by a callable during the current
 /// computation.
@@ -133,18 +135,23 @@ impl PyCallback {
         let d = x_arg.as_ref().map(|(_, d)| *d);
         let (values, handle) = Python::attach(|py| -> PyResult<(Vec<f64>, Py<PyAny>)> {
             let bridge = py.import(BRIDGE)?;
+            let x_arg = match &x_arg {
+                Some((data, d)) => Some((float_values(py, data)?, *d)),
+                None => None,
+            };
             let res = bridge.call_method1(
                 "forward",
                 (
                     self.callable.bind(py),
                     self.kind,
-                    samples.to_row_major(),
+                    float_values(py, &samples.to_row_major())?,
                     (s, n, m),
                     x_arg,
                     with_grad,
                 ),
             )?;
-            res.extract()
+            let (values, handle): (Bound<'_, PyAny>, Py<PyAny>) = res.extract()?;
+            Ok((float_data(&values)?, handle))
         })
         .map_err(callback_error)?;
         let values = values_matrix(&values, s, n)?;
@@ -152,9 +159,14 @@ impl PyCallback {
             Some(Box::new(move |bar: &Matrix| {
                 let (sbar, xbar) = Python::attach(|py| -> PyResult<(Vec<f64>, Option<Vec<f64>>)> {
                     let bridge = py.import(BRIDGE)?;
-                    bridge
-                        .call_method1("backward", (handle, adjoint_list(bar)))?
-                        .extract()
+                    let adjoint = float_values(py, &adjoint_list(bar))?;
+                    let res = bridge.call_method1("backward", (handle, adjoint))?;
+                    let (sbar, xbar): (Bound<'_, PyAny>, Option<Bound<'_, PyAny>>) =
+                        res.extract()?;
+                    Ok((
+                        float_data(&sbar)?,
+                        xbar.map(|x| float_data(&x)).transpose()?,
+                    ))
                 })
                 .map_err(callback_error)?;
                 let sbar = McSamples::from_row_major(&sbar, s, n, m)?.into_data();

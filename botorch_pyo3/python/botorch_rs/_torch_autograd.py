@@ -12,15 +12,16 @@ from typing import Any
 
 import torch
 
+from botorch_rs._arrays import ArrayKind, from_flat, to_flat
+
 
 class _AcquisitionValue(torch.autograd.Function):
     @staticmethod
     def forward(ctx: Any, X: torch.Tensor, acqf_rs: Any) -> torch.Tensor:  # type: ignore[override]
-        flat = X.detach().reshape(-1).cpu().tolist()
-        (values, vshape), (grads, _) = acqf_rs.forward_with_grad((flat, tuple(X.shape)))
-        grad = torch.tensor(grads, dtype=X.dtype).reshape(X.shape).to(X.device)
-        ctx.save_for_backward(grad)
-        return torch.tensor(values, dtype=X.dtype).reshape(tuple(vshape)).to(X.device)
+        kind = ArrayKind("torch", X.dtype, X.device)
+        (values, vshape), (grads, _) = acqf_rs.forward_with_grad(to_flat(X))
+        ctx.save_for_backward(from_flat(grads, tuple(X.shape), kind))
+        return from_flat(values, tuple(vshape), kind)
 
     @staticmethod
     def backward(ctx: Any, grad_output: torch.Tensor) -> tuple[torch.Tensor, None]:  # type: ignore[override]
