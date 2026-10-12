@@ -14,7 +14,7 @@ use std::sync::Arc;
 use crate::error::{BotorchError, Result};
 use crate::models::batched::{block_diagonal, block_diagonal_grad};
 use crate::models::model::check_vjp_shapes;
-use crate::models::{BatchedMultiOutputGP, Model};
+use crate::models::{BatchedMultiOutputGP, Model, SingleTaskGP};
 use crate::posterior::{JointPosteriorGrad, PointPosteriors, Posterior};
 use crate::{Matrix, Vector};
 
@@ -236,6 +236,14 @@ impl Model for ModelListGP {
 
     fn batch_shape(&self) -> &[usize] {
         ModelListGP::batch_shape(self)
+    }
+
+    fn output_gps(&self) -> Option<Vec<&SingleTaskGP>> {
+        let mut out = Vec::with_capacity(self.num_outputs);
+        for m in &self.models {
+            out.extend(m.output_gps()?);
+        }
+        Some(out)
     }
 
     fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {

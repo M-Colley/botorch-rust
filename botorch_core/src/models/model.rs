@@ -32,6 +32,7 @@ use std::fmt::Debug;
 use std::ops::Range;
 
 use crate::error::{BotorchError, Result};
+use crate::models::SingleTaskGP;
 use crate::posterior::{JointPosteriorGrad, PointPosteriors, Posterior, MIN_VARIANCE};
 use crate::{Matrix, Vector};
 
@@ -51,6 +52,16 @@ pub trait Model: Send + Sync + Debug {
     /// unbatched models. Acquisition functions require unbatched models.
     fn batch_shape(&self) -> &[usize] {
         &[]
+    }
+
+    /// The independent single-output exact GPs that produce the outputs of
+    /// an unbatched model, in output order (`None` otherwise, the default).
+    /// Acquisition functions use them to compute joint posteriors with a
+    /// fixed point set from cached quantities (BoTorch's `cache_root`, see
+    /// [`SingleTaskGP::cross_posterior`]); without them they fall back to
+    /// [`Model::posterior`].
+    fn output_gps(&self) -> Option<Vec<&SingleTaskGP>> {
+        None
     }
 
     /// Joint posterior at the `q × d` inputs `x` over all outputs (BoTorch's

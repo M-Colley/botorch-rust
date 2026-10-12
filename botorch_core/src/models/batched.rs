@@ -774,6 +774,12 @@ impl Model for BatchedMultiOutputGP {
         &self.batch_shape
     }
 
+    fn output_gps(&self) -> Option<Vec<&SingleTaskGP>> {
+        self.batch_shape
+            .is_empty()
+            .then(|| self.models.iter().collect())
+    }
+
     fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {
         self.require_unbatched()?;
         self.posterior_at(0, x, observation_noise)

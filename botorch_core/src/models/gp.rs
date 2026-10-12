@@ -991,6 +991,161 @@ impl SingleTaskGP {
         }
         Ok(out)
     }
+
+    // ------------------------------------------------------------------
+    // Posteriors jointly with a fixed point set
+    // ------------------------------------------------------------------
+
+    /// Caches what the posteriors of new points jointly with the fixed raw-
+    /// space points `xb` (`n_b × d`, e.g. the baseline of a noisy acquisition
+    /// function) need: see [`SingleTaskGP::cross_posterior`].
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] for a column mismatch and
+    /// [`BotorchError::NotPsd`] if the training covariance cannot be factorized.
+    pub fn baseline_cache(&self, xb: &Matrix) -> Result<BaselineCache> {
+        let xt = self.transform_inputs(xb)?;
+        let cache = self.cache()?;
+        let scaled = cache.kernel.scale_points(&xt);
+        let mut v = cache
+            .kernel
+            .cross_scaled(&scaled, &cache.train_scaled)
+            .transpose();
+        cache.chol.solve_lower_mut(&mut v);
+        let mut w = v.clone();
+        cache.chol.solve_lower_transpose_mut(&mut w);
+        Ok(BaselineCache {
+            scaled,
+            v,
+            w,
+            n: xb.nrows(),
+        })
+    }
+
+    /// The blocks of the joint posterior (without observation noise) of the
+    /// fixed points of `baseline` and the raw-space points `x` (`q × d`) that
+    /// involve `x`: the mean at `x`, the cross-covariance `Σ(x, B)` and the
+    /// covariance `Σ(x, x)` (original outcome space). These are the blocks
+    /// of [`SingleTaskGP::posterior`] over `[B; x]`, computed in
+    /// `O(n² q)` instead of `O(n² (n_b + q))` for `n` training points.
+    ///
+    /// # Errors
+    /// See [`SingleTaskGP::baseline_cache`].
+    pub fn cross_posterior(&self, baseline: &BaselineCache, x: &Matrix) -> Result<CrossPosterior> {
+        let xt = self.transform_inputs(x)?;
+        let cache = self.cache()?;
+        let xs = cache.kernel.scale_points(&xt);
+        let kxs = cache.kernel.cross_scaled(&xs, &cache.train_scaled);
+        let mean_tf = (&kxs * &cache.alpha).add_scalar(self.constant());
+        let mut v = kxs.transpose();
+        cache.chol.solve_lower_mut(&mut v);
+        let mut cross = cache.kernel.cross_scaled(&xs, &baseline.scaled);
+        cross.gemm_tr(-1.0, &v, &baseline.v, 1.0);
+        let mut cov = cache.kernel.symmetric_scaled(&xs);
+        cov.gemm_tr(-1.0, &v, &v, 1.0);
+        let (mu, sd) = self.outcome_affine();
+        Ok(CrossPosterior {
+            mean: mean_tf.map(|m| mu + sd * m),
+            cross: cross.map(|c| sd * c * sd),
+            covariance: cov.map(|c| sd * c * sd),
+        })
+    }
+
+    /// Reverse-mode derivative of [`SingleTaskGP::cross_posterior`]: for the
+    /// scalar `s = ⟨mean_adjoint, μ(x)⟩ + ⟨cross_adjoint, Σ(x, B)⟩ +
+    /// ⟨covariance_adjoint, Σ(x, x)⟩` (only the symmetric part of
+    /// `covariance_adjoint` matters), returns `∂s/∂x` (`q × d`).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] for inconsistent shapes; see also
+    /// [`SingleTaskGP::baseline_cache`].
+    pub fn cross_posterior_vjp(
+        &self,
+        baseline: &BaselineCache,
+        x: &Matrix,
+        mean_adjoint: &Vector,
+        cross_adjoint: &Matrix,
+        covariance_adjoint: &Matrix,
+    ) -> Result<Matrix> {
+        let q = x.nrows();
+        if mean_adjoint.len() != q
+            || cross_adjoint.shape() != (q, baseline.n)
+            || covariance_adjoint.shape() != (q, q)
+        {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "adjoints of {q} points and a baseline of {} points must have shapes {q}, \
+                 {q}x{} and {q}x{q}",
+                baseline.n, baseline.n
+            )));
+        }
+        let xt = self.transform_inputs(x)?;
+        let cache = self.cache()?;
+        let d = xt.ncols();
+        let kernel = &cache.kernel;
+        let xs = kernel.scale_points(&xt);
+        let (_, sd) = self.outcome_affine();
+        let mbar = mean_adjoint * sd;
+        let cbar = cross_adjoint * (sd * sd);
+        let dbar = (covariance_adjoint + covariance_adjoint.transpose()) * (0.5 * sd * sd);
+        // W = K⁻¹ K(X_train, x) (n × q).
+        let mut w = kernel.cross_scaled(&xs, &cache.train_scaled).transpose();
+        cache.chol.solve_lower_mut(&mut w);
+        cache.chol.solve_lower_transpose_mut(&mut w);
+        let jac = self.input_jacobian();
+        let mut out = Matrix::zeros(q, d);
+        for p in 0..q {
+            let d_p = dbar.column(p).into_owned();
+            let c_p = cbar.row(p).transpose();
+            // ∂/∂x_p = Dk_pᵀ (mbar_p α - 2 W dbar[:, p] - W_B cbar[p, :]ᵀ)
+            //        + 2 Σ_b dbar[p, b] ∂₁k(x_p, x_b) + Σ_b cbar[p, b] ∂₁k(x_p, B_b).
+            let v = &cache.alpha * mbar[p] - (&w * &d_p) * 2.0 - &baseline.w * &c_p;
+            let (_, dk) = kernel.cross_with_grad_scaled(xs.row(p), &cache.train_scaled);
+            let mut g = dk.tr_mul(&v);
+            let (_, dkk) = kernel.cross_with_grad_scaled(xs.row(p), &xs);
+            g += dkk.tr_mul(&d_p) * 2.0;
+            let (_, dkb) = kernel.cross_with_grad_scaled(xs.row(p), &baseline.scaled);
+            g += dkb.tr_mul(&c_p);
+            for k in 0..d {
+                out[(p, k)] = g[k] * jac[k];
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Quantities of a fixed point set `B` cached by
+/// [`SingleTaskGP::baseline_cache`]: its scaled transformed points,
+/// `V_B = L⁻¹ K(X_train, B)` and `W_B = K⁻¹ K(X_train, B)`.
+#[derive(Clone, Debug)]
+pub struct BaselineCache {
+    scaled: ScaledPoints,
+    v: Matrix,
+    w: Matrix,
+    n: usize,
+}
+
+impl BaselineCache {
+    /// Number of fixed points `n_b`.
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    /// Whether the fixed point set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+}
+
+/// The blocks of a joint posterior over `[B; x]` that involve the new points
+/// `x` (see [`SingleTaskGP::cross_posterior`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CrossPosterior {
+    /// Posterior mean at `x` (`q`).
+    pub mean: Vector,
+    /// Cross-covariance `Σ(x, B)` (`q × n_b`).
+    pub cross: Matrix,
+    /// Covariance `Σ(x, x)` (`q × q`).
+    pub covariance: Matrix,
 }
 
 impl Model for SingleTaskGP {
@@ -1000,6 +1155,10 @@ impl Model for SingleTaskGP {
 
     fn num_outputs(&self) -> usize {
         SingleTaskGP::num_outputs(self)
+    }
+
+    fn output_gps(&self) -> Option<Vec<&SingleTaskGP>> {
+        Some(vec![self])
     }
 
     fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {
