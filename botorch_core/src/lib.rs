@@ -163,11 +163,13 @@
 //! values, bounds, optima and optimizers agree to 3e-16.
 //!
 //! *Multi-objective test problems* (`tests/mo_test_functions_parity.rs`, all 30
-//! problems in 51 configurations, at random points and at the corners of the
+//! problems in 52 configurations, at random points and at the corners of the
 //! domain): objectives, constraint slacks and the deterministic Pareto fronts
-//! agree to 5e-16, reference points exactly and maximum hypervolumes to the
-//! last bit; ten problems implement the corrected definitions of BoTorch
-//! pull requests (see [`test_functions::MultiObjectiveKind::deviation`]).
+//! agree to 7e-16 (Penicillin: relative to BoTorch's own sensitivity to
+//! rounding, observed exact), reference points exactly and maximum
+//! hypervolumes to the last bit; ten problems implement the corrected
+//! definitions of BoTorch pull requests (see
+//! [`test_functions::MultiObjectiveKind::deviation`]).
 //!
 //! *Multi-output, batched and list models* (13 configurations: `m` = 1, 2, 3;
 //! batch shapes `3`, `2`, `2 × 2`; shared, per-batch and explicit `Normalize`;
