@@ -923,6 +923,7 @@ def nsga2_non_dominated_fronts(
     f: Array, n_stop_if_ranked: int | None = None
 ) -> list[list[int]]: ...
 def nsga2_crowding_distance(f: Array) -> list[float]: ...
+
 # Fantasy models, cost models and the hypervolume knowledge gradient.
 
 #: An evaluation mask ``(data, shape)`` (``n x m`` booleans).
