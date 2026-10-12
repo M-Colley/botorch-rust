@@ -526,6 +526,22 @@ def test_posteriors(case: tuple) -> None:
     CHECK.check("context embeddings", c.rs._task_embeddings(), eb, 0.0)
 
 
+@pytest.mark.parametrize("case", CASES, ids=_ids)
+def test_task_covariance_renormalizes_first(case: tuple) -> None:
+    """``task_covar_module(task_idcs)`` before any other forward pass: the
+    embedding lookup renormalizes the weights before the covariance."""
+    c = Case(*case, seed=35)
+    c.randomize(36)
+    g = torch.Generator().manual_seed(37)
+    idx = torch.randint(c.K, (2, 4, 1), generator=g)
+    with torch.no_grad():
+        kb = c.bt.task_covar_module(idx)
+    kr = c.rs.task_covar_module(idx)
+    assert tuple(torch.as_tensor(kr).shape) == tuple(kb.shape) == (2, 4, 4)
+    CHECK.check("task_covar_module(task_idcs)", kr, kb, VALUE_TOL)
+    compare_named_parameters(c.label, c.bt, c.rs)
+
+
 def test_task_values_are_validated() -> None:
     c = Case("learned", 3, 1, 2, 4, [2], seed=41)
     X = torch.rand(2, 3, dtype=DT)

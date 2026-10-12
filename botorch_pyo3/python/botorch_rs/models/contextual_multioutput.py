@@ -427,12 +427,12 @@ class LCEMGP(MultiTaskGP):
     def task_covar_module(self, task_idcs: Any) -> Any:
         """The task covariance of the task indices ``task_idcs`` (``n x 1`` or
         ``b x n x 1``), shape ``n x n`` or ``b x n x n``."""
-        data, shape = self._rs.task_covariance()
-        k = shape[0]
         idx, ishape = to_flat(task_idcs, "task_idcs")
         if not ishape or ishape[-1] != 1:
             raise BotorchTensorDimensionError("task_idcs must have shape `(b x) n x 1`.")
         self._forward_pass()
+        data, shape = self._rs.task_covariance()
+        k = shape[0]
         n = ishape[-2]
         batch = math.prod(ishape[:-2])
         out: list[float] = []
