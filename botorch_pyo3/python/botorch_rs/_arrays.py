@@ -265,28 +265,23 @@ def bool_array(data: Sequence[bool] | bytes, shape: Sequence[int], kind: ArrayKi
     ``bytes`` with one byte per value (the extension's masks with more than a
     few values; non-zero bytes are ``True``)."""
     shape = tuple(shape)
-    if isinstance(data, (bytes, bytearray)) and data and kind.lib != "list":
-        if kind.lib == "torch":
-            torch = _torch() or importlib.import_module("torch")
+    is_bytes = isinstance(data, (bytes, bytearray)) and len(data) > 0
+    if kind.lib == "torch":
+        torch = _torch() or importlib.import_module("torch")
+        if is_bytes:
             # A writable copy, viewed by torch and compared into a new tensor.
             t = torch.frombuffer(bytearray(data), dtype=torch.uint8).reshape(shape) != 0
-            if kind.device is not None and kind.device.type != "cpu":
-                t = t.to(kind.device)
-            return t
-        np = _numpy() or importlib.import_module("numpy")
-        return np.frombuffer(data, dtype=np.uint8).reshape(shape) != 0
-    values = [bool(v) for v in data]
-    if kind.lib == "torch":
-        import torch
-
-        t = torch.tensor(values, dtype=torch.bool).reshape(shape)
+        else:
+            t = torch.tensor([bool(v) for v in data], dtype=torch.bool).reshape(shape)
         if kind.device is not None and kind.device.type != "cpu":
             t = t.to(kind.device)
         return t
     if kind.lib == "numpy":
-        import numpy as np
-
-        return np.asarray(values, dtype=bool).reshape(shape)
+        np = _numpy() or importlib.import_module("numpy")
+        if is_bytes:
+            return np.frombuffer(data, dtype=np.uint8).reshape(shape) != 0
+        return np.asarray([bool(v) for v in data], dtype=bool).reshape(shape)
+    values = [bool(v) for v in data]
     if not shape:
         return values[0]
 
