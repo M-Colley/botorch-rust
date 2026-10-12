@@ -15,6 +15,7 @@ use pyo3::prelude::*;
 mod acquisition;
 mod arrays;
 mod callbacks;
+mod contextual;
 mod errors;
 mod fantasize;
 mod hvkg;
@@ -45,6 +46,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<models::PySingleTaskGP>()?;
     m.add_class::<models::PyModelListGP>()?;
     m.add_class::<models::PyModel>()?;
+    m.add_class::<contextual::PyLCEMGP>()?;
     m.add_class::<transforms::PyNormalize>()?;
     m.add_class::<transforms::PyStandardize>()?;
     m.add_class::<specs::PyPrior>()?;
