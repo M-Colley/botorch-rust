@@ -204,6 +204,55 @@ impl Fittable for SingleTaskGP {
 
 /// The single-output fit of [`fit_gpytorch_mll`].
 fn fit_single_task_gp(model: &mut SingleTaskGP, options: FitOptions) -> Result<FitResult> {
+    let initial = model.hyperparameters().clone();
+    let x_init = initial.to_vector().as_slice().to_vec();
+    let bounds = model.raw_parameter_bounds();
+    let (result, x) = {
+        let mll = ExactMarginalLogLikelihood::new(model);
+        let model_ref: &SingleTaskGP = model;
+        minimize_with_retries(
+            &x_init,
+            &bounds,
+            options,
+            false,
+            |x| {
+                mll.value_and_grad(x)
+                    .map(|(v, g)| (v, g.as_slice().to_vec()))
+            },
+            |rng| sample_all_priors(model_ref, &initial, rng),
+        )?
+    };
+    model.set_raw_parameters(&x)?;
+    Ok(result)
+}
+
+/// BoTorch's `_fit_fallback` with `fit_gpytorch_mll_scipy` for a model with
+/// flat raw parameters: maximizes `mll` (value and gradient with respect to
+/// the raw parameters) with L-BFGS-B from `x_init` within `bounds`, and
+/// retries failed attempts from `resample` (BoTorch's `sample_all_priors`),
+/// up to `options.max_attempts` attempts. Returns the summary and the fitted
+/// raw parameters.
+///
+/// With `nan_tolerant`, a NaN covariance ([`BotorchError::Nan`]) and
+/// non-finite values give NaN values and gradients, from which L-BFGS-B
+/// backtracks, as in BoTorch (whose closure maps linear_operator's `NanError`
+/// to NaN); otherwise they end the attempt.
+///
+/// # Errors
+/// [`BotorchError::InvalidArgument`] for invalid options and
+/// [`BotorchError::ModelFitting`] if all attempts fail.
+pub(crate) fn minimize_with_retries<F, S>(
+    x_init: &[f64],
+    bounds: &[(f64, f64)],
+    options: FitOptions,
+    nan_tolerant: bool,
+    mll: F,
+    mut resample: S,
+) -> Result<(FitResult, Vec<f64>)>
+where
+    F: Fn(&[f64]) -> Result<(f64, Vec<f64>)>,
+    S: FnMut(&mut StdRng) -> Vec<f64>,
+{
     if options.max_attempts == 0 || options.maxcor == 0 {
         return Err(BotorchError::InvalidArgument(
             "max_attempts and maxcor must be at least 1".into(),
@@ -217,43 +266,46 @@ fn fit_single_task_gp(model: &mut SingleTaskGP, options: FitOptions) -> Result<F
         maxfun: options.maxfun,
         maxls: options.maxls,
     };
-    let initial = model.hyperparameters().clone();
-    let x_init = initial.to_vector().as_slice().to_vec();
-    let (lower, upper): (Vec<f64>, Vec<f64>) = model.raw_parameter_bounds().into_iter().unzip();
+    let (lower, upper): (Vec<f64>, Vec<f64>) = bounds.iter().copied().unzip();
     let mut rng = StdRng::seed_from_u64(options.seed);
     let mut messages = Vec::new();
     for attempt in 1..=options.max_attempts {
         let x0 = if attempt == 1 {
-            x_init.clone()
+            x_init.to_vec()
         } else {
-            sample_all_priors(model, &initial, &mut rng)
+            resample(&mut rng)
         };
-        let outcome = {
-            let mll = ExactMarginalLogLikelihood::new(model);
-            let loss_and_grad = |x: &[f64]| -> Result<(f64, Vec<f64>)> {
-                let (value, grad) = mll.value_and_grad(x)?;
-                if !value.is_finite() || grad.iter().any(|g| !g.is_finite()) {
-                    return Err(BotorchError::Numerical(format!(
-                        "non-finite marginal log likelihood {value} or gradient at raw parameters {x:?}"
-                    )));
+        let loss_and_grad = |x: &[f64]| -> Result<(f64, Vec<f64>)> {
+            let (value, grad) = match mll(x) {
+                Ok(vg) => vg,
+                // BoTorch's `_handle_numerical_errors`: a NaN covariance
+                // (linear_operator's `NanError`) gives NaN values and
+                // gradients, from which L-BFGS-B's line search backtracks.
+                Err(BotorchError::Nan { .. }) if nan_tolerant => {
+                    return Ok((f64::NAN, vec![f64::NAN; x.len()]))
                 }
-                Ok((-value, grad.iter().map(|g| -g).collect()))
+                Err(e) => return Err(e),
             };
-            lbfgsb::minimize(loss_and_grad, &x0, &lower, &upper, &lb_options)
+            if !nan_tolerant && (!value.is_finite() || grad.iter().any(|g| !g.is_finite())) {
+                return Err(BotorchError::Numerical(format!(
+                    "non-finite marginal log likelihood {value} or gradient at raw parameters {x:?}"
+                )));
+            }
+            Ok((-value, grad.iter().map(|g| -g).collect()))
         };
-        match outcome {
+        match lbfgsb::minimize(loss_and_grad, &x0, &lower, &upper, &lb_options) {
             Ok(res) => {
                 let status = fit_status(res.status);
                 if status != FitStatus::Failure {
-                    model.set_raw_parameters(&res.x)?;
-                    return Ok(FitResult {
+                    let result = FitResult {
                         loss: res.f,
                         iterations: res.iterations,
                         evaluations: res.evaluations,
                         status,
                         message: res.status.message().to_string(),
                         attempts: attempt,
-                    });
+                    };
+                    return Ok((result, res.x));
                 }
                 messages.push(format!("attempt {attempt}: {}", res.status.message()));
             }
