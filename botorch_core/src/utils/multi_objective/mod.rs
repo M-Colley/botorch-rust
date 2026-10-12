@@ -1,10 +1,14 @@
 //! Multi-objective utilities mirroring `botorch.utils.multi_objective`:
-//! Pareto dominance ([`pareto`]) and box decompositions of the dominated and
-//! non-dominated space ([`box_decompositions`]).
+//! Pareto dominance ([`pareto`]), hypervolumes ([`hypervolume`]) and box
+//! decompositions of the dominated and non-dominated space
+//! ([`box_decompositions`]).
 //!
 //! | BoTorch | botorch_core |
 //! |---|---|
 //! | `is_non_dominated(Y, maximize, deduplicate)` | [`pareto::is_non_dominated`] (`n × m` matrix), [`pareto::is_non_dominated_rows`] (row-major slice), [`pareto::is_non_dominated_batch`] (a [`PointBatch`], parallel over the batch) |
+//! | `Hypervolume(ref_point).compute(pareto_Y)` | [`hypervolume::Hypervolume::new`]`(&ref_point)`, [`hypervolume::Hypervolume::compute`]`(&pareto_y)` |
+//! | `infer_reference_point(pareto_Y, max_ref_point, scale, scale_max_ref_point)` | [`hypervolume::infer_reference_point`] |
+//! | `get_hypervolume_maximizing_subset(n, Y, ref_point)` | [`hypervolume::get_hypervolume_maximizing_subset`]`(n, &y, &ref_point, choose)` (`choose` replaces `random.choice`) |
 //! | `NondominatedPartitioning(ref_point, Y, alpha)` | [`box_decompositions::NondominatedPartitioning::new`] / [`new_batched`](box_decompositions::NondominatedPartitioning::new_batched) / [`from_points`](box_decompositions::NondominatedPartitioning::from_points) |
 //! | `FastNondominatedPartitioning(ref_point, Y)`, `DominatedPartitioning(ref_point, Y)` | [`box_decompositions::FastNondominatedPartitioning`], [`box_decompositions::DominatedPartitioning`] (same constructors) |
 //! | `bd.pareto_Y`, `bd.Y`, `bd.ref_point`, `bd.num_outcomes`, `bd.batch_shape`, `bd.update(Y)`, `bd.reset()`, `bd.partition_space()`, `bd.compute_hypervolume()`, `bd.get_hypercell_bounds()` | the [`box_decompositions::BoxDecomposition`] trait; bounds as contiguous [`box_decompositions::CellBounds`] |
@@ -44,6 +48,7 @@
 //!   per batch element when a front is empty).
 
 pub mod box_decompositions;
+pub mod hypervolume;
 pub mod pareto;
 
 use crate::error::{BotorchError, Result};
