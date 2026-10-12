@@ -148,6 +148,104 @@ class ModelListGP(Model):
             self._rs_list(), transform_arg(posterior_transform, self.num_outputs)
         )
 
+    # -- conditioning and fantasies ----------------------------------------
+
+    def condition_on_observations(
+        self, X: list[Any], Y: Any, noise: Any = None, **kwargs: Any
+    ) -> ModelListGP:
+        r"""The list conditioned on new observations (BoTorch's
+        ``ModelListGP.condition_on_observations`` with
+        meta-pytorch/botorch#3399): ``X`` holds the new inputs of every output
+        (``batch_shape x n' x d``), ``Y`` the observations (``batch_shape' x n'
+        x m``) and ``noise`` their noise variances in the *original* outcome
+        space; every (single-output) sub-model is conditioned with its own
+        input and outcome transforms. BoTorch main passes untransformed
+        inputs and outcome-transformed targets to GPyTorch instead."""
+        if kwargs:
+            raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
+        if self.training:
+            raise RuntimeError(
+                "Fantasy observations can only be added after making predictions with a model "
+                "so that all test independent caches exist. Call the model on some data first!"
+            )
+        if not isinstance(X, (list, tuple)):
+            raise BotorchTensorDimensionError(
+                "ModelListGP.condition_on_observations expects a list of inputs, one per output."
+            )
+        y = to_flat(Y, "Y")
+        if noise is not None:
+            nz = to_flat(noise, "noise")
+            if tuple(nz[1]) != tuple(y[1][len(y[1]) - len(nz[1]) :]):
+                raise BotorchTensorDimensionError(
+                    "The shape of observation noise does not agree with the outcomes. "
+                    f"Received {tuple(nz[1])} noise with {tuple(y[1])} outcomes."
+                )
+        else:
+            nz = None
+        out = _rs.model_list_condition_on_observations(
+            [m._rs for m in self.models], [to_flat(x, "X") for x in X], y, nz
+        )
+        return self._with_models(out)
+
+    def fantasize(
+        self,
+        X: Any,
+        sampler: Any,
+        observation_noise: Any = None,
+        evaluation_mask: Any = None,
+        **kwargs: Any,
+    ) -> ModelListGP:
+        r"""A fantasy model (BoTorch's ``ModelList.fantasize``): every
+        (single-output) sub-model is fantasized at ``X`` with its sampler of a
+        ``ListSampler`` (or with a shared ``SobolQMCNormalSampler``). With an
+        ``evaluation_mask`` (``n' x m``, which outputs are observed at which
+        point; requires a ``ListSampler``), output ``i`` is fantasized only at
+        the points ``X[..., mask[:, i], :]``. ``observation_noise``
+        (``model_batch x 1 x m`` or ``x n' x m``, outcome-transformed space)
+        defaults to each sub-model's noise."""
+        from botorch_rs.sampling.list_sampler import ListSampler
+        from botorch_rs.sampling.normal import SobolQMCNormalSampler
+
+        if kwargs:
+            raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
+        if isinstance(sampler, ListSampler):
+            samplers, shared = [s._rs for s in sampler.samplers], False
+        elif isinstance(sampler, SobolQMCNormalSampler):
+            samplers, shared = [sampler._rs], True
+        else:
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or ListSampler."
+            )
+        mask = None
+        if evaluation_mask is not None:
+            from botorch_rs.acquisition.cost_aware import _mask_arg
+
+            mask = _mask_arg(evaluation_mask)
+            x_shape = to_flat(X, "X")[1]
+            if (
+                mask is None
+                or len(mask[1]) != 2
+                or tuple(mask[1]) != (x_shape[-2], self.num_outputs)
+            ):
+                raise BotorchTensorDimensionError(
+                    f"Expected evaluation_mask of shape `{x_shape[0]} x {self.num_outputs}`, "
+                    f"but got {tuple(mask[1]) if mask is not None else None}."
+                )
+            if shared:
+                raise ValueError("Decoupled fantasization requires a list of samplers.")
+        self.eval()
+        nz = None if observation_noise is None else to_flat(observation_noise, "observation_noise")
+        out = _rs.model_list_fantasize(
+            [m._rs for m in self.models], to_flat(X, "X"), samplers, shared, nz, mask
+        )
+        return self._with_models(out)
+
+    def _with_models(self, handles: list[Any]) -> ModelListGP:
+        """A list of copies of the sub-models around new Rust models."""
+        new = self.__class__(*[m._with_rs(h) for m, h in zip(self.models, handles, strict=True)])
+        new.training = False
+        return new
+
     # -- parameters --------------------------------------------------------
 
     def named_parameters(self) -> Iterator[tuple[str, Any]]:

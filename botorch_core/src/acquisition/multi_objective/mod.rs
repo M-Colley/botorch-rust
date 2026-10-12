@@ -21,6 +21,9 @@
 //! * [`hypervolume`] — the inclusion–exclusion over the subsets of the
 //!   candidates (`compute_subset_indices`, `SubsetIndexCachingMixin`) and the
 //!   hypervolume improvement of MC samples with exact gradients.
+//! * [`hypervolume_knowledge_gradient`] — [`QHypervolumeKnowledgeGradient`]
+//!   (qHVKG, one-shot, decoupled evaluations, cost-aware) and
+//!   [`QMultiFidelityHypervolumeKnowledgeGradient`].
 //!
 //! The MC acquisition functions sample the joint posterior of the candidates
 //! (and pending or baseline points) over all model outputs with BoTorch's
@@ -48,6 +51,7 @@ use crate::Matrix;
 
 pub mod analytic;
 pub mod hypervolume;
+pub mod hypervolume_knowledge_gradient;
 pub mod logei;
 pub mod monte_carlo;
 pub mod multi_fidelity;
@@ -59,6 +63,11 @@ pub mod utils;
 
 pub use analytic::ExpectedHypervolumeImprovement;
 pub use hypervolume::{compute_subset_indices, HypercellBounds, SubsetIndexCache, Subsets};
+pub use hypervolume_knowledge_gradient::{
+    split_hvkg_fantasy_points, HypervolumeValueFunction, QHypervolumeKnowledgeGradient,
+    QHypervolumeKnowledgeGradientOptions, QMultiFidelityHypervolumeKnowledgeGradient,
+    QMultiFidelityHypervolumeKnowledgeGradientOptions,
+};
 pub use logei::{
     QLogExpectedHypervolumeImprovement, QLogExpectedHypervolumeImprovementOptions,
     QLogNoisyExpectedHypervolumeImprovement, QLogNoisyExpectedHypervolumeImprovementOptions,

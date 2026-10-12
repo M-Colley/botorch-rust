@@ -157,3 +157,37 @@ def nonlinear_constraint(fn: Any, x: list[float], shape: list[int]) -> tuple[flo
         g = None
     grad = torch.zeros_like(X) if g is None else g
     return float(value.detach()), grad.reshape(-1).tolist()
+
+
+def call_tensor_function(
+    fn: Any, args: list[tuple[Sequence[float], Sequence[int]]], with_grad: bool
+) -> tuple[FloatData, list[int], Any]:
+    """Evaluates ``fn(*args)`` on float64 tensors built from ``(data, shape)``
+    pairs; returns the values (row-major), their shape and a handle for
+    :func:`tensor_function_vjp` (with gradients)."""
+    torch = _torch()
+    inputs = [from_flat(data, tuple(shape), _float64()) for data, shape in args]
+    if with_grad:
+        for t in inputs:
+            t.requires_grad_(True)
+    with torch.enable_grad() if with_grad else torch.no_grad():
+        out = torch.as_tensor(fn(*inputs), dtype=torch.float64)
+    values = to_flat(out, "values")[0]
+    handle = (out, inputs) if with_grad else None
+    return values, list(out.shape), handle
+
+
+def tensor_function_vjp(handle: Any, adjoint: Sequence[float]) -> list[FloatData]:
+    """The adjoints of the arguments of :func:`call_tensor_function` for the
+    adjoint of its values."""
+    torch = _torch()
+    out, inputs = handle
+    g = from_flat(adjoint, tuple(out.shape), _float64())
+    if out.requires_grad:
+        grads = torch.autograd.grad(out, inputs, grad_outputs=g, allow_unused=True)
+    else:
+        grads = (None,) * len(inputs)
+    return [
+        to_flat(gr if gr is not None else torch.zeros_like(t))[0]
+        for gr, t in zip(grads, inputs, strict=True)
+    ]

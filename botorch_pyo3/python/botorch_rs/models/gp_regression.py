@@ -425,6 +425,84 @@ class SingleTaskGP(Model):
             self._rs, transform_arg(posterior_transform, self.num_outputs)
         )
 
+    # -- conditioning and fantasies ----------------------------------------
+
+    def _with_rs(self, rs: _rs.SingleTaskGP) -> SingleTaskGP:
+        """A copy of this model (with its own modules) around the Rust model
+        ``rs``, in eval mode (e.g. a conditioned or fantasy model)."""
+        new = self.__class__.__new__(self.__class__)
+        memo: dict[int, Any] = {id(self): new}
+        for key, value in self.__dict__.items():
+            new.__dict__[key] = rs if key == "_rs" else copy.deepcopy(value, memo)
+        new.training = False
+        return new
+
+    def condition_on_observations(
+        self, X: Any, Y: Any, noise: Any = None, **kwargs: Any
+    ) -> SingleTaskGP:
+        r"""The model conditioned on new observations (BoTorch's
+        ``condition_on_observations``): ``X`` (``batch_shape x n' x d``),
+        ``Y`` (``batch_shape' x n' x m``, original outcome space) and optional
+        observation-noise variances ``noise`` (shape of ``Y``, in the
+        *outcome-transformed* space, as BoTorch assumes). The result has the
+        new points appended to the training data, the same hyperparameters
+        and the fitted transforms (applied in eval mode), and the broadcast
+        batch shape of the model, ``X`` and ``Y``. Explicit noise of a model
+        that infers its noise level enters the posterior mean and covariance
+        (meta-pytorch/botorch#3396; BoTorch main uses it for the covariance
+        only).
+
+        As in BoTorch, the model must be in eval mode (e.g. after a call of
+        ``posterior``).
+        """
+        if kwargs:
+            raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
+        if self.training:
+            raise RuntimeError(
+                "Fantasy observations can only be added after making predictions with a model "
+                "so that all test independent caches exist. Call the model on some data first!"
+            )
+        x = to_flat(X, "X")
+        y = to_flat(Y, "Y")
+        tb, ib = len(y[1]) - 2, len(x[1]) - 2
+        if not (tb == ib or tb == ib + 1):
+            raise RuntimeError(
+                f"Unsupported batch shapes: The target batch shape ({tuple(y[1][:-2])}) must "
+                "have either the same dimension as or one more dimension than the input batch "
+                f"shape ({tuple(x[1][:-2])})"
+            )
+        nz = None if noise is None else to_flat(noise, "noise")
+        return self._with_rs(_rs.condition_on_observations(self._rs, x, y, nz))
+
+    def fantasize(
+        self, X: Any, sampler: Any, observation_noise: Any = None, **kwargs: Any
+    ) -> SingleTaskGP:
+        r"""A fantasy model (BoTorch's ``fantasize``): ``n_f`` sets of
+        observations at ``X`` (``batch_shape x n' x d``) are sampled from the
+        posterior with observation noise using ``sampler`` (a
+        ``SobolQMCNormalSampler`` with ``sample_shape=(n_f,)``; its base samples
+        are shared by the batch elements), and the model is conditioned on
+        each of them. The fantasy model has the batch shape ``n_f x
+        broadcast(batch_shape, model.batch_shape)``. ``observation_noise``
+        (``model_batch x 1 x m`` or ``model_batch x n' x m``, outcome-transformed
+        space) defaults to the inferred noise level, or the mean training
+        noise of a fixed-noise model."""
+        from botorch_rs.exceptions.errors import DeprecationError
+        from botorch_rs.sampling.normal import SobolQMCNormalSampler
+
+        if kwargs:
+            raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
+        if isinstance(observation_noise, bool):
+            raise DeprecationError(
+                "`fantasize` no longer accepts a boolean for `observation_noise`."
+            )
+        if not isinstance(sampler, SobolQMCNormalSampler):
+            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        self.eval()
+        x = to_flat(X, "X")
+        nz = None if observation_noise is None else to_flat(observation_noise, "observation_noise")
+        return self._with_rs(_rs.fantasize(self._rs, x, sampler._rs, nz))
+
     # -- parameters --------------------------------------------------------
 
     def _raw_param(self, suffix: str) -> list[float]:

@@ -16,6 +16,8 @@ mod acquisition;
 mod arrays;
 mod callbacks;
 mod errors;
+mod fantasize;
+mod hvkg;
 mod input_perturbation;
 mod mo_acquisition;
 mod mo_test_functions;
@@ -92,5 +94,8 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     risk_measures::register(m)?;
     momf::register(m)?;
     nsga2::register(m)?;
+    // Fantasy models, cost models and the hypervolume knowledge gradient.
+    fantasize::register(m)?;
+    hvkg::register(m)?;
     Ok(())
 }

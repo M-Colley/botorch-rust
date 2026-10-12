@@ -35,6 +35,10 @@ use crate::transforms::input::{ChainedInputTransform, InputTape};
 use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
 use crate::{Matrix, Vector};
 
+mod conditioning;
+
+pub(crate) use conditioning::{FantasyAdjoint, FantasyGp, FantasyPosterior};
+
 /// Lower bound on the inferred noise variance of BoTorch's default likelihoods.
 pub const MIN_INFERRED_NOISE_LEVEL: f64 = 1e-4;
 
@@ -277,6 +281,12 @@ pub struct SingleTaskGP {
     covar_module: KernelSpec,
     likelihood: Likelihood,
     hyperparameters: Hyperparameters,
+    /// Noise variances (transformed space) of training points that were
+    /// added by conditioning a homoskedastic model on observations with
+    /// explicit `noise`; `None` entries (and all points if absent) use the
+    /// likelihood noise. Like BoTorch's fantasy models, the explicit noise
+    /// only enters the predictions, not the marginal log likelihood.
+    point_noise: Option<Vec<Option<f64>>>,
     cache: OnceLock<std::result::Result<PredictionCache, BotorchError>>,
 }
 
@@ -446,6 +456,7 @@ impl SingleTaskGP {
             covar_module,
             likelihood,
             hyperparameters,
+            point_noise: None,
             cache: OnceLock::new(),
         })
     }
@@ -739,7 +750,7 @@ impl SingleTaskGP {
         let noise = self.likelihood_noise();
         let n = self.num_train();
         for i in 0..n {
-            k[(i, i)] += if noise.len() == 1 { noise[0] } else { noise[i] };
+            k[(i, i)] += self.training_noise(&noise, i);
         }
         let chol = psd_safe_cholesky(&k)?;
         let resid = self.train_y_tf.add_scalar(-self.constant());

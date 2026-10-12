@@ -1,13 +1,18 @@
 """Multi-objective acquisition functions (``botorch.acquisition.multi_objective``):
 qLogNEHVI (BoTorch's recommended default), qLogEHVI, qNEHVI, qEHVI, the
-analytic EHVI, qLogNParEGO and MOMF, multi-output MC objectives (including
-the multi-output risk measures of ``multi_output_risk_measures``) and the
-multi-objective utilities, computed in Rust with exact gradients."""
+analytic EHVI, qLogNParEGO, MOMF and the hypervolume knowledge gradient,
+multi-output MC objectives (including the multi-output risk measures of
+``multi_output_risk_measures``) and the multi-objective utilities, computed
+in Rust with exact gradients."""
 
 from botorch_rs.acquisition.multi_objective.analytic import ExpectedHypervolumeImprovement
 from botorch_rs.acquisition.multi_objective.base import (
     MultiObjectiveAnalyticAcquisitionFunction,
     MultiObjectiveMCAcquisitionFunction,
+)
+from botorch_rs.acquisition.multi_objective.hypervolume_knowledge_gradient import (
+    qHypervolumeKnowledgeGradient,
+    qMultiFidelityHypervolumeKnowledgeGradient,
 )
 from botorch_rs.acquisition.multi_objective.logei import (
     qLogExpectedHypervolumeImprovement,
@@ -44,8 +49,10 @@ __all__ = [
     "get_default_partitioning_alpha",
     "prune_inferior_points_multi_objective",
     "qExpectedHypervolumeImprovement",
+    "qHypervolumeKnowledgeGradient",
     "qLogExpectedHypervolumeImprovement",
     "qLogNParEGO",
     "qLogNoisyExpectedHypervolumeImprovement",
+    "qMultiFidelityHypervolumeKnowledgeGradient",
     "qNoisyExpectedHypervolumeImprovement",
 ]

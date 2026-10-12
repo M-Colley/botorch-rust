@@ -138,6 +138,48 @@ impl CholeskyFactor {
     pub fn logdet(&self) -> f64 {
         2.0 * self.l.diagonal().iter().map(|v| v.ln()).sum::<f64>()
     }
+
+    /// The Cholesky factor of the bordered matrix `[[A, Bᵀ], [B, C]]` from
+    /// this factor of `A` (`n × n`), the new rows `cross = B` (`k × n`) and
+    /// the new corner `corner = C` (`k × k`): an exact rank-`k` update,
+    ///
+    /// ```text
+    /// [[L, 0], [B L⁻ᵀ, chol(C - B A⁻¹ Bᵀ)]],
+    /// ```
+    ///
+    /// in `O(n² k)` instead of `O((n + k)³)`. This is what a Cholesky
+    /// factorization of the whole matrix computes (block by block), and what
+    /// GPyTorch's fantasy models do (`LinearOperator.cat_rows`).
+    ///
+    /// Returns `None` if this factor needed jitter (the update would keep
+    /// the jitter of the old block only) or if the Schur complement is not
+    /// numerically positive definite; callers then factorize the whole
+    /// matrix with [`psd_safe_cholesky`].
+    ///
+    /// # Panics
+    /// If the shapes are inconsistent.
+    pub fn bordered(&self, cross: &Matrix, corner: &Matrix) -> Option<CholeskyFactor> {
+        let n = self.dim();
+        let k = cross.nrows();
+        assert!(
+            cross.ncols() == n && corner.shape() == (k, k),
+            "bordered: inconsistent shapes"
+        );
+        if self.jitter != 0.0 {
+            return None;
+        }
+        // L21ᵀ = L⁻¹ Bᵀ (n × k).
+        let mut l21t = cross.transpose();
+        self.solve_lower_mut(&mut l21t);
+        let mut schur = corner.clone();
+        schur.gemm_tr(-1.0, &l21t, &l21t, 1.0);
+        let l22 = try_cholesky(&schur)?;
+        let mut l = Matrix::zeros(n + k, n + k);
+        l.view_mut((0, 0), (n, n)).copy_from(&self.l);
+        l.view_mut((n, 0), (k, n)).copy_from(&l21t.transpose());
+        l.view_mut((n, n), (k, k)).copy_from(&l22);
+        Some(CholeskyFactor { l, jitter: 0.0 })
+    }
 }
 
 /// Attempts a plain Cholesky factorization, returning `None` if `a` is not
@@ -416,6 +458,31 @@ mod tests {
             psd_safe_cholesky(&b),
             Err(BotorchError::NotPsd { .. })
         ));
+    }
+
+    #[test]
+    fn bordered_factor_equals_the_full_factorization() {
+        let a = spd(7);
+        let full = psd_safe_cholesky(&a).unwrap();
+        for n in [1usize, 4, 6] {
+            let k = 7 - n;
+            let head = psd_safe_cholesky(&a.view((0, 0), (n, n)).into_owned()).unwrap();
+            let cross = a.view((n, 0), (k, n)).into_owned();
+            let corner = a.view((n, n), (k, k)).into_owned();
+            let b = head.bordered(&cross, &corner).unwrap();
+            assert!((b.l() - full.l()).amax() < 1e-12 * full.l().amax());
+        }
+        // A Schur complement that is not positive definite (C - B A⁻¹ Bᵀ < 0)
+        // and a factor with jitter.
+        let head = psd_safe_cholesky(&a.view((0, 0), (6, 6)).into_owned()).unwrap();
+        let cross = a.view((6, 0), (1, 6)).into_owned();
+        assert!(head.bordered(&cross, &Matrix::zeros(1, 1)).is_none());
+        let v = Matrix::from_column_slice(3, 1, &[1.0, 2.0, 3.0]);
+        let jittered = psd_safe_cholesky(&(&v * v.transpose())).unwrap();
+        assert!(jittered.jitter() > 0.0);
+        assert!(jittered
+            .bordered(&Matrix::zeros(1, 3), &Matrix::identity(1, 1))
+            .is_none());
     }
 
     #[test]

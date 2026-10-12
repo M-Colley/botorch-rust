@@ -13,6 +13,11 @@ from botorch_rs.acquisition.analytic import (
     ProbabilityOfImprovement,
     UpperConfidenceBound,
 )
+from botorch_rs.acquisition.cost_aware import (
+    CostAwareUtility,
+    GenericCostAwareUtility,
+    InverseCostWeightedUtility,
+)
 from botorch_rs.acquisition.logei import (
     qLogExpectedImprovement,
     qLogNoisyExpectedImprovement,
@@ -42,9 +47,12 @@ __all__ = [
     "AnalyticAcquisitionFunction",
     "ConstrainedExpectedImprovement",
     "ConstrainedMCObjective",
+    "CostAwareUtility",
     "ExpectedImprovement",
+    "GenericCostAwareUtility",
     "GenericMCObjective",
     "IdentityMCObjective",
+    "InverseCostWeightedUtility",
     "LinearMCObjective",
     "LogConstrainedExpectedImprovement",
     "LogExpectedImprovement",

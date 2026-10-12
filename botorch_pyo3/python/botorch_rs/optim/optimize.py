@@ -32,8 +32,11 @@ _INT_OPTIONS = {
     "maxls",
     "n_burnin",
     "n_thinning",
+    # The one-shot initial conditions (gen_one_shot_hvkg_initial_conditions).
+    "num_inner_restarts",
+    "raw_inner_samples",
 }
-_FLOAT_OPTIONS = {"ftol", "gtol", "eta", "alpha"}
+_FLOAT_OPTIONS = {"ftol", "gtol", "eta", "alpha", "frac_random"}
 _IGNORED_OPTIONS = {"disp", "iprint"}
 
 _WARNINGS: dict[str, type[Warning]] = {
@@ -73,6 +76,9 @@ def _parse_options(options: dict[str, Any] | None) -> dict[str, Any]:
             out[key] = None if value is None else float(value)
         elif key not in _IGNORED_OPTIONS:
             raise UnsupportedError(f"optimize_acqf option {key!r} is not supported by botorch_rs.")
+    if out.get("eta") is not None:
+        # BoTorch's one-shot initial conditions read ``eta`` too (default 2).
+        out["one_shot_eta"] = out["eta"]
     return out
 
 
@@ -161,8 +167,15 @@ def optimize_acqf(
     ``batch_limit``, ``init_batch_limit``, ``eta``, ``alpha``,
     ``nonnegative``, ``method`` (``"L-BFGS-B"`` or ``"SLSQP"``), ``maxiter``
     (2000), ``ftol``, the L-BFGS-B settings ``maxfun``, ``gtol``, ``maxcor``,
-    ``maxls``, and the polytope sampler's ``n_burnin`` (10000) and
-    ``n_thinning`` (32).
+    ``maxls``, the polytope sampler's ``n_burnin`` (10000) and
+    ``n_thinning`` (32), and the one-shot initial conditions'
+    ``frac_random``, ``num_inner_restarts`` and ``raw_inner_samples``.
+
+    One-shot acquisition functions (``qHypervolumeKnowledgeGradient``) are
+    optimized over augmented candidate sets (``get_augmented_q_batch_size``),
+    starting by default from ``gen_one_shot_hvkg_initial_conditions``; the
+    candidates are extracted (``extract_candidates``) unless
+    ``return_full_tree=True``.
 
     Returns:
         ``(candidates, acq_value)``: a ``q x d`` candidate set (``num_restarts x
@@ -180,10 +193,14 @@ def optimize_acqf(
         gen_candidates=gen_candidates,
         acq_function_sequence=acq_function_sequence,
         timeout_sec=timeout_sec,
-        return_full_tree=return_full_tree,
     )
+    from botorch_rs.acquisition.acquisition import OneShotAcquisitionFunction
     from botorch_rs.optim import initializers
 
+    one_shot = isinstance(acq_function, OneShotAcquisitionFunction)
+    if one_shot and ic_generator is initializers.gen_one_shot_hvkg_initial_conditions:
+        # The default of one-shot acquisition functions, generated natively.
+        ic_generator = None
     native_generator = ic_generator is initializers.gen_batch_initial_conditions
     if ic_gen_kwargs and (ic_generator is None or native_generator):
         raise UnsupportedError(f"Unsupported keyword arguments: {sorted(ic_gen_kwargs)}.")
@@ -278,16 +295,43 @@ def optimize_acqf(
     for category, message in messages:
         warnings.warn(message, _WARNINGS.get(category, RuntimeWarning), stacklevel=2)
     acq_function._after_evaluation()
+    full_tree = return_full_tree and one_shot
     if return_best_only:
-        X = from_pair(candidates, kind)
+        if full_tree:
+            X = _best_full_tree(candidates, acq_values[0], restart_x, restart_values, kind)
+        else:
+            X = from_pair(candidates, kind)
         if sequential:
             values = from_flat(acq_values, (len(acq_values),), kind)
         else:
             values = from_flat(acq_values[:1], (), kind)
     else:
         X = from_pair(restart_x, kind)
+        if one_shot and not full_tree:
+            X = acq_function.extract_candidates(X)  # type: ignore[attr-defined]
         values = from_flat(restart_values, (len(restart_values),), kind)
     return X, (values if return_acq_values else None)
+
+
+def _best_full_tree(
+    candidates: Any, value: float, restart_x: Any, restart_values: list[float], kind: Any
+) -> Any:
+    """The augmented candidate set of the best restart: the first restart
+    with the returned value whose leading points are the returned
+    candidates."""
+    data, shape = restart_x
+    per = shape[-2] * shape[-1]
+    n = len(candidates[0])
+    best = None
+    for i, v in enumerate(restart_values):
+        block = data[i * per : (i + 1) * per]
+        if v == value and list(block[:n]) == list(candidates[0]):
+            best = i
+            break
+    if best is None:
+        finite = [(v, -i) for i, v in enumerate(restart_values) if v == v]
+        best = -max(finite)[1] if finite else 0
+    return from_flat(data[best * per : (best + 1) * per], tuple(shape[1:]), kind)
 
 
 def _concat_rows(parts: list[Any], kind: Any) -> Any:
