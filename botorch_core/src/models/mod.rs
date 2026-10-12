@@ -13,6 +13,7 @@
 //! (`condition_on_observations`, `fantasize`; see [`fantasize`]).
 
 pub mod batched;
+pub mod cost;
 pub mod fantasize;
 pub mod gp;
 pub mod model;
