@@ -17,10 +17,12 @@ mod arrays;
 mod callbacks;
 mod errors;
 mod mo_acquisition;
+mod mo_entropy;
 mod mo_test_functions;
 mod models;
 mod multi_objective;
 mod optim;
+mod pathwise;
 mod polytope;
 mod sampling;
 mod specs;
@@ -82,5 +84,8 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     multi_objective::register(m)?;
     // Multi-objective acquisition functions.
     mo_acquisition::register(m)?;
+    // Pathwise sampling and the information-theoretic acquisition functions.
+    pathwise::register(m)?;
+    mo_entropy::register(m)?;
     Ok(())
 }
