@@ -145,6 +145,49 @@ posterior = model.posterior(train_X)
 print(posterior.mean.shape, posterior.variance.shape)  # (28, 1), (28, 1)
 ```
 
+Multi-objective optimization works the same way. This is BoTorch's qLogNEHVI
+loop on BraninCurrin, which reaches about 93% of the maximum hypervolume in
+10 iterations and about 9 seconds:
+
+```python
+import torch
+from botorch_rs.acquisition.multi_objective import qLogNoisyExpectedHypervolumeImprovement
+from botorch_rs.fit import fit_gpytorch_mll
+from botorch_rs.mlls import ExactMarginalLogLikelihood
+from botorch_rs.models import SingleTaskGP
+from botorch_rs.models.transforms import Normalize
+from botorch_rs.optim import optimize_acqf
+from botorch_rs.sampling import SobolQMCNormalSampler
+from botorch_rs.test_functions import BraninCurrin
+from botorch_rs.utils.multi_objective.box_decompositions import DominatedPartitioning
+from botorch_rs.utils.sampling import draw_sobol_samples
+
+problem = BraninCurrin(negate=True)
+bounds = problem.bounds
+train_X = draw_sobol_samples(bounds, n=6, q=1, seed=0).squeeze(-2)
+train_Y = problem(train_X)
+for iteration in range(10):
+    model = SingleTaskGP(train_X, train_Y, input_transform=Normalize(d=2))
+    fit_gpytorch_mll(ExactMarginalLogLikelihood(model.likelihood, model))
+    acqf = qLogNoisyExpectedHypervolumeImprovement(
+        model, ref_point=problem.ref_point, X_baseline=train_X, prune_baseline=True,
+        sampler=SobolQMCNormalSampler(torch.Size([128]), seed=iteration),
+    )
+    candidates, _ = optimize_acqf(acqf, bounds, q=2, num_restarts=10, raw_samples=512,
+                                  sequential=True, options={"seed": iteration})
+    train_X = torch.cat([train_X, candidates])
+    train_Y = torch.cat([train_Y, problem(candidates)])
+
+hv = DominatedPartitioning(ref_point=problem.ref_point, Y=train_Y).compute_hypervolume()
+print(f"hypervolume {hv.item():.2f} of {problem.max_hv:.2f}")  # 55.13 of 59.41
+```
+
+As in BoTorch, L-BFGS-B sometimes stops with an abnormal line search on
+qLogNEHVI's flat landscape. `optimize_acqf` then warns and retries with new
+initial conditions. Over six runs of this loop, the first attempt failed in
+22 of 60 calls with botorch-rust and 19 of 60 with BoTorch, and the final
+hypervolumes were 55.7 and 55.9 on average.
+
 ### Rust
 
 ```rust
@@ -207,6 +250,14 @@ counterpart.
 | `botorch.utils.multi_objective.box_decompositions.*` | same paths | `NondominatedPartitioning` (with `alpha`), `FastNondominatedPartitioning`, `DominatedPartitioning`, `BoxDecompositionList` and the helpers of `box_decompositions.utils`: stateful, backed by Rust; `update(Y)` (incremental), `reset()`, `compute_hypervolume()`, `get_hypercell_bounds()`, `pareto_Y`, batches of two-objective fronts of different sizes; cells and local upper bounds in BoTorch's order |
 | `botorch.utils.multi_objective.scalarization.get_chebyshev_scalarization` | same path | returns a callable `ChebyshevScalarization` (`obj(Y, X=None)`), evaluated in Rust and differentiable with `torch.autograd` |
 | `botorch.utils.sampling.sample_simplex`, `sample_hypersphere` | `botorch_rs.utils.sampling.*` | `d`, `n`, `qmc`, `seed`, `device`, `dtype` |
+| `botorch.acquisition.multi_objective.qLogNoisyExpectedHypervolumeImprovement`, `qNoisyExpectedHypervolumeImprovement` | `botorch_rs.acquisition.multi_objective.*` | `ref_point`, `X_baseline`, `sampler` (default: 128 Sobol samples), `objective`, outcome `constraints` and `eta`, `X_pending` / `set_X_pending` (cached in the box decompositions as in BoTorch: `cache_pending`, `max_iep`, `incremental_nehvi`), `prune_baseline`, `alpha`, `cache_root` (default `True`: BoTorch's low-rank update of the cached baseline root; `False`: the joint posterior), `fat`, `tau_relu`, `tau_max` |
+| `qLogExpectedHypervolumeImprovement`, `qExpectedHypervolumeImprovement` | `botorch_rs.acquisition.multi_objective.*` | `ref_point`, `partitioning` (any unbatched box decomposition of botorch_rs or BoTorch), `sampler`, `objective`, `constraints`, `eta`, `X_pending`, `fat`, `tau_relu`, `tau_max` |
+| `ExpectedHypervolumeImprovement` | `botorch_rs.acquisition.multi_objective.*` | analytic, `q = 1`, independent outputs |
+| `qLogNParEGO` | `botorch_rs.acquisition.multi_objective.*` | `scalarization_weights` (or random weights, see the migration notes), `sampler`, `objective`, `constraints`, `eta`, `X_pending`, `fat`, `prune_baseline`, `tau_relu`, `tau_max`, `incremental` |
+| `IdentityMCMultiOutputObjective`, `WeightedMCMultiOutputObjective`, `GenericMCMultiOutputObjective`, `FeasibilityWeightedMCMultiOutputObjective`, `MCMultiOutputObjective` | `botorch_rs.acquisition.multi_objective.objective.*` | identity, weighted and feasibility-weighted objectives run in Rust; generic objectives and subclasses are torch callables, evaluated from Rust with gradients from `torch.autograd`; BoTorch's own objective objects are accepted too |
+| `botorch.acquisition.multi_objective.utils.prune_inferior_points_multi_objective`, `get_default_partitioning_alpha` | same paths | `objective`, `constraints`, `num_samples`, `max_frac`, and a keyword-only `sampler` |
+| `botorch.utils.multi_objective.hypervolume.compute_subset_indices`, `SubsetIndexCachingMixin`, `NoisyExpectedHypervolumeMixin` | same path | |
+| `botorch.optim.optimize.optimize_acqf_list` | `botorch_rs.optim.optimize.optimize_acqf_list` | sequential, with the previous candidates as `X_pending`; `fixed_features` / `fixed_features_list`, parameter constraints, `options`, `ic_generator`, `return_acq_values` |
 | `botorch.exceptions` | `botorch_rs.exceptions` | `BotorchRsError` hierarchy (also `ValueError`, `RuntimeError`, `NotImplementedError` subclasses) and BoTorch's warnings |
 
 Everything else in BoTorch is not ported yet: see
@@ -215,8 +266,8 @@ Everything else in BoTorch is not ported yet: see
 ## What is not ported yet
 
 botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **146 of the 773
-public classes and functions** defined in BoTorch's modules (19%; BoTorch main
+processes, which is a small part of BoTorch: it provides **165 of the 773
+public classes and functions** defined in BoTorch's modules (21%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
 [docs/api_coverage.md](docs/api_coverage.md). The main gaps:
@@ -261,18 +312,24 @@ module and writes every missing class, function, parameter and method to
   - risk measures (VaR, CVaR, ...) and cost-aware utilities;
   - penalized, proximal, prior-guided, fixed-feature and decoupled wrappers,
     multi-output acquisition functions, and pathwise Thompson sampling.
-- **Multi-objective optimization:** the Pareto, hypervolume, box-decomposition
-  and scalarization utilities and the test problems are ported; not yet:
-  - all multi-objective acquisition functions (`qLogNoisyExpectedHypervolumeImprovement`,
-    `qLogExpectedHypervolumeImprovement`, `qLogNParEGO`,
-    `qHypervolumeKnowledgeGradient`, `MOMF`, multi-objective entropy search,
-    ...), their objectives and risk measures;
+- **Multi-objective optimization:** qLogNEHVI, qLogEHVI, qNEHVI, qEHVI, the
+  analytic EHVI and qLogNParEGO, their objectives and utilities,
+  `optimize_acqf_list`, the Pareto, hypervolume, box-decomposition and
+  scalarization utilities, and the test problems are ported. Not yet:
+  - `qHypervolumeKnowledgeGradient`, `MOMF`, multi-objective entropy search
+    (max-value, joint and predictive) and multi-objective risk measures
+    (`MVaR`, `MARS`, ...);
+  - `compute_sample_box_decomposition`, `random_search_optimizer` and
+    `sample_optimal_points`, which the entropy-search methods use;
+  - in the ported acquisition functions: `marginalize_dim` (fully Bayesian
+    models), per-constraint `fat` lists, posterior transforms, batched models
+    and batched box decompositions;
   - `optimize_with_nsgaii` (NSGA-II via pymoo).
 - **Objectives and transforms:** posterior transforms other than
-  `ScalarizedPosteriorTransform`, learned and multi-output MC objectives, and
+  `ScalarizedPosteriorTransform`, learned MC objectives, and
   `get_acquisition_function` with the input constructors.
 - **Optimization and candidate generation:**
-  - `optimize_acqf_cyclic`, `optimize_acqf_list`, `optimize_acqf_mixed`
+  - `optimize_acqf_cyclic`, `optimize_acqf_mixed`
     (also the alternating variant), `optimize_acqf_discrete` (also with local
     search) and `optimize_acqf_homotopy`;
   - in `optimize_acqf`: custom `gen_candidates` (`gen_candidates_torch`),
@@ -299,7 +356,7 @@ module and writes every missing class, function, parameter and method to
 | Area | Public classes and functions | In botorch_rs | Share |
 |---|---|---|---|
 | `acquisition` | 145 | 27 | 19% |
-| `acquisition.multi_objective` | 33 | 0 | 0% |
+| `acquisition.multi_objective` | 33 | 15 | 45% |
 | `cross_validation` | 7 | 0 | 0% |
 | `exceptions` | 20 | 15 | 75% |
 | `fit` | 3 | 1 | 33% |
@@ -312,7 +369,7 @@ module and writes every missing class, function, parameter and method to
 | `models.likelihoods` | 5 | 0 | 0% |
 | `models.transforms` | 35 | 4 | 11% |
 | `models.utils` | 26 | 4 | 15% |
-| `optim` | 58 | 5 | 9% |
+| `optim` | 58 | 6 | 10% |
 | `optim.closures` | 5 | 0 | 0% |
 | `optim.utils` | 14 | 0 | 0% |
 | `posteriors` | 13 | 2 | 15% |
@@ -322,9 +379,9 @@ module and writes every missing class, function, parameter and method to
 | `test_functions` | 84 | 57 | 68% |
 | `test_utils` | 2 | 0 | 0% |
 | `utils` | 97 | 10 | 10% |
-| `utils.multi_objective` | 22 | 16 | 73% |
+| `utils.multi_objective` | 22 | 19 | 86% |
 | `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **773** | **146** | **19%** |
+| **all of `botorch`** | **773** | **165** | **21%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -341,7 +398,9 @@ tested at two levels:
    multi-output, batched and list models, posterior transforms and
    constrained EI, `--phase 4b` MC objectives, outcome constraints,
    constrained optimization and polytope sampling, `--phase 5a-utils`
-   multi-objective utilities, `--phase 5a-tf` multi-objective test problems).
+   multi-objective utilities, `--phase 5a-tf` multi-objective test problems,
+   `--phase 5b` multi-objective acquisition functions; `--phase 5b-3392` needs
+   a BoTorch with meta-pytorch/botorch#3392).
    The
    `botorch_core/tests/*parity*.rs` tests reproduce them with the Rust core
    alone, without Python (`cargo test`).
@@ -355,7 +414,10 @@ tested at two levels:
    parameter constraints, polytope sampling, constrained optimization),
    `test_parity_mo_utils.py` (Pareto, hypervolume, box decompositions,
    scalarization, simplex and sphere samplers), `test_parity_mo_test_functions.py`
-   (multi-objective test problems) and the unified, randomized suite
+   (multi-objective test problems), `test_parity_mo_acquisition.py`
+   (multi-objective acquisition functions, objectives, pruning,
+   `optimize_acqf_list`), `test_mobo_loop.py` (whole multi-objective loops),
+   the randomized `test_equivalence_multi_objective.py`, and the unified, randomized suite
    `test_equivalence.py`. The randomized sweeps of the multi-objective modules
    are also part of `-m equivalence`.
 
@@ -536,6 +598,67 @@ inputs by one unit in the last place changes BoTorch's own values by up to
 agrees to 1.6e-13 on 20,000 random points, but because other math libraries
 can amplify last-bit differences as much, it is compared relative to BoTorch's
 own sensitivity, like the Monte-Carlo quantities on nearly singular posteriors.
+
+### Multi-objective acquisition functions
+
+The acquisition functions are compared with identical Monte-Carlo base samples.
+
+**Models and settings covered:**
+- multi-output `SingleTaskGP`s with 2, 3 and 4 outputs, and `ModelListGP`s of
+  single- and multi-output models;
+- q = 1, 2 and 3, and t-batches;
+- pending points: at construction, cached or not, appended, replaced and
+  cleared;
+- outcome constraints with `eta`, and `fat`, `tau_relu` and `tau_max`;
+- all objectives;
+- exact and approximate (`alpha`) partitionings;
+- `cache_root` true and false;
+- incremental and non-incremental NEHVI, and pruned baselines.
+
+**Where the tests are:**
+- Rust fixtures: `botorch_core/tests/mo_acquisition_parity.rs`, about 120 cases.
+- Live Python tests: `test_parity_mo_acquisition.py`, 135 tests.
+- A randomized suite: `test_equivalence_multi_objective.py`, 143 tests over 13
+  scenarios with random reference points, fronts, q, pending points,
+  objectives, constraints, `eta`, `fat` and `alpha`.
+
+| Quantity | Tolerance | Rust fixtures | Python parity | Randomized suite |
+|---|---|---|---|---|
+| Multi-output objectives | 1e-12 | 4.1e-14 | exact | 4.6e-15 |
+| qEHVI values / gradients | 1e-9 / 1e-8 | 9.7e-15 / 2.9e-14 | 1.5e-14 / 5.4e-14 | 1.4e-13 / 9.2e-12 |
+| qLogEHVI values / gradients | 1e-9 / 1e-8 | 4.5e-14 / 8.6e-14 | 9.8e-15 / 5.0e-14 | 2.6e-14 / 6.0e-13 |
+| qNEHVI values / gradients | 1e-9 / 1e-8, or 10× BoTorch's noise floor (errors scaled to the nominal tolerance) | 1.3e-12 / 9.5e-12 | 6.8e-11 / 5.0e-9 | 9.6e-10 / 4.7e-9 |
+| qLogNEHVI values / gradients | as above | 3.6e-13 / 3.6e-12 | 3.7e-12 / 4.9e-10 | 3.5e-10 / 5.9e-9 |
+| Analytic EHVI values / gradients | 1e-9 / 1e-8 | 6.1e-15 / 7.4e-15 | 3.1e-15 / 2.4e-15 | 6.6e-15 / 4.8e-15 |
+| qLogNParEGO values / gradients | as for qNEHVI | 3.2e-13 / 1.4e-11 | 4.4e-11 / 2.6e-10 | 2.8e-10 / 7.0e-9 |
+| Cached baselines, box decompositions, pruned points, `compute_subset_indices` | identical | identical | identical | identical |
+| Unscaled errors of the noisy acquisition functions (values / gradients) | | | | 6.4e-3 / 2.0e-2 in 1-D scenarios, where BoTorch's own change reaches 3.4e-2 / 7.8e-2 |
+
+**Independent of BoTorch:**
+- qEHVI equals the average over its samples of the exact hypervolume
+  improvement computed with `Hypervolume` (worst 1.8e-15).
+- The analytic EHVI agrees with qEHVI over 16,384 quasi-random samples.
+- qLogEHVI converges to `log qEHVI` as the smoothing goes to zero.
+- Gradients agree with finite differences.
+- The `cache_root` and joint computations agree with each other.
+- Results don't depend on the number of threads (bitwise).
+
+**Optimization.** From identical initial conditions, every `optimize_acqf`
+restart with qLogNEHVI reaches BoTorch's value, and `optimize_acqf_list`
+agrees to 4.7e-14.
+
+**Whole loops.** `test_mobo_loop.py` compares qLogNEHVI loops on BraninCurrin
+from the same initial designs. Single runs differ by about 5.7% of the maximum
+hypervolume, because the optimizers draw different initial conditions, so CI
+only guards against gross failures. Over 24 designs the loops are
+statistically indistinguishable:
+
+| | botorch-rust | BoTorch |
+|---|---|---|
+| Mean final hypervolume | 50.54 | 49.90 |
+| Median final hypervolume | 50.85 | 50.69 |
+
+botorch-rust's shortfall is −1.1% ± 1.2% (mean ± standard error).
 
 ### Versions checked
 
@@ -784,6 +907,41 @@ threads.
     fallback with Python's `random.choice`, as BoTorch does.
   - As in BoTorch, batched decompositions with more than two objectives and
     more than one batch dimension are not supported.
+- **Multi-objective acquisition functions.**
+  - **Cached pending points** (meta-pytorch/botorch#3392). When qNEHVI or
+    qLogNEHVI caches pending points in its box decompositions, botorch-rust
+    keeps the base samples of the points already decomposed and draws only
+    the new ones. BoTorch main redraws all of them, which mixes sampling noise
+    into the improvement. For example, a pending point equal to a baseline
+    point "improves" the hypervolume by 3.6e-3 in BoTorch main, and by 1e-15
+    with the fix. These cases are tested against BoTorch with #3392.
+  - **Feasibility weighting** (#3392). With several `constraint_idcs`,
+    `FeasibilityWeightedMCMultiOutputObjective` weights by every constraint.
+    BoTorch main applies only the last index, because of a late-binding
+    closure.
+  - **`cache_root`.** The default (`True`) is BoTorch's computation: new
+    points are sampled through a low-rank update of the cached root of each
+    output's baseline covariance, with BoTorch's jitter retries and fallback.
+    `cache_root=False` samples the joint posterior. Both agree with BoTorch's
+    corresponding paths. qLogNParEGO, like qLogNEI, always uses the joint
+    computation.
+  - **Random numbers.** `prune_baseline` and qLogNParEGO's default
+    scalarization weights draw from botorch-rust's generator, seeded from the
+    sampler's seed. BoTorch uses torch's global generator. Explicit
+    `scalarization_weights` reproduce BoTorch exactly.
+  - **Non-incremental qLogNEHVI** returns `log(NEHVI + prev_nehvi)`. The
+    improvement of cached pending points, `prev_nehvi`, is exact only to
+    rounding, about 1e-15 of the hypervolume. Where candidates add nothing,
+    the logarithm turns that rounding into differences of order one in both
+    libraries, so the tests compare these cases in linear space.
+  - **BoTorch's fused C++ kernel** for the log hypervolume improvement
+    reassociates the arithmetic. botorch-rust follows BoTorch's pure-Python
+    path.
+  - **Not supported**, each raising `UnsupportedError`: per-constraint `fat`
+    lists, posterior transforms, `marginalize_dim`, batched models and
+    batched box decompositions.
+  - **Missing methods.** `psi` and `nu` of the analytic EHVI,
+    `get_posterior_samples` and `sample_shape` are not ported.
 - **Multi-objective test problems.**
   - Evaluations run in float64; float32 inputs give the rounded float64
     values. The keyword-only `seed` seeds the noise of nested-list inputs, and
@@ -840,7 +998,9 @@ Other scripts:
   - `--phase 4b`: MC objectives, outcome constraints, constrained optimization
     and polytope sampling;
   - `--phase 5a-utils` and `--phase 5a-tf`: the multi-objective utilities and
-    test problems.
+    test problems;
+  - `--phase 5b`: the multi-objective acquisition functions (`--phase 5b-3392`
+    with a BoTorch that includes meta-pytorch/botorch#3392).
 - `python scripts/benchmark.py` measures the timings above;
   `scripts/benchmark_mo_utils.py` and `scripts/benchmark_arrays.py [--botorch]`
   measure the multi-objective utilities and the exchange of arrays between

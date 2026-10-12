@@ -570,7 +570,7 @@ def main() -> None:
         if args.no_botorch:
             parser.error("--json needs BoTorch for the comparison")
         has_loop = any(task.name.startswith(("BO loop", "MOBO loop")) for task in task_list)
-        loops = f" ({args.loop_repeats} for the BO loop)" if has_loop else ""
+        loops = f" ({args.loop_repeats} for the BO loops)" if has_loop else ""
         n_runs = f"{args.repeats} run" + ("s" if args.repeats != 1 else "")
         meta = {
             "subtitle": f"Hartmann-6, one thread each, median of {n_runs}{loops}. {cpu}.",

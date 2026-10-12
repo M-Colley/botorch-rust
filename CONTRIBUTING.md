@@ -31,7 +31,7 @@ fixtures recorded from BoTorch. After changing what they cover, regenerate
 them with BoTorch installed (or a source checkout on `PYTHONPATH`):
 
 ```console
-$ python scripts/generate_fixtures.py [--phase 1|2|4|4b|5a-utils|5a-tf|all]
+$ python scripts/generate_fixtures.py [--phase 1|2|4|4b|5a-utils|5a-tf|5b|all]
 ```
 
 ## Python
