@@ -9,6 +9,8 @@
 //!   [`QLogNoisyExpectedHypervolumeImprovement`] (qLogNEHVI, BoTorch's
 //!   recommended default).
 //! * [`analytic`] — [`ExpectedHypervolumeImprovement`] (`q = 1`).
+//! * [`parego`] — [`QLogNParEGO`] (qLogNEI of a random augmented Chebyshev
+//!   scalarization).
 //! * [`utils`] — `get_default_partitioning_alpha`,
 //!   `prune_inferior_points_multi_objective`.
 //! * [`hypervolume`] — the inclusion–exclusion over the subsets of the
@@ -44,6 +46,7 @@ pub mod logei;
 pub mod monte_carlo;
 mod nehvi;
 pub mod objective;
+pub mod parego;
 pub mod utils;
 
 pub use analytic::ExpectedHypervolumeImprovement;
@@ -61,6 +64,7 @@ pub use objective::{
     GenericMcMultiOutputObjective, IdentityMcMultiOutputObjective, McMultiOutputObjective,
     MultiOutputValues, WeightedMcMultiOutputObjective,
 };
+pub use parego::{QLogNParEGO, QLogNParEGOOptions};
 pub use utils::{
     get_default_partitioning_alpha, prune_inferior_points_multi_objective,
     prune_inferior_points_multi_objective_indices, PruneMultiObjectiveOptions,
