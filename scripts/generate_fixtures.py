@@ -2786,8 +2786,20 @@ def main() -> None:
         else:
             fixtures_mo_hvkg.generate_phase5c_hvkg(args.out)
 
-            "1", "2", "4", "4b", "5a-utils", "5a-tf", "5b", "5b-3392", "5c-hvkg", "5c-hvkg-prs",
-            "5c-entropy", "5c-robust", "5c-robust-3392", "all"
+    if args.phase in ("5c-entropy", "all"):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from fixtures_mo_entropy import generate_phase5c_entropy
+
+        generate_phase5c_entropy(args.out)
+
+    if args.phase in ("5c-robust", "5c-robust-3392", "all"):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import fixtures_mo_robust
+
+        if args.phase == "5c-robust-3392":
+            fixtures_mo_robust.generate_phase5c_robust_3392(args.out)
+        else:
+            fixtures_mo_robust.generate_phase5c_robust(args.out)
 
 
 if __name__ == "__main__":
