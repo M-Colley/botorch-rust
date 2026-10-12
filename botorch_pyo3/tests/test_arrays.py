@@ -210,7 +210,12 @@ def test_round_trips(kind: str, n: int) -> None:
 
                 ref = np.asarray(values, dtype=k.dtype or np.float64).reshape(shape)
                 assert out.dtype == ref.dtype and out.shape == ref.shape
-                assert out.tobytes() == ref.tobytes()
+                if out.dtype == np.longdouble and out.dtype.itemsize > 8:
+                    # x87 extended precision is padded to 12 or 16 bytes, and
+                    # the padding is uninitialized: compare the values.
+                    assert np.array_equal(out, ref)
+                else:
+                    assert out.tobytes() == ref.tobytes()
                 assert out.flags.writeable and out.flags.c_contiguous
             # Results never share memory with the data.
             if isinstance(data, array):
