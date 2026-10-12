@@ -649,6 +649,12 @@ def _compare_restarts(label: str, x_rs: Any, v_rs: Any, x_bt: Any, v_bt: Any) ->
     assert sum(agree) >= k - 1, (label, v_rs, v_bt)
 
 
+# BoTorch 0.18.1 (with SciPy >= 1.16) optimizes all L-BFGS-B restarts as one joint
+# problem by default, which stops them at other points than separate problems; main and
+# botorch_rs optimize every restart on its own.
+ONE_RESTART_PER_PROBLEM = {"batch_limit": 1}
+
+
 @pytest.mark.parametrize("case", list(COMPOSITES)[:2])
 def test_composite_optimize_acqf(case: str) -> None:
     seed, num, weights = COMPOSITES[case]
@@ -664,6 +670,7 @@ def test_composite_optimize_acqf(case: str) -> None:
             num_restarts=4,
             batch_initial_conditions=ics,
             return_best_only=False,
+            options=ONE_RESTART_PER_PROBLEM,
         )
     for kind in ("native", "callable"):
         x_rs, v_rs = rs_optimize.optimize_acqf(
@@ -712,6 +719,7 @@ def test_composite_sweep(seed: int) -> None:
             num_restarts=3,
             batch_initial_conditions=ics,
             return_best_only=False,
+            options=ONE_RESTART_PER_PROBLEM,
         )
     x_rs, v_rs = rs_optimize.optimize_acqf(
         c["native"],
