@@ -258,6 +258,14 @@ counterpart.
 | `botorch.acquisition.multi_objective.utils.prune_inferior_points_multi_objective`, `get_default_partitioning_alpha` | same paths | `objective`, `constraints`, `num_samples`, `max_frac`, and a keyword-only `sampler` |
 | `botorch.utils.multi_objective.hypervolume.compute_subset_indices`, `SubsetIndexCachingMixin`, `NoisyExpectedHypervolumeMixin` | same path | |
 | `botorch.optim.optimize.optimize_acqf_list` | `botorch_rs.optim.optimize.optimize_acqf_list` | sequential, with the previous candidates as `X_pending`; `fixed_features` / `fixed_features_list`, parameter constraints, `options`, `ic_generator`, `return_acq_values` |
+| `SingleTaskGP.condition_on_observations`, `fantasize` | same methods | the fitted transforms; GPyTorch's batch rules; explicit noise; `fantasize(X, sampler, observation_noise)` gives `n_f` fantasy models with base samples shared over the batch, as in BoTorch; exact rank-k updates of the cached Cholesky factor |
+| `ModelListGP.condition_on_observations`, `fantasize` | same methods | single-output sub-models; noise in the original outcome space (meta-pytorch/botorch#3399); a `ListSampler`, a shared sampler or an `evaluation_mask` |
+| `botorch.sampling.list_sampler.ListSampler` | `botorch_rs.sampling.ListSampler` | |
+| `botorch.models.cost.AffineFidelityCostModel`, `FixedCostModel` | `botorch_rs.models.cost.*` | `fidelity_weights`, `fixed_cost`; differentiable with `torch.autograd` |
+| `botorch.acquisition.cost_aware.InverseCostWeightedUtility`, `GenericCostAwareUtility` | `botorch_rs.acquisition.cost_aware.*` | `use_mean`, `cost_objective`, `log` |
+| `botorch.acquisition.utils.project_to_target_fidelity`, `expand_trace_observations` | same paths | |
+| `qHypervolumeKnowledgeGradient`, `qMultiFidelityHypervolumeKnowledgeGradient` | `botorch_rs.acquisition.multi_objective.*` | `ModelListGP` of single-output models; `num_fantasies`, `num_pareto`, `objective`, `inner_sampler`, `X_evaluation_mask`, `X_pending`, `current_value`, `use_posterior_mean`, `cost_aware_utility`, `log`, `target_fidelities`, `project`; exact gradients computed in Rust |
+| `botorch.optim.initializers.gen_one_shot_hvkg_initial_conditions`, `optimize_acqf` with one-shot acquisition functions | `botorch_rs.optim.*` | augmented `q`, `extract_candidates`, `return_full_tree`, `fixed_features`, linear constraints (qHVKG) |
 | `botorch.exceptions` | `botorch_rs.exceptions` | `BotorchRsError` hierarchy (also `ValueError`, `RuntimeError`, `NotImplementedError` subclasses) and BoTorch's warnings |
 
 Everything else in BoTorch is not ported yet: see
@@ -266,8 +274,8 @@ Everything else in BoTorch is not ported yet: see
 ## What is not ported yet
 
 botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **165 of the 773
-public classes and functions** defined in BoTorch's modules (21%; BoTorch main
+processes, which is a small part of BoTorch: it provides **178 of the 773
+public classes and functions** defined in BoTorch's modules (23%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
 [docs/api_coverage.md](docs/api_coverage.md). The main gaps:
@@ -283,11 +291,12 @@ module and writes every missing class, function, parameter and method to
     `LatentKroneckerGP`;
   - preference learning (`PairwiseGP`);
   - contextual and additive GPs;
-  - deterministic, ensemble and cost models;
+  - deterministic and ensemble models, and cost models other than
+    `AffineFidelityCostModel` and `FixedCostModel`;
   - relevance pursuit, and the empirical and hierarchical model packages.
 - **Model features:**
-  - `condition_on_observations`, `fantasize`, `subset_output` and
-    `construct_inputs`;
+  - `subset_output` and `construct_inputs`, and `condition_on_observations` /
+    `fantasize` for multi-output sub-models of a `ModelListGP`;
   - autograd through models (acquisition values do support `torch.autograd`
     with respect to their inputs);
   - kernels other than RBF, Matérn-5/2 and `ScaleKernel`, including BoTorch's
@@ -304,7 +313,9 @@ module and writes every missing class, function, parameter and method to
   - `qNoisyExpectedImprovement` and the analytic noisy EI variants;
   - `qLowerConfidenceBound`, `qPosteriorStandardDeviation`,
     `ScalarizedPosteriorMean`, and the analytic `LogProbabilityOfFeasibility`;
-  - knowledge gradient (`qKnowledgeGradient` and its multi-fidelity variant);
+  - single-objective knowledge gradient (`qKnowledgeGradient` and its
+    multi-fidelity variant), although the fantasy machinery it needs is
+    ported;
   - entropy search (max-value entropy search, GIBBON, joint and predictive
     entropy search) and `qMultiStepLookahead`;
   - active learning (`qNegIntegratedPosteriorVariance`, BALD) and preference
@@ -313,10 +324,11 @@ module and writes every missing class, function, parameter and method to
   - penalized, proximal, prior-guided, fixed-feature and decoupled wrappers,
     multi-output acquisition functions, and pathwise Thompson sampling.
 - **Multi-objective optimization:** qLogNEHVI, qLogEHVI, qNEHVI, qEHVI, the
-  analytic EHVI and qLogNParEGO, their objectives and utilities,
+  analytic EHVI, qLogNParEGO and the hypervolume knowledge gradient (also
+  multi-fidelity), their objectives and utilities,
   `optimize_acqf_list`, the Pareto, hypervolume, box-decomposition and
   scalarization utilities, and the test problems are ported. Not yet:
-  - `qHypervolumeKnowledgeGradient`, `MOMF`, multi-objective entropy search
+  - `MOMF`, multi-objective entropy search
     (max-value, joint and predictive) and multi-objective risk measures
     (`MVaR`, `MARS`, ...);
   - `compute_sample_box_decomposition`, `random_search_optimizer` and
@@ -355,25 +367,25 @@ module and writes every missing class, function, parameter and method to
 
 | Area | Public classes and functions | In botorch_rs | Share |
 |---|---|---|---|
-| `acquisition` | 145 | 27 | 19% |
-| `acquisition.multi_objective` | 33 | 15 | 45% |
+| `acquisition` | 145 | 33 | 23% |
+| `acquisition.multi_objective` | 33 | 17 | 52% |
 | `cross_validation` | 7 | 0 | 0% |
-| `exceptions` | 20 | 15 | 75% |
+| `exceptions` | 20 | 16 | 80% |
 | `fit` | 3 | 1 | 33% |
 | `generation` | 8 | 0 | 0% |
 | `logging` | 1 | 0 | 0% |
-| `models` | 66 | 3 | 5% |
+| `models` | 66 | 5 | 8% |
 | `models.empirical_gps` | 36 | 0 | 0% |
 | `models.hierarchical` | 6 | 0 | 0% |
 | `models.kernels` | 19 | 0 | 0% |
 | `models.likelihoods` | 5 | 0 | 0% |
 | `models.transforms` | 35 | 4 | 11% |
 | `models.utils` | 26 | 4 | 15% |
-| `optim` | 58 | 6 | 10% |
+| `optim` | 58 | 7 | 12% |
 | `optim.closures` | 5 | 0 | 0% |
 | `optim.utils` | 14 | 0 | 0% |
 | `posteriors` | 13 | 2 | 15% |
-| `sampling` | 14 | 2 | 14% |
+| `sampling` | 14 | 3 | 21% |
 | `sampling.pathwise` | 25 | 0 | 0% |
 | `settings` | 3 | 0 | 0% |
 | `test_functions` | 84 | 57 | 68% |
@@ -381,7 +393,7 @@ module and writes every missing class, function, parameter and method to
 | `utils` | 97 | 10 | 10% |
 | `utils.multi_objective` | 22 | 19 | 86% |
 | `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **773** | **165** | **21%** |
+| **all of `botorch`** | **773** | **178** | **23%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -660,6 +672,47 @@ statistically indistinguishable:
 
 botorch-rust's shortfall is −1.1% ± 1.2% (mean ± standard error).
 
+### Fantasies and the hypervolume knowledge gradient
+
+**Models and settings covered:**
+- `SingleTaskGP` with one and two outputs, inferred and fixed noise,
+  `Normalize` and `Standardize`, RBF and Matérn-5/2 kernels;
+- conditioning on batched targets and inputs, and fantasies;
+- `ModelListGP` fantasies, with a `ListSampler`, evaluation masks or a shared
+  sampler;
+- qHVKG and qMFHVKG with posterior means and posterior samples, `log`,
+  `current_value`, pending points, all multi-output objectives, cost-aware
+  utilities and target-fidelity projections.
+
+**Where the tests are:**
+- Rust fixtures: `botorch_core/tests/mo_hvkg_parity.rs`, with
+  BoTorch-independent properties in `mo_hvkg_properties.rs`.
+- Live Python tests: `test_parity_mo_hvkg.py`.
+- A randomized suite: `test_equivalence_mo_hvkg.py`, part of
+  `-m equivalence`.
+
+| Quantity | Tolerance | Rust fixtures | Python parity | Randomized suite |
+|---|---|---|---|---|
+| Conditioned and fantasy models: means / covariances | 1e-9 | 2.7e-15 / 1.2e-14 | 2.4e-14 / 2.7e-14 | 5.0e-15 / 3.4e-14 |
+| qHVKG / qMFHVKG values | 1e-9 | 9.9e-15 | 5.0e-15 | 5.6e-13 |
+| qHVKG / qMFHVKG gradients | 1e-8 | 5.4e-14 | 3.2e-15 | 2.1e-11 |
+| Cost models, utilities, projections | 1e-14 | exact | exact (8.7e-16 with a GP as cost model) | |
+
+With posterior samples, the gradient references are BoTorch's under
+GPyTorch's `detach_test_caches(False)`. BoTorch's default gradients are wrong
+there; see the migration notes.
+
+**Independent of BoTorch:**
+- Conditioning equals refitting on the augmented data with the same
+  hyperparameters, and the rank-k Cholesky updates equal a full
+  factorization.
+- Gradients match finite differences.
+- qHVKG is non-negative in expectation.
+
+**Optimization.** From identical initial conditions, `optimize_acqf` restarts
+reach BoTorch's values (to 4.8e-14) in 11 of 12 cases. The inner
+optimization of the one-shot initial conditions agrees in 18 of 18 restarts.
+
 ### Versions checked
 
 The numbers above come from BoTorch's main branch at da00e04 with GPyTorch
@@ -765,6 +818,19 @@ such as the acquisition functions, see the native timings
 `FastNondominatedPartitioning` takes 11 µs, 426 µs and 7.0 ms for m = 2, 3 and
 4, and building the 128 decompositions of the last row takes 1.2 ms on 22
 threads.
+
+### Hypervolume knowledge gradient
+
+`scripts/benchmark_mo_hvkg.py` uses a `ModelListGP` of two GPs on DTLZ2
+(d = 6, 30 points, fixed hyperparameters), with BoTorch on one thread. These
+are medians of 5 runs, measured while other jobs ran on the machine.
+
+| Task | BoTorch | botorch-rust, 1 thread | botorch-rust, 6 threads |
+|---|---|---|---|
+| qHVKG values and gradients, posterior mean | 109 ms | 17.3 ms | 4.9 ms |
+| the same with 32 posterior samples | 1.16 s | 141 ms | 26 ms |
+| `gen_one_shot_hvkg_initial_conditions` | 1.22 s | 37 ms | 7.4 ms |
+| `optimize_acqf` (q = 1, 4 restarts, 4 fantasies × 5 designs) | 9.4 s (42 s with `batch_limit=1`) | 102 ms | 23 ms |
 
 ## Migration notes and known differences
 
@@ -942,6 +1008,38 @@ threads.
     batched box decompositions.
   - **Missing methods.** `psi` and `nu` of the analytic EHVI,
     `get_posterior_samples` and `sample_shape` are not ported.
+- **Fantasies and the hypervolume knowledge gradient.**
+  - **qHVKG evaluates every t-batch on its own fantasy designs.** BoTorch's
+    `_split_hvkg_fantasy_points` reshapes without permuting, so with several
+    t-batches each candidate set is partly valued on other t-batches'
+    designs. `optimize_acqf` optimizes its restarts jointly by default, so
+    BoTorch optimizes and ranks mixed values. In the benchmark below, its
+    returned candidates have true values of 0.20–0.33, against 0.38–0.48 with
+    `batch_limit=1` and 0.42–0.45 with botorch-rust. Values of a single
+    t-batch agree with BoTorch's.
+  - **Exact gradients with posterior samples.** With
+    `use_posterior_mean=False`, BoTorch's gradient misses the dependence of
+    the fantasy covariances on the candidates, because GPyTorch's
+    `detach_test_caches` is on by default. The error reaches 35% in the
+    fixture cases. botorch-rust's gradients are exact.
+  - **Cost-aware utilities.** `GenericCostAwareUtility` and
+    `InverseCostWeightedUtility(use_mean=False)` both fail in BoTorch's
+    qHVKG; both work in botorch-rust (`use_mean=False` with deterministic
+    cost models).
+  - **Fixes from open BoTorch PRs:**
+    - explicit `noise` also changes the posterior mean of a homoskedastic
+      conditioned model (#3396);
+    - `ModelListGP.condition_on_observations` uses each sub-model's own
+      transforms (#3399);
+    - `set_X_pending(X)` without a mask clears the previous mask (#3391).
+  - **Multi-fidelity initial conditions.** Negative target-fidelity indices
+    and `fixed_features` are resolved correctly; BoTorch fails on the former
+    and fixes the wrong column for the latter.
+  - **Smaller differences:**
+    - `AffineFidelityCostModel` keeps its weights in float64;
+    - the random choices of the one-shot initial conditions use
+      botorch-rust's generator;
+    - `ModelListGP.fantasize` and qHVKG require single-output sub-models.
 - **Multi-objective test problems.**
   - Evaluations run in float64; float32 inputs give the rounded float64
     values. The keyword-only `seed` seeds the noise of nested-list inputs, and
@@ -1000,7 +1098,9 @@ Other scripts:
   - `--phase 5a-utils` and `--phase 5a-tf`: the multi-objective utilities and
     test problems;
   - `--phase 5b`: the multi-objective acquisition functions (`--phase 5b-3392`
-    with a BoTorch that includes meta-pytorch/botorch#3392).
+    with a BoTorch that includes meta-pytorch/botorch#3392);
+  - `--phase 5c-hvkg`: fantasies and the hypervolume knowledge gradient
+    (`--phase 5c-hvkg-prs` from the pull-request branches).
 - `python scripts/benchmark.py` measures the timings above;
   `scripts/benchmark_mo_utils.py` and `scripts/benchmark_arrays.py [--botorch]`
   measure the multi-objective utilities and the exchange of arrays between
