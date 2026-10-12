@@ -33,6 +33,7 @@ import json
 import os
 import subprocess
 import sys
+import zlib
 from typing import Any
 
 import torch
@@ -72,6 +73,7 @@ CASES: list[tuple[str, dict[str, int]]] = [
     ("DTLZ3", {"dim": 6, "num_objectives": 3}),
     ("DTLZ4", {"dim": 4, "num_objectives": 2}),
     ("DTLZ4", {"dim": 6, "num_objectives": 3}),
+    ("DTLZ5", {"dim": 3, "num_objectives": 1}),
     ("DTLZ5", {"dim": 4, "num_objectives": 2}),
     ("DTLZ5", {"dim": 6, "num_objectives": 3}),
     ("DTLZ5", {"dim": 7, "num_objectives": 4}),
@@ -272,8 +274,10 @@ def generate_phase5a_tf(out: str) -> None:
     os.makedirs(out, exist_ok=True)
     assert len({name for name, _ in CASES}) == len(ref.MULTI_OBJECTIVE) + len(ref.MULTI_FIDELITY)
     entries = []
-    for i, (name, kwargs) in enumerate(CASES):
-        entry = case_fixture(ref, name, kwargs, seed=5000 + i)
+    for name, kwargs in CASES:
+        # Seeds that do not depend on the position of the case in the list.
+        seed = zlib.crc32(f"{name}{sorted(kwargs.items())}".encode())
+        entry = case_fixture(ref, name, kwargs, seed=seed)
         entries.append(entry)
         print(
             f"{name:24s} {str(kwargs):38s} reference={entry['reference']}"

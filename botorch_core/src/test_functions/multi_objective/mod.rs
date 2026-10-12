@@ -413,6 +413,12 @@ impl MultiObjectiveKind {
                 "dim must be > num_objectives, but got {d} and {m}."
             )));
         }
+        if self == Self::Dtlz7 && m == 1 {
+            // BoTorch accepts it but fails to evaluate it (no position variable).
+            return Err(BotorchError::InvalidArgument(
+                "DTLZ7 requires num_objectives >= 2.".into(),
+            ));
+        }
         if self == Self::Mw7 && d < 2 {
             return Err(BotorchError::InvalidArgument(
                 "dim must be greater than or equal to 2.".into(),
@@ -1142,6 +1148,8 @@ mod tests {
             BotorchError::InvalidArgument("dim must be > num_objectives, but got 3 and 3.".into())
         );
         assert_eq!(K::Dtlz2.resolve_sizes(Some(4), None).unwrap(), (4, 2));
+        assert!(K::Dtlz7.resolve_sizes(Some(4), Some(1)).is_err());
+        assert_eq!(K::Dtlz5.resolve_sizes(Some(4), Some(1)).unwrap(), (4, 1));
         assert_eq!(
             err(K::Zdt1, Some(4), Some(3)),
             BotorchError::Unsupported("ZDT1 currently only supports 2 objectives.".into())

@@ -81,6 +81,12 @@ pub(super) fn dtlz4(x: &[f64], m: usize, out: &mut [f64]) {
 pub(super) fn dtlz5(x: &[f64], m: usize, out: &mut [f64]) {
     let k = x.len() - m + 1;
     let g = g_sphere(&x[x.len() - k..]);
+    if m == 1 {
+        // BoTorch prepends x_0 to the (here empty) angles, so that its single
+        // objective is (1 + g) cos(x_0 pi / 2).
+        out[0] = (g + 1.0) * (x[0] * FRAC_PI_2).cos();
+        return;
+    }
     // torch evaluates `1 / t` as `t.reciprocal() * 1`.
     let c = 1.0 / (2.0 * (1.0 + g));
     let theta = |j: usize| {
