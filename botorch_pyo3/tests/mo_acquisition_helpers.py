@@ -1,6 +1,6 @@
 """Shared helpers of the parity tests of the multi-objective acquisition
 functions (``test_parity_mo_acquisition.py``,
-``test_equivalence_multi_objective.py``) and of the phase-5B fixtures.
+``test_equivalence_multi_objective.py``).
 
 Import only after ``importorskip_botorch()``: this module requires torch and
 BoTorch.
