@@ -185,6 +185,7 @@ impl SingleTaskGP {
         ys: &[Matrix],
         noise: Option<&Matrix>,
     ) -> Result<Vec<SingleTaskGP>> {
+        self.require_no_perturbation("condition_on_observations")?;
         let k = x.nrows();
         if x.ncols() != self.dim() {
             return Err(BotorchError::DimensionMismatch(format!(
@@ -326,6 +327,7 @@ impl SingleTaskGP {
         sampler: &SobolQMCNormalSampler,
         observation_noise: Option<&[f64]>,
     ) -> Result<Vec<SingleTaskGP>> {
+        self.require_no_perturbation("fantasize")?;
         let k = x.nrows();
         let n_f = sampler.num_samples();
         if x.ncols() != self.dim() {
@@ -440,6 +442,7 @@ impl<'a> FantasyGp<'a> {
         base: Arc<Matrix>,
         num_fantasies: usize,
     ) -> Result<Self> {
+        gp.require_no_perturbation("fantasize")?;
         let cache = gp.cache()?;
         let k = x_new.nrows();
         let d = gp.dim();

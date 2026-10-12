@@ -147,6 +147,20 @@ def test_model_posterior_is_plain_posterior_at_perturbed_points(kind: str) -> No
     assert shape(lst.posterior(Xq).mean) == (6, 4)
 
 
+def test_conditioning_and_fantasies_are_rejected(kind: str) -> None:
+    """BoTorch fantasizes in a "fantasize mode" that skips the perturbations;
+    without it the perturbed inputs would not match the observations."""
+    Xt, Yt = data(m=1)
+    tf = InputPerturbation(as_kind(PSET, kind))
+    model = SingleTaskGP(as_kind(Xt, kind), as_kind(Yt, kind), input_transform=tf)
+    model.posterior(as_kind([[0.5, 0.5]], kind))  # eval mode
+    X = as_kind([[0.2, 0.3]], kind)
+    with pytest.raises(UnsupportedError, match="one-to-many"):
+        model.condition_on_observations(X, as_kind([[0.1]], kind))
+    with pytest.raises(UnsupportedError, match="one-to-many"):
+        model.fantasize(X, SobolQMCNormalSampler(sample_shape=[4], seed=0))
+
+
 def test_chained_transform_fits_normalize(kind: str) -> None:
     Xt, Yt = data(m=1)
     Xs = [[3 * a - 1, 2 * b] for a, b in Xt]

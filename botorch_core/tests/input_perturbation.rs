@@ -366,3 +366,27 @@ fn rejected_configurations() {
     );
     assert!(Model::point_posteriors(&gp, &xq).is_ok());
 }
+
+#[test]
+fn conditioning_and_fantasies_need_one_input_per_observation() {
+    let chain = chains(2, 3).remove(0);
+    let gp = perturbed_gp(16, chain);
+    assert!(gp.points_per_input() > 1);
+    let xn = points(17, 2, 2);
+    let yn = Matrix::from_element(2, 1, 0.5);
+    assert!(matches!(
+        gp.condition_on_observations(&xn, &yn, None),
+        Err(BotorchError::Unsupported(_))
+    ));
+    let sampler = botorch_core::sampling::SobolQMCNormalSampler::new(4, Some(0)).unwrap();
+    assert!(matches!(
+        gp.fantasize(&xn, &sampler, None),
+        Err(BotorchError::Unsupported(_))
+    ));
+    let batched = BatchedMultiOutputGP::from(gp);
+    let xb = botorch_core::models::BatchedMatrix::new(Vec::new(), vec![xn]).unwrap();
+    assert!(matches!(
+        batched.fantasize(&xb, &sampler, None),
+        Err(BotorchError::Unsupported(_))
+    ));
+}

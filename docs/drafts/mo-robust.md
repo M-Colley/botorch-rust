@@ -207,7 +207,10 @@ Minimal reproductions (BoTorch main `da00e0401` and 0.18.1):
 - `InputPerturbation` in train mode, `Normalize` with a batch shape in
   chains, other input transforms in chains (`AppendFeatures`, `Warp`,
   `Round`, ...), risk measures on batched models.
-- Fantasy models (`transform_on_fantasize` is recorded only).
+- BoTorch's "fantasize mode" (`transform_on_fantasize`, recorded only):
+  `condition_on_observations` and `fantasize` raise `UnsupportedError` for
+  models with a one-to-many transform (BoTorch fantasizes at the
+  unperturbed points).
 - Other pymoo algorithms and options of `optimize_with_nsgaii`'s internals
   (pymoo's `Result` object, callbacks).
 - `MVaR.make_differentiable` as public API (its gradient is part of the

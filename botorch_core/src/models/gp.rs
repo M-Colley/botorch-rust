@@ -525,12 +525,31 @@ impl SingleTaskGP {
             .map_or(1, ChainedInputTransform::points_per_input)
     }
 
+    /// Errors for a one-to-many input transform: conditioning on
+    /// observations and fantasizing (`what`) need one model input per
+    /// observation. BoTorch fantasizes in "fantasize mode", which skips
+    /// perturbations with `transform_on_fantasize=False`; that mode is not
+    /// ported (see [`crate::transforms::input`]).
+    pub(crate) fn require_no_perturbation(&self, what: &str) -> Result<()> {
+        let k = self.points_per_input();
+        if k != 1 {
+            return Err(BotorchError::Unsupported(format!(
+                "{what} is not supported for models with a one-to-many input transform \
+                 (InputPerturbation with n_w = {k}): the perturbed inputs would not match the \
+                 observations"
+            )));
+        }
+        Ok(())
+    }
+
     /// Errors unless every input maps to a single posterior point.
     fn require_one_point_per_input(&self) -> Result<()> {
         let k = self.points_per_input();
         if k != 1 {
             return Err(BotorchError::Unsupported(format!(
-                "this evaluates every input point on its own, which requires one posterior                  point per input; the model's one-to-many input transform (InputPerturbation)                  gives {k}"
+                "this evaluates every input point on its own, which requires one posterior \
+                 point per input; the model's one-to-many input transform (InputPerturbation) \
+                 gives {k}"
             )));
         }
         Ok(())

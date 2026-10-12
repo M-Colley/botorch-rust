@@ -27,8 +27,10 @@
 //! supports); `InputPerturbation` defaults to eval only. A perturbation that
 //! also applies in train mode would give the exact GP `n·n_w` training inputs
 //! for `n` targets, which BoTorch cannot evaluate either, so models reject
-//! it. `transform_on_fantasize` is recorded for completeness: this crate has
-//! no fantasy models.
+//! it. `transform_on_fantasize` is recorded only: BoTorch fantasizes in a
+//! "fantasize mode" that skips perturbations with `transform_on_fantasize =
+//! false`, which is not ported, so models with a one-to-many chain reject
+//! `condition_on_observations` and `fantasize`.
 //!
 //! # Derivatives
 //!
