@@ -116,6 +116,63 @@ class FixedNoiseGaussianLikelihood(Likelihood):
         return "FixedNoiseGaussianLikelihood()"
 
 
+class HadamardGaussianLikelihood(Likelihood):
+    """Per-task noise levels (``gpytorch.likelihoods.HadamardGaussianLikelihood``),
+    the likelihood of an ``LCEMGP``: ``noise`` has shape ``num_tasks`` (in the
+    model's transformed outcome space), with BoTorch's ``LogNormal(-4, 1)``
+    prior and ``GreaterThan(1e-4)`` constraint."""
+
+    _spec: _rs.GaussianLikelihoodSpec
+    noise_prior: Prior | None
+    noise_constraint: Interval
+    num_tasks: int
+    task_feature_index: int
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise UnsupportedError(
+            "HadamardGaussianLikelihood is created by LCEMGP; custom likelihoods are not supported."
+        )
+
+    @classmethod
+    def _create(
+        cls, model: Any, spec: _rs.GaussianLikelihoodSpec, num_tasks: int, task_feature_index: int
+    ) -> HadamardGaussianLikelihood:
+        obj = cls.__new__(cls)
+        obj._spec = spec
+        obj.noise_prior = _prior_from_rs(spec.noise_prior)
+        obj.noise_constraint = _constraint_from_rs(spec.noise_constraint)
+        obj.num_tasks = num_tasks
+        obj.task_feature_index = task_feature_index
+        obj._bind(model)
+        return obj
+
+    @property
+    def noise(self) -> Any:
+        """The noise variance of every task, shape ``num_tasks``."""
+        return self._out(self._model._rs.noise, (self.num_tasks,))
+
+    @noise.setter
+    def noise(self, value: Any) -> None:
+        self._model._rs.set_noise(list(to_flat(value, "noise")[0]))
+
+    @property
+    def raw_noise(self) -> Any:
+        return self._out(
+            self._model._raw_param("likelihood.noise_covar.raw_noise"), (self.num_tasks,)
+        )
+
+    @raw_noise.setter
+    def raw_noise(self, value: Any) -> None:
+        self._model._set_raw_param("likelihood.noise_covar.raw_noise", value)
+
+    @property
+    def raw_noise_constraint(self) -> Interval:
+        return self.noise_constraint
+
+    def __repr__(self) -> str:
+        return f"HadamardGaussianLikelihood(num_tasks={self.num_tasks})"
+
+
 class LikelihoodList(Likelihood):
     """The likelihoods of the sub-models of a ``ModelListGP``
     (``gpytorch.likelihoods.LikelihoodList``)."""
@@ -127,4 +184,10 @@ class LikelihoodList(Likelihood):
         return f"LikelihoodList({', '.join(repr(lik) for lik in self.likelihoods)})"
 
 
-__all__ = ["FixedNoiseGaussianLikelihood", "GaussianLikelihood", "Likelihood", "LikelihoodList"]
+__all__ = [
+    "FixedNoiseGaussianLikelihood",
+    "GaussianLikelihood",
+    "HadamardGaussianLikelihood",
+    "Likelihood",
+    "LikelihoodList",
+]

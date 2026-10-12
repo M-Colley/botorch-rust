@@ -63,5 +63,10 @@ class GPModule:
     def train(self, mode: bool = True) -> GPModule:
         return self
 
+    def to(self, *args: Any, **kwargs: Any) -> GPModule:
+        """For API compatibility (``module.to(tensor)``): botorch_rs computes
+        in float64 on the CPU, so the module is returned unchanged."""
+        return self
+
     def eval(self) -> GPModule:
         return self

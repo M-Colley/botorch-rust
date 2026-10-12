@@ -8,8 +8,17 @@ from typing import Any
 from botorch_rs._arrays import broadcast_shapes, broadcast_to, from_flat, to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.likelihoods import Likelihood
+from botorch_rs.models.contextual_multioutput import LCEMGP
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.model_list_gp_regression import ModelListGP
+
+
+def _forward_pass(model: Any) -> None:
+    """The side effects of a forward pass of the model (the in-place
+    renormalization of LCEMGP's embeddings)."""
+    hook = getattr(model, "_forward_pass", None)
+    if hook is not None:
+        hook()
 
 
 class MarginalLogLikelihood:
@@ -44,9 +53,11 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
     (shape ``_aug_batch_shape``) otherwise.
     """
 
-    def __init__(self, likelihood: Likelihood, model: SingleTaskGP) -> None:
-        if not isinstance(model, SingleTaskGP):
-            raise UnsupportedError("ExactMarginalLogLikelihood requires a botorch_rs SingleTaskGP.")
+    def __init__(self, likelihood: Likelihood, model: SingleTaskGP | LCEMGP) -> None:
+        if not isinstance(model, (SingleTaskGP, LCEMGP)):
+            raise UnsupportedError(
+                "ExactMarginalLogLikelihood requires a botorch_rs SingleTaskGP or LCEMGP."
+            )
         if likelihood is not model.likelihood:
             raise UnsupportedError(
                 "The likelihood must be the model's likelihood (`model.likelihood`)."
@@ -60,6 +71,7 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
                 "botorch_rs evaluates the MLL on the model's training data: call `mll()` "
                 "without arguments."
             )
+        _forward_pass(self.model)
         data, shape = self.model._rs.mll()
         return from_flat(data, tuple(shape), self.model._kind)
 
@@ -72,6 +84,8 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
         hyperparameters. The value is a float for a single-output model and a
         list of values (one per element) otherwise."""
         params = None if raw_parameters is None else to_flat(raw_parameters)[0]
+        if params is None:
+            _forward_pass(self.model)
         (values, shape), grad = self.model._rs.mll_value_and_grad(params)
         return (values[0] if not shape else list(values)), grad
 
@@ -114,6 +128,8 @@ class SumMarginalLogLikelihood(MarginalLogLikelihood):
                 "botorch_rs evaluates the MLL on the models' training data: call `mll()` "
                 "without arguments."
             )
+        for mll in self.mlls:
+            _forward_pass(mll.model)
         parts = [mll.model._rs.mll() for mll in self.mlls]
         shape = broadcast_shapes(*(tuple(s) for _, s in parts))
         if shape is None:

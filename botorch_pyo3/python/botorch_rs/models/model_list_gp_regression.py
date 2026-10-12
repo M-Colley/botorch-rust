@@ -10,6 +10,7 @@ from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import LIST, kind_of, to_flat
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.likelihoods import LikelihoodList
+from botorch_rs.models.contextual_multioutput import LCEMGP
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.model import Model
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
@@ -23,7 +24,9 @@ class ModelListGP(Model):
     sub-model may itself have several outputs). The posterior is the
     block-diagonal joint Gaussian of the sub-model posteriors in BoTorch's
     output-major layout (a ``MultitaskMultivariateNormal`` with
-    ``interleaved=False``). Fit it with a ``SumMarginalLogLikelihood``.
+    ``interleaved=False``). Fit it with a ``SumMarginalLogLikelihood``. The
+    sub-models are ``SingleTaskGP``s or ``LCEMGP``s (conditioning and
+    fantasies require ``SingleTaskGP``s).
 
     Example:
         >>> model1 = SingleTaskGP(train_X1, train_Y1)
@@ -33,14 +36,14 @@ class ModelListGP(Model):
         >>> fit_gpytorch_mll(mll)
     """
 
-    def __init__(self, *gp_models: SingleTaskGP) -> None:
+    def __init__(self, *gp_models: SingleTaskGP | LCEMGP) -> None:
         if not gp_models:
             raise ValueError("ModelListGP requires at least one model.")
         for m in gp_models:
-            if not isinstance(m, SingleTaskGP):
+            if not isinstance(m, (SingleTaskGP, LCEMGP)):
                 raise UnsupportedError(
                     "The sub-models of a botorch_rs ModelListGP must be botorch_rs SingleTaskGPs "
-                    f"(got {type(m).__name__})."
+                    f"or LCEMGPs (got {type(m).__name__})."
                 )
         dims = {m._rs.dim for m in gp_models}
         if len(dims) > 1:
@@ -53,15 +56,26 @@ class ModelListGP(Model):
                 "`ModelListGP.batch_shape` is only supported if all constituent models have "
                 "the same `batch_shape`."
             )
-        self.models: list[SingleTaskGP] = list(gp_models)
+        self.models: list[Any] = list(gp_models)
         self.likelihood = LikelihoodList(*[m.likelihood for m in gp_models])
         kinds = [m._kind for m in gp_models if m._kind.lib != "list"]
         self._kind = kinds[0] if kinds else LIST
         self.training = True
 
-    def _rs_list(self) -> _rs.ModelListGP:
-        """A list of the current snapshots of the sub-models."""
-        return _rs.ModelListGP([m._rs for m in self.models])
+    @property
+    def _all_single_task(self) -> bool:
+        return all(isinstance(m, SingleTaskGP) for m in self.models)
+
+    def _require_single_task(self, what: str) -> None:
+        if not self._all_single_task:
+            raise UnsupportedError(f"{what} requires SingleTaskGP sub-models in botorch_rs.")
+
+    def _rs_list(self) -> Any:
+        """A list of the current snapshots of the sub-models (a generic list
+        of model handles if a sub-model is not a ``SingleTaskGP``)."""
+        if self._all_single_task:
+            return _rs.ModelListGP([m._rs for m in self.models])
+        return _rs.Model.from_models([m._acquisition_model(None) for m in self.models])
 
     # -- data --------------------------------------------------------------
 
@@ -144,9 +158,12 @@ class ModelListGP(Model):
         """The model handle that acquisition functions are built on."""
         from botorch_rs.acquisition.objective import transform_arg
 
-        return _rs.Model.from_model_list(
-            self._rs_list(), transform_arg(posterior_transform, self.num_outputs)
-        )
+        transform = transform_arg(posterior_transform, self.num_outputs)
+        if not self._all_single_task:
+            return _rs.Model.from_models(
+                [m._acquisition_model(None) for m in self.models], transform
+            )
+        return _rs.Model.from_model_list(self._rs_list(), transform)
 
     # -- conditioning and fantasies ----------------------------------------
 
@@ -163,6 +180,7 @@ class ModelListGP(Model):
         inputs and outcome-transformed targets to GPyTorch instead."""
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
+        self._require_single_task("condition_on_observations")
         if self.training:
             raise RuntimeError(
                 "Fantasy observations can only be added after making predictions with a model "
@@ -208,6 +226,7 @@ class ModelListGP(Model):
 
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
+        self._require_single_task("fantasize")
         if isinstance(sampler, ListSampler):
             samplers, shared = [s._rs for s in sampler.samplers], False
         elif isinstance(sampler, SobolQMCNormalSampler):

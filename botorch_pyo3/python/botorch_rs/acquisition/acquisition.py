@@ -17,6 +17,7 @@ from botorch_rs._arrays import (
 )
 from botorch_rs._botorch_rs import Model as _RsModel
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
+from botorch_rs.models.contextual_multioutput import LCEMGP
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.model_list_gp_regression import ModelListGP
 
@@ -67,10 +68,10 @@ class AcquisitionFunction:
     _log: bool = False
 
     def __init__(self, model: Any) -> None:
-        if not isinstance(model, (SingleTaskGP, ModelListGP)):
+        if not isinstance(model, (SingleTaskGP, ModelListGP, LCEMGP)):
             raise UnsupportedError(
-                "botorch_rs acquisition functions require a botorch_rs SingleTaskGP or "
-                "ModelListGP model."
+                "botorch_rs acquisition functions require a botorch_rs SingleTaskGP, "
+                "ModelListGP or LCEMGP model."
             )
         if model.batch_shape:
             raise UnsupportedError(

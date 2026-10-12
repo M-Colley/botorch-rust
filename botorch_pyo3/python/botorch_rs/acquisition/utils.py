@@ -13,6 +13,7 @@ from botorch_rs.acquisition._fidelity import (
 from botorch_rs.acquisition.acquisition import check_unsupported
 from botorch_rs.acquisition.objective import constraints_arg, objective_arg
 from botorch_rs.exceptions.errors import UnsupportedError
+from botorch_rs.models.contextual_multioutput import LCEMGP
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.model_list_gp_regression import ModelListGP
 from botorch_rs.sampling.normal import SobolQMCNormalSampler
@@ -46,9 +47,9 @@ def prune_inferior_points(
     a ``sampler``, the samples are drawn with a random seed (like BoTorch).
     """
     check_unsupported(marginalize_dim=marginalize_dim)
-    if not isinstance(model, (SingleTaskGP, ModelListGP)):
+    if not isinstance(model, (SingleTaskGP, ModelListGP, LCEMGP)):
         raise UnsupportedError(
-            "prune_inferior_points requires a botorch_rs SingleTaskGP or ModelListGP."
+            "prune_inferior_points requires a botorch_rs SingleTaskGP, ModelListGP or LCEMGP."
         )
     if model.num_outputs > 1 and objective is None and posterior_transform is None:
         raise UnsupportedError(
