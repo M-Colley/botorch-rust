@@ -20,6 +20,7 @@ References:
 
 from __future__ import annotations
 
+import importlib
 import math
 import random
 import sys
@@ -194,7 +195,7 @@ def compute_subset_indices(q: int, device: Any = None) -> dict[str, Any]:
     """
     torch = sys.modules.get("torch")
     if torch is None and device is not None:
-        import torch
+        torch = importlib.import_module("torch")
     out: dict[str, Any] = {}
     for i in range(1, q + 1):
         subsets = [list(c) for c in combinations(range(q), i)]
