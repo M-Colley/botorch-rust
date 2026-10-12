@@ -11,7 +11,7 @@ use botorch_core::utils::polytope::{
 use botorch_core::{Matrix, Vector};
 use pyo3::prelude::*;
 
-use crate::arrays::{matrix_out, Array, ArrayOut};
+use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
 use crate::errors::{dimension_error, IntoPyResult};
 use crate::optim::{linear_constraints, LinearArg};
 use crate::threads;
@@ -56,7 +56,7 @@ pub fn get_polytope_samples_py(
     seed: Option<u64>,
     n_burnin: usize,
     n_thinning: usize,
-) -> PyResult<ArrayOut> {
+) -> PyResult<ArrayBuf> {
     let bounds = bounds.matrix("bounds")?;
     let ineq = linear_constraints(inequality_constraints)?;
     let eq = linear_constraints(equality_constraints)?;
@@ -64,7 +64,7 @@ pub fn get_polytope_samples_py(
         get_polytope_samples(n, &bounds, &ineq, &eq, seed, n_burnin, n_thinning)
     })
     .into_py_result()?;
-    Ok(matrix_out(&x))
+    Ok(matrix_out(&x).into())
 }
 
 /// `sparse_to_dense_constraints(d, constraints)`: `(A, b)` with
@@ -124,13 +124,13 @@ pub fn sample_polytope_py(
     n0: usize,
     n_thinning: usize,
     seed: Option<u64>,
-) -> PyResult<ArrayOut> {
+) -> PyResult<ArrayBuf> {
     let a = a.matrix("A")?;
     let b = vector(&b, "b")?;
     let x0 = vector(&x0, "x0")?;
     let x = threads::run(py, || sample_polytope(&a, &b, &x0, n, n0, n_thinning, seed))
         .into_py_result()?;
-    Ok(matrix_out(&x))
+    Ok(matrix_out(&x).into())
 }
 
 /// BoTorch's `HitAndRunPolytopeSampler`.
@@ -193,12 +193,12 @@ impl PyHitAndRunPolytopeSampler {
 
     /// `n` samples (`n x d`); the chain continues on the next call.
     #[pyo3(signature = (n=1))]
-    fn draw(&self, py: Python<'_>, n: usize) -> PyResult<ArrayOut> {
+    fn draw(&self, py: Python<'_>, n: usize) -> PyResult<ArrayBuf> {
         let inner = &self.inner;
         let x = threads::run(py, || {
             inner.lock().unwrap_or_else(|e| e.into_inner()).draw(n)
         })
         .into_py_result()?;
-        Ok(matrix_out(&x))
+        Ok(matrix_out(&x).into())
     }
 }

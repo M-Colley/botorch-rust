@@ -22,7 +22,7 @@ use botorch_core::{
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
-use crate::arrays::{broadcast_indices, broadcast_shapes, broadcast_to, Array, ArrayOut};
+use crate::arrays::{broadcast_indices, broadcast_shapes, broadcast_to, Array, ArrayBuf, ArrayOut};
 use crate::errors::{dimension_error, unsupported, value_error, IntoPyResult};
 use crate::specs::{PyKernelSpec, PyLikelihoodSpec};
 use crate::threads;
@@ -282,7 +282,7 @@ fn joints(
 }
 
 /// Joint means (`out_batch x q x m'`) and covariances (`out_batch x q·m' x q·m'`).
-fn joint_out(shape: Vec<usize>, posts: &[Posterior], q: usize, mo: usize) -> (ArrayOut, ArrayOut) {
+fn joint_out(shape: Vec<usize>, posts: &[Posterior], q: usize, mo: usize) -> (ArrayBuf, ArrayBuf) {
     let mut mean = Vec::with_capacity(posts.len() * q * mo);
     let mut cov = Vec::with_capacity(posts.len() * q * q * mo * mo);
     for p in posts {
@@ -302,7 +302,7 @@ fn joint_out(shape: Vec<usize>, posts: &[Posterior], q: usize, mo: usize) -> (Ar
     mshape.extend([q, mo]);
     let mut cshape = shape;
     cshape.extend([q * mo, q * mo]);
-    ((mean, mshape), (cov, cshape))
+    (ArrayBuf(mean, mshape), ArrayBuf(cov, cshape))
 }
 
 /// Posterior samples from base samples `z` of shape `S x q·m'` (shared by all
@@ -312,7 +312,7 @@ fn joint_out(shape: Vec<usize>, posts: &[Posterior], q: usize, mo: usize) -> (Ar
 /// uses the root of its own `q x q` covariance block, as GPyTorch does for
 /// BoTorch's block-diagonal multi-output posteriors. Returns `S x out_batch x
 /// q x m'`.
-fn samples(model: &ModelRef, x: &Array, z: &Array, noise: bool, view: &View) -> PyResult<ArrayOut> {
+fn samples(model: &ModelRef, x: &Array, z: &Array, noise: bool, view: &View) -> PyResult<ArrayBuf> {
     let (shape, posts) = joints(model, x, noise, view)?;
     let q = x.1[x.1.len() - 2];
     let mo = view.num_outputs;
@@ -361,7 +361,7 @@ fn samples(model: &ModelRef, x: &Array, z: &Array, noise: bool, view: &View) -> 
     let mut out_shape = vec![s];
     out_shape.extend(shape);
     out_shape.extend([q, mo]);
-    Ok((data, out_shape))
+    Ok(ArrayBuf(data, out_shape))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -611,50 +611,47 @@ impl PySingleTaskGP {
     }
 
     /// Training inputs in the original space (`batch_shape x n x d`).
-    fn train_inputs(&self) -> ArrayOut {
+    fn train_inputs(&self) -> ArrayBuf {
         let m = self.snapshot();
         let mats: Vec<Matrix> = (0..m.batch_size())
             .map(|b| m.train_inputs(b).clone())
             .collect();
-        crate::arrays::stack_out(&mats, m.batch_shape(), m.num_train(), m.dim())
+        crate::arrays::stack_out(&mats, m.batch_shape(), m.num_train(), m.dim()).into()
     }
 
     /// Training targets in the original space (`batch_shape x n x m`).
-    fn train_targets(&self) -> ArrayOut {
+    fn train_targets(&self) -> ArrayBuf {
         let m = self.snapshot();
         let mats: Vec<Matrix> = (0..m.batch_size())
             .map(|b| m.train_targets(b).clone())
             .collect();
-        crate::arrays::stack_out(&mats, m.batch_shape(), m.num_train(), m.num_outputs())
+        crate::arrays::stack_out(&mats, m.batch_shape(), m.num_train(), m.num_outputs()).into()
     }
 
     /// Observed noise variances in the original space, if given.
-    fn train_yvar(&self) -> Option<ArrayOut> {
+    fn train_yvar(&self) -> Option<ArrayBuf> {
         let m = self.snapshot();
         m.train_yvar(0)?;
         let mats: Vec<Matrix> = (0..m.batch_size())
             .map(|b| m.train_yvar(b).expect("fixed noise").clone())
             .collect();
-        Some(crate::arrays::stack_out(
-            &mats,
-            m.batch_shape(),
-            m.num_train(),
-            m.num_outputs(),
-        ))
+        Some(
+            crate::arrays::stack_out(&mats, m.batch_shape(), m.num_train(), m.num_outputs()).into(),
+        )
     }
 
     /// Training inputs after the input transform (`batch_shape x n x d`).
-    fn transformed_train_inputs(&self) -> ArrayOut {
+    fn transformed_train_inputs(&self) -> ArrayBuf {
         let m = self.snapshot();
         let mats: Vec<Matrix> = (0..m.batch_size())
             .map(|b| m.model(b, 0).transformed_train_inputs().clone())
             .collect();
-        crate::arrays::stack_out(&mats, m.batch_shape(), m.num_train(), m.dim())
+        crate::arrays::stack_out(&mats, m.batch_shape(), m.num_train(), m.dim()).into()
     }
 
     /// Training targets after the outcome transform, BoTorch's
     /// `model.train_targets` (`_aug_batch_shape x n`).
-    fn transformed_train_targets(&self) -> ArrayOut {
+    fn transformed_train_targets(&self) -> ArrayBuf {
         let m = self.snapshot();
         let mut data = Vec::with_capacity(m.num_elements() * m.num_train());
         for gp in m.models() {
@@ -662,7 +659,7 @@ impl PySingleTaskGP {
         }
         let mut shape = m.aug_batch_shape();
         shape.push(m.num_train());
-        (data, shape)
+        ArrayBuf(data, shape)
     }
 
     /// The fitted input transform, if any.
@@ -866,12 +863,12 @@ impl PySingleTaskGP {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
-    ) -> PyResult<(ArrayOut, ArrayOut)> {
+    ) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let model = self.model_ref();
         let view = View::new(model.num_outputs(), output_indices, transform)?;
         let (mean, var, shape) =
             threads::run(py, || marginals(&model, &x, observation_noise, &view))?;
-        Ok(((mean, shape.clone()), (var, shape)))
+        Ok((ArrayBuf(mean, shape.clone()), ArrayBuf(var, shape)))
     }
 
     /// Joint posteriors of the point sets of `X` (`... x q x d`): means
@@ -885,7 +882,7 @@ impl PySingleTaskGP {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
-    ) -> PyResult<(ArrayOut, ArrayOut)> {
+    ) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let model = self.model_ref();
         let view = View::new(model.num_outputs(), output_indices, transform)?;
         let q = x.1.get(x.1.len().wrapping_sub(2)).copied().unwrap_or(0);
@@ -905,7 +902,7 @@ impl PySingleTaskGP {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
-    ) -> PyResult<ArrayOut> {
+    ) -> PyResult<ArrayBuf> {
         let model = self.model_ref();
         let view = View::new(model.num_outputs(), output_indices, transform)?;
         threads::run(py, || {
@@ -1032,12 +1029,12 @@ impl PyModelListGP {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
-    ) -> PyResult<(ArrayOut, ArrayOut)> {
+    ) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let model = ModelRef::List(self.inner.clone());
         let view = View::new(model.num_outputs(), output_indices, transform)?;
         let (mean, var, shape) =
             threads::run(py, || marginals(&model, &x, observation_noise, &view))?;
-        Ok(((mean, shape.clone()), (var, shape)))
+        Ok((ArrayBuf(mean, shape.clone()), ArrayBuf(var, shape)))
     }
 
     /// See `SingleTaskGP.posterior_joint`.
@@ -1049,7 +1046,7 @@ impl PyModelListGP {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
-    ) -> PyResult<(ArrayOut, ArrayOut)> {
+    ) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let model = ModelRef::List(self.inner.clone());
         let view = View::new(model.num_outputs(), output_indices, transform)?;
         let q = x.1.get(x.1.len().wrapping_sub(2)).copied().unwrap_or(0);
@@ -1068,7 +1065,7 @@ impl PyModelListGP {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
-    ) -> PyResult<ArrayOut> {
+    ) -> PyResult<ArrayBuf> {
         let model = ModelRef::List(self.inner.clone());
         let view = View::new(model.num_outputs(), output_indices, transform)?;
         threads::run(py, || {

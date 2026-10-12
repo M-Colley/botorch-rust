@@ -6,7 +6,7 @@ import warnings
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import as_float, first_kind, from_flat, from_pair, to_flat
+from botorch_rs._arrays import Flat, as_float, first_kind, from_flat, from_pair, to_flat
 from botorch_rs.acquisition.acquisition import AcquisitionFunction, check_unsupported
 from botorch_rs.exceptions.errors import (
     BotorchTensorDimensionError,
@@ -89,9 +89,7 @@ def _wrap_ic_generator(
     """``generate(q, num_restarts, raw_samples) -> (data, shape)`` calling the
     user's ``ic_generator`` with BoTorch's keyword arguments."""
 
-    def generate(
-        q: int, num_restarts: int, raw_samples: int | None
-    ) -> tuple[list[float], list[int]]:
+    def generate(q: int, num_restarts: int, raw_samples: int | None) -> Flat:
         X = ic_generator(
             acq_function=acq_function,
             bounds=bounds,
@@ -104,8 +102,7 @@ def _wrap_ic_generator(
             equality_constraints=equality_constraints,
             **ic_gen_kwargs,
         )
-        data, shape = to_flat(X, "initial conditions")
-        return data, list(shape)
+        return to_flat(X, "initial conditions")
 
     return generate
 

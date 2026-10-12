@@ -32,7 +32,7 @@ use botorch_core::{Matrix, Model, Vector};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
-use crate::arrays::{matrix_out, Array, ArrayOut};
+use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
 use crate::callbacks::PyCallback;
 use crate::errors::{unsupported, value_error, IntoPyResult};
 use crate::models::PyModel;
@@ -525,16 +525,16 @@ impl PyAcquisitionFunction {
     }
 
     /// Values at the candidate sets `X` (`... x q x d`); shape `...`.
-    fn forward(&self, py: Python<'_>, x: Array) -> PyResult<ArrayOut> {
+    fn forward(&self, py: Python<'_>, x: Array) -> PyResult<ArrayBuf> {
         let (batch, sets) = candidate_sets(&x)?;
         let acqf = &self.inner;
         let values = threads::run(py, || acqf.forward_many(&sets)).into_py_result()?;
-        Ok((values, batch))
+        Ok(ArrayBuf(values, batch))
     }
 
     /// Values (shape `...`) and gradients (shape of `X`) at the candidate
     /// sets `X` (`... x q x d`).
-    fn forward_with_grad(&self, py: Python<'_>, x: Array) -> PyResult<(ArrayOut, ArrayOut)> {
+    fn forward_with_grad(&self, py: Python<'_>, x: Array) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let (batch, sets) = candidate_sets(&x)?;
         let acqf = &self.inner;
         let results = threads::run(py, || {
@@ -550,7 +550,7 @@ impl PyAcquisitionFunction {
             let (data, _) = matrix_out(g);
             grads.extend(data);
         }
-        Ok(((values, batch), (grads, x.1.clone())))
+        Ok((ArrayBuf(values, batch), ArrayBuf(grads, x.1.clone())))
     }
 
     /// The pending points (`m x d`), if any.

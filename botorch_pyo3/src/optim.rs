@@ -23,7 +23,7 @@ use rand::rngs::Xoshiro256PlusPlus;
 use rand::SeedableRng;
 
 use crate::acquisition::PyAcquisitionFunction;
-use crate::arrays::{matrix_out, stack_out, Array, ArrayOut};
+use crate::arrays::{matrix_out, stack_out, Array, ArrayBuf, ArrayOut, BoolBuf};
 use crate::callbacks::PyNonlinearConstraint;
 use crate::errors::{dimension_error, value_error, IntoPyResult};
 use crate::threads;
@@ -402,7 +402,7 @@ pub fn sample_q_batches_from_polytope_py(
     seed: Option<u64>,
     inequality_constraints: Option<Vec<LinearArg<'_>>>,
     equality_constraints: Option<Vec<LinearArg<'_>>>,
-) -> PyResult<ArrayOut> {
+) -> PyResult<ArrayBuf> {
     let bounds = bounds.matrix("bounds")?;
     let d = bounds.ncols();
     let ineq = linear_constraints(inequality_constraints)?;
@@ -411,7 +411,7 @@ pub fn sample_q_batches_from_polytope_py(
         sample_q_batches_from_polytope(n, q, &bounds, n_burnin, n_thinning, seed, &ineq, &eq)
     })
     .into_py_result()?;
-    Ok(stack_out(&batches, &[n], q, d))
+    Ok(stack_out(&batches, &[n], q, d).into())
 }
 
 /// BoTorch's `evaluate_feasibility`: whether each candidate set of `X`
@@ -431,7 +431,7 @@ pub fn evaluate_feasibility_py(
     equality_constraints: Option<Vec<LinearArg<'_>>>,
     nonlinear_inequality_constraints: Option<Vec<(Py<PyAny>, bool)>>,
     tolerance: Option<f64>,
-) -> PyResult<(Vec<bool>, Vec<usize>)> {
+) -> PyResult<BoolBuf> {
     let (batch, sets) = x.batches("X")?;
     let d = x.1.last().copied().unwrap_or(0);
     let constraints = parameter_constraints(
@@ -447,5 +447,5 @@ pub fn evaluate_feasibility_py(
             .collect::<botorch_core::Result<Vec<bool>>>()
     })
     .into_py_result()?;
-    Ok((feasible, batch))
+    Ok(BoolBuf(feasible, batch))
 }

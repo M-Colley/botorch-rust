@@ -3,7 +3,7 @@
 use botorch_core::test_functions::{SyntheticTestFunction, TestFunctionKind};
 use pyo3::prelude::*;
 
-use crate::arrays::{matrix_out, Array, ArrayOut};
+use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
 use crate::errors::{unsupported, IntoPyResult};
 
 /// A synthetic test function with BoTorch's `forward` / `evaluate_true`
@@ -24,14 +24,14 @@ pub fn test_function_names() -> Vec<&'static str> {
 }
 
 impl PySyntheticTestFunction {
-    fn evaluate(&self, x: &Array, noise: Option<bool>) -> PyResult<ArrayOut> {
+    fn evaluate(&self, x: &Array, noise: Option<bool>) -> PyResult<ArrayBuf> {
         let (batch, points) = x.points("X")?;
         let values = match noise {
             None => self.inner.evaluate_true(&points),
             Some(noise) => self.inner.forward(&points, noise),
         }
         .into_py_result()?;
-        Ok((values.as_slice().to_vec(), batch))
+        Ok(ArrayBuf(values.as_slice().to_vec(), batch))
     }
 }
 
@@ -130,13 +130,13 @@ impl PySyntheticTestFunction {
     }
 
     /// Noiseless, un-negated values at the points `X` (`... x d`).
-    fn evaluate_true(&self, x: Array) -> PyResult<ArrayOut> {
+    fn evaluate_true(&self, x: Array) -> PyResult<ArrayBuf> {
         self.evaluate(&x, None)
     }
 
     /// Values with observation noise (if `noise`) and negation at `X`.
     #[pyo3(signature = (x, noise=true))]
-    fn forward(&self, x: Array, noise: bool) -> PyResult<ArrayOut> {
+    fn forward(&self, x: Array, noise: bool) -> PyResult<ArrayBuf> {
         self.evaluate(&x, Some(noise))
     }
 }
