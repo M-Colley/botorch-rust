@@ -34,9 +34,10 @@ use rayon::prelude::*;
 use super::{row_major, PointBatch};
 use crate::Matrix;
 
-/// Minimal work (`batch · n² · m`) before batch elements are processed in
-/// parallel.
-const PARALLEL_WORK: usize = 1 << 15;
+/// Minimal work (`batch · n² · m`, about 1 ns per unit) before batch
+/// elements are processed in parallel: below about a millisecond, waking up
+/// the worker threads costs more than it saves.
+const PARALLEL_WORK: usize = 1 << 20;
 
 /// BoTorch's `is_non_dominated(Y, maximize, deduplicate)` for one `n × m`
 /// point set (rows are points): `mask[i]` tells whether point `i` is
@@ -221,9 +222,10 @@ mod tests {
         expected.extend(is_non_dominated(&b, true, true));
         assert_eq!(is_non_dominated_batch(&pb, true, true), expected);
         // Large enough to run in parallel.
-        let big: Vec<Matrix> = (0..16)
-            .map(|k| Matrix::from_fn(40, 3, |i, j| ((i * 7 + j * 13 + k * 5) % 11) as f64))
+        let big: Vec<Matrix> = (0..64)
+            .map(|k| Matrix::from_fn(80, 3, |i, j| ((i * 7 + j * 13 + k * 5) % 11) as f64))
             .collect();
+        const { assert!(64 * 80 * 80 * 3 >= PARALLEL_WORK) };
         let pb = PointBatch::from_matrices(&big).unwrap();
         let expected: Vec<bool> = big
             .iter()
