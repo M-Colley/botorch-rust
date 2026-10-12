@@ -1,5 +1,6 @@
 """Utilities (``botorch.utils``)."""
 
+from botorch_rs.utils import multi_objective
 from botorch_rs.utils.sampling import (
     HitAndRunPolytopeSampler,
     draw_sobol_normal_samples,
@@ -20,4 +21,5 @@ __all__ = [
     "get_polytope_samples",
     "sample_polytope",
     "sparse_to_dense_constraints",
+    "multi_objective",
 ]

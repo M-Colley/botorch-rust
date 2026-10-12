@@ -9,6 +9,12 @@ The polytope samplers (``get_polytope_samples``,
 hit-and-run algorithm (unit-cube normalization, equality constraints via
 their null space, an interior point from a linear program); their random
 streams differ from torch's for the same seed, with the same distribution.
+
+``sample_simplex`` and ``sample_hypersphere`` apply BoTorch's transformations
+(sorted spacings of uniform numbers, normalized normal vectors) to i.i.d.
+numbers from a seeded Xoshiro256++ generator or, with ``qmc=True``, to the
+scrambled Sobol sequence above; for the same seed the samples differ from
+BoTorch's, with the same distribution.
 """
 
 from __future__ import annotations
@@ -203,6 +209,64 @@ class HitAndRunPolytopeSampler:
         return from_pair(self._rs.draw(int(n)), self._kind)
 
 
+def sample_hypersphere(
+    d: int,
+    n: int = 1,
+    qmc: bool = False,
+    seed: int | None = None,
+    device: Any = None,
+    dtype: Any = None,
+) -> Any:
+    r"""Sample uniformly from a unit d-sphere.
+
+    Args:
+        d: The dimension of the hypersphere.
+        n: The number of samples to return.
+        qmc: If True, use QMC Sobol sampling (instead of i.i.d. normal
+            samples).
+        seed: If provided, use as a seed for the RNG.
+        device: The torch device.
+        dtype: The torch (or NumPy) dtype; float64 torch tensors by default
+            if torch has been imported, else lists.
+
+    Returns:
+        An ``n x d`` array of uniform samples from the d-hypersphere (``+-1``
+        for ``d = 1``).
+    """
+    return from_pair(
+        _rs.sample_hypersphere(int(d), int(n), bool(qmc), _seed(seed)),
+        kind_from_dtype(dtype, device),
+    )
+
+
+def sample_simplex(
+    d: int,
+    n: int = 1,
+    qmc: bool = False,
+    seed: int | None = None,
+    device: Any = None,
+    dtype: Any = None,
+) -> Any:
+    r"""Sample uniformly from a d-simplex.
+
+    Args:
+        d: The dimension of the simplex.
+        n: The number of samples to return.
+        qmc: If True, use QMC Sobol sampling (instead of i.i.d. uniform).
+        seed: If provided, use as a seed for the RNG.
+        device: The torch device.
+        dtype: The torch (or NumPy) dtype; float64 torch tensors by default
+            if torch has been imported, else lists.
+
+    Returns:
+        An ``n x d`` array of uniform samples from the d-simplex.
+    """
+    return from_pair(
+        _rs.sample_simplex(int(d), int(n), bool(qmc), _seed(seed)),
+        kind_from_dtype(dtype, device),
+    )
+
+
 __all__ = [
     "HitAndRunPolytopeSampler",
     "draw_sobol_normal_samples",
@@ -211,4 +275,6 @@ __all__ = [
     "get_polytope_samples",
     "sample_polytope",
     "sparse_to_dense_constraints",
+    "sample_hypersphere",
+    "sample_simplex",
 ]

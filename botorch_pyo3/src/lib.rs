@@ -17,6 +17,7 @@ mod arrays;
 mod callbacks;
 mod errors;
 mod models;
+mod multi_objective;
 mod optim;
 mod polytope;
 mod sampling;
@@ -69,5 +70,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Threads.
     m.add_function(wrap_pyfunction!(threads::set_num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(threads::get_num_threads, m)?)?;
+    // Multi-objective utilities, `sample_simplex` and `sample_hypersphere`.
+    multi_objective::register(m)?;
     Ok(())
 }
