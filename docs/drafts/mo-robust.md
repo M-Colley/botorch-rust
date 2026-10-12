@@ -77,8 +77,8 @@ acquisition functions):
 | MVaR (all options): values / gradients; MVaR sets | 0 / 9.4e-17; 0 | 1e-9 / 1e-8; 0 |
 | MARS: values / gradients / baseline / bounds | 4.2e-16 / 0 / 1.0e-16 / 1.0e-16 | 1e-9 / 1e-8 |
 | qEHVI, qLogEHVI with risk measures: values / gradients | 1.6e-14 / 2.8e-14 | 1e-9 / 1e-8 |
-| qNEHVI, qLogNEHVI with risk measures: values / gradients | 2.9e-10 / 4.1e-9 (relative to the floor-adjusted tolerance; see the terminal summary) | 1e-9 / 1e-8 or 10x floor |
-| qLogNEI (CVaR, VaR, MARS), qLogEI, qSimpleRegret: values / gradients | 5.8e-10 / 6.8e-9 | 1e-9 / 1e-8 or 10x floor |
+| qNEHVI, qLogNEHVI with risk measures: values / gradients | 1.9e-10 / 4.1e-9 where the nominal tolerance applies; up to 7.2e-5 / 1.8e-4 where BoTorch's own noise floor (up to 2.5e-4 / 7.0e-3) is larger | 1e-9 / 1e-8 or 10x floor |
+| qLogNEI (CVaR, VaR, MARS), qLogEI, qSimpleRegret: values / gradients | 5.8e-10 / 6.8e-9 (6.2e-9 / 1.1e-8 above a noise floor) | 1e-9 / 1e-8 or 10x floor |
 | MOMF: values / gradients | 3.4e-16 / 3.7e-16 | 1e-9 / 1e-8 |
 | NSGA-II vs pymoo (fronts, crowding distance) | 0 (needs pymoo) | 1e-15 |
 | `optimize_with_nsgaii` vs BoTorch + pymoo: mean hypervolume over 10 seeds | within 4 standard errors or 1% (needs pymoo) | statistical |
