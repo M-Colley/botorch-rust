@@ -106,6 +106,7 @@ from parity_helpers import (  # noqa: E402
 CHECK = Checker("robust multi-objective")
 VALUE_TOL = 1e-9
 GRAD_TOL = 1e-8
+NEGLIGIBLE_LOG = math.log(1e-12)
 NUM_SAMPLES = 16
 N_W = 4
 HAS_PYMOO = importlib.util.find_spec("pymoo") is not None
@@ -495,12 +496,36 @@ def compare(
     magnitude between perturbations when the improvement is negligible and
     the log values are dominated by the smoothing)."""
     (v_rs, g_rs), (v_bt, g_bt) = rs_vg, bt_vg
+    keep = None
+    if log:
+        # Log values below log(1e-12) are improvements of less than 1e-12 of
+        # the outcome scale, dominated by the smoothing (about -42 for
+        # tau_relu = 1e-6): their logarithms (and gradients) amplify rounding
+        # without bound, so such entries are compared in linear space, where
+        # both are negligible, and left out of the log-space comparison.
+        v_rs, v_bt = torch.as_tensor(v_rs), torch.as_tensor(v_bt)
+        negligible = (v_bt < NEGLIGIBLE_LOG) & (v_rs < NEGLIGIBLE_LOG)
+        if bool(negligible.any()):
+            CHECK.record(
+                f"{label}: negligible values (both below 1e-12; linear space)",
+                (v_rs[negligible].exp() - v_bt[negligible].exp()).abs().max().item(),
+                1e-12,
+            )
+            keep = ~negligible
+            if not bool(keep.any()):
+                return
+            v_rs, v_bt = v_rs[keep], v_bt[keep]
+            if g_bt is not None:
+                g_rs, g_bt = torch.as_tensor(g_rs)[keep], torch.as_tensor(g_bt)[keep]
     err_v = log_err(v_rs, v_bt) if log else rel_err(v_rs, v_bt, atol=1e-300)
     err_g = 0.0 if g_bt is None else rel_err(g_rs, g_bt, atol=1e-14)
     tol_v, tol_g = VALUE_TOL, GRAD_TOL
     if (err_v > tol_v or err_g > tol_g) and twins is not None:
         floor_v = floor_g = 0.0
         for v_tw, g_tw in twins():
+            if keep is not None:
+                v_tw = torch.as_tensor(v_tw)[keep]
+                g_tw = None if g_tw is None else torch.as_tensor(g_tw)[keep]
             floor_v = max(floor_v, log_err(v_tw, v_bt) if log else rel_err(v_tw, v_bt))
             if g_bt is not None:
                 floor_g = max(floor_g, rel_err(g_tw, g_bt, atol=1e-14))
