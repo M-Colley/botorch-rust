@@ -107,6 +107,21 @@ pub(crate) fn check_mc_model(model: &dyn Model, objective: Option<&dyn McObjecti
     Ok(())
 }
 
+/// BoTorch's error for outcome constraints with a one-to-many input transform
+/// (`MultiObjectiveMCAcquisitionFunction`; the feasibility of the `q·n_w`
+/// perturbed points cannot weight the `q` objective values).
+pub(crate) fn check_constraints_one_to_one(model: &dyn Model) -> Result<()> {
+    if model.points_per_input() != 1 {
+        return Err(BotorchError::Unsupported(
+            "Constraints are not supported with input perturbations, due to sample q-batch \
+             shape being different than that of the inputs. Use a composite objective that \
+             applies feasibility weighting to samples before calculating the risk measure."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Roots of a joint posterior covariance over `n` points and `m` outputs.
 #[derive(Clone, Debug)]
 pub(crate) enum SampleRoots {
@@ -171,6 +186,7 @@ impl crate::posterior::Posterior {
         }
         let js = JointSamples {
             x: Matrix::zeros(q, 0),
+            n: q,
             m,
             mean: self.mean.clone(),
             roots: SampleRoots::new(&self.covariance, q, m)?,
@@ -182,9 +198,16 @@ impl crate::posterior::Posterior {
 
 /// Joint posterior samples of a point set together with what is needed to
 /// backpropagate through them.
+///
+/// With a one-to-many input transform (see [`Model::points_per_input`]) the
+/// posterior of the `x.nrows()` inputs is over `n = x.nrows()·n_w` points:
+/// the samples, base samples and ranges of points refer to those `n` points,
+/// while the rows of gradients refer to the inputs.
 pub(crate) struct JointSamples {
-    /// The full input (`n × d`).
+    /// The full input (`n_in × d`).
     pub x: Matrix,
+    /// Number of posterior points `n` (`n_in·n_w`).
+    pub n: usize,
     /// Number of outputs `m`.
     pub m: usize,
     /// Posterior mean (`n·m`, output-major).
@@ -197,17 +220,17 @@ pub(crate) struct JointSamples {
 
 impl JointSamples {
     /// Computes the posterior over `x` and its roots, and fetches the base
-    /// samples for `x.nrows()` points and all outputs.
+    /// samples for its `x.nrows()·n_w` points and all outputs.
     pub fn new(model: &dyn Model, x: Matrix, sampler: &SobolQMCNormalSampler) -> Result<Self> {
         let m = model.num_outputs();
-        let base = sampler.base_samples(x.nrows() * m)?;
+        let base = sampler.base_samples(x.nrows() * model.points_per_input() * m)?;
         Self::with_base_samples(model, x, base)
     }
 
     /// Like [`JointSamples::new`] with explicit base samples (`S × n·m`).
     pub fn with_base_samples(model: &dyn Model, x: Matrix, base: Arc<Matrix>) -> Result<Self> {
         let post = model.posterior(&x, false)?;
-        let n = x.nrows();
+        let n = post.num_points();
         let m = post.num_outputs();
         if base.ncols() != n * m {
             return Err(BotorchError::DimensionMismatch(format!(
@@ -219,6 +242,7 @@ impl JointSamples {
         let roots = SampleRoots::new(&post.covariance, n, m)?;
         Ok(Self {
             x,
+            n,
             m,
             mean: post.mean,
             roots,
@@ -226,9 +250,14 @@ impl JointSamples {
         })
     }
 
-    /// Number of points `n`.
+    /// Number of posterior points `n`.
     pub fn num_points(&self) -> usize {
-        self.x.nrows()
+        self.n
+    }
+
+    /// Number of posterior points per input (`n_w`).
+    pub fn points_per_input(&self) -> usize {
+        self.n / self.x.nrows().max(1)
     }
 
     /// Number of MC samples `S`.
@@ -297,7 +326,7 @@ impl JointSamples {
 
     /// Propagates the adjoint `ybar` of the samples of the points `cols` (in
     /// the layout of [`JointSamples::samples`]) to the inputs `grad_rows`
-    /// (`grad_rows.len() × d`).
+    /// (rows of `x`; `grad_rows.len() × d`).
     pub fn backward(
         &self,
         model: &dyn Model,
@@ -369,21 +398,25 @@ impl SampledObjective {
         Self::from_joint(js, objective, with_grad)
     }
 
-    /// Evaluates the objective on joint samples.
+    /// Evaluates the objective on joint samples. The objective maps the
+    /// samples of the `n` posterior points to one value per input (BoTorch's
+    /// q-batch check of `MCAcquisitionObjective.__call__`; with a one-to-many
+    /// input transform this needs an objective such as a risk measure).
     pub fn from_joint(
         js: JointSamples,
         objective: Option<&dyn McObjective>,
         with_grad: bool,
     ) -> Result<Self> {
         let n = js.num_points();
+        let n_in = js.x.nrows();
         let samples = js.samples(0..n);
         let (obj, pullback) = match objective {
             Some(o) => {
                 let v = o.evaluate(&samples, Some(&js.x), with_grad)?;
-                if v.values.shape() != (n, samples.num_samples()) {
+                if v.values.shape() != (n_in, samples.num_samples()) {
                     return Err(crate::acquisition::mc_objective::q_batch_mismatch(
                         v.values.nrows(),
-                        n,
+                        n_in,
                     ));
                 }
                 (v.values, v.pullback)
@@ -391,6 +424,9 @@ impl SampledObjective {
             None => {
                 if samples.num_outputs() != 1 {
                     return Err(BotorchError::Unsupported(MULTI_OUTPUT_MESSAGE.into()));
+                }
+                if n != n_in {
+                    return Err(crate::acquisition::mc_objective::q_batch_mismatch(n, n_in));
                 }
                 (samples.data().clone(), None)
             }
@@ -403,7 +439,7 @@ impl SampledObjective {
         })
     }
 
-    /// Propagates the adjoint of the objective values (`n × S`) and an
+    /// Propagates the adjoint of the objective values (`n_in × S`) and an
     /// additional adjoint of the samples (e.g. from constraints) to the
     /// inputs `grad_rows`.
     pub fn backward(
@@ -414,6 +450,7 @@ impl SampledObjective {
         grad_rows: Range<usize>,
     ) -> Result<Matrix> {
         let n = self.js.num_points();
+        let n_in = self.js.x.nrows();
         let (mut sbar, xbar) = match self.pullback {
             Some(pb) => pb(obj_bar)?,
             None => (obj_bar.clone(), None),
@@ -423,9 +460,9 @@ impl SampledObjective {
         }
         let mut grad = self.js.backward(model, 0..n, &sbar, grad_rows.clone())?;
         if let Some(xb) = xbar {
-            if xb.shape() != (n, self.js.x.ncols()) {
+            if xb.shape() != (n_in, self.js.x.ncols()) {
                 return Err(BotorchError::DimensionMismatch(format!(
-                    "the objective's input adjoint has shape {:?}, expected {n} x {}",
+                    "the objective's input adjoint has shape {:?}, expected {n_in} x {}",
                     xb.shape(),
                     self.js.x.ncols()
                 )));
@@ -475,6 +512,7 @@ impl McCore {
     ) -> Result<Self> {
         check_mc_model(model.as_ref(), options.objective.as_deref())?;
         if let Some(c) = &options.constraints {
+            check_constraints_one_to_one(model.as_ref())?;
             crate::utils::objective::check_fat(c, &fat)?;
         }
         if let (Some(_), Some(o)) = (&options.constraints, &options.objective) {

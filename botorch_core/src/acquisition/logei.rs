@@ -24,8 +24,8 @@ use rand::{RngExt, SeedableRng};
 
 use crate::acquisition::mc_objective::{McObjective, McSamples};
 use crate::acquisition::monte_carlo::{
-    check_mc_model, read_lock, sampler_or_default, vstack, write_lock, JointSamples,
-    McAcquisitionOptions, McCore, Reduced, SampledObjective,
+    check_constraints_one_to_one, check_mc_model, read_lock, sampler_or_default, vstack,
+    write_lock, JointSamples, McAcquisitionOptions, McCore, Reduced, SampledObjective,
 };
 use crate::acquisition::utils::{
     compute_best_feasible_objective, estimate_objective_lower_bound, prune_inferior_points,
@@ -511,6 +511,9 @@ impl QLogNoisyExpectedImprovement {
     ) -> Result<Self> {
         check_not_constrained_objective(options.objective.as_deref())?;
         check_mc_model(model.as_ref(), options.objective.as_deref())?;
+        if options.constraints.is_some() {
+            check_constraints_one_to_one(model.as_ref())?;
+        }
         let d = model.dim();
         if x_baseline.ncols() != d {
             return Err(BotorchError::DimensionMismatch(format!(
@@ -677,7 +680,8 @@ impl QLogNoisyExpectedImprovement {
                 return Ok(Arc::clone(v));
             }
         }
-        let bl_samples = so.samples.points(0..n_baseline);
+        let k = so.js.points_per_input();
+        let bl_samples = so.samples.points(0..n_baseline * k);
         let bl_obj = so.obj.rows(0, n_baseline).into_owned();
         let best = compute_best_feasible_objective(
             &bl_samples,
@@ -715,7 +719,8 @@ impl QLogNoisyExpectedImprovement {
             with_grad,
         )?;
         let best_f = self.incumbents(&so, n_bl)?;
-        let cand = n_bl..n;
+        let k = so.js.points_per_input();
+        let cand = n_bl * k..n * k;
         let ind = match &self.constraints {
             Some(c) => Some(compute_smoothed_feasibility_indicator(
                 c,
@@ -887,8 +892,10 @@ impl QLogProbabilityOfFeasibility {
             Some(p) => vstack(&[x, p], d),
             None => x.clone(),
         };
-        let n = x_full.nrows();
         let js = JointSamples::new(self.model.as_ref(), x_full, &self.sampler)?;
+        // All posterior points (with a one-to-many input transform, every
+        // perturbation of every point, as in BoTorch).
+        let n = js.num_points();
         let samples: McSamples = js.samples(0..n);
         let ind = compute_smoothed_feasibility_indicator(
             &self.constraints,

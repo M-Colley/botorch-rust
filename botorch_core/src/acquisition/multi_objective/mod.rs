@@ -32,6 +32,7 @@ use std::sync::Arc;
 
 use crate::acquisition::check_unbatched;
 use crate::acquisition::mc_objective::McSamples;
+use crate::acquisition::monte_carlo::check_constraints_one_to_one;
 use crate::acquisition::multi_objective::hypervolume::{log_qehvi, qehvi, LogSettings};
 use crate::acquisition::multi_objective::objective::check_values;
 use crate::error::{BotorchError, Result};
@@ -132,6 +133,9 @@ impl MoMcCore {
         fat: bool,
     ) -> Result<Self> {
         check_unbatched(model.as_ref())?;
+        if constraints.is_some() {
+            check_constraints_one_to_one(model.as_ref())?;
+        }
         Ok(Self {
             model,
             sampler: mo_sampler_or_default(sampler)?,
@@ -155,7 +159,12 @@ impl MoMcCore {
         with_grad: bool,
     ) -> Result<SampleReduction> {
         let out = self.objective.evaluate(samples, Some(x), with_grad)?;
-        check_values(&out.values, samples)?;
+        check_values(
+            &out.values,
+            samples,
+            Some(x),
+            self.objective.verify_output_shape(),
+        )?;
         if out.values.num_outputs() != cells.num_outcomes() {
             return Err(BotorchError::DimensionMismatch(format!(
                 "The objective has {} outputs but the box decomposition (reference point) has \
@@ -174,7 +183,9 @@ impl MoMcCore {
             )?),
             None => None,
         };
-        let subsets = self.subsets.get(samples.num_points());
+        // BoTorch's `q_out = obj.shape[-2]`: the points of the objective
+        // values (several per input for set-valued objectives such as MVaR).
+        let subsets = self.subsets.get(out.values.num_points());
         let w = feas.as_ref().map(|f| &f.values);
         let r = match reduction {
             Reduction::Linear => qehvi(&out.values, w, cells, &subsets, with_grad),

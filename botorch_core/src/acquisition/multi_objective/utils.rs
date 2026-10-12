@@ -81,6 +81,11 @@ impl Default for PruneMultiObjectiveOptions {
 /// every objective. If more than `ceil(max_frac · n)` points have a non-zero
 /// probability, the most probable ones are kept (ties in index order).
 ///
+/// With a one-to-many input transform and a risk-measure objective, the
+/// objective may return several points per input (e.g. `MVaR`); as in
+/// BoTorch, the probabilities are computed per objective point and an input
+/// is kept if one of its objective points is (`idcs // effective_n_w`).
+///
 /// # Errors
 /// [`BotorchError::InvalidArgument`] for an empty `x` or `max_frac` outside
 /// `(0, 1]`, [`BotorchError::Unsupported`] for batched models,
@@ -108,30 +113,39 @@ pub fn prune_inferior_points_multi_objective_indices(
     check_unbatched(model)?;
     let m = model.num_outputs();
     let max_points = (options.max_frac * n as f64).ceil() as usize;
+    // The posterior points (`n·n_w` with a one-to-many input transform).
+    let np = n * model.points_per_input();
+    if options.constraints.as_ref().is_some_and(|c| !c.is_empty()) && np != n {
+        return Err(BotorchError::Unsupported(
+            "Outcome constraints are not supported with one-to-many input transforms.".into(),
+        ));
+    }
     let base = match &options.base_samples {
         Some(z) => {
-            if z.ncols() != n * m || z.nrows() == 0 {
+            if z.ncols() != np * m || z.nrows() == 0 {
                 return Err(BotorchError::DimensionMismatch(format!(
-                    "base samples must have {} columns ({n} points x {m} outputs), got {}x{}",
-                    n * m,
+                    "base samples must have {} columns ({np} points x {m} outputs), got {}x{}",
+                    np * m,
                     z.nrows(),
                     z.ncols()
                 )));
             }
             z.clone()
         }
-        None => draw_sobol_normal_samples(n * m, options.num_samples, options.seed)?,
+        None => draw_sobol_normal_samples(np * m, options.num_samples, options.seed)?,
     };
     let js = JointSamples::with_base_samples(model, x.clone(), Arc::new(base))?;
-    let samples = js.samples(0..n);
+    let samples = js.samples(0..np);
     let obj: McSamples = match &options.objective {
         Some(o) => {
             let v = o.evaluate(&samples, Some(x), false)?.values;
-            check_values(&v, &samples)?;
+            check_values(&v, &samples, Some(x), o.verify_output_shape())?;
             v
         }
         None => samples.clone(),
     };
+    // The objective points (several per input for set-valued objectives).
+    let no = obj.num_points();
     let mo = obj.num_outputs();
     if ref_point.len() != mo {
         return Err(BotorchError::DimensionMismatch(format!(
@@ -146,9 +160,9 @@ pub fn prune_inferior_points_multi_objective_indices(
         None => None,
     };
     // Row-major S x n x m' values, infeasible points set to the reference point.
-    let mut values = Vec::with_capacity(s * n * mo);
+    let mut values = Vec::with_capacity(s * no * mo);
     for c in 0..s {
-        for p in 0..n {
+        for p in 0..no {
             if feasible.as_ref().is_some_and(|f| !f[(p, c)]) {
                 values.extend_from_slice(ref_point);
             } else {
@@ -156,25 +170,30 @@ pub fn prune_inferior_points_multi_objective_indices(
             }
         }
     }
-    let batch = PointBatch::new(vec![s], n, mo, values)?;
+    let batch = PointBatch::new(vec![s], no, mo, values)?;
     let mask = is_non_dominated_batch(&batch, true, false);
-    let mut counts = vec![0usize; n];
+    let mut counts = vec![0usize; no];
     for c in 0..s {
         for (p, count) in counts.iter_mut().enumerate() {
-            if mask[c * n + p] && batch.point(c, p).iter().zip(ref_point).all(|(v, r)| v > r) {
+            if mask[c * no + p] && batch.point(c, p).iter().zip(ref_point).all(|(v, r)| v > r) {
                 *count += 1;
             }
         }
     }
-    let mut idcs: Vec<usize> = (0..n).filter(|&i| counts[i] > 0).collect();
+    let mut idcs: Vec<usize> = (0..no).filter(|&i| counts[i] > 0).collect();
     if idcs.len() > max_points {
         // torch.sort(probs, stable=True, descending=True), then the first
-        // max_points indices, returned in increasing order (`unique`).
-        let mut order: Vec<usize> = (0..n).collect();
+        // max_points indices.
+        let mut order: Vec<usize> = (0..no).collect();
         order.sort_by(|&a, &b| counts[b].cmp(&counts[a]));
         idcs = order[..max_points].to_vec();
-        idcs.sort_unstable();
     }
+    // `(idcs / effective_n_w).long().unique()`: the inputs, in increasing
+    // order.
+    let effective_n_w = (no / n).max(1);
+    let mut idcs: Vec<usize> = idcs.into_iter().map(|i| i / effective_n_w).collect();
+    idcs.sort_unstable();
+    idcs.dedup();
     Ok(idcs)
 }
 

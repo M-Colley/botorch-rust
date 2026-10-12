@@ -30,6 +30,15 @@
 //! `cache_root`, the joint posterior of `[B; X]` is sampled with one root per
 //! output (BoTorch's `cache_root=False`). Both agree to rounding unless the
 //! joint covariance needs jitter.
+//!
+//! # One-to-many input transforms
+//!
+//! With `n_w` posterior points per input (BoTorch's `InputPerturbation`, see
+//! [`crate::models::Model::points_per_input`]), every count of points above
+//! is a count of posterior points (`N·n_w` for the baseline, `q'·n_w` for the
+//! new points, BoTorch's `q_in = q * n_w`), and the objective (a risk
+//! measure) maps them back to one (or, for set-valued objectives such as
+//! `MVaR`, several) objective points per input.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -250,12 +259,19 @@ impl NehviCore {
         self.mc.model.num_outputs()
     }
 
+    /// The number of posterior points per input (`n_w`).
+    fn nw(&self) -> usize {
+        self.mc.model.points_per_input()
+    }
+
     /// BoTorch's `_set_cell_bounds(num_appended_points)`: samples the cached
     /// points, records the base samples and the roots, and decomposes the
     /// non-dominated space under every sample.
     fn set_cell_bounds(&self, st: &mut NehviState, _num_appended: Option<usize>) -> Result<()> {
         let m = self.m();
         let n = st.x_cached.nrows();
+        // Posterior points of the cached points.
+        let np = n * self.nw();
         let n_obs = st.x_baseline.nrows();
         let mref = self.cfg.ref_point.len();
         let num_samples = self.mc.sampler.num_samples();
@@ -274,7 +290,7 @@ impl NehviCore {
                         .unwrap_or_else(|e| e.into_inner());
                     let z = match su.take() {
                         Some((k, z)) if k == n => z,
-                        _ => self.mc.sampler.base_samples(n * m)?,
+                        _ => self.mc.sampler.base_samples(np * m)?,
                     };
                     if n == n_obs {
                         st.baseline_base_z = Some(Arc::clone(&z));
@@ -283,10 +299,10 @@ impl NehviCore {
                 }
                 // Extend the base samples to the appended points, keeping
                 // those of the previously decomposed points (#3392).
-                Some(old) if old.ncols() == n * m => old,
+                Some(old) if old.ncols() == np * m => old,
                 Some(old) => {
-                    let mut z = (*self.mc.sampler.base_samples(n * m)?).clone();
-                    let k = old.ncols().min(n * m);
+                    let mut z = (*self.mc.sampler.base_samples(np * m)?).clone();
+                    let k = old.ncols().min(np * m);
                     z.columns_mut(0, k).copy_from(&old.columns(0, k));
                     Arc::new(z)
                 }
@@ -301,7 +317,7 @@ impl NehviCore {
                 st.x_cached.clone(),
                 Arc::clone(&z),
             )?;
-            let samples = js.samples(0..n);
+            let samples = js.samples(0..np);
             st.cached = if self.cfg.cache_root {
                 self.cached_root(&js, &st.x_cached, &z)?
             } else {
@@ -312,7 +328,12 @@ impl NehviCore {
                 .objective
                 .evaluate(&samples, Some(&st.x_cached), false)?
                 .values;
-            check_values(&obj, &samples)?;
+            check_values(
+                &obj,
+                &samples,
+                Some(&st.x_cached),
+                self.mc.objective.verify_output_shape(),
+            )?;
             let feas = match &self.mc.constraints {
                 Some(c) => Some(compute_feasibility_indicator(c.constraints(), &samples)?),
                 None => None,
@@ -370,7 +391,8 @@ impl NehviCore {
         if roots.iter().any(|r| matches!(r, CovarianceRoot::Eigen(_))) {
             return Ok(None);
         }
-        let n = x_cached.nrows();
+        // Posterior points of the cached points.
+        let n = js.num_points();
         let caches = gps
             .iter()
             .map(|g| g.baseline_cache(x_cached))
@@ -556,11 +578,11 @@ impl NehviCore {
         }
         let m = self.m();
         let n = st.x_cached.nrows();
-        let all = self.mc.sampler.base_samples((n + q_new) * m)?;
+        let all = self.mc.sampler.base_samples((n + q_new) * self.nw() * m)?;
         let z = match &st.base_z {
             Some(b) if n > 0 => {
                 let mut z = (*all).clone();
-                z.columns_mut(0, n * m).copy_from(b.as_ref());
+                z.columns_mut(0, b.ncols()).copy_from(b.as_ref());
                 Arc::new(z)
             }
             _ => all,
@@ -570,7 +592,8 @@ impl NehviCore {
     }
 
     /// Samples of the new points `x_new` from the low-rank update of the
-    /// cached baseline roots (`None` if it fails).
+    /// cached baseline roots (`None` if it fails); `n` is the number of
+    /// posterior points of the cached points.
     fn low_rank_samples(
         &self,
         cached: &Arc<CachedRoot>,
@@ -582,7 +605,8 @@ impl NehviCore {
             return Ok(None);
         };
         let m = self.m();
-        let q = x_new.nrows();
+        // Posterior points of the new points.
+        let q = x_new.nrows() * self.nw();
         let s = z.nrows();
         let mut data = Matrix::zeros(m * q, s);
         let mut outputs = Vec::with_capacity(m);
@@ -639,8 +663,9 @@ impl NehviCore {
     fn backward(&self, path: SamplePath, sbar: &Matrix, q: usize) -> Result<Matrix> {
         match path {
             SamplePath::Joint { js, n } => {
-                let q_new = js.num_points() - n;
-                js.backward(self.mc.model.as_ref(), n..n + q_new, sbar, n..n + q)
+                // Posterior points of the cached points and of all points.
+                let (np, total) = (n * js.points_per_input(), js.num_points());
+                js.backward(self.mc.model.as_ref(), np..total, sbar, n..n + q)
             }
             SamplePath::LowRank {
                 cached,
@@ -651,8 +676,9 @@ impl NehviCore {
                     self.mc.model.output_gps().ok_or_else(|| {
                         BotorchError::Runtime("the model lost its output GPs".into())
                     })?;
-                let qn = x_new.nrows();
-                let mut grad = Matrix::zeros(qn, x_new.ncols());
+                // Posterior points of the new points.
+                let qn = x_new.nrows() * self.nw();
+                let mut grad = Matrix::zeros(x_new.nrows(), x_new.ncols());
                 for (t, (g, (bl, br, zn))) in gps.iter().zip(&outputs).enumerate() {
                     let yb = sbar.rows(t * qn, qn);
                     let mbar = crate::Vector::from_fn(qn, |p, _| yb.row(p).sum());
@@ -706,8 +732,9 @@ impl NehviCore {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
         let z = self.joint_base(&st, q_new)?;
+        let nw = self.nw();
         let low_rank = match (&st.cached, self.cfg.cache_root) {
-            (Some(c), true) => self.low_rank_samples(c, &x_new, &z, n)?,
+            (Some(c), true) => self.low_rank_samples(c, &x_new, &z, n * nw)?,
             _ => None,
         };
         let (samples, path) = match low_rank {
@@ -715,7 +742,7 @@ impl NehviCore {
             None => {
                 let x_full = vstack(&[&st.x_cached, &x_new], d);
                 let js = JointSamples::with_base_samples(self.mc.model.as_ref(), x_full, z)?;
-                let samples = js.samples(n..n + q_new);
+                let samples = js.samples(n * nw..(n + q_new) * nw);
                 (samples, SamplePath::Joint { js, n })
             }
         };
