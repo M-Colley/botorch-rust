@@ -7,7 +7,7 @@
 //! double precision; `float32=True` (the default) reproduces that rounding so
 //! that models agree with BoTorch to double precision.
 
-use botorch_core::constraints::ParameterTransform;
+use botorch_core::constraints::{Constraint, Interval, ParameterTransform};
 use botorch_core::kernels::{
     get_covar_module_with_dim_scaled_prior, get_matern_kernel_with_gamma_prior,
 };
@@ -94,16 +94,27 @@ impl PyPrior {
     }
 }
 
-/// A lower-bound constraint (`gpytorch.constraints.GreaterThan` /
-/// `Positive`).
-#[pyclass(frozen, name = "GreaterThan", module = "botorch_rs._botorch_rs")]
-pub struct PyGreaterThan {
+fn transform_from_name(name: Option<&str>) -> PyResult<Option<ParameterTransform>> {
+    match name {
+        None => Ok(None),
+        Some("softplus") => Ok(Some(ParameterTransform::Softplus)),
+        Some("sigmoid") => Ok(Some(ParameterTransform::Sigmoid)),
+        Some(other) => Err(unsupported(format!(
+            "Only the softplus and sigmoid transforms (or None) are supported, got {other:?}."
+        ))),
+    }
+}
+
+/// A parameter constraint: `gpytorch.constraints.GreaterThan` / `Positive`
+/// or `Interval`.
+#[pyclass(frozen, name = "Constraint", module = "botorch_rs._botorch_rs")]
+pub struct PyConstraint {
     /// The constraint.
-    pub inner: GreaterThan,
+    pub inner: Constraint,
 }
 
 #[pymethods]
-impl PyGreaterThan {
+impl PyConstraint {
     /// Immutable: copies are the object itself.
     fn __copy__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
@@ -117,22 +128,21 @@ impl PyGreaterThan {
     /// `GreaterThan(lower_bound, transform, initial_value)`; `transform` is
     /// `"softplus"` (GPyTorch's default) or `None` (not enforced: the bound is
     /// imposed by the optimizer, as in BoTorch's default models).
-    #[new]
+    #[staticmethod]
     #[pyo3(signature = (lower_bound, transform=Some("softplus"), initial_value=None, float32=true))]
-    fn new(
+    fn greater_than(
         lower_bound: f64,
         transform: Option<&str>,
         initial_value: Option<f64>,
         float32: bool,
     ) -> PyResult<Self> {
-        let transform = match transform {
-            None => None,
-            Some("softplus") => Some(ParameterTransform::Softplus),
-            Some(other) => {
-                return Err(unsupported(format!(
-                    "Only the softplus transform (or None) is supported, got {other:?}."
-                )))
+        let transform = match transform_from_name(transform)? {
+            Some(ParameterTransform::Sigmoid) => {
+                return Err(unsupported(
+                    "GreaterThan supports the softplus transform (or None) in botorch_rs.",
+                ))
             }
+            t => t,
         };
         if lower_bound.is_nan() || lower_bound == f64::INFINITY {
             return Err(value_error(format!("invalid lower bound {lower_bound}")));
@@ -146,8 +156,59 @@ impl PyGreaterThan {
         }
         let c = GreaterThan::new(lower_bound, transform, initial_value);
         Ok(Self {
-            inner: if float32 { c.rounded_to_f32() } else { c },
+            inner: if float32 { c.rounded_to_f32() } else { c }.into(),
         })
+    }
+
+    /// `Interval(lower_bound, upper_bound, transform, inv_transform,
+    /// initial_value)`; `transform` is `"sigmoid"` (GPyTorch's default),
+    /// `"softplus"` or `None` (not enforced: box bounds in the optimizer),
+    /// `inv_transform` the transform whose inverse maps values to raw values
+    /// (`None`: GPyTorch's default `inv_sigmoid`).
+    #[staticmethod]
+    #[pyo3(signature = (
+        lower_bound,
+        upper_bound,
+        transform=Some("sigmoid"),
+        inv_transform=None,
+        initial_value=None,
+        float32=true,
+    ))]
+    fn interval(
+        lower_bound: f64,
+        upper_bound: f64,
+        transform: Option<&str>,
+        inv_transform: Option<&str>,
+        initial_value: Option<f64>,
+        float32: bool,
+    ) -> PyResult<Self> {
+        let transform = transform_from_name(transform)?;
+        let inverse = transform_from_name(inv_transform)?;
+        if float32 {
+            // GPyTorch validates the bounds after storing them in float32.
+            Interval::new(
+                lower_bound as f32 as f64,
+                upper_bound as f32 as f64,
+                transform,
+                inverse,
+                None,
+            )
+            .into_py_result()?;
+        }
+        let c = Interval::new(lower_bound, upper_bound, transform, inverse, initial_value)
+            .into_py_result()?;
+        Ok(Self {
+            inner: if float32 { c.rounded_to_f32() } else { c }.into(),
+        })
+    }
+
+    /// `"GreaterThan"` or `"Interval"`.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match self.inner {
+            Constraint::GreaterThan(_) => "GreaterThan",
+            Constraint::Interval(_) => "Interval",
+        }
     }
 
     /// The lower bound.
@@ -156,16 +217,40 @@ impl PyGreaterThan {
         self.inner.lower_bound()
     }
 
-    /// Whether the constraint is enforced through a softplus transform.
+    /// The upper bound (`inf` for `GreaterThan`).
+    #[getter]
+    fn upper_bound(&self) -> f64 {
+        self.inner.upper_bound()
+    }
+
+    /// Whether the constraint is enforced through a transform.
     #[getter]
     fn enforced(&self) -> bool {
         self.inner.enforced()
+    }
+
+    /// The name of the transform (`None` if not enforced).
+    #[getter]
+    fn transform_name(&self) -> Option<&'static str> {
+        self.inner.transform_kind().map(ParameterTransform::name)
     }
 
     /// The initial value (actual space), if any.
     #[getter]
     fn initial_value(&self) -> Option<f64> {
         self.inner.initial_value()
+    }
+
+    /// The raw initial value (GPyTorch's `constraint.initial_value`), if any.
+    #[getter]
+    fn initial_raw_value(&self) -> Option<f64> {
+        self.inner.initial_raw_value()
+    }
+
+    /// Optimizer bounds of the raw parameter (`get_parameters_and_bounds`).
+    #[getter]
+    fn raw_bounds(&self) -> (f64, f64) {
+        self.inner.raw_bounds()
     }
 
     /// Maps a raw value to the actual value.
@@ -176,6 +261,11 @@ impl PyGreaterThan {
     /// Maps an actual value to the raw value.
     fn inverse_transform(&self, value: f64) -> f64 {
         self.inner.inverse_transform(value)
+    }
+
+    /// The derivative of the transform at a raw value.
+    fn transform_derivative(&self, raw: f64) -> f64 {
+        self.inner.transform_derivative(raw)
     }
 }
 
@@ -214,7 +304,7 @@ impl PyKernelSpec {
         kind: &str,
         ard_num_dims: usize,
         lengthscale_prior: Option<PyRef<'_, PyPrior>>,
-        lengthscale_constraint: Option<PyRef<'_, PyGreaterThan>>,
+        lengthscale_constraint: Option<PyRef<'_, PyConstraint>>,
     ) -> PyResult<Self> {
         let kind = match kind {
             "rbf" => KernelKind::Rbf,
@@ -268,7 +358,7 @@ impl PyKernelSpec {
     fn with_scale_kernel(
         &self,
         outputscale_prior: Option<PyRef<'_, PyPrior>>,
-        outputscale_constraint: Option<PyRef<'_, PyGreaterThan>>,
+        outputscale_constraint: Option<PyRef<'_, PyConstraint>>,
     ) -> PyResult<Self> {
         if self.inner.scale.is_some() {
             return Err(unsupported(
@@ -310,8 +400,8 @@ impl PyKernelSpec {
 
     /// The lengthscale constraint.
     #[getter]
-    fn lengthscale_constraint(&self) -> PyGreaterThan {
-        PyGreaterThan {
+    fn lengthscale_constraint(&self) -> PyConstraint {
+        PyConstraint {
             inner: self.inner.lengthscale_constraint,
         }
     }
@@ -327,8 +417,8 @@ impl PyKernelSpec {
 
     /// The outputscale constraint (`None` without `ScaleKernel`).
     #[getter]
-    fn outputscale_constraint(&self) -> Option<PyGreaterThan> {
-        self.inner.scale.map(|s| PyGreaterThan {
+    fn outputscale_constraint(&self) -> Option<PyConstraint> {
+        self.inner.scale.map(|s| PyConstraint {
             inner: s.outputscale_constraint,
         })
     }
@@ -363,7 +453,7 @@ impl PyLikelihoodSpec {
     #[pyo3(signature = (noise_prior=None, noise_constraint=None))]
     fn new(
         noise_prior: Option<PyRef<'_, PyPrior>>,
-        noise_constraint: Option<PyRef<'_, PyGreaterThan>>,
+        noise_constraint: Option<PyRef<'_, PyConstraint>>,
     ) -> Self {
         Self {
             inner: GaussianLikelihoodSpec {
@@ -375,7 +465,8 @@ impl PyLikelihoodSpec {
                         Some(ParameterTransform::Softplus),
                         None,
                     )
-                    .rounded_to_f32(),
+                    .rounded_to_f32()
+                    .into(),
                 },
             },
         }
@@ -405,8 +496,8 @@ impl PyLikelihoodSpec {
 
     /// The noise constraint.
     #[getter]
-    fn noise_constraint(&self) -> PyGreaterThan {
-        PyGreaterThan {
+    fn noise_constraint(&self) -> PyConstraint {
+        PyConstraint {
             inner: self.inner.noise_constraint,
         }
     }

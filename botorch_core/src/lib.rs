@@ -99,7 +99,7 @@
 //! | `get_gaussian_likelihood_with_lognormal_prior`, `..._with_gamma_prior` | [`get_gaussian_likelihood_with_lognormal_prior`], [`get_gaussian_likelihood_with_gamma_prior`] |
 //! | `Normalize`, `Standardize` | [`Normalize`], [`Standardize`] |
 //! | `LogNormalPrior`, `GammaPrior` | [`Prior`] |
-//! | `GreaterThan`, `Positive` | [`GreaterThan`] |
+//! | `GreaterThan`, `Positive`, `Interval` | [`GreaterThan`], [`Interval`] (both as a [`Constraint`]) |
 //! | `scipy.optimize.minimize(method="L-BFGS-B")` | [`lbfgsb::minimize`]`(fun, &x0, &lower, &upper, &`[`lbfgsb::LbfgsbOptions`]`)` |
 //! | `linear_operator.utils.cholesky.psd_safe_cholesky` | [`psd_safe_cholesky`] |
 //!
@@ -346,7 +346,7 @@ pub type Matrix = nalgebra::DMatrix<f64>;
 pub type Vector = nalgebra::DVector<f64>;
 
 pub use acquisition::AcquisitionFunction;
-pub use constraints::{GreaterThan, ParameterTransform};
+pub use constraints::{Constraint, GreaterThan, Interval, ParameterTransform};
 pub use error::{BotorchError, Result};
 pub use fit::{fit_gpytorch_mll, BatchedFitResult, FitOptions, FitResult, FitStatus, Fittable};
 pub use kernels::{Kernel, KernelKind, KernelSpec, ScaleKernelSpec};

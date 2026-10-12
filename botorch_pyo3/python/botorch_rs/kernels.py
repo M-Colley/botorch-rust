@@ -15,7 +15,7 @@ from typing import Any
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import to_flat
 from botorch_rs._module import GPModule
-from botorch_rs.constraints import GreaterThan, Interval, Positive
+from botorch_rs.constraints import Interval, Positive
 from botorch_rs.constraints import _from_rs as _constraint_from_rs
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.priors import Prior
@@ -40,9 +40,9 @@ def _check_prior(prior: Any, name: str) -> None:
 
 
 def _check_constraint(constraint: Any, name: str) -> None:
-    if constraint is not None and not isinstance(constraint, GreaterThan):
+    if constraint is not None and not isinstance(constraint, Interval):
         raise UnsupportedError(
-            f"`{name}` must be a botorch_rs.constraints.GreaterThan or Positive."
+            f"`{name}` must be a botorch_rs.constraints.GreaterThan, Positive or Interval."
         )
 
 

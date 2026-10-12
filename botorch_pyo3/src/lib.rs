@@ -48,7 +48,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<transforms::PyNormalize>()?;
     m.add_class::<transforms::PyStandardize>()?;
     m.add_class::<specs::PyPrior>()?;
-    m.add_class::<specs::PyGreaterThan>()?;
+    m.add_class::<specs::PyConstraint>()?;
     m.add_class::<specs::PyKernelSpec>()?;
     m.add_class::<specs::PyLikelihoodSpec>()?;
     // Acquisition functions and their optimization.
