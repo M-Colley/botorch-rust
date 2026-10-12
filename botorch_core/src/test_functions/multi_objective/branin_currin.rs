@@ -1,4 +1,4 @@
-//! `BraninCurrin`.
+//! `BraninCurrin` and the constraint of `ConstrainedBraninCurrin`.
 
 use crate::test_functions::SyntheticTestFunction;
 
@@ -16,4 +16,13 @@ pub(super) fn currin(x0: f64, x1: f64) -> f64 {
 pub(super) fn evaluate(branin: &SyntheticTestFunction, x: &[f64], out: &mut [f64]) {
     out[0] = branin.value_unchecked(&[15.0 * x[0] - 5.0, 15.0 * x[1]]);
     out[1] = currin(x[0], x[1]);
+}
+
+/// The disk constraint of Gelbart et al. (2014) on Branin's domain:
+/// `50 - (x_0' - 2.5)^2 - (x_1' - 7.5)^2 >= 0` with `x' = unnormalize(x)`.
+pub(super) fn constraint_slack(x: &[f64], out: &mut [f64]) {
+    // `unnormalize(X, [(-5, 10), (0, 15)])` = `X * (upper - lower) + lower`.
+    let u0 = x[0] * 15.0 + -5.0;
+    let u1 = x[1] * 15.0 + 0.0;
+    out[0] = 50.0 - (u0 - 2.5) * (u0 - 2.5) - (u1 - 7.5) * (u1 - 7.5);
 }

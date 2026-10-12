@@ -107,6 +107,77 @@ pub(super) fn dtlz7(x: &[f64], m: usize, out: &mut [f64]) {
     out[m - 1] = (1.0 + g) * h;
 }
 
+/// The radius of the feasible regions of C2-DTLZ2 for `M` objectives (Jain
+/// & Deb, 2014; 0.2 for `M = 2`, as in pymoo).
+pub(super) fn c2dtlz2_radius(m: usize) -> f64 {
+    match m {
+        2 => 0.2,
+        3 => 0.4,
+        _ => 0.5,
+    }
+}
+
+/// `min(a, b)` that propagates NaN (`torch.minimum`).
+fn nan_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.min(b)
+    }
+}
+
+/// The constraint slack of C2-DTLZ2 at the objectives `f` (Jain & Deb, 2014):
+/// `-(min(min_i [(f_i - 1)^2 + sum_{j != i} f_j^2], sum_i (f_i - 1 / sqrt(M))^2)
+/// - r^2)`, i.e. feasible within distance `r` of a unit vector `e_i` or of
+/// `(1, ..., 1) / sqrt(M)`. BoTorch main subtracts `r^2` inside the sums and
+/// uses `r = 0.2` for all `M` (fixed in BoTorch PR #3402).
+pub(super) fn c2dtlz2_slack_at_objectives(f: &[f64]) -> f64 {
+    let m = f.len();
+    let r = c2dtlz2_radius(m);
+    let sq_sum: f64 = f.iter().map(|v| v * v).sum();
+    let to_unit_vectors = f
+        .iter()
+        .map(|&v| (v - 1.0) * (v - 1.0) + sq_sum - v * v)
+        .fold(f64::INFINITY, nan_min);
+    let c = 1.0 / (m as f64).sqrt();
+    let to_center: f64 = f.iter().map(|&v| (v - c) * (v - c)).sum();
+    -(nan_min(to_unit_vectors, to_center) - r * r)
+}
+
+/// C2-DTLZ2: the slack at the DTLZ2 objectives of `x`.
+pub(super) fn c2dtlz2_slack(x: &[f64], m: usize, out: &mut [f64]) {
+    let mut buf = [0.0; 16];
+    let mut heap = Vec::new();
+    let f = if m <= buf.len() {
+        &mut buf[..m]
+    } else {
+        heap.resize(m, 0.0);
+        &mut heap[..]
+    };
+    dtlz2(x, m, f);
+    out[0] = c2dtlz2_slack_at_objectives(f);
+}
+
+/// The maximum hypervolume of C2-DTLZ2 for `M = 2` (`None` otherwise): the
+/// feasible Pareto front consists of the arcs of the unit circle with angles
+/// in `[0, a]`, `[pi/4 - a, pi/4 + a]` and `[pi/2 - a, pi/2]` with
+/// `a = 2 asin(r / 2)`; the hypervolume of the quarter circle is reduced by
+/// the area between the circle and the two corners that bridge the gaps
+/// (BoTorch PR #3402; BoTorch main uses an NSGA-II estimate for all `M`).
+pub(super) fn c2dtlz2_max_hv(m: usize) -> Option<f64> {
+    if m != 2 {
+        return None;
+    }
+    let a = 2.0 * (c2dtlz2_radius(m) / 2.0).asin();
+    // The integral of sqrt(1 - t^2) from lo to hi.
+    let antiderivative = |t: f64| 0.5 * (t * (1.0 - t * t).sqrt() + t.asin());
+    let area_under_circle = |lo: f64, hi: f64| antiderivative(hi) - antiderivative(lo);
+    let (lo, hi) = (a, PI / 4.0 - a);
+    let gap = (lo.cos() - hi.cos()) * (hi.sin() - lo.sin())
+        - (area_under_circle(hi.cos(), lo.cos()) - lo.sin() * (lo.cos() - hi.cos()));
+    Some(1.1f64.powf(2.0) - PI / 4.0 - 2.0 * gap)
+}
+
 /// `Gamma(n / 2)` for `n >= 1`, by the exact recursions from `Gamma(1) = 1`
 /// and `Gamma(1/2) = sqrt(pi)`.
 fn gamma_half(n: usize) -> f64 {
@@ -181,5 +252,21 @@ mod tests {
         }
         dtlz7(&[0.3, 0.8, 0.0, 0.0, 0.0], 3, &mut f);
         assert_eq!(&f[..2], &[0.3, 0.8]);
+    }
+
+    #[test]
+    fn c2dtlz2_feasible_regions() {
+        // On the front, feasible near e_1 and the center, not in between.
+        let r = c2dtlz2_radius(2);
+        assert!(c2dtlz2_slack_at_objectives(&[1.0, 0.0]) > 0.0);
+        let c = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((c2dtlz2_slack_at_objectives(&[c, c]) - r * r).abs() < 1e-15);
+        let t = 0.3f64; // angle beyond a = 2 asin(0.1) = 0.2003
+        assert!(c2dtlz2_slack_at_objectives(&[t.cos(), t.sin()]) < 0.0);
+        // Below the hypervolume of the unconstrained front (BoTorch PR #3402:
+        // 0.3823336).
+        let hv = c2dtlz2_max_hv(2).unwrap();
+        assert!(hv < 1.21 - PI / 4.0 && (hv - 0.3823336).abs() < 1e-7);
+        assert!(c2dtlz2_max_hv(3).is_none());
     }
 }

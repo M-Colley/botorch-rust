@@ -25,6 +25,7 @@
 //! [`MultiObjectiveKind::deviation`]).
 
 mod branin_currin;
+mod constrained;
 mod dh;
 mod dtlz;
 mod engineering;
@@ -87,6 +88,24 @@ pub enum MultiObjectiveKind {
     Zdt3,
     /// `CarSideImpact`: 7 inputs, 4 objectives (Tanabe & Ishibuchi, 2020).
     CarSideImpact,
+    /// `BNH`: 2 inputs, 2 objectives, 2 constraints.
+    Bnh,
+    /// `CONSTR`: 2 inputs, 2 objectives, 2 constraints.
+    Constr,
+    /// `ConstrainedBraninCurrin`: `BraninCurrin` with a disk constraint.
+    ConstrainedBraninCurrin,
+    /// `C2DTLZ2`: DTLZ2 with the constraint of Jain & Deb (2014).
+    C2Dtlz2,
+    /// `DiscBrake`: 4 inputs, 2 objectives, 4 constraints.
+    DiscBrake,
+    /// `MW7`: `d ≥ 2` inputs, 2 objectives, 2 constraints (Ma & Wang, 2019).
+    Mw7,
+    /// `OSY`: 6 inputs, 2 objectives, 6 constraints.
+    Osy,
+    /// `SRN`: 2 inputs, 2 objectives, 2 constraints.
+    Srn,
+    /// `WeldedBeam`: 4 inputs, 2 objectives, 4 constraints.
+    WeldedBeam,
     /// `MOMFBraninCurrin` (`multi_objective_multi_fidelity`): 2 inputs and a fidelity.
     MomfBraninCurrin,
     /// `MOMFPark` (`multi_objective_multi_fidelity`): 4 inputs and a fidelity.
@@ -95,7 +114,7 @@ pub enum MultiObjectiveKind {
 
 impl MultiObjectiveKind {
     /// All problems, in the order of BoTorch's modules.
-    pub const ALL: [MultiObjectiveKind; 21] = [
+    pub const ALL: [MultiObjectiveKind; 30] = [
         Self::BraninCurrin,
         Self::Dh1,
         Self::Dh2,
@@ -115,6 +134,15 @@ impl MultiObjectiveKind {
         Self::Zdt2,
         Self::Zdt3,
         Self::CarSideImpact,
+        Self::Bnh,
+        Self::Constr,
+        Self::ConstrainedBraninCurrin,
+        Self::C2Dtlz2,
+        Self::DiscBrake,
+        Self::Mw7,
+        Self::Osy,
+        Self::Srn,
+        Self::WeldedBeam,
         Self::MomfBraninCurrin,
         Self::MomfPark,
     ];
@@ -141,6 +169,15 @@ impl MultiObjectiveKind {
             Self::Zdt2 => "ZDT2",
             Self::Zdt3 => "ZDT3",
             Self::CarSideImpact => "CarSideImpact",
+            Self::Bnh => "BNH",
+            Self::Constr => "CONSTR",
+            Self::ConstrainedBraninCurrin => "ConstrainedBraninCurrin",
+            Self::C2Dtlz2 => "C2DTLZ2",
+            Self::DiscBrake => "DiscBrake",
+            Self::Mw7 => "MW7",
+            Self::Osy => "OSY",
+            Self::Srn => "SRN",
+            Self::WeldedBeam => "WeldedBeam",
             Self::MomfBraninCurrin => "MOMFBraninCurrin",
             Self::MomfPark => "MOMFPark",
         }
@@ -159,7 +196,13 @@ impl MultiObjectiveKind {
 
     /// The number of outcome constraints (0 for unconstrained problems).
     pub fn num_constraints(self) -> usize {
-        0
+        match self {
+            Self::ConstrainedBraninCurrin | Self::C2Dtlz2 => 1,
+            Self::Bnh | Self::Constr | Self::Mw7 | Self::Srn => 2,
+            Self::DiscBrake | Self::WeldedBeam => 4,
+            Self::Osy => 6,
+            _ => 0,
+        }
     }
 
     /// Whether the problem has outcome constraints (BoTorch's
@@ -171,7 +214,14 @@ impl MultiObjectiveKind {
     /// The input dimension of problems with a fixed dimension.
     pub fn fixed_dim(self) -> Option<usize> {
         match self {
-            Self::BraninCurrin | Self::Gmm => Some(2),
+            Self::BraninCurrin
+            | Self::Gmm
+            | Self::Bnh
+            | Self::Constr
+            | Self::ConstrainedBraninCurrin
+            | Self::Srn => Some(2),
+            Self::DiscBrake | Self::WeldedBeam => Some(4),
+            Self::Osy => Some(6),
             Self::ToyRobust => Some(1),
             Self::VehicleSafety => Some(5),
             Self::CarSideImpact | Self::Penicillin => Some(7),
@@ -189,7 +239,13 @@ impl MultiObjectiveKind {
     fn is_dtlz(self) -> bool {
         matches!(
             self,
-            Self::Dtlz1 | Self::Dtlz2 | Self::Dtlz3 | Self::Dtlz4 | Self::Dtlz5 | Self::Dtlz7
+            Self::Dtlz1
+                | Self::Dtlz2
+                | Self::Dtlz3
+                | Self::Dtlz4
+                | Self::Dtlz5
+                | Self::Dtlz7
+                | Self::C2Dtlz2
         )
     }
 
@@ -241,6 +297,23 @@ impl MultiObjectiveKind {
             Self::Gmm => Some(
                 "meta-pytorch/botorch#3405: float64 parameters (BoTorch creates them in \
                  float32, so it evaluates float64 inputs in float32 and returns float32)",
+            ),
+            Self::ConstrainedBraninCurrin => Some(
+                "meta-pytorch/botorch#3402: max_hv is 609.4038 (BoTorch's NSGA-II estimate \
+                 608.4004 is exceeded by evaluated points)",
+            ),
+            Self::C2Dtlz2 => Some(
+                "meta-pytorch/botorch#3402: the constraint of Jain & Deb (2014) subtracts r^2 \
+                 once, with r = 0.4 for M = 3 and 0.5 for M > 3, also for batched and 1-d \
+                 inputs; the exact max_hv for M = 2 (none otherwise)",
+            ),
+            Self::Srn => Some(
+                "meta-pytorch/botorch#3402: f_0 uses (x_1 - 1)^2 and the first constraint is \
+                 x_0^2 + x_1^2 <= 225 (Srinivas & Deb, 1994)",
+            ),
+            Self::WeldedBeam => Some(
+                "meta-pytorch/botorch#3402: the constraint slack is negated (pymoo's \
+                 constraints are feasible if non-positive)",
             ),
             _ => None,
         }
@@ -299,6 +372,11 @@ impl MultiObjectiveKind {
             return Err(BotorchError::InvalidArgument(format!(
                 "dim must be > num_objectives, but got {d} and {m}."
             )));
+        }
+        if self == Self::Mw7 && d < 2 {
+            return Err(BotorchError::InvalidArgument(
+                "dim must be greater than or equal to 2.".into(),
+            ));
         }
         if self == Self::Gmm && !(2..=4).contains(&m) {
             return Err(BotorchError::Unsupported(
@@ -400,7 +478,9 @@ impl MultiObjectiveTestProblem {
         let pairs = default_bounds(kind, dim);
         let bounds = Matrix::from_fn(2, dim, |i, k| if i == 0 { pairs[k].0 } else { pairs[k].1 });
         let component = match kind {
-            MultiObjectiveKind::BraninCurrin => Some(SyntheticTestFunction::branin()),
+            MultiObjectiveKind::BraninCurrin | MultiObjectiveKind::ConstrainedBraninCurrin => {
+                Some(SyntheticTestFunction::branin())
+            }
             MultiObjectiveKind::ToyRobust => Some(SyntheticTestFunction::levy(2)?),
             _ => None,
         };
@@ -593,7 +673,7 @@ impl MultiObjectiveTestProblem {
     fn objectives_at(&self, x: &[f64], out: &mut [f64]) {
         use MultiObjectiveKind as K;
         match self.kind {
-            K::BraninCurrin => {
+            K::BraninCurrin | K::ConstrainedBraninCurrin => {
                 branin_currin::evaluate(self.component.as_ref().expect("Branin"), x, out)
             }
             K::Dh1 => dh::dh1(x, 1.0, out),
@@ -614,14 +694,34 @@ impl MultiObjectiveTestProblem {
             K::ToyRobust => toy_robust::evaluate(self.component.as_ref().expect("Levy"), x, out),
             K::VehicleSafety => engineering::vehicle_safety(x, out),
             K::CarSideImpact => engineering::car_side_impact(x, out),
+            K::Bnh => constrained::bnh(x, out),
+            K::Constr => constrained::constr(x, out),
+            K::C2Dtlz2 => dtlz::dtlz2(x, self.num_objectives, out),
+            K::DiscBrake => engineering::disc_brake(x, out),
+            K::Mw7 => constrained::mw7(x, out),
+            K::Osy => constrained::osy(x, out),
+            K::Srn => constrained::srn(x, out),
+            K::WeldedBeam => engineering::welded_beam(x, out),
             K::MomfBraninCurrin => multi_fidelity::branin_currin(x, out),
             K::MomfPark => multi_fidelity::park(x, out),
         }
     }
 
     /// The constraint slacks at one point (no bounds check).
-    fn slack_at(&self, _x: &[f64], _out: &mut [f64]) {
-        unreachable!("{} has no constraints", self.name())
+    fn slack_at(&self, x: &[f64], out: &mut [f64]) {
+        use MultiObjectiveKind as K;
+        match self.kind {
+            K::Bnh => constrained::bnh_slack(x, out),
+            K::Constr => constrained::constr_slack(x, out),
+            K::ConstrainedBraninCurrin => branin_currin::constraint_slack(x, out),
+            K::C2Dtlz2 => dtlz::c2dtlz2_slack(x, self.num_objectives, out),
+            K::DiscBrake => engineering::disc_brake_slack(x, out),
+            K::Mw7 => constrained::mw7_slack(x, out),
+            K::Osy => constrained::osy_slack(x, out),
+            K::Srn => constrained::srn_slack(x, out),
+            K::WeldedBeam => engineering::welded_beam_slack(x, out),
+            _ => unreachable!("{} has no constraints", self.name()),
+        }
     }
 
     /// Noiseless, un-negated objectives (row-major `n × M`) at the row-major
@@ -827,7 +927,25 @@ fn add_noise<R: Rng + ?Sized>(values: &mut [f64], std: &[f64], rng: &mut R) {
 fn default_bounds(kind: MultiObjectiveKind, dim: usize) -> Vec<(f64, f64)> {
     use MultiObjectiveKind as K;
     match kind {
-        K::BraninCurrin | K::MomfBraninCurrin | K::MomfPark => vec![(0.0, 1.0); dim],
+        K::BraninCurrin
+        | K::ConstrainedBraninCurrin
+        | K::C2Dtlz2
+        | K::Mw7
+        | K::MomfBraninCurrin
+        | K::MomfPark => vec![(0.0, 1.0); dim],
+        K::Bnh => vec![(0.0, 5.0), (0.0, 3.0)],
+        K::Constr => vec![(0.1, 10.0), (0.0, 5.0)],
+        K::DiscBrake => vec![(55.0, 80.0), (75.0, 110.0), (1000.0, 3000.0), (11.0, 20.0)],
+        K::Osy => vec![
+            (0.0, 10.0),
+            (0.0, 10.0),
+            (1.0, 5.0),
+            (0.0, 6.0),
+            (1.0, 5.0),
+            (0.0, 10.0),
+        ],
+        K::Srn => vec![(-20.0, 20.0); 2],
+        K::WeldedBeam => vec![(0.125, 5.0), (0.1, 10.0), (0.1, 10.0), (0.125, 5.0)],
         K::Dtlz1 | K::Dtlz2 | K::Dtlz3 | K::Dtlz4 | K::Dtlz5 | K::Dtlz7 => vec![(0.0, 1.0); dim],
         K::Zdt1 | K::Zdt2 | K::Zdt3 | K::Gmm => vec![(0.0, 1.0); dim],
         K::ToyRobust => vec![(0.0, 0.7)],
@@ -880,6 +998,14 @@ fn raw_ref_point(kind: MultiObjectiveKind, m: usize) -> Vec<f64> {
         K::Penicillin => vec![25.935, 57.612, 935.5],
         K::VehicleSafety => vec![1864.72022, 11.81993945, 0.2903999384],
         K::CarSideImpact => vec![45.4872, 4.5114, 13.3394, 10.3942],
+        K::Bnh | K::Srn => vec![0.0, 0.0],
+        K::Constr => vec![10.0, 10.0],
+        K::ConstrainedBraninCurrin => vec![80.0, 12.0],
+        K::C2Dtlz2 => vec![1.1; m],
+        K::DiscBrake => vec![5.7771, 3.9651],
+        K::Mw7 => vec![1.2, 1.2],
+        K::Osy => vec![-75.0, 75.0],
+        K::WeldedBeam => vec![40.0, 0.015],
         K::MomfBraninCurrin | K::MomfPark => vec![0.0, 0.0],
     }
 }
@@ -911,6 +1037,9 @@ fn max_hv(kind: MultiObjectiveKind, dim: usize, m: usize) -> Option<f64> {
         K::Penicillin => Some(2183455.909507436),
         K::VehicleSafety => Some(246.81607081187002),
         K::CarSideImpact => Some(484.72654347642793),
+        K::ConstrainedBraninCurrin => Some(609.4038),
+        K::C2Dtlz2 => dtlz::c2dtlz2_max_hv(m),
+        K::Bnh | K::Constr | K::DiscBrake | K::Mw7 | K::Osy | K::Srn | K::WeldedBeam => None,
         K::MomfBraninCurrin => Some(0.5235514158034145),
         K::MomfPark => Some(0.08551927363087991),
     }
@@ -956,6 +1085,12 @@ mod tests {
         );
         assert_eq!(K::Gmm.resolve_sizes(None, Some(4)).unwrap(), (2, 4));
         assert_eq!(K::CarSideImpact.resolve_sizes(None, None).unwrap(), (7, 4));
+        assert_eq!(
+            err(K::Mw7, Some(1), None),
+            BotorchError::InvalidArgument("dim must be greater than or equal to 2.".into())
+        );
+        assert_eq!(K::C2Dtlz2.resolve_sizes(Some(5), Some(3)).unwrap(), (5, 3));
+        assert!(K::C2Dtlz2.resolve_sizes(Some(3), Some(3)).is_err());
         for kind in MultiObjectiveKind::ALL {
             assert_eq!(MultiObjectiveKind::from_name(kind.name()), Some(kind));
         }
@@ -1001,6 +1136,33 @@ mod tests {
             .clone()
             .with_constraint_noise_std(NoiseStd::Scalar(0.1))
             .is_err());
+        // Constrained problems: slack noise and feasibility.
+        let c = MultiObjectiveTestProblem::new(MultiObjectiveKind::Osy, None, None)
+            .unwrap()
+            .with_negate(true)
+            .with_constraint_noise_std(NoiseStd::PerOutput(vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0]))
+            .unwrap()
+            .with_seed(1);
+        assert!(matches!(
+            c.clone()
+                .with_constraint_noise_std(NoiseStd::PerOutput(vec![0.1; 2])),
+            Err(BotorchError::InputData(_))
+        ));
+        let xc = Matrix::from_row_slice(
+            2,
+            6,
+            &[5.0, 1.0, 2.0, 0.0, 5.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+        );
+        let slack = c.evaluate_slack_true(&xc).unwrap();
+        let noisy = c.evaluate_slack(&xc, true).unwrap();
+        assert_eq!(slack.columns(0, 5), noisy.columns(0, 5));
+        assert!(slack.column(5) != noisy.column(5));
+        let feasible = c.is_feasible(&xc, false).unwrap();
+        let expected: Vec<bool> = (0..2)
+            .map(|i| slack.row(i).iter().all(|&v| v >= 0.0))
+            .collect();
+        assert_eq!(feasible, expected);
+        assert_eq!(feasible, vec![true, false]);
         // Empty inputs.
         assert_eq!(
             p.evaluate_true(&Matrix::zeros(0, 3)).unwrap().shape(),
