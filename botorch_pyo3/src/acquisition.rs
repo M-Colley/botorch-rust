@@ -9,10 +9,11 @@
 //! MC objectives and outcome constraints arrive as small specifications
 //! built by the Python layer: `("identity",)`, `("linear", weights)`,
 //! `("callable", objective)` (BoTorch's `objective(samples, X=X)`, evaluated
-//! through [`crate::callbacks`]) or `("constrained", objective, constraints,
-//! infeasible_cost, eta)` for an objective; a list of callables with one
-//! temperature each (and optionally BoTorch's per-constraint `fat` list) for
-//! outcome constraints.
+//! through [`crate::callbacks`]), `("constrained", objective, constraints,
+//! infeasible_cost, eta)` or `("native", obj)` for an objective evaluated in
+//! Rust (a risk measure, [`crate::risk_measures::PyRiskMeasure`]); a list of
+//! callables with one temperature each (and optionally BoTorch's
+//! per-constraint `fat` list) for outcome constraints.
 
 use std::sync::Arc;
 
@@ -106,7 +107,9 @@ fn candidate_sets(x: &Array) -> PyResult<(Vec<usize>, Vec<Matrix>)> {
 }
 
 /// An MC objective from its specification (see the module documentation).
-fn objective_of(spec: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Arc<dyn McObjective>>> {
+pub(crate) fn objective_of(
+    spec: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<Arc<dyn McObjective>>> {
     let Some(spec) = spec.filter(|s| !s.is_none()) else {
         return Ok(None);
     };
@@ -133,6 +136,11 @@ fn objective_of(spec: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Arc<dyn McOb
                 )
                 .into_py_result()?,
             )
+        }
+        "native" => {
+            let obj: PyRef<'_, crate::risk_measures::PyRiskMeasure> =
+                spec.get_item(1)?.extract()?;
+            Arc::clone(&obj.inner)
         }
         other => return Err(unsupported(format!("Unknown MC objective {other:?}."))),
     };

@@ -312,7 +312,13 @@ def mo_objective_arg(objective: Any) -> tuple[Any, ...] | None:
                 outcomes,
             )
         else:
-            spec = ("callable", objective)
+            from botorch_rs.acquisition.multi_objective.multi_output_risk_measures import (
+                mo_risk_measure_from_botorch,
+            )
+
+            # BoTorch's multi-output risk measures are computed in Rust.
+            native = mo_risk_measure_from_botorch(objective)
+            spec = ("callable", objective) if native is None else native._mo_spec()
     if spec[0] == "callable":
         from botorch_rs._torch_bridge import require_torch
 

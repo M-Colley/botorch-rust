@@ -56,6 +56,19 @@ pub struct PyMultiOutputObjective {
     constraint_idcs: Vec<usize>,
 }
 
+impl PyMultiOutputObjective {
+    /// A multi-output objective evaluated in Rust (e.g. a multi-output risk
+    /// measure of [`crate::risk_measures`]).
+    pub(crate) fn from_objective(inner: Arc<dyn McMultiOutputObjective>) -> Self {
+        Self {
+            inner,
+            infeasible_cost: Vec::new(),
+            objective_idcs: Vec::new(),
+            constraint_idcs: Vec::new(),
+        }
+    }
+}
+
 #[pymethods]
 impl PyMultiOutputObjective {
     /// `FeasibilityWeightedMCMultiOutputObjective(model, X_baseline,
@@ -111,7 +124,7 @@ impl PyMultiOutputObjective {
 
 /// A multi-output objective from its specification (see the module
 /// documentation).
-fn mo_objective_of(
+pub(crate) fn mo_objective_of(
     spec: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<Arc<dyn McMultiOutputObjective>>> {
     let Some(spec) = spec.filter(|s| !s.is_none()) else {

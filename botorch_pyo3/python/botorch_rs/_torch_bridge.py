@@ -12,7 +12,10 @@ outputs back and the vector-Jacobian product is computed with
 
 Layouts (row-major): posterior samples ``S x 1 x n x m`` (BoTorch's
 ``sample_shape x batch_shape x q x m`` for one candidate set), inputs
-``1 x n x d``, objective and constraint values ``S x 1 x n``.
+``1 x q x d``, objective and constraint values ``S x 1 x n``. With a
+one-to-many input transform (``InputPerturbation``) the samples have
+``n = q * n_w`` points and an objective that is a risk measure returns
+``S x 1 x q`` values.
 """
 
 from __future__ import annotations
@@ -61,7 +64,7 @@ def forward(
     X = None
     if x is not None:
         data, d = x
-        X = from_flat(data, (1, n, d), _float64())
+        X = from_flat(data, (1, len(data) // d, d), _float64())
     if with_grad:
         Y.requires_grad_(True)
         if X is not None:
@@ -69,7 +72,7 @@ def forward(
     with torch.enable_grad() if with_grad else torch.no_grad():
         out = fn(Y, X=X) if kind == "objective" else fn(Y)
         out = torch.as_tensor(out, dtype=torch.float64)
-    if out.numel() != s * n:
+    if out.numel() == 0 or out.numel() % s != 0 or out.numel() > s * n:
         raise RuntimeError(
             f"The {kind} returned values of shape {tuple(out.shape)}, expected "
             f"{(s, 1, n)} (`sample_shape x batch_shape x q`)."
@@ -85,31 +88,35 @@ def forward_mo(
     shape: tuple[int, int, int],
     x: tuple[Sequence[float], int] | None,
     with_grad: bool,
-) -> tuple[FloatData, int, Any]:
-    """Evaluates a multi-output objective ``fn(samples, X=X)`` on posterior
-    samples; returns the values (``S x n x m'``, row-major), ``m'`` and a
-    handle for :func:`backward`."""
+    pass_x: bool = True,
+) -> tuple[FloatData, int, int, Any]:
+    """Evaluates a multi-output objective ``fn(samples, X=X)`` (``fn(samples)``
+    without ``pass_x``, e.g. the preprocessing function of a risk measure) on
+    posterior samples; returns the values (``S x n' x m'``, row-major),
+    ``n'``, ``m'`` and a handle for :func:`backward`. ``n'`` is the number of
+    sample points ``n``, or fewer for a multi-output risk measure."""
     torch = _torch()
     s, n, m = shape
     Y = from_flat(samples, (s, 1, n, m), _float64())
     X = None
     if x is not None:
         data, d = x
-        X = from_flat(data, (1, n, d), _float64())
+        X = from_flat(data, (1, len(data) // d, d), _float64())
     if with_grad:
         Y.requires_grad_(True)
         if X is not None:
             X.requires_grad_(True)
     with torch.enable_grad() if with_grad else torch.no_grad():
-        out = torch.as_tensor(fn(Y, X=X), dtype=torch.float64)
-    if out.dim() < 2 or out.shape[-2] != n or out.numel() % (s * n) != 0:
+        out = torch.as_tensor(fn(Y, X=X) if pass_x else fn(Y), dtype=torch.float64)
+    if out.dim() < 2 or out.numel() == 0 or out.numel() % (s * out.shape[-2]) != 0:
         raise RuntimeError(
             f"The multi-output objective returned values of shape {tuple(out.shape)}, "
             f"expected {(s, 1, n)} x m' (`sample_shape x batch_shape x q x m'`)."
         )
+    nv = int(out.shape[-2])
     values = to_flat(out, "objective")[0]
     handle = (out, Y, X) if with_grad else None
-    return values, out.numel() // (s * n), handle
+    return values, nv, out.numel() // (s * nv), handle
 
 
 def backward(handle: Any, adjoint: Sequence[float]) -> tuple[FloatData, FloatData | None]:

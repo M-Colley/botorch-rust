@@ -23,6 +23,7 @@ mod models;
 mod multi_objective;
 mod optim;
 mod polytope;
+mod risk_measures;
 mod sampling;
 mod specs;
 mod test_functions;
@@ -86,5 +87,6 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Robust and multi-fidelity multi-objective optimization: input
     // perturbations, risk measures, MOMF, NSGA-II.
     input_perturbation::register(m)?;
+    risk_measures::register(m)?;
     Ok(())
 }

@@ -368,7 +368,11 @@ def objective_arg(objective: Any) -> tuple[Any, ...] | None:
         elif name == "IdentityMCObjective":
             spec = ("identity",)
         else:
-            spec = ("callable", objective)
+            from botorch_rs.acquisition.risk_measures import risk_measure_from_botorch
+
+            # BoTorch's risk measures are computed in Rust.
+            native = risk_measure_from_botorch(objective)
+            spec = ("callable", objective) if native is None else native._spec()
     if spec[0] in ("callable", "constrained"):
         from botorch_rs._torch_bridge import require_torch
 
