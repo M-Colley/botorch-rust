@@ -266,6 +266,16 @@ counterpart.
 | `botorch.acquisition.utils.project_to_target_fidelity`, `expand_trace_observations` | same paths | |
 | `qHypervolumeKnowledgeGradient`, `qMultiFidelityHypervolumeKnowledgeGradient` | `botorch_rs.acquisition.multi_objective.*` | `ModelListGP` of single-output models; `num_fantasies`, `num_pareto`, `objective`, `inner_sampler`, `X_evaluation_mask`, `X_pending`, `current_value`, `use_posterior_mean`, `cost_aware_utility`, `log`, `target_fidelities`, `project`; exact gradients computed in Rust |
 | `botorch.optim.initializers.gen_one_shot_hvkg_initial_conditions`, `optimize_acqf` with one-shot acquisition functions | `botorch_rs.optim.*` | augmented `q`, `extract_candidates`, `return_full_tree`, `fixed_features`, linear constraints (qHVKG) |
+| `botorch.sampling.pathwise.draw_matheron_paths`, `draw_kernel_feature_paths`, `gaussian_update`, `PathDict`, `PathList`, `SamplePath`, `GeneralizedLinearPath`, `MatheronPath`, `get_matheron_path_model` | same paths | `SingleTaskGP` (one or several outputs) and `ModelListGP`; random Fourier features of RBF and Matérn-5/2 kernels with or without `ScaleKernel`, `num_features`; any `sample_shape`; exact gradients; keyword-only `seed`, or BoTorch's random numbers as `draws` |
+| `botorch.models.deterministic.MatheronPathModel` | same path | `posterior(X).mean`, `output_indices` |
+| `botorch.acquisition.multi_objective.utils.sample_optimal_points`, `random_search_optimizer`, `compute_sample_box_decomposition` | same paths | the default random search runs in Rust in parallel; custom `optimizer`s; all partitionings, `maximize`, `num_constraints` |
+| `qLowerBoundMultiObjectiveMaxValueEntropySearch`, `qLowerBoundMultiObjectiveJointEntropySearch`, `LowerBoundMultiObjectiveEntropySearch` | `botorch_rs.acquisition.multi_objective.*` | `estimation_type` (`"0"`, `"LB"`, `"LB2"`, `"MC"`), `hypercell_bounds`, `pareto_sets`, `pareto_fronts`, `X_pending`, `num_samples`; values and exact gradients in Rust |
+| `qMultiObjectivePredictiveEntropySearch`, `log_cdf_robust` | same path | BoTorch's expectation propagation (damping, fallbacks, convergence) in Rust; `max_ep_iterations`, `ep_jitter`, `test_jitter`, `threshold`, `X_pending` |
+| `botorch.models.transforms.input.InputPerturbation`, `ChainedInputTransform` | same paths | `perturbation_set` (an array or a torch callable), `bounds`, `indices`, `multiplicative`, `transform_on_eval`; chains of `Normalize` and `InputPerturbation`; posteriors, samples and exact gradients over the `q * n_w` perturbed points of `SingleTaskGP` and `ModelListGP` |
+| `botorch.acquisition.risk_measures.*`: `CVaR`, `VaR`, `WorstCase`, `Expectation` | same path | `preprocessing_function`; usable as objectives of the MC acquisition functions, evaluated in Rust |
+| `botorch.acquisition.multi_objective.multi_output_risk_measures.*`: `MVaR`, `MARS`, `MultiOutputExpectation`, `IndependentCVaR`, `IndependentVaR`, `MultiOutputWorstCase` | same path | `MVaR(expectation, pad_to_n_w, filter_dominated, use_counting)`, `MARS` with `set_baseline_Y`; objectives of qEHVI, qLogEHVI, qNEHVI and qLogNEHVI, evaluated in Rust |
+| `botorch.acquisition.multi_objective.MOMF` | same path | `cost_call` (any torch callable; default BoTorch's affine fidelity cost), `X_pending`, `constraints`, `eta`, `objective` |
+| `botorch.acquisition.multioutput_acquisition.*`, `botorch.utils.multi_objective.optimize.optimize_with_nsgaii` | same paths | NSGA-II in Rust following pymoo 0.6.2's defaults as BoTorch configures them (pymoo is not needed); every argument of BoTorch's function |
 | `botorch.exceptions` | `botorch_rs.exceptions` | `BotorchRsError` hierarchy (also `ValueError`, `RuntimeError`, `NotImplementedError` subclasses) and BoTorch's warnings |
 
 Everything else in BoTorch is not ported yet: see
@@ -274,8 +284,8 @@ Everything else in BoTorch is not ported yet: see
 ## What is not ported yet
 
 botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **178 of the 773
-public classes and functions** defined in BoTorch's modules (23%; BoTorch main
+processes, which is a small part of BoTorch: it provides **217 of the 773
+public classes and functions** defined in BoTorch's modules (28%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
 [docs/api_coverage.md](docs/api_coverage.md). The main gaps:
@@ -291,8 +301,9 @@ module and writes every missing class, function, parameter and method to
     `LatentKroneckerGP`;
   - preference learning (`PairwiseGP`);
   - contextual and additive GPs;
-  - deterministic and ensemble models, and cost models other than
-    `AffineFidelityCostModel` and `FixedCostModel`;
+  - deterministic models other than `MatheronPathModel`, ensemble models,
+    and cost models other than `AffineFidelityCostModel` and
+    `FixedCostModel`;
   - relevance pursuit, and the empirical and hierarchical model packages.
 - **Model features:**
   - `subset_output` and `construct_inputs`, and `condition_on_observations` /
@@ -303,8 +314,9 @@ module and writes every missing class, function, parameter and method to
     own kernels for categorical inputs, fidelities and additive structure;
   - priors other than LogNormal and Gamma, and likelihoods other than
     Gaussian;
-  - input transforms other than `Normalize` (`InputStandardize`, `Warp`,
-    `Round`, `AppendFeatures`, `InputPerturbation`, chained transforms, ...);
+  - input transforms other than `Normalize`, `InputPerturbation` and their
+    chains (`InputStandardize`, `Warp`, `Round`, `AppendFeatures`, ...), and
+    `InputPerturbation` in train or fantasize mode;
   - outcome transforms other than `Standardize` (`Log`, `Power`, `Bilog`,
     chained transforms, ...);
   - GPU execution and float32 arithmetic: everything runs in float64 on the
@@ -316,27 +328,25 @@ module and writes every missing class, function, parameter and method to
   - single-objective knowledge gradient (`qKnowledgeGradient` and its
     multi-fidelity variant), although the fantasy machinery it needs is
     ported;
-  - entropy search (max-value entropy search, GIBBON, joint and predictive
-    entropy search) and `qMultiStepLookahead`;
+  - single-objective entropy search (max-value entropy search, GIBBON, joint
+    and predictive entropy search), although the pathwise sampling it needs
+    is ported, and `qMultiStepLookahead`;
   - active learning (`qNegIntegratedPosteriorVariance`, BALD) and preference
     learning (EUBO);
-  - risk measures (VaR, CVaR, ...) and cost-aware utilities;
   - penalized, proximal, prior-guided, fixed-feature and decoupled wrappers,
-    multi-output acquisition functions, and pathwise Thompson sampling.
-- **Multi-objective optimization:** qLogNEHVI, qLogEHVI, qNEHVI, qEHVI, the
-  analytic EHVI, qLogNParEGO and the hypervolume knowledge gradient (also
-  multi-fidelity), their objectives and utilities,
-  `optimize_acqf_list`, the Pareto, hypervolume, box-decomposition and
-  scalarization utilities, and the test problems are ported. Not yet:
-  - `MOMF`, multi-objective entropy search
-    (max-value, joint and predictive) and multi-objective risk measures
-    (`MVaR`, `MARS`, ...);
-  - `compute_sample_box_decomposition`, `random_search_optimizer` and
-    `sample_optimal_points`, which the entropy-search methods use;
+    and pathwise Thompson sampling.
+- **Multi-objective optimization:** all of BoTorch's multi-objective
+  acquisition functions are ported: qLogNEHVI, qLogEHVI, qNEHVI, qEHVI,
+  analytic EHVI, qLogNParEGO, the hypervolume knowledge gradient (also
+  multi-fidelity), MOMF, and max-value, joint and predictive entropy search.
+  So are their objectives, the multi-output risk measures, the utilities,
+  `optimize_acqf_list`, `optimize_with_nsgaii` and the test problems. Not yet:
   - in the ported acquisition functions: `marginalize_dim` (fully Bayesian
     models), per-constraint `fat` lists, posterior transforms, batched models
     and batched box decompositions;
-  - `optimize_with_nsgaii` (NSGA-II via pymoo).
+  - `get_posterior_samples` and `sample_shape` of the MC acquisition
+    functions, and `psi` / `nu` of the analytic EHVI;
+  - risk measures on batched models, and pymoo algorithms other than NSGA-II.
 - **Objectives and transforms:** posterior transforms other than
   `ScalarizedPosteriorTransform`, learned MC objectives, and
   `get_acquisition_function` with the input constructors.
@@ -347,12 +357,15 @@ module and writes every missing class, function, parameter and method to
   - in `optimize_acqf`: custom `gen_candidates` (`gen_candidates_torch`),
     `post_processing_func`, `timeout_sec`, `sample_around_best` and
     batch-shaped fixed features;
-  - initial conditions for one-shot acquisition functions;
+  - initial conditions for the single-objective one-shot acquisition
+    functions (qKG);
   - `MaxPosteriorSampling` and `BoltzmannSampling`;
   - fitting with torch optimizers, BoTorch's closures and stopping criteria.
 - **Sampling and utilities:**
-  - samplers other than `SobolQMCNormalSampler` (`IIDNormalSampler`,
-    `StochasticSampler`, `ListSampler`, ...) and pathwise (Matheron) sampling;
+  - samplers other than `SobolQMCNormalSampler` and `ListSampler`
+    (`IIDNormalSampler`, `StochasticSampler`, ...);
+  - pathwise sampling of approximate GPs, ensembles and batched models,
+    and with kernels other than RBF and Matérn-5/2;
   - most of `botorch.utils`: probability (bivariate and truncated
     multivariate normal, elliptical slice sampling), low-rank and dataset
     utilities;
@@ -367,33 +380,33 @@ module and writes every missing class, function, parameter and method to
 
 | Area | Public classes and functions | In botorch_rs | Share |
 |---|---|---|---|
-| `acquisition` | 145 | 33 | 23% |
-| `acquisition.multi_objective` | 33 | 17 | 52% |
+| `acquisition` | 145 | 41 | 28% |
+| `acquisition.multi_objective` | 33 | 33 | 100% |
 | `cross_validation` | 7 | 0 | 0% |
 | `exceptions` | 20 | 16 | 80% |
 | `fit` | 3 | 1 | 33% |
 | `generation` | 8 | 0 | 0% |
 | `logging` | 1 | 0 | 0% |
-| `models` | 66 | 5 | 8% |
+| `models` | 66 | 7 | 11% |
 | `models.empirical_gps` | 36 | 0 | 0% |
 | `models.hierarchical` | 6 | 0 | 0% |
 | `models.kernels` | 19 | 0 | 0% |
 | `models.likelihoods` | 5 | 0 | 0% |
-| `models.transforms` | 35 | 4 | 11% |
+| `models.transforms` | 35 | 6 | 17% |
 | `models.utils` | 26 | 4 | 15% |
 | `optim` | 58 | 7 | 12% |
 | `optim.closures` | 5 | 0 | 0% |
 | `optim.utils` | 14 | 0 | 0% |
 | `posteriors` | 13 | 2 | 15% |
 | `sampling` | 14 | 3 | 21% |
-| `sampling.pathwise` | 25 | 0 | 0% |
+| `sampling.pathwise` | 25 | 11 | 44% |
 | `settings` | 3 | 0 | 0% |
 | `test_functions` | 84 | 57 | 68% |
 | `test_utils` | 2 | 0 | 0% |
 | `utils` | 97 | 10 | 10% |
 | `utils.multi_objective` | 22 | 19 | 86% |
 | `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **773** | **178** | **23%** |
+| **all of `botorch`** | **773** | **217** | **28%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -713,6 +726,78 @@ there; see the migration notes.
 reach BoTorch's values (to 4.8e-14) in 11 of 12 cases. The inner
 optimization of the one-shot initial conditions agrees in 18 of 18 restarts.
 
+### Pathwise sampling and multi-objective entropy search
+
+BoTorch draws the random numbers of its paths (Fourier frequencies, prior
+weights, update noise) and of its random search from torch's global
+generator. The comparisons pass BoTorch's draws to botorch-rust, which then
+reproduces BoTorch's paths, sampled optima and acquisition values.
+
+**Models and settings covered:**
+- single- and multi-output `SingleTaskGP`s and `ModelListGP`s, with the usual
+  kernels, transforms and noise settings;
+- several sample shapes, `maximize` true and false;
+- the estimates "0", "LB", "LB2" and "MC", q = 1, 2 and 3, pending points;
+- PES with converging and non-converging expectation propagation (EP).
+
+**Where the tests are:**
+- Rust fixtures: `botorch_core/tests/mo_entropy_parity.rs`, plus
+  BoTorch-independent properties in `mo_entropy_properties.rs`.
+- Live Python tests: `test_parity_mo_entropy.py`.
+- A randomized suite: `test_equivalence_mo_entropy.py`, part of
+  `-m equivalence`.
+
+| Quantity | Tolerance | Rust fixtures | Python parity | Randomized suite |
+|---|---|---|---|---|
+| Matheron path values / gradients | 1e-9 / 1e-8 | 1.3e-15 / 2.9e-15 | 1.3e-15 / 2.2e-15 | 2.6e-15 / 1.6e-14 |
+| Sampled Pareto sets and their box decompositions | identical | identical | identical | identical |
+| MES values / gradients | 1e-9 / 1e-8, or 10× BoTorch's noise floor | 9.3e-11 / 1.8e-8 (floor 4e-8) | 4.6e-13 / 9.5e-14 | 6.4e-12 / 7.0e-13 |
+| JES values / gradients | as above | 3.2e-13 / 4.6e-13 | 9.1e-14 / 1.1e-13 | 7.9e-14 / 2.3e-12 |
+| PES values / gradients, converged EP | as above | 1.5e-7 / 5.4e-7 (floors up to 1e-6) | 1.5e-8 / 1.4e-8 | 5.3e-9 / 7.2e-9 |
+| PES EP iteration counts and damping decisions | identical | identical | identical | identical |
+
+The entropy estimates are differences of entropies of order one, so rounding
+is amplified. For PES, the noise floor also includes BoTorch's change under
+last-bit noise in `exp` and `erf`, because EP evaluates `log1p(-exp(s))` near
+`s = 0`. Where BoTorch's EP does not converge within 250 iterations, its own
+values change by up to 0.2 under rounding, and botorch-rust stays within ten
+times that change.
+
+**Independent of BoTorch:**
+- Matheron paths have the posterior's mean and covariance.
+- Prior paths plus Gaussian updates are the Matheron paths.
+- Conditioning on the sampled optima equals refitting with them appended.
+- All gradients agree with finite differences.
+
+### Robust multi-objective optimization, MOMF and NSGA-II
+
+**Where the tests are:**
+- Rust fixtures: `botorch_core/tests/mo_robust_parity.rs` and
+  `input_perturbation.rs`.
+- Live Python tests: `test_parity_mo_robust.py`, with a randomized sweep in
+  `-m equivalence`.
+
+| Quantity | Tolerance | Worst error |
+|---|---|---|
+| `InputPerturbation` and chains: transformed points | 1e-15 | 0 |
+| Posteriors over the `q * n_w` perturbed points: means / covariances / samples | 1e-9 | 3.0e-16 / 5.6e-15 / 2.4e-14 |
+| All risk measures, including MVaR sets and MARS: values / gradients | 1e-9 / 1e-8 | 4.2e-16 / 9.4e-17 |
+| qEHVI and qLogEHVI with risk measures | 1e-9 / 1e-8 | 1.6e-14 / 2.8e-14 |
+| qNEHVI and qLogNEHVI with risk measures | 1e-9 / 1e-8, or 10× BoTorch's noise floor | 1.9e-10 / 4.1e-9 nominal; up to 7.2e-5 / 1.8e-4 where BoTorch's own floor reaches 2.5e-4 / 7.0e-3 |
+| MOMF values / gradients | 1e-9 / 1e-8 | 4.3e-15 / 3.7e-16 |
+| NSGA-II building blocks (fronts, crowding distance, SBX, mutation, given the random numbers) | exact | 0 |
+
+The joint posteriors over a perturbed baseline are nearly singular. When the
+improvement is negligible, the log values are dominated by the smoothing, so
+BoTorch's own values change by up to 2.5e-4 under rounding; that bounds the
+attainable agreement.
+
+**NSGA-II.** pymoo's random streams can't be reproduced, so
+`optimize_with_nsgaii` is compared statistically: CI's BoTorch job installs
+pymoo and compares mean hypervolumes over 10 seeds. Independently of BoTorch,
+NSGA-II reaches 99.5% of the optimal hypervolume on ZDT1 and at least 90% of
+a uniform 105-point set on DTLZ2.
+
 ### Versions checked
 
 The numbers above come from BoTorch's main branch at da00e04 with GPyTorch
@@ -831,6 +916,33 @@ are medians of 5 runs, measured while other jobs ran on the machine.
 | the same with 32 posterior samples | 1.16 s | 141 ms | 26 ms |
 | `gen_one_shot_hvkg_initial_conditions` | 1.22 s | 37 ms | 7.4 ms |
 | `optimize_acqf` (q = 1, 4 restarts, 4 fantasies × 5 designs) | 9.4 s (42 s with `batch_limit=1`) | 102 ms | 23 ms |
+
+### Entropy search and robust optimization
+
+`scripts/benchmark_mo_entropy.py` and the robust-optimization timings use
+two-output `SingleTaskGP`s (d = 3) with BoTorch on one thread. These timings
+were taken while other jobs ran on the machine.
+
+| Task | BoTorch | botorch-rust, 1 thread | botorch-rust, 6 threads |
+|---|---|---|---|
+| `draw_matheron_paths`, 16 paths, 1024 features (n = 20) | 93 ms | 4.9 ms | 3.1 ms |
+| `compute_sample_box_decomposition`, 10 fronts | 8.0 ms | 0.16 ms | 0.22 ms |
+| JES-LB, 256 candidates, values and gradients (n = 50) | 604 ms | 65 ms | 15 ms |
+| PES construction (EP, 250 iterations) | 2.54 s | 262 ms | 203 ms |
+| PES, 256 candidates, values and gradients (n = 50) | 1.64 s | 324 ms | 62 ms |
+| `sample_optimal_points`, 10 sets of 10 points | 1.56 s | 868 ms | 176 ms |
+| `optimize_acqf` with qNEHVI(MVaR), `n_w = 16` | 29.8 s | | 0.32 s |
+| qLogNEI(MARS), 64 candidates, values and gradients | 0.37 s | | 1.37 s |
+
+The Monte-Carlo estimates and the random search are dominated by scalar
+transcendental functions, which PyTorch vectorizes, so their speedups are the
+smallest.
+
+qLogNEI with MARS is about 4× slower than BoTorch. botorch-rust's qLogNEI
+samples the joint posterior of the baseline and each candidate set, which with
+`n_w = 16` means a 336-point Cholesky factorization per candidate set.
+BoTorch's default instead updates a cached factor of the baseline. qNEHVI
+already has this update, and porting it to qLogNEI is planned.
 
 ## Migration notes and known differences
 
@@ -1040,6 +1152,41 @@ are medians of 5 runs, measured while other jobs ran on the machine.
     - the random choices of the one-shot initial conditions use
       botorch-rust's generator;
     - `ModelListGP.fantasize` and qHVKG require single-output sub-models.
+- **Pathwise sampling and entropy search.**
+  - **Random numbers.** Paths, sampled optima and the default MC samplers use
+    botorch-rust's generators, so `torch.manual_seed` has no effect. Pass
+    `seed=` for reproducibility, or BoTorch's random numbers as `draws=` /
+    `candidates=` to reproduce BoTorch exactly.
+  - **JES conditions on the raw Pareto sets** (meta-pytorch/botorch#3399).
+    BoTorch main transforms them twice with an input transform such as
+    `Normalize`. Model lists condition each sub-model on its own outputs, also
+    for multi-output sub-models, where #3399 is still wrong.
+  - **PES runs EP at the raw training inputs.** On a model in eval mode,
+    BoTorch transforms the training inputs twice (0.1925 instead of 0.2111 in
+    a minimal example). This BoTorch bug has no pull request yet.
+  - **PES evaluates every candidate set on its own.** BoTorch takes its
+    fallback and damping decisions for the whole batch.
+  - **Smaller differences:** PES gradients are finite where BoTorch's are NaN;
+    a failed Cholesky factorization in PES raises `NumericalError`; paths apply
+    input transforms in eval mode (#3385).
+  - **Kept from BoTorch although they look wrong:** for q > 1, MES and JES
+    shift every value by `-0.5 (q - 1) M (1 + log 2π)`, which doesn't change
+    the maximizer. PES's test-time observation-noise term is always zero.
+- **Robust optimization, MOMF and NSGA-II.**
+  - **MVaR** keeps tied alpha-level points and allows preprocessing functions
+    that change the number of outputs (#3392). `MVaR(expectation=True)` has
+    gradients, where BoTorch returns NaN of the wrong shape.
+  - **MVaR sets are padded per candidate set.** BoTorch pads across the whole
+    t-batch, so its values of one candidate set depend on the others.
+  - **`InputPerturbation`:** a perturbation function's `n_w` is fixed when the
+    model is built, and `transform_on_train=True` is rejected.
+  - **Rejected with a perturbation:** outcome constraints are rejected with
+    any one-to-many transform, including chains, and analytic acquisition
+    functions raise `UnsupportedError` when `n_w > 1`.
+  - **NSGA-II** draws different random numbers than pymoo, so results agree
+    only statistically.
+  - **Acquisition functions keep a MARS objective's state** from their
+    construction, where BoTorch reads it at every evaluation.
 - **Multi-objective test problems.**
   - Evaluations run in float64; float32 inputs give the rounded float64
     values. The keyword-only `seed` seeds the noise of nested-list inputs, and
@@ -1100,7 +1247,12 @@ Other scripts:
   - `--phase 5b`: the multi-objective acquisition functions (`--phase 5b-3392`
     with a BoTorch that includes meta-pytorch/botorch#3392);
   - `--phase 5c-hvkg`: fantasies and the hypervolume knowledge gradient
-    (`--phase 5c-hvkg-prs` from the pull-request branches).
+    (`--phase 5c-hvkg-prs` from the pull-request branches);
+  - `--phase 5c-entropy`: pathwise sampling and multi-objective entropy
+    search;
+  - `--phase 5c-robust`: input perturbations, risk measures, MOMF and
+    NSGA-II (`--phase 5c-robust-3392` with a BoTorch that includes
+    meta-pytorch/botorch#3392).
 - `python scripts/benchmark.py` measures the timings above;
   `scripts/benchmark_mo_utils.py` and `scripts/benchmark_arrays.py [--botorch]`
   measure the multi-objective utilities and the exchange of arrays between
