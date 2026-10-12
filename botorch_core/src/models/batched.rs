@@ -229,6 +229,41 @@ impl BatchedMultiOutputGP {
         })
     }
 
+    /// A model from its elements (`models[b·m + t]` for output `t` of batch
+    /// element `b`), e.g. conditioned copies of another model's elements;
+    /// the training targets (and observed noise) are collected from the
+    /// elements.
+    pub(crate) fn from_elements(
+        batch_shape: Vec<usize>,
+        num_outputs: usize,
+        input_transform: Option<BatchedInputTransform>,
+        models: Vec<SingleTaskGP>,
+    ) -> Self {
+        let m = num_outputs;
+        let nb = models.len() / m;
+        let columns = |b: usize, f: &dyn Fn(&SingleTaskGP) -> Matrix| -> Matrix {
+            let cols: Vec<Matrix> = (0..m).map(|t| f(&models[b * m + t])).collect();
+            Matrix::from_fn(cols[0].nrows(), m, |i, t| cols[t][(i, 0)])
+        };
+        let train_y = (0..nb)
+            .map(|b| columns(b, &|g| g.train_targets().clone()))
+            .collect();
+        let train_yvar = models[0].train_yvar().is_some().then(|| {
+            (0..nb)
+                .map(|b| columns(b, &|g| g.train_yvar().expect("fixed noise").clone()))
+                .collect()
+        });
+        Self {
+            batch_shape,
+            num_outputs: m,
+            dim: models[0].dim(),
+            train_y,
+            train_yvar,
+            input_transform,
+            models,
+        }
+    }
+
     /// An unbatched model with `m = train_y.ncols()` outputs sharing the
     /// training inputs `train_x` (`n × d`); `options.train_yvar` must be
     /// `n × m` and a `Normalize` input transform is shared by the outputs.
