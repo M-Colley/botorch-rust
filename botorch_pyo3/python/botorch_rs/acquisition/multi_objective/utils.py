@@ -264,6 +264,9 @@ def sample_optimal_points(
         )
     if model.num_outputs == 1 and num_points > 1:
         raise UnsupportedError("For single-objective optimization `num_points` should be 1.")
+    if isinstance(model, ModelListGP) and len(model.models) != model.num_outputs:
+        # BoTorch's path models (``MatheronPathModel``) do not support them.
+        raise UnsupportedError("A model-list of multi-output models is not supported.")
     kwargs = dict(optimizer_kwargs or {})
     kind = kind_of(bounds)
     rs_model = model._acquisition_model(None)
