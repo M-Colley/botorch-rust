@@ -136,7 +136,7 @@ def compare(
     """Compares values and gradients. If they differ by more than the nominal
     tolerances and ``twins()`` is given, the tolerance is 10x BoTorch's own
     change when its training inputs are perturbed by 1e-14 (``twins()``
-    returns BoTorch's values and gradients for two perturbed copies of the
+    returns BoTorch's values and gradients for perturbed copies of the
     model): the joint posteriors of noisy acquisition functions over their
     baseline (the training points) are nearly singular. Errors are recorded
     relative to the nominal tolerance."""
@@ -399,7 +399,9 @@ def test_nehvi_family(pair: tuple, case: tuple) -> None:
     name = "qLogNEHVI" if log else "qNEHVI"
 
     def twins() -> Iterator[tuple[Any, Any]]:
-        for k in (1, 2):
+        # Five copies: the noise floor of a single copy varies by an order of
+        # magnitude, and two underestimated it on Linux CI.
+        for k in range(1, 6):
             twin = perturbed_copy(bt, seed=k)
             a_tw, _ = nehvi_pair(twin, rs, X, log, 7, (n + n_pending + q) * m, **kw)
             with synced_draws(7):

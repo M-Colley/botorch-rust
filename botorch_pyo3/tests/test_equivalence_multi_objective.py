@@ -492,7 +492,9 @@ class Twins:
     def acqfs(self) -> list[Any]:
         if self._acqfs is None:
             self._acqfs = []
-            for j in (1, 2):
+            # Five copies: the noise floor of a single copy varies by an order
+            # of magnitude.
+            for j in range(1, 6):
                 a = self.build(perturbed_copy(self.bt, seed=j))
                 for step in self.steps:
                     step(a)
@@ -838,7 +840,7 @@ def test_qlognparego(pair: tuple) -> None:
         v_rs, g_rs = values_and_grads(a_rs, Xt)
 
         def twins(evaluate: Any = evaluate) -> Iterator[Any]:
-            for j in (1, 2):
+            for j in range(1, 6):
                 yield evaluate(perturbed_copy(bt, seed=j))[1:]
 
         label = f"qLogNParEGO [{o.label.split(' ')[0]}{c_label}]"
