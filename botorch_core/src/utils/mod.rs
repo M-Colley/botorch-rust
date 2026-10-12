@@ -1,8 +1,10 @@
 //! Numerical utilities: safe special functions (`botorch.utils.safe_math`),
 //! standard-normal helpers (`botorch.utils.probability.utils`), quasi-random
 //! sampling and polytope sampling (`botorch.utils.sampling`) and outcome
-//! constraints (`botorch.utils.objective`).
+//! constraints (`botorch.utils.objective`); multi-objective utilities
+//! (`botorch.utils.multi_objective`) in [`multi_objective`].
 
+pub mod multi_objective;
 pub mod objective;
 pub mod polytope;
 pub mod probability;
