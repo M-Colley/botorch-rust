@@ -27,7 +27,10 @@
 mod branin_currin;
 mod dh;
 mod dtlz;
+mod engineering;
+mod gmm;
 mod multi_fidelity;
+mod toy_robust;
 mod zdt;
 
 use std::sync::Mutex;
@@ -67,12 +70,20 @@ pub enum MultiObjectiveKind {
     Dtlz5,
     /// `DTLZ7`, `M` objectives, `d > M` inputs.
     Dtlz7,
+    /// `GMM`: `M ∈ {2, 3, 4}` Gaussian mixtures on `[0, 1]^2`.
+    Gmm,
+    /// `ToyRobust`: a one-dimensional problem with two objectives.
+    ToyRobust,
+    /// `VehicleSafety`: 5 inputs, 3 objectives (Tanabe & Ishibuchi, 2020).
+    VehicleSafety,
     /// `ZDT1`, two objectives, `d ≥ 2` inputs (Zitzler et al., 2000).
     Zdt1,
     /// `ZDT2`, two objectives, `d ≥ 2` inputs.
     Zdt2,
     /// `ZDT3`, two objectives, `d ≥ 2` inputs.
     Zdt3,
+    /// `CarSideImpact`: 7 inputs, 4 objectives (Tanabe & Ishibuchi, 2020).
+    CarSideImpact,
     /// `MOMFBraninCurrin` (`multi_objective_multi_fidelity`): 2 inputs and a fidelity.
     MomfBraninCurrin,
     /// `MOMFPark` (`multi_objective_multi_fidelity`): 4 inputs and a fidelity.
@@ -81,7 +92,7 @@ pub enum MultiObjectiveKind {
 
 impl MultiObjectiveKind {
     /// All problems, in the order of BoTorch's modules.
-    pub const ALL: [MultiObjectiveKind; 16] = [
+    pub const ALL: [MultiObjectiveKind; 20] = [
         Self::BraninCurrin,
         Self::Dh1,
         Self::Dh2,
@@ -93,9 +104,13 @@ impl MultiObjectiveKind {
         Self::Dtlz4,
         Self::Dtlz5,
         Self::Dtlz7,
+        Self::Gmm,
+        Self::ToyRobust,
+        Self::VehicleSafety,
         Self::Zdt1,
         Self::Zdt2,
         Self::Zdt3,
+        Self::CarSideImpact,
         Self::MomfBraninCurrin,
         Self::MomfPark,
     ];
@@ -114,9 +129,13 @@ impl MultiObjectiveKind {
             Self::Dtlz4 => "DTLZ4",
             Self::Dtlz5 => "DTLZ5",
             Self::Dtlz7 => "DTLZ7",
+            Self::Gmm => "GMM",
+            Self::ToyRobust => "ToyRobust",
+            Self::VehicleSafety => "VehicleSafety",
             Self::Zdt1 => "ZDT1",
             Self::Zdt2 => "ZDT2",
             Self::Zdt3 => "ZDT3",
+            Self::CarSideImpact => "CarSideImpact",
             Self::MomfBraninCurrin => "MOMFBraninCurrin",
             Self::MomfPark => "MOMFPark",
         }
@@ -147,7 +166,10 @@ impl MultiObjectiveKind {
     /// The input dimension of problems with a fixed dimension.
     pub fn fixed_dim(self) -> Option<usize> {
         match self {
-            Self::BraninCurrin => Some(2),
+            Self::BraninCurrin | Self::Gmm => Some(2),
+            Self::ToyRobust => Some(1),
+            Self::VehicleSafety => Some(5),
+            Self::CarSideImpact => Some(7),
             Self::MomfBraninCurrin => Some(3),
             Self::MomfPark => Some(5),
             _ => None,
@@ -156,7 +178,7 @@ impl MultiObjectiveKind {
 
     /// Whether the number of objectives is an argument (`num_objectives`).
     fn has_num_objectives_argument(self) -> bool {
-        self.is_dtlz() || self.is_zdt()
+        self.is_dtlz() || self.is_zdt() || self == Self::Gmm
     }
 
     fn is_dtlz(self) -> bool {
@@ -172,10 +194,11 @@ impl MultiObjectiveKind {
 
     /// The number of objectives of problems with a fixed number.
     pub fn fixed_num_objectives(self) -> Option<usize> {
-        if self.has_num_objectives_argument() {
-            None
-        } else {
-            Some(2)
+        match self {
+            _ if self.has_num_objectives_argument() => None,
+            Self::VehicleSafety => Some(3),
+            Self::CarSideImpact => Some(4),
+            _ => Some(2),
         }
     }
 
@@ -209,6 +232,10 @@ impl MultiObjectiveKind {
             Self::Zdt3 => Some(
                 "meta-pytorch/botorch#3402: the second objective is multiplied by g, as in \
                  Zitzler et al. (2000)",
+            ),
+            Self::Gmm => Some(
+                "meta-pytorch/botorch#3405: float64 parameters (BoTorch creates them in \
+                 float32, so it evaluates float64 inputs in float32 and returns float32)",
             ),
             _ => None,
         }
@@ -268,6 +295,11 @@ impl MultiObjectiveKind {
                 "dim must be > num_objectives, but got {d} and {m}."
             )));
         }
+        if self == Self::Gmm && !(2..=4).contains(&m) {
+            return Err(BotorchError::Unsupported(
+                "GMM only currently supports 2 to 4 objectives.".into(),
+            ));
+        }
         if self.is_zdt() {
             if m != 2 {
                 return Err(BotorchError::Unsupported(format!(
@@ -322,7 +354,7 @@ pub struct MultiObjectiveTestProblem {
     negate: bool,
     noise_std: Option<NoiseStd>,
     constraint_noise_std: Option<NoiseStd>,
-    /// Branin for `BraninCurrin`.
+    /// Branin for `BraninCurrin`, Levy for `ToyRobust`.
     component: Option<SyntheticTestFunction>,
     rng: Mutex<Xoshiro256PlusPlus>,
 }
@@ -362,6 +394,7 @@ impl MultiObjectiveTestProblem {
         let bounds = Matrix::from_fn(2, dim, |i, k| if i == 0 { pairs[k].0 } else { pairs[k].1 });
         let component = match kind {
             MultiObjectiveKind::BraninCurrin => Some(SyntheticTestFunction::branin()),
+            MultiObjectiveKind::ToyRobust => Some(SyntheticTestFunction::levy(2)?),
             _ => None,
         };
         Ok(Self {
@@ -565,6 +598,10 @@ impl MultiObjectiveTestProblem {
             K::Zdt1 => zdt::zdt1(x, out),
             K::Zdt2 => zdt::zdt2(x, out),
             K::Zdt3 => zdt::zdt3(x, out),
+            K::Gmm => gmm::evaluate(x, self.num_objectives, out),
+            K::ToyRobust => toy_robust::evaluate(self.component.as_ref().expect("Levy"), x, out),
+            K::VehicleSafety => engineering::vehicle_safety(x, out),
+            K::CarSideImpact => engineering::car_side_impact(x, out),
             K::MomfBraninCurrin => multi_fidelity::branin_currin(x, out),
             K::MomfPark => multi_fidelity::park(x, out),
         }
@@ -780,7 +817,18 @@ fn default_bounds(kind: MultiObjectiveKind, dim: usize) -> Vec<(f64, f64)> {
     match kind {
         K::BraninCurrin | K::MomfBraninCurrin | K::MomfPark => vec![(0.0, 1.0); dim],
         K::Dtlz1 | K::Dtlz2 | K::Dtlz3 | K::Dtlz4 | K::Dtlz5 | K::Dtlz7 => vec![(0.0, 1.0); dim],
-        K::Zdt1 | K::Zdt2 | K::Zdt3 => vec![(0.0, 1.0); dim],
+        K::Zdt1 | K::Zdt2 | K::Zdt3 | K::Gmm => vec![(0.0, 1.0); dim],
+        K::ToyRobust => vec![(0.0, 0.7)],
+        K::VehicleSafety => vec![(1.0, 3.0); 5],
+        K::CarSideImpact => vec![
+            (0.5, 1.5),
+            (0.45, 1.35),
+            (0.5, 1.5),
+            (0.5, 1.5),
+            (0.875, 2.625),
+            (0.4, 1.2),
+            (0.4, 1.2),
+        ],
         K::Dh1 | K::Dh2 | K::Dh3 | K::Dh4 => {
             let x1_lower = match kind {
                 K::Dh1 | K::Dh2 => -1.0,
@@ -806,6 +854,10 @@ fn raw_ref_point(kind: MultiObjectiveKind, m: usize) -> Vec<f64> {
         K::Dtlz5 => vec![10.0; m],
         K::Dtlz7 => vec![15.0; m],
         K::Zdt1 | K::Zdt2 | K::Zdt3 => vec![11.0, 11.0],
+        K::Gmm => gmm::REF_POINT[..m].to_vec(),
+        K::ToyRobust => vec![-6.1397, -8.1942],
+        K::VehicleSafety => vec![1864.72022, 11.81993945, 0.2903999384],
+        K::CarSideImpact => vec![45.4872, 4.5114, 13.3394, 10.3942],
         K::MomfBraninCurrin | K::MomfPark => vec![0.0, 0.0],
     }
 }
@@ -833,6 +885,9 @@ fn max_hv(kind: MultiObjectiveKind, dim: usize, m: usize) -> Option<f64> {
         K::Zdt1 => Some(120.0 + 2.0 / 3.0),
         K::Zdt2 => Some(120.0 + 1.0 / 3.0),
         K::Zdt3 => Some(128.778_116_130_690_76),
+        K::Gmm | K::ToyRobust => None,
+        K::VehicleSafety => Some(246.81607081187002),
+        K::CarSideImpact => Some(484.72654347642793),
         K::MomfBraninCurrin => Some(0.5235514158034145),
         K::MomfPark => Some(0.08551927363087991),
     }
@@ -872,6 +927,12 @@ mod tests {
             err(K::Zdt3, Some(1), None),
             BotorchError::InvalidArgument("dim must be >= num_objectives, but got 1 and 2".into())
         );
+        assert_eq!(
+            err(K::Gmm, None, Some(5)),
+            BotorchError::Unsupported("GMM only currently supports 2 to 4 objectives.".into())
+        );
+        assert_eq!(K::Gmm.resolve_sizes(None, Some(4)).unwrap(), (2, 4));
+        assert_eq!(K::CarSideImpact.resolve_sizes(None, None).unwrap(), (7, 4));
         for kind in MultiObjectiveKind::ALL {
             assert_eq!(MultiObjectiveKind::from_name(kind.name()), Some(kind));
         }
