@@ -13,6 +13,9 @@
 //!   scalarization).
 //! * [`utils`] — `get_default_partitioning_alpha`,
 //!   `prune_inferior_points_multi_objective`.
+//! * [`multi_output_risk_measures`] — multi-output risk measures (`MVaR`,
+//!   `MARS`, `IndependentCVaR`, ...) for robust multi-objective
+//!   optimization with an `InputPerturbation`.
 //! * [`hypervolume`] — the inclusion–exclusion over the subsets of the
 //!   candidates (`compute_subset_indices`, `SubsetIndexCachingMixin`) and the
 //!   hypervolume improvement of MC samples with exact gradients.
@@ -45,6 +48,7 @@ pub mod analytic;
 pub mod hypervolume;
 pub mod logei;
 pub mod monte_carlo;
+pub mod multi_output_risk_measures;
 mod nehvi;
 pub mod objective;
 pub mod parego;
