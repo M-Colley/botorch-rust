@@ -440,7 +440,8 @@ pub fn gen_batch_initial_conditions_with_fantasies<R: Rng + ?Sized>(
     if let Some(f) = fixed_x_fantasies {
         if f.ncols() != d {
             return Err(BotorchError::DimensionMismatch(format!(
-                "`fixed_X_fantasies` and `bounds` must both have the same trailing dimension                  `d`, but have {} and {d}, respectively.",
+                "`fixed_X_fantasies` and `bounds` must both have the same trailing \
+                 dimension `d`, but have {} and {d}, respectively.",
                 f.ncols()
             )));
         }
