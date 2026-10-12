@@ -25,6 +25,8 @@
 //!   [`crate::utils::objective`].
 //! * [`utils`] — `prune_inferior_points`, `compute_best_feasible_objective`,
 //!   `get_infeasible_cost`.
+//! * [`multioutput_acquisition`] — multi-output acquisition functions for
+//!   NSGA-II (`MultiOutputPosteriorMean`, `MultiOutputAcquisitionFunctionWrapper`).
 //! * [`risk_measures`] — risk measures as MC objectives (`CVaR`, `VaR`,
 //!   `WorstCase`, `Expectation`) for models with an `InputPerturbation`.
 //! * [`multi_objective`] — multi-objective acquisition functions (qLogNEHVI,
@@ -55,6 +57,7 @@ pub mod logei;
 pub mod mc_objective;
 pub mod monte_carlo;
 pub mod multi_objective;
+pub mod multioutput_acquisition;
 pub mod objective;
 pub mod risk_measures;
 pub mod utils;
