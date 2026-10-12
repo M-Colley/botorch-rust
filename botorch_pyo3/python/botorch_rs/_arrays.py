@@ -259,10 +259,22 @@ def from_flat(data: Sequence[float], shape: Sequence[int], kind: ArrayKind) -> A
     return _unflatten(data, shape)
 
 
-def bool_array(data: Sequence[bool], shape: Sequence[int], kind: ArrayKind) -> Any:
+def bool_array(data: Sequence[bool] | bytes, shape: Sequence[int], kind: ArrayKind) -> Any:
     """A boolean array of the given kind and shape (a bool tensor, a NumPy
-    bool array, or nested lists of bools)."""
+    bool array, or nested lists of bools) from a sequence of bools, or from
+    ``bytes`` with one byte per value (the extension's masks with more than a
+    few values; non-zero bytes are ``True``)."""
     shape = tuple(shape)
+    if isinstance(data, (bytes, bytearray)) and data and kind.lib != "list":
+        if kind.lib == "torch":
+            torch = _torch() or importlib.import_module("torch")
+            # A writable copy, viewed by torch and compared into a new tensor.
+            t = torch.frombuffer(bytearray(data), dtype=torch.uint8).reshape(shape) != 0
+            if kind.device is not None and kind.device.type != "cpu":
+                t = t.to(kind.device)
+            return t
+        np = _numpy() or importlib.import_module("numpy")
+        return np.frombuffer(data, dtype=np.uint8).reshape(shape) != 0
     values = [bool(v) for v in data]
     if kind.lib == "torch":
         import torch

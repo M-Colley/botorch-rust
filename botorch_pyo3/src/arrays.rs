@@ -7,17 +7,17 @@
 //! protocol, and the values of nested lists and of arrays with a few values
 //! as a `list[float]`, which is cheaper for a few values. Results whose size
 //! grows with the inputs ([`ArrayBuf`]) come back as `array.array('d')` too
-//! (as lists up to [`LIST_MAX`] values), small results of fixed size
-//! ([`ArrayOut`]: bounds, hyperparameters, ...) as lists. The Python layer
-//! converts both forms back into the caller's array type. Keeping the
-//! extension free of NumPy / torch types is what lets the package work without
-//! either library.
+//! (as lists up to [`LIST_MAX`] values), boolean masks ([`BoolBuf`]) as
+//! `bytes`, and small results of fixed size ([`ArrayOut`]: bounds,
+//! hyperparameters, ...) as lists. The Python layer converts every form back
+//! into the caller's array type. Keeping the extension free of NumPy / torch
+//! types is what lets the package work without either library.
 
 use botorch_core::Matrix;
 use pyo3::buffer::{PyBuffer, PyUntypedBuffer};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyList, PyTuple};
+use pyo3::types::{PyBytes, PyList, PyTuple};
 
 use crate::errors::dimension_error;
 
@@ -107,6 +107,33 @@ pub fn float_buffer<'py>(py: Python<'py>, values: &[f64]) -> PyResult<Bound<'py,
         PyBuffer::<f64>::get(&out)?.copy_from_slice(py, values)?;
     }
     Ok(out)
+}
+
+/// A boolean array (a mask) returned to Python as `(data, shape)` in
+/// row-major order: `data` is a list of bools for at most [`LIST_MAX`]
+/// values, else `bytes` with one byte (0 or 1) per value.
+pub struct BoolBuf(pub Vec<bool>, pub Vec<usize>);
+
+impl<'py> IntoPyObject<'py> for BoolBuf {
+    type Target = PyTuple;
+    type Output = Bound<'py, PyTuple>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
+        let Self(values, shape) = self;
+        let data = if values.len() <= LIST_MAX {
+            PyList::new(py, values)?.into_any()
+        } else {
+            PyBytes::new_with(py, values.len(), |bytes| {
+                for (byte, &v) in bytes.iter_mut().zip(&values) {
+                    *byte = u8::from(v);
+                }
+                Ok(())
+            })?
+            .into_any()
+        };
+        (data, shape).into_pyobject(py)
+    }
 }
 
 impl Array {

@@ -4,9 +4,10 @@ This is the low-level layer used by the ``botorch_rs`` package. Arrays are
 exchanged as ``(data, shape)`` tuples: ``data`` holds the values in row-major
 order and ``shape`` the dimensions. Arguments accept a float64
 ``array.array`` (read with one memcpy) or any sequence of numbers as
-``data``. Results whose size grows with the inputs (``ArrayBuf``) return more
-than 16 values as an ``array.array('d')``, fewer as a list; small results of
-fixed size (``ArrayOut``) return a list. Use the BoTorch-style classes of the
+``data``. Results whose size grows with the inputs (``ArrayBuf``,
+``BoolBuf``) return more than 16 values as an ``array.array('d')`` (or
+``bytes`` of 0/1 for boolean masks), fewer as a list; small results of fixed
+size (``ArrayOut``) return a list. Use the BoTorch-style classes of the
 ``botorch_rs`` package instead of this module.
 """
 
@@ -17,6 +18,7 @@ from typing import Any
 Array = tuple[Sequence[float], Sequence[int]]
 ArrayOut = tuple[list[float], list[int]]
 ArrayBuf = tuple[list[float] | array[float], list[int]]
+BoolBuf = tuple[list[bool] | bytes, list[int]]
 #: An MC objective: ``("identity",)``, ``("linear", weights)``,
 #: ``("callable", f)`` with ``f(samples, X=X)`` on torch tensors, or
 #: ``("constrained", f, constraints, infeasible_cost, etas)``.
@@ -471,7 +473,7 @@ def evaluate_feasibility(
     equality_constraints: Sequence[LinearConstraint] | None = None,
     nonlinear_inequality_constraints: Sequence[NonlinearConstraint] | None = None,
     tolerance: float | None = None,
-) -> tuple[list[bool], list[int]]: ...
+) -> BoolBuf: ...
 def get_polytope_samples(
     n: int,
     bounds: Array,
@@ -550,9 +552,7 @@ def test_function_names() -> list[str]: ...
 # Multi-objective utilities (botorch.utils.multi_objective) and the simplex /
 # hypersphere samplers of botorch.utils.sampling.
 
-def is_non_dominated(
-    y: Array, maximize: bool = True, deduplicate: bool = True
-) -> tuple[list[bool], list[int]]: ...
+def is_non_dominated(y: Array, maximize: bool = True, deduplicate: bool = True) -> BoolBuf: ...
 def hypervolume(ref_point: Sequence[float], pareto_y: Array) -> float: ...
 def infer_reference_point(
     pareto_y: Array,
@@ -662,7 +662,7 @@ class MultiObjectiveTestProblem:
     def forward(self, x: Array, noise: bool = True) -> ArrayBuf: ...
     def evaluate_slack_true(self, x: Array) -> ArrayBuf: ...
     def evaluate_slack(self, x: Array, noise: bool = True) -> ArrayBuf: ...
-    def is_feasible(self, x: Array, noise: bool = True) -> tuple[list[bool], list[int]]: ...
+    def is_feasible(self, x: Array, noise: bool = True) -> BoolBuf: ...
     def gen_pareto_front(self, n: int, seed: int | None = None) -> ArrayBuf: ...
 
 def multi_objective_problem_names() -> list[str]: ...

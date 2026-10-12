@@ -30,7 +30,7 @@ use botorch_core::{BotorchError, Matrix};
 use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
 
-use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
+use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut, BoolBuf};
 use crate::errors::{dimension_error, to_pyerr, value_error};
 use crate::threads;
 
@@ -121,13 +121,13 @@ pub fn is_non_dominated(
     y: Array,
     maximize: bool,
     deduplicate: bool,
-) -> PyResult<(Vec<bool>, Vec<usize>)> {
+) -> PyResult<BoolBuf> {
     let points = point_batch(&y, "Y")?;
     let mask = threads::run(py, || {
         is_non_dominated_batch(&points, maximize, deduplicate)
     });
     let shape = y.1[..y.1.len() - 1].to_vec();
-    Ok((mask, shape))
+    Ok(BoolBuf(mask, shape))
 }
 
 /// `Hypervolume(ref_point).compute(pareto_Y)` for an `n x m` array.

@@ -4,7 +4,7 @@
 use botorch_core::test_functions::{MultiObjectiveKind, MultiObjectiveTestProblem, NoiseStd};
 use pyo3::prelude::*;
 
-use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
+use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut, BoolBuf};
 use crate::errors::{dimension_error, unsupported, IntoPyResult};
 use crate::threads;
 
@@ -211,16 +211,11 @@ impl PyMultiObjectiveTestProblem {
     /// Whether all (noisy, if `noise`) slacks at each point of `X` are
     /// non-negative: `(flags, leading shape)`.
     #[pyo3(signature = (x, noise=true))]
-    fn is_feasible(
-        &self,
-        py: Python<'_>,
-        x: Array,
-        noise: bool,
-    ) -> PyResult<(Vec<bool>, Vec<usize>)> {
+    fn is_feasible(&self, py: Python<'_>, x: Array, noise: bool) -> PyResult<BoolBuf> {
         let (batch, data, d) = points(&x, "X")?;
         let flags =
             threads::run(py, || self.inner.is_feasible_rows(data, d, noise)).into_py_result()?;
-        Ok((flags, batch))
+        Ok(BoolBuf(flags, batch))
     }
 
     /// `n` points of the Pareto front (`n x M`, negated if `negate`).
