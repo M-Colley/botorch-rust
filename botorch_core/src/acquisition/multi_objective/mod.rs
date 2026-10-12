@@ -3,8 +3,11 @@
 //! * [`objective`] — multi-output MC objectives (`IdentityMCMultiOutputObjective`,
 //!   `WeightedMCMultiOutputObjective`, `GenericMCMultiOutputObjective`,
 //!   `FeasibilityWeightedMCMultiOutputObjective`).
-//! * [`monte_carlo`] — [`QExpectedHypervolumeImprovement`] (qEHVI).
-//! * [`logei`] — [`QLogExpectedHypervolumeImprovement`] (qLogEHVI).
+//! * [`monte_carlo`] — [`QExpectedHypervolumeImprovement`] (qEHVI) and
+//!   [`QNoisyExpectedHypervolumeImprovement`] (qNEHVI).
+//! * [`logei`] — [`QLogExpectedHypervolumeImprovement`] (qLogEHVI) and
+//!   [`QLogNoisyExpectedHypervolumeImprovement`] (qLogNEHVI, BoTorch's
+//!   recommended default).
 //! * [`analytic`] — [`ExpectedHypervolumeImprovement`] (`q = 1`).
 //! * [`utils`] — `get_default_partitioning_alpha`,
 //!   `prune_inferior_points_multi_objective`.
@@ -19,8 +22,9 @@
 //! objectives with a multi-output objective, weight them with the smoothed
 //! feasibility of outcome constraints, and compute the expected (log)
 //! hypervolume improvement over a box decomposition of the space not
-//! dominated by the current Pareto front. Gradients are computed in reverse
-//! mode.
+//! dominated by the current Pareto front: a fixed decomposition for qEHVI and
+//! qLogEHVI, and one decomposition per MC sample of the baseline for qNEHVI
+//! and qLogNEHVI. Gradients are computed in reverse mode.
 
 use std::sync::Arc;
 
@@ -38,13 +42,20 @@ pub mod analytic;
 pub mod hypervolume;
 pub mod logei;
 pub mod monte_carlo;
+mod nehvi;
 pub mod objective;
 pub mod utils;
 
 pub use analytic::ExpectedHypervolumeImprovement;
 pub use hypervolume::{compute_subset_indices, HypercellBounds, SubsetIndexCache, Subsets};
-pub use logei::{QLogExpectedHypervolumeImprovement, QLogExpectedHypervolumeImprovementOptions};
-pub use monte_carlo::{QExpectedHypervolumeImprovement, QExpectedHypervolumeImprovementOptions};
+pub use logei::{
+    QLogExpectedHypervolumeImprovement, QLogExpectedHypervolumeImprovementOptions,
+    QLogNoisyExpectedHypervolumeImprovement, QLogNoisyExpectedHypervolumeImprovementOptions,
+};
+pub use monte_carlo::{
+    QExpectedHypervolumeImprovement, QExpectedHypervolumeImprovementOptions,
+    QNoisyExpectedHypervolumeImprovement, QNoisyExpectedHypervolumeImprovementOptions,
+};
 pub use objective::{
     get_infeasible_cost_per_output, FeasibilityWeightedMcMultiOutputObjective,
     GenericMcMultiOutputObjective, IdentityMcMultiOutputObjective, McMultiOutputObjective,

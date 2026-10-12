@@ -25,8 +25,8 @@
 //!   [`crate::utils::objective`].
 //! * [`utils`] — `prune_inferior_points`, `compute_best_feasible_objective`,
 //!   `get_infeasible_cost`.
-//! * [`multi_objective`] — multi-objective acquisition functions (qLogEHVI,
-//!   qEHVI, analytic EHVI), multi-output MC objectives and
+//! * [`multi_objective`] — multi-objective acquisition functions (qLogNEHVI,
+//!   qLogEHVI, qNEHVI, qEHVI, analytic EHVI), multi-output MC objectives and
 //!   `prune_inferior_points_multi_objective`.
 //!
 //! Acquisition functions require unbatched models; multi-output models need

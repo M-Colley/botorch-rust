@@ -14,8 +14,9 @@
 //! The NEHVI mixins of BoTorch's module belong to the acquisition functions:
 //! `compute_subset_indices` and `SubsetIndexCachingMixin` are re-exported
 //! here from [`crate::acquisition::multi_objective::hypervolume`];
-//! `NoisyExpectedHypervolumeMixin` belongs to the noisy hypervolume
-//! acquisition functions.
+//! `NoisyExpectedHypervolumeMixin` is the shared machinery of
+//! [`crate::acquisition::multi_objective::QNoisyExpectedHypervolumeImprovement`]
+//! and [`crate::acquisition::multi_objective::QLogNoisyExpectedHypervolumeImprovement`].
 
 pub use crate::acquisition::multi_objective::hypervolume::{
     compute_subset_indices, SubsetIndexCache,

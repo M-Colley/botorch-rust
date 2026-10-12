@@ -1,12 +1,18 @@
 //! Monte-Carlo hypervolume improvement (`botorch.acquisition.multi_objective.monte_carlo`):
 //! [`QExpectedHypervolumeImprovement`] (qEHVI, Daulton et al., NeurIPS 2020)
-//! (BoTorch recommends its log version in [`super::logei`]).
+//! and [`QNoisyExpectedHypervolumeImprovement`] (qNEHVI, Daulton et al.,
+//! NeurIPS 2021). BoTorch recommends their log versions in
+//! [`super::logei`].
 
 use std::sync::{Arc, RwLock};
 
 use crate::acquisition::monte_carlo::{read_lock, vstack, write_lock, JointSamples};
 use crate::acquisition::multi_objective::hypervolume::HypercellBounds;
+use crate::acquisition::multi_objective::nehvi::{
+    nehvi_accessors, nehvi_common, NehviConfig, NehviCore,
+};
 use crate::acquisition::multi_objective::objective::McMultiOutputObjective;
+use crate::acquisition::multi_objective::utils::PruneMultiObjectiveOptions;
 use crate::acquisition::multi_objective::{check_ref_point, MoMcCore, Reduction};
 use crate::acquisition::{check_candidates, check_pending, AcquisitionFunction};
 use crate::error::{BotorchError, Result};
@@ -241,6 +247,126 @@ impl QExpectedHypervolumeImprovement {
 
 impl AcquisitionFunction for QExpectedHypervolumeImprovement {
     ehvi_common!(|_: &Self| Reduction::Linear);
+
+    fn is_nonnegative(&self) -> bool {
+        true
+    }
+}
+
+/// Options of [`QNoisyExpectedHypervolumeImprovement`] (BoTorch's keyword
+/// arguments).
+#[derive(Clone, Debug)]
+pub struct QNoisyExpectedHypervolumeImprovementOptions {
+    /// The sampler (default: 128 Sobol samples with a random seed).
+    pub sampler: Option<Arc<SobolQMCNormalSampler>>,
+    /// The multi-output objective (default: the identity on all outputs).
+    pub objective: Option<Arc<dyn McMultiOutputObjective>>,
+    /// Outcome constraints (feasible iff `<= 0`) with their temperatures.
+    pub constraints: Option<OutcomeConstraints>,
+    /// Pending points.
+    pub x_pending: Option<Matrix>,
+    /// Fat-tailed smoothing of the feasibility indicator (default `false`).
+    pub fat: bool,
+    /// Prune the baseline with `prune_inferior_points_multi_objective`
+    /// (default `false`).
+    pub prune_baseline: bool,
+    /// Settings of the pruning (its objective and constraints are those of
+    /// the acquisition function).
+    pub prune_options: PruneMultiObjectiveOptions,
+    /// Approximation level of the box decompositions (default `0`: exact
+    /// `FastNondominatedPartitioning`; `> 0`: `NondominatedPartitioning`).
+    pub alpha: f64,
+    /// Cache box decompositions of pending points (default `true`).
+    pub cache_pending: bool,
+    /// Maximum number of pending points that are appended to the candidates
+    /// instead of being cached (default `0`).
+    pub max_iep: usize,
+    /// Compute the incremental NEHVI of the candidates given the pending
+    /// points (default `true`) or the NEHVI of candidates and pending points.
+    pub incremental_nehvi: bool,
+    /// Sample new points from low-rank updates of the cached root of the
+    /// baseline covariance (BoTorch's default `cache_root=True`); `false`
+    /// samples the joint posterior of baseline and candidates.
+    pub cache_root: bool,
+}
+
+impl Default for QNoisyExpectedHypervolumeImprovementOptions {
+    fn default() -> Self {
+        Self {
+            sampler: None,
+            objective: None,
+            constraints: None,
+            x_pending: None,
+            fat: false,
+            prune_baseline: false,
+            prune_options: PruneMultiObjectiveOptions::default(),
+            alpha: 0.0,
+            cache_pending: true,
+            max_iep: 0,
+            incremental_nehvi: true,
+            cache_root: true,
+        }
+    }
+}
+
+/// MC-based batch Noisy Expected Hypervolume Improvement (BoTorch's
+/// `qNoisyExpectedHypervolumeImprovement`): the expected hypervolume
+/// improvement of the candidates over the Pareto front of the (noisy)
+/// baseline under each joint posterior sample, with one box decomposition
+/// per MC sample (see the module documentation of the shared machinery).
+#[derive(Debug)]
+pub struct QNoisyExpectedHypervolumeImprovement {
+    core: NehviCore,
+}
+
+impl QNoisyExpectedHypervolumeImprovement {
+    /// `qNoisyExpectedHypervolumeImprovement(model, ref_point, X_baseline,
+    /// ...)`.
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] for fewer than two objectives,
+    /// [`BotorchError::Unsupported`] for batched models,
+    /// [`BotorchError::DimensionMismatch`] for inputs of the wrong dimension
+    /// or an objective whose number of outputs differs from the reference
+    /// point, and errors of the model, the objective and the constraints.
+    pub fn new(
+        model: Arc<dyn Model>,
+        ref_point: &[f64],
+        x_baseline: &Matrix,
+        options: QNoisyExpectedHypervolumeImprovementOptions,
+    ) -> Result<Self> {
+        let mc = MoMcCore::new(
+            model,
+            options.sampler,
+            options.objective,
+            options.constraints,
+            options.fat,
+        )?;
+        let cfg = NehviConfig {
+            ref_point: ref_point.to_vec(),
+            alpha: options.alpha,
+            cache_pending: options.cache_pending,
+            max_iep: options.max_iep,
+            incremental: options.incremental_nehvi,
+            cache_root: options.cache_root,
+            prune_baseline: options.prune_baseline,
+            prune_options: options.prune_options,
+        };
+        Ok(Self {
+            core: NehviCore::new(mc, cfg, x_baseline, options.x_pending)?,
+        })
+    }
+
+    /// The reference point.
+    pub fn ref_point(&self) -> &[f64] {
+        &self.core.cfg.ref_point
+    }
+
+    nehvi_accessors!();
+}
+
+impl AcquisitionFunction for QNoisyExpectedHypervolumeImprovement {
+    nehvi_common!(|_: &Self| Reduction::Linear);
 
     fn is_nonnegative(&self) -> bool {
         true
