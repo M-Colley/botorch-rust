@@ -165,7 +165,7 @@ pub(crate) fn mo_objective_of(
 }
 
 /// Hypercell bounds of shape `2 x num_cells x m`.
-fn cells_of(cells: &Array) -> PyResult<HypercellBounds> {
+pub(crate) fn cells_of(cells: &Array) -> PyResult<HypercellBounds> {
     let (nc, m) = match cells.1.as_slice() {
         [2, nc, m] => (*nc, *m),
         s => {

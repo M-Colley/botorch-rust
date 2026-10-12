@@ -60,3 +60,30 @@ def perturbation_vjp(
     (grad,) = torch.autograd.grad(out, X, grad_outputs=g, allow_unused=True)
     return to_flat(torch.zeros_like(X) if grad is None else grad)[0]
 
+
+def costs(
+    fn: Any, x: Sequence[float], n: int, d: int, with_grad: bool
+) -> tuple[FloatData, FloatData | None]:
+    """The costs ``fn(X)`` of the points ``X`` (``1 x n x d``) and, with
+    ``with_grad``, the gradient of every cost with respect to its point
+    (``n x d``; the costs of different points must not depend on each other,
+    as BoTorch's cost models)."""
+    torch = _torch()
+    X = from_flat(x, (1, n, d), _float64())
+    if with_grad:
+        X.requires_grad_(True)
+    with torch.enable_grad() if with_grad else torch.no_grad():
+        out = torch.as_tensor(fn(X), dtype=torch.float64)
+    if out.numel() != n:
+        raise ValueError(
+            f"The cost function must return one cost per point (`batch_shape x q x 1`), got "
+            f"shape {tuple(out.shape)} for inputs of shape {(1, n, d)}."
+        )
+    values = to_flat(out.detach(), "costs")[0]
+    if not with_grad:
+        return values, None
+    if not out.requires_grad:
+        return values, to_flat(torch.zeros(n, d, dtype=torch.float64))[0]
+    (grad,) = torch.autograd.grad(out.sum(), X, allow_unused=True)
+    grad = torch.zeros_like(X) if grad is None else grad
+    return values, to_flat(grad.reshape(n, d))[0]

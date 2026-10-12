@@ -20,6 +20,7 @@ mod input_perturbation;
 mod mo_acquisition;
 mod mo_test_functions;
 mod models;
+mod momf;
 mod multi_objective;
 mod optim;
 mod polytope;
@@ -88,5 +89,6 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // perturbations, risk measures, MOMF, NSGA-II.
     input_perturbation::register(m)?;
     risk_measures::register(m)?;
+    momf::register(m)?;
     Ok(())
 }

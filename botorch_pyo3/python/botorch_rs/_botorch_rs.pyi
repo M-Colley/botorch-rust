@@ -872,3 +872,14 @@ class MultiOutputRiskMeasure:
     def vjp(self, samples: Array, adjoint: Array) -> ArrayBuf: ...
 
 def mars_y_normalization_bounds(y: Array, ref_point: Sequence[float] | None = None) -> ArrayOut: ...
+def momf(
+    model: Model,
+    ref_point: Sequence[float],
+    cells: Array,
+    sampler: SobolQMCNormalSampler | None = None,
+    x_pending: Array | None = None,
+    objective: MultiOutputObjectiveSpec | None = None,
+    constraints: Sequence[Callable[[Any], Any]] | None = None,
+    eta: Sequence[float] | None = None,
+    cost_call: Callable[[Any], Any] | None = None,
+) -> AcquisitionFunction: ...
