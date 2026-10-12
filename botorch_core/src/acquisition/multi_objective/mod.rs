@@ -13,6 +13,11 @@
 //!   scalarization).
 //! * [`utils`] — `get_default_partitioning_alpha`,
 //!   `prune_inferior_points_multi_objective`.
+//! * [`pareto_samples`] — the sampled Pareto sets and fronts of the
+//!   information-theoretic acquisition functions (`sample_optimal_points`,
+//!   `random_search_optimizer`) and their box decompositions
+//!   (`compute_sample_box_decomposition`).
+
 //! * [`hypervolume`] — the inclusion–exclusion over the subsets of the
 //!   candidates (`compute_subset_indices`, `SubsetIndexCachingMixin`) and the
 //!   hypervolume improvement of MC samples with exact gradients.
@@ -47,6 +52,7 @@ pub mod monte_carlo;
 mod nehvi;
 pub mod objective;
 pub mod parego;
+pub mod pareto_samples;
 pub mod utils;
 
 pub use analytic::ExpectedHypervolumeImprovement;
@@ -65,6 +71,11 @@ pub use objective::{
     MultiOutputValues, WeightedMcMultiOutputObjective,
 };
 pub use parego::{QLogNParEGO, QLogNParEGOOptions};
+pub use pareto_samples::{
+    compute_sample_box_decomposition, random_search_optimizer, sample_optimal_points,
+    sample_optimal_points_with, RandomSearchOptions, SampleOptimalPointsOptions,
+    SamplePartitioning,
+};
 pub use utils::{
     get_default_partitioning_alpha, prune_inferior_points_multi_objective,
     prune_inferior_points_multi_objective_indices, PruneMultiObjectiveOptions,
