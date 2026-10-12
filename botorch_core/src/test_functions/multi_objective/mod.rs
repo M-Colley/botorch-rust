@@ -22,6 +22,22 @@
 //!   Pareto front (negated with `negate`) of the problems for which BoTorch
 //!   defines it (DTLZ1-4, C2DTLZ2 and ZDT1-3).
 //!
+//! ```
+//! use botorch_core::test_functions::{MultiObjectiveKind, MultiObjectiveTestProblem};
+//! use botorch_core::Matrix;
+//!
+//! // BoTorch's `DTLZ2(dim=6, num_objectives=3, negate=True)`.
+//! let problem = MultiObjectiveTestProblem::new(MultiObjectiveKind::Dtlz2, Some(6), Some(3))?
+//!     .with_negate(true);
+//! let x = Matrix::from_element(4, 6, 0.5); // on the Pareto set
+//! let y = problem.forward(&x, false)?; // 4 × 3, to be maximized
+//! assert!((y.row(0).norm() - 1.0).abs() < 1e-15);
+//! assert_eq!(problem.ref_point(), vec![-1.1; 3]);
+//! let front = problem.gen_pareto_front(16, Some(0))?;
+//! assert_eq!(front.shape(), (16, 3));
+//! # Ok::<(), botorch_core::BotorchError>(())
+//! ```
+//!
 //! The evaluations follow BoTorch's floating-point operations, so that values
 //! agree to a few units in the last place. Where BoTorch's definitions are
 //! wrong, the corrected definitions are implemented (see
