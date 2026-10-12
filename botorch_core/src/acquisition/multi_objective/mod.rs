@@ -17,7 +17,11 @@
 //!   information-theoretic acquisition functions (`sample_optimal_points`,
 //!   `random_search_optimizer`) and their box decompositions
 //!   (`compute_sample_box_decomposition`).
-
+//! * [`max_value_entropy_search`] —
+//!   [`QLowerBoundMultiObjectiveMaxValueEntropySearch`] (MESMO).
+//! * [`joint_entropy_search`] —
+//!   [`QLowerBoundMultiObjectiveJointEntropySearch`] and the entropy
+//!   estimators of both (`"0"`, `"LB"`, `"LB2"`, `"MC"`).
 //! * [`hypervolume`] — the inclusion–exclusion over the subsets of the
 //!   candidates (`compute_subset_indices`, `SubsetIndexCachingMixin`) and the
 //!   hypervolume improvement of MC samples with exact gradients.
@@ -46,8 +50,11 @@ use crate::utils::objective::{compute_smoothed_feasibility_indicator, OutcomeCon
 use crate::Matrix;
 
 pub mod analytic;
+mod entropy_linalg;
 pub mod hypervolume;
+pub mod joint_entropy_search;
 pub mod logei;
+pub mod max_value_entropy_search;
 pub mod monte_carlo;
 mod nehvi;
 pub mod objective;
@@ -57,9 +64,20 @@ pub mod utils;
 
 pub use analytic::ExpectedHypervolumeImprovement;
 pub use hypervolume::{compute_subset_indices, HypercellBounds, SubsetIndexCache, Subsets};
+pub use joint_entropy_search::{
+    compute_entropy_monte_carlo, compute_entropy_noiseless, compute_entropy_upper_bound,
+    compute_entropy_with_grad, ConditionedOutput, EntropyGradient, EntropyStatistics,
+    EstimationType, LowerBoundMultiObjectiveEntropySearch,
+    LowerBoundMultiObjectiveEntropySearchOptions, QLowerBoundMultiObjectiveJointEntropySearch,
+    QLowerBoundMultiObjectiveJointEntropySearchOptions,
+};
 pub use logei::{
     QLogExpectedHypervolumeImprovement, QLogExpectedHypervolumeImprovementOptions,
     QLogNoisyExpectedHypervolumeImprovement, QLogNoisyExpectedHypervolumeImprovementOptions,
+};
+pub use max_value_entropy_search::{
+    QLowerBoundMultiObjectiveMaxValueEntropySearch,
+    QLowerBoundMultiObjectiveMaxValueEntropySearchOptions,
 };
 pub use monte_carlo::{
     QExpectedHypervolumeImprovement, QExpectedHypervolumeImprovementOptions,
