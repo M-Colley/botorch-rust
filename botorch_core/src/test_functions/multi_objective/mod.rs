@@ -26,7 +26,9 @@
 
 mod branin_currin;
 mod dh;
+mod dtlz;
 mod multi_fidelity;
+mod zdt;
 
 use std::sync::Mutex;
 
@@ -53,6 +55,24 @@ pub enum MultiObjectiveKind {
     Dh3,
     /// `DH4`, `d ≥ 3` inputs.
     Dh4,
+    /// `DTLZ1`, `M` objectives, `d > M` inputs (Deb et al., 2005).
+    Dtlz1,
+    /// `DTLZ2`, `M` objectives, `d > M` inputs.
+    Dtlz2,
+    /// `DTLZ3`, `M` objectives, `d > M` inputs.
+    Dtlz3,
+    /// `DTLZ4`, `M` objectives, `d > M` inputs.
+    Dtlz4,
+    /// `DTLZ5`, `M` objectives, `d > M` inputs.
+    Dtlz5,
+    /// `DTLZ7`, `M` objectives, `d > M` inputs.
+    Dtlz7,
+    /// `ZDT1`, two objectives, `d ≥ 2` inputs (Zitzler et al., 2000).
+    Zdt1,
+    /// `ZDT2`, two objectives, `d ≥ 2` inputs.
+    Zdt2,
+    /// `ZDT3`, two objectives, `d ≥ 2` inputs.
+    Zdt3,
     /// `MOMFBraninCurrin` (`multi_objective_multi_fidelity`): 2 inputs and a fidelity.
     MomfBraninCurrin,
     /// `MOMFPark` (`multi_objective_multi_fidelity`): 4 inputs and a fidelity.
@@ -61,12 +81,21 @@ pub enum MultiObjectiveKind {
 
 impl MultiObjectiveKind {
     /// All problems, in the order of BoTorch's modules.
-    pub const ALL: [MultiObjectiveKind; 7] = [
+    pub const ALL: [MultiObjectiveKind; 16] = [
         Self::BraninCurrin,
         Self::Dh1,
         Self::Dh2,
         Self::Dh3,
         Self::Dh4,
+        Self::Dtlz1,
+        Self::Dtlz2,
+        Self::Dtlz3,
+        Self::Dtlz4,
+        Self::Dtlz5,
+        Self::Dtlz7,
+        Self::Zdt1,
+        Self::Zdt2,
+        Self::Zdt3,
         Self::MomfBraninCurrin,
         Self::MomfPark,
     ];
@@ -79,6 +108,15 @@ impl MultiObjectiveKind {
             Self::Dh2 => "DH2",
             Self::Dh3 => "DH3",
             Self::Dh4 => "DH4",
+            Self::Dtlz1 => "DTLZ1",
+            Self::Dtlz2 => "DTLZ2",
+            Self::Dtlz3 => "DTLZ3",
+            Self::Dtlz4 => "DTLZ4",
+            Self::Dtlz5 => "DTLZ5",
+            Self::Dtlz7 => "DTLZ7",
+            Self::Zdt1 => "ZDT1",
+            Self::Zdt2 => "ZDT2",
+            Self::Zdt3 => "ZDT3",
             Self::MomfBraninCurrin => "MOMFBraninCurrin",
             Self::MomfPark => "MOMFPark",
         }
@@ -112,13 +150,33 @@ impl MultiObjectiveKind {
             Self::BraninCurrin => Some(2),
             Self::MomfBraninCurrin => Some(3),
             Self::MomfPark => Some(5),
-            Self::Dh1 | Self::Dh2 | Self::Dh3 | Self::Dh4 => None,
+            _ => None,
         }
+    }
+
+    /// Whether the number of objectives is an argument (`num_objectives`).
+    fn has_num_objectives_argument(self) -> bool {
+        self.is_dtlz() || self.is_zdt()
+    }
+
+    fn is_dtlz(self) -> bool {
+        matches!(
+            self,
+            Self::Dtlz1 | Self::Dtlz2 | Self::Dtlz3 | Self::Dtlz4 | Self::Dtlz5 | Self::Dtlz7
+        )
+    }
+
+    fn is_zdt(self) -> bool {
+        matches!(self, Self::Zdt1 | Self::Zdt2 | Self::Zdt3)
     }
 
     /// The number of objectives of problems with a fixed number.
     pub fn fixed_num_objectives(self) -> Option<usize> {
-        Some(2)
+        if self.has_num_objectives_argument() {
+            None
+        } else {
+            Some(2)
+        }
     }
 
     /// BoTorch's default number of objectives (the fixed one, or the default
@@ -139,6 +197,18 @@ impl MultiObjectiveKind {
             Self::Dh4 => Some(
                 "meta-pytorch/botorch#3402: max_hv depends on the dimension (h < 0 for \
                  x_0 > 0.98534, where f_1 decreases with g)",
+            ),
+            Self::Dtlz1 => Some(
+                "meta-pytorch/botorch#3402: max_hv subtracts the volume 0.5^M / M! of the \
+                 simplex below the Pareto front (BoTorch: 1 / 2^M)",
+            ),
+            Self::Dtlz4 => Some(
+                "meta-pytorch/botorch#3402: the position variables are mapped to x_i^100 \
+                 (BoTorch's DTLZ4 equals DTLZ2)",
+            ),
+            Self::Zdt3 => Some(
+                "meta-pytorch/botorch#3402: the second objective is multiplied by g, as in \
+                 Zitzler et al. (2000)",
             ),
             _ => None,
         }
@@ -192,6 +262,23 @@ impl MultiObjectiveKind {
             return Err(BotorchError::InvalidArgument(format!(
                 "dim must be >= {min_dim}, but got dim={d}!"
             )));
+        }
+        if self.is_dtlz() && d <= m {
+            return Err(BotorchError::InvalidArgument(format!(
+                "dim must be > num_objectives, but got {d} and {m}."
+            )));
+        }
+        if self.is_zdt() {
+            if m != 2 {
+                return Err(BotorchError::Unsupported(format!(
+                    "{name} currently only supports 2 objectives."
+                )));
+            }
+            if d < m {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "dim must be >= num_objectives, but got {d} and {m}"
+                )));
+            }
         }
         if d < 1 || m < 1 {
             return Err(BotorchError::InvalidArgument(format!(
@@ -469,6 +556,15 @@ impl MultiObjectiveTestProblem {
             K::Dh2 => dh::dh1(x, 10.0, out),
             K::Dh3 => dh::dh3(x, false, out),
             K::Dh4 => dh::dh3(x, true, out),
+            K::Dtlz1 => dtlz::dtlz1(x, self.num_objectives, out),
+            K::Dtlz2 => dtlz::dtlz2(x, self.num_objectives, out),
+            K::Dtlz3 => dtlz::dtlz3(x, self.num_objectives, out),
+            K::Dtlz4 => dtlz::dtlz4(x, self.num_objectives, out),
+            K::Dtlz5 => dtlz::dtlz5(x, self.num_objectives, out),
+            K::Dtlz7 => dtlz::dtlz7(x, self.num_objectives, out),
+            K::Zdt1 => zdt::zdt1(x, out),
+            K::Zdt2 => zdt::zdt2(x, out),
+            K::Zdt3 => zdt::zdt3(x, out),
             K::MomfBraninCurrin => multi_fidelity::branin_currin(x, out),
             K::MomfPark => multi_fidelity::park(x, out),
         }
@@ -683,6 +779,8 @@ fn default_bounds(kind: MultiObjectiveKind, dim: usize) -> Vec<(f64, f64)> {
     use MultiObjectiveKind as K;
     match kind {
         K::BraninCurrin | K::MomfBraninCurrin | K::MomfPark => vec![(0.0, 1.0); dim],
+        K::Dtlz1 | K::Dtlz2 | K::Dtlz3 | K::Dtlz4 | K::Dtlz5 | K::Dtlz7 => vec![(0.0, 1.0); dim],
+        K::Zdt1 | K::Zdt2 | K::Zdt3 => vec![(0.0, 1.0); dim],
         K::Dh1 | K::Dh2 | K::Dh3 | K::Dh4 => {
             let x1_lower = match kind {
                 K::Dh1 | K::Dh2 => -1.0,
@@ -697,18 +795,24 @@ fn default_bounds(kind: MultiObjectiveKind, dim: usize) -> Vec<(f64, f64)> {
 }
 
 /// BoTorch's `_ref_point` (of the un-negated problem).
-fn raw_ref_point(kind: MultiObjectiveKind, _m: usize) -> Vec<f64> {
+fn raw_ref_point(kind: MultiObjectiveKind, m: usize) -> Vec<f64> {
     use MultiObjectiveKind as K;
     match kind {
         K::BraninCurrin => vec![18.0, 6.0],
         K::Dh1 | K::Dh2 | K::Dh3 | K::Dh4 => vec![1.1, 1.1],
+        K::Dtlz1 => vec![400.0; m],
+        K::Dtlz2 | K::Dtlz4 => vec![1.1; m],
+        K::Dtlz3 => vec![10000.0; m],
+        K::Dtlz5 => vec![10.0; m],
+        K::Dtlz7 => vec![15.0; m],
+        K::Zdt1 | K::Zdt2 | K::Zdt3 => vec![11.0, 11.0],
         K::MomfBraninCurrin | K::MomfPark => vec![0.0, 0.0],
     }
 }
 
 /// The maximum hypervolume (BoTorch's `_max_hv`), with the corrections of
 /// [`MultiObjectiveKind::deviation`].
-fn max_hv(kind: MultiObjectiveKind, dim: usize, _m: usize) -> Option<f64> {
+fn max_hv(kind: MultiObjectiveKind, dim: usize, m: usize) -> Option<f64> {
     use MultiObjectiveKind as K;
     // DH: the area of the box spanned by the reference point minus the area
     // under the Pareto front.
@@ -720,6 +824,15 @@ fn max_hv(kind: MultiObjectiveKind, dim: usize, _m: usize) -> Option<f64> {
         // 0.228445... is the area under the part of the front with g = 0 and
         // -0.001572... the change per unit of max(g) = 50 (d - 2) where h < 0.
         K::Dh4 => Some(dh_box - (0.228445034673 - 0.001572780262 * 50.0 * (dim - 2) as f64)),
+        // The box spanned by the reference point minus the region below the
+        // Pareto front (a simplex for DTLZ1, a ball's orthant for DTLZ2-4).
+        K::Dtlz1 => Some(400f64.powf(m as f64) - dtlz::dtlz1_simplex_volume(m)),
+        K::Dtlz2 | K::Dtlz4 => Some(1.1f64.powf(m as f64) - dtlz::positive_ball_volume(m)),
+        K::Dtlz3 => Some(10000f64.powf(m as f64) - dtlz::positive_ball_volume(m)),
+        K::Dtlz5 | K::Dtlz7 => None,
+        K::Zdt1 => Some(120.0 + 2.0 / 3.0),
+        K::Zdt2 => Some(120.0 + 1.0 / 3.0),
+        K::Zdt3 => Some(128.778_116_130_690_76),
         K::MomfBraninCurrin => Some(0.5235514158034145),
         K::MomfPark => Some(0.08551927363087991),
     }
@@ -746,6 +859,19 @@ mod tests {
         assert!(K::BraninCurrin.resolve_sizes(None, Some(3)).is_err());
         assert_eq!(K::BraninCurrin.resolve_sizes(None, None).unwrap(), (2, 2));
         assert_eq!(K::MomfPark.resolve_sizes(Some(5), Some(2)).unwrap(), (5, 2));
+        assert_eq!(
+            err(K::Dtlz2, Some(3), Some(3)),
+            BotorchError::InvalidArgument("dim must be > num_objectives, but got 3 and 3.".into())
+        );
+        assert_eq!(K::Dtlz2.resolve_sizes(Some(4), None).unwrap(), (4, 2));
+        assert_eq!(
+            err(K::Zdt1, Some(4), Some(3)),
+            BotorchError::Unsupported("ZDT1 currently only supports 2 objectives.".into())
+        );
+        assert_eq!(
+            err(K::Zdt3, Some(1), None),
+            BotorchError::InvalidArgument("dim must be >= num_objectives, but got 1 and 2".into())
+        );
         for kind in MultiObjectiveKind::ALL {
             assert_eq!(MultiObjectiveKind::from_name(kind.name()), Some(kind));
         }
