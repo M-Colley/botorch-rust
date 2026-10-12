@@ -124,7 +124,7 @@ DEVIATIONS: dict[str, Deviation] = {
         PR3405,
         "float64 parameters: BoTorch builds them in float32, so float64 inputs are evaluated "
         "in float32 and return float32 values",
-        ("objectives", "dtype"),
+        ("dtype",),
     ),
 }
 
@@ -220,7 +220,9 @@ class DTLZ4Fixed(bt_mo.DTLZ4):
     def _evaluate_true(self, X: Tensor) -> Tensor:
         n_pos = self.num_objectives - 1
         X = torch.cat([X[..., :n_pos].pow(self._alpha), X[..., n_pos:]], dim=-1)
-        return super()._evaluate_true(X)
+        # DTLZ2's objectives (not `super()`, which already maps X if BoTorch
+        # contains the fix).
+        return bt_mo.DTLZ2._evaluate_true(self, X)
 
 
 class SRNFixed(bt_mo.SRN):
@@ -237,7 +239,26 @@ class SRNFixed(bt_mo.SRN):
 
 class WeldedBeamFixed(bt_mo.WeldedBeam):
     def _evaluate_slack_true(self, X: Tensor) -> Tensor:
-        return -super()._evaluate_slack_true(X)
+        # BoTorch's (pymoo's) constraint values, negated (self-contained, so
+        # that it does not compound with BoTorch's fix).
+        x1, x2, x3, x4 = X.unbind(-1)
+        P = 6000.0
+        L = 14.0
+        t_max = 13600.0
+        s_max = 30000.0
+        R = torch.sqrt(0.25 * (x2.pow(2) + (x1 + x3).pow(2)))
+        M = P * (L + x2 / 2)
+        J = 2 * math.sqrt(0.5) * x1 * x2 * (x2.pow(2) / 12 + 0.25 * (x1 + x3).pow(2))
+        t1 = P / (math.sqrt(2) * x1 * x2)
+        t2 = M * R / J
+        t = torch.sqrt(t1.pow(2) + t1 * t2 * x2 / R + t2.pow(2))
+        s = 6 * P * L / (x4 * x3.pow(2))
+        P_c = 64746.022 * (1 - 0.0282346 * x3) * x3 * x4.pow(3)
+        g1 = (t - t_max) / t_max
+        g2 = (s - s_max) / s_max
+        g3 = 1 / (5 - 0.125) * (x1 - x4)
+        g4 = (P - P_c) / P
+        return -torch.stack([g1, g2, g3, g4], dim=-1)
 
 
 class GMMFixed(bt_mo.GMM):
