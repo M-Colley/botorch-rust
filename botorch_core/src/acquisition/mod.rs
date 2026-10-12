@@ -30,7 +30,8 @@
 //!   objectives and `prune_inferior_points_multi_objective`.
 //! * [`cost_aware`] — cost-aware utilities (`InverseCostWeightedUtility`,
 //!   `GenericCostAwareUtility`); [`fidelity`] — `project_to_target_fidelity`
-//!   and `expand_trace_observations`.
+//!   and `expand_trace_observations`; [`one_shot`] — the interface of one-shot
+//!   acquisition functions.
 //!
 //! Acquisition functions require unbatched models; multi-output models need
 //! a posterior transform or (for the MC acquisition functions) an MC
@@ -59,6 +60,7 @@ pub mod mc_objective;
 pub mod monte_carlo;
 pub mod multi_objective;
 pub mod objective;
+pub mod one_shot;
 pub mod utils;
 
 pub use analytic::{
@@ -156,6 +158,14 @@ pub trait AcquisitionFunction: Send + Sync + Debug {
     /// Whether the values are on a log scale (BoTorch's `_log` attribute).
     fn is_log(&self) -> bool {
         false
+    }
+
+    /// The one-shot interface of one-shot acquisition functions (BoTorch's
+    /// `OneShotAcquisitionFunction`, e.g. the hypervolume knowledge
+    /// gradient), which `optimize_acqf` uses to optimize augmented candidate
+    /// sets; `None` for all others.
+    fn as_one_shot(&self) -> Option<&dyn one_shot::OneShotAcquisitionFunction> {
+        None
     }
 }
 

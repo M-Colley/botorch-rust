@@ -3,17 +3,23 @@
 //! (linear and nonlinear parameter constraints), the initialization
 //! heuristics of `botorch.optim.initializers` and the constraint handling of
 //! `botorch.optim.parameter_constraints`; [`optimize_acqf_list`] for lists of
-//! acquisition functions.
+//! acquisition functions; the initial conditions of one-shot acquisition
+//! functions ([`one_shot`]).
 
 pub mod initializers;
+pub mod one_shot;
 pub mod optimize;
 pub mod optimize_list;
 pub mod parameter_constraints;
 pub mod slsqp;
 
 pub use initializers::{
-    gen_batch_initial_conditions, initialize_q_batch, initialize_q_batch_nonneg,
-    sample_q_batches_from_polytope, transform_constraints, InitialConditionOptions,
+    gen_batch_initial_conditions, gen_batch_initial_conditions_with_fantasies, initialize_q_batch,
+    initialize_q_batch_nonneg, sample_q_batches_from_polytope, transform_constraints,
+    InitialConditionOptions,
+};
+pub use one_shot::{
+    boltzmann_sample, gen_one_shot_hvkg_initial_conditions, OneShotInitialConditionOptions,
 };
 pub use optimize::{
     default_lbfgsb_options, gen_candidates_lbfgsb, optimize_acqf, optimize_acqf_detailed,

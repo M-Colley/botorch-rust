@@ -268,6 +268,7 @@ pub fn optimize_acqf(
         n_burnin: n_burnin.unwrap_or(defaults.n_burnin),
         n_thinning: n_thinning.unwrap_or(defaults.n_thinning),
         ic_generator,
+        one_shot: Default::default(),
     };
     let acqf = &acq_function.inner;
     let result = threads::run(py, || {

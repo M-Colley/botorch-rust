@@ -46,6 +46,7 @@ use crate::optim::initializers::{
     apply_fixed_features, gen_batch_initial_conditions, InitialConditionOptions, DEFAULT_ALPHA,
     DEFAULT_ETA, DEFAULT_N_BURNIN, DEFAULT_N_THINNING,
 };
+use crate::optim::one_shot::OneShotInitialConditionOptions;
 use crate::optim::parameter_constraints::{
     evaluate_feasibility, ParameterConstraints, CONSTRAINT_TOLERANCE,
 };
@@ -183,6 +184,10 @@ pub struct OptimizeAcqfOptions {
     pub n_thinning: usize,
     /// Generator of initial conditions (BoTorch's `ic_generator`).
     pub ic_generator: Option<IcGenerator>,
+    /// Settings of the initial conditions of one-shot acquisition functions
+    /// (`options["frac_random"]`, `["num_inner_restarts"]`,
+    /// `["raw_inner_samples"]`, `["eta"]`).
+    pub one_shot: OneShotInitialConditionOptions,
 }
 
 impl Default for OptimizeAcqfOptions {
@@ -205,6 +210,7 @@ impl Default for OptimizeAcqfOptions {
             n_burnin: DEFAULT_N_BURNIN,
             n_thinning: DEFAULT_N_THINNING,
             ic_generator: None,
+            one_shot: OneShotInitialConditionOptions::default(),
         }
     }
 }
@@ -343,9 +349,13 @@ pub fn optimize_acqf_detailed(
     if sequential {
         options.constraints.validate_sequential()?;
     }
+    // One-shot acquisition functions optimize augmented candidate sets.
+    let q_opt = acq_function
+        .as_one_shot()
+        .map_or(q, |os| os.get_augmented_q_batch_size(q));
     options
         .constraints
-        .validate(if sequential { 1 } else { q }, d)?;
+        .validate(if sequential { 1 } else { q_opt }, d)?;
     if options.method == OptimizationMethod::Lbfgsb && !options.constraints.is_empty() {
         return Err(BotorchError::InvalidArgument(
             "Method L-BFGS-B cannot handle constraints.".into(),
@@ -360,9 +370,13 @@ pub fn optimize_acqf_detailed(
 
     // All features fixed: nothing to optimize.
     if options.fixed_features.len() == d {
-        let mut x = Matrix::zeros(q, d);
+        let mut x = Matrix::zeros(q_opt, d);
         apply_fixed_features(&mut x, &options.fixed_features);
         let v = acq_function.forward(&x)?;
+        let x = match acq_function.as_one_shot() {
+            Some(os) => os.extract_candidates(&x)?,
+            None => x,
+        };
         return Ok(OptimizeAcqfResult {
             candidates: x,
             acq_value: v,
@@ -391,6 +405,12 @@ pub fn optimize_acqf_detailed(
              avoid specifying `batch_initial_conditions` to use the custom initializer or use \
              the `ic_generator` kwarg to generate initial conditions for the case of nonlinear \
              inequality constraints."
+                .into(),
+        ));
+    }
+    if acq_function.as_one_shot().is_some() {
+        return Err(BotorchError::Unsupported(
+            "sequential optimization currently not supported for one-shot acquisition              functions. Must have `sequential=False`."
                 .into(),
         ));
     }
@@ -476,11 +496,15 @@ fn optimize_batch(
         OptimizationMethod::Slsqp => true,
         OptimizationMethod::Lbfgsb => false,
     };
+    let one_shot = acq_function.as_one_shot();
+    // The number of points of the optimized sets (augmented for one-shot
+    // acquisition functions).
+    let q_opt = one_shot.map_or(q, |os| os.get_augmented_q_batch_size(q));
     let provided = options.batch_initial_conditions.clone().unwrap_or_default();
     for ic in &provided {
-        if ic.shape() != (q, d) {
+        if ic.shape() != (q_opt, d) {
             return Err(BotorchError::DimensionMismatch(format!(
-                "batch_initial_conditions must be {q} x {d}, got {}x{}",
+                "batch_initial_conditions must be {q_opt} x {d}, got {}x{}",
                 ic.nrows(),
                 ic.ncols()
             )));
@@ -517,15 +541,28 @@ fn optimize_batch(
                         };
                         let ics = (generator.0)(&request)?;
                         for ic in &ics {
-                            if ic.shape() != (q, d) {
+                            if ic.shape() != (q_opt, d) {
                                 return Err(BotorchError::DimensionMismatch(format!(
                                     "the ic_generator returned a {}x{} initial condition, \
-                                     expected {q} x {d}",
+                                     expected {q_opt} x {d}",
                                     ic.nrows(),
                                     ic.ncols()
                                 )));
                             }
                         }
+                        ics
+                    }
+                    None if one_shot.is_some() => {
+                        let os = one_shot.expect("one-shot acquisition function");
+                        let (ics, ws) = os.gen_one_shot_initial_conditions(
+                            bounds,
+                            q,
+                            required,
+                            raw_samples,
+                            options,
+                            &mut *rng,
+                        )?;
+                        warnings.extend(ws);
                         ics
                     }
                     None => {
@@ -621,8 +658,12 @@ fn optimize_batch(
     }
     let best = best_restart(&restarts)?;
     let r = &restarts[best];
+    let candidates = match one_shot {
+        Some(os) => os.extract_candidates(&r.candidates)?,
+        None => r.candidates.clone(),
+    };
     Ok(OptimizeAcqfResult {
-        candidates: r.candidates.clone(),
+        candidates,
         acq_value: r.acq_value,
         acq_values: vec![r.acq_value],
         restarts,
