@@ -651,6 +651,13 @@ threads.
 - **Arrays.** Inputs may be torch tensors, NumPy arrays or nested lists;
   results have the array type, floating dtype and device of the input they are
   computed from (float64 for integer inputs). All computations are in float64.
+  Arrays with more than a few values cross between Python and Rust as float64
+  buffers: torch or NumPy copies them once and Rust reads them with one
+  memcpy. Converting 10,000 points therefore takes microseconds, and results
+  never share memory with the inputs or with each other. Small arrays and
+  nested lists are exchanged as lists of floats. Under
+  `torch.set_default_device(...)`, larger results computed from CPU tensors
+  stay on the CPU, like their inputs.
   Results that are not computed from an array (a test function's `bounds`,
   `draw_sobol_normal_samples`) are float64 tensors if torch has been imported
   and lists otherwise; pass `dtype=` (a torch or NumPy dtype) to choose.
@@ -823,15 +830,25 @@ The Python parity tests run when BoTorch is importable; to test against a
 source checkout put it first on the path (`PYTHONPATH=/path/to/botorch:botorch_pyo3/python`).
 `-m equivalence` selects the unified equivalence suite (see [Equivalence with
 BoTorch](#equivalence-with-botorch)).
-`python scripts/generate_fixtures.py` regenerates the Rust parity fixtures
-(`--phase 1` for the GP core, `--phase 2` for acquisition functions,
-optimization and test functions, `--phase 4` for multi-output, batched and
-list models, posterior transforms and constrained EI, `--phase 4b` for MC
-objectives, outcome constraints, constrained optimization and polytope
-sampling, `--phase 5a-utils` and `--phase 5a-tf` for the multi-objective
-utilities and test problems), and `python scripts/benchmark.py` measures the timings above, and
-`python scripts/api_coverage.py` regenerates the API coverage report
-([docs/api_coverage.md](docs/api_coverage.md)). See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+Other scripts:
+
+- `python scripts/generate_fixtures.py` regenerates the Rust parity fixtures:
+  - `--phase 1`: the GP core;
+  - `--phase 2`: acquisition functions, optimization and test functions;
+  - `--phase 4`: multi-output, batched and list models, posterior transforms
+    and constrained EI;
+  - `--phase 4b`: MC objectives, outcome constraints, constrained optimization
+    and polytope sampling;
+  - `--phase 5a-utils` and `--phase 5a-tf`: the multi-objective utilities and
+    test problems.
+- `python scripts/benchmark.py` measures the timings above;
+  `scripts/benchmark_mo_utils.py` and `scripts/benchmark_arrays.py [--botorch]`
+  measure the multi-objective utilities and the exchange of arrays between
+  Python and Rust.
+- `python scripts/api_coverage.py` regenerates the API coverage report
+  ([docs/api_coverage.md](docs/api_coverage.md)).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## License
 
