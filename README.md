@@ -200,6 +200,13 @@ counterpart.
 | `botorch.utils.sampling.draw_sobol_samples`, `draw_sobol_normal_samples` | `botorch_rs.utils.sampling.*` | |
 | `botorch.utils.sampling.get_polytope_samples`, `HitAndRunPolytopeSampler`, `find_interior_point`, `sample_polytope`, `sparse_to_dense_constraints` | `botorch_rs.utils.sampling.*` | |
 | `botorch.test_functions.*` | `botorch_rs.test_functions.*` | Ackley, Beale, Branin, Bukin, Cosine8, DixonPrice, DropWave, EggHolder, Griewank, Hartmann, HolderTable, Levy, Michalewicz, Powell, Rastrigin, Rosenbrock, Shekel, SixHumpCamel, StyblinskiTang, ThreeHumpCamel |
+| `botorch.test_functions.multi_objective.*`, `multi_objective_multi_fidelity.*` | same paths (also re-exported from `botorch_rs.test_functions`) | all 31 multi-objective problems: BraninCurrin, DH1–DH4, DTLZ1–DTLZ5, DTLZ7, GMM, Penicillin, ToyRobust, VehicleSafety, ZDT1–ZDT3, CarSideImpact and the constrained BNH, CONSTR, ConstrainedBraninCurrin, C2DTLZ2, DiscBrake, MW7, OSY, SRN, WeldedBeam; MOMFBraninCurrin, MOMFPark. `forward(X, noise)`, `evaluate_true`, `evaluate_slack(_true)`, `is_feasible`, `bounds`, `ref_point`, `max_hv`, `gen_pareto_front(n)`, `noise_std` per objective, `constraint_noise_std`, `negate`; ten problems use corrected definitions (see the migration notes) |
+| `botorch.test_functions.base.BaseTestProblem`, `ConstrainedBaseTestProblem`, `MultiObjectiveTestProblem` | `botorch_rs.test_functions.base.*` | shared behaviour: noise, negation, slacks, feasibility, reference points, `.to` |
+| `botorch.utils.multi_objective.pareto.is_non_dominated` | same path | `(batch_shape) x n x m`, `maximize`, `deduplicate` (the first of identical points is kept); points with a NaN are dominated (meta-pytorch/botorch#3392) |
+| `botorch.utils.multi_objective.hypervolume.Hypervolume`, `infer_reference_point`, `get_hypervolume_maximizing_subset` | same paths | the dimension-sweep algorithm of Fonseca et al. (2006), results identical to BoTorch's |
+| `botorch.utils.multi_objective.box_decompositions.*` | same paths | `NondominatedPartitioning` (with `alpha`), `FastNondominatedPartitioning`, `DominatedPartitioning`, `BoxDecompositionList` and the helpers of `box_decompositions.utils`: stateful, backed by Rust; `update(Y)` (incremental), `reset()`, `compute_hypervolume()`, `get_hypercell_bounds()`, `pareto_Y`, batches of two-objective fronts of different sizes; cells and local upper bounds in BoTorch's order |
+| `botorch.utils.multi_objective.scalarization.get_chebyshev_scalarization` | same path | returns a callable `ChebyshevScalarization` (`obj(Y, X=None)`), evaluated in Rust and differentiable with `torch.autograd` |
+| `botorch.utils.sampling.sample_simplex`, `sample_hypersphere` | `botorch_rs.utils.sampling.*` | `d`, `n`, `qmc`, `seed`, `device`, `dtype` |
 | `botorch.exceptions` | `botorch_rs.exceptions` | `BotorchRsError` hierarchy (also `ValueError`, `RuntimeError`, `NotImplementedError` subclasses) and BoTorch's warnings |
 
 Everything else in BoTorch is not ported yet: see
@@ -208,8 +215,8 @@ Everything else in BoTorch is not ported yet: see
 ## What is not ported yet
 
 botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **92 of the 773
-public classes and functions** defined in BoTorch's modules (12%; BoTorch main
+processes, which is a small part of BoTorch: it provides **146 of the 773
+public classes and functions** defined in BoTorch's modules (19%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
 [docs/api_coverage.md](docs/api_coverage.md). The main gaps:
@@ -254,12 +261,13 @@ module and writes every missing class, function, parameter and method to
   - risk measures (VaR, CVaR, ...) and cost-aware utilities;
   - penalized, proximal, prior-guided, fixed-feature and decoupled wrappers,
     multi-output acquisition functions, and pathwise Thompson sampling.
-- **Multi-objective optimization:**
+- **Multi-objective optimization:** the Pareto, hypervolume, box-decomposition
+  and scalarization utilities and the test problems are ported; not yet:
   - all multi-objective acquisition functions (`qLogNoisyExpectedHypervolumeImprovement`,
     `qLogExpectedHypervolumeImprovement`, `qLogNParEGO`,
     `qHypervolumeKnowledgeGradient`, `MOMF`, multi-objective entropy search,
-    ...);
-  - their objectives, risk measures, and hypervolume and Pareto utilities.
+    ...), their objectives and risk measures;
+  - `optimize_with_nsgaii` (NSGA-II via pymoo).
 - **Objectives and transforms:** posterior transforms other than
   `ScalarizedPosteriorTransform`, learned and multi-output MC objectives, and
   `get_acquisition_function` with the input constructors.
@@ -276,13 +284,13 @@ module and writes every missing class, function, parameter and method to
 - **Sampling and utilities:**
   - samplers other than `SobolQMCNormalSampler` (`IIDNormalSampler`,
     `StochasticSampler`, `ListSampler`, ...) and pathwise (Matheron) sampling;
-  - most of `botorch.utils`: multi-objective, probability (bivariate and
-    truncated multivariate normal, elliptical slice sampling), low-rank and
-    dataset utilities;
+  - most of `botorch.utils`: probability (bivariate and truncated
+    multivariate normal, elliptical slice sampling), low-rank and dataset
+    utilities;
   - cross-validation and `settings`.
 - **Test functions and community code:** test functions other than the 20
-  synthetic ones above (multi-objective, multi-fidelity, constrained
-  engineering problems, sensitivity analysis, ...), and everything in
+  synthetic and the 33 multi-objective ones above (multi-fidelity, constrained
+  single-objective problems, sensitivity analysis, ...), and everything in
   `botorch_community`.
 
 <details>
@@ -311,12 +319,12 @@ module and writes every missing class, function, parameter and method to
 | `sampling` | 14 | 2 | 14% |
 | `sampling.pathwise` | 25 | 0 | 0% |
 | `settings` | 3 | 0 | 0% |
-| `test_functions` | 84 | 21 | 25% |
+| `test_functions` | 84 | 57 | 68% |
 | `test_utils` | 2 | 0 | 0% |
-| `utils` | 97 | 8 | 8% |
-| `utils.multi_objective` | 22 | 0 | 0% |
+| `utils` | 97 | 10 | 10% |
+| `utils.multi_objective` | 22 | 16 | 73% |
 | `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **773** | **92** | **12%** |
+| **all of `botorch`** | **773** | **146** | **19%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -332,7 +340,9 @@ tested at two levels:
    acquisition functions, optimization and test functions, `--phase 4`
    multi-output, batched and list models, posterior transforms and
    constrained EI, `--phase 4b` MC objectives, outcome constraints,
-   constrained optimization and polytope sampling). The
+   constrained optimization and polytope sampling, `--phase 5a-utils`
+   multi-objective utilities, `--phase 5a-tf` multi-objective test problems).
+   The
    `botorch_core/tests/*parity*.rs` tests reproduce them with the Rust core
    alone, without Python (`cargo test`).
 2. **Live side-by-side Python tests.** The Python tests build the same models
@@ -342,8 +352,12 @@ tested at two levels:
    functions and API signatures), `test_parity_multi_output.py`
    (multi-output, batched and list models, posterior transforms, constrained
    EI), `test_parity_constraints.py` (MC objectives, outcome constraints,
-   parameter constraints, polytope sampling, constrained optimization) and
-   the unified, randomized suite `test_equivalence.py`.
+   parameter constraints, polytope sampling, constrained optimization),
+   `test_parity_mo_utils.py` (Pareto, hypervolume, box decompositions,
+   scalarization, simplex and sphere samplers), `test_parity_mo_test_functions.py`
+   (multi-objective test problems) and the unified, randomized suite
+   `test_equivalence.py`. The randomized sweeps of the multi-objective modules
+   are also part of `-m equivalence`.
 
 Every parity module prints the worst error of every quantity in the pytest
 terminal summary.
@@ -486,6 +500,43 @@ SciPy 1.16 and later solve the SLSQP subproblems with LAPACK, botorch-rust with
 the port of Kraft's original code, so long runs on flat landscapes can end in
 different local optima, in either direction.
 
+### Multi-objective utilities and test problems
+
+The Pareto masks, hypervolumes, box decompositions and the multi-objective
+test problems are compared with BoTorch on randomized cases: m = 1 to 5
+objectives, up to 300 points (1,200 for BoTorch's loop variant of
+`is_non_dominated`), ties, duplicates, infinities and NaNs, points worse than
+the reference point, empty fronts, batches of fronts of different sizes,
+incremental updates and `reset()`, `alpha` > 0, float32 inputs, and errors.
+The algorithms are ported step by step, so Pareto points, hypercells and local
+upper bounds come out in BoTorch's order and are compared in order.
+
+| Quantity | Tolerance | Observed, Rust fixtures | Observed, Python API |
+|---|---|---|---|
+| `is_non_dominated` masks, Pareto sets, `get_hypervolume_maximizing_subset` selections | identical | identical | identical |
+| Box decompositions: Pareto sets, cells, local upper bounds (after construction, updates, `reset`; batches; `alpha`) | identical | identical (bitwise) | identical (bitwise) |
+| `Hypervolume.compute`, `infer_reference_point` | 1e-12 (relative) | exact | exact |
+| Box-decomposition hypervolumes (summed in a different order than torch) | 1e-12 | 3.0e-15 | 7.4e-16 |
+| Chebyshev scalarization: values / gradients | 1e-12 | exact / 9.4e-17 | exact / 8.4e-17 |
+| `sample_simplex`, `sample_hypersphere`: transformation of given random numbers / moments (statistical) | exact / 0.03 (i.i.d.), 0.002 (QMC) | exact | exact / 6.2e-3, 6.1e-5 |
+| Multi-objective test problems: objectives and constraint slacks (all 33 problems, 52 configurations; random points and the corners of the domain) | 1e-12 | ≤ 6.8e-16 | ≤ 3.7e-16 |
+| Penicillin (an ODE simulation, up to 486 Euler steps) | max(1e-12, 10 × BoTorch's own change under 1-ulp input changes) | exact | ≤ 6.0e-13 |
+| Test problems: bounds, reference points, `max_hv`, ZDT Pareto fronts | exact / 1e-12 | exact / ≤ 8.5e-17 | exact / ≤ 1.1e-16 |
+| DTLZ Pareto fronts (quasi-random): distance to the front / moments vs BoTorch's (statistical) | 1e-14 / 0.03 | | 2.2e-16 / 8.1e-3 |
+
+Independent of BoTorch, the dimension sweep and all three decompositions agree
+with an exact grid computation of the hypervolume (worst 3.4e-15) and with
+Monte-Carlo estimates, random points lie in exactly one dominated or
+non-dominated cell, incremental updates equal fresh decompositions, and the
+generated Pareto fronts contain no dominated or infeasible points.
+
+Penicillin's explicit Euler simulation is ill-conditioned: perturbing its
+inputs by one unit in the last place changes BoTorch's own values by up to
+6.6e-4. botorch-rust performs BoTorch's operations in BoTorch's order and
+agrees to 1.6e-13 on 20,000 random points, but because other math libraries
+can amplify last-bit differences as much, it is compared relative to BoTorch's
+own sensitivity, like the Monte-Carlo quantities on nearly singular posteriors.
+
 ### Versions checked
 
 The numbers above come from BoTorch's main branch at da00e04 with GPyTorch
@@ -565,6 +616,32 @@ task (BoTorch's qLogEI). The chart and the tables are generated from
 $ python scripts/benchmark.py --json docs/assets/benchmark.json
 $ python scripts/plot_benchmarks.py docs/assets/benchmark.json --out docs/assets/benchmark
 ```
+
+### Multi-objective utilities
+
+`scripts/benchmark_mo_utils.py` times the utilities through the Python API on
+one thread, on points near the unit sphere, so that nearly all points are
+Pareto optimal. "Decomposition" means construction, `get_hypercell_bounds()`
+and `compute_hypervolume()`. These timings were taken while other jobs ran on
+the machine.
+
+| Task | m | n | botorch-rust | BoTorch | Speedup |
+|---|---|---|---|---|---|
+| `Hypervolume.compute` | 3 | 100 | 96 µs | 183 ms | 1,900× |
+| `Hypervolume.compute` | 4 | 200 | 1.5 ms | 6.9 s | 4,600× |
+| `FastNondominatedPartitioning` | 2 | 100 | 349 µs | 1.5 ms | 4× |
+| `FastNondominatedPartitioning` | 3 | 100 | 1.2 ms | 385 ms | 310× |
+| `FastNondominatedPartitioning` | 4 | 200 | 35 ms | 3.7 s | 107× |
+| `NondominatedPartitioning` | 4 | 50 | 0.39 s | 226 s | 580× |
+| `DominatedPartitioning` | 3 | 100 | 0.89 ms | 118 ms | 132× |
+| `BoxDecompositionList` of 128 fronts of 20 points (as in qNEHVI) | 3 | 20 | 33 ms | 9.8 s | 300× |
+
+For two objectives and small inputs, the Python bindings dominate. Rust callers,
+such as the acquisition functions, see the native timings
+(`cargo run --release --example benchmark_mo_utils`). For example, for n = 100
+`FastNondominatedPartitioning` takes 11 µs, 426 µs and 7.0 ms for m = 2, 3 and
+4, and building the 128 decompositions of the last row takes 1.2 ms on 22
+threads.
 
 ## Migration notes and known differences
 
@@ -675,6 +752,58 @@ $ python scripts/plot_benchmarks.py docs/assets/benchmark.json --out docs/assets
   exception.
 - **Threads.** `botorch_rs.set_num_threads(n)` sets the number of threads
   (default: one per logical CPU); the GIL is released during all computations.
+- **Multi-objective utilities.**
+  - `is_non_dominated` treats a point with a NaN in any outcome as dominated,
+    as BoTorch documents and meta-pytorch/botorch#3392 implements. BoTorch
+    main and 0.18.1 only drop points whose outcomes are *all* NaN.
+  - For more than two objectives, the incremental `update` of the fast
+    partitionings returns early when no new point is better than the
+    reference point (#3392). The results are bitwise identical to BoTorch's.
+  - With a batched reference point and no Pareto point in any batch element,
+    `FastNondominatedPartitioning` and `DominatedPartitioning` return one cell
+    per batch element, where BoTorch raises a `RuntimeError`.
+    `_pad_batch_pareto_frontier` accepts one reference point for all batch
+    elements, where BoTorch raises an `IndexError`.
+  - Everything is computed in float64, and results have the dtype of the
+    outcomes. BoTorch computes float32 inputs in float32, which differs by
+    up to about 1e-7 relative.
+  - `get_chebyshev_scalarization` returns a callable `ChebyshevScalarization`
+    object instead of a closure. It is called like BoTorch's (`obj(Y, X=None)`)
+    and exposes `weights`, `alpha` and the normalization bounds.
+  - `sample_simplex` and `sample_hypersphere` use botorch-rust's random
+    streams. For the same seed the samples differ from BoTorch's but have the
+    same distribution, and transforming given random numbers gives exactly
+    BoTorch's results. `get_hypervolume_maximizing_subset` draws its random
+    fallback with Python's `random.choice`, as BoTorch does.
+  - As in BoTorch, batched decompositions with more than two objectives and
+    more than one batch dimension are not supported.
+- **Multi-objective test problems.**
+  - Evaluations run in float64; float32 inputs give the rounded float64
+    values. The keyword-only `seed` seeds the noise of nested-list inputs, and
+    `gen_pareto_front(n, *, seed=None)` seeds the quasi-random fronts.
+  - The DTLZ fronts use botorch-rust's scrambled Sobol sequence, so the
+    points differ from BoTorch's but have the same distribution. The ZDT
+    fronts are identical.
+  - Some invalid configurations are rejected when the problem is created
+    rather than when it is evaluated, e.g. `DTLZ7` with one objective, which
+    BoTorch cannot evaluate.
+  - **Corrected definitions.** Ten problems implement verified fixes from
+    open BoTorch pull requests, so they differ from BoTorch main and 0.18.1.
+    `problem.deviation` describes each one.
+    - meta-pytorch/botorch#3402:
+      - `max_hv` of BraninCurrin (59.4066), ConstrainedBraninCurrin
+        (609.4038), DH4 (now depends on `dim`) and DTLZ1 (subtracts the
+        simplex volume 0.5^M / M!);
+      - DTLZ4 applies its `x^100` mapping (BoTorch's equals DTLZ2);
+      - the second objective of ZDT3 is multiplied by `g`;
+      - C2DTLZ2 uses the constraint of Jain & Deb (2014), and its `max_hv` is
+        exact for M = 2;
+      - SRN's first objective and first constraint;
+      - WeldedBeam's constraint slack is negated.
+    - meta-pytorch/botorch#3405: `GMM` keeps float64 parameters (BoTorch
+      evaluates in float32).
+    - Without a pull request yet: `C2DTLZ2.gen_pareto_front` returns only
+      feasible points. Of BoTorch's front, 57% is feasible for M = 2.
 - **Deliberate deviations.** `prune_inferior_points` with
   `max_frac < 1` keeps the most frequent maximizers (BoTorch indexes the wrong
   points there), the LogEI gradient is accurate far in the tail, and posterior
@@ -699,7 +828,8 @@ BoTorch](#equivalence-with-botorch)).
 optimization and test functions, `--phase 4` for multi-output, batched and
 list models, posterior transforms and constrained EI, `--phase 4b` for MC
 objectives, outcome constraints, constrained optimization and polytope
-sampling), and `python scripts/benchmark.py` measures the timings above, and
+sampling, `--phase 5a-utils` and `--phase 5a-tf` for the multi-objective
+utilities and test problems), and `python scripts/benchmark.py` measures the timings above, and
 `python scripts/api_coverage.py` regenerates the API coverage report
 ([docs/api_coverage.md](docs/api_coverage.md)). See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
