@@ -22,6 +22,7 @@ mod mo_test_functions;
 mod models;
 mod momf;
 mod multi_objective;
+mod nsga2;
 mod optim;
 mod polytope;
 mod risk_measures;
@@ -90,5 +91,6 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     input_perturbation::register(m)?;
     risk_measures::register(m)?;
     momf::register(m)?;
+    nsga2::register(m)?;
     Ok(())
 }

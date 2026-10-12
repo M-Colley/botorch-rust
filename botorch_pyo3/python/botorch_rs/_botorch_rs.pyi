@@ -883,3 +883,36 @@ def momf(
     eta: Sequence[float] | None = None,
     cost_call: Callable[[Any], Any] | None = None,
 ) -> AcquisitionFunction: ...
+
+class MultiOutputAcquisitionFunction:
+    @staticmethod
+    def posterior_mean(
+        model: Model, weights: Sequence[float] | None = None
+    ) -> MultiOutputAcquisitionFunction: ...
+    @staticmethod
+    def wrapper(acqfs: Sequence[AcquisitionFunction]) -> MultiOutputAcquisitionFunction: ...
+    @property
+    def num_outputs(self) -> int: ...
+    @property
+    def dim(self) -> int: ...
+    def forward(self, x: Array) -> ArrayBuf: ...
+
+def optimize_with_nsgaii(
+    bounds: Array,
+    num_objectives: int,
+    acqf: MultiOutputAcquisitionFunction | None = None,
+    evaluate: Callable[[Array], tuple[Array, Array | None]] | None = None,
+    q: int | None = None,
+    ref_point: Sequence[float] | None = None,
+    inequality_constraints: Sequence[tuple[Sequence[int], Sequence[float], float]] = ...,
+    population_size: int = 250,
+    max_gen: int | None = None,
+    seed: int | None = None,
+    fixed_features: Sequence[tuple[int, float]] = ...,
+    max_attempts: int = 2,
+    discrete_choices: Sequence[tuple[int, Sequence[float]]] = ...,
+) -> tuple[ArrayBuf, ArrayBuf, list[str], int]: ...
+def nsga2_non_dominated_fronts(
+    f: Array, n_stop_if_ranked: int | None = None
+) -> list[list[int]]: ...
+def nsga2_crowding_distance(f: Array) -> list[float]: ...

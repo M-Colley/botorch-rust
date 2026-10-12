@@ -1,7 +1,7 @@
 """Multi-objective utilities (``botorch.utils.multi_objective``): Pareto
 dominance, hypervolumes, box decompositions and scalarizations, computed in
-Rust. ``botorch.utils.multi_objective.optimize`` (NSGA-II via pymoo) is not
-ported."""
+Rust. ``botorch_rs.utils.multi_objective.optimize.optimize_with_nsgaii``
+runs NSGA-II in Rust (BoTorch uses pymoo, which is not needed here)."""
 
 from botorch_rs.utils.multi_objective import box_decompositions, hypervolume, pareto, scalarization
 from botorch_rs.utils.multi_objective.hypervolume import Hypervolume, infer_reference_point
