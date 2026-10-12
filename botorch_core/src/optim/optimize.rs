@@ -410,7 +410,8 @@ pub fn optimize_acqf_detailed(
     }
     if acq_function.as_one_shot().is_some() {
         return Err(BotorchError::Unsupported(
-            "sequential optimization currently not supported for one-shot acquisition              functions. Must have `sequential=False`."
+            "sequential optimization currently not supported for one-shot acquisition \
+             functions. Must have `sequential=False`."
                 .into(),
         ));
     }

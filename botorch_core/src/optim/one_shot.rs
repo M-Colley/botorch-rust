@@ -224,11 +224,121 @@ impl AcquisitionFunction for FixedFidelityValue {
     }
 }
 
+/// The optimized hypervolume-maximizing sets of the value function (the
+/// inner optimization of [`gen_one_shot_hvkg_initial_conditions`]).
+#[derive(Clone, Debug)]
+pub struct ValueFunctionSolutions {
+    /// One optimized set of `num_pareto` designs per inner restart (all `d`
+    /// columns; at the target fidelities for multi-fidelity functions).
+    pub candidates: Vec<Matrix>,
+    /// The value function at every set.
+    pub values: Vec<f64>,
+    /// BoTorch's warnings of the optimization.
+    pub warnings: Vec<String>,
+}
+
+/// The inner optimization of [`gen_one_shot_hvkg_initial_conditions`]:
+/// `optimize_acqf` of the value function of the current model (BoTorch's
+/// `_get_hv_value_function` with the knowledge gradient's objective, inner
+/// sampler and `use_posterior_mean`) for `num_pareto` designs, from
+/// `options.one_shot.num_inner_restarts` starts selected among
+/// `options.one_shot.raw_inner_samples` raw samples, returning every restart.
+/// For multi-fidelity knowledge gradients the designs are optimized over the
+/// non-fidelity columns with the fidelities at their targets (BoTorch's
+/// `FixedFeatureAcquisitionFunction`).
+///
+/// # Errors
+/// [`BotorchError::Unsupported`] for parameter constraints with a
+/// multi-fidelity knowledge gradient; errors of `optimize_acqf`.
+pub fn optimize_hvkg_value_function(
+    acq_function: &QHypervolumeKnowledgeGradient,
+    bounds: &Matrix,
+    options: &OptimizeAcqfOptions,
+) -> Result<ValueFunctionSolutions> {
+    let os = &options.one_shot;
+    let d = bounds.ncols();
+    let np = acq_function.num_pareto();
+    let value_function = acq_function.value_function()?;
+    let inner_options = OptimizeAcqfOptions {
+        batch_initial_conditions: None,
+        sequential: false,
+        ic_generator: None,
+        ..options.clone()
+    };
+    let (candidates, values, warnings) = match acq_function.multi_fidelity() {
+        None => {
+            let r = optimize_acqf_detailed(
+                &value_function,
+                bounds,
+                np,
+                os.num_inner_restarts,
+                os.raw_inner_samples,
+                &inner_options,
+            )?;
+            let (c, v): (Vec<Matrix>, Vec<f64>) = r
+                .restarts
+                .into_iter()
+                .map(|r| (r.candidates, r.acq_value))
+                .unzip();
+            (c, v, r.warnings)
+        }
+        Some(mf) => {
+            if !options.constraints.is_empty() {
+                return Err(BotorchError::Unsupported(
+                    "parameter constraints are not supported by the one-shot initial conditions \
+                     of the multi-fidelity hypervolume knowledge gradient"
+                        .into(),
+                ));
+            }
+            let mut fixed: Vec<(usize, f64)> = Vec::new();
+            for &(k, v) in &mf.target_fidelities {
+                let c = if k < 0 { d as isize + k } else { k } as usize;
+                fixed.retain(|(f, _)| *f != c);
+                fixed.push((c, v));
+            }
+            fixed.sort_by_key(|&(c, _)| c);
+            let wrapped = FixedFidelityValue {
+                inner: value_function,
+                d,
+                fixed,
+            };
+            let free = wrapped.free_columns();
+            let reduced = Matrix::from_fn(2, free.len(), |i, j| bounds[(i, free[j])]);
+            let mut reduced_options = inner_options;
+            reduced_options.fixed_features = options
+                .fixed_features
+                .iter()
+                .filter_map(|(&k, &v)| free.iter().position(|&c| c == k).map(|j| (j, v)))
+                .collect();
+            let r = optimize_acqf_detailed(
+                &wrapped,
+                &reduced,
+                np,
+                os.num_inner_restarts,
+                os.raw_inner_samples,
+                &reduced_options,
+            )?;
+            let (c, v): (Vec<Matrix>, Vec<f64>) = r
+                .restarts
+                .into_iter()
+                .map(|r| (wrapped.full(&r.candidates), r.acq_value))
+                .unzip();
+            (c, v, r.warnings)
+        }
+    };
+    Ok(ValueFunctionSolutions {
+        candidates,
+        values,
+        warnings,
+    })
+}
+
 /// Records BoTorch's `BadInitialCandidatesWarning` of a random fallback.
 fn fallback_warning(fallback: bool, warnings: &mut Vec<String>) {
     if fallback {
         warnings.push(
-            "Unable to find non-zero acquisition function values - initial conditions are              being selected randomly."
+            "Unable to find non-zero acquisition function values - initial conditions are \
+             being selected randomly."
                 .into(),
         );
     }
@@ -273,74 +383,9 @@ pub fn gen_one_shot_hvkg_initial_conditions(
     let n_f = acq_function.num_fantasies();
     let np = acq_function.num_pareto();
     let mut warnings = Vec::new();
-    let value_function = acq_function.value_function()?;
-    // The inner optimization of the value function (num_pareto designs).
-    let inner_options = OptimizeAcqfOptions {
-        batch_initial_conditions: None,
-        sequential: false,
-        ic_generator: None,
-        ..options.clone()
-    };
-    let (cands, vals): (Vec<Matrix>, Vec<f64>) = match acq_function.multi_fidelity() {
-        None => {
-            let r = optimize_acqf_detailed(
-                &value_function,
-                bounds,
-                np,
-                os.num_inner_restarts,
-                os.raw_inner_samples,
-                &inner_options,
-            )?;
-            warnings.extend(r.warnings);
-            r.restarts
-                .into_iter()
-                .map(|r| (r.candidates, r.acq_value))
-                .unzip()
-        }
-        Some(mf) => {
-            let mut fixed: Vec<(usize, f64)> = Vec::new();
-            for &(k, v) in &mf.target_fidelities {
-                let c = if k < 0 { d as isize + k } else { k } as usize;
-                fixed.retain(|(f, _)| *f != c);
-                fixed.push((c, v));
-            }
-            fixed.sort_by_key(|&(c, _)| c);
-            let wrapped = FixedFidelityValue {
-                inner: value_function,
-                d,
-                fixed,
-            };
-            let free = wrapped.free_columns();
-            let reduced = Matrix::from_fn(2, free.len(), |i, j| bounds[(i, free[j])]);
-            let mut reduced_options = inner_options.clone();
-            reduced_options.fixed_features = options
-                .fixed_features
-                .iter()
-                .filter_map(|(&k, &v)| free.iter().position(|&c| c == k).map(|j| (j, v)))
-                .collect();
-            reduced_options.constraints = Default::default();
-            if !options.constraints.is_empty() {
-                return Err(BotorchError::Unsupported(
-                    "parameter constraints are not supported by the one-shot initial conditions \
-                     of the multi-fidelity hypervolume knowledge gradient"
-                        .into(),
-                ));
-            }
-            let r = optimize_acqf_detailed(
-                &wrapped,
-                &reduced,
-                np,
-                os.num_inner_restarts,
-                os.raw_inner_samples,
-                &reduced_options,
-            )?;
-            warnings.extend(r.warnings);
-            r.restarts
-                .into_iter()
-                .map(|r| (wrapped.full(&r.candidates), r.acq_value))
-                .unzip()
-        }
-    };
+    let inner = optimize_hvkg_value_function(acq_function, bounds, options)?;
+    warnings.extend(inner.warnings);
+    let (cands, vals) = (inner.candidates, inner.values);
     let num_optim = (num_restarts as f64 * (1.0 - frac_random)).round_ties_even() as usize;
     let num_optim = num_optim.min(num_restarts);
     let mut optim_ics: Vec<Matrix> = Vec::with_capacity(num_optim);

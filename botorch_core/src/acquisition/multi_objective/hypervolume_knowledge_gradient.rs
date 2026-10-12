@@ -311,7 +311,7 @@ impl HypervolumeValueFunction {
     /// The value function of `model` (a model of independent single-output
     /// GPs) with the reference point `ref_point`, the objective (default:
     /// the identity), the sampler of posterior samples (used without
-    /// `use_posterior_mean`; default: 32 Sobol samples), `log` and an
+    /// `use_posterior_mean`; default: qEHVI's 128 Sobol samples), `log` and an
     /// optional projection of the designs (BoTorch's
     /// `ProjectedAcquisitionFunction`).
     ///
@@ -330,7 +330,10 @@ impl HypervolumeValueFunction {
         output_gps(model.as_ref())?;
         let sampler = match sampler {
             Some(s) => s,
-            None => Arc::new(SobolQMCNormalSampler::new(DEFAULT_INNER_SAMPLES, None)?),
+            None => Arc::new(SobolQMCNormalSampler::new(
+                super::DEFAULT_MO_MC_SAMPLES,
+                None,
+            )?),
         };
         Ok(Self {
             core: ValueCore::new(
