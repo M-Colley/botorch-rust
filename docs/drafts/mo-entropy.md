@@ -74,7 +74,9 @@ from the same distributions.
   7 tests over 20 MES/JES cases and 3 PES cases per model, and BoTorch's EP
   iterates step by step), `botorch_core/tests/mo_entropy_properties.rs`
   (8 tests independent of BoTorch).
-- Live Python tests: `test_parity_mo_entropy.py`, 102 tests.
+- Live Python tests: `test_parity_mo_entropy.py`, 103 tests (also passing
+  against BoTorch with #3399, where JES on model lists conditions on the raw
+  Pareto sets natively).
 - A randomized suite: `test_equivalence_mo_entropy.py`, 60 tests over 12
   scenarios (m = 1, 2, 3, n = 6-14, d = 1-3, random noise, transforms,
   kernels and input ranges, three `ModelListGP`s) with random sample shapes,
@@ -106,6 +108,7 @@ one-ulp difference to percent-level changes of the EP factors).
 | BoTorch's EP iterates step by step (given BoTorch's inputs): factors / marginals / damped Cholesky factors | 1e-9 relative to 10× the last-bit floor / 1e-9 / 1e-9 | 9.8e-11 (scaled) / exact / 5.2e-15 | | |
 | PES where BoTorch's EP itself depends on rounding (iteration counts change under the noise) | 0.5 (gross) | 1.9e-3 | 2.3e-15 | 1.9e-15 |
 | `optimize_acqf` with JES from identical initial conditions (value / candidate) | 1e-6 / 1e-4 | | 8.5e-15 / 3.5e-15 | |
+| `ModelListGP` with a multi-output sub-model: MES and PES vs BoTorch, JES vs BoTorch on the equivalent single-output list (values / gradients) | 1e-9 / 1e-8 | | 5.4e-15 / 6.2e-14 | |
 
 Note on PES fixtures: in the two fixture models whose EP does not converge
 within 250 iterations (`m2_fixed_noise_d2_n8`, and the minimization case of
@@ -171,8 +174,15 @@ PyTorch vectorizes; their single-threaded speed-ups are the smallest.
   transform such as `Normalize`, BoTorch conditions on the sampled fronts at
   the wrong inputs. botorch-rust transforms them once (without input
   transforms both agree). Model lists condition each sub-model on its own
-  outputs, also with multi-output sub-models, which BoTorch main does not
-  handle (it raises a `BotorchTensorDimensionError` or mixes up the outputs).
+  outputs, also with multi-output sub-models. BoTorch main raises a
+  `BotorchTensorDimensionError` for such lists, and #3399 still conditions
+  them wrongly: its `ModelListGP.condition_on_observations` stacks the
+  observations of a multi-output sub-model's outputs along the data
+  dimension (as for a multi-task model), so a batched multi-output
+  `SingleTaskGP` conditions every output on the observations of all of them
+  (JES values off by O(1)). botorch-rust agrees with BoTorch's JES on the
+  equivalent list of single-output models to 9e-16 (values) and 6e-14
+  (gradients).
 - **PES uses the raw training inputs** (a BoTorch bug without a pull request
   yet). BoTorch reads `model.train_inputs` at construction; a model in eval
   mode (e.g. after fitting) stores them transformed, and `model.posterior`

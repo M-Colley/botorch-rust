@@ -70,6 +70,7 @@ from mo_entropy_helpers import (  # noqa: E402
     recorded_candidates,
     recorded_optima,
     recorded_randn,
+    single_output_list,
     ulp_noise,
 )
 
@@ -673,6 +674,54 @@ def test_pes_matches_botorch(case: str) -> None:
         )
         _floored("PES values", va, vb, VALUE_TOL, floor_v)
         _pes_gradients(ga, gb, twins)
+
+
+def test_model_list_of_multi_output_models() -> None:
+    """MES, JES and PES on a ModelListGP with a multi-output sub-model. BoTorch
+    main's JES rejects such lists (#3399's conditioning stacks the outputs of
+    a multi-output sub-model along the data dimension, which conditions each
+    output on all of them), so JES is compared with BoTorch's JES on the
+    equivalent list of single-output models; MES and PES with both."""
+    bt, rs, X = CASES["list"]()
+    equiv = single_output_list(bt)
+    ps = points_in(X, (3, 4, 2), 1)
+    with torch.no_grad(), dense_model_list():
+        pf = bt.posterior(ps).mean
+        CHECK.check(
+            "equivalent single-output list: means",
+            equiv.posterior(ps).mean,
+            pf,
+            EXACT_TOL,
+        )
+    cells = bt_utils.compute_sample_box_decomposition(pf)
+    Xt = points_in(X, (3, 2, 2), 2)
+    for est in ("0", "LB", "LB2", "MC"):
+        torch.manual_seed(0)
+        with dense_model_list():
+            e = bt_jes.qLowerBoundMultiObjectiveJointEntropySearch(
+                equiv, ps, pf, cells, estimation_type=est, num_samples=16
+            )
+            ve, ge = values_and_grads(e, Xt)
+            m = bt_mes.qLowerBoundMultiObjectiveMaxValueEntropySearch(
+                bt, cells, estimation_type=est, num_samples=16
+            )
+            vm, gm = values_and_grads(m, Xt)
+        base = e.sampler.base_samples if est == "MC" else None
+        r = _rs_entropy_search("JES", rs, ps, pf, cells, est, None, base)
+        va, ga = values_and_grads(r, Xt)
+        CHECK.check(f"JES-{est} (list of a multi-output model) values", va, ve, VALUE_TOL)
+        CHECK.check(f"JES-{est} (list of a multi-output model) gradients", ga, ge, GRAD_TOL)
+        base = m.sampler.base_samples if est == "MC" else None
+        r = _rs_entropy_search("MES", rs, ps, pf, cells, est, None, base)
+        va, ga = values_and_grads(r, Xt)
+        CHECK.check(f"MES-{est} (list of a multi-output model) values", va, vm, VALUE_TOL)
+        CHECK.check(f"MES-{est} (list of a multi-output model) gradients", ga, gm, GRAD_TOL)
+    _, vb, gb, _ = _bt_pes(bt, ps, True, None, Xt, None)
+    _, ve, ge, _ = _bt_pes(equiv, ps, True, None, Xt, None)
+    CHECK.check("PES (equivalent lists) values", ve, vb, VALUE_TOL)
+    va, ga = values_and_grads(rs_pes.qMultiObjectivePredictiveEntropySearch(rs, ps), Xt)
+    CHECK.check("PES (list of a multi-output model) values", va, vb, VALUE_TOL)
+    CHECK.check("PES (list of a multi-output model) gradients", ga, gb, GRAD_TOL)
 
 
 def test_log_cdf_robust_matches_botorch() -> None:

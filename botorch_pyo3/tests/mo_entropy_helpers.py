@@ -189,3 +189,40 @@ def ulp_noise(seed: int) -> Iterator[None]:
     finally:
         torch.exp = orig_exp  # type: ignore[assignment]
         torch.erf = orig_erf  # type: ignore[assignment]
+
+
+def single_output_list(model_list: Any) -> Any:
+    """The equivalent BoTorch ``ModelListGP`` of single-output models: every
+    output of a multi-output ``SingleTaskGP`` (RBF or Matern kernel without
+    ``ScaleKernel``, no input transform) becomes a ``SingleTaskGP`` with that
+    output's data and hyperparameters (``Standardize`` of one column has the
+    same statistics as that column of ``Standardize(m)``)."""
+    import gpytorch
+    from botorch.models import ModelListGP, SingleTaskGP
+
+    out = []
+    for sub in model_list.models:
+        if sub.num_outputs == 1:
+            out.append(sub)
+            continue
+        X = sub.train_inputs[0][0]
+        Y = sub.outcome_transform.untransform(sub.train_targets.transpose(-1, -2))[0]
+        base = sub.covar_module
+        for t in range(sub.num_outputs):
+            if isinstance(base, gpytorch.kernels.MaternKernel):
+                kernel = gpytorch.kernels.MaternKernel(nu=base.nu, ard_num_dims=X.shape[-1])
+            else:
+                kernel = gpytorch.kernels.RBFKernel(ard_num_dims=X.shape[-1])
+            gp = SingleTaskGP(X, Y[:, t : t + 1], covar_module=kernel)
+            gp.initialize(
+                **{
+                    "covar_module.lengthscale": base.lengthscale[t].detach(),
+                    "mean_module.constant": sub.mean_module.constant[t].detach(),
+                    "likelihood.noise": sub.likelihood.noise[t].detach(),
+                }
+            )
+            gp.eval()
+            out.append(gp)
+    equiv = ModelListGP(*out)
+    equiv.eval()
+    return equiv
