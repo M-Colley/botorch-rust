@@ -863,7 +863,8 @@ fn mes_and_jes_match_botorch() {
 // ---------------------------------------------------------------------------
 
 /// PES against BoTorch: where BoTorch's EP is stable (its twins with
-/// perturbed training inputs take the same number of iterations), the
+/// perturbed training inputs take the same number of iterations and their
+/// values change by less than 1e-3), the
 /// iteration counts must be identical and the cached factors, values and
 /// gradients agree to the nominal tolerances or 10 times BoTorch's own
 /// change; where EP depends on rounding (the twins disagree), the values
@@ -895,7 +896,13 @@ fn pes_matches_botorch() {
             }
             let acqf = acqf.unwrap_or_else(|e| panic!("{} case {ci}: {e}", f.name));
             let floor = c.floor.as_ref().unwrap();
-            let stable = floor.iterations.iter().all(|&i| i == floor.iterations[0]);
+            // EP is stable when BoTorch's twins take the same number of
+            // iterations and its values barely move under the perturbations;
+            // where they move by more than 1e-3, the iteration count itself
+            // depends on the platform's last-bit rounding of `exp` and `erf`
+            // (one more iteration on Linux for a case with a 0.15 spread).
+            let stable =
+                floor.iterations.iter().all(|&i| i == floor.iterations[0]) && floor.value < 1e-3;
             let expected_values = vals(c.values.as_ref().unwrap());
             let expected_grads: Vec<f64> = c
                 .grads

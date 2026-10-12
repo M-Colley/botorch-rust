@@ -265,7 +265,21 @@ def perturbed_copy(model: Any, seed: int, rel: float = 1e-14) -> Any:
     implementations can reach."""
     import copy
 
-    twin = copy.deepcopy(model)
+    from gpytorch.models import ExactGP
+
+    # Caches that BoTorch builds while differentiating hold tensors with
+    # autograd history (prediction strategies; e.g. the `_perturbations` buffer
+    # of an `InputPerturbation` with a callable perturbation set), which torch
+    # cannot deep-copy. The twin recomputes them: copy prediction strategies as
+    # None and such tensors detached, without touching the original model.
+    memo: dict[int, Any] = {}
+    for m in model.modules():
+        if isinstance(m, ExactGP) and m.prediction_strategy is not None:
+            memo[id(m.prediction_strategy)] = None
+        for v in list(vars(m).get("_buffers", {}).values()) + list(vars(m).values()):
+            if torch.is_tensor(v) and not v.is_leaf:
+                memo[id(v)] = v.detach().clone()
+    twin = copy.deepcopy(model, memo)
     g = torch.Generator().manual_seed(seed)
 
     def perturb(gp: Any) -> None:
