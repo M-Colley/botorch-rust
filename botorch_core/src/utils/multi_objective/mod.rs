@@ -1,7 +1,9 @@
 //! Multi-objective utilities mirroring `botorch.utils.multi_objective`:
-//! Pareto dominance ([`pareto`]), hypervolumes ([`hypervolume`]) and box
+//! Pareto dominance ([`pareto`]), hypervolumes ([`hypervolume`]), box
 //! decompositions of the dominated and non-dominated space
-//! ([`box_decompositions`]).
+//! ([`box_decompositions`]) and the augmented Chebyshev scalarization
+//! ([`scalarization`]). `botorch.utils.multi_objective.optimize` (NSGA-II via
+//! pymoo) is not ported.
 //!
 //! | BoTorch | botorch_core |
 //! |---|---|
@@ -14,6 +16,7 @@
 //! | `bd.pareto_Y`, `bd.Y`, `bd.ref_point`, `bd.num_outcomes`, `bd.batch_shape`, `bd.update(Y)`, `bd.reset()`, `bd.partition_space()`, `bd.compute_hypervolume()`, `bd.get_hypercell_bounds()` | the [`box_decompositions::BoxDecomposition`] trait; bounds as contiguous [`box_decompositions::CellBounds`] |
 //! | `BoxDecompositionList(*decompositions)` | [`box_decompositions::BoxDecompositionList`] (parallel construction with [`box_decompositions::BoxDecompositionList::par_build`] and parallel updates) |
 //! | `box_decompositions.utils.*` | [`box_decompositions::utils`]: [`compute_local_upper_bounds`](box_decompositions::utils::compute_local_upper_bounds), [`get_partition_bounds`](box_decompositions::utils::get_partition_bounds), [`update_local_upper_bounds_incremental`](box_decompositions::utils::update_local_upper_bounds_incremental), [`compute_non_dominated_hypercell_bounds_2d`](box_decompositions::utils::compute_non_dominated_hypercell_bounds_2d), [`compute_dominated_hypercell_bounds_2d`](box_decompositions::utils::compute_dominated_hypercell_bounds_2d), [`expand_ref_point`](box_decompositions::utils::expand_ref_point) (`_expand_ref_point`), [`pad_batch_pareto_frontier`](box_decompositions::utils::pad_batch_pareto_frontier) (`_pad_batch_pareto_frontier`) |
+//! | `get_chebyshev_scalarization(weights, Y, alpha)` | [`scalarization::get_chebyshev_scalarization`] -> [`scalarization::ChebyshevScalarization`] (values and gradients) |
 //!
 //! ## Conventions
 //!
@@ -50,6 +53,7 @@
 pub mod box_decompositions;
 pub mod hypervolume;
 pub mod pareto;
+pub mod scalarization;
 
 use crate::error::{BotorchError, Result};
 use crate::Matrix;
