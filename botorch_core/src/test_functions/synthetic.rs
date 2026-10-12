@@ -721,6 +721,12 @@ impl SyntheticTestFunction {
         Ok(f)
     }
 
+    /// The function value at a single point without the bounds check, for
+    /// problems composed of synthetic functions (e.g. `BraninCurrin`).
+    pub(crate) fn value_unchecked(&self, x: &[f64]) -> f64 {
+        self.value(x)
+    }
+
     /// The function value at a single point (no bounds check).
     fn value(&self, x: &[f64]) -> f64 {
         use TestFunctionKind as K;
