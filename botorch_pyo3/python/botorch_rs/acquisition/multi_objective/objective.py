@@ -27,6 +27,7 @@ from botorch_rs.exceptions.errors import (
     BotorchTensorDimensionError,
     UnsupportedError,
 )
+from botorch_rs.utils.multi_objective._common import shape_repr
 
 #: The temperature of ``apply_constraints`` in
 #: ``FeasibilityWeightedMCMultiOutputObjective``: BoTorch's ``eta=1e-3``,
@@ -182,8 +183,9 @@ class WeightedMCMultiOutputObjective(IdentityMCMultiOutputObjective):
         super().__init__(outcomes=outcomes, num_outcomes=num_outcomes)
         data, shape = to_flat(weights, "weights")
         if len(shape) != 1:
-            shape_s = tuple(weights.shape) if hasattr(weights, "shape") else tuple(shape)
-            raise BotorchTensorDimensionError(f"weights must be an 1-D tensor, but got {shape_s}.")
+            raise BotorchTensorDimensionError(
+                f"weights must be an 1-D tensor, but got {shape_repr(weights, shape)}."
+            )
         if outcomes is not None and shape[0] != len(outcomes):
             raise BotorchTensorDimensionError(
                 "weights must contain the same number of elements as outcomes, "
