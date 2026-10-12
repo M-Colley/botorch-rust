@@ -841,8 +841,16 @@ impl MultiObjectiveTestProblem {
     /// # Errors
     /// See [`MultiObjectiveTestProblem::evaluate_true_rows`].
     pub fn forward_rows(&self, x: &[f64], ncols: usize, noise: bool) -> Result<Vec<f64>> {
-        let mut rng = self.rng.lock().unwrap_or_else(|e| e.into_inner());
-        self.forward_rows_with_rng(x, ncols, noise, &mut *rng)
+        let mut f = self.evaluate_true_rows(x, ncols)?;
+        if let (true, Some(s)) = (noise, &self.noise_std) {
+            // Lock the generator only for drawing the noise.
+            let mut rng = self.rng.lock().unwrap_or_else(|e| e.into_inner());
+            add_noise(&mut f, &s.expand(self.num_objectives), &mut *rng);
+        }
+        if self.negate {
+            f.iter_mut().for_each(|v| *v = -*v);
+        }
+        Ok(f)
     }
 
     fn require_constraints(&self) -> Result<usize> {
@@ -895,8 +903,12 @@ impl MultiObjectiveTestProblem {
     /// # Errors
     /// See [`MultiObjectiveTestProblem::evaluate_slack_true_rows`].
     pub fn evaluate_slack_rows(&self, x: &[f64], ncols: usize, noise: bool) -> Result<Vec<f64>> {
-        let mut rng = self.rng.lock().unwrap_or_else(|e| e.into_inner());
-        self.evaluate_slack_rows_with_rng(x, ncols, noise, &mut *rng)
+        let mut c = self.evaluate_slack_true_rows(x, ncols)?;
+        if let (true, Some(s)) = (noise, &self.constraint_noise_std) {
+            let mut rng = self.rng.lock().unwrap_or_else(|e| e.into_inner());
+            add_noise(&mut c, &s.expand(self.num_constraints()), &mut *rng);
+        }
+        Ok(c)
     }
 
     /// Whether all (possibly noisy) constraint slacks of each point are
