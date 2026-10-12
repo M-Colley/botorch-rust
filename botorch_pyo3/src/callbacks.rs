@@ -56,7 +56,7 @@ pub(crate) fn callback_error(e: PyErr) -> BotorchError {
 const BRIDGE: &str = "botorch_rs._torch_bridge";
 
 /// Row-major data of a matrix.
-fn rows(m: &Matrix) -> Vec<f64> {
+pub(crate) fn rows(m: &Matrix) -> Vec<f64> {
     let mut out = Vec::with_capacity(m.len());
     for i in 0..m.nrows() {
         out.extend(m.row(i).iter());
@@ -423,7 +423,7 @@ pub struct PyTensorFunction {
 
 /// The outputs of a [`PyTensorFunction`]: the values (row-major) with their
 /// shape and, with gradients, the handle of the autograd graph.
-type TensorOutput = (Vec<f64>, Vec<usize>, Option<Py<PyAny>>);
+pub(crate) type TensorOutput = (Vec<f64>, Vec<usize>, Option<Py<PyAny>>);
 
 impl PyTensorFunction {
     /// The callable `f`.
@@ -431,8 +431,17 @@ impl PyTensorFunction {
         Self { callable }
     }
 
+    /// The callable, bound to `py`.
+    pub(crate) fn callable<'py>(&self, py: Python<'py>) -> &Bound<'py, PyAny> {
+        self.callable.bind(py)
+    }
+
     /// `f(*args)` for arguments given as `(row-major data, shape)`.
-    fn call(&self, args: &[(Vec<f64>, Vec<usize>)], with_grad: bool) -> Result<TensorOutput> {
+    pub(crate) fn call(
+        &self,
+        args: &[(Vec<f64>, Vec<usize>)],
+        with_grad: bool,
+    ) -> Result<TensorOutput> {
         Python::attach(|py| -> PyResult<TensorOutput> {
             let bridge = py.import(BRIDGE)?;
             let py_args = args

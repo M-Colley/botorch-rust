@@ -1202,4 +1202,10 @@ impl PyModel {
     fn points_per_input(&self) -> usize {
         self.inner.points_per_input()
     }
+
+    /// Whether the model is deterministic (e.g. a `PosteriorMeanModel`).
+    #[getter]
+    fn is_deterministic(&self) -> bool {
+        self.inner.is_deterministic()
+    }
 }

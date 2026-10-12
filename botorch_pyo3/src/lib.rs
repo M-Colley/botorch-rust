@@ -15,6 +15,8 @@ use pyo3::prelude::*;
 mod acquisition;
 mod arrays;
 mod callbacks;
+mod composite;
+mod deterministic;
 mod errors;
 mod fantasize;
 mod hvkg;
@@ -102,5 +104,8 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Pathwise sampling and the information-theoretic acquisition functions.
     pathwise::register(m)?;
     mo_entropy::register(m)?;
+    // Deterministic models, composite and callable acquisition functions.
+    deterministic::register(m)?;
+    composite::register(m)?;
     Ok(())
 }

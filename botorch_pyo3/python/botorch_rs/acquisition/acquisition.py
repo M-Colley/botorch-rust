@@ -53,6 +53,24 @@ def pending_arg(X_pending: Any, d: int) -> Flat | None:
     return flat
 
 
+def is_acquisition_model(model: Any) -> bool:
+    """Whether botorch_rs acquisition functions can be built on ``model``: a
+    ``SingleTaskGP``, a ``ModelListGP``, or a ``PosteriorMeanModel`` or
+    ``GenericDeterministicModel``."""
+    from botorch_rs.models.deterministic import GenericDeterministicModel, PosteriorMeanModel
+
+    return isinstance(
+        model, (SingleTaskGP, ModelListGP, PosteriorMeanModel, GenericDeterministicModel)
+    )
+
+
+#: The error message for other models.
+ACQUISITION_MODEL_MESSAGE = (
+    "botorch_rs acquisition functions require a botorch_rs SingleTaskGP or ModelListGP model "
+    "(or a PosteriorMeanModel or GenericDeterministicModel)."
+)
+
+
 class AcquisitionFunction:
     """Base class of the acquisition functions.
 
@@ -67,11 +85,8 @@ class AcquisitionFunction:
     _log: bool = False
 
     def __init__(self, model: Any) -> None:
-        if not isinstance(model, (SingleTaskGP, ModelListGP)):
-            raise UnsupportedError(
-                "botorch_rs acquisition functions require a botorch_rs SingleTaskGP or "
-                "ModelListGP model."
-            )
+        if not is_acquisition_model(model):
+            raise UnsupportedError(ACQUISITION_MODEL_MESSAGE)
         if model.batch_shape:
             raise UnsupportedError(
                 "botorch_rs acquisition functions require unbatched models, got a model with "
