@@ -1,6 +1,8 @@
 //! Quasi-random sampling mirroring `botorch.utils.sampling`:
 //! [`draw_sobol_samples`] (scrambled Sobol points in a box) and
-//! [`draw_sobol_normal_samples`] (quasi-random standard normal samples).
+//! [`draw_sobol_normal_samples`] (quasi-random standard normal samples);
+//! uniform samples from the simplex and the unit sphere
+//! ([`sample_simplex`], [`sample_hypersphere`]).
 //!
 //! The Sobol points come from [`SobolEngine`], an Owen-scrambled Sobol
 //! sequence built from the components of the `sobol_burley` crate (Burley's
@@ -20,6 +22,9 @@
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 
+use rand::rngs::Xoshiro256PlusPlus;
+use rand::{RngExt, SeedableRng};
+use rand_distr::StandardNormal;
 use sobol_burley::parts::{hash, owen_scramble_rev, sobol_rev};
 use sobol_burley::NUM_DIMENSIONS;
 
@@ -190,6 +195,106 @@ pub(crate) fn check_bounds(bounds: &Matrix) -> Result<usize> {
         ));
     }
     Ok(bounds.ncols())
+}
+
+/// `n` points drawn uniformly from the probability simplex `{x ∈ [0, 1]^d :
+/// Σ_j x_j = 1}` (BoTorch's `sample_simplex(d, n, qmc, seed)`): the spacings
+/// of `d - 1` sorted uniform random numbers ([`simplex_from_uniform`]),
+/// which are i.i.d. from a seeded Xoshiro256++ generator, or the points of a
+/// scrambled Sobol sequence with `qmc` ([`SobolEngine`]). For `d = 1` every
+/// point is `1`. For the same seed the samples differ from BoTorch's (torch's
+/// generator and `SobolEngine`); their distribution is the same.
+///
+/// # Errors
+/// [`BotorchError::InvalidArgument`] if `d == 0` or, with `qmc`, `n > 2¹⁶`.
+pub fn sample_simplex(d: usize, n: usize, qmc: bool, seed: Option<u64>) -> Result<Matrix> {
+    if d == 0 {
+        return Err(BotorchError::InvalidArgument(
+            "the dimension of the simplex must be positive".into(),
+        ));
+    }
+    if d == 1 {
+        return Ok(Matrix::from_element(n, 1, 1.0));
+    }
+    let u = if qmc {
+        SobolEngine::new(d - 1, seed)?.draw(n, 0)?
+    } else {
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed.unwrap_or_else(random_seed));
+        Matrix::from_fn(n, d - 1, |_, _| rng.random::<f64>())
+    };
+    Ok(simplex_from_uniform(&u))
+}
+
+/// The simplex points of `sample_simplex` from `n × (d - 1)` uniform random
+/// numbers: each row is sorted, framed by 0 and 1, and differenced, giving
+/// `n × d` points that sum to 1.
+pub fn simplex_from_uniform(u: &Matrix) -> Matrix {
+    let (n, k) = u.shape();
+    let mut out = Matrix::zeros(n, k + 1);
+    let mut row: Vec<f64> = Vec::with_capacity(k);
+    for i in 0..n {
+        row.clear();
+        row.extend(u.row(i).iter());
+        // torch.sort: NaNs last.
+        row.sort_by(|a, b| {
+            a.partial_cmp(b)
+                .unwrap_or_else(|| a.is_nan().cmp(&b.is_nan()))
+        });
+        let mut prev = 0.0;
+        for (j, &v) in row.iter().enumerate() {
+            out[(i, j)] = v - prev;
+            prev = v;
+        }
+        out[(i, k)] = 1.0 - prev;
+    }
+    out
+}
+
+/// `n` points drawn uniformly from the unit sphere in `d` dimensions
+/// (BoTorch's `sample_hypersphere(d, n, qmc, seed)`): standard normal
+/// vectors normalized to unit length ([`hypersphere_from_normal`]), i.i.d.
+/// from a seeded Xoshiro256++ generator or quasi-random with `qmc`
+/// ([`draw_sobol_normal_samples`]). For `d = 1` the points are `±1` with equal
+/// probability (also with `qmc`, as in BoTorch). For the same seed the
+/// samples differ from BoTorch's; their distribution is the same.
+///
+/// # Errors
+/// [`BotorchError::InvalidArgument`] if `d == 0` or, with `qmc`, `n > 2¹⁶`.
+pub fn sample_hypersphere(d: usize, n: usize, qmc: bool, seed: Option<u64>) -> Result<Matrix> {
+    if d == 0 {
+        return Err(BotorchError::InvalidArgument(
+            "the dimension of the hypersphere must be positive".into(),
+        ));
+    }
+    let seed = seed.unwrap_or_else(random_seed);
+    if d == 1 {
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
+        return Ok(Matrix::from_fn(n, 1, |_, _| {
+            if rng.random::<bool>() {
+                1.0
+            } else {
+                -1.0
+            }
+        }));
+    }
+    let z = if qmc {
+        draw_sobol_normal_samples(d, n, Some(seed))?
+    } else {
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
+        Matrix::from_fn(n, d, |_, _| rng.sample(StandardNormal))
+    };
+    Ok(hypersphere_from_normal(&z))
+}
+
+/// The sphere points of `sample_hypersphere` from `n × d` normal samples:
+/// every row divided by its Euclidean norm.
+pub fn hypersphere_from_normal(z: &Matrix) -> Matrix {
+    let mut out = z.clone();
+    for mut row in out.row_iter_mut() {
+        let norm = row.iter().map(|v| v * v).sum::<f64>().sqrt();
+        row /= norm;
+    }
+    out
 }
 
 #[cfg(test)]
