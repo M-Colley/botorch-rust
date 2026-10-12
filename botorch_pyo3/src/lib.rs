@@ -16,6 +16,7 @@ mod acquisition;
 mod arrays;
 mod callbacks;
 mod errors;
+mod mo_test_functions;
 mod models;
 mod optim;
 mod polytope;
@@ -66,6 +67,12 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Test functions.
     m.add_class::<test_functions::PySyntheticTestFunction>()?;
     m.add_function(wrap_pyfunction!(test_functions::test_function_names, m)?)?;
+    // Multi-objective test problems.
+    m.add_class::<mo_test_functions::PyMultiObjectiveTestProblem>()?;
+    m.add_function(wrap_pyfunction!(
+        mo_test_functions::multi_objective_problem_names,
+        m
+    )?)?;
     // Threads.
     m.add_function(wrap_pyfunction!(threads::set_num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(threads::get_num_threads, m)?)?;

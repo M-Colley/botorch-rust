@@ -599,6 +599,27 @@ impl MultiObjectiveTestProblem {
         Ok(self)
     }
 
+    /// Replaces the bounds against which inputs are validated, e.g. by
+    /// BoTorch's bounds rounded to the dtype of the problem: BoTorch validates
+    /// inputs against its `bounds` buffer, which has the problem's dtype
+    /// (`dtype=torch.float32` rounds `-0.15` to `-0.15000000596...`).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] unless `bounds` is `2 × d` and
+    /// [`BotorchError::InvalidArgument`] for non-finite bounds or lower bounds
+    /// above upper bounds.
+    pub fn with_bounds(mut self, bounds: Matrix) -> Result<Self> {
+        let d = crate::utils::sampling::check_bounds(&bounds)?;
+        if d != self.dim {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "Expected the bounds to match the dimensionality of the domain. Got {} and {d}.",
+                self.dim
+            )));
+        }
+        self.bounds = bounds;
+        Ok(self)
+    }
+
     /// Seeds the random number generator of the observation noise (by
     /// default it is seeded randomly, like torch's global RNG).
     pub fn with_seed(self, seed: u64) -> Self {
@@ -1259,6 +1280,15 @@ mod tests {
             p.evaluate_true(&Matrix::zeros(0, 3)).unwrap().shape(),
             (0, 2)
         );
+        // Bounds rounded to float32 (BoTorch's `dtype=torch.float32`).
+        let lower = -0.15f32 as f64;
+        let dh4 = MultiObjectiveTestProblem::new(MultiObjectiveKind::Dh4, Some(3), None).unwrap();
+        let corner = Matrix::from_row_slice(1, 3, &[0.0, lower, -1.0]);
+        assert!(dh4.evaluate_true(&corner).is_err());
+        let b = dh4.bounds().map(|v| v as f32 as f64);
+        let dh4 = dh4.with_bounds(b).unwrap();
+        assert!(dh4.evaluate_true(&corner).is_ok());
+        assert!(dh4.clone().with_bounds(Matrix::zeros(2, 2)).is_err());
     }
 
     #[test]
