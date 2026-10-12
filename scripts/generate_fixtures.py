@@ -51,9 +51,20 @@ infeasible baselines with recorded lower-bound points),
 nonlinear / fixed-feature constraints) and moments of hit-and-run polytope
 samples.
 
+Phase 5A, utilities (``<out>/phase5a_utils/*.json``): the multi-objective
+utilities -- ``is_non_dominated`` (all flags, batches, BoTorch's loop variant,
+infinities; NaN outcomes in ``pareto_nan.json``, written only with a BoTorch
+that includes meta-pytorch/botorch#3392), ``Hypervolume``,
+``infer_reference_point``, ``get_hypervolume_maximizing_subset`` (with
+BoTorch's random choices), the three box decompositions (states after
+construction, incremental updates and ``reset``, batches), the helpers of
+``box_decompositions.utils``, ``get_chebyshev_scalarization`` (values and
+gradients) and the transformations of ``sample_simplex`` and
+``sample_hypersphere``.
+
 Usage (from the repository root, with BoTorch, GPyTorch and PyTorch installed)::
 
-    python scripts/generate_fixtures.py [--out botorch_core/tests/fixtures] [--phase 1|2|4|4b|all]
+    python scripts/generate_fixtures.py [--out botorch_core/tests/fixtures] [--phase 1|2|4|4b|5a-utils|all]
 
 To use a source checkout of BoTorch, put it first on the path, e.g.
 ``PYTHONPATH=/path/to/botorch python -P scripts/generate_fixtures.py``.
@@ -2224,6 +2235,445 @@ def generate_phase4b(out: str) -> None:
     _write_json(os.path.join(out, "polytope.json"), p4b_polytope_fixture())
 
 
+# ---------------------------------------------------------------------------
+# Phase 5A (utils): multi-objective utilities
+# ---------------------------------------------------------------------------
+# Written to <out>/phase5a_utils/. Non-finite numbers are written as the
+# strings "inf", "-inf" and "nan" (JSON has no literals for them). Outcome
+# sets come from three generators: i.i.d. uniform points (small Pareto
+# fronts), points near the positive unit sphere (large fronts) and points on
+# a coarse grid (ties and duplicates); some sets get an exact duplicate and
+# points that do not dominate the reference point.
+
+
+def _p5a_enc(x):
+    """JSON-compatible values: tensors as lists, non-finite floats as strings."""
+    if isinstance(x, torch.Tensor):
+        x = x.detach().cpu().tolist()
+    if isinstance(x, float):
+        if math.isnan(x):
+            return "nan"
+        if math.isinf(x):
+            return "inf" if x > 0 else "-inf"
+        return x
+    if isinstance(x, dict):
+        return {k: _p5a_enc(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_p5a_enc(v) for v in x]
+    return x
+
+
+def _p5a_points(n: int, m: int, kind: str, seed: int, batch=()) -> torch.Tensor:
+    g = torch.Generator().manual_seed(seed)
+    shape = (*batch, n, m)
+    if kind == "uniform":
+        Y = torch.rand(*shape, generator=g, dtype=DTYPE)
+    elif kind == "front":
+        u = torch.rand(*shape, generator=g, dtype=DTYPE) + 1e-3
+        u = u / u.norm(dim=-1, keepdim=True)
+        Y = u * (1.0 - 0.15 * torch.rand(*batch, n, 1, generator=g, dtype=DTYPE))
+    elif kind == "grid":
+        Y = torch.round(4.0 * torch.rand(*shape, generator=g, dtype=DTYPE)) / 4.0
+    else:
+        raise ValueError(kind)
+    if n >= 4:
+        Y[..., n // 2, :] = Y[..., 0, :]  # an exact duplicate
+    return Y
+
+
+def _p5a_write(path: str, obj: dict) -> None:
+    """Compact JSON (the cell bounds of the decompositions are large)."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(_p5a_enc(obj), f, separators=(",", ":"))
+        f.write("\n")
+
+
+def _p5a_versions() -> dict:
+    return {
+        "botorch": botorch.__version__,
+        "botorch_revision": botorch_revision(),
+        "torch": torch.__version__,
+    }
+
+
+def _p5a_has_nan_fix() -> bool:
+    """Whether the imported BoTorch treats partially NaN points as dominated
+    (meta-pytorch/botorch#3392)."""
+    from botorch.utils.multi_objective.pareto import is_non_dominated
+
+    Y = torch.tensor([[float("nan"), 0.0], [1.0, 1.0]], dtype=DTYPE)
+    return is_non_dominated(Y, deduplicate=False).tolist() == [False, True]
+
+
+def p5a_pareto_fixture() -> dict:
+    """``is_non_dominated`` for all flag combinations: m = 1..5, n = 0..300,
+    ties, duplicates and infinities, batches (also large enough for BoTorch's
+    loop variant) and n = 1200 (loop variant)."""
+    from botorch.utils.multi_objective.pareto import is_non_dominated
+
+    cases = []
+    seed = 5000
+    configs = [(m, n, kind) for m in (1, 2, 3, 4, 5) for n in (0, 1, 2, 7, 50, 300)
+               for kind in ("uniform", "front", "grid")]
+    configs += [(2, 1200, "front"), (3, 1200, "grid")]
+    for m, n, kind in configs:
+        seed += 1
+        Y = _p5a_points(n, m, kind, seed)
+        if n >= 7 and m >= 2:
+            Y[3, 0] = float("inf")
+            Y[5, 1] = float("-inf")
+        cases.append({"name": f"m{m}_n{n}_{kind}", "y": Y, "shape": list(Y.shape)})
+    for batch, n, m, kind in (((2, 3), 20, 2, "grid"), ((10,), 300, 2, "front"), ((4,), 30, 3, "uniform")):
+        seed += 1
+        Y = _p5a_points(n, m, kind, seed, batch=batch)
+        cases.append({"name": f"batch{'x'.join(map(str, batch))}_m{m}_n{n}_{kind}", "y": Y,
+                      "shape": list(Y.shape)})
+    for c in cases:
+        Y = c.pop("y")
+        c["y"] = Y.reshape(-1)
+        c["masks"] = {f"{mx}_{dd}": is_non_dominated(Y, maximize=mx, deduplicate=dd).reshape(-1)
+                      for mx in (True, False) for dd in (True, False)}
+    return {"versions": _p5a_versions(), "cases": cases}
+
+
+def p5a_pareto_nan_fixture() -> dict:
+    """``is_non_dominated`` with NaN outcomes (requires a BoTorch with
+    meta-pytorch/botorch#3392): partially and entirely NaN points, a NaN
+    first point, and the loop variant (n = 1200)."""
+    from botorch.utils.multi_objective.pareto import is_non_dominated
+
+    cases = []
+    for name, n, m, rows in (("first_row", 6, 2, [0]), ("partial", 30, 3, [2, 7, 11]),
+                             ("all_nan", 10, 2, [4]), ("loop", 1200, 2, [0, 10, 500])):
+        Y = _p5a_points(n, m, "front", 5900 + n)
+        for r in rows:
+            Y[r, r % m] = float("nan")
+        if name == "all_nan":
+            Y[4] = float("nan")
+        masks = {f"{mx}_{dd}": is_non_dominated(Y, maximize=mx, deduplicate=dd).reshape(-1)
+                 for mx in (True, False) for dd in (True, False)}
+        cases.append({"name": name, "y": Y.reshape(-1), "shape": list(Y.shape), "masks": masks})
+    return {"versions": _p5a_versions(), "cases": cases}
+
+
+def p5a_hypervolume_fixture() -> dict:
+    """``Hypervolume.compute`` (Pareto sets and raw sets with dominated points
+    and points that do not dominate the reference point), m = 1..5;
+    ``infer_reference_point``; ``get_hypervolume_maximizing_subset`` (with
+    the random choices BoTorch makes)."""
+    import random
+
+    from botorch.utils.multi_objective.hypervolume import (
+        Hypervolume,
+        get_hypervolume_maximizing_subset,
+        infer_reference_point,
+    )
+    from botorch.utils.multi_objective.pareto import is_non_dominated
+
+    hv_cases = []
+    seed = 6000
+    sizes = {1: (0, 1, 30), 2: (0, 1, 5, 50, 300), 3: (2, 10, 60, 120), 4: (5, 20, 40), 5: (5, 12, 20)}
+    for m, ns in sizes.items():
+        for n in ns:
+            for kind in ("uniform", "front", "grid"):
+                seed += 1
+                Y = _p5a_points(n, m, kind, seed)
+                ref = torch.full((m,), 0.1, dtype=DTYPE) if kind != "grid" else torch.zeros(m, dtype=DTYPE)
+                for subset in ("pareto", "raw"):
+                    pts = Y[is_non_dominated(Y)] if subset == "pareto" and n > 0 else Y
+                    hv_cases.append({"name": f"m{m}_n{n}_{kind}_{subset}", "ref_point": ref, "y": pts,
+                                     "hv": Hypervolume(ref).compute(pts)})
+    # Infinite outcomes.
+    Y = torch.tensor([[1.0, float("inf")], [2.0, 1.0]], dtype=DTYPE)
+    hv_cases.append({"name": "inf", "ref_point": torch.zeros(2, dtype=DTYPE), "y": Y,
+                     "hv": Hypervolume(torch.zeros(2, dtype=DTYPE)).compute(Y)})
+
+    ref_cases = []
+    g = torch.Generator().manual_seed(6500)
+    P2 = torch.rand(10, 2, generator=g, dtype=DTYPE)
+    P3 = torch.rand(10, 3, generator=g, dtype=DTYPE)
+    nan = float("nan")
+    for name, P, max_ref in (
+        ("none_m2", P2, None), ("none_m3", P3, None),
+        ("better_m2", P2, torch.tensor([0.1, 0.1], dtype=DTYPE)),
+        ("not_better_m3", P3, torch.tensor([0.9, 0.95, 0.99], dtype=DTYPE)),
+        ("partial_nan_m3", P3, torch.tensor([0.2, nan, 0.3], dtype=DTYPE)),
+        ("partial_nan_not_better_m3", P3, torch.tensor([2.0, nan, 0.3], dtype=DTYPE)),
+        ("all_nan_m2", P2, torch.tensor([nan, nan], dtype=DTYPE)),
+        ("single", P3[:1], None), ("single_better", P3[:1], torch.tensor([0.0, 0.0, 0.0], dtype=DTYPE)),
+        ("single_zero", torch.tensor([[0.0, 2.0]], dtype=DTYPE), None),
+        ("constant_objective", torch.tensor([[1.0, 0.5], [1.0, 0.2], [1.0, 0.9]], dtype=DTYPE), None),
+        ("empty", P2[:0], torch.tensor([0.5, -1.5], dtype=DTYPE)),
+    ):
+        for scale in (0.1, 0.25):
+            for smr in (False, True):
+                ref_cases.append({"name": f"{name}_{scale}_{smr}", "pareto_y": P, "shape": list(P.shape),
+                                  "max_ref_point": max_ref, "scale": scale, "scale_max_ref_point": smr,
+                                  "ref_point": infer_reference_point(P, max_ref_point=max_ref, scale=scale,
+                                                                     scale_max_ref_point=smr)})
+
+    subset_cases = []
+    for name, m, n, k, worse in (("pareto_m2", 2, 12, 4, False), ("pareto_m3", 3, 15, 6, False),
+                                 ("raw_m2", 2, 15, 15, True), ("raw_m3", 3, 10, 8, True)):
+        Y = _p5a_points(n, m, "front", 6600 + n * m)
+        ref = torch.zeros(m, dtype=DTYPE)
+        if worse:
+            Y[1] = -0.5  # does not dominate the reference point
+            Y[2] = 0.5 * Y[0]  # dominated
+        else:
+            Y = Y[is_non_dominated(Y)]
+        choices = []
+        orig = random.choice
+
+        def recording_choice(seq, _orig=orig, _choices=choices):
+            c = _orig(seq)
+            _choices.append({"remaining": list(seq), "choice": c})
+            return c
+
+        random.seed(6700 + n)
+        random.choice = recording_choice
+        try:
+            sub, idx = get_hypervolume_maximizing_subset(k, Y, ref)
+        finally:
+            random.choice = orig
+        subset_cases.append({"name": name, "n": k, "y": Y, "ref_point": ref, "subset": sub,
+                             "indices": idx, "choices": choices})
+    return {"versions": _p5a_versions(), "hypervolume": hv_cases, "infer_reference_point": ref_cases,
+            "maximizing_subset": subset_cases}
+
+
+def _p5a_state(bd) -> dict:
+    from botorch.utils.multi_objective.box_decompositions.box_decomposition import FastPartitioning
+
+    state = {"pareto_y": bd.pareto_Y.reshape(-1), "pareto_shape": list(bd.pareto_Y.shape),
+             "hv": bd.compute_hypervolume().reshape(-1)}
+    cells = bd.get_hypercell_bounds()
+    state["cells"] = cells.reshape(-1)
+    state["cells_shape"] = list(cells.shape)
+    if isinstance(bd, FastPartitioning) and bd.num_outcomes > 2 and hasattr(bd, "_U"):
+        state["u"] = bd._U.reshape(-1)
+        state["z"] = bd._Z.reshape(-1)
+        state["num_bounds"] = bd._U.shape[0]
+    return state
+
+
+def p5a_box_decomposition_fixture() -> dict:
+    """The three partitionings: m = 1..5, fronts of up to 300 points (two
+    objectives), points that do not dominate the reference point, duplicates,
+    an empty frontier, alpha > 0, batches of fronts of different sizes
+    (shared and batched reference points), and incremental updates with new
+    Pareto points, with dominated points only and with points worse than the
+    reference point, followed by ``reset()``."""
+    from botorch.utils.multi_objective.box_decompositions import (
+        DominatedPartitioning,
+        FastNondominatedPartitioning,
+        NondominatedPartitioning,
+    )
+
+    classes = {"NondominatedPartitioning": NondominatedPartitioning,
+               "FastNondominatedPartitioning": FastNondominatedPartitioning,
+               "DominatedPartitioning": DominatedPartitioning}
+    cases = []
+    seed = 7000
+    configs = []
+    for m, ns in {2: (0, 1, 8, 60, 300), 3: (1, 10, 40, 100), 4: (6, 15, 30), 5: (5, 12)}.items():
+        for n in ns:
+            for kind in ("uniform", "front", "grid"):
+                configs.append((m, n, kind))
+    configs.append((1, 6, "uniform"))
+    for m, n, kind in configs:
+        seed += 1
+        Y = _p5a_points(n, m, kind, seed)
+        ref = torch.full((m,), 0.2, dtype=DTYPE)
+        g = torch.Generator().manual_seed(seed + 1)
+        new_pareto = 0.95 + 0.1 * torch.rand(3, m, generator=g, dtype=DTYPE)
+        dominated = 0.21 + 0.01 * torch.rand(2, m, generator=g, dtype=DTYPE)
+        worse = torch.rand(2, m, generator=g, dtype=DTYPE) * 0.1
+        large = n > (60 if m == 3 else 20 if m > 3 else 1000)
+        for name, cls in classes.items():
+            if m == 1 and name != "NondominatedPartitioning":
+                continue  # BoTorch's local upper bounds need two objectives
+            alphas = [0.0]
+            if name == "NondominatedPartitioning":
+                if large and m > 2:
+                    continue  # too many cells for an exact binary partitioning
+                if m > 2 and n >= 10:
+                    alphas += [1e-3, 1e-2, 0.1]
+            for alpha in alphas:
+                kw = {"alpha": alpha} if alpha > 0 else {}
+                bd = cls(ref_point=ref, Y=Y, **kw)
+                states = [_p5a_state(bd)]
+                updates = [new_pareto, dominated, worse] if not large else [new_pareto]
+                for upd in updates:
+                    bd.update(upd)
+                    states.append(_p5a_state(bd))
+                if not large:
+                    bd.reset()
+                    states.append(_p5a_state(bd))
+                cases.append({"name": f"{name}_m{m}_n{n}_{kind}_a{alpha}", "class": name, "alpha": alpha,
+                              "ref_point": ref, "ref_shape": [m], "y": Y.reshape(-1), "y_shape": list(Y.shape),
+                              "updates": [u.reshape(-1) for u in updates],
+                              "update_shapes": [list(u.shape) for u in updates], "reset": not large,
+                              "states": states})
+    # Batches of two-objective fronts of different sizes (one empty).
+    for n, batched_ref in ((1, False), (12, False), (40, True), (150, False)):
+        seed += 1
+        Y = _p5a_points(n, 2, "front", seed, batch=(5,))
+        Y[1] = Y[1] * 0.5  # a smaller front
+        Y[3] = -1.0  # no point better than the reference point
+        if n >= 4:
+            Y[2, : n // 2] = Y[2, :1]  # many duplicates
+        ref = torch.zeros(2, dtype=DTYPE)
+        if batched_ref:
+            ref = torch.tensor([[0.0, 0.0], [0.1, 0.0], [0.0, 0.2], [0.0, 0.0], [-0.5, -0.5]], dtype=DTYPE)
+        g = torch.Generator().manual_seed(seed + 1)
+        upd = torch.rand(5, 3, 2, generator=g, dtype=DTYPE) * 1.2
+        for name, cls in classes.items():
+            bd = cls(ref_point=ref, Y=Y)
+            states = [_p5a_state(bd)]
+            bd.update(upd)
+            states.append(_p5a_state(bd))
+            cases.append({"name": f"{name}_batch5_n{n}_ref{'b' if batched_ref else 's'}", "class": name,
+                          "alpha": 0.0, "ref_point": ref.reshape(-1), "ref_shape": list(ref.shape),
+                          "y": Y.reshape(-1), "y_shape": list(Y.shape), "updates": [upd.reshape(-1)],
+                          "update_shapes": [list(upd.shape)], "reset": False, "states": states})
+    return {"versions": _p5a_versions(), "cases": cases}
+
+
+def p5a_box_utils_fixture() -> dict:
+    """``compute_local_upper_bounds`` step by step (including dominated
+    points), ``update_local_upper_bounds_incremental``,
+    ``get_partition_bounds``, the two-objective cell bounds (batched, shared
+    and batched reference points), ``_pad_batch_pareto_frontier`` (with
+    feasibility masks) and ``_expand_ref_point``."""
+    from botorch.utils.multi_objective.box_decompositions.utils import (
+        _expand_ref_point,
+        _pad_batch_pareto_frontier,
+        compute_dominated_hypercell_bounds_2d,
+        compute_local_upper_bounds,
+        compute_non_dominated_hypercell_bounds_2d,
+        get_partition_bounds,
+        update_local_upper_bounds_incremental,
+    )
+    from botorch.utils.multi_objective.pareto import is_non_dominated
+
+    lub_cases = []
+    for m, n in ((2, 8), (3, 12), (4, 10), (5, 6)):
+        Y = _p5a_points(n, m, "front", 7500 + m)
+        neg = -Y
+        ref = torch.zeros(m, dtype=DTYPE)
+        U = ref.unsqueeze(0).clone()
+        Z = torch.zeros(1, m, m, dtype=DTYPE)
+        for j in range(m):
+            Z[0, j] = float("-inf")
+            Z[0, j, j] = U[0, j]
+        U0, Z0 = U.clone(), Z.clone()
+        steps = []
+        for i in range(n):
+            U, Z = compute_local_upper_bounds(U=U, Z=Z, z=neg[i])
+            steps.append({"z": neg[i], "u": U.reshape(-1), "z_points": Z.reshape(-1), "len": U.shape[0]})
+        U_inc, Z_inc = update_local_upper_bounds_incremental(new_pareto_Y=neg, U=U0, Z=Z0)
+        bounds = get_partition_bounds(Z=Z, U=U, ref_point=ref)
+        lub_cases.append({"m": m, "u0": U0.reshape(-1), "z0": Z0.reshape(-1), "steps": steps,
+                          "incremental_u": U_inc.reshape(-1), "incremental_z": Z_inc.reshape(-1),
+                          "partition_bounds": bounds.reshape(-1), "partition_shape": list(bounds.shape)})
+    cells_2d = []
+    for batch, n, batched_ref in (((), 1, False), ((), 9, False), ((3,), 6, False), ((3,), 6, True)):
+        Y = _p5a_points(n, 2, "front", 7600 + n + len(batch), batch=batch) + 0.5
+        Y = Y.gather(-2, torch.argsort(Y[..., :1], dim=-2).expand(Y.shape))  # sorted by the first outcome
+        ref = torch.tensor([0.1, 0.2], dtype=DTYPE)
+        if batched_ref:
+            ref = torch.tensor([[0.1, 0.2], [0.0, 0.0], [0.3, 0.1]], dtype=DTYPE)
+        nd = compute_non_dominated_hypercell_bounds_2d(pareto_Y_sorted=Y, ref_point=ref)
+        d = compute_dominated_hypercell_bounds_2d(pareto_Y_sorted=Y, ref_point=ref)
+        cells_2d.append({"y": Y.reshape(-1), "y_shape": list(Y.shape), "ref_point": ref.reshape(-1),
+                         "non_dominated": nd.reshape(-1), "non_dominated_shape": list(nd.shape),
+                         "dominated": d.reshape(-1), "dominated_shape": list(d.shape)})
+    pad_cases = []
+    for batch, n, m in (((), 10, 2), ((4,), 10, 2), ((3,), 8, 3)):
+        Y = _p5a_points(n, m, "grid", 7700 + n * m, batch=batch)
+        ref = torch.full((*batch, m), 0.25, dtype=DTYPE)
+        g = torch.Generator().manual_seed(7701)
+        feas = torch.rand(*batch, n, generator=g) > 0.3
+        for is_pareto in (False, True):
+            for mask in (None, feas):
+                Yp = Y[is_non_dominated(Y)] if (is_pareto and not batch) else Y
+                mask = None if mask is None else mask[..., : Yp.shape[-2]]
+                out = _pad_batch_pareto_frontier(Y=Yp, ref_point=ref, is_pareto=is_pareto, feasibility_mask=mask)
+                pad_cases.append({"y": Yp.reshape(-1), "y_shape": list(Yp.shape), "ref_point": ref.reshape(-1),
+                                  "is_pareto": is_pareto, "mask": None if mask is None else mask.reshape(-1),
+                                  "out": out.reshape(-1), "out_shape": list(out.shape)})
+    expand = _expand_ref_point(torch.tensor([0.5, -1.0], dtype=DTYPE), torch.Size([3]))
+    return {"versions": _p5a_versions(), "local_upper_bounds": lub_cases, "cells_2d": cells_2d,
+            "pad": pad_cases, "expand": {"ref_point": [0.5, -1.0], "batch_shape": [3], "out": expand.reshape(-1)}}
+
+
+def p5a_scalarization_fixture() -> dict:
+    """``get_chebyshev_scalarization``: values and autograd gradients for
+    mixed-sign weights, no observations, a constant outcome and several
+    ``alpha``."""
+    from botorch.utils.multi_objective.scalarization import get_chebyshev_scalarization
+
+    cases = []
+    g = torch.Generator().manual_seed(7800)
+    for name, weights, n, alpha in (
+        ("pos_m2", [0.3, 0.7], 10, 0.05), ("mixed_m2", [0.5, -0.5], 10, 0.05),
+        ("mixed_m3", [-0.2, 0.3, 0.5], 1, 0.0), ("pos_m4", [0.1, 0.2, 0.3, 0.4], 25, 0.5),
+        ("no_obs_m3", [0.2, 0.3, 0.5], 0, 0.05), ("constant_m2", [0.6, -0.4], 5, 0.05),
+    ):
+        m = len(weights)
+        w = torch.tensor(weights, dtype=DTYPE)
+        Y = torch.randn(n, m, generator=g, dtype=DTYPE)
+        if name.startswith("constant"):
+            Y[:, 0] = 1.5
+        X = 2.0 * torch.randn(20, m, generator=g, dtype=DTYPE)
+        f = get_chebyshev_scalarization(weights=w, Y=Y, alpha=alpha)
+        Xg = X.clone().requires_grad_(True)
+        values = f(Xg)
+        (grad,) = torch.autograd.grad(values.sum(), Xg)
+        cases.append({"name": name, "weights": weights, "y": Y.reshape(-1), "n": n, "alpha": alpha,
+                      "x": X.reshape(-1), "values": values.detach(), "grads": grad.reshape(-1)})
+    return {"versions": _p5a_versions(), "cases": cases}
+
+
+def p5a_sampling_fixture() -> dict:
+    """``sample_simplex`` / ``sample_hypersphere`` from torch's random
+    numbers (the deterministic transformations), and moments of their
+    quasi-random samples."""
+    from botorch.utils.sampling import manual_seed, sample_hypersphere, sample_simplex
+
+    simplex, sphere = [], []
+    for d, n, seed in ((2, 5, 0), (3, 7, 1), (5, 4, 2), (1, 3, 3)):
+        with manual_seed(seed):
+            u = torch.rand(n, max(d - 1, 0), dtype=DTYPE)
+        simplex.append({"d": d, "n": n, "u": u.reshape(-1),
+                        "out": sample_simplex(d=d, n=n, seed=seed, dtype=DTYPE).reshape(-1)})
+    for d, n, seed in ((2, 5, 0), (3, 7, 1), (6, 4, 2)):
+        with manual_seed(seed):
+            z = torch.randn(n, d, dtype=DTYPE)
+        sphere.append({"d": d, "n": n, "z": z.reshape(-1),
+                       "out": sample_hypersphere(d=d, n=n, seed=seed, dtype=DTYPE).reshape(-1)})
+    return {"versions": _p5a_versions(), "simplex": simplex, "hypersphere": sphere}
+
+
+def generate_phase5a_utils(out: str) -> None:
+    out = os.path.join(out, "phase5a_utils")
+    os.makedirs(out, exist_ok=True)
+    for fname, build in (("pareto.json", p5a_pareto_fixture), ("hypervolume.json", p5a_hypervolume_fixture),
+                         ("box_decompositions.json", p5a_box_decomposition_fixture),
+                         ("box_utils.json", p5a_box_utils_fixture),
+                         ("scalarization.json", p5a_scalarization_fixture),
+                         ("sampling.json", p5a_sampling_fixture)):
+        _p5a_write(os.path.join(out, fname), build())
+        print(f"phase 5a-utils: wrote {fname}", file=sys.stderr)
+    if _p5a_has_nan_fix():
+        _p5a_write(os.path.join(out, "pareto_nan.json"), p5a_pareto_nan_fixture())
+        print("phase 5a-utils: wrote pareto_nan.json", file=sys.stderr)
+    else:
+        print("phase 5a-utils: pareto_nan.json not regenerated (it needs a BoTorch with "
+              "meta-pytorch/botorch#3392, which treats partially NaN points as dominated)", file=sys.stderr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     default_out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "botorch_core", "tests", "fixtures")
@@ -2231,12 +2681,13 @@ def main() -> None:
     parser.add_argument("--only", nargs="*", help="only generate these (phase 1) case names")
     parser.add_argument(
         "--phase",
-        choices=["1", "2", "4", "4b", "all"],
+        choices=["1", "2", "4", "4b", "5a-utils", "all"],
         default="all",
         help=(
             "1: GP fixtures, 2: acquisition / optimization / test-function fixtures, "
             "4: multi-output, batched and ModelListGP models, posterior transforms, constrained EI, "
-            "4b: MC objectives, outcome constraints, constrained optimize_acqf, polytope sampling"
+            "4b: MC objectives, outcome constraints, constrained optimize_acqf, polytope sampling, "
+            "5a-utils: multi-objective utilities"
         ),
     )
     args = parser.parse_args()
@@ -2264,6 +2715,8 @@ def main() -> None:
         generate_phase4(args.out)
     if args.phase in ("4b", "all"):
         generate_phase4b(args.out)
+    if args.phase in ("5a-utils", "all"):
+        generate_phase5a_utils(args.out)
 
 
 if __name__ == "__main__":
