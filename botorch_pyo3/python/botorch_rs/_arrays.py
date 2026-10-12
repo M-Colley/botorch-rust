@@ -22,15 +22,16 @@ import math
 import sys
 from array import array
 from collections.abc import Sequence
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, TypeAlias
 
 #: The values of an array in row-major order: a list of numbers (nested lists,
 #: small arrays) or a float64 ``array.array`` (larger torch tensors, NumPy
 #: arrays and results). Both are sequences of floats; use ``list(data)`` where
 #: a list is needed (``array + list`` raises, ``array == list`` is False).
-FloatData = list[float] | array[float]
+#: (A string, since ``array`` is only subscriptable from Python 3.12.)
+FloatData: TypeAlias = "list[float] | array[float]"
 #: ``(data, shape)`` as produced by :func:`to_flat`.
-Flat = tuple[FloatData, tuple[int, ...]]
+Flat: TypeAlias = "tuple[FloatData, tuple[int, ...]]"
 #: ``(data, shape)`` as returned by the extension module.
 Pair = tuple[Sequence[float], Sequence[int]]
 
