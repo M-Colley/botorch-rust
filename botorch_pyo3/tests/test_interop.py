@@ -69,7 +69,8 @@ def test_numpy_dtypes() -> None:
     assert from_flat([1.0, 2.0], (2,), kind_of(x32)).dtype == np.float32
     xi = np.ones((2, 2), dtype=np.int64)
     assert from_flat([1.0], (1,), kind_of(xi)).dtype == np.float64
-    assert to_flat(xi) == ([1, 1, 1, 1], (2, 2))
+    data, shp = to_flat(xi)
+    assert list(data) == [1, 1, 1, 1] and shp == (2, 2)
     assert kind_from_dtype(np.float64).lib == "numpy"
 
 
@@ -81,7 +82,8 @@ def test_torch_dtypes_and_devices() -> None:
     k = kind_of(x32)
     assert k.lib == "torch" and k.dtype == torch.float32
     assert from_flat([1.0, 2.0], (2,), k).dtype == torch.float32
-    assert to_flat(x32) == ([1.0] * 4, (2, 2))
+    data, shp = to_flat(x32)
+    assert list(data) == [1.0] * 4 and shp == (2, 2)
     xi = torch.ones(3, dtype=torch.int64)
     assert from_flat([0.5], (1,), kind_of(xi)).dtype == torch.float64
     assert kind_from_dtype(torch.float64) == ArrayKind("torch", torch.float64, None)

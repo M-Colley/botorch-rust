@@ -1,23 +1,140 @@
 //! Dense float64 arrays exchanged with the Python layer.
 //!
-//! The `botorch_rs` package converts torch tensors, NumPy arrays and nested
-//! lists into a flat row-major `list[float]` together with its shape, i.e. a
-//! `(data, shape)` tuple, and converts the `(data, shape)` results of this
-//! module back into the caller's array type. Keeping the extension free of
-//! NumPy / torch types is what lets the package work without either library.
+//! Arrays cross the boundary as `(data, shape)` tuples, with the values in
+//! row-major (C) order. The `botorch_rs` package passes the values of torch
+//! tensors and NumPy arrays as an `array.array('d')`, a float64 buffer of the
+//! standard library that [`Array`] reads with one memcpy through the buffer
+//! protocol, and the values of nested lists and of arrays with a few values
+//! as a `list[float]`, which is cheaper for a few values. Results whose size
+//! grows with the inputs ([`ArrayBuf`]) come back as `array.array('d')` too
+//! (as lists up to [`LIST_MAX`] values), boolean masks ([`BoolBuf`]) as
+//! `bytes`, and small results of fixed size ([`ArrayOut`]: bounds,
+//! hyperparameters, ...) as lists. The Python layer converts every form back
+//! into the caller's array type. Keeping the extension free of NumPy / torch
+//! types is what lets the package work without either library.
 
 use botorch_core::Matrix;
+use pyo3::buffer::{PyBuffer, PyUntypedBuffer};
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
+use pyo3::types::{PyBytes, PyList, PyTuple};
 
 use crate::errors::dimension_error;
 
 /// An array received from Python: `(data, shape)` with `data` in row-major
-/// (C) order.
+/// (C) order, a float64 buffer or a sequence of numbers (see
+/// [`float_data`]).
 #[derive(FromPyObject)]
-pub struct Array(pub Vec<f64>, pub Vec<usize>);
+pub struct Array(
+    #[pyo3(from_py_with = float_data)] pub Vec<f64>,
+    pub Vec<usize>,
+);
 
-/// An array returned to Python: `(data, shape)` in row-major order.
+/// The values of a Python array argument: a one-dimensional buffer of native
+/// float64 values (an `array.array('d')` or a NumPy float64 array, copied
+/// with one memcpy), or else any sequence of numbers (a list of floats,
+/// extracted value by value).
+pub fn float_data(obj: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
+    if !obj.is_instance_of::<PyList>() && !obj.is_instance_of::<PyTuple>() {
+        if let Ok(buf) = PyUntypedBuffer::get(obj) {
+            // Only formats in the native byte order (`PyBuffer` itself accepts
+            // `>d` on little-endian machines), and not the unaligned dummy
+            // pointer of an empty `array.array` (read as a sequence below).
+            if buf.dimensions() == 1 && matches!(buf.format().to_bytes(), b"d" | b"@d" | b"=d") {
+                if let Ok(buf) = buf.into_typed::<f64>() {
+                    return buf.to_vec(obj.py());
+                }
+            }
+        }
+    }
+    obj.extract()
+}
+
+/// An array returned to Python: `(data, shape)` in row-major order, with
+/// `data` a list of floats (for small results; see [`ArrayBuf`]).
 pub type ArrayOut = (Vec<f64>, Vec<usize>);
+
+/// An array returned to Python like [`ArrayOut`], but with `data` an
+/// `array.array('d')` if it has more than [`LIST_MAX`] values: they are
+/// copied with one memcpy instead of being converted into a Python float
+/// each. For results whose size grows with the inputs (`(values,
+/// shape).into()` converts an [`ArrayOut`]).
+pub struct ArrayBuf(pub Vec<f64>, pub Vec<usize>);
+
+/// Results with at most this many values are returned as lists, which are
+/// cheaper than a buffer for a few values.
+pub const LIST_MAX: usize = 16;
+
+impl From<ArrayOut> for ArrayBuf {
+    fn from((data, shape): ArrayOut) -> Self {
+        Self(data, shape)
+    }
+}
+
+impl<'py> IntoPyObject<'py> for ArrayBuf {
+    type Target = PyTuple;
+    type Output = Bound<'py, PyTuple>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
+        (float_values(py, &self.0)?, self.1).into_pyobject(py)
+    }
+}
+
+/// `values` for Python: a list of floats for at most [`LIST_MAX`] values,
+/// else an `array.array('d')` ([`float_buffer`]).
+pub fn float_values<'py>(py: Python<'py>, values: &[f64]) -> PyResult<Bound<'py, PyAny>> {
+    if values.len() <= LIST_MAX {
+        Ok(PyList::new(py, values)?.into_any())
+    } else {
+        float_buffer(py, values)
+    }
+}
+
+/// `values` as a new `array.array('d')`, filled with one memcpy through the
+/// buffer protocol.
+pub fn float_buffer<'py>(py: Python<'py>, values: &[f64]) -> PyResult<Bound<'py, PyAny>> {
+    static ZERO: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    let zero = ZERO.get_or_try_init(py, || -> PyResult<_> {
+        let array = py.import("array")?.getattr("array")?;
+        Ok(array.call1(("d", (0.0,)))?.unbind())
+    })?;
+    // `array('d', [0.0]) * n` allocates the array without a Python float per
+    // value; the prototype itself is never modified.
+    let out = zero.bind(py).mul(values.len())?;
+    // (An empty array exports an unaligned dummy pointer.)
+    if !values.is_empty() {
+        PyBuffer::<f64>::get(&out)?.copy_from_slice(py, values)?;
+    }
+    Ok(out)
+}
+
+/// A boolean array (a mask) returned to Python as `(data, shape)` in
+/// row-major order: `data` is a list of bools for at most [`LIST_MAX`]
+/// values, else `bytes` with one byte (0 or 1) per value.
+pub struct BoolBuf(pub Vec<bool>, pub Vec<usize>);
+
+impl<'py> IntoPyObject<'py> for BoolBuf {
+    type Target = PyTuple;
+    type Output = Bound<'py, PyTuple>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
+        let Self(values, shape) = self;
+        let data = if values.len() <= LIST_MAX {
+            PyList::new(py, values)?.into_any()
+        } else {
+            PyBytes::new_with(py, values.len(), |bytes| {
+                for (byte, &v) in bytes.iter_mut().zip(&values) {
+                    *byte = u8::from(v);
+                }
+                Ok(())
+            })?
+            .into_any()
+        };
+        (data, shape).into_pyobject(py)
+    }
+}
 
 impl Array {
     fn validate(&self, name: &str) -> PyResult<()> {

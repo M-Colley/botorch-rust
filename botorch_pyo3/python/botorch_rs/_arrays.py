@@ -1,12 +1,18 @@
 """Array interoperability without runtime dependencies.
 
 Every array argument may be a torch tensor, a NumPy array or a (nested) list of
-numbers. Arrays are passed to the extension as a flat row-major list of floats
-plus a shape, and results are returned with the type of the array they were
-computed from: torch tensors (same floating dtype -- float64 unless a different
-floating dtype was passed -- and device), NumPy arrays, or nested lists of
-floats. torch and NumPy are never imported by this module; they are only used
-when the caller's arrays already come from them.
+numbers. Arrays are passed to the extension as ``(data, shape)``: the values in
+row-major order and the shape. For torch tensors and NumPy arrays with more
+than a few values, ``data`` is an ``array.array('d')`` (a float64 buffer of the
+standard library, filled by torch or NumPy with one copy and read by the
+extension with one memcpy); for nested lists and small arrays it is a list of
+numbers, which is cheaper for a few values. Results come back in either form
+and are returned with the type of the array they were computed from: torch
+tensors (same floating dtype -- float64 unless a different floating dtype was
+passed -- and device), NumPy arrays, or nested lists of floats. Returned
+arrays never share memory with ``data``. torch and NumPy are never imported by
+this module; they are only used when the caller's arrays already come from
+them.
 """
 
 from __future__ import annotations
@@ -14,13 +20,30 @@ from __future__ import annotations
 import importlib
 import math
 import sys
+from array import array
 from collections.abc import Sequence
 from typing import Any, NamedTuple
 
+#: The values of an array in row-major order: a list of numbers (nested lists,
+#: small arrays) or a float64 ``array.array`` (larger torch tensors, NumPy
+#: arrays and results). Both are sequences of floats; use ``list(data)`` where
+#: a list is needed (``array + list`` raises, ``array == list`` is False).
+FloatData = list[float] | array[float]
 #: ``(data, shape)`` as produced by :func:`to_flat`.
-Flat = tuple[list[float], tuple[int, ...]]
+Flat = tuple[FloatData, tuple[int, ...]]
 #: ``(data, shape)`` as returned by the extension module.
 Pair = tuple[Sequence[float], Sequence[int]]
+
+#: Tensors and NumPy arrays with at most this many values are passed as lists
+#: (``tolist()``), which is faster than a buffer for a few values; the
+#: extension returns results of up to 16 values as lists for the same reason.
+_TORCH_LIST_MAX = 128
+_NUMPY_LIST_MAX = 32
+#: Buffers with at most this many values become tensors through a list.
+_TORCH_SMALL_RESULT = 16
+#: ``array('d', [0.0])``: ``_ZERO * n`` allocates ``n`` values without
+#: creating a Python float per value (it is never modified).
+_ZERO = array("d", [0.0])
 
 
 class ArrayKind(NamedTuple):
@@ -129,19 +152,48 @@ def _flatten_nested(x: Sequence[Any], name: str) -> Flat:
     return level, tuple(shape)
 
 
+def _torch_values(t: Any) -> FloatData:
+    """The values of a (detached) tensor with more than ``_TORCH_LIST_MAX``
+    values in row-major order, as a float64 buffer (one copy by torch)."""
+    torch = _torch()
+    if t.layout != torch.strided or t.is_quantized:
+        return t.reshape(-1).cpu().tolist()  # type: ignore[no-any-return]
+    out = _ZERO * t.numel()
+    # torch converts the dtype, follows the strides and copies from the device.
+    torch.frombuffer(out, dtype=torch.float64).view(t.shape).copy_(t)
+    return out
+
+
+def _numpy_values(a: Any) -> array[float]:
+    """The values of a real NumPy array in row-major order, as a float64
+    buffer (one copy by NumPy, which converts the dtype and the byte order)."""
+    out = array("d")
+    out.frombytes(memoryview(_numpy().ascontiguousarray(a, dtype="float64")).cast("B"))
+    return out
+
+
 def to_flat(x: Any, name: str = "X") -> Flat:
-    """``(data, shape)``: the values of ``x`` in row-major order and its shape."""
+    """``(data, shape)``: the values of ``x`` in row-major order and its shape.
+
+    ``data`` is a copy: a list of numbers for nested lists and small arrays
+    (as ``tolist()`` gives them), a float64 ``array.array`` for larger torch
+    tensors and NumPy arrays (see :data:`FloatData`).
+    """
     if is_torch_tensor(x):
         if x.is_complex():
             raise TypeError(f"`{name}` must be real-valued.")
         t = x.detach()
-        return t.reshape(-1).cpu().tolist(), tuple(t.shape)
+        if t.numel() <= _TORCH_LIST_MAX:
+            return t.reshape(-1).cpu().tolist(), tuple(t.shape)
+        return _torch_values(t), tuple(t.shape)
     if _is_numpy(x):
         np = _numpy()
         a = np.asarray(x)
         if a.dtype.kind not in "biuf":
             raise TypeError(f"`{name}` must be a real-valued array, got dtype {a.dtype}.")
-        return a.reshape(-1).tolist(), tuple(a.shape)
+        if a.size <= _NUMPY_LIST_MAX:
+            return a.reshape(-1).tolist(), tuple(a.shape)
+        return _numpy_values(a), tuple(a.shape)
     if isinstance(x, (bool, int, float)):
         return [float(x)], ()
     if isinstance(x, (list, tuple)):
@@ -157,10 +209,11 @@ def to_flat(x: Any, name: str = "X") -> Flat:
 def _unflatten(data: Sequence[float], shape: tuple[int, ...]) -> Any:
     if not shape:
         return float(data[0])
+    values = data.tolist() if isinstance(data, array) else [float(v) for v in data]
 
     def build(offset: int, dims: tuple[int, ...]) -> list[Any]:
         if len(dims) == 1:
-            return [float(v) for v in data[offset : offset + dims[0]]]
+            return values[offset : offset + dims[0]]
         step = math.prod(dims[1:])
         return [build(offset + i * step, dims[1:]) for i in range(dims[0])]
 
@@ -168,7 +221,9 @@ def _unflatten(data: Sequence[float], shape: tuple[int, ...]) -> Any:
 
 
 def from_flat(data: Sequence[float], shape: Sequence[int], kind: ArrayKind) -> Any:
-    """An array of the given kind and shape holding ``data`` (row-major).
+    """An array of the given kind and shape holding ``data`` (row-major): a
+    sequence of numbers or a float64 ``array.array``. The result never shares
+    memory with ``data``.
 
     A shape of ``()`` gives a 0-dim tensor, a NumPy scalar or a float.
     """
@@ -176,36 +231,57 @@ def from_flat(data: Sequence[float], shape: Sequence[int], kind: ArrayKind) -> A
     if kind.lib == "torch":
         # torch was imported for the input, so this is normally a dict lookup.
         torch = _torch() or importlib.import_module("torch")
-        values = data if isinstance(data, list) else list(data)
-        t = torch.tensor(values, dtype=kind.dtype or torch.float64).reshape(shape)
-        if kind.device is not None and kind.device.type != "cpu":
-            t = t.to(kind.device)
-        return t
+        dtype = kind.dtype or torch.float64
+        device = kind.device if kind.device is not None and kind.device.type != "cpu" else None
+        if isinstance(data, list):
+            values: list[Any] = data
+        elif isinstance(data, array):
+            if data.typecode == "d" and len(data) > _TORCH_SMALL_RESULT:
+                # A view of `data` (the memoryview keeps it from being resized
+                # meanwhile), then a copy that the result owns.
+                t = torch.frombuffer(memoryview(data), dtype=torch.float64).reshape(shape)
+                if device is None and dtype == torch.float64:
+                    return t.clone()
+                return t.to(device=device, dtype=dtype)
+            values = data.tolist()
+        else:
+            values = list(data)
+        t = torch.tensor(values, dtype=dtype).reshape(shape)
+        return t if device is None else t.to(device)
     if kind.lib == "numpy":
         np = _numpy() or importlib.import_module("numpy")
         dtype = kind.dtype or np.float64
         if not shape:
             return np.dtype(dtype).type(data[0])
+        if isinstance(data, array):
+            return np.array(data, dtype=dtype).reshape(shape)  # a copy
         return np.asarray(data, dtype=dtype).reshape(shape)
     return _unflatten(data, shape)
 
 
-def bool_array(data: Sequence[bool], shape: Sequence[int], kind: ArrayKind) -> Any:
+def bool_array(data: Sequence[bool] | bytes, shape: Sequence[int], kind: ArrayKind) -> Any:
     """A boolean array of the given kind and shape (a bool tensor, a NumPy
-    bool array, or nested lists of bools)."""
+    bool array, or nested lists of bools) from a sequence of bools, or from
+    ``bytes`` with one byte per value (the extension's masks with more than a
+    few values; non-zero bytes are ``True``)."""
     shape = tuple(shape)
-    values = [bool(v) for v in data]
+    is_bytes = isinstance(data, (bytes, bytearray)) and len(data) > 0
     if kind.lib == "torch":
-        import torch
-
-        t = torch.tensor(values, dtype=torch.bool).reshape(shape)
+        torch = _torch() or importlib.import_module("torch")
+        if is_bytes:
+            # A writable copy, viewed by torch and compared into a new tensor.
+            t = torch.frombuffer(bytearray(data), dtype=torch.uint8).reshape(shape) != 0
+        else:
+            t = torch.tensor([bool(v) for v in data], dtype=torch.bool).reshape(shape)
         if kind.device is not None and kind.device.type != "cpu":
             t = t.to(kind.device)
         return t
     if kind.lib == "numpy":
-        import numpy as np
-
-        return np.asarray(values, dtype=bool).reshape(shape)
+        np = _numpy() or importlib.import_module("numpy")
+        if is_bytes:
+            return np.frombuffer(data, dtype=np.uint8).reshape(shape) != 0
+        return np.asarray([bool(v) for v in data], dtype=bool).reshape(shape)
+    values = [bool(v) for v in data]
     if not shape:
         return values[0]
 

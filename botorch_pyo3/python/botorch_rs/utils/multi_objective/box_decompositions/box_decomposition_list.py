@@ -77,8 +77,10 @@ class BoxDecompositionList:
         for data, shape in flats:
             half = shape[1] * m
             pad = [0.0] * ((max_cells - shape[1]) * m)
-            lower += data[:half] + pad
-            upper += data[half:] + pad
+            lower.extend(data[:half])
+            lower.extend(pad)
+            upper.extend(data[half:])
+            upper.extend(pad)
         kind = self.box_decompositions[0]._kind
         if kind is LIST:
             kind = self.box_decompositions[0]._ref_kind

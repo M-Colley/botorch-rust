@@ -4,7 +4,7 @@
 use botorch_core::test_functions::{MultiObjectiveKind, MultiObjectiveTestProblem, NoiseStd};
 use pyo3::prelude::*;
 
-use crate::arrays::{matrix_out, Array, ArrayOut};
+use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut, BoolBuf};
 use crate::errors::{dimension_error, unsupported, IntoPyResult};
 use crate::threads;
 
@@ -61,10 +61,10 @@ fn points<'a>(x: &'a Array, name: &str) -> PyResult<(Vec<usize>, &'a [f64], usiz
 }
 
 /// `values` (row-major, `width` per point) with the shape `(*batch, width)`.
-fn with_shape(values: Vec<f64>, batch: &[usize], width: usize) -> ArrayOut {
+fn with_shape(values: Vec<f64>, batch: &[usize], width: usize) -> ArrayBuf {
     let mut shape = batch.to_vec();
     shape.push(width);
-    (values, shape)
+    ArrayBuf(values, shape)
 }
 
 #[pymethods]
@@ -176,7 +176,7 @@ impl PyMultiObjectiveTestProblem {
     }
 
     /// Noiseless, un-negated objectives at `X` (`... x d` -> `... x M`).
-    fn evaluate_true(&self, py: Python<'_>, x: Array) -> PyResult<ArrayOut> {
+    fn evaluate_true(&self, py: Python<'_>, x: Array) -> PyResult<ArrayBuf> {
         let (batch, data, d) = points(&x, "X")?;
         let f = threads::run(py, || self.inner.evaluate_true_rows(data, d)).into_py_result()?;
         Ok(with_shape(f, &batch, self.inner.num_objectives()))
@@ -185,14 +185,14 @@ impl PyMultiObjectiveTestProblem {
     /// Objectives with observation noise (if `noise`; drawn from the problem's
     /// seeded generator) and negation at `X`.
     #[pyo3(signature = (x, noise=true))]
-    fn forward(&self, py: Python<'_>, x: Array, noise: bool) -> PyResult<ArrayOut> {
+    fn forward(&self, py: Python<'_>, x: Array, noise: bool) -> PyResult<ArrayBuf> {
         let (batch, data, d) = points(&x, "X")?;
         let f = threads::run(py, || self.inner.forward_rows(data, d, noise)).into_py_result()?;
         Ok(with_shape(f, &batch, self.inner.num_objectives()))
     }
 
     /// Noiseless constraint slacks at `X` (`... x d` -> `... x n_c`).
-    fn evaluate_slack_true(&self, py: Python<'_>, x: Array) -> PyResult<ArrayOut> {
+    fn evaluate_slack_true(&self, py: Python<'_>, x: Array) -> PyResult<ArrayBuf> {
         let (batch, data, d) = points(&x, "X")?;
         let c =
             threads::run(py, || self.inner.evaluate_slack_true_rows(data, d)).into_py_result()?;
@@ -201,7 +201,7 @@ impl PyMultiObjectiveTestProblem {
 
     /// Constraint slacks with observation noise (if `noise`).
     #[pyo3(signature = (x, noise=true))]
-    fn evaluate_slack(&self, py: Python<'_>, x: Array, noise: bool) -> PyResult<ArrayOut> {
+    fn evaluate_slack(&self, py: Python<'_>, x: Array, noise: bool) -> PyResult<ArrayBuf> {
         let (batch, data, d) = points(&x, "X")?;
         let c =
             threads::run(py, || self.inner.evaluate_slack_rows(data, d, noise)).into_py_result()?;
@@ -211,22 +211,17 @@ impl PyMultiObjectiveTestProblem {
     /// Whether all (noisy, if `noise`) slacks at each point of `X` are
     /// non-negative: `(flags, leading shape)`.
     #[pyo3(signature = (x, noise=true))]
-    fn is_feasible(
-        &self,
-        py: Python<'_>,
-        x: Array,
-        noise: bool,
-    ) -> PyResult<(Vec<bool>, Vec<usize>)> {
+    fn is_feasible(&self, py: Python<'_>, x: Array, noise: bool) -> PyResult<BoolBuf> {
         let (batch, data, d) = points(&x, "X")?;
         let flags =
             threads::run(py, || self.inner.is_feasible_rows(data, d, noise)).into_py_result()?;
-        Ok((flags, batch))
+        Ok(BoolBuf(flags, batch))
     }
 
     /// `n` points of the Pareto front (`n x M`, negated if `negate`).
     #[pyo3(signature = (n, seed=None))]
-    fn gen_pareto_front(&self, py: Python<'_>, n: usize, seed: Option<u64>) -> PyResult<ArrayOut> {
+    fn gen_pareto_front(&self, py: Python<'_>, n: usize, seed: Option<u64>) -> PyResult<ArrayBuf> {
         let f = threads::run(py, || self.inner.gen_pareto_front(n, seed)).into_py_result()?;
-        Ok(matrix_out(&f))
+        Ok(matrix_out(&f).into())
     }
 }
