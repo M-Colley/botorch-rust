@@ -22,6 +22,8 @@ use botorch_core::utils::objective::McConstraint;
 use botorch_core::{BotorchError, Matrix, Result};
 use pyo3::prelude::*;
 
+use crate::arrays::Array;
+
 /// The first Python exception raised by a callable during the current
 /// computation.
 static PENDING: Mutex<Option<PyErr>> = Mutex::new(None);
@@ -256,14 +258,13 @@ pub fn ic_generator(generate: Py<PyAny>) -> IcGenerator {
     let generate = Arc::new(generate);
     IcGenerator::new(move |req: &IcRequest<'_>| {
         let d = req.bounds.ncols();
-        let (data, shape): (Vec<f64>, Vec<usize>) =
-            Python::attach(|py| -> PyResult<(Vec<f64>, Vec<usize>)> {
-                generate
-                    .bind(py)
-                    .call1((req.q, req.num_restarts, req.raw_samples))?
-                    .extract()
-            })
-            .map_err(callback_error)?;
+        let Array(data, shape) = Python::attach(|py| -> PyResult<Array> {
+            generate
+                .bind(py)
+                .call1((req.q, req.num_restarts, req.raw_samples))?
+                .extract()
+        })
+        .map_err(callback_error)?;
         let (b, q) = match shape.as_slice() {
             [b, q, dd] if *dd == d => (*b, *q),
             [q, dd] if *dd == d => (1, *q),

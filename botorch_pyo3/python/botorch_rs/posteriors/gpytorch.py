@@ -18,7 +18,15 @@ import math
 import random
 from typing import Any
 
-from botorch_rs._arrays import ArrayKind, Flat, Pair, broadcast_shapes, from_flat, to_flat
+from botorch_rs._arrays import (
+    ArrayKind,
+    Flat,
+    FloatData,
+    Pair,
+    broadcast_shapes,
+    from_flat,
+    to_flat,
+)
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError
 
 
@@ -121,7 +129,7 @@ class GPyTorchPosterior(Posterior):
             )
         return self._joint
 
-    def _out(self, data: list[float], shape: tuple[int, ...]) -> Any:
+    def _out(self, data: FloatData, shape: tuple[int, ...]) -> Any:
         return from_flat(data, shape, self._kind)
 
     def _samples(self, z: Pair) -> list[float]:

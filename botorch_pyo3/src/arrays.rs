@@ -1,20 +1,50 @@
 //! Dense float64 arrays exchanged with the Python layer.
 //!
-//! The `botorch_rs` package converts torch tensors, NumPy arrays and nested
-//! lists into a flat row-major `list[float]` together with its shape, i.e. a
-//! `(data, shape)` tuple, and converts the `(data, shape)` results of this
-//! module back into the caller's array type. Keeping the extension free of
+//! Arrays cross the boundary as `(data, shape)` tuples, with the values in
+//! row-major (C) order. The `botorch_rs` package passes the values of torch
+//! tensors and NumPy arrays as an `array.array('d')`, a float64 buffer of the
+//! standard library that [`Array`] reads with one memcpy through the buffer
+//! protocol, and the values of nested lists and of arrays with a few values
+//! as a `list[float]`, which is cheaper for a few values. Results
+//! ([`ArrayOut`]) come back as lists of floats, which the Python layer
+//! converts back into the caller's array type. Keeping the extension free of
 //! NumPy / torch types is what lets the package work without either library.
 
 use botorch_core::Matrix;
+use pyo3::buffer::PyUntypedBuffer;
 use pyo3::prelude::*;
+use pyo3::types::{PyList, PyTuple};
 
 use crate::errors::dimension_error;
 
 /// An array received from Python: `(data, shape)` with `data` in row-major
-/// (C) order.
+/// (C) order, a float64 buffer or a sequence of numbers (see
+/// [`float_data`]).
 #[derive(FromPyObject)]
-pub struct Array(pub Vec<f64>, pub Vec<usize>);
+pub struct Array(
+    #[pyo3(from_py_with = float_data)] pub Vec<f64>,
+    pub Vec<usize>,
+);
+
+/// The values of a Python array argument: a one-dimensional buffer of native
+/// float64 values (an `array.array('d')` or a NumPy float64 array, copied
+/// with one memcpy), or else any sequence of numbers (a list of floats,
+/// extracted value by value).
+pub fn float_data(obj: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
+    if !obj.is_instance_of::<PyList>() && !obj.is_instance_of::<PyTuple>() {
+        if let Ok(buf) = PyUntypedBuffer::get(obj) {
+            // Only formats in the native byte order (`PyBuffer` itself accepts
+            // `>d` on little-endian machines), and not the unaligned dummy
+            // pointer of an empty `array.array` (read as a sequence below).
+            if buf.dimensions() == 1 && matches!(buf.format().to_bytes(), b"d" | b"@d" | b"=d") {
+                if let Ok(buf) = buf.into_typed::<f64>() {
+                    return buf.to_vec(obj.py());
+                }
+            }
+        }
+    }
+    obj.extract()
+}
 
 /// An array returned to Python: `(data, shape)` in row-major order.
 pub type ArrayOut = (Vec<f64>, Vec<usize>);

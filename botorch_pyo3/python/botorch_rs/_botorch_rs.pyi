@@ -2,8 +2,10 @@
 
 This is the low-level layer used by the ``botorch_rs`` package. Arrays are
 exchanged as ``(data, shape)`` tuples: ``data`` holds the values in row-major
-order and ``shape`` the dimensions. Use the BoTorch-style classes of the
-``botorch_rs`` package instead of this module.
+order and ``shape`` the dimensions. Arguments accept a float64
+``array.array`` (read with one memcpy) or any sequence of numbers as
+``data``. Use the BoTorch-style classes of the ``botorch_rs`` package instead
+of this module.
 """
 
 from collections.abc import Callable, Sequence
