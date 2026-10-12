@@ -7,9 +7,10 @@
 //!   and an optional batch shape, i.e. independent `SingleTaskGP`s per batch
 //!   element and output;
 //! * [`ModelListGP`]: independent sub-models with possibly different training
-//!   data.
+//!   data;
+//! * [`ModelList`]: a list of arbitrary models (BoTorch's `ModelList`).
 //!
-//! All three can be conditioned on new observations and fantasized
+//! The first three can be conditioned on new observations and fantasized
 //! (`condition_on_observations`, `fantasize`; see [`fantasize`]).
 
 pub mod batched;
@@ -18,6 +19,8 @@ pub mod fantasize;
 pub mod gp;
 pub mod model;
 pub mod model_list;
+pub mod model_list_dyn;
+pub mod multitask;
 
 pub use batched::{BatchedInputTransform, BatchedMultiOutputGP, BatchedMultiOutputGPOptions};
 pub use fantasize::{BatchedMatrix, BoolMatrix, FantasySampler};
@@ -28,3 +31,5 @@ pub use gp::{
 };
 pub use model::Model;
 pub use model_list::ModelListGP;
+pub use model_list_dyn::ModelList;
+pub use multitask::TaskLayout;

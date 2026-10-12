@@ -212,7 +212,7 @@ impl ModelListGP {
 }
 
 /// Point posteriors of independent output groups, concatenated along the outputs.
-fn concat_point_posteriors(parts: &[PointPosteriors]) -> PointPosteriors {
+pub(crate) fn concat_point_posteriors(parts: &[PointPosteriors]) -> PointPosteriors {
     if parts.len() == 1 {
         return parts[0].clone();
     }
