@@ -7,6 +7,9 @@
 //! baseline for noisy acquisition functions), and are reused across
 //! evaluations: acquisition values are a smooth, deterministic sample-average
 //! approximation (SAA) that can be optimized with L-BFGS-B.
+//!
+//! [`pathwise`] draws functions from GP posteriors (Matheron paths on random
+//! Fourier features, `botorch.sampling.pathwise`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -14,6 +17,8 @@ use std::sync::{Arc, RwLock};
 use crate::error::{BotorchError, Result};
 use crate::utils::sampling::{draw_sobol_normal_samples, random_seed, SOBOL_MAX_SAMPLES};
 use crate::Matrix;
+
+pub mod pathwise;
 
 /// Default number of MC samples of BoTorch's `MCAcquisitionFunction`
 /// (`MCSamplerMixin._default_sample_shape = torch.Size([512])`).

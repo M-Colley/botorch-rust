@@ -19,10 +19,12 @@ mod errors;
 mod fantasize;
 mod hvkg;
 mod mo_acquisition;
+mod mo_entropy;
 mod mo_test_functions;
 mod models;
 mod multi_objective;
 mod optim;
+mod pathwise;
 mod polytope;
 mod sampling;
 mod specs;
@@ -87,5 +89,8 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Fantasy models, cost models and the hypervolume knowledge gradient.
     fantasize::register(m)?;
     hvkg::register(m)?;
+    // Pathwise sampling and the information-theoretic acquisition functions.
+    pathwise::register(m)?;
+    mo_entropy::register(m)?;
     Ok(())
 }

@@ -1,11 +1,10 @@
 //! Utilities of the multi-objective acquisition functions
 //! (`botorch.acquisition.multi_objective.utils`):
 //! [`get_default_partitioning_alpha`] and
-//! [`prune_inferior_points_multi_objective`].
-//!
-//! `compute_sample_box_decomposition`, `random_search_optimizer` and
-//! `sample_optimal_points` (used by the information-theoretic acquisition
-//! functions) need pathwise posterior samples, which are not ported.
+//! [`prune_inferior_points_multi_objective`]; `compute_sample_box_decomposition`,
+//! `random_search_optimizer` and `sample_optimal_points` (used by the
+//! information-theoretic acquisition functions) live in
+//! [`pareto_samples`](super::pareto_samples) and are re-exported here.
 
 use std::sync::Arc;
 
@@ -20,6 +19,10 @@ use crate::utils::multi_objective::PointBatch;
 use crate::utils::objective::{compute_feasibility_indicator, McConstraint};
 use crate::utils::sampling::draw_sobol_normal_samples;
 use crate::Matrix;
+
+pub use super::pareto_samples::{
+    compute_sample_box_decomposition, random_search_optimizer, sample_optimal_points,
+};
 
 /// BoTorch's warning of [`get_default_partitioning_alpha`] for more than six
 /// objectives.

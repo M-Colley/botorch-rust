@@ -13,6 +13,17 @@
 //!   scalarization).
 //! * [`utils`] — `get_default_partitioning_alpha`,
 //!   `prune_inferior_points_multi_objective`.
+//! * [`pareto_samples`] — the sampled Pareto sets and fronts of the
+//!   information-theoretic acquisition functions (`sample_optimal_points`,
+//!   `random_search_optimizer`) and their box decompositions
+//!   (`compute_sample_box_decomposition`).
+//! * [`max_value_entropy_search`] —
+//!   [`QLowerBoundMultiObjectiveMaxValueEntropySearch`] (MESMO).
+//! * [`joint_entropy_search`] —
+//!   [`QLowerBoundMultiObjectiveJointEntropySearch`] and the entropy
+//!   estimators of both (`"0"`, `"LB"`, `"LB2"`, `"MC"`).
+//! * [`predictive_entropy_search`] —
+//!   [`QMultiObjectivePredictiveEntropySearch`] (expectation propagation).
 //! * [`hypervolume`] — the inclusion–exclusion over the subsets of the
 //!   candidates (`compute_subset_indices`, `SubsetIndexCachingMixin`) and the
 //!   hypervolume improvement of MC samples with exact gradients.
@@ -44,13 +55,18 @@ use crate::utils::objective::{compute_smoothed_feasibility_indicator, OutcomeCon
 use crate::Matrix;
 
 pub mod analytic;
+mod entropy_linalg;
 pub mod hypervolume;
 pub mod hypervolume_knowledge_gradient;
+pub mod joint_entropy_search;
 pub mod logei;
+pub mod max_value_entropy_search;
 pub mod monte_carlo;
 mod nehvi;
 pub mod objective;
 pub mod parego;
+pub mod pareto_samples;
+pub mod predictive_entropy_search;
 pub mod utils;
 
 pub use analytic::ExpectedHypervolumeImprovement;
@@ -60,9 +76,20 @@ pub use hypervolume_knowledge_gradient::{
     QHypervolumeKnowledgeGradientOptions, QMultiFidelityHypervolumeKnowledgeGradient,
     QMultiFidelityHypervolumeKnowledgeGradientOptions,
 };
+pub use joint_entropy_search::{
+    compute_entropy_monte_carlo, compute_entropy_noiseless, compute_entropy_upper_bound,
+    compute_entropy_with_grad, ConditionedOutput, EntropyGradient, EntropyStatistics,
+    EstimationType, LowerBoundMultiObjectiveEntropySearch,
+    LowerBoundMultiObjectiveEntropySearchOptions, QLowerBoundMultiObjectiveJointEntropySearch,
+    QLowerBoundMultiObjectiveJointEntropySearchOptions,
+};
 pub use logei::{
     QLogExpectedHypervolumeImprovement, QLogExpectedHypervolumeImprovementOptions,
     QLogNoisyExpectedHypervolumeImprovement, QLogNoisyExpectedHypervolumeImprovementOptions,
+};
+pub use max_value_entropy_search::{
+    QLowerBoundMultiObjectiveMaxValueEntropySearch,
+    QLowerBoundMultiObjectiveMaxValueEntropySearchOptions,
 };
 pub use monte_carlo::{
     QExpectedHypervolumeImprovement, QExpectedHypervolumeImprovementOptions,
@@ -74,6 +101,17 @@ pub use objective::{
     MultiOutputValues, WeightedMcMultiOutputObjective,
 };
 pub use parego::{QLogNParEGO, QLogNParEGOOptions};
+pub use pareto_samples::{
+    compute_sample_box_decomposition, random_search_optimizer, sample_optimal_point_paths,
+    sample_optimal_points, sample_optimal_points_with, RandomSearchOptions,
+    SampleOptimalPointsOptions, SamplePartitioning,
+};
+pub use predictive_entropy_search::{
+    augment_factors_with_cached_factors, compute_log_determinant, initialize_predictive_matrices,
+    log_cdf_robust, safe_update_omega, update_damping, update_damping_when_converged,
+    update_marginals, update_omega, EpFactors, EpSummary, OmegaInputs, PredictiveMatrices,
+    QMultiObjectivePredictiveEntropySearch, QMultiObjectivePredictiveEntropySearchOptions,
+};
 pub use utils::{
     get_default_partitioning_alpha, prune_inferior_points_multi_objective,
     prune_inferior_points_multi_objective_indices, PruneMultiObjectiveOptions,

@@ -44,7 +44,7 @@ pub fn take_error() -> Option<PyErr> {
 
 /// Records a Python exception and returns the core error that aborts the
 /// computation.
-fn callback_error(e: PyErr) -> BotorchError {
+pub(crate) fn callback_error(e: PyErr) -> BotorchError {
     let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     let msg = Python::attach(|py| e.value(py).to_string());
     if pending.is_none() {

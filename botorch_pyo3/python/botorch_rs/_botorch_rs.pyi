@@ -898,3 +898,130 @@ def project_to_target_fidelity(
 def expand_trace_observations(
     x: Array, fidelity_dims: Sequence[int] | None = None, num_trace_obs: int = 0
 ) -> ArrayBuf: ...
+
+# Pathwise sampling (``botorch.sampling.pathwise``).
+
+PathDraws = tuple[Array, Array, Array]
+
+class SamplePaths:
+    @property
+    def num_samples(self) -> int: ...
+    @property
+    def num_outputs(self) -> int: ...
+    @property
+    def dim(self) -> int: ...
+    @property
+    def kind(self) -> str: ...
+    @property
+    def has_components(self) -> bool: ...
+    def forward(self, x: Array, component: str | None = None) -> ArrayBuf: ...
+    def forward_with_grad(
+        self, x: Array, component: str | None = None
+    ) -> tuple[ArrayBuf, ArrayBuf]: ...
+    def draws(self) -> list[tuple[ArrayBuf, ArrayBuf, ArrayBuf]]: ...
+    def update_weights(self) -> list[ArrayBuf]: ...
+    def noise(self) -> list[ArrayBuf]: ...
+
+def draw_matheron_paths(
+    model: Model,
+    num_samples: int,
+    num_features: int = 1024,
+    seed: int | None = None,
+    draws: Sequence[PathDraws] | None = None,
+) -> SamplePaths: ...
+def draw_kernel_feature_paths(
+    model: Model,
+    num_samples: int,
+    num_features: int = 1024,
+    seed: int | None = None,
+    draws: Sequence[tuple[Array, Array]] | None = None,
+) -> SamplePaths: ...
+def gaussian_update(
+    model: Model,
+    sample_values: Sequence[Array],
+    noise: Sequence[Array] | None = None,
+    seed: int | None = None,
+) -> SamplePaths: ...
+
+# Information-theoretic multi-objective acquisition functions.
+
+class PesState:
+    @property
+    def ep_iterations(self) -> int: ...
+    def ep_damping(self) -> ArrayBuf: ...
+    def cached_factors(self) -> tuple[ArrayBuf, ArrayBuf]: ...
+
+def compute_sample_box_decomposition(
+    pareto_fronts: Array,
+    partitioning: str = "dominated",
+    alpha: float = 0.0,
+    maximize: bool = True,
+    num_constraints: int = 0,
+) -> ArrayBuf: ...
+def random_search_optimizer(
+    model: SamplePaths | Callable[[Array], Array],
+    bounds: Array,
+    num_points: int,
+    maximize: bool,
+    pop_size: int = 1024,
+    max_tries: int = 10,
+    seed: int | None = None,
+    candidates: Sequence[Array] | None = None,
+    sample: int = 0,
+) -> tuple[ArrayBuf, ArrayBuf]: ...
+def sample_optimal_points(
+    model: Model,
+    bounds: Array,
+    num_samples: int,
+    num_points: int,
+    maximize: bool = True,
+    pop_size: int = 1024,
+    max_tries: int = 10,
+    num_features: int = 1024,
+    seed: int | None = None,
+    draws: Sequence[Sequence[PathDraws]] | None = None,
+    candidates: Sequence[Sequence[Array]] | None = None,
+) -> tuple[ArrayBuf, ArrayBuf]: ...
+def sample_optimal_point_paths(
+    model: Model,
+    num_samples: int,
+    num_features: int = 1024,
+    seed: int | None = None,
+    draws: Sequence[Sequence[PathDraws]] | None = None,
+) -> list[SamplePaths]: ...
+def q_lower_bound_mo_max_value_entropy_search(
+    model: Model,
+    hypercell_bounds: Array,
+    x_pending: Array | None = None,
+    estimation_type: str = "LB",
+    sampler: SobolQMCNormalSampler | None = None,
+) -> AcquisitionFunction: ...
+def q_lower_bound_mo_joint_entropy_search(
+    model: Model,
+    pareto_sets: Array,
+    pareto_fronts: Array,
+    hypercell_bounds: Array,
+    x_pending: Array | None = None,
+    estimation_type: str = "LB",
+    sampler: SobolQMCNormalSampler | None = None,
+) -> AcquisitionFunction: ...
+def q_mo_predictive_entropy_search(
+    model: Model,
+    pareto_sets: Array,
+    maximize: bool = True,
+    x_pending: Array | None = None,
+    max_ep_iterations: int = 250,
+    ep_jitter: float = 1e-4,
+    test_jitter: float = 1e-4,
+    threshold: float = 1e-2,
+) -> tuple[AcquisitionFunction, PesState]: ...
+def compute_entropy(
+    estimation_type: str,
+    hypercell_bounds: Array,
+    mean: Array,
+    variance: Array,
+    observation_noise: Array,
+    samples: Array | None = None,
+    samples_log_prob: Array | None = None,
+) -> ArrayBuf: ...
+def log_cdf_robust(x: Array) -> ArrayBuf: ...
