@@ -17,7 +17,10 @@
 //!   `constraint_noise_std` and [`MultiObjectiveTestProblem::is_feasible`]
 //!   checks that all slacks are non-negative;
 //! * [`MultiObjectiveTestProblem::ref_point`] is negated with `negate`,
-//!   [`MultiObjectiveTestProblem::max_hv`] is not.
+//!   [`MultiObjectiveTestProblem::max_hv`] is not;
+//! * [`MultiObjectiveTestProblem::gen_pareto_front`] returns points of the
+//!   Pareto front (negated with `negate`) of the problems for which BoTorch
+//!   defines it (DTLZ1-4, C2DTLZ2 and ZDT1-3).
 //!
 //! The evaluations follow BoTorch's floating-point operations, so that values
 //! agree to a few units in the last place. Where BoTorch's definitions are
@@ -31,6 +34,7 @@ mod dtlz;
 mod engineering;
 mod gmm;
 mod multi_fidelity;
+mod pareto;
 mod penicillin;
 mod toy_robust;
 mod zdt;
@@ -46,6 +50,8 @@ use crate::error::{BotorchError, Result};
 use crate::test_functions::SyntheticTestFunction;
 use crate::utils::sampling::random_seed;
 use crate::Matrix;
+
+pub use pareto::{hypersphere_from_normal, simplex_from_uniform};
 
 /// The multi-objective test problems of BoTorch (concrete classes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -205,6 +211,22 @@ impl MultiObjectiveKind {
         }
     }
 
+    /// Whether [`MultiObjectiveTestProblem::gen_pareto_front`] is available
+    /// (BoTorch defines `gen_pareto_front` for DTLZ1-4, C2DTLZ2 and ZDT1-3).
+    pub fn has_pareto_front(self) -> bool {
+        matches!(
+            self,
+            Self::Dtlz1
+                | Self::Dtlz2
+                | Self::Dtlz3
+                | Self::Dtlz4
+                | Self::C2Dtlz2
+                | Self::Zdt1
+                | Self::Zdt2
+                | Self::Zdt3
+        )
+    }
+
     /// Whether the problem has outcome constraints (BoTorch's
     /// `ConstrainedBaseTestProblem`).
     pub fn is_constrained(self) -> bool {
@@ -305,7 +327,9 @@ impl MultiObjectiveKind {
             Self::C2Dtlz2 => Some(
                 "meta-pytorch/botorch#3402: the constraint of Jain & Deb (2014) subtracts r^2 \
                  once, with r = 0.4 for M = 3 and 0.5 for M > 3, also for batched and 1-d \
-                 inputs; the exact max_hv for M = 2 (none otherwise)",
+                 inputs; the exact max_hv for M = 2 (none otherwise). No pull request yet: \
+                 gen_pareto_front returns only feasible points (BoTorch returns DTLZ2's \
+                 front, the whole positive unit sphere)",
             ),
             Self::Srn => Some(
                 "meta-pytorch/botorch#3402: f_0 uses (x_1 - 1)^2 and the first constraint is \
@@ -623,6 +647,37 @@ impl MultiObjectiveTestProblem {
     /// The maximum hypervolume with respect to the reference point, if known.
     pub fn max_hv(&self) -> Option<f64> {
         max_hv(self.kind, self.dim, self.num_objectives)
+    }
+
+    /// `n` points of the Pareto front (`n × M`, negated with `negate`):
+    /// evenly spaced for ZDT1-3, quasi-random for DTLZ1-4 and C2DTLZ2 (from a
+    /// scrambled Sobol sequence seeded with `seed`, random if `None`; BoTorch
+    /// uses torch's `SobolEngine` and global random number generator, so the
+    /// points have the same distribution but different values). For C2DTLZ2,
+    /// only the feasible part of DTLZ2's front (see
+    /// [`MultiObjectiveKind::deviation`]).
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] (BoTorch's `NotImplementedError`) for
+    /// problems without a known Pareto front.
+    pub fn gen_pareto_front(&self, n: usize, seed: Option<u64>) -> Result<Matrix> {
+        use MultiObjectiveKind as K;
+        let m = self.num_objectives;
+        let front = match self.kind {
+            K::Zdt1 => pareto::zdt_front(1, n),
+            K::Zdt2 => pareto::zdt_front(2, n),
+            K::Zdt3 => pareto::zdt_front(3, n),
+            K::Dtlz1 => pareto::dtlz1_front(m, n, seed)?,
+            K::Dtlz2 | K::Dtlz3 | K::Dtlz4 => pareto::sphere_front(m, n, seed)?,
+            K::C2Dtlz2 => pareto::c2dtlz2_front(m, n, seed)?,
+            _ => {
+                return Err(BotorchError::Unsupported(format!(
+                    "{} does not define a Pareto front.",
+                    self.name()
+                )))
+            }
+        };
+        Ok(if self.negate { -front } else { front })
     }
 
     /// Validates row-major points with `ncols` columns and returns their number.
