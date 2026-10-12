@@ -13,6 +13,8 @@
 //!   scalarization).
 //! * [`utils`] — `get_default_partitioning_alpha`,
 //!   `prune_inferior_points_multi_objective`.
+//! * [`multi_fidelity`] — [`multi_fidelity::Momf`] (qEHVI weighted by the
+//!   inverse cost of the candidates).
 //! * [`multi_output_risk_measures`] — multi-output risk measures (`MVaR`,
 //!   `MARS`, `IndependentCVaR`, ...) for robust multi-objective
 //!   optimization with an `InputPerturbation`.
@@ -48,6 +50,7 @@ pub mod analytic;
 pub mod hypervolume;
 pub mod logei;
 pub mod monte_carlo;
+pub mod multi_fidelity;
 pub mod multi_output_risk_measures;
 mod nehvi;
 pub mod objective;
