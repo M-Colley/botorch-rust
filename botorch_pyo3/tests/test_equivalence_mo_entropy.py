@@ -52,7 +52,7 @@ from typing import Any
 
 import pytest
 
-from helpers import importorskip_botorch
+from helpers import ParityLog, importorskip_botorch
 
 importorskip_botorch()
 torch = pytest.importorskip("torch")
@@ -185,6 +185,9 @@ def _floored(quantity: str, a: Any, e: Any, nominal: float, floor: float, atol: 
     err = rel_err(a, e, atol)
     tol = max(nominal, NOISE_FACTOR * floor)
     CHECK.record(quantity + " (scaled)", err * nominal / tol, nominal)
+    # The unscaled error and BoTorch's own change under the perturbations.
+    ParityLog.record(quantity + " (unscaled)", err, section=CHECK.section)
+    ParityLog.record(quantity + " (BoTorch's noise floor)", floor, section=CHECK.section)
     assert err <= tol, (quantity, err, tol)
 
 
