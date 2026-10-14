@@ -141,6 +141,14 @@ def optimize_acqf(
     r"""Optimizes ``acq_function`` over the box ``bounds`` (``2 x d``), like
     BoTorch's ``optimize_acqf``.
 
+    ``acq_function`` is a botorch_rs acquisition function, or (like in
+    BoTorch) any callable on torch tensors, e.g. a ``torch.nn.Module`` whose
+    ``forward(X)`` maps ``batch x q x d`` candidate sets to ``batch`` values:
+    it is evaluated from Rust with gradients from ``torch.autograd`` (see
+    :class:`~botorch_rs.acquisition.composite.CallableAcquisitionFunction`;
+    :class:`~botorch_rs.acquisition.composite.WeightedLogMeanExp` evaluates
+    weighted blends of log-scale acquisition functions natively).
+
     ``raw_samples`` scrambled Sobol candidate sets are evaluated and
     ``num_restarts`` of them are selected as starting points (Boltzmann
     sampling, or the non-negative heuristic for non-negative acquisition
@@ -183,10 +191,10 @@ def optimize_acqf(
         scalar; ``q`` values for ``sequential=True``; one per restart with
         ``return_best_only=False``), of the array type of ``bounds``.
     """
-    if not isinstance(acq_function, AcquisitionFunction):
+    if not isinstance(acq_function, AcquisitionFunction) and not callable(acq_function):
         raise UnsupportedError(
-            "optimize_acqf requires a botorch_rs acquisition function (got "
-            f"{type(acq_function).__name__})."
+            "optimize_acqf requires a botorch_rs acquisition function or a callable on torch "
+            f"tensors (got {type(acq_function).__name__})."
         )
     check_unsupported(
         post_processing_func=post_processing_func,
@@ -213,6 +221,13 @@ def optimize_acqf(
             f"bounds should be a `2 x d` tensor, current shape: {list(bounds_flat[1])}."
         )
     d = bounds_flat[1][1]
+    user_acq_function = acq_function
+    if not isinstance(acq_function, AcquisitionFunction):
+        # A torch callable (e.g. a ``torch.nn.Module`` blending acquisition
+        # functions): values from Python, gradients from torch.autograd.
+        from botorch_rs.acquisition.composite import CallableAcquisitionFunction
+
+        acq_function = CallableAcquisitionFunction(acq_function, d)
     fixed = None
     if fixed_features is not None:
         fixed = {int(k) % d: as_float(v, f"fixed_features[{k}]") for k, v in fixed_features.items()}
@@ -267,7 +282,7 @@ def optimize_acqf(
     if ic_generator is not None and not native_generator:
         generator = _wrap_ic_generator(
             ic_generator,
-            acq_function,
+            user_acq_function,
             bounds,
             fixed,
             options,

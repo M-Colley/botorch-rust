@@ -12,7 +12,9 @@
 //!   multi-task GP with a kernel on context embeddings (with the task
 //!   handling of `MultiTaskGP`, [`multitask`]);
 //! * [`ModelList`]: a list of arbitrary models (BoTorch's `ModelList`), e.g.
-//!   `ModelListGP(*lcemgps)`.
+//!   `ModelListGP(*lcemgps)`;
+//! * [`PosteriorMeanModel`]: the posterior mean of a model as a deterministic
+//!   model (see [`deterministic`]).
 //!
 //! The first three can be conditioned on new observations and fantasized
 //! (`condition_on_observations`, `fantasize`; see [`fantasize`]).
@@ -20,6 +22,7 @@
 pub mod batched;
 pub mod contextual_multioutput;
 pub mod cost;
+pub mod deterministic;
 pub mod fantasize;
 pub mod gp;
 pub mod model;
@@ -29,6 +32,7 @@ pub mod multitask;
 
 pub use batched::{BatchedInputTransform, BatchedMultiOutputGP, BatchedMultiOutputGPOptions};
 pub use contextual_multioutput::{LCEMGPOptions, LcemParameters, LcemTaskInputs, LCEMGP};
+pub use deterministic::PosteriorMeanModel;
 pub use fantasize::{BatchedMatrix, BoolMatrix, FantasySampler};
 pub use gp::{
     get_gaussian_likelihood_with_gamma_prior, get_gaussian_likelihood_with_lognormal_prior,

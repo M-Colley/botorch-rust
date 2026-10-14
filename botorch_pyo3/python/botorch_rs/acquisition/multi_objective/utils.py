@@ -14,7 +14,7 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_flat, from_pair, kind_of, to_flat
-from botorch_rs.acquisition.acquisition import check_unsupported
+from botorch_rs.acquisition.acquisition import check_unsupported, is_acquisition_model
 from botorch_rs.acquisition.multi_objective.base import ref_point_arg
 from botorch_rs.acquisition.multi_objective.objective import mo_objective_arg
 from botorch_rs.acquisition.objective import constraints_arg
@@ -73,12 +73,10 @@ def prune_inferior_points_multi_objective(
     BoTorch.
     """
     check_unsupported(marginalize_dim=marginalize_dim)
-    from botorch_rs.models.contextual_multioutput import LCEMGP
-
-    if not isinstance(model, (SingleTaskGP, ModelListGP, LCEMGP)):
+    if not is_acquisition_model(model):
         raise UnsupportedError(
             "prune_inferior_points_multi_objective requires a botorch_rs SingleTaskGP, "
-            "ModelListGP or LCEMGP."
+            "ModelListGP or LCEMGP (or a PosteriorMeanModel or GenericDeterministicModel)."
         )
     flat = to_flat(X, "X")
     if len(flat[1]) > 2:

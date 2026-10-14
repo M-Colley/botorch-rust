@@ -32,6 +32,9 @@
 //! * [`multi_objective`] — multi-objective acquisition functions (qLogNEHVI,
 //!   qLogEHVI, qNEHVI, qEHVI, analytic EHVI, qLogNParEGO), multi-output MC
 //!   objectives and `prune_inferior_points_multi_objective`.
+//! * [`composite`] — [`WeightedLogMeanExp`], the weighted log-mean-exp blend
+//!   of log-scale acquisition functions (a botorch-rust extension for
+//!   transfer acquisition functions).
 //! * [`cost_aware`] — cost-aware utilities (`InverseCostWeightedUtility`,
 //!   `GenericCostAwareUtility`); [`fidelity`] — `project_to_target_fidelity`
 //!   and `expand_trace_observations`; [`one_shot`] — the interface of one-shot
@@ -57,6 +60,7 @@ use crate::models::Model;
 use crate::Matrix;
 
 pub mod analytic;
+pub mod composite;
 pub mod cost_aware;
 pub mod fidelity;
 pub mod logei;
@@ -74,6 +78,7 @@ pub use analytic::{
     LogExpectedImprovement, LogProbabilityOfImprovement, OutputConstraint, PosteriorMean,
     PosteriorStandardDeviation, ProbabilityOfImprovement, UpperConfidenceBound,
 };
+pub use composite::WeightedLogMeanExp;
 pub use logei::{
     QLogExpectedImprovement, QLogExpectedImprovementOptions, QLogNoisyExpectedImprovement,
     QLogNoisyExpectedImprovementOptions, QLogProbabilityOfFeasibility,

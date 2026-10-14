@@ -99,6 +99,39 @@ def test_hyperparameter_setters(kind: str, data: tuple[list, list]) -> None:
         model.covar_module.lengthscale = [[-1.0, 1.0]]
 
 
+def test_size_one_values_for_scalar_hyperparameters(kind: str, data: tuple[list, list]) -> None:
+    """Like GPyTorch's ``Module.initialize`` (``expand_as``, else
+    ``view_as``), a parameter can be set from a value of another shape with
+    as many elements, e.g. a 0-dim outputscale from a tensor of shape
+    ``(1,)``."""
+    X, Y = data
+    model = SingleTaskGP(
+        as_kind(X, kind),
+        as_kind(Y, kind),
+        covar_module=ScaleKernel(MaternKernel(nu=2.5, ard_num_dims=2)),
+    )
+    model.covar_module.outputscale = as_kind([1.7], kind)
+    model.likelihood.noise = as_kind([[0.03]], kind)
+    model.mean_module.constant = as_kind([-0.2], kind)
+    model.covar_module.base_kernel.lengthscale = as_kind([[0.4], [0.6]], kind)
+    assert shape(model.covar_module.outputscale) == ()
+    assert_close(model.covar_module.outputscale, 1.7, rtol=1e-15)
+    assert shape(model.likelihood.noise) == (1,)
+    assert_close(model.likelihood.noise, [0.03], rtol=1e-15)
+    assert shape(model.mean_module.constant) == ()
+    assert_close(model.mean_module.constant, -0.2, rtol=1e-15)
+    assert_close(model.covar_module.base_kernel.lengthscale, [[0.4, 0.6]], rtol=1e-15)
+    model.initialize(**{"covar_module.raw_outputscale": as_kind([0.5], kind)})
+    params = {name: to_list(v) for name, v in model.named_parameters()}
+    assert_close(params["covar_module.raw_outputscale"], 0.5, rtol=1e-15)
+    with pytest.raises(BotorchRsError):
+        model.covar_module.outputscale = as_kind([1.0, 2.0], kind)
+    with pytest.raises(BotorchRsError):
+        model.covar_module.base_kernel.lengthscale = as_kind([0.1, 0.2, 0.3], kind)
+    with pytest.raises(BotorchRsError):
+        model.initialize(**{"covar_module.raw_outputscale": as_kind([0.5, 0.1], kind)})
+
+
 def test_transforms_are_fitted(kind: str) -> None:
     X, Y = make_data(n=10, d=3, seed=1)
     Xs = [[10.0 + 3.0 * v for v in x] for x in X]

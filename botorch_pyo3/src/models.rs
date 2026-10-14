@@ -500,7 +500,10 @@ impl PySingleTaskGP {
     }
 
     /// Sets one hyperparameter of every element from `value` broadcast to
-    /// `shape_per_element` (preceded by the `_aug_batch_shape`).
+    /// `shape_per_element` (preceded by the `_aug_batch_shape`), or reshaped
+    /// to it if it has as many values (GPyTorch's `Module.initialize`:
+    /// `expand_as`, else `view_as`; e.g. a value of shape `(1,)` for a 0-dim
+    /// outputscale).
     fn set_elementwise<F>(&self, value: &Array, per_element: &[usize], f: F) -> PyResult<()>
     where
         F: Fn(&mut Hyperparameters, &[f64]) -> PyResult<()>,
@@ -508,12 +511,14 @@ impl PySingleTaskGP {
         let model = self.snapshot();
         let mut target = model.aug_batch_shape();
         target.extend_from_slice(per_element);
-        let values = broadcast_to(&value.0, &value.1, &target).ok_or_else(|| {
-            dimension_error(format!(
-                "a value of shape {:?} cannot be broadcast to the parameter shape {target:?}",
-                value.1
-            ))
-        })?;
+        let values = broadcast_to(&value.0, &value.1, &target)
+            .or_else(|| (value.0.len() == numel(&target)).then(|| value.0.clone()))
+            .ok_or_else(|| {
+                dimension_error(format!(
+                    "a value of shape {:?} cannot be broadcast to the parameter shape {target:?}",
+                    value.1
+                ))
+            })?;
         let k = numel(per_element);
         let mut hs: Vec<Hyperparameters> = (0..model.num_elements())
             .map(|e| model.element_hyperparameters(e).clone())
@@ -1322,5 +1327,11 @@ impl PyModel {
     #[getter]
     fn points_per_input(&self) -> usize {
         self.inner.points_per_input()
+    }
+
+    /// Whether the model is deterministic (e.g. a `PosteriorMeanModel`).
+    #[getter]
+    fn is_deterministic(&self) -> bool {
+        self.inner.is_deterministic()
     }
 }

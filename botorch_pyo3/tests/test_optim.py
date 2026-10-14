@@ -24,7 +24,7 @@ from botorch_rs.mlls import ExactMarginalLogLikelihood
 from botorch_rs.models import SingleTaskGP
 from botorch_rs.optim import optimize_acqf
 from botorch_rs.sampling import SobolQMCNormalSampler
-from helpers import as_kind, check_kind, flatten, make_data, shape
+from helpers import HAS_TORCH, as_kind, check_kind, flatten, make_data, shape
 
 X_TRAIN, Y_TRAIN = make_data(n=12, d=3, seed=11)
 BOUNDS = [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]
@@ -162,6 +162,10 @@ def test_unsupported_arguments(model: SingleTaskGP) -> None:
         with pytest.raises(UnsupportedError):
             optimize_acqf(acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, **kwargs)
     with pytest.raises(UnsupportedError):
+        optimize_acqf(object(), BOUNDS, q=1, num_restarts=2, raw_samples=8)  # type: ignore[arg-type]
+    # Callables are evaluated on torch tensors (see test_deterministic.py); their
+    # values must have the batch shape.
+    with pytest.raises(UnsupportedError if not HAS_TORCH else RuntimeError):
         optimize_acqf(lambda X: X, BOUNDS, q=1, num_restarts=2, raw_samples=8)
     # As in BoTorch, return_full_tree only applies to one-shot acquisition
     # functions (see test_mo_hvkg.py).

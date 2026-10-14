@@ -130,6 +130,10 @@ pub(crate) enum SampleRoots {
     Blocks(Vec<CovarianceRoot>),
     /// One root of the full output-major covariance.
     Full(CovarianceRoot),
+    /// The zero root of a deterministic model's posterior (see
+    /// [`Model::is_deterministic`]): every sample is the mean, and only the
+    /// mean receives adjoints.
+    Zero,
 }
 
 impl SampleRoots {
@@ -162,6 +166,7 @@ impl SampleRoots {
         match self {
             Self::Blocks(rs) => rs.iter().map(bits).collect(),
             Self::Full(r) => bits(r).map(|b| vec![b]),
+            Self::Zero => Some(Vec::new()),
         }
     }
 }
@@ -239,7 +244,11 @@ impl JointSamples {
                 base.ncols()
             )));
         }
-        let roots = SampleRoots::new(&post.covariance, n, m)?;
+        let roots = if model.is_deterministic() {
+            SampleRoots::Zero
+        } else {
+            SampleRoots::new(&post.covariance, n, m)?
+        };
         Ok(Self {
             x,
             n,
@@ -320,6 +329,14 @@ impl JointSamples {
                     }
                 }
             }
+            SampleRoots::Zero => {
+                for t in 0..m {
+                    for i in 0..k {
+                        let mu = self.mean[t * n + rows.start + i];
+                        data.row_mut(t * k + i).fill(mu);
+                    }
+                }
+            }
         }
         McSamples::new(data, k, m).expect("consistent sample shapes")
     }
@@ -368,6 +385,7 @@ impl JointSamples {
                 }
                 cov_bar = root.backward(&root_bar)?;
             }
+            SampleRoots::Zero => {}
         }
         model.joint_posterior_vjp(&self.x, grad_rows, &mean_bar, &cov_bar)
     }

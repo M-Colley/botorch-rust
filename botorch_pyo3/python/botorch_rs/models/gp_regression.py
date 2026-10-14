@@ -525,9 +525,12 @@ class SingleTaskGP(Model):
                 try:
                     new = broadcast_to(data, shape, target)
                 except ValueError:
-                    raise BotorchTensorDimensionError(
-                        f"{name} has shape {target}, got a value of shape {tuple(shape)}."
-                    ) from None
+                    # GPyTorch's `Module.initialize`: `expand_as`, else `view_as`.
+                    if len(data) != size:
+                        raise BotorchTensorDimensionError(
+                            f"{name} has shape {target}, got a value of shape {tuple(shape)}."
+                        ) from None
+                    new = [float(v) for v in data]
                 values[offset : offset + size] = new
                 self._rs.set_raw_parameters(values)
                 return
