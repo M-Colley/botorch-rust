@@ -111,7 +111,7 @@ extension into the source tree instead (see [Development](#development)).
 
 ```toml
 [dependencies]
-botorch_core = { git = "https://github.com/M-Colley/botorch-rust" }
+botorch_core = { git = "https://github.com/M-Colley/botorch-rust", tag = "v0.1.0" }
 ```
 
 ## Quickstart

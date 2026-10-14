@@ -4,7 +4,13 @@ name: Release
 # 3.11 and later) and the sdist with maturin, checks the native wheels, and
 # attaches everything to a GitHub Release for tags `v*`. A manual run
 # (workflow_dispatch) builds and checks the same files and keeps them as
-# workflow artifacts only.
+# workflow artifacts only; a manual run with `publish` set to the tag of an
+# existing GitHub Release instead uploads that release's files to PyPI.
+#
+# PyPI uses trusted publishing (no API token): the PyPI project `botorch-rust`
+# trusts this workflow (owner `M-Colley`, repository `botorch-rust`, workflow
+# `release.yml`, environment `pypi`). Tags publish to PyPI automatically after
+# the GitHub Release once the repository variable `PYPI_PUBLISH` is `true`.
 #
 # Before tagging `vX.Y.Z`, set the version in `botorch_pyo3/pyproject.toml`
 # (`X.Y.Z`, PEP 440, e.g. `0.1.0`, `0.2.0rc1`) and in the workspace
@@ -16,6 +22,13 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: >-
+          Tag of an existing GitHub Release to upload to PyPI (e.g. v0.1.0).
+          Empty: build and check the wheels only.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -26,6 +39,7 @@ env:
 jobs:
   version:
     name: Check the version
+    if: inputs.publish == '' || inputs.publish == null
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -196,28 +210,44 @@ jobs:
           gh release create "$TAG" dist/* --repo "$REPO" --title "botorch-rust $TAG" \
             --generate-notes --verify-tag $flags
 
-  # Publishing to PyPI is disabled until the project exists there. To enable
-  # it with trusted publishing (no API token):
-  #   1. On pypi.org, add a "pending publisher" for the project `botorch-rust`:
-  #      owner `M-Colley`, repository `botorch-rust`, workflow `release.yml`,
-  #      environment `pypi`.
-  #   2. In the repository settings, create the environment `pypi` (optionally
-  #      with required reviewers).
-  #   3. Uncomment the job below. It runs for tags after the GitHub Release.
-  #
-  # pypi:
-  #   name: Publish to PyPI
-  #   if: github.ref_type == 'tag'
-  #   needs: release
-  #   runs-on: ubuntu-latest
-  #   environment:
-  #     name: pypi
-  #     url: https://pypi.org/p/botorch-rust
-  #   permissions:
-  #     id-token: write
-  #   steps:
-  #     - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-  #       with:
-  #         path: dist
-  #         merge-multiple: true
-  #     - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+  # Uploads the files of a new release to PyPI (tags, once PYPI_PUBLISH is
+  # `true`).
+  pypi:
+    name: Publish to PyPI
+    if: github.ref_type == 'tag' && vars.PYPI_PUBLISH == 'true'
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/botorch-rust
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  # Uploads the files of an existing GitHub Release to PyPI (manual run with
+  # `publish`), e.g. a release tagged before PyPI publishing was set up.
+  pypi-existing:
+    name: Publish an existing release to PyPI
+    if: github.event_name == 'workflow_dispatch' && inputs.publish != ''
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/botorch-rust
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download the release files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.publish }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release download "$TAG" --repo "$REPO" --dir dist --pattern '*.whl' --pattern '*.tar.gz'
+          ls -l dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
