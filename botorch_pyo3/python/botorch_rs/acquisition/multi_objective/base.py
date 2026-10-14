@@ -15,6 +15,7 @@ from botorch_rs.acquisition.multi_objective.objective import (
 from botorch_rs.acquisition.objective import PosteriorTransform, constraints_arg, fat_arg
 from botorch_rs.exceptions.errors import BotorchError, UnsupportedError
 from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.stochastic_samplers import mc_sampler_arg
 
 #: BoTorch's default number of MC samples of the multi-objective MC
 #: acquisition functions.
@@ -110,11 +111,7 @@ class MultiObjectiveMCAcquisitionFunction(AcquisitionFunction):
     ) -> None:
         super().__init__(model)
         self._rs_model = self._model_handle(None)
-        if sampler is None:
-            sampler = SobolQMCNormalSampler(sample_shape=self._default_sample_shape)
-        elif not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
-        self.sampler = sampler
+        self.sampler = mc_sampler_arg(sampler, self._rs_model, self._default_sample_shape)
         if objective is None:
             objective = IdentityMCMultiOutputObjective()
             self._mo_objective: tuple[Any, ...] | None = None

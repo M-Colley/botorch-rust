@@ -13,6 +13,7 @@ from botorch_rs.acquisition.analytic import (
     ProbabilityOfImprovement,
     UpperConfidenceBound,
 )
+from botorch_rs.acquisition.composite import CallableAcquisitionFunction, WeightedLogMeanExp
 from botorch_rs.acquisition.cost_aware import (
     CostAwareUtility,
     GenericCostAwareUtility,
@@ -45,6 +46,7 @@ from botorch_rs.acquisition.utils import prune_inferior_points
 __all__ = [
     "AcquisitionFunction",
     "AnalyticAcquisitionFunction",
+    "CallableAcquisitionFunction",
     "ConstrainedExpectedImprovement",
     "ConstrainedMCObjective",
     "CostAwareUtility",
@@ -66,6 +68,7 @@ __all__ = [
     "ProbabilityOfImprovement",
     "ScalarizedPosteriorTransform",
     "UpperConfidenceBound",
+    "WeightedLogMeanExp",
     "prune_inferior_points",
     "qExpectedImprovement",
     "qLogExpectedImprovement",

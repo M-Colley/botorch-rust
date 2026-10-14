@@ -283,6 +283,10 @@ impl Model for ScalarizedModel {
         self.model.points_per_input()
     }
 
+    fn is_deterministic(&self) -> bool {
+        self.model.is_deterministic()
+    }
+
     fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {
         let p = self.model.posterior(x, observation_noise)?;
         self.transform.transform_posterior(&p)

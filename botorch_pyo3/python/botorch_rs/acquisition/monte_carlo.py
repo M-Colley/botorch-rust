@@ -31,6 +31,7 @@ from botorch_rs.acquisition.objective import (
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import legacy_ei_numerics_warning
 from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.stochastic_samplers import mc_sampler_arg
 
 #: BoTorch's default number of MC samples.
 DEFAULT_MC_SAMPLES = 512
@@ -73,11 +74,7 @@ class MCAcquisitionFunction(AcquisitionFunction):
         self.objective = IdentityMCObjective() if objective is None else objective
         self.posterior_transform = posterior_transform
         self._rs_model = self._model_handle(posterior_transform)
-        if sampler is None:
-            sampler = SobolQMCNormalSampler(sample_shape=(DEFAULT_MC_SAMPLES,))
-        elif not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
-        self.sampler = sampler
+        self.sampler = mc_sampler_arg(sampler, self._rs_model, (DEFAULT_MC_SAMPLES,))
         self._pending = pending_arg(X_pending, self._rs_model.dim)
         if X_pending is not None:
             self._pending_kind = kind_of(X_pending)

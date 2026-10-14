@@ -191,3 +191,104 @@ def tensor_function_vjp(handle: Any, adjoint: Sequence[float]) -> list[FloatData
         to_flat(gr if gr is not None else torch.zeros_like(t))[0]
         for gr, t in zip(grads, inputs, strict=True)
     ]
+
+
+def _deterministic_values(fn: Any, X: Any) -> Any:
+    """``fn(X)`` of a ``GenericDeterministicModel`` with gradients; an output
+    that does not depend on ``X`` through autograd is an error (as in BoTorch,
+    whose optimizers differentiate it)."""
+    torch = _torch()
+    with torch.enable_grad():
+        out = torch.as_tensor(fn(X), dtype=torch.float64)
+    if not out.requires_grad:
+        raise RuntimeError(
+            "GenericDeterministicModel: f(X) does not require gradients, so its gradient "
+            "with respect to X cannot be computed with torch.autograd (botorch_rs models do "
+            "not support autograd through their posteriors; use PosteriorMeanModel for the "
+            "posterior mean of a botorch_rs model)."
+        )
+    return out
+
+
+def deterministic_model_vjp(
+    fn: Any, data: Sequence[float], shape: Sequence[int], adjoint: Sequence[float]
+) -> FloatData:
+    """The vector-Jacobian product of ``fn`` (a ``GenericDeterministicModel``)
+    at ``X`` (``shape``) with the adjoint of its values (row-major)."""
+    torch = _torch()
+    X = from_flat(data, tuple(shape), _float64()).requires_grad_(True)
+    out = _deterministic_values(fn, X)
+    g = from_flat(adjoint, tuple(out.shape), _float64())
+    (grad,) = torch.autograd.grad(out, X, grad_outputs=g, allow_unused=True)
+    return to_flat(torch.zeros_like(X) if grad is None else grad)[0]
+
+
+def deterministic_model_jacobian(
+    fn: Any, data: Sequence[float], shape: Sequence[int]
+) -> tuple[FloatData, list[int], FloatData]:
+    """``fn(X)`` of a ``GenericDeterministicModel`` with its Jacobian: the
+    values (row-major), their shape and the Jacobian (row-major,
+    ``values.numel() x X.numel()``)."""
+    torch = _torch()
+    X = from_flat(data, tuple(shape), _float64()).requires_grad_(True)
+    out = _deterministic_values(fn, X)
+    rows = []
+    # Callers may run in no-grad mode (e.g. torch.autograd.Function.forward).
+    with torch.enable_grad():
+        flat = out.reshape(-1)
+        for k in range(flat.numel()):
+            (g,) = torch.autograd.grad(flat[k], X, retain_graph=True, allow_unused=True)
+            rows.append(torch.zeros(X.numel(), dtype=torch.float64) if g is None else g.reshape(-1))
+    jac = torch.stack(rows) if rows else torch.zeros(0, X.numel(), dtype=torch.float64)
+    return to_flat(out.detach())[0], list(out.shape), to_flat(jac)[0]
+
+
+def acquisition_forward(
+    fn: Any, data: Sequence[float], shape: Sequence[int], with_grad: bool
+) -> tuple[FloatData, FloatData | None]:
+    """Values of an acquisition function given as a callable on torch tensors
+    (``fn(X)`` with ``X`` of shape ``b x q x d``, returning ``b`` values) and,
+    with ``with_grad``, the gradient of their sum with respect to ``X``
+    (row-major, ``b x q x d``)."""
+    torch = _torch()
+    X = from_flat(data, tuple(shape), _float64())
+    if with_grad:
+        X.requires_grad_(True)
+    b = int(shape[0])
+    grads = None
+    # Callers may run in no-grad mode (e.g. torch.autograd.Function.forward),
+    # so the graph is built and differentiated in one enable_grad block.
+    with torch.enable_grad() if with_grad else torch.no_grad():
+        out = torch.as_tensor(fn(X), dtype=torch.float64)
+        if out.numel() != b:
+            raise RuntimeError(
+                f"The acquisition function returned values of shape {tuple(out.shape)} for "
+                f"candidate sets of shape {tuple(shape)}, expected {b} values (`batch_shape`)."
+            )
+        if with_grad:
+            g = None
+            if out.requires_grad:
+                (g,) = torch.autograd.grad(out.sum(), X, allow_unused=True)
+            grads = to_flat(torch.zeros_like(X) if g is None else g)[0]
+    return to_flat(out.detach().reshape(b))[0], grads
+
+
+def acquisition_x_pending(fn: Any) -> tuple[FloatData, list[int]] | None:
+    """The ``X_pending`` attribute (``m x d``) of a callable acquisition
+    function, if it has one."""
+    pending = getattr(fn, "X_pending", None)
+    if pending is None:
+        return None
+    flat, shape = to_flat(pending, "X_pending")
+    return flat, list(shape)
+
+
+def acquisition_set_x_pending(fn: Any, x: tuple[Sequence[float], Sequence[int]] | None) -> None:
+    """Calls ``fn.set_X_pending`` with a float64 tensor (or ``None``)."""
+    setter = getattr(fn, "set_X_pending", None)
+    if setter is None:
+        raise UnsupportedError(
+            f"{type(fn).__name__} has no `set_X_pending`; pending points (sequential "
+            "optimization, optimize_acqf_list) are not supported."
+        )
+    setter(None if x is None else from_flat(x[0], tuple(x[1]), _float64()))

@@ -78,6 +78,16 @@ pub trait Model: Send + Sync + Debug {
         1
     }
 
+    /// Whether the model is deterministic (BoTorch's `DeterministicModel`,
+    /// e.g. [`crate::models::PosteriorMeanModel`]): its posterior is a point
+    /// mass with zero covariance, so Monte-Carlo samples equal the mean for
+    /// any base samples, and its variances are exactly zero (BoTorch's
+    /// `EnsemblePosterior` of one member does not clamp them). `false` by
+    /// default.
+    fn is_deterministic(&self) -> bool {
+        false
+    }
+
     /// Joint posterior at the `q × d` inputs `x` over all outputs (BoTorch's
     /// `model.posterior(X, observation_noise=...)`), flattened in output-major
     /// order.
@@ -182,7 +192,8 @@ pub trait Model: Send + Sync + Debug {
     /// Marginal posterior means and variances of every row of `x` evaluated
     /// independently (the posterior of a `b × 1 × d` batch in BoTorch) for a
     /// *single-output* model. Variances are clamped from below like
-    /// `posterior.variance`.
+    /// `posterior.variance` (except for deterministic models, see
+    /// [`Model::is_deterministic`]).
     ///
     /// The default implementation uses [`Model::point_posteriors`].
     ///
@@ -193,16 +204,24 @@ pub trait Model: Send + Sync + Debug {
         require_single_output(self.num_outputs())?;
         let pp = self.point_posteriors(x)?;
         let b = pp.len();
+        let deterministic = self.is_deterministic();
         Ok((
             Vector::from_fn(b, |i, _| pp.mean[(i, 0)]),
-            Vector::from_fn(b, |i, _| clamp_variance(pp.covariance[(i, 0)])),
+            Vector::from_fn(b, |i, _| {
+                let v = pp.covariance[(i, 0)];
+                if deterministic {
+                    v
+                } else {
+                    clamp_variance(v)
+                }
+            }),
         ))
     }
 
     /// Posterior mean and (clamped) variance of a *single-output* model at a
     /// single point (length `d`) together with their gradients with respect
     /// to the point: `(mean, variance, ∂mean/∂x, ∂variance/∂x)`. The gradient
-    /// of a clamped variance is zero.
+    /// of a clamped variance is zero; deterministic models are not clamped.
     ///
     /// The default implementation uses [`Model::point_posterior_with_grad`].
     ///
@@ -216,7 +235,7 @@ pub trait Model: Send + Sync + Debug {
         let mean = g.mean[0];
         let var = g.covariance[(0, 0)];
         let dmean = Vector::from_fn(d, |k, _| g.dmean[k][0]);
-        if var < MIN_VARIANCE {
+        if var < MIN_VARIANCE && !self.is_deterministic() {
             return Ok((mean, MIN_VARIANCE, dmean, Vector::zeros(d)));
         }
         let dvar = Vector::from_fn(d, |k, _| g.dcov[k][(0, 0)]);
