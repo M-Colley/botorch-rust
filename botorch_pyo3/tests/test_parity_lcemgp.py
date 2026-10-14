@@ -37,7 +37,7 @@ training inputs are perturbed at 1e-14 .. 1e-11, per candidate set within the
 regime of BoTorch's outcomes that botorch_rs's value falls into (on nearly
 singular posteriors BoTorch's own result jumps between regimes, depending on
 whether a Cholesky factorization needs jitter, and the regimes differ in
-their sensitivity to rounding; up to 256 twins when botorch_rs's outcome
+their sensitivity to rounding; up to 512 twins when botorch_rs's outcome
 falls into a rare regime; errors scaled to the tolerance). The worst errors are listed in the terminal summary
 (section "LCEMGP (Unity contextual models)"). Skipped unless BoTorch is
 importable; the randomized sweep is marked ``equivalence``.
@@ -106,7 +106,7 @@ NUM_SAMPLES = 16
 #: when botorch_rs's outcome is a rare one of BoTorch's.
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 16
-N_TWINS_MAX = 256
+N_TWINS_MAX = 512
 #: BoTorch's outcomes whose values lie within this distance (log-space error;
 #: or 100 x BoTorch's median change, if larger) of one another belong to the
 #: same regime.

@@ -892,7 +892,7 @@ training inputs are perturbed at 1e-14 to 1e-11 (16 "twins"):
   under perturbations of 1e-16, while the common one changes them by about
   2e-11. Each candidate set is therefore compared with the regime of
   BoTorch's outcomes that botorch-rust's value falls into, within 10× that
-  regime's own spread. The live tests draw up to 256 twins when
+  regime's own spread. The live tests draw up to 512 twins when
   botorch-rust's outcome falls into a rare regime.
 
 The live test of single fits from identical initial values still compares
