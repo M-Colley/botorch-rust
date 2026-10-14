@@ -30,11 +30,11 @@
 //!   the spread of BoTorch's outcomes at its best optimum);
 //! * qLogNEI and qLogNEHVI (on a list with a second model) with BoTorch's
 //!   recorded base samples: per candidate set, the nearest of BoTorch's
-//!   outcomes on the model and its 16 twins (on nearly singular posteriors
-//!   BoTorch's result jumps between regimes, depending on whether a Cholesky
-//!   factorization needs jitter); values 1e-9 (log values absolute below 1)
-//!   and gradients 1e-8, or 10 × BoTorch's median change on the twins,
-//!   whichever is larger.
+//!   outcomes on the model and its 16 twins in the regime botorch_rs's value
+//!   falls into (on nearly singular posteriors BoTorch's result jumps between
+//!   regimes, depending on whether a Cholesky factorization needs jitter);
+//!   values 1e-9 (log values absolute below 1) and gradients 1e-8, or 10 ×
+//!   the median spread of that regime, whichever is larger.
 //!
 //! `interval.json`: `Interval` values, inverses, derivatives, raw initial
 //! values and optimizer bounds (1e-15), and `SingleTaskGP`s with `Interval`
@@ -71,6 +71,10 @@ const FIT_TOL: f64 = 1e-6;
 /// BoTorch's fit outcomes within this distance of its best final loss count
 /// as the same optimum; their spread sets the fit tolerance.
 const FIT_CLUSTER: f64 = 1e-4;
+/// BoTorch's MC outcomes whose values lie within this distance (log-space
+/// error; or 100 × BoTorch's median change, if larger) of one another belong
+/// to the same regime.
+const REGIME_GAP: f64 = 1e-6;
 /// Two float32 units in the last place (relative).
 const F32_ULP: f64 = 2.4e-7;
 /// The seed of the samplers (every dimension has a recorded draw).
@@ -307,9 +311,13 @@ fn median(mut xs: Vec<f64>) -> f64 {
     }
 }
 
-/// Compares the MC evaluations (values in log space) of `acqf`, per
-/// candidate set, with the nearest of BoTorch's outcomes (on the model and
-/// its twins), within 10 × BoTorch's median change on the twins.
+/// Compares the MC evaluations (values in log space) of `acqf` with
+/// BoTorch's outcomes on the model and its twins, per candidate set: with
+/// the nearest outcome of the regime of BoTorch's outcomes that botorch_rs's
+/// value falls into, within 10 × the median spread of that regime around it
+/// (at least the nominal tolerances). On nearly singular posteriors BoTorch's
+/// result jumps between regimes (whether a Cholesky factorization needs
+/// jitter), and a regime can be much more sensitive to rounding than another.
 fn check_mc(
     report: &mut Report,
     name: &str,
@@ -335,60 +343,57 @@ fn check_mc(
                     .map(|(v, g)| (vals(v), flat(g))),
             )
             .collect();
-    let (base_v, base_g) = &outcomes[0];
-    let floor_v = median(
-        outcomes[1..]
-            .iter()
-            .map(|(v, _)| log_err(v, base_v))
-            .collect(),
-    );
-    let floor_g = median(
-        outcomes[1..]
-            .iter()
-            .map(|(_, g)| grad_err(&g.concat(), &base_g.concat()))
-            .collect(),
-    );
-    let tol_v = VALUE_TOL.max(10.0 * floor_v);
-    let tol_g = GRAD_TOL.max(10.0 * floor_g);
-    // Per candidate set, the nearest outcome (errors relative to the
-    // tolerances; at most 1 passes) and its unscaled errors.
-    let mut worst = (0.0f64, 0.0f64, 0.0f64);
+    // (scaled excess, value error, gradient error, regime size) of the
+    // worst candidate set, and the largest share of twins outside the regime
+    // of BoTorch's own outcome.
+    let mut worst = (0.0f64, 0.0f64, 0.0f64, 0usize);
+    let mut jumps = 0.0f64;
     for (i, (v, g)) in values.iter().zip(&grads).enumerate() {
-        let nearest = outcomes
+        let ov: Vec<f64> = outcomes.iter().map(|(o, _)| o[i]).collect();
+        let og: Vec<&Vec<f64>> = outcomes.iter().map(|(_, o)| &o[i]).collect();
+        let err = |a: f64, b: f64| log_err(&[a], &[b]);
+        let gap = REGIME_GAP.max(100.0 * median(ov[1..].iter().map(|&o| err(o, ov[0])).collect()));
+        let nearest = (0..ov.len())
+            .min_by(|&a, &b| err(*v, ov[a]).total_cmp(&err(*v, ov[b])))
+            .unwrap();
+        let regime: Vec<usize> = (0..ov.len())
+            .filter(|&j| err(ov[j], ov[nearest]) <= gap)
+            .collect();
+        let others: Vec<usize> = regime.iter().copied().filter(|&j| j != nearest).collect();
+        let spread = |xs: Vec<f64>| if xs.is_empty() { 0.0 } else { median(xs) };
+        let floor_v = spread(others.iter().map(|&j| err(ov[j], ov[nearest])).collect());
+        let floor_g = spread(
+            others
+                .iter()
+                .map(|&j| grad_err(og[j], og[nearest]))
+                .collect(),
+        );
+        let tol_v = VALUE_TOL.max(10.0 * floor_v);
+        let tol_g = GRAD_TOL.max(10.0 * floor_g);
+        let best = regime
             .iter()
-            .map(|(ov, og)| {
-                let ev = log_err(std::slice::from_ref(v), &ov[i..=i]);
-                let eg = grad_err(g, &og[i]);
-                ((ev / tol_v).max(eg / tol_g), ev, eg)
+            .map(|&j| {
+                let ev = err(*v, ov[j]);
+                let eg = grad_err(g, og[j]);
+                ((ev / tol_v).max(eg / tol_g), ev, eg, regime.len())
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .unwrap();
-        if nearest.0 > worst.0 {
-            worst = nearest;
+        if best.0 >= worst.0 {
+            worst = best;
         }
+        let outside = ov[1..].iter().filter(|&&o| err(o, ov[0]) > gap).count();
+        jumps = jumps.max(outside as f64 / (ov.len() - 1) as f64);
     }
-    let regimes = outcomes[1..]
-        .iter()
-        .any(|(v, _)| log_err(v, base_v) > 100.0 * tol_v);
     let label = format!("{what} q={}", e.q);
-    report.check(
-        name,
-        &format!("{label} values (unscaled, nearest)"),
-        worst.1,
-        f64::INFINITY,
-    );
-    report.check(
-        name,
-        &format!("{label} gradients (unscaled, nearest)"),
-        worst.2,
-        f64::INFINITY,
-    );
-    report.check(
-        name,
-        &format!("{label} BoTorch outcomes in several regimes"),
-        f64::from(u8::from(regimes)),
-        f64::INFINITY,
-    );
+    for (quantity, value) in [
+        ("values (unscaled, nearest)", worst.1),
+        ("gradients (unscaled, nearest)", worst.2),
+        ("size of the regime compared with", worst.3 as f64),
+        ("share of BoTorch's twins in another regime", jumps),
+    ] {
+        report.check(name, &format!("{label} {quantity}"), value, f64::INFINITY);
+    }
     report.check(
         name,
         &format!("{label} values and gradients (scaled)"),

@@ -32,12 +32,13 @@ change of its final loss when the training inputs are perturbed by 1e-14 or
 L-BFGS-B's variables are reversed``)`` (long L-BFGS-B runs on flat
 likelihoods amplify rounding, and botorch_rs's L-BFGS-B port and SciPy's,
 which uses BLAS, agree only to rounding); MC acquisition values / gradients
-1e-9 / 1e-8 or 10x BoTorch's median change on 16 twins whose training inputs
-are perturbed at 1e-14 .. 1e-11, against the nearest of BoTorch's outcomes
-per candidate set (on nearly singular posteriors BoTorch's own result jumps
-between regimes, depending on whether a Cholesky factorization needs jitter;
-up to 64 twins when botorch_rs's outcome is a rare one of BoTorch's; errors
-scaled to the tolerance). The worst errors are listed in the terminal summary
+1e-9 / 1e-8 or 10x the spread of BoTorch's outcomes on 16 twins whose
+training inputs are perturbed at 1e-14 .. 1e-11, per candidate set within the
+regime of BoTorch's outcomes that botorch_rs's value falls into (on nearly
+singular posteriors BoTorch's own result jumps between regimes, depending on
+whether a Cholesky factorization needs jitter, and the regimes differ in
+their sensitivity to rounding; up to 256 twins when botorch_rs's outcome
+falls into a rare regime; errors scaled to the tolerance). The worst errors are listed in the terminal summary
 (section "LCEMGP (Unity contextual models)"). Skipped unless BoTorch is
 importable; the randomized sweep is marked ``equivalence``.
 """
@@ -105,7 +106,11 @@ NUM_SAMPLES = 16
 #: when botorch_rs's outcome is a rare one of BoTorch's.
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 16
-N_TWINS_MAX = 64
+N_TWINS_MAX = 256
+#: BoTorch's outcomes whose values lie within this distance (log-space error;
+#: or 100 x BoTorch's median change, if larger) of one another belong to the
+#: same regime.
+REGIME_GAP = 1e-6
 
 
 # ---------------------------------------------------------------------------
@@ -706,51 +711,58 @@ def twin_scale(k: int) -> float:
     return TWIN_SCALES[(k - 1) % len(TWIN_SCALES)]
 
 
-def _nearest_excess(rs_vg: tuple, outcomes: list[tuple], tol_v: float, tol_g: float) -> tuple:
-    """Per candidate set, the BoTorch outcome nearest to botorch_rs's (values
-    and gradients scaled by their tolerances): the largest scaled distance
-    over the candidate sets and the unscaled errors there."""
-    worst = (0.0, 0.0, 0.0)
-    for i in range(rs_vg[0].shape[0]):
-        best = min(
-            (
-                max(ev / tol_v, eg / tol_g),
-                ev,
-                eg,
-            )
-            for ev, eg in (
-                (log_err(rs_vg[0][i : i + 1], v[i : i + 1]), rel_err(rs_vg[1][i], g[i]))
-                for v, g in outcomes
-            )
-        )
-        worst = max(worst, best)
-    return worst
+def _set_excess(rs_vg: tuple, outcomes: list[tuple], i: int) -> tuple:
+    """Candidate set ``i`` against BoTorch's outcomes: botorch_rs's value
+    and gradient against the nearest outcome of the regime of BoTorch's
+    outcomes that botorch_rs's value falls into, scaled by 10 x the median
+    spread of that regime around it (at least the nominal tolerances).
+
+    Returns (scaled excess, value error, gradient error, regime size, number
+    of BoTorch's twins outside the regime of its own outcome)."""
+    rv, rg = rs_vg[0][i : i + 1], rs_vg[1][i]
+    vals = [v[i : i + 1] for v, _ in outcomes]
+    grads = [g[i] for _, g in outcomes]
+    gap = max(REGIME_GAP, 100 * statistics.median(log_err(v, vals[0]) for v in vals[1:]))
+    nearest = min(range(len(vals)), key=lambda j: log_err(rv, vals[j]))
+    regime = [j for j in range(len(vals)) if log_err(vals[j], vals[nearest]) <= gap]
+    others = [j for j in regime if j != nearest]
+    floor_v = statistics.median(log_err(vals[j], vals[nearest]) for j in others) if others else 0.0
+    floor_g = (
+        statistics.median(rel_err(grads[j], grads[nearest]) for j in others) if others else 0.0
+    )
+    tol_v, tol_g = max(VALUE_TOL, 10 * floor_v), max(GRAD_TOL, 10 * floor_g)
+    excess, ev, eg = min(
+        (max(ev / tol_v, eg / tol_g), ev, eg)
+        for ev, eg in ((log_err(rv, vals[j]), rel_err(rg, grads[j])) for j in regime)
+    )
+    jumps = sum(log_err(v, vals[0]) > gap for v in vals[1:])
+    return excess, ev, eg, len(regime), jumps
 
 
 def _check_mc(name: str, rs_vg: tuple, outcome: Any) -> None:
     """botorch_rs's values and gradients against BoTorch's outcomes
     ``outcome(k)`` on twin ``k`` (0: the model itself).
 
-    On nearly singular posteriors BoTorch's own result can jump between
-    discrete regimes (whether a Cholesky factorization needs jitter) under
-    rounding-level perturbations, so each candidate set is compared with the
-    nearest of BoTorch's outcomes, within 10 times BoTorch's typical (median)
-    change under the perturbations."""
-    base = outcome(0)
-    outcomes = [base] + [outcome(k) for k in range(1, N_TWINS + 1)]
-    floor_v = statistics.median(log_err(v, base[0]) for v, _ in outcomes[1:])
-    floor_g = statistics.median(rel_err(g, base[1]) for _, g in outcomes[1:])
-    tol_v, tol_g = max(VALUE_TOL, 10 * floor_v), max(GRAD_TOL, 10 * floor_g)
-    excess, ev, eg = _nearest_excess(rs_vg, outcomes, tol_v, tol_g)
-    while excess > 1.0 and len(outcomes) <= N_TWINS_MAX:
+    On nearly singular posteriors BoTorch's own result jumps between discrete
+    regimes (whether a Cholesky factorization needs jitter) under
+    rounding-level perturbations, and a regime can be much more sensitive to
+    rounding than another. So each candidate set is compared with the regime
+    of BoTorch's outcomes that botorch_rs's value falls into, within 10 x
+    that regime's own spread (``_set_excess``); more twins are drawn while a
+    candidate set exceeds its tolerance (a rare regime has few outcomes)."""
+    outcomes = [outcome(k) for k in range(N_TWINS + 1)]
+    n_sets = rs_vg[0].shape[0]
+    sets = [_set_excess(rs_vg, outcomes, i) for i in range(n_sets)]
+    while max(s[0] for s in sets) > 1.0 and len(outcomes) <= N_TWINS_MAX:
         n = len(outcomes)
         outcomes += [outcome(k) for k in range(n, n + N_TWINS)]
-        excess, ev, eg = _nearest_excess(rs_vg, outcomes, tol_v, tol_g)
-    regimes = max(log_err(v, base[0]) for v, _ in outcomes[1:]) > 100 * tol_v
+        sets = [_set_excess(rs_vg, outcomes, i) for i in range(n_sets)]
+    excess, ev, eg, size, _ = max(sets)
+    jumps = max(s[4] / (len(outcomes) - 1) for s in sets)
     CHECK.record(f"{name} values (unscaled, nearest BoTorch outcome)", ev, None)
     CHECK.record(f"{name} gradients (unscaled, nearest BoTorch outcome)", eg, None)
-    CHECK.record(f"{name}: BoTorch noise floor (median), values", floor_v, None)
-    CHECK.record(f"{name}: BoTorch outcomes in several regimes", float(regimes), None)
+    CHECK.record(f"{name}: share of BoTorch's twins in another regime", jumps, None)
+    CHECK.record(f"{name}: size of the regime compared with", float(size), None)
     CHECK.record(f"{name}: BoTorch outcomes compared", float(len(outcomes)), None)
     CHECK.check_bound(f"{name} values and gradients (scaled)", excess, 1.0)
 

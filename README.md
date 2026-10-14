@@ -867,8 +867,8 @@ The references are the Unity project's classes on BoTorch.
 | `SumMarginalLogLikelihood` of a `ModelListGP` of two Unity models | 1e-9 | | 1.8e-16 |
 | Fits on the model and 16 twins: best loss above BoTorch's best / own loss above BoTorch's worst outcome, scaled by `max(1e-6, 10 ×` the spread at BoTorch's best`)` | ≤ 1 | 1.0e-3 / 0 | |
 | Fit from identical initial values: final loss above BoTorch's, scaled by `max(1e-6, 10 ×` BoTorch's spread`)` | ≤ 1 | | 0.16 |
-| qLogNEI (q = 1, 2): values and gradients against the nearest BoTorch outcome, scaled by `max(nominal, 10 ×` BoTorch's median change on 16 twins`)` | ≤ 1 | 0.098 | 0.025 |
-| qLogNEHVI on a `ModelListGP` of two Unity models: the same | ≤ 1 | 0.14 | 0.11 |
+| qLogNEI (q = 1, 2): values and gradients against the nearest BoTorch outcome in botorch-rust's regime, scaled by `max(nominal, 10 ×` that regime's spread`)` | ≤ 1 | 0.059 | 0.15 |
+| qLogNEHVI on a `ModelListGP` of two Unity models: the same | ≤ 1 | 0.12 | 0.087 |
 | `optimize_acqf` (qLogNEI) from 4 identical initial conditions: restarts ending at another value | ≤ 1 of 4 | | 1 (0.18.1) / 0 (main) |
 | `Interval` values / raw initial values | 1e-15 / 1 float32 ulp | 0 / 1.2e-7 | 0 / 7.5e-8 |
 | `SingleTaskGP` with `Interval` constraints: MLL / gradient; fit (scaled) | 1e-9 / 1e-8; ≤ 1 | 6.6e-16 / 6.8e-15; 6.0e-5 | 8.7e-16 / 6.6e-15; 0.45 |
@@ -886,10 +886,14 @@ training inputs are perturbed at 1e-14 to 1e-11 (16 "twins"):
   [-1.00849816, -0.63902018].
 - **Acquisition values.** On nearly singular posteriors, BoTorch's qLogNEI
   jumps between discrete regimes, depending on whether a Cholesky
-  factorization needs jitter: by 4.4e-2 in log value for one live case. Each
-  candidate set is therefore compared with the nearest of BoTorch's outcomes
-  on the model and its twins. The live tests draw up to 64 twins when
-  botorch-rust's outcome is a rare one of BoTorch's.
+  factorization needs jitter: by 4.4e-2 in log value for one live case. The
+  regimes also differ in their sensitivity to rounding. In that case, the
+  rare regime (4 of 128 BoTorch twins) changes its gradients by about 1e-6
+  under perturbations of 1e-16, while the common one changes them by about
+  2e-11. Each candidate set is therefore compared with the regime of
+  BoTorch's outcomes that botorch-rust's value falls into, within 10× that
+  regime's own spread. The live tests draw up to 256 twins when
+  botorch-rust's outcome falls into a rare regime.
 
 The live test of single fits from identical initial values still compares
 final losses directly; short fits end at the same iterate.
