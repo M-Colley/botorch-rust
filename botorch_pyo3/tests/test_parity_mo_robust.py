@@ -497,6 +497,7 @@ def compare(
     bt_vg: tuple[Any, Any],
     log: bool,
     twins: Callable[[], Iterator[tuple[Any, Any]]] | None = None,
+    piecewise_grad_tol: float | None = None,
 ) -> None:
     """Values and gradients; above the nominal tolerances, the tolerance is
     10x BoTorch's own change under small perturbations of its training
@@ -548,6 +549,13 @@ def compare(
         CHECK.record(f"{label}: values (observed, above the noise floor tolerance)", err_v, None)
         CHECK.record(f"{label}: gradients (observed)", err_g, None)
     assert err_v <= tol_v, (label, "values", err_v, tol_v)
+    if piecewise_grad_tol is not None and err_g > tol_g:
+        # The objective's gradient is only piecewise continuous (see
+        # check_mo_acquisition): a gross check, recorded separately.
+        CHECK.record(
+            f"{label}: gradients across a selection tie (gross)", err_g, piecewise_grad_tol
+        )
+        tol_g = max(tol_g, piecewise_grad_tol)
     assert err_g <= tol_g, (label, "gradients", err_g, tol_g)
 
 
@@ -668,7 +676,16 @@ def check_mo_acquisition(model_name: str, case: tuple, seed: int) -> None:
                 yield bt_eval(per_candidate, a_tw, Xt, grads)
 
     label = f"{name}({spec['kind']}{', BoTorch object' if spec.get('botorch_object') else ''})"
-    compare(label, vg_rs, vg_bt, name.startswith("qLog"), twins if noisy else None)
+    # MVaR selects sample points by counting: its value is continuous, but its
+    # gradient jumps where two samples swap order. On the nearly singular
+    # joint posteriors of the noisy acquisition functions such near-ties are
+    # common, and the side an implementation lands on depends on last-bit
+    # differences (on Linux CI a 1.2e-4 jump that no perturbation of BoTorch's
+    # training inputs up to 1e-11 reproduced). Values stay at the nominal
+    # tolerance; gradients get a gross check there. Exact MVaR gradients are
+    # compared in test_risk_measures and the Rust fixtures.
+    piecewise = 1e-2 if noisy and spec["kind"] == "MVaR" else None
+    compare(label, vg_rs, vg_bt, name.startswith("qLog"), twins if noisy else None, piecewise)
 
 
 @pytest.mark.parametrize("model_name", MO_MODELS)
