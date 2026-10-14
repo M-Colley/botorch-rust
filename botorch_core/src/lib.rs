@@ -52,7 +52,8 @@
 //! | joint mean/covariance and their gradients | [`SingleTaskGP::joint_posterior_with_grad`]`(&x) -> `[`JointPosteriorGrad`] (index `j = point·d + dim`); reverse mode [`SingleTaskGP::joint_posterior_vjp`] |
 //! | `SingleTaskGP(train_X, train_Y)` with `m > 1` outputs and/or a batch shape | [`BatchedMultiOutputGP::multi_output`]`(train_x, train_y, `[`SingleTaskGPOptions`]`)`, [`BatchedMultiOutputGP::new`]`(train_x, train_y, batch_shape, `[`BatchedMultiOutputGPOptions`]`)` (one matrix per batch element), `From<SingleTaskGP>` |
 //! | `model.posterior(X)` over `m` outputs, batched `X` | [`Model::posterior`] -> [`Posterior`]` { mean, covariance, num_outputs }` (output-major; [`Posterior::mean_matrix`], [`Posterior::select_outputs`]); per batch element [`BatchedMultiOutputGP::posterior_at`]`(batch, &x, observation_noise)` |
-//! | `ModelListGP(*models)` | [`ModelListGP::new`]`(vec![...])` (block-diagonal joint posterior over the concatenated outputs), [`ModelListGP::posterior_at`] |
+//! | `ModelListGP(*models)` | [`ModelListGP::new`]`(vec![...])` (block-diagonal joint posterior over the concatenated outputs), [`ModelListGP::posterior_at`]; for other sub-models (e.g. `LCEMGP`s) [`ModelList::new`]`(vec![Arc<dyn Model>, ...])` |
+//! | `LCEMGP(train_X, train_Y, task_feature, context_cat_feature, context_emb_feature, embs_dim_list, output_tasks, all_tasks, ...)` | [`LCEMGP::new`]`(train_x, train_y, task_feature, `[`LCEMGPOptions`]`)`; [`LCEMGP::posterior`] over the output tasks, [`LCEMGP::posterior_with_tasks`], [`LCEMGP::mll_value_and_grad`], `fit_gpytorch_mll` (see [`models::contextual_multioutput`]) |
 //! | `ExactMarginalLogLikelihood` of a batched model, `SumMarginalLogLikelihood` | [`BatchedMultiOutputGP::mll_values`] (one value per element of `_aug_batch_shape`), [`BatchedMultiOutputGP::mll_values_and_grad`], [`ModelListGP::mll_values`] |
 //! | `botorch.models.model.Model` (what acquisition functions use) | the [`Model`] trait, implemented by [`SingleTaskGP`], [`BatchedMultiOutputGP`] and [`ModelListGP`] (unbatched) and [`acquisition::ScalarizedModel`]; joint multi-output posteriors with input derivatives: [`Model::joint_posterior_with_grad`], [`Model::joint_posterior_vjp`], [`Model::point_posteriors`], [`Model::point_posterior_with_grad`] |
 //! | `model.named_parameters()` | [`SingleTaskGP::hyperparameters`], [`SingleTaskGP::set_hyperparameters`], [`SingleTaskGP::raw_parameters`], [`SingleTaskGP::parameter_names`] |
@@ -101,7 +102,7 @@
 //! | `get_gaussian_likelihood_with_lognormal_prior`, `..._with_gamma_prior` | [`get_gaussian_likelihood_with_lognormal_prior`], [`get_gaussian_likelihood_with_gamma_prior`] |
 //! | `Normalize`, `Standardize` | [`Normalize`], [`Standardize`] |
 //! | `LogNormalPrior`, `GammaPrior` | [`Prior`] |
-//! | `GreaterThan`, `Positive` | [`GreaterThan`] |
+//! | `GreaterThan`, `Positive`, `Interval` | [`GreaterThan`], [`Interval`] (both as a [`Constraint`]) |
 //! | `scipy.optimize.minimize(method="L-BFGS-B")` | [`lbfgsb::minimize`]`(fun, &x0, &lower, &upper, &`[`lbfgsb::LbfgsbOptions`]`)` |
 //! | `linear_operator.utils.cholesky.psd_safe_cholesky` | [`psd_safe_cholesky`] |
 //!
@@ -348,7 +349,7 @@ pub type Matrix = nalgebra::DMatrix<f64>;
 pub type Vector = nalgebra::DVector<f64>;
 
 pub use acquisition::AcquisitionFunction;
-pub use constraints::{GreaterThan, ParameterTransform};
+pub use constraints::{Constraint, GreaterThan, Interval, ParameterTransform};
 pub use error::{BotorchError, Result};
 pub use fit::{fit_gpytorch_mll, BatchedFitResult, FitOptions, FitResult, FitStatus, Fittable};
 pub use kernels::{Kernel, KernelKind, KernelSpec, ScaleKernelSpec};
@@ -357,8 +358,8 @@ pub use mll::ExactMarginalLogLikelihood;
 pub use models::{
     get_gaussian_likelihood_with_gamma_prior, get_gaussian_likelihood_with_lognormal_prior,
     BatchedInputTransform, BatchedMultiOutputGP, BatchedMultiOutputGPOptions,
-    GaussianLikelihoodSpec, Hyperparameters, Likelihood, Model, ModelListGP, ParameterLayout,
-    SingleTaskGP, SingleTaskGPOptions,
+    GaussianLikelihoodSpec, Hyperparameters, LCEMGPOptions, Likelihood, Model, ModelList,
+    ModelListGP, ParameterLayout, SingleTaskGP, SingleTaskGPOptions, LCEMGP,
 };
 pub use optim::{optimize_acqf, OptimizeAcqfOptions};
 pub use posterior::{JointPosteriorGrad, PointPosteriors, Posterior};

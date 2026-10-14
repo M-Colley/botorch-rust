@@ -13,16 +13,18 @@
 use std::sync::{Arc, RwLock};
 
 use botorch_core::acquisition::{ScalarizedModel, ScalarizedPosteriorTransform};
+use botorch_core::models::LcemTaskInputs;
 use botorch_core::posterior::MIN_VARIANCE;
 use botorch_core::{
     fit_gpytorch_mll, BatchedFitResult, BatchedMultiOutputGP, BatchedMultiOutputGPOptions,
-    FitOptions, FitStatus, Hyperparameters, Likelihood, Matrix, Model, ModelListGP,
+    FitOptions, FitStatus, Hyperparameters, Likelihood, Matrix, Model, ModelList, ModelListGP,
     OutcomeTransformChoice, PointPosteriors, Posterior, Vector,
 };
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use crate::arrays::{broadcast_indices, broadcast_shapes, broadcast_to, Array, ArrayBuf, ArrayOut};
+use crate::contextual::PyLCEMGP;
 use crate::errors::{dimension_error, unsupported, value_error, IntoPyResult};
 use crate::specs::{PyKernelSpec, PyLikelihoodSpec};
 use crate::threads;
@@ -56,12 +58,13 @@ fn status_name(status: FitStatus) -> &'static str {
     }
 }
 
-/// A model evaluated per model batch element: a `SingleTaskGP` or a
-/// `ModelListGP`.
+/// A model evaluated per model batch element: a `SingleTaskGP`, a
+/// `ModelListGP`, or any unbatched model (e.g. an `LCEMGP` or a list of them).
 #[derive(Clone)]
 enum ModelRef {
     Gp(Arc<BatchedMultiOutputGP>),
     List(ModelListGP),
+    Dyn(Arc<dyn Model>),
 }
 
 impl ModelRef {
@@ -69,6 +72,7 @@ impl ModelRef {
         match self {
             ModelRef::Gp(m) => m.dim(),
             ModelRef::List(l) => l.dim(),
+            ModelRef::Dyn(m) => m.dim(),
         }
     }
 
@@ -76,6 +80,7 @@ impl ModelRef {
         match self {
             ModelRef::Gp(m) => m.num_outputs(),
             ModelRef::List(l) => l.num_outputs(),
+            ModelRef::Dyn(m) => m.num_outputs(),
         }
     }
 
@@ -83,6 +88,7 @@ impl ModelRef {
         match self {
             ModelRef::Gp(m) => m.batch_shape().to_vec(),
             ModelRef::List(l) => l.batch_shape().to_vec(),
+            ModelRef::Dyn(m) => m.batch_shape().to_vec(),
         }
     }
 
@@ -91,6 +97,7 @@ impl ModelRef {
         match self {
             ModelRef::Gp(m) => m.points_per_input(),
             ModelRef::List(l) => l.points_per_input(),
+            ModelRef::Dyn(m) => m.points_per_input(),
         }
     }
 
@@ -98,6 +105,7 @@ impl ModelRef {
         match self {
             ModelRef::Gp(m) => m.posterior_at(b, x, noise),
             ModelRef::List(l) => l.posterior_at(b, x, noise),
+            ModelRef::Dyn(m) => m.posterior(x, noise),
         }
     }
 
@@ -110,6 +118,26 @@ impl ModelRef {
         match self {
             ModelRef::Gp(m) => m.point_posteriors_at(b, x, noise),
             ModelRef::List(l) => l.point_posteriors_at(b, x, noise),
+            ModelRef::Dyn(m) if !noise => m.point_posteriors(x),
+            ModelRef::Dyn(m) => {
+                // Every point on its own, with observation noise.
+                let k = m.num_outputs();
+                let mut mean = Matrix::zeros(x.nrows(), k);
+                let mut cov = Matrix::zeros(x.nrows(), k * k);
+                for i in 0..x.nrows() {
+                    let p = m.posterior(&x.rows(i, 1).into_owned(), true)?;
+                    for a in 0..k {
+                        mean[(i, a)] = p.mean[a];
+                        for c in 0..k {
+                            cov[(i, a * k + c)] = p.covariance[(a, c)];
+                        }
+                    }
+                }
+                Ok(PointPosteriors {
+                    mean,
+                    covariance: cov,
+                })
+            }
         }
     }
 }
@@ -1163,6 +1191,104 @@ impl PyModel {
         let m: Arc<dyn Model> = model.snapshot();
         Ok(Self {
             inner: with_transform(m, transform)?,
+        })
+    }
+
+    /// The current snapshot of an `LCEMGP` (over its output tasks, or over
+    /// the tasks `output_tasks` if given), seen through the posterior
+    /// transform if given.
+    #[staticmethod]
+    #[pyo3(signature = (model, output_tasks=None, transform=None))]
+    fn from_lcemgp(
+        model: PyRef<'_, PyLCEMGP>,
+        output_tasks: Option<Vec<i64>>,
+        transform: Option<TransformArg>,
+    ) -> PyResult<Self> {
+        let snapshot = model.snapshot();
+        let m: Arc<dyn Model> = match output_tasks {
+            Some(tasks) => Arc::new(snapshot.with_output_tasks(&tasks).into_py_result()?),
+            None => snapshot,
+        };
+        Ok(Self {
+            inner: with_transform(m, transform)?,
+        })
+    }
+
+    /// The current snapshot of an `LCEMGP` with inputs that include the
+    /// task column (`d + 1` columns, one output).
+    #[staticmethod]
+    fn from_lcemgp_task_inputs(model: PyRef<'_, PyLCEMGP>) -> Self {
+        Self {
+            inner: Arc::new(LcemTaskInputs::new(model.snapshot())),
+        }
+    }
+
+    /// A list of independent models (BoTorch's `ModelList`, e.g. a
+    /// `ModelListGP` of `LCEMGP`s), seen through the posterior transform if
+    /// given.
+    #[staticmethod]
+    #[pyo3(signature = (models, transform=None))]
+    fn from_models(
+        models: Vec<PyRef<'_, PyModel>>,
+        transform: Option<TransformArg>,
+    ) -> PyResult<Self> {
+        let list = ModelList::new(models.iter().map(|m| Arc::clone(&m.inner)).collect())
+            .into_py_result()?;
+        Ok(Self {
+            inner: with_transform(Arc::new(list), transform)?,
+        })
+    }
+
+    /// See `SingleTaskGP.posterior_marginals` (unbatched models).
+    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None))]
+    fn posterior_marginals(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        observation_noise: bool,
+        output_indices: Option<Vec<usize>>,
+        transform: Option<TransformArg>,
+    ) -> PyResult<(ArrayBuf, ArrayBuf)> {
+        let model = ModelRef::Dyn(Arc::clone(&self.inner));
+        let view = View::new(model.num_outputs(), output_indices, transform)?;
+        let (mean, var, shape) =
+            threads::run(py, || marginals(&model, &x, observation_noise, &view))?;
+        Ok((ArrayBuf(mean, shape.clone()), ArrayBuf(var, shape)))
+    }
+
+    /// See `SingleTaskGP.posterior_joint` (unbatched models).
+    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None))]
+    fn posterior_joint(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        observation_noise: bool,
+        output_indices: Option<Vec<usize>>,
+        transform: Option<TransformArg>,
+    ) -> PyResult<(ArrayBuf, ArrayBuf)> {
+        let model = ModelRef::Dyn(Arc::clone(&self.inner));
+        let view = View::new(model.num_outputs(), output_indices, transform)?;
+        let q = x.1.get(x.1.len().wrapping_sub(2)).copied().unwrap_or(0) * model.points_per_input();
+        let mo = view.num_outputs;
+        let (shape, posts) = threads::run(py, || joints(&model, &x, observation_noise, &view))?;
+        Ok(joint_out(shape, &posts, q, mo))
+    }
+
+    /// See `SingleTaskGP.posterior_samples` (unbatched models).
+    #[pyo3(signature = (x, base_samples, observation_noise=false, output_indices=None, transform=None))]
+    fn posterior_samples(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        base_samples: Array,
+        observation_noise: bool,
+        output_indices: Option<Vec<usize>>,
+        transform: Option<TransformArg>,
+    ) -> PyResult<ArrayBuf> {
+        let model = ModelRef::Dyn(Arc::clone(&self.inner));
+        let view = View::new(model.num_outputs(), output_indices, transform)?;
+        threads::run(py, || {
+            samples(&model, &x, &base_samples, observation_noise, &view)
         })
     }
 

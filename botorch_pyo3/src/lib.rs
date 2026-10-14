@@ -16,6 +16,7 @@ mod acquisition;
 mod arrays;
 mod callbacks;
 mod composite;
+mod contextual;
 mod deterministic;
 mod errors;
 mod fantasize;
@@ -47,10 +48,11 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<models::PySingleTaskGP>()?;
     m.add_class::<models::PyModelListGP>()?;
     m.add_class::<models::PyModel>()?;
+    m.add_class::<contextual::PyLCEMGP>()?;
     m.add_class::<transforms::PyNormalize>()?;
     m.add_class::<transforms::PyStandardize>()?;
     m.add_class::<specs::PyPrior>()?;
-    m.add_class::<specs::PyGreaterThan>()?;
+    m.add_class::<specs::PyConstraint>()?;
     m.add_class::<specs::PyKernelSpec>()?;
     m.add_class::<specs::PyLikelihoodSpec>()?;
     // Acquisition functions and their optimization.

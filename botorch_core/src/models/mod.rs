@@ -8,21 +8,30 @@
 //!   element and output;
 //! * [`ModelListGP`]: independent sub-models with possibly different training
 //!   data;
+//! * [`LCEMGP`]: BoTorch's latent context embedding multi-output GP, a
+//!   multi-task GP with a kernel on context embeddings (with the task
+//!   handling of `MultiTaskGP`, [`multitask`]);
+//! * [`ModelList`]: a list of arbitrary models (BoTorch's `ModelList`), e.g.
+//!   `ModelListGP(*lcemgps)`;
 //! * [`PosteriorMeanModel`]: the posterior mean of a model as a deterministic
 //!   model (see [`deterministic`]).
 //!
-//! All three can be conditioned on new observations and fantasized
+//! The first three can be conditioned on new observations and fantasized
 //! (`condition_on_observations`, `fantasize`; see [`fantasize`]).
 
 pub mod batched;
+pub mod contextual_multioutput;
 pub mod cost;
 pub mod deterministic;
 pub mod fantasize;
 pub mod gp;
 pub mod model;
 pub mod model_list;
+pub mod model_list_dyn;
+pub mod multitask;
 
 pub use batched::{BatchedInputTransform, BatchedMultiOutputGP, BatchedMultiOutputGPOptions};
+pub use contextual_multioutput::{LCEMGPOptions, LcemParameters, LcemTaskInputs, LCEMGP};
 pub use deterministic::PosteriorMeanModel;
 pub use fantasize::{BatchedMatrix, BoolMatrix, FantasySampler};
 pub use gp::{
@@ -32,3 +41,5 @@ pub use gp::{
 };
 pub use model::Model;
 pub use model_list::ModelListGP;
+pub use model_list_dyn::ModelList;
+pub use multitask::TaskLayout;

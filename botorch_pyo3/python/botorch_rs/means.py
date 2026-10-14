@@ -52,4 +52,61 @@ class ConstantMean(Mean):
         return "ConstantMean()"
 
 
-__all__ = ["ConstantMean", "Mean"]
+class _TaskConstantMean(Mean):
+    """The ``ConstantMean`` of one task of a ``MultitaskMean``."""
+
+    def __init__(self, model: Any, task: int) -> None:
+        self._task = task
+        self._bind(model)
+
+    @property
+    def _name(self) -> str:
+        return f"mean_module.base_means.{self._task}.raw_constant"
+
+    @property
+    def constant(self) -> Any:
+        """The constant of the task (a scalar)."""
+        return self._out(self._model._raw_param(self._name), ())
+
+    @constant.setter
+    def constant(self, value: Any) -> None:
+        self._model._set_raw_param(self._name, value)
+
+    @property
+    def raw_constant(self) -> Any:
+        return self.constant
+
+    @raw_constant.setter
+    def raw_constant(self, value: Any) -> None:
+        self.constant = value
+
+    def __repr__(self) -> str:
+        return "ConstantMean()"
+
+
+class MultitaskMean(Mean):
+    """One ``ConstantMean`` per task (``gpytorch.means.MultitaskMean``), the
+    mean of an ``LCEMGP``: ``base_means[t].constant`` (transformed outcome
+    space)."""
+
+    num_tasks: int
+    base_means: list[_TaskConstantMean]
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise UnsupportedError(
+            "MultitaskMean is created by LCEMGP; custom mean modules are not supported."
+        )
+
+    @classmethod
+    def _create(cls, model: Any, num_tasks: int) -> MultitaskMean:
+        obj = cls.__new__(cls)
+        obj.num_tasks = num_tasks
+        obj.base_means = [_TaskConstantMean(model, t) for t in range(num_tasks)]
+        obj._bind(model)
+        return obj
+
+    def __repr__(self) -> str:
+        return f"MultitaskMean(num_tasks={self.num_tasks})"
+
+
+__all__ = ["ConstantMean", "Mean", "MultitaskMean"]

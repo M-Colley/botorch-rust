@@ -13,7 +13,7 @@
 //! [`Kernel`] is a kernel with concrete hyperparameter values that can be
 //! evaluated, together with its derivatives.
 
-use crate::constraints::GreaterThan;
+use crate::constraints::{Constraint, GreaterThan};
 use crate::error::{BotorchError, Result};
 use crate::priors::Prior;
 use crate::{Matrix, Vector};
@@ -40,7 +40,7 @@ pub struct ScaleKernelSpec {
     /// Prior on the outputscale (evaluated on the actual outputscale).
     pub outputscale_prior: Option<Prior>,
     /// Constraint on the outputscale (GPyTorch default: `Positive()`).
-    pub outputscale_constraint: GreaterThan,
+    pub outputscale_constraint: Constraint,
 }
 
 impl ScaleKernelSpec {
@@ -49,7 +49,7 @@ impl ScaleKernelSpec {
     pub fn new(outputscale_prior: Option<Prior>) -> Self {
         Self {
             outputscale_prior,
-            outputscale_constraint: GreaterThan::positive(),
+            outputscale_constraint: Constraint::positive(),
         }
     }
 
@@ -85,7 +85,7 @@ pub struct KernelSpec {
     /// Prior on each lengthscale (evaluated on the actual lengthscales).
     pub lengthscale_prior: Option<Prior>,
     /// Constraint on the lengthscales.
-    pub lengthscale_constraint: GreaterThan,
+    pub lengthscale_constraint: Constraint,
     /// Optional `ScaleKernel` wrapper.
     pub scale: Option<ScaleKernelSpec>,
 }
@@ -98,7 +98,7 @@ impl KernelSpec {
             kind,
             ard_num_dims,
             lengthscale_prior: None,
-            lengthscale_constraint: GreaterThan::positive(),
+            lengthscale_constraint: Constraint::positive(),
             scale: None,
         }
     }
@@ -173,7 +173,9 @@ pub fn get_covar_module_with_dim_scaled_prior(
         float32: false,
     }
     .rounded_to_f32();
-    let constraint = GreaterThan::new(2.5e-2, None, Some(prior.mode_f32())).rounded_to_f32();
+    let constraint: Constraint = GreaterThan::new(2.5e-2, None, Some(prior.mode_f32()))
+        .rounded_to_f32()
+        .into();
     KernelSpec {
         kind: if use_rbf_kernel {
             KernelKind::Rbf
@@ -202,7 +204,7 @@ pub fn get_matern_kernel_with_gamma_prior(ard_num_dims: usize) -> KernelSpec {
             }
             .rounded_to_f32(),
         ),
-        lengthscale_constraint: GreaterThan::positive(),
+        lengthscale_constraint: Constraint::positive(),
         scale: Some(ScaleKernelSpec::legacy_gamma()),
     }
 }

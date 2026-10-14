@@ -75,8 +75,8 @@ def prune_inferior_points_multi_objective(
     check_unsupported(marginalize_dim=marginalize_dim)
     if not is_acquisition_model(model):
         raise UnsupportedError(
-            "prune_inferior_points_multi_objective requires a botorch_rs SingleTaskGP or "
-            "ModelListGP (or a PosteriorMeanModel or GenericDeterministicModel)."
+            "prune_inferior_points_multi_objective requires a botorch_rs SingleTaskGP, "
+            "ModelListGP or LCEMGP (or a PosteriorMeanModel or GenericDeterministicModel)."
         )
     flat = to_flat(X, "X")
     if len(flat[1]) > 2:

@@ -20,7 +20,7 @@
 use std::ops::Range;
 use std::sync::OnceLock;
 
-use crate::constraints::GreaterThan;
+use crate::constraints::{Constraint, GreaterThan};
 use crate::error::{BotorchError, Result};
 use crate::kernels::{
     get_covar_module_with_dim_scaled_prior, Kernel, KernelKind, KernelSpec, ScaleKernelSpec,
@@ -53,7 +53,7 @@ pub struct GaussianLikelihoodSpec {
     /// Prior on the noise variance (evaluated on the actual noise).
     pub noise_prior: Option<Prior>,
     /// Constraint on the noise variance.
-    pub noise_constraint: GreaterThan,
+    pub noise_constraint: Constraint,
 }
 
 impl GaussianLikelihoodSpec {
@@ -78,7 +78,8 @@ pub fn get_gaussian_likelihood_with_lognormal_prior() -> GaussianLikelihoodSpec 
     GaussianLikelihoodSpec {
         noise_prior: Some(prior),
         noise_constraint: GreaterThan::new(MIN_INFERRED_NOISE_LEVEL, None, Some(prior.mode_f32()))
-            .rounded_to_f32(),
+            .rounded_to_f32()
+            .into(),
     }
 }
 
@@ -94,7 +95,8 @@ pub fn get_gaussian_likelihood_with_gamma_prior() -> GaussianLikelihoodSpec {
     GaussianLikelihoodSpec {
         noise_prior: Some(prior),
         noise_constraint: GreaterThan::new(MIN_INFERRED_NOISE_LEVEL, None, Some(prior.mode_f32()))
-            .rounded_to_f32(),
+            .rounded_to_f32()
+            .into(),
     }
 }
 

@@ -17,6 +17,7 @@ from botorch_rs._arrays import (
 )
 from botorch_rs._botorch_rs import Model as _RsModel
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
+from botorch_rs.models.contextual_multioutput import LCEMGP
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.model_list_gp_regression import ModelListGP
 
@@ -55,19 +56,20 @@ def pending_arg(X_pending: Any, d: int) -> Flat | None:
 
 def is_acquisition_model(model: Any) -> bool:
     """Whether botorch_rs acquisition functions can be built on ``model``: a
-    ``SingleTaskGP``, a ``ModelListGP``, or a ``PosteriorMeanModel`` or
-    ``GenericDeterministicModel``."""
+    ``SingleTaskGP``, a ``ModelListGP``, an ``LCEMGP``, or a
+    ``PosteriorMeanModel`` or ``GenericDeterministicModel``."""
     from botorch_rs.models.deterministic import GenericDeterministicModel, PosteriorMeanModel
 
     return isinstance(
-        model, (SingleTaskGP, ModelListGP, PosteriorMeanModel, GenericDeterministicModel)
+        model,
+        (SingleTaskGP, ModelListGP, LCEMGP, PosteriorMeanModel, GenericDeterministicModel),
     )
 
 
 #: The error message for other models.
 ACQUISITION_MODEL_MESSAGE = (
-    "botorch_rs acquisition functions require a botorch_rs SingleTaskGP or ModelListGP model "
-    "(or a PosteriorMeanModel or GenericDeterministicModel)."
+    "botorch_rs acquisition functions require a botorch_rs SingleTaskGP, ModelListGP or LCEMGP "
+    "model (or a PosteriorMeanModel or GenericDeterministicModel)."
 )
 
 
