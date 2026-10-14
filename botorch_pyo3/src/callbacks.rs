@@ -30,11 +30,18 @@ use crate::arrays::{float_data, float_values, Array};
 
 /// The first Python exception raised by a callable during the current
 /// computation.
+///
+/// Lock order: the GIL is never acquired while this lock is held. Callables
+/// run on worker threads while other workers hold the GIL (a callable that
+/// starts a nested botorch_rs computation clears or reads this slot with the
+/// GIL held), so waiting for the GIL under this lock deadlocks.
 static PENDING: Mutex<Option<PyErr>> = Mutex::new(None);
 
-/// Forgets a pending exception (called before every computation).
+/// Forgets a pending exception (called before every outermost computation,
+/// see [`crate::threads::run`]).
 pub fn clear_error() {
-    *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let stale = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take();
+    drop(stale);
 }
 
 /// The pending Python exception, if a callable raised one.
@@ -45,11 +52,17 @@ pub fn take_error() -> Option<PyErr> {
 /// Records a Python exception and returns the core error that aborts the
 /// computation.
 pub(crate) fn callback_error(e: PyErr) -> BotorchError {
-    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     let msg = Python::attach(|py| e.value(py).to_string());
-    if pending.is_none() {
-        *pending = Some(e);
-    }
+    let unused = {
+        let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        if pending.is_none() {
+            *pending = Some(e);
+            None
+        } else {
+            Some(e)
+        }
+    };
+    drop(unused);
     BotorchError::Runtime(format!("a Python callable raised an exception: {msg}"))
 }
 

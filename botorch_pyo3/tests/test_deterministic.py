@@ -8,7 +8,11 @@ errors. The comparisons with BoTorch are in ``test_parity_deterministic.py``.
 from __future__ import annotations
 
 import math
+import os
 import random
+import subprocess
+import sys
+import textwrap
 from typing import Any
 
 import pytest
@@ -417,3 +421,63 @@ def test_generic_deterministic_model() -> None:
     assert torch.isfinite(acqf(X[:, :1])).all()
     with pytest.raises(RuntimeError, match="does not require gradients"):
         acqf(X[:, :1].clone().requires_grad_(True))
+
+
+_NESTED_SCRIPT = """
+import torch
+
+import botorch_rs
+from botorch_rs.acquisition.multi_objective import qLogExpectedHypervolumeImprovement
+from botorch_rs.models import GenericDeterministicModel, PosteriorMeanModel
+from test_deterministic import _front, _model_list
+
+
+class Boom(Exception):
+    pass
+
+
+pm = PosteriorMeanModel(_model_list("torch"))
+
+
+def f(X):
+    if bool((X[..., 0] > 0.8).any()):
+        raise Boom()
+    return pm(X) + 0.0 * X.sum(-1, keepdim=True)
+
+
+ref, part = _front("torch")
+acqf = qLogExpectedHypervolumeImprovement(GenericDeterministicModel(f, num_outputs=2, dim=2), ref, part)
+g = torch.Generator().manual_seed(0)
+botorch_rs.set_num_threads(4)
+for i in range(60):
+    X = torch.rand(48, 1, 2, generator=g, dtype=torch.float64).requires_grad_(True)
+    try:
+        acqf(X)
+    except Boom:
+        continue
+    raise AssertionError(f"iteration {i}: the callable's exception was not re-raised")
+"""
+
+
+@needs_torch
+def test_nested_computations_keep_callable_exceptions() -> None:
+    # Callables on worker threads that start botorch_rs computations themselves
+    # (a GenericDeterministicModel evaluating a botorch_rs model), while a
+    # callable on another worker raises: the exception comes back unchanged,
+    # not cleared by a nested computation, and nothing deadlocks (the GIL and
+    # the pending-exception lock were once taken in opposite orders). In a
+    # subprocess, so that a deadlock fails the test instead of hanging it.
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    package_root = os.path.dirname(os.path.dirname(botorch_rs.__file__))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (tests_dir, package_root, env.get("PYTHONPATH")) if p
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(_NESTED_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=240,
+    )
+    assert result.returncode == 0, result.stderr[-3000:]

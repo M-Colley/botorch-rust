@@ -7,6 +7,7 @@
 //! is set). Multi-start acquisition optimization and batch evaluations are
 //! parallelized over this pool.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use pyo3::prelude::*;
@@ -15,19 +16,46 @@ use crate::errors::value_error;
 
 static POOL: RwLock<Option<Arc<rayon::ThreadPool>>> = RwLock::new(None);
 
+/// The number of computations running in [`run`], including computations
+/// nested in Python callables of another computation.
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// Marks a computation as running for its lifetime (also when it panics).
+struct Active;
+
+impl Active {
+    /// Enters a computation; `true` for the outermost one.
+    fn enter() -> (Self, bool) {
+        (Self, ACTIVE.fetch_add(1, Ordering::SeqCst) == 0)
+    }
+}
+
+impl Drop for Active {
+    fn drop(&mut self) {
+        ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn current_pool() -> Option<Arc<rayon::ThreadPool>> {
     POOL.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// Runs `f` with the GIL released, on the configured thread pool. Python
 /// callables invoked by `f` reacquire the GIL; the first exception they raise
-/// is kept for [`crate::errors::to_pyerr`].
+/// is kept for [`crate::errors::to_pyerr`]. Only the outermost computation
+/// forgets a stale exception: a computation started by a callable of another
+/// one (a `GenericDeterministicModel` evaluating a botorch_rs model) must not
+/// discard an exception that a callable of the outer computation raised on
+/// another worker.
 pub fn run<T, F>(py: Python<'_>, f: F) -> T
 where
     F: FnOnce() -> T + Send,
     T: Send,
 {
-    crate::callbacks::clear_error();
+    let (_active, outermost) = Active::enter();
+    if outermost {
+        crate::callbacks::clear_error();
+    }
     let pool = current_pool();
     py.detach(move || match pool {
         Some(pool) => pool.install(f),
