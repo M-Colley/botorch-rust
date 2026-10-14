@@ -88,15 +88,23 @@ balances compatibility and performance:
 
 ### Python
 
-botorch-rust is not yet on PyPI. Install it from a source checkout (requires a
-Rust toolchain, see [rustup.rs](https://rustup.rs)):
+botorch-rust is not yet on PyPI. Released versions come as prebuilt abi3 wheels
+for CPython 3.11 and later: Windows x86_64, macOS arm64 and x86_64, and Linux
+x86_64 and aarch64. They're attached to the
+[GitHub releases](https://github.com/M-Colley/botorch-rust/releases) and need no
+Rust toolchain:
+
+```console
+$ pip install botorch-rust --find-links https://github.com/M-Colley/botorch-rust/releases/expanded_assets/v0.1.0
+```
+
+From a source checkout (requires a Rust toolchain, see [rustup.rs](https://rustup.rs)):
 
 ```console
 $ pip install ./botorch_pyo3
 ```
 
-This builds an abi3 wheel with [maturin](https://www.maturin.rs) that works on
-CPython 3.11 and later. For development, `python scripts/develop.py` builds the
+This builds an abi3 wheel with [maturin](https://www.maturin.rs). For development, `python scripts/develop.py` builds the
 extension into the source tree instead (see [Development](#development)).
 
 ### Rust
@@ -276,6 +284,11 @@ counterpart.
 | `botorch.acquisition.multi_objective.multi_output_risk_measures.*`: `MVaR`, `MARS`, `MultiOutputExpectation`, `IndependentCVaR`, `IndependentVaR`, `MultiOutputWorstCase` | same path | `MVaR(expectation, pad_to_n_w, filter_dominated, use_counting)`, `MARS` with `set_baseline_Y`; objectives of qEHVI, qLogEHVI, qNEHVI and qLogNEHVI, evaluated in Rust |
 | `botorch.acquisition.multi_objective.MOMF` | same path | `cost_call` (any torch callable; default BoTorch's affine fidelity cost), `X_pending`, `constraints`, `eta`, `objective` |
 | `botorch.acquisition.multioutput_acquisition.*`, `botorch.utils.multi_objective.optimize.optimize_with_nsgaii` | same paths | NSGA-II in Rust following pymoo 0.6.2's defaults as BoTorch configures them (pymoo is not needed); every argument of BoTorch's function |
+| `botorch.models.deterministic.PosteriorMeanModel`, `GenericDeterministicModel` | same paths (also `botorch_rs.models`) | the model of every analytic and Monte-Carlo acquisition function, evaluated in Rust with exact gradients through the mean (samples equal the mean, `σ = sqrt(1e-12)` as in BoTorch); `GenericDeterministicModel(f)` calls a torch function, differentiated with `torch.autograd`, and needs the keyword `dim=d` in acquisition functions |
+| `botorch.sampling.stochastic_samplers.StochasticSampler` | same path | for deterministic models (BoTorch's own sampler is accepted too) |
+| a `torch.nn.Module` computing `logsumexp(log w_i + acqf_i(X)) - log Σ w_i` (openbo's MO-TAF blend) | `botorch_rs.acquisition.WeightedLogMeanExp(acq_functions, weights)` | botorch-rust extension, evaluated in Rust with exact gradients; terms with weight 0 are skipped |
+| `optimize_acqf(acq_function=<any torch callable>)` | `botorch_rs.optim.optimize_acqf` | values from Python and gradients from `torch.autograd`, as in BoTorch; slower than native acquisition functions, because every evaluation calls Python |
+| hyperparameter setters (`outputscale`, `noise`, `constant`, `lengthscale`, `initialize`) | same | values with as many elements as the parameter are reshaped, as in GPyTorch: e.g. `covar_module.outputscale = torch.tensor([v])` |
 | `botorch.exceptions` | `botorch_rs.exceptions` | `BotorchRsError` hierarchy (also `ValueError`, `RuntimeError`, `NotImplementedError` subclasses) and BoTorch's warnings |
 
 Everything else in BoTorch is not ported yet: see
@@ -284,7 +297,7 @@ Everything else in BoTorch is not ported yet: see
 ## What is not ported yet
 
 botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **217 of the 773
+processes, which is a small part of BoTorch: it provides **220 of the 773
 public classes and functions** defined in BoTorch's modules (28%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
@@ -301,7 +314,8 @@ module and writes every missing class, function, parameter and method to
     `LatentKroneckerGP`;
   - preference learning (`PairwiseGP`);
   - contextual and additive GPs;
-  - deterministic models other than `MatheronPathModel`, ensemble models,
+  - deterministic models other than `MatheronPathModel`, `PosteriorMeanModel`
+    and `GenericDeterministicModel`, ensemble models,
     and cost models other than `AffineFidelityCostModel` and
     `FixedCostModel`;
   - relevance pursuit, and the empirical and hierarchical model packages.
@@ -362,7 +376,8 @@ module and writes every missing class, function, parameter and method to
   - `MaxPosteriorSampling` and `BoltzmannSampling`;
   - fitting with torch optimizers, BoTorch's closures and stopping criteria.
 - **Sampling and utilities:**
-  - samplers other than `SobolQMCNormalSampler` and `ListSampler`
+  - samplers other than `SobolQMCNormalSampler`, `ListSampler` and
+    `StochasticSampler` (for deterministic models)
     (`IIDNormalSampler`, `StochasticSampler`, ...);
   - pathwise sampling of approximate GPs, ensembles and batched models,
     and with kernels other than RBF and Matérn-5/2;
@@ -387,7 +402,7 @@ module and writes every missing class, function, parameter and method to
 | `fit` | 3 | 1 | 33% |
 | `generation` | 8 | 0 | 0% |
 | `logging` | 1 | 0 | 0% |
-| `models` | 66 | 7 | 11% |
+| `models` | 66 | 9 | 14% |
 | `models.empirical_gps` | 36 | 0 | 0% |
 | `models.hierarchical` | 6 | 0 | 0% |
 | `models.kernels` | 19 | 0 | 0% |
@@ -398,7 +413,7 @@ module and writes every missing class, function, parameter and method to
 | `optim.closures` | 5 | 0 | 0% |
 | `optim.utils` | 14 | 0 | 0% |
 | `posteriors` | 13 | 2 | 15% |
-| `sampling` | 14 | 3 | 21% |
+| `sampling` | 14 | 4 | 29% |
 | `sampling.pathwise` | 25 | 11 | 44% |
 | `settings` | 3 | 0 | 0% |
 | `test_functions` | 84 | 57 | 68% |
@@ -406,7 +421,7 @@ module and writes every missing class, function, parameter and method to
 | `utils` | 97 | 10 | 10% |
 | `utils.multi_objective` | 22 | 19 | 86% |
 | `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **773** | **217** | **28%** |
+| **all of `botorch`** | **773** | **220** | **28%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -798,6 +813,28 @@ pymoo and compares mean hypervolumes over 10 seeds. Independently of BoTorch,
 NSGA-II reaches 99.5% of the optimal hypervolume on ZDT1 and at least 90% of
 a uniform 105-point set on DTLZ2.
 
+### Deterministic models and composite acquisition functions
+
+**Where the tests are:** Rust fixtures in
+`botorch_core/tests/deterministic_parity.rs` (`--phase 5d-deterministic`), with
+two configurations built like openbo's MO-TAF. Live Python tests in
+`test_parity_deterministic.py`, with a randomized sweep of composites in
+`-m equivalence`.
+
+| Quantity | Tolerance | Worst error |
+|---|---|---|
+| `PosteriorMeanModel` posterior means and samples | 1e-9 | 1.3e-15 |
+| qLogEHVI, qEHVI and analytic EHVI on `PosteriorMeanModel`: values / gradients | 1e-9 / 1e-8 | 1.6e-14 / 1.7e-13 |
+| The other MC acquisition functions on `PosteriorMeanModel`: values / gradients | 1e-9 / 1e-8 | 6.5e-16 / 4.3e-15 |
+| LogEI, EI and LogPI within a few `σ = 1e-6` of the mean: values / gradients | 1e-9 / 1e-8 | 2.5e-10 / 3.6e-10 |
+| `WeightedLogMeanExp` and the same blend as a `torch.nn.Module`: values / gradients | 1e-9 / 1e-8 | 4.0e-14 / 3.8e-13 |
+| `optimize_acqf` of the blend from identical initial conditions: candidates | 1e-6 | 5.7e-14 (every restart reaches BoTorch's value) |
+
+The LogEI row is the largest because a deterministic model has
+`σ = sqrt(1e-12)`, so the improvement amplifies 1e-16 differences in the means.
+Far in the tail botorch-rust's LogEI gradient is exact (3.4e-16 against an
+mpmath reference), where BoTorch's autograd is off by up to 8.1e-6.
+
 ### Versions checked
 
 The numbers above come from BoTorch's main branch at da00e04 with GPyTorch
@@ -943,6 +980,26 @@ samples the joint posterior of the baseline and each candidate set, which with
 `n_w = 16` means a 336-point Cholesky factorization per candidate set.
 BoTorch's default instead updates a cached factor of the baseline. qNEHVI
 already has this update, and porting it to qLogNEI is planned.
+
+### MO-TAF (openbo)
+
+openbo's MO-TAF can run on botorch-rust through its `BO_MODEL_LIBRARY` switch.
+It then uses `PosteriorMeanModel` source terms and the native
+`WeightedLogMeanExp` blend. The test problem is 3-dimensional with two
+objectives and two source tasks, using openbo's defaults. These timings were
+taken while other jobs ran on the machine.
+
+| | BoTorch | botorch-rust, 1 thread | botorch-rust, 4 threads |
+|---|---|---|---|
+| One `suggest()` (fit, acquisition, `optimize_acqf`), median | 2.19 s | 54 ms (41×) | 28 ms (79×) |
+| 15 suggestions | 37 s | 0.93 s | 0.44 s |
+
+The two libraries find equally good suggestions:
+- Over 10 seeds, the final hypervolumes are 3.924 ± 0.021 with BoTorch and
+  3.942 ± 0.017 with botorch-rust (p = 0.10).
+- On 30 fixed sets of observations, BoTorch's own MO-TAF acquisition function
+  rates botorch-rust's suggestions within BoTorch's own run-to-run variability
+  (p = 0.27).
 
 ## Migration notes and known differences
 
@@ -1152,6 +1209,16 @@ already has this update, and porting it to qLogNEI is planned.
     - the random choices of the one-shot initial conditions use
       botorch-rust's generator;
     - `ModelListGP.fantasize` and qHVKG require single-output sub-models.
+- **Deterministic models and composite acquisition functions.**
+  - As in BoTorch, posterior transforms raise `UnsupportedError` and
+    `observation_noise=True` is ignored.
+  - Two cases work where BoTorch fails: a `SobolQMCNormalSampler` on a
+    deterministic model, and qNEHVI / qLogNEHVI / qLogNParEGO with a
+    `StochasticSampler`. The sampler never changes the values.
+  - `StochasticSampler` is only accepted for deterministic models.
+  - `GenericDeterministicModel` needs `dim=d` in acquisition functions.
+  - Torch-callable acquisition functions hold the GIL on every evaluation; for
+    MO-TAF, use the native `WeightedLogMeanExp`.
 - **Pathwise sampling and entropy search.**
   - **Random numbers.** Paths, sampled optima and the default MC samplers use
     botorch-rust's generators, so `torch.manual_seed` has no effect. Pass
@@ -1252,7 +1319,9 @@ Other scripts:
     search;
   - `--phase 5c-robust`: input perturbations, risk measures, MOMF and
     NSGA-II (`--phase 5c-robust-3392` with a BoTorch that includes
-    meta-pytorch/botorch#3392).
+    meta-pytorch/botorch#3392);
+  - `--phase 5d-deterministic`: deterministic models and composite
+    acquisition functions (openbo's MO-TAF).
 - `python scripts/benchmark.py` measures the timings above;
   `scripts/benchmark_mo_utils.py` and `scripts/benchmark_arrays.py [--botorch]`
   measure the multi-objective utilities and the exchange of arrays between
