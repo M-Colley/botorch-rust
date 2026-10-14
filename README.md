@@ -865,18 +865,34 @@ The references are the Unity project's classes on BoTorch.
 | Posterior input gradients | 1e-8 | 2.5e-15 | |
 | Context covariance, task covariance, embeddings | 1e-9 | | 1.3e-16 / 5.8e-17 / 0 |
 | `SumMarginalLogLikelihood` of a `ModelListGP` of two Unity models | 1e-9 | | 1.8e-16 |
-| Fit: final loss above BoTorch's, scaled by `max(1e-6, 10 ×` BoTorch's spread`)` | ≤ 1 | 1.4e-2 | 0.16 |
-| qLogNEI (q = 1, 2): values / gradients, scaled by the noise floor | ≤ 1 | 0.21 / 0.10 | 0.10 / 0.10 |
-| qLogNEHVI on a `ModelListGP` of two Unity models: values / gradients, scaled | ≤ 1 | 0.23 / 0.19 | 0.13 / 0.06 |
+| Fits on the model and 16 twins: best loss above BoTorch's best / own loss above BoTorch's worst outcome, scaled by `max(1e-6, 10 ×` the spread at BoTorch's best`)` | ≤ 1 | 1.0e-3 / 0 | |
+| Fit from identical initial values: final loss above BoTorch's, scaled by `max(1e-6, 10 ×` BoTorch's spread`)` | ≤ 1 | | 0.16 |
+| qLogNEI (q = 1, 2): values and gradients against the nearest BoTorch outcome, scaled by `max(nominal, 10 ×` BoTorch's median change on 16 twins`)` | ≤ 1 | 0.098 | 0.025 |
+| qLogNEHVI on a `ModelListGP` of two Unity models: the same | ≤ 1 | 0.14 | 0.11 |
 | `optimize_acqf` (qLogNEI) from 4 identical initial conditions: restarts ending at another value | ≤ 1 of 4 | | 1 (0.18.1) / 0 (main) |
 | `Interval` values / raw initial values | 1e-15 / 1 float32 ulp | 0 / 1.2e-7 | 0 / 7.5e-8 |
 | `SingleTaskGP` with `Interval` constraints: MLL / gradient; fit (scaled) | 1e-9 / 1e-8; ≤ 1 | 6.6e-16 / 6.8e-15; 6.0e-5 | 8.7e-16 / 6.6e-15; 0.45 |
 
-Fits are compared by their final loss because long L-BFGS-B runs on the flat
-likelihoods of these models amplify rounding: BoTorch itself ends at a
-different loss (by up to 3.4e-4) when the training inputs are perturbed by
-1e-14. The largest unscaled excess is 1.1e-5; short fits end at the same
-iterate.
+BoTorch's own results on these models depend on rounding, so the tests
+compare botorch-rust with the set of outcomes BoTorch produces when the
+training inputs are perturbed at 1e-14 to 1e-11 (16 "twins"):
+
+- **Fits.** Long L-BFGS-B runs on these likelihoods end in different optima
+  under rounding-level changes. For the `stock` model with K = 5 and d = 1,
+  BoTorch's final loss ranges from -1.0085 to -0.639 over the twins. The
+  fixtures record BoTorch's outcomes on the twins, and botorch-rust fits the
+  same twins. In every case it reaches BoTorch's best optimum, and the ranges
+  agree: for that model, [-1.00849814, -0.63902342] against BoTorch's
+  [-1.00849816, -0.63902018].
+- **Acquisition values.** On nearly singular posteriors, BoTorch's qLogNEI
+  jumps between discrete regimes, depending on whether a Cholesky
+  factorization needs jitter: by 4.4e-2 in log value for one live case. Each
+  candidate set is therefore compared with the nearest of BoTorch's outcomes
+  on the model and its twins. The live tests draw up to 64 twins when
+  botorch-rust's outcome is a rare one of BoTorch's.
+
+The live test of single fits from identical initial values still compares
+final losses directly; short fits end at the same iterate.
 
 **End to end in the Unity project.** BoTorch and botorch-rust draw different
 Monte Carlo, restart and embedding-initialization samples, so the suggestions

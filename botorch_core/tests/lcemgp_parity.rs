@@ -20,14 +20,21 @@
 //!   observation noise), over all tasks and at inputs with a task column,
 //!   and the gradient of a weighted sum of the posterior mean and covariance
 //!   with respect to the inputs (1e-9);
-//! * `fit_gpytorch_mll` from the default parameters: the final loss must not
-//!   exceed BoTorch's by more than max(1e-6, 10 × BoTorch's own change of the
-//!   final loss when the training inputs are perturbed by 1e-14 or the
-//!   optimizer's variables are reversed);
+//! * `fit_gpytorch_mll` from the default parameters, compared with BoTorch's
+//!   outcomes: its own fit, the fit with the optimizer's variables reversed
+//!   and the fits of 16 twins whose training inputs are perturbed at 1e-14 ..
+//!   1e-11 (long L-BFGS-B runs on these likelihoods end in other optima under
+//!   rounding-level changes, in either library). botorch_rs fits the same
+//!   twins; its best final loss must reach BoTorch's best, and its own fit
+//!   must not end above BoTorch's worst outcome, both within max(1e-6, 10 ×
+//!   the spread of BoTorch's outcomes at its best optimum);
 //! * qLogNEI and qLogNEHVI (on a list with a second model) with BoTorch's
-//!   recorded base samples: values 1e-9 (log values absolute below 1) and
-//!   gradients 1e-8, or 10 × BoTorch's own change under 1e-14 perturbations
-//!   of the training inputs, whichever is larger.
+//!   recorded base samples: per candidate set, the nearest of BoTorch's
+//!   outcomes on the model and its 16 twins (on nearly singular posteriors
+//!   BoTorch's result jumps between regimes, depending on whether a Cholesky
+//!   factorization needs jitter); values 1e-9 (log values absolute below 1)
+//!   and gradients 1e-8, or 10 × BoTorch's median change on the twins,
+//!   whichever is larger.
 //!
 //! `interval.json`: `Interval` values, inverses, derivatives, raw initial
 //! values and optimizer bounds (1e-15), and `SingleTaskGP`s with `Interval`
@@ -61,6 +68,9 @@ use serde::Deserialize;
 const VALUE_TOL: f64 = 1e-9;
 const GRAD_TOL: f64 = 1e-8;
 const FIT_TOL: f64 = 1e-6;
+/// BoTorch's fit outcomes within this distance of its best final loss count
+/// as the same optimum; their spread sets the fit tolerance.
+const FIT_CLUSTER: f64 = 1e-4;
 /// Two float32 units in the last place (relative).
 const F32_ULP: f64 = 2.4e-7;
 /// The seed of the samplers (every dimension has a recorded draw).
@@ -111,9 +121,12 @@ struct Fit {
     iterations: usize,
     raw_params: Vec<f64>,
     initial_raw_params: Vec<f64>,
-    floor_inputs: f64,
-    floor_order: f64,
-    floor: f64,
+    /// The training inputs of BoTorch's twins (perturbed at 1e-14 .. 1e-11)
+    /// and its final losses on them.
+    twin_train_x: Vec<Vec<Vec<f64>>>,
+    twin_losses: Vec<f64>,
+    /// BoTorch's final loss with L-BFGS-B's variables reversed.
+    reversed_loss: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,8 +164,9 @@ struct McEval {
     draws: BTreeMap<String, Vec<Vec<f64>>>,
     values: Vec<F>,
     grads: Vec<Vec<Vec<f64>>>,
-    floor_values: f64,
-    floor_grads: f64,
+    /// BoTorch's outcomes on the twins of the model(s).
+    twin_values: Vec<Vec<F>>,
+    twin_grads: Vec<Vec<Vec<Vec<f64>>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -215,6 +229,16 @@ fn load_cases() -> Vec<Case> {
 
 /// The model of a case (as the Unity project builds it) on targets `y`.
 fn build(c: &Case, y: &[Vec<f64>], embedding_init: Option<&Vec<Vec<f64>>>) -> LCEMGP {
+    build_on(c, &c.train_x, y, embedding_init)
+}
+
+/// The model of `c` on the training inputs `x` (with the task column).
+fn build_on(
+    c: &Case,
+    x: &[Vec<f64>],
+    y: &[Vec<f64>],
+    embedding_init: Option<&Vec<Vec<f64>>>,
+) -> LCEMGP {
     let k = c.num_contexts;
     let mut options = LCEMGPOptions {
         output_tasks: Some(vec![c.current]),
@@ -239,7 +263,7 @@ fn build(c: &Case, y: &[Vec<f64>], embedding_init: Option<&Vec<Vec<f64>>>) -> LC
     if let Some(w) = embedding_init {
         options.embedding_weights = Some(vec![matrix(w)]);
     }
-    LCEMGP::new(matrix(&c.train_x), matrix(y), -1, options).unwrap()
+    LCEMGP::new(matrix(x), matrix(y), -1, options).unwrap()
 }
 
 fn log_err(a: &[f64], e: &[f64]) -> f64 {
@@ -272,7 +296,20 @@ fn sampler(draws: &BTreeMap<String, Vec<Vec<f64>>>) -> Arc<SobolQMCNormalSampler
     Arc::new(s)
 }
 
-/// Compares the MC evaluations (values in log space) of `acqf`.
+/// The median of `xs` (the mean of the two middle values for an even count).
+fn median(mut xs: Vec<f64>) -> f64 {
+    xs.sort_by(f64::total_cmp);
+    let n = xs.len();
+    if n % 2 == 1 {
+        xs[n / 2]
+    } else {
+        0.5 * (xs[n / 2 - 1] + xs[n / 2])
+    }
+}
+
+/// Compares the MC evaluations (values in log space) of `acqf`, per
+/// candidate set, with the nearest of BoTorch's outcomes (on the model and
+/// its twins), within 10 × BoTorch's median change on the twins.
 fn check_mc(
     report: &mut Report,
     name: &str,
@@ -285,22 +322,77 @@ fn check_mc(
     for x in &e.x {
         let (v, g) = acqf.forward_with_grad(&matrix(x)).unwrap();
         values.push(v);
-        grads.extend(common::matrix_rows(&g));
+        grads.push(common::matrix_rows(&g));
     }
-    let expected_grads: Vec<f64> = e.grads.iter().flatten().flatten().copied().collect();
-    let tol_v = VALUE_TOL.max(10.0 * e.floor_values);
-    let tol_g = GRAD_TOL.max(10.0 * e.floor_grads);
-    // Errors relative to the tolerance (≤ 1 passes).
+    let flat =
+        |g: &[Vec<Vec<f64>>]| -> Vec<Vec<f64>> { g.iter().map(|set| set.concat()).collect() };
+    let outcomes: Vec<(Vec<f64>, Vec<Vec<f64>>)> =
+        std::iter::once((vals(&e.values), flat(&e.grads)))
+            .chain(
+                e.twin_values
+                    .iter()
+                    .zip(&e.twin_grads)
+                    .map(|(v, g)| (vals(v), flat(g))),
+            )
+            .collect();
+    let (base_v, base_g) = &outcomes[0];
+    let floor_v = median(
+        outcomes[1..]
+            .iter()
+            .map(|(v, _)| log_err(v, base_v))
+            .collect(),
+    );
+    let floor_g = median(
+        outcomes[1..]
+            .iter()
+            .map(|(_, g)| grad_err(&g.concat(), &base_g.concat()))
+            .collect(),
+    );
+    let tol_v = VALUE_TOL.max(10.0 * floor_v);
+    let tol_g = GRAD_TOL.max(10.0 * floor_g);
+    // Per candidate set, the nearest outcome (errors relative to the
+    // tolerances; at most 1 passes) and its unscaled errors.
+    let mut worst = (0.0f64, 0.0f64, 0.0f64);
+    for (i, (v, g)) in values.iter().zip(&grads).enumerate() {
+        let nearest = outcomes
+            .iter()
+            .map(|(ov, og)| {
+                let ev = log_err(std::slice::from_ref(v), &ov[i..=i]);
+                let eg = grad_err(g, &og[i]);
+                ((ev / tol_v).max(eg / tol_g), ev, eg)
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .unwrap();
+        if nearest.0 > worst.0 {
+            worst = nearest;
+        }
+    }
+    let regimes = outcomes[1..]
+        .iter()
+        .any(|(v, _)| log_err(v, base_v) > 100.0 * tol_v);
+    let label = format!("{what} q={}", e.q);
     report.check(
         name,
-        &format!("{what} q={} values (scaled)", e.q),
-        log_err(&values, &vals(&e.values)) / tol_v,
-        1.0,
+        &format!("{label} values (unscaled, nearest)"),
+        worst.1,
+        f64::INFINITY,
     );
     report.check(
         name,
-        &format!("{what} q={} gradients (scaled)", e.q),
-        grad_err(&grads, &expected_grads) / tol_g,
+        &format!("{label} gradients (unscaled, nearest)"),
+        worst.2,
+        f64::INFINITY,
+    );
+    report.check(
+        name,
+        &format!("{label} BoTorch outcomes in several regimes"),
+        f64::from(u8::from(regimes)),
+        f64::INFINITY,
+    );
+    report.check(
+        name,
+        &format!("{label} values and gradients (scaled)"),
+        worst.0,
         1.0,
     );
 }
@@ -349,30 +441,55 @@ fn lcemgp_matches_botorch() {
             0.0,
         );
         let r = fit_gpytorch_mll(&mut fitted, FitOptions::default()).unwrap();
-        let excess = r.loss - c.fit.loss;
+        // BoTorch's outcomes, and botorch_rs's on the same twins.
+        let bt: Vec<f64> = [c.fit.loss, c.fit.reversed_loss]
+            .into_iter()
+            .chain(c.fit.twin_losses.iter().copied())
+            .collect();
+        let rs: Vec<f64> = std::iter::once(r.loss)
+            .chain(c.fit.twin_train_x.iter().map(|x| {
+                let mut twin = build_on(&c, x, &c.train_y, c.embedding_init.as_ref());
+                twin.renorm_embeddings();
+                fit_gpytorch_mll(&mut twin, FitOptions::default())
+                    .unwrap()
+                    .loss
+            }))
+            .collect();
+        let bt_best = bt.iter().copied().fold(f64::INFINITY, f64::min);
+        let bt_worst = bt.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let rs_best = rs.iter().copied().fold(f64::INFINITY, f64::min);
+        let rs_worst = rs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let spread = bt
+            .iter()
+            .copied()
+            .filter(|&l| l <= bt_best + FIT_CLUSTER)
+            .fold(bt_best, f64::max)
+            - bt_best;
+        let tol = FIT_TOL.max(10.0 * spread);
         report.check(
             name,
-            "fit: loss above BoTorch's (scaled)",
-            excess.max(0.0) / FIT_TOL.max(10.0 * c.fit.floor),
+            "fit: best loss above BoTorch's best (scaled)",
+            (rs_best - bt_best).max(0.0) / tol,
             1.0,
         );
+        report.check(
+            name,
+            "fit: loss above BoTorch's worst outcome (scaled)",
+            (r.loss - bt_worst).max(0.0) / tol,
+            1.0,
+        );
+        let parameter_difference = fitted
+            .raw_parameters()
+            .iter()
+            .zip(&c.fit.raw_params)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
         println!(
-            "{name:28} fit: loss {:+.10} (BoTorch {:+.10}, excess {excess:+.1e}, floor {:.1e} = \
-             max(perturbed inputs {:.1e}, reversed order {:.1e})), iterations {} (BoTorch {}), \
-             max parameter difference {:.1e}",
-            r.loss,
-            c.fit.loss,
-            c.fit.floor,
-            c.fit.floor_inputs,
-            c.fit.floor_order,
-            r.iterations,
-            c.fit.iterations,
-            fitted
-                .raw_parameters()
-                .iter()
-                .zip(&c.fit.raw_params)
-                .map(|(a, b)| (a - b).abs())
-                .fold(0.0, f64::max)
+            "{name:28} fit: loss {:+.10} (BoTorch {:+.10}), iterations {} (BoTorch {}), max \
+             parameter difference {parameter_difference:.1e}; outcomes with the 16 twins: BoTorch \
+             [{bt_best:+.10}, {bt_worst:+.10}], botorch_rs [{rs_best:+.10}, {rs_worst:+.10}], \
+             spread at BoTorch's best {spread:.1e}",
+            r.loss, c.fit.loss, r.iterations, c.fit.iterations,
         );
 
         // Random hyperparameters: MLL, renormalization by a forward pass.

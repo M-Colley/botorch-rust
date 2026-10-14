@@ -23,14 +23,17 @@ the task kernel resized to both).
     the gradient of a weighted sum of the mean and covariance;
   - the constant means after ``eval()``;
   - ``fit_gpytorch_mll`` from the default parameters: the final loss,
-    parameters and iterations, and BoTorch's own change of the final loss
-    when the training inputs are perturbed by 1e-14 and when L-BFGS-B's
-    variables are reversed (its noise floor: long L-BFGS-B runs on flat
-    likelihoods amplify rounding);
+    parameters and iterations, and BoTorch's own outcomes when the training
+    inputs are perturbed at rounding level (16 twins at 1e-14 .. 1e-11, with
+    their inputs, so that botorch_rs fits them too) and when L-BFGS-B's
+    variables are reversed (long L-BFGS-B runs on flat or multimodal
+    likelihoods amplify rounding into other optima);
   - qLogNEI (q = 1, 2, three candidate sets) and qLogNEHVI on a
     ``ModelListGP`` of this model and a second one on other targets:
     values and gradients with BoTorch's recorded base samples, and BoTorch's
-    own change when the training inputs are perturbed by 1e-14.
+    own outcomes on the 16 twins (on nearly singular posteriors its result
+    jumps between regimes, depending on whether a Cholesky factorization
+    needs jitter).
 
 * ``interval.json``: ``Interval`` constraints (sigmoid, softplus with the
   default inverse, no transform) on values, inverse values, derivatives,
@@ -58,6 +61,10 @@ import torch
 
 DT = torch.float64
 NUM_SAMPLES = 16
+#: BoTorch's own outcomes under rounding-level perturbations of the training
+#: inputs: N_TWINS twins at these relative scales.
+TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
+N_TWINS = 16
 TESTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "botorch_pyo3", "tests")
 
 CASES = [
@@ -211,6 +218,14 @@ def perturbed_twin(model: Any, seed: int, rel: float = 1e-14) -> Any:
     return twin
 
 
+def twins(model: Any) -> list[Any]:
+    """BoTorch's perturbed twins of ``model`` (seeds 1..N_TWINS)."""
+    return [
+        perturbed_twin(model, k, TWIN_SCALES[(k - 1) % len(TWIN_SCALES)])
+        for k in range(1, N_TWINS + 1)
+    ]
+
+
 def make_data(seed: int, K: int, d: int, n_per: int, unobserved: list[int], shift: float = 0.0):
     g = torch.Generator().manual_seed(seed)
     observed = [k for k in range(K) if k not in unobserved]
@@ -267,14 +282,6 @@ def values_and_grads(acqf: Any, X: Any) -> tuple[Any, Any]:
     return v.detach(), g
 
 
-def floor(pairs: list[tuple[Any, Any]], base: tuple[Any, Any]) -> tuple[float, float]:
-    fv = max(((v - base[0]).abs() / base[0].abs().clamp_min(1.0)).max().item() for v, _ in pairs)
-    fg = max(
-        ((g - base[1]).abs().max() / base[1].abs().max().clamp_min(1e-300)).item() for _, g in pairs
-    )
-    return fv, fg
-
-
 # ---------------------------------------------------------------------------
 # Model cases
 # ---------------------------------------------------------------------------
@@ -314,15 +321,15 @@ def model_case(
     }
     v, gr = mll_value_and_grad(model)
     case["default_mll"] = {"value": v, "grad": gr}
-    # The fit from the default parameters and BoTorch's noise floor.
+    # The fit from the default parameters and BoTorch's outcomes on its twins.
     # (The MLL evaluation above renormalized the embedding weights in place.)
     initial = flat_params(model)
     fitted = fit(copy.deepcopy(model))
     fitted["initial_raw_params"] = initial
-    losses = [fit(perturbed_twin(model, rep + 1))["loss"] for rep in range(4)]
-    fitted["floor_inputs"] = max(abs(v - fitted["loss"]) for v in losses)
-    fitted["floor_order"] = abs(fit(copy.deepcopy(model), reverse=True)["loss"] - fitted["loss"])
-    fitted["floor"] = max(fitted["floor_inputs"], fitted["floor_order"])
+    twin_models = twins(model)
+    fitted["twin_train_x"] = [t.train_inputs[0].clone() for t in twin_models]
+    fitted["twin_losses"] = [fit(t)["loss"] for t in twin_models]
+    fitted["reversed_loss"] = fit(copy.deepcopy(model), reverse=True)["loss"]
     case["fit"] = fitted
     # Random hyperparameters.
     raw = random_raw_params(model, seed + 2)
@@ -376,14 +383,13 @@ def model_case(
         Xc = torch.rand(3, qq, d, generator=gx, dtype=DT)
         draws: dict[int, Any] = {}
         evals = []
-        for mdl in [model] + [perturbed_twin(model, s) for s in (1, 2)]:
+        for mdl in [model] + twins(model):
             with recorded_draws(seed + qq, draws):
                 sampler = SobolQMCNormalSampler(torch.Size([NUM_SAMPLES]), seed=0)
                 acqf = qLogNoisyExpectedImprovement(
                     mdl, X_baseline=Xb, sampler=sampler, prune_baseline=False, cache_root=False
                 )
                 evals.append(values_and_grads(acqf, Xc))
-        fv, fg = floor(evals[1:], evals[0])
         case["qlognei"].append(
             {
                 "q": qq,
@@ -391,8 +397,8 @@ def model_case(
                 "draws": {d_: z for d_, z in draws.items()},
                 "values": evals[0][0],
                 "grads": evals[0][1],
-                "floor_values": fv,
-                "floor_grads": fg,
+                "twin_values": [v for v, _ in evals[1:]],
+                "twin_grads": [g for _, g in evals[1:]],
             }
         )
 
@@ -418,7 +424,7 @@ def model_case(
         draws = {}
         evals = []
         lists = [lst] + [
-            ModelListGP(perturbed_twin(model, s), perturbed_twin(model2, s)) for s in (1, 2)
+            ModelListGP(a, b) for a, b in zip(twins(model), twins(model2), strict=True)
         ]
         for lm in lists:
             lm.eval()
@@ -428,7 +434,6 @@ def model_case(
                     lm, ref_point=ref, X_baseline=Xb, sampler=sampler, prune_baseline=False
                 )
                 evals.append(values_and_grads(acqf, Xc))
-        fv, fg = floor(evals[1:], evals[0])
         case["nehvi"]["evaluations"].append(
             {
                 "q": qq,
@@ -436,8 +441,8 @@ def model_case(
                 "draws": {d_: z for d_, z in draws.items()},
                 "values": evals[0][0],
                 "grads": evals[0][1],
-                "floor_values": fv,
-                "floor_grads": fg,
+                "twin_values": [v for v, _ in evals[1:]],
+                "twin_grads": [g for _, g in evals[1:]],
             }
         )
     case["nehvi"]["raw_params2_after"] = flat_params(model2)
@@ -625,8 +630,8 @@ def generate_unity_lcemgp(out: str) -> None:
             json.dump(enc(case), f)
         print(
             f"unity-lcemgp: {case['name']}: mll={case['mll']['value']:+.6f} fit loss="
-            f"{case['fit']['loss']:+.8f} iters={case['fit']['iterations']} floor="
-            f"{case['fit']['floor']:.1e}",
+            f"{case['fit']['loss']:+.8f} iters={case['fit']['iterations']} twins: "
+            f"[{min(case['fit']['twin_losses']):+.8f}, {max(case['fit']['twin_losses']):+.8f}]",
             file=sys.stderr,
         )
     with open(os.path.join(out, "interval.json"), "w") as f:
