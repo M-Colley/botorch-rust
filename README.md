@@ -227,13 +227,17 @@ counterpart.
 | BoTorch / GPyTorch | botorch_rs | Notes |
 |---|---|---|
 | `botorch.models.SingleTaskGP` | `botorch_rs.models.SingleTaskGP` | `batch_shape x n x d` inputs and `batch_shape x n x m` targets (`m ≥ 1` independent outputs, any batch shape: independent hyperparameters per output and batch element, BoTorch's `_aug_batch_shape`); inferred noise or fixed `train_Yvar`; `posterior(X, output_indices, observation_noise, posterior_transform)` with BoTorch's shapes (`mean`/`variance` `batch x q x m`, `MultitaskMultivariateNormal` covariance `batch x qm x qm` in BoTorch's output-major layout, batch broadcasting, `rsample`, `rsample_from_base_samples`), `train_inputs`, `train_targets`, `named_parameters`, `initialize`, `likelihood.noise`, `covar_module.lengthscale`, ... |
-| `botorch.models.ModelListGP` | `botorch_rs.models.ModelListGP` | independent single- or multi-output `SingleTaskGP`s with different training data; block-diagonal joint posterior over the concatenated outputs, `output_indices`, `posterior_transform`, `likelihood` (`LikelihoodList`), `named_parameters` |
+| `botorch.models.ModelListGP` | `botorch_rs.models.ModelListGP` | independent single- or multi-output `SingleTaskGP`s (or `LCEMGP`s) with different training data; block-diagonal joint posterior over the concatenated outputs, `output_indices`, `posterior_transform`, `likelihood` (`LikelihoodList`), `named_parameters` |
+| `botorch.models.contextual_multioutput.LCEMGP` | same path (also `botorch_rs.models`) | BoTorch's latent context embedding multi-output GP: learned embeddings (`embs_dim_list`, `torch.nn.Embedding(max_norm=1.0)` with its in-place renormalization) and fixed embeddings (`context_emb_feature`), `context_cat_feature`, `output_tasks`, `all_tasks` (also tasks without data); per-task constant means and noise levels, `Standardize`; `posterior` over the output tasks (`X` without the task column) or the given tasks (with it), batched, exact input gradients; `eval()` / `train()`, `named_parameters`, `initialize`, `emb_layers[i].weight`, `task_covar_module_base` (assignable), `_eval_context_covar()`; fitted with `fit_gpytorch_mll` and usable in every MC acquisition function and in a `ModelListGP`. Keyword-only `seed` for the embedding initialization. Differences: see the migration notes |
+| the Unity project BOforUnity's provided-embedding LCE-M model (`_ProvidedEmbeddingLCEMGP`, not in BoTorch) | `botorch_rs.models.contextual_multioutput.ProvidedEmbeddingLCEMGP` (also `botorch_rs.models`) | botorch-rust extension, same signature as `LCEMGP` with `context_emb_feature` required: no learned embeddings; context covariance `(1 − w) · RBF(E, E) + w · I` on the provided embeddings `E` with a learned `w = context_specific_weight` (`Interval(0, 1, transform=None)`, initially 0); `HAS_PROVIDED_EMBEDDING_LCEMGP = True` in the same module |
+| `botorch.models.multitask.MultiTaskGP` | same path | only as the base class of `LCEMGP` (task feature, task values and their validation, `get_all_tasks`); creating a `MultiTaskGP` raises `UnsupportedError` |
 | `botorch.models.transforms.Normalize`, `Standardize` | `botorch_rs.models.transforms.Normalize`, `Standardize` | learned or fixed bounds over all inputs, `center=0.5`; `Standardize(m, batch_shape)`, `Normalize(d, batch_shape)` / batched bounds (single-output batched models) |
 | `botorch.models.utils.gpytorch_modules.*` | `botorch_rs.models.utils.gpytorch_modules.*` | BoTorch's default (dimension-scaled LogNormal) and legacy (Gamma) priors |
 | `gpytorch.kernels.RBFKernel`, `MaternKernel(nu=2.5)`, `ScaleKernel` | `botorch_rs.kernels.*` | ARD kernels |
 | `gpytorch.priors.LogNormalPrior`, `GammaPrior` | `botorch_rs.priors.*` | |
-| `gpytorch.constraints.GreaterThan`, `Positive` | `botorch_rs.constraints.*` | softplus or no transform |
+| `gpytorch.constraints.GreaterThan`, `Positive`, `Interval` | `botorch_rs.constraints.*` | softplus, sigmoid or no transform; `Interval(lower_bound, upper_bound, transform, inv_transform, initial_value)` as in GPyTorch (bounds and raw initial values in float32; with `transform=None` the value is the raw parameter, kept in `[l, u]` by `fit_gpytorch_mll`'s L-BFGS-B bounds); usable as lengthscale, outputscale and noise constraints. `GreaterThan` and `Positive` are subclasses of `Interval`, as in GPyTorch |
 | `gpytorch.likelihoods.GaussianLikelihood`, `gpytorch.means.ConstantMean` | `botorch_rs.likelihoods.*`, `botorch_rs.means.*` | |
+| `gpytorch.likelihoods.HadamardGaussianLikelihood`, `gpytorch.means.MultitaskMean` | `botorch_rs.likelihoods.*`, `botorch_rs.means.*` | the per-task noise and means of an `LCEMGP` (`likelihood.noise`, `mean_module.base_means[t].constant`); not constructible on their own |
 | `gpytorch.mlls.ExactMarginalLogLikelihood`, `SumMarginalLogLikelihood` | `botorch_rs.mlls.*` | `mll()` evaluates it on the training data (one value per output and batch element; the sum over a `ModelListGP`'s sub-models divided by their number) |
 | `botorch.fit.fit_gpytorch_mll` | `botorch_rs.fit.fit_gpytorch_mll` | L-BFGS-B (port of L-BFGS-B 3.0 reproducing SciPy's iterates), retries from prior samples, `optimizer_kwargs={"options": {...}}`, `max_attempts`; multi-output and batched models are fitted per element like BoTorch's batched independent fitting, `ModelListGP`s per sub-model |
 | `ExpectedImprovement`, `LogExpectedImprovement`, `ProbabilityOfImprovement`, `LogProbabilityOfImprovement`, `UpperConfidenceBound`, `PosteriorMean`, `PosteriorStandardDeviation` | `botorch_rs.acquisition.*` | analytic, `q = 1`, `maximize`, `posterior_transform` |
@@ -297,15 +301,16 @@ Everything else in BoTorch is not ported yet: see
 ## What is not ported yet
 
 botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **220 of the 773
-public classes and functions** defined in BoTorch's modules (28%; BoTorch main
+processes, which is a small part of BoTorch: it provides **222 of the 773
+public classes and functions** defined in BoTorch's modules (29%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
 [docs/api_coverage.md](docs/api_coverage.md). The main gaps:
 
 - **Models:**
-  - multi-task GPs (`MultiTaskGP`, `KroneckerMultiTaskGP`,
-    `HeterogeneousMTGP`);
+  - multi-task GPs (`MultiTaskGP` itself with its `IndexKernel` task
+    covariance and task priors, `KroneckerMultiTaskGP`, `HeterogeneousMTGP`);
+    `LCEMGP` is ported;
   - multi-fidelity and mixed or categorical GPs (`SingleTaskMultiFidelityGP`,
     `MixedSingleTaskGP`);
   - fully Bayesian and MAP SAAS models (`SaasFullyBayesianSingleTaskGP` with
@@ -313,7 +318,7 @@ module and writes every missing class, function, parameter and method to
   - variational GPs (`SingleTaskVariationalGP`), `HigherOrderGP` and
     `LatentKroneckerGP`;
   - preference learning (`PairwiseGP`);
-  - contextual and additive GPs;
+  - the additive contextual GPs (`SACGP`, `LCEAGP`) and other additive GPs;
   - deterministic models other than `MatheronPathModel`, `PosteriorMeanModel`
     and `GenericDeterministicModel`, ensemble models,
     and cost models other than `AffineFidelityCostModel` and
@@ -322,12 +327,17 @@ module and writes every missing class, function, parameter and method to
 - **Model features:**
   - `subset_output` and `construct_inputs`, and `condition_on_observations` /
     `fantasize` for multi-output sub-models of a `ModelListGP`;
+  - for `LCEMGP`: fixed noise (`train_Yvar`), custom `mean_module` /
+    `likelihood`, input transforms, outcome transforms other than
+    `Standardize`, batched training data and `condition_on_observations` /
+    `fantasize`;
   - autograd through models (acquisition values do support `torch.autograd`
     with respect to their inputs);
   - kernels other than RBF, Matérn-5/2 and `ScaleKernel`, including BoTorch's
     own kernels for categorical inputs, fidelities and additive structure;
-  - priors other than LogNormal and Gamma, and likelihoods other than
-    Gaussian;
+  - priors other than LogNormal and Gamma, constraints other than
+    `GreaterThan`, `Positive` and `Interval` (`LessThan`), and likelihoods
+    other than Gaussian (and `LCEMGP`'s per-task noise);
   - input transforms other than `Normalize`, `InputPerturbation` and their
     chains (`InputStandardize`, `Warp`, `Round`, `AppendFeatures`, ...), and
     `InputPerturbation` in train or fantasize mode;
@@ -402,7 +412,7 @@ module and writes every missing class, function, parameter and method to
 | `fit` | 3 | 1 | 33% |
 | `generation` | 8 | 0 | 0% |
 | `logging` | 1 | 0 | 0% |
-| `models` | 66 | 9 | 14% |
+| `models` | 66 | 11 | 17% |
 | `models.empirical_gps` | 36 | 0 | 0% |
 | `models.hierarchical` | 6 | 0 | 0% |
 | `models.kernels` | 19 | 0 | 0% |
@@ -421,7 +431,7 @@ module and writes every missing class, function, parameter and method to
 | `utils` | 97 | 10 | 10% |
 | `utils.multi_objective` | 22 | 19 | 86% |
 | `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **773** | **220** | **28%** |
+| **all of `botorch`** | **773** | **222** | **29%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -835,6 +845,53 @@ The LogEI row is the largest because a deterministic model has
 Far in the tail botorch-rust's LogEI gradient is exact (3.4e-16 against an
 mpmath reference), where BoTorch's autograd is off by up to 8.1e-6.
 
+### Contextual multi-output GP (LCEMGP)
+
+**Where the tests are:** Rust fixtures in `botorch_core/tests/lcemgp_parity.rs`
+(`--phase unity-lcemgp`, from `scripts/fixtures_lcemgp.py`), with the two
+contextual models of the Unity project BOforUnity (learned and provided
+embeddings; K = 2, 3, 5 contexts, including contexts without data;
+m = 1, 3 embedding dimensions; d = 1–4), `LCEMGP` with learned and fixed
+embeddings, and `SingleTaskGP`s with `Interval` constraints. Live Python tests
+in `test_parity_lcemgp.py`, with the Unity models built exactly as the Unity
+project builds them on BoTorch, and a randomized sweep in `-m equivalence`.
+The references are the Unity project's classes on BoTorch.
+
+| Quantity | Tolerance | Worst error (fixtures) | Worst error (live) |
+|---|---|---|---|
+| Parameter names, bounds and values after construction, `initialize`, forward passes and `eval()` | exact | 0 | 0 |
+| MLL / gradient | 1e-9 / 1e-8 | 3.5e-14 / 3.5e-14 | 7.0e-16 / 3.1e-15 |
+| Posterior mean / covariance (output task, all tasks, task column, batched, observation noise) | 1e-9 | 1.4e-15 / 1.0e-14 | 1.9e-15 / 1.2e-14 |
+| Posterior input gradients | 1e-8 | 2.5e-15 | |
+| Context covariance, task covariance, embeddings | 1e-9 | | 1.3e-16 / 5.8e-17 / 0 |
+| `SumMarginalLogLikelihood` of a `ModelListGP` of two Unity models | 1e-9 | | 1.8e-16 |
+| Fit: final loss above BoTorch's, scaled by `max(1e-6, 10 ×` BoTorch's spread`)` | ≤ 1 | 1.4e-2 | 0.16 |
+| qLogNEI (q = 1, 2): values / gradients, scaled by the noise floor | ≤ 1 | 0.21 / 0.10 | 0.10 / 0.10 |
+| qLogNEHVI on a `ModelListGP` of two Unity models: values / gradients, scaled | ≤ 1 | 0.23 / 0.19 | 0.13 / 0.06 |
+| `optimize_acqf` (qLogNEI) from 4 identical initial conditions: restarts ending at another value | ≤ 1 of 4 | | 1 (0.18.1) / 0 (main) |
+| `Interval` values / raw initial values | 1e-15 / 1 float32 ulp | 0 / 1.2e-7 | 0 / 7.5e-8 |
+| `SingleTaskGP` with `Interval` constraints: MLL / gradient; fit (scaled) | 1e-9 / 1e-8; ≤ 1 | 6.6e-16 / 6.8e-15; 6.0e-5 | 8.7e-16 / 6.6e-15; 0.45 |
+
+Fits are compared by their final loss because long L-BFGS-B runs on the flat
+likelihoods of these models amplify rounding: BoTorch itself ends at a
+different loss (by up to 3.4e-4) when the training inputs are perturbed by
+1e-14. The largest unscaled excess is 1.1e-5; short fits end at the same
+iterate.
+
+**End to end in the Unity project.** BoTorch and botorch-rust draw different
+Monte Carlo, restart and embedding-initialization samples, so the suggestions
+agree in distribution, not bit for bit. The real contextual `bo.py` (qLogNEI,
+10 iterations) and `mobo.py` (qLogNEHVI, 8 iterations) loops ran on synthetic
+contextual objectives (d = 2, three participants whose optima move with their
+embeddings, warm-start data from two of them, Unity's defaults), paired by
+seed, for learned and provided embeddings and for a participant with and
+without data. Over 16 comparisons (12 seeds each, 52 for one case),
+botorch-rust's final and mean simple regret (`bo.py`) and hypervolume
+(`mobo.py`) never differ significantly from BoTorch's (Wilcoxon signed-rank,
+all p ≥ 0.23). On 30 fixed data sets per case, BoTorch's own qLogNEI rates
+botorch-rust's suggestions within the spread of BoTorch's suggestions with
+another torch seed.
+
 ### Versions checked
 
 The numbers above come from BoTorch's main branch at da00e04 with GPyTorch
@@ -1001,8 +1058,48 @@ The two libraries find equally good suggestions:
   rates botorch-rust's suggestions within BoTorch's own run-to-run variability
   (p = 0.27).
 
+### Contextual BO in the Unity project
+
+The contextual `bo.py` and `mobo.py` loops of the Unity project BOforUnity
+(one LCE-M GP per objective, a new participant without data, Unity's defaults:
+10 restarts, 1024 raw samples, 128 MC samples; `bo.py` on one thread,
+`mobo.py` with botorch-rust on 4 threads). Medians per suggestion, measured
+while other jobs ran on the machine:
+
+| Loop | Embeddings | BoTorch | botorch-rust | Speed-up |
+|---|---|---|---|---|
+| `bo.py` | provided | 0.89 s | 24 ms | 37× |
+| `bo.py` | learned | 1.14 s | 18 ms | 62× |
+| `mobo.py` (two LCE-M GPs) | provided | 4.41 s | 56 ms | 79× |
+| `mobo.py` (two LCE-M GPs) | learned | 4.07 s | 52 ms | 78× |
+
+The model fits alone are 140–550× faster.
+
 ## Migration notes and known differences
 
+- **LCEMGP.** botorch-rust's `LCEMGP` deviates from BoTorch's where BoTorch
+  fails or depends on torch's global random state:
+  - **Contexts without data.** BoTorch's `MultiTaskGP.eval()` initializes
+    `IndexKernel` factors that `LCEMGP` does not have, so BoTorch (0.18.1 and
+    main) raises an `AttributeError` for any `LCEMGP` with an unobserved task.
+    botorch-rust's `eval()` instead sets the constant mean of every task
+    without data to the average of the observed tasks' constants (otherwise
+    it stays at its initial 0 and offsets a new participant's predictions),
+    as the Unity project does. Observed tasks are unaffected.
+  - **Task kernel size.** BoTorch sizes the task kernel for the learned
+    embedding dimensions only but evaluates it on learned and fixed
+    embeddings, which fails with a `context_emb_feature`. botorch-rust gives
+    it one lengthscale per embedding dimension (learned and fixed).
+  - **Per-task noise** is looked up by task index, not raw task value
+    (meta-pytorch/botorch#3396); identical for task values `0..K-1`.
+  - **Embedding initialization.** botorch-rust draws learned embeddings from
+    `N(0, 1)` with its own generator, seeded by the keyword-only `seed`
+    (random if `None`); BoTorch uses torch's global generator. Setting the
+    weights (`model.emb_layers[0].weight = W` or `initialize`) reproduces any
+    BoTorch model.
+  - **Sigmoid `Interval`s** compute raw initial values in float32 like
+    GPyTorch, but torch's float32 `log` is not correctly rounded, so they can
+    differ by one float32 ulp. `Interval(..., transform=None)` is exact.
 - **Imports.** Replace `botorch.` by `botorch_rs.`; GPyTorch's
   `mlls`, `kernels`, `priors`, `constraints`, `likelihoods` and `means` are
   `botorch_rs.mlls`, `botorch_rs.kernels`, ... (only the classes listed above).
@@ -1321,7 +1418,9 @@ Other scripts:
     NSGA-II (`--phase 5c-robust-3392` with a BoTorch that includes
     meta-pytorch/botorch#3392);
   - `--phase 5d-deterministic`: deterministic models and composite
-    acquisition functions (openbo's MO-TAF).
+    acquisition functions (openbo's MO-TAF);
+  - `--phase unity-lcemgp`: `LCEMGP`, the Unity project's
+    `ProvidedEmbeddingLCEMGP` and the `Interval` constraint.
 - `python scripts/benchmark.py` measures the timings above;
   `scripts/benchmark_mo_utils.py` and `scripts/benchmark_arrays.py [--botorch]`
   measure the multi-objective utilities and the exchange of arrays between
