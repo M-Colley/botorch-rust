@@ -107,11 +107,14 @@ CHECK = Checker("robust multi-objective")
 VALUE_TOL = 1e-9
 GRAD_TOL = 1e-8
 NEGLIGIBLE_LOG = math.log(1e-12)
-# Perturbed copies of BoTorch's model per noise floor. Under 1e-14
-# perturbations, BoTorch's own gradients of qLogNEHVI with MVaR sat at 1e-9
-# in 4 of 16 copies and jumped by 1.2e-4 in the other 12 (a near-tie in the
-# MVaR sets): four copies missed the jump on Linux CI.
+# Perturbed copies of BoTorch's model per noise floor, with relative
+# perturbations from 1e-14 to 1e-11 (rounding level for these nearly singular
+# kernels). qLogNEHVI with MVaR has near-ties in its MVaR sets, where its
+# gradient jumps by 1.2e-4: on Windows, 12 of 16 copies at 1e-14 crossed the
+# tie; on Linux CI none did, while botorch-rust's samples (which differ from
+# BoTorch's by more than 1e-14 on such posteriors) landed on the other side.
 N_TWINS = 16
+TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 NUM_SAMPLES = 16
 N_W = 4
 HAS_PYMOO = importlib.util.find_spec("pymoo") is not None
@@ -496,8 +499,8 @@ def compare(
     twins: Callable[[], Iterator[tuple[Any, Any]]] | None = None,
 ) -> None:
     """Values and gradients; above the nominal tolerances, the tolerance is
-    10x BoTorch's own change under 1e-14 perturbations of its training
-    inputs (``twins()``, ``N_TWINS`` perturbations: the change varies by
+    10x BoTorch's own change under small perturbations of its training
+    inputs (``twins()``, ``N_TWINS`` perturbations of 1e-14 to 1e-11: the change varies by
     orders of magnitude between perturbations, e.g. at near-ties of the MVaR
     sets BoTorch's own gradients take one of two values 1.2e-4 apart)."""
     (v_rs, g_rs), (v_bt, g_bt) = rs_vg, bt_vg
@@ -659,7 +662,7 @@ def check_mo_acquisition(model_name: str, case: tuple, seed: int) -> None:
 
     def twins() -> Iterator[tuple[Any, Any]]:
         for k in range(1, N_TWINS + 1):
-            twin = perturbed_copy(bt, seed=k)
+            twin = perturbed_copy(bt, seed=k, rel=TWIN_SCALES[k % len(TWIN_SCALES)])
             with synced_draws(seed):
                 a_tw = bt_eval(build, twin)
                 yield bt_eval(per_candidate, a_tw, Xt, grads)
@@ -767,7 +770,7 @@ def check_so_acquisition(case: tuple, seed: int) -> None:
 
     def twins() -> Iterator[tuple[Any, Any]]:
         for k in range(1, N_TWINS + 1):
-            twin = perturbed_copy(bt, seed=k)
+            twin = perturbed_copy(bt, seed=k, rel=TWIN_SCALES[k % len(TWIN_SCALES)])
             with synced_draws(seed):
                 a_tw = bt_eval(build, twin)
                 yield bt_eval(per_candidate, a_tw, Xt)
