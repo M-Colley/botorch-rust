@@ -1,10 +1,11 @@
-# Phase 9: optimization and candidate generation (`9-optim`)
+# Optimization and candidate generation
 
-Draft for the README (Supported API, What is not ported yet, Equivalence with
-BoTorch, Migration notes). Reference: BoTorch main at da00e0401 and BoTorch
-0.18.1, both with SciPy 1.18 and torch 2.x on CPU.
+The port of BoTorch's optimization and candidate generation (roadmap phase 9):
+the supported API, the deviations from BoTorch, the equivalence results and the
+BoTorch bugs found. Reference: BoTorch main at da00e0401 and BoTorch 0.18.1,
+both with SciPy 1.18 and torch 2.x on CPU.
 
-## Supported API (rows for the README table)
+## Supported API
 
 | BoTorch / GPyTorch | botorch_rs | Notes |
 |---|---|---|
@@ -30,9 +31,6 @@ BoTorch, Migration notes). Reference: BoTorch main at da00e0401 and BoTorch
 
 ## What remains unported (in this area)
 
-- Initial conditions of the single-objective one-shot knowledge gradient
-  (`gen_one_shot_kg_initial_conditions`) and
-  `gen_value_function_initial_conditions` (qKG belongs to another phase).
 - `optimize_acqf(acq_function_sequence=...)` (raises `UnsupportedError`),
   per-t-batch (tensor-valued) fixed features in `gen_candidates_*`, and
   `timeout_sec` on the constrained (SLSQP) path, which runs to completion.

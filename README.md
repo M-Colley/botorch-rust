@@ -293,6 +293,25 @@ counterpart.
 | `acqf(X)`, `torch.autograd.grad(acqf(X), X)` | same | exact gradients computed in Rust; `acqf.value_and_grad(X)` for NumPy and lists |
 | `botorch.sampling.SobolQMCNormalSampler` | `botorch_rs.sampling.SobolQMCNormalSampler` | explicit `base_samples` supported |
 | `botorch.optim.optimize_acqf` | `botorch_rs.optim.optimize_acqf` | box bounds, `inequality_constraints` / `equality_constraints` (BoTorch's `(indices, coefficients, rhs)`, intra- and inter-point), `nonlinear_inequality_constraints` (`(callable, is_intrapoint)`, torch callables), `fixed_features`, `batch_initial_conditions`, `ic_generator` (called with BoTorch's keyword arguments; `gen_batch_initial_conditions` runs natively), `sequential`, `return_best_only`, `options` (`seed`, `method` (`"L-BFGS-B"`, `"SLSQP"`), `batch_limit`, `init_batch_limit`, `eta`, `alpha`, `nonnegative`, `maxiter`, `maxfun`, `ftol`, `gtol`, `maxcor`, `maxls`, `n_burnin`, `n_thinning`); with constraints, SLSQP over chunks of `batch_limit` restarts, projection of infeasible results and `CandidateGenerationError` as in BoTorch |
+| `botorch.optim.optimize_acqf` (additions) | `botorch_rs.optim.optimize_acqf` | `post_processing_func` (applied to all restarts before the best is chosen, values recomputed), `timeout_sec` (split over sequential steps and chunks; L-BFGS-B and Adam stop after the iteration that exceeds it), `gen_candidates` (`gen_candidates_scipy`, `gen_candidates_torch` natively with Adam, or any callable with BoTorch's signature, called from Rust per chunk), `options`: `topn` (with `largest`, `sorted`), `sample_around_best` (with `sample_around_best_sigma`, `_subset_sigma`, `_prob_perturb`), `max_optimization_problem_aggregation_size` (BoTorch's serial path: groups of restarts as one L-BFGS-B problem, run in parallel), `factr` / `pgtol` / `tol` / `max_cor` aliases, `optimizer_options` / `stopping_criterion_options` for `gen_candidates_torch`. All of these work with the one-shot acquisition functions (`qKnowledgeGradient`, `qHypervolumeKnowledgeGradient` and their multi-fidelity variants): post-processing sees and re-evaluates the full trees (`b x q_aug x d`), and `topn` / `sample_around_best` reach the one-shot initial conditions, as in BoTorch. Both of BoTorch's L-BFGS-B paths: independent runs per restart (parallel path) and the aggregated problem (serial path, taken with `timeout_sec` or options outside the parallel path's) |
+| `botorch.optim.optimize.optimize_acqf_mixed` | `botorch_rs.optim.optimize_acqf_mixed` | `fixed_features_list` (the combinations run in parallel), `return_best_only`, sequential `q > 1` with the previous candidates as pending points, parameter constraints, `post_processing_func`, `gen_candidates`, `batch_initial_conditions`, `ic_generator`; combinations that fail with `CandidateGenerationError` are skipped with BoTorch's warning. `optimize_acqf_list` uses it for `fixed_features_list` |
+| `botorch.optim.optimize.optimize_acqf_discrete` | `botorch_rs.optim.optimize_acqf_discrete` | `choices`, `q` (sequential, pending points), `max_batch_size`, `unique`, `X_avoid`, `inequality_constraints`, `return_acq_values`; batched evaluation in Rust |
+| `botorch.optim.optimize.optimize_acqf_discrete_local_search` | `botorch_rs.optim.optimize_acqf_discrete_local_search` | all arguments; the local searches of the restarts run in parallel; random lattice points from botorch_rs's generator (keyword-only `seed`); a replaced `_gen_batch_initial_conditions_local_search` (module attribute) is honored |
+| `botorch.optim.optimize.optimize_acqf_cyclic` | `botorch_rs.optim.optimize_acqf_cyclic` | `cyclic_options` (`ExpMAStoppingCriterion` settings), the arguments of `optimize_acqf` |
+| `botorch.optim.optimize_mixed.optimize_acqf_mixed_alternating` and its building blocks | `botorch_rs.optim.optimize_mixed.*` (also `botorch_rs.optim`) | discrete, binary and categorical dimensions, continuous relaxation of discrete dimensions with more than `max_discrete_values` values, random subsets of large categorical dimensions, all `options` (`initialization_strategy` `"continuous_relaxation"` / `"random"`, `tol`, `maxiter_*`, `num_spray_points`, `std_cont_perturbation`, `batch_limit`, `init_batch_limit`), fixed features, linear constraints, `post_processing_func`; the starting points run in parallel. Keyword-only `seed`. Also `round_discrete_dims`, `get_nearest_neighbors`, `get_categorical_neighbors`, `get_spray_points`, `sample_feasible_points`, `generate_starting_points` (a replaced module attribute is honored), `discrete_step`, `continuous_step`, `complement_indices`, `complement_indices_like`, `should_use_mixed_alternating_optimizer` and the module constants |
+| `botorch.optim.optimize_homotopy.optimize_acqf_homotopy`, `prune_candidates` | `botorch_rs.optim.optimize_homotopy.*` (also `botorch_rs.optim`) | all arguments, including `discrete_dims` / `cat_dims` (mixed or mixed-alternating inner optimizer, as in BoTorch) |
+| `botorch.optim.homotopy.*` | `botorch_rs.optim.homotopy.*` | `FixedHomotopySchedule`, `LinearHomotopySchedule`, `LogLinearHomotopySchedule` (torch's `linspace` formula), `HomotopyParameter` (a torch `Parameter`, a model attribute or a `HomotopyValue`), `Homotopy` with callbacks |
+| `botorch.optim.initializers.initialize_q_batch`, `initialize_q_batch_nonneg`, `initialize_q_batch_topn`, `sample_points_around_best`, `is_nonnegative` | `botorch_rs.optim.initializers.*` | torch's draws when torch is importable (`torch.multinomial` / `torch.randperm` under the global seed, as in BoTorch), Python's `random` otherwise; `gen_batch_initial_conditions` with `topn` and `sample_around_best` options (natively) |
+| `botorch.utils.sampling.sample_truncated_normal_perturbations`, `sample_perturbed_subset_dims`, `batched_multinomial`, `boltzmann_sample` | `botorch_rs.utils.sampling.*` | Sobol or uniform draws, BoTorch's truncated normal by inverse CDF |
+| `botorch.generation.gen.gen_candidates_scipy`, `gen_candidates_torch`, `get_best_candidates` | `botorch_rs.generation.*` | `gen_candidates_scipy`: L-BFGS-B (both paths) or SLSQP with constraints, `fixed_features`, `timeout_sec`; `gen_candidates_torch`: Adam natively (torch's update rule, BoTorch's `ExpMAStoppingCriterion` on the loss, `callback`, `fixed_features`, `timeout_sec`), other torch optimizers run BoTorch's loop with torch |
+| `botorch.generation.sampling.MaxPosteriorSampling`, `BoltzmannSampling`, `ConstrainedMaxPosteriorSampling`, `SamplingStrategy` | `botorch_rs.generation.sampling.*` (also `botorch_rs.generation`) | `objective`, `posterior_transform`, `replacement`, batched `X`; joint posterior samples with GPyTorch's base-sample layout (`torch.randn` under the global seed when torch is importable) and the maximization in Rust |
+| `botorch.optim.fit.fit_gpytorch_mll_torch`, `fit_gpytorch_mll_scipy` | `botorch_rs.optim.fit.*` | native for botorch_rs GPs (all outputs and batch elements in parallel): torch's Adam update and `ExpMAStoppingCriterion`, `step_limit`, `parameters`, `bounds`, `timeout_sec`; L-BFGS-B with BoTorch's options; other optimizers, closures, schedulers and callbacks run BoTorch's generic loop on the botorch_rs closure. `fit_gpytorch_mll(..., optimizer=fit_gpytorch_mll_torch)` retries like BoTorch |
+| `botorch.optim.core.OptimizationResult`, `OptimizationStatus`, `scipy_minimize`, `torch_minimize` | `botorch_rs.optim.core.*` | the generic minimizers run SciPy / torch on Python closures (NumPy / torch required) |
+| `botorch.optim.stopping.StoppingCriterion`, `ExpMAStoppingCriterion` | `botorch_rs.optim.stopping.*` | torch's float32 weights (bitwise for the defaults) |
+| `botorch.optim.closures.ForwardBackwardClosure`, `NdarrayOptimizationClosure`, `get_loss_closure`, `get_loss_closure_with_grads` | `botorch_rs.optim.closures.*` | loss and gradients of botorch_rs MLLs computed in Rust; `data_loader` is not supported |
+| `botorch.optim.utils.columnwise_clamp`, `fix_features`, `get_X_baseline`, `get_parameters`, `get_parameters_and_bounds`, `get_name_filter`, `sample_all_priors`, `TorchAttr` | `botorch_rs.optim.utils.*` | BoTorch's parameter names and order (likelihood first) |
+| `botorch.cross_validation.gen_loo_cv_folds`, `batch_cross_validation`, `CVFolds`, `CVResults` | `botorch_rs.cross_validation.*` | batched LOO folds (also `train_Yvar`, multi-output), one batched model fitted per fold in parallel, `observation_noise`, `model_init_kwargs`; `MultiTaskGP` raises `UnsupportedError` as in BoTorch |
+| `botorch.exceptions.errors.OptimizationTimeoutError`, `OptimizationGradientError` | `botorch_rs.exceptions.errors.*` | with `current_x` and `runtime` |
 | `botorch.optim.initializers.gen_batch_initial_conditions`, `sample_q_batches_from_polytope`, `transform_constraints` | `botorch_rs.optim.initializers.*` | linear constraints (hit-and-run polytope sampling of the raw samples), `fixed_features`, `options` |
 | `botorch.optim.parameter_constraints.evaluate_feasibility` | same path | linear and nonlinear constraints, `tolerance` |
 | `botorch.utils.sampling.draw_sobol_samples`, `draw_sobol_normal_samples` | `botorch_rs.utils.sampling.*` | |
@@ -344,8 +363,8 @@ Everything else in BoTorch is not ported yet: see
 ## What is not ported yet
 
 botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **271 of the 776
-public classes and functions** defined in BoTorch's modules (35%; BoTorch main
+processes, which is a small part of BoTorch: it provides **337 of the 776
+public classes and functions** defined in BoTorch's modules (43%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
 [docs/api_coverage.md](docs/api_coverage.md); [docs/roadmap.md](docs/roadmap.md)
@@ -420,16 +439,11 @@ orders the remaining work toward a full port. The main gaps:
   `ScalarizedPosteriorTransform`, learned MC objectives, and
   `get_acquisition_function` with the input constructors.
 - **Optimization and candidate generation:**
-  - `optimize_acqf_cyclic`, `optimize_acqf_mixed`
-    (also the alternating variant), `optimize_acqf_discrete` (also with local
-    search) and `optimize_acqf_homotopy`;
-  - in `optimize_acqf`: custom `gen_candidates` (`gen_candidates_torch`),
-    `post_processing_func`, `timeout_sec`, `sample_around_best` and
-    batch-shaped fixed features;
-  - initial conditions for the single-objective one-shot acquisition
-    functions (qKG);
-  - `MaxPosteriorSampling` and `BoltzmannSampling`;
-  - fitting with torch optimizers, BoTorch's closures and stopping criteria.
+  - `optimize_acqf(acq_function_sequence=...)`, tensor-valued fixed features
+    per t-batch, and `timeout_sec` on the constrained (SLSQP) path;
+  - `get_loss_closure(data_loader=...)` and `get_data_loader`;
+  - `loo_cv`, `efficient_loo_cv` and `ensemble_loo_cv` (`batch_cross_validation`
+    is ported); see [docs/optimization.md](docs/optimization.md).
 - **Sampling and utilities:**
   - samplers other than `SobolQMCNormalSampler`, `ListSampler` and
     `StochasticSampler` (for deterministic models)
@@ -439,7 +453,7 @@ orders the remaining work toward a full port. The main gaps:
   - most of `botorch.utils`: probability (bivariate and truncated
     multivariate normal, elliptical slice sampling), low-rank and dataset
     utilities;
-  - cross-validation and `settings`.
+  - `settings`.
 - **Test functions and community code:** test functions other than the 20
   synthetic and the 33 multi-objective ones above (multi-fidelity, constrained
   single-objective problems, sensitivity analysis, ...), and everything in
@@ -452,10 +466,10 @@ orders the remaining work toward a full port. The main gaps:
 |---|---|---|---|
 | `acquisition` | 145 | 79 | 54% |
 | `acquisition.multi_objective` | 33 | 33 | 100% |
-| `cross_validation` | 7 | 0 | 0% |
-| `exceptions` | 20 | 16 | 80% |
+| `cross_validation` | 7 | 4 | 57% |
+| `exceptions` | 20 | 18 | 90% |
 | `fit` | 3 | 1 | 33% |
-| `generation` | 8 | 0 | 0% |
+| `generation` | 8 | 7 | 88% |
 | `logging` | 1 | 0 | 0% |
 | `models` | 66 | 11 | 17% |
 | `models.empirical_gps` | 36 | 0 | 0% |
@@ -464,19 +478,19 @@ orders the remaining work toward a full port. The main gaps:
 | `models.likelihoods` | 5 | 0 | 0% |
 | `models.transforms` | 35 | 6 | 17% |
 | `models.utils` | 26 | 5 | 19% |
-| `optim` | 58 | 8 | 14% |
-| `optim.closures` | 5 | 0 | 0% |
-| `optim.utils` | 14 | 0 | 0% |
+| `optim` | 58 | 45 | 78% |
+| `optim.closures` | 5 | 4 | 80% |
+| `optim.utils` | 14 | 8 | 57% |
 | `posteriors` | 13 | 2 | 15% |
 | `sampling` | 14 | 4 | 29% |
 | `sampling.pathwise` | 25 | 11 | 44% |
 | `settings` | 3 | 0 | 0% |
 | `test_functions` | 84 | 57 | 68% |
 | `test_utils` | 2 | 0 | 0% |
-| `utils` | 97 | 10 | 10% |
+| `utils` | 97 | 14 | 14% |
 | `utils.multi_objective` | 25 | 20 | 80% |
 | `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **776** | **271** | **35%** |
+| **all of `botorch`** | **776** | **337** | **43%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -957,6 +971,37 @@ all p ≥ 0.23). On 30 fixed data sets per case, BoTorch's own qLogNEI rates
 botorch-rust's suggestions within the spread of BoTorch's suggestions with
 another torch seed.
 
+### Optimization and candidate generation
+
+**Where the tests are:**
+- Rust fixtures in `botorch_core/tests/phase9_optim_parity.rs`
+  (`--phase 9-optim`).
+- Live Python tests in `test_parity_9_optim.py`.
+- A randomized suite in `test_equivalence_9_optim.py` (`-m equivalence`).
+
+All of them run against BoTorch main and 0.18.1. Every comparison starts
+from identical inputs: initial conditions, and replaced or recorded random
+draws.
+
+| Quantity | Fixtures | Live tests |
+|---|---|---|
+| Values | 4.7e-15 | 7e-15 |
+| Discrete candidates | exact | — |
+| Continuous candidates | 1.6e-9 (tolerance 1e-8) | 2.0e-8 (tolerance 1e-7) |
+| Fitted parameters | 1.4e-11 | — |
+| Cross-validation | 1.9e-10 | — |
+| Knowledge-gradient optimization, candidates / values | — | 5.4e-14 / 6.3e-17 |
+
+At a converged optimum the objective is flat, so round-off moves the final
+iterate by up to about sqrt(eps). The values at those candidates still agree
+to 1e-14.
+
+The default stopping-criterion weights match bitwise. Other weights match to
+5.9e-8, because BoTorch computes them in float32.
+
+[docs/optimization.md](docs/optimization.md) has the full tables and 14
+BoTorch bugs found by these tests.
+
 ### Kernels, priors and constraints
 
 **Where the tests are:**
@@ -1223,6 +1268,23 @@ The model fits alone are 140–550× faster.
 
 ## Migration notes and known differences
 
+- **Optimization and candidate generation.**
+  - Random draws (raw samples, lattice and starting points, perturbations)
+    come from botorch-rust's generator (`options["seed"]` or a keyword-only
+    `seed`).
+  - The pure-Python helpers (`initialize_q_batch*`, `MaxPosteriorSampling`,
+    `BoltzmannSampling`) use torch's generator when torch is installed.
+  - Initial-condition options no longer move `optimize_acqf` to BoTorch's
+    serial L-BFGS-B path.
+  - Where BoTorch is wrong, botorch-rust has the correct behaviour:
+    - `ftol` / `max_cor` on the parallel path;
+    - `subset_sigma` and per-point perturbations in `sample_points_around_best`;
+    - `BoltzmannSampling` with batched inputs;
+    - `optimize_acqf_cyclic`'s stopping history;
+    - feasible restarts in `optimize_acqf_mixed`;
+    - no global warning filters.
+
+  See [docs/optimization.md](docs/optimization.md#deviations-from-botorch-migration-notes).
 - **Kernels and priors.**
   - Kernel calls return dense arrays of the input's type, not
     `LinearOperator`s.
@@ -1599,6 +1661,8 @@ Other scripts:
     acquisition functions (openbo's MO-TAF);
   - `--phase 6a-kernels`: kernel trees, kernels, priors and constraints;
   - `--phase 8-so-acquisition`: the single-objective acquisition functions;
+  - `--phase 9-optim`: optimization, candidate generation, torch-style fitting
+    and cross-validation;
   - `--phase unity-lcemgp`: `LCEMGP`, the Unity project's
     `ProvidedEmbeddingLCEMGP` and the `Interval` constraint.
 - `python scripts/benchmark.py` measures the timings above;

@@ -59,15 +59,21 @@ Remaining:
 - the active learning that needs pairwise or fully Bayesian models
   (Phase 10).
 
-## Phase 9: optimization and candidate generation
+## Phase 9: optimization and candidate generation (done; [details](optimization.md))
 
+Ported:
 - `optimize_acqf_mixed` (also alternating), `optimize_acqf_discrete` (also
-  with local search), `optimize_acqf_cyclic`, `optimize_acqf_homotopy`.
-- In `optimize_acqf`: `gen_candidates_torch`, `sample_around_best`,
-  `post_processing_func`, `timeout_sec`.
-- `MaxPosteriorSampling`, `BoltzmannSampling`, `get_best_candidates`.
-- Fitting with torch optimizers, BoTorch's closures and stopping criteria.
-- `botorch.cross_validation`.
+  local search), `optimize_acqf_cyclic`, `optimize_acqf_homotopy`;
+- `post_processing_func`, `timeout_sec`, `gen_candidates`, `topn` and
+  `sample_around_best` in `optimize_acqf`;
+- `MaxPosteriorSampling`, `BoltzmannSampling`, `get_best_candidates`;
+- fitting with torch optimizers, the closures and stopping criteria;
+- `batch_cross_validation`.
+
+Remaining:
+- `acq_function_sequence`;
+- `loo_cv`, `efficient_loo_cv` and `ensemble_loo_cv`;
+- `data_loader` closures.
 
 ## Phase 10: fully Bayesian, preference and approximate models
 
