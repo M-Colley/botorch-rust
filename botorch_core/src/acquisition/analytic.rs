@@ -1051,6 +1051,464 @@ impl AcquisitionFunction for ConstrainedExpectedImprovement {
     }
 }
 
+/// Log Probability of Feasibility (BoTorch's `LogProbabilityOfFeasibility`):
+/// `Σ_i log P(lower_i <= y_i(x) <= upper_i)` for independent Gaussian
+/// outputs of a single- or multi-output model (`q = 1`), with BoTorch's
+/// `log_ndtr` / `log_prob_normal_in`.
+#[derive(Debug, Clone)]
+pub struct LogProbabilityOfFeasibility {
+    model: Arc<dyn Model>,
+    bounds: ConstraintBounds,
+    constraints: Vec<OutputConstraint>,
+}
+
+impl LogProbabilityOfFeasibility {
+    /// Creates `LogProbabilityOfFeasibility(model, constraints)`;
+    /// `constraints` lists `(output index, lower, upper)` with `None` for an
+    /// unbounded side.
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] for no constraints, an upper bound
+    /// not above the lower bound (BoTorch's messages), indices out of range
+    /// or duplicates, and [`BotorchError::Unsupported`] for batched models.
+    pub fn new(model: Arc<dyn Model>, constraints: Vec<OutputConstraint>) -> Result<Self> {
+        crate::acquisition::check_unbatched(model.as_ref())?;
+        let bounds = ConstraintBounds::new(&constraints, None, model.num_outputs())?;
+        Ok(Self {
+            model,
+            bounds,
+            constraints,
+        })
+    }
+
+    /// The output constraints `(index, lower, upper)` in the given order.
+    pub fn constraints(&self) -> &[OutputConstraint] {
+        &self.constraints
+    }
+}
+
+impl AcquisitionFunction for LogProbabilityOfFeasibility {
+    fn model(&self) -> &Arc<dyn Model> {
+        &self.model
+    }
+
+    fn expected_q(&self) -> Option<usize> {
+        Some(1)
+    }
+
+    fn forward(&self, x: &Matrix) -> Result<f64> {
+        Ok(self.forward_many(std::slice::from_ref(x))?[0])
+    }
+
+    fn forward_many(&self, xs: &[Matrix]) -> Result<Vec<f64>> {
+        output_moments_batch(self.model.as_ref(), xs, |m, s| {
+            self.bounds.log_prob_feas(m, s)
+        })
+    }
+
+    fn forward_with_grad(&self, x: &Matrix) -> Result<(f64, Matrix)> {
+        check_candidates(x, self.model.dim(), Some(1))?;
+        let mo = output_moments(self.model.as_ref(), x)?;
+        let (value, grad) = self.bounds.log_prob_feas_with_grad(&mo);
+        Ok((value, row_matrix(grad)))
+    }
+
+    fn is_log(&self) -> bool {
+        true
+    }
+}
+
+/// Scalarized posterior mean (BoTorch's `ScalarizedPosteriorMean`): the
+/// posterior means of the `q` points of a candidate set weighted by
+/// `weights` (one per point), `Σ_j w_j μ(x_j)`, for a single-output model
+/// (multi-output models through a posterior transform).
+#[derive(Debug, Clone)]
+pub struct ScalarizedPosteriorMean {
+    model: Arc<dyn Model>,
+    weights: Vector,
+}
+
+impl ScalarizedPosteriorMean {
+    /// Creates `ScalarizedPosteriorMean(model, weights)`; pass `-weights` to
+    /// minimize the scalarized posterior mean.
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] for multi-output models and
+    /// [`BotorchError::InvalidArgument`] for empty or non-finite weights.
+    pub fn new(model: Arc<dyn Model>, weights: Vector) -> Result<Self> {
+        check_single_output(model.as_ref())?;
+        if weights.is_empty() || weights.iter().any(|w| !w.is_finite()) {
+            return Err(BotorchError::InvalidArgument(
+                "weights must be a non-empty vector of finite values".into(),
+            ));
+        }
+        Ok(Self { model, weights })
+    }
+
+    /// The weights (one per point of a candidate set).
+    pub fn weights(&self) -> &Vector {
+        &self.weights
+    }
+
+    fn check(&self, x: &Matrix) -> Result<()> {
+        check_candidates(x, self.model.dim(), None)?;
+        if x.nrows() != self.weights.len() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "ScalarizedPosteriorMean has {} weights but X has {} points.",
+                self.weights.len(),
+                x.nrows()
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl AcquisitionFunction for ScalarizedPosteriorMean {
+    fn model(&self) -> &Arc<dyn Model> {
+        &self.model
+    }
+
+    fn expected_q(&self) -> Option<usize> {
+        Some(self.weights.len())
+    }
+
+    fn forward(&self, x: &Matrix) -> Result<f64> {
+        self.check(x)?;
+        Ok(self.model.posterior(x, false)?.mean.dot(&self.weights))
+    }
+
+    fn forward_with_grad(&self, x: &Matrix) -> Result<(f64, Matrix)> {
+        self.check(x)?;
+        let q = x.nrows();
+        let post = self.model.posterior(x, false)?;
+        let grad = self
+            .model
+            .joint_posterior_vjp(x, 0..q, &self.weights, &Matrix::zeros(q, q))?;
+        Ok((post.mean.dot(&self.weights), grad))
+    }
+}
+
+/// BoTorch's message for models that the fantasy-based noisy expected
+/// improvements do not support.
+const NOISY_EI_MESSAGE: &str = "Only single-output `SingleTaskGP` models with known \
+     observation noise are currently supported for fantasy-based NEI & LogNEI.";
+
+/// Default number of fantasies of the fantasy-based noisy expected
+/// improvements.
+pub const DEFAULT_NOISY_EI_FANTASIES: usize = 20;
+
+/// Noise variance (transformed space) of the noiseless fantasy models
+/// (BoTorch's `Yvar = torch.full_like(Y_fantasized, 1e-7)`).
+const NOISELESS_FANTASY_NOISE: f64 = 1e-7;
+
+/// The fantasy models and incumbents shared by [`NoisyExpectedImprovement`]
+/// and [`LogNoisyExpectedImprovement`].
+#[derive(Debug)]
+struct NoisyEiCore {
+    model: Arc<dyn Model>,
+    fantasies: Vec<crate::models::SingleTaskGP>,
+    best_f: Vec<f64>,
+    maximize: bool,
+    transform: Option<crate::acquisition::objective::ScalarizedPosteriorTransform>,
+}
+
+impl NoisyEiCore {
+    fn new(
+        model: Arc<dyn Model>,
+        x_observed: &Matrix,
+        num_fantasies: usize,
+        maximize: bool,
+        sampler: Option<Arc<crate::sampling::SobolQMCNormalSampler>>,
+        transform: Option<crate::acquisition::objective::ScalarizedPosteriorTransform>,
+    ) -> Result<Self> {
+        crate::acquisition::check_unbatched(model.as_ref())?;
+        let gp = match model.output_gps() {
+            Some(gps) if gps.len() == 1 => gps[0],
+            _ => {
+                return Err(BotorchError::Unsupported(format!(
+                    "{NOISY_EI_MESSAGE} Model is not a `SingleTaskGP`."
+                )))
+            }
+        };
+        if gp.default_fantasy_noise().is_none() {
+            return Err(BotorchError::Unsupported(format!(
+                "{NOISY_EI_MESSAGE} Model likelihood is not a `FixedNoiseGaussianLikelihood`."
+            )));
+        }
+        if model.num_outputs() != 1 {
+            return Err(BotorchError::Unsupported(format!(
+                "{NOISY_EI_MESSAGE} Model has {} outputs.",
+                model.num_outputs()
+            )));
+        }
+        if let Some(t) = &transform {
+            if t.num_outputs() != 1 {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "Output shape not equal to that of weights. Output shape is 1 and weights \
+                     are [{}]",
+                    t.num_outputs()
+                )));
+            }
+        }
+        let sampler = match sampler {
+            Some(s) => {
+                if s.num_samples() != num_fantasies {
+                    return Err(BotorchError::InvalidArgument(format!(
+                        "The sampler shape must match num_fantasies={num_fantasies}."
+                    )));
+                }
+                s
+            }
+            None => Arc::new(crate::sampling::SobolQMCNormalSampler::new(
+                num_fantasies,
+                None,
+            )?),
+        };
+        let post = gp.posterior(x_observed, false)?;
+        let n = x_observed.nrows();
+        let z = sampler.base_samples(n)?;
+        let samples = post.rsample_from_base_samples(&z)?;
+        // n_f × n fantasized targets.
+        let ys = samples.data().transpose();
+        let best_f = (0..num_fantasies)
+            .map(|f| {
+                let row = ys.row(f);
+                if maximize {
+                    row.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+                } else {
+                    row.iter().copied().fold(f64::INFINITY, f64::min)
+                }
+            })
+            .collect();
+        let fantasies = gp.noiseless_fantasies(x_observed, &ys, NOISELESS_FANTASY_NOISE)?;
+        Ok(Self {
+            model,
+            fantasies,
+            best_f,
+            maximize,
+            transform,
+        })
+    }
+
+    /// `(mean, sigma)` of every fantasy at the point `x` (`1 × d`), through
+    /// the posterior transform, with BoTorch's clamps.
+    fn moments(&self, x: &Matrix) -> Result<Vec<(f64, f64)>> {
+        self.fantasies
+            .iter()
+            .map(|g| {
+                let pp = g.point_posteriors(x)?;
+                let (m, v) = self.transformed(pp.mean[(0, 0)], pp.covariance[(0, 0)]);
+                Ok((m, clamped_sigma(v, crate::posterior::MIN_VARIANCE)))
+            })
+            .collect()
+    }
+
+    fn transformed(&self, mean: f64, var: f64) -> (f64, f64) {
+        match &self.transform {
+            Some(t) => {
+                let w = t.weights()[0];
+                (t.offset() + w * mean, w * w * var)
+            }
+            None => (mean, var),
+        }
+    }
+
+    /// `(u, sigma, ∂u/∂x, ∂sigma/∂x)` of every fantasy at `x` (`1 × d`).
+    fn moments_with_grad(&self, x: &Matrix) -> Result<Vec<(f64, f64, Vector, Vector)>> {
+        let point: Vec<f64> = x.row(0).iter().copied().collect();
+        let d = point.len();
+        self.fantasies
+            .iter()
+            .zip(&self.best_f)
+            .map(|(g, &best)| {
+                let pg = g.point_posterior_with_grad(&point)?;
+                let w = self.transform.as_ref().map_or(1.0, |t| t.weights()[0]);
+                let (mean, var) = self.transformed(pg.mean[0], pg.covariance[(0, 0)]);
+                let floor = crate::posterior::MIN_VARIANCE;
+                let sigma = clamped_sigma(var, floor);
+                let dmean = Vector::from_fn(d, |k, _| w * pg.dmean[k][0]);
+                let dsigma = if var >= floor.max(MIN_VAR) {
+                    Vector::from_fn(d, |k, _| w * w * pg.dcov[k][(0, 0)] / (2.0 * sigma))
+                } else {
+                    Vector::zeros(d)
+                };
+                let (u, du) = scaled_improvement(mean, sigma, &dmean, &dsigma, best, self.maximize);
+                Ok((u, sigma, du, dsigma))
+            })
+            .collect()
+    }
+
+    fn u(&self, f: usize, mean: f64, sigma: f64) -> f64 {
+        let u = (mean - self.best_f[f]) / sigma;
+        if self.maximize {
+            u
+        } else {
+            -u
+        }
+    }
+}
+
+/// Single-outcome Noisy Expected Improvement via fantasies (BoTorch's
+/// `NoisyExpectedImprovement`): the expected improvement averaged over
+/// `num_fantasies` noiseless fantasy models, each trained on the observed
+/// points `X_observed` with targets sampled from the posterior there (and a
+/// noise variance of `1e-7`), with the best fantasized target as `best_f`.
+/// Requires a single-output `SingleTaskGP` with known observation noise.
+/// BoTorch recommends [`LogNoisyExpectedImprovement`].
+#[derive(Debug)]
+pub struct NoisyExpectedImprovement {
+    core: NoisyEiCore,
+}
+
+impl NoisyExpectedImprovement {
+    /// Creates `NoisyExpectedImprovement(model, X_observed, num_fantasies,
+    /// maximize)`; the fantasies are sampled with the base samples of
+    /// `sampler` (BoTorch: a Sobol sampler with a random seed, which `None`
+    /// creates).
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] for other models (BoTorch's messages),
+    /// [`BotorchError::InvalidArgument`] for a sampler with another number of
+    /// samples, and errors of the posterior and the factorization.
+    pub fn new(
+        model: Arc<dyn Model>,
+        x_observed: &Matrix,
+        num_fantasies: usize,
+        maximize: bool,
+        sampler: Option<Arc<crate::sampling::SobolQMCNormalSampler>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            core: NoisyEiCore::new(model, x_observed, num_fantasies, maximize, sampler, None)?,
+        })
+    }
+
+    /// The incumbent of every fantasy (the best fantasized target).
+    pub fn best_f(&self) -> &[f64] {
+        &self.core.best_f
+    }
+}
+
+impl AcquisitionFunction for NoisyExpectedImprovement {
+    fn model(&self) -> &Arc<dyn Model> {
+        &self.core.model
+    }
+
+    fn expected_q(&self) -> Option<usize> {
+        Some(1)
+    }
+
+    fn forward(&self, x: &Matrix) -> Result<f64> {
+        check_candidates(x, self.core.model.dim(), Some(1))?;
+        let ms = self.core.moments(x)?;
+        let n_f = ms.len() as f64;
+        Ok(ms
+            .iter()
+            .enumerate()
+            .map(|(f, &(m, s))| s * ei_helper(self.core.u(f, m, s)))
+            .sum::<f64>()
+            / n_f)
+    }
+
+    fn forward_with_grad(&self, x: &Matrix) -> Result<(f64, Matrix)> {
+        check_candidates(x, self.core.model.dim(), Some(1))?;
+        let ms = self.core.moments_with_grad(x)?;
+        let n_f = ms.len() as f64;
+        let mut value = 0.0;
+        let mut grad = Vector::zeros(x.ncols());
+        for (u, sigma, du, dsigma) in &ms {
+            let h = ei_helper(*u);
+            value += sigma * h;
+            grad += dsigma * h + du * (sigma * ndtr(*u));
+        }
+        Ok((value / n_f, row_matrix(grad / n_f)))
+    }
+
+    fn is_nonnegative(&self) -> bool {
+        true
+    }
+}
+
+/// Single-outcome Log Noisy Expected Improvement via fantasies (BoTorch's
+/// `LogNoisyExpectedImprovement`): `logmeanexp` over the noiseless fantasy
+/// models of [`NoisyExpectedImprovement`] of `log EI`, computed with
+/// BoTorch's numerically robust `_log_ei_helper`.
+#[derive(Debug)]
+pub struct LogNoisyExpectedImprovement {
+    core: NoisyEiCore,
+}
+
+impl LogNoisyExpectedImprovement {
+    /// Creates `LogNoisyExpectedImprovement(model, X_observed, num_fantasies,
+    /// maximize, posterior_transform)` (see [`NoisyExpectedImprovement::new`]).
+    ///
+    /// # Errors
+    /// See [`NoisyExpectedImprovement::new`].
+    pub fn new(
+        model: Arc<dyn Model>,
+        x_observed: &Matrix,
+        num_fantasies: usize,
+        maximize: bool,
+        sampler: Option<Arc<crate::sampling::SobolQMCNormalSampler>>,
+        posterior_transform: Option<crate::acquisition::objective::ScalarizedPosteriorTransform>,
+    ) -> Result<Self> {
+        Ok(Self {
+            core: NoisyEiCore::new(
+                model,
+                x_observed,
+                num_fantasies,
+                maximize,
+                sampler,
+                posterior_transform,
+            )?,
+        })
+    }
+
+    /// The incumbent of every fantasy (the best fantasized target).
+    pub fn best_f(&self) -> &[f64] {
+        &self.core.best_f
+    }
+}
+
+impl AcquisitionFunction for LogNoisyExpectedImprovement {
+    fn model(&self) -> &Arc<dyn Model> {
+        &self.core.model
+    }
+
+    fn expected_q(&self) -> Option<usize> {
+        Some(1)
+    }
+
+    fn forward(&self, x: &Matrix) -> Result<f64> {
+        check_candidates(x, self.core.model.dim(), Some(1))?;
+        let ms = self.core.moments(x)?;
+        let logs: Vec<f64> = ms
+            .iter()
+            .enumerate()
+            .map(|(f, &(m, s))| log_ei_helper(self.core.u(f, m, s)) + s.ln())
+            .collect();
+        Ok(crate::utils::safe_math::logmeanexp(&logs))
+    }
+
+    fn forward_with_grad(&self, x: &Matrix) -> Result<(f64, Matrix)> {
+        check_candidates(x, self.core.model.dim(), Some(1))?;
+        let ms = self.core.moments_with_grad(x)?;
+        let logs: Vec<f64> = ms
+            .iter()
+            .map(|(u, s, _, _)| log_ei_helper(*u) + s.ln())
+            .collect();
+        let (value, w) = crate::utils::safe_math::logmeanexp_with_grad(&logs);
+        let mut grad = Vector::zeros(x.ncols());
+        for ((u, sigma, du, dsigma), wf) in ms.iter().zip(&w) {
+            grad += (du * log_ei_helper_grad(*u) + dsigma / *sigma) * *wf;
+        }
+        Ok((value, row_matrix(grad)))
+    }
+
+    fn is_log(&self) -> bool {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

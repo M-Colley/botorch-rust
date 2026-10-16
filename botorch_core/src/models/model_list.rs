@@ -264,6 +264,14 @@ impl Model for ModelListGP {
         Some(out)
     }
 
+    fn fantasy_output_groups(&self) -> Option<Vec<usize>> {
+        let mut out = Vec::with_capacity(self.models.len());
+        for m in &self.models {
+            out.extend(m.fantasy_output_groups()?);
+        }
+        Some(out)
+    }
+
     fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {
         self.require_unbatched()?;
         self.posterior_at(0, x, observation_noise)

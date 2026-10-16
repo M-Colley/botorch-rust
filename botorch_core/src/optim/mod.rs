@@ -19,8 +19,9 @@ pub use initializers::{
     InitialConditionOptions,
 };
 pub use one_shot::{
-    boltzmann_sample, gen_one_shot_hvkg_initial_conditions, optimize_hvkg_value_function,
-    OneShotInitialConditionOptions, ValueFunctionSolutions,
+    boltzmann_sample, gen_one_shot_hvkg_initial_conditions, gen_one_shot_kg_initial_conditions,
+    optimize_hvkg_value_function, OneShotInitialConditionOptions,
+    ValueFunctionInitialConditionOptions, ValueFunctionSolutions,
 };
 pub use optimize::{
     default_lbfgsb_options, gen_candidates_lbfgsb, optimize_acqf, optimize_acqf_detailed,

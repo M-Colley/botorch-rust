@@ -100,6 +100,14 @@ impl Model for ModelList {
         Some(out)
     }
 
+    fn fantasy_output_groups(&self) -> Option<Vec<usize>> {
+        let mut out = Vec::with_capacity(self.models.len());
+        for m in &self.models {
+            out.extend(m.fantasy_output_groups()?);
+        }
+        Some(out)
+    }
+
     fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {
         if self.models.len() == 1 {
             return self.models[0].posterior(x, observation_noise);

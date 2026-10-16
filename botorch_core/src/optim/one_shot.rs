@@ -16,11 +16,15 @@ use std::sync::Arc;
 
 use rand::{Rng, RngExt};
 
+use crate::acquisition::knowledge_gradient::QKnowledgeGradient;
 use crate::acquisition::multi_objective::hypervolume_knowledge_gradient::{
     HypervolumeValueFunction, QHypervolumeKnowledgeGradient,
 };
+use crate::acquisition::one_shot::OneShotAcquisitionFunction;
 use crate::acquisition::AcquisitionFunction;
 use crate::error::{BotorchError, Result};
+use crate::lbfgsb::LbfgsbOptions;
+use crate::models::gp::FantasyGp;
 use crate::models::Model;
 use crate::optim::initializers::{
     gen_batch_initial_conditions_with_fantasies, InitialConditionOptions,
@@ -474,6 +478,321 @@ pub fn gen_one_shot_hvkg_initial_conditions(
         }
     }
     Ok((out, warnings))
+}
+
+/// BoTorch's `gen_one_shot_kg_initial_conditions(acq_function, bounds, q,
+/// num_restarts, raw_samples, fixed_features, options,
+/// inequality_constraints, equality_constraints)`: `num_restarts` augmented
+/// candidate sets (`(q + n_f) × d`) from `gen_batch_initial_conditions` of the
+/// knowledge gradient, whose last `int((1 - frac_random) n_f)` fantasy points
+/// are replaced by maximizers of the value function of the current model
+/// (`optimize_acqf` from `num_inner_restarts` starts among
+/// `raw_inner_samples` raw samples), drawn by Boltzmann sampling of their
+/// values (temperature `eta`, default 2). Returns the initial conditions and
+/// the messages of BoTorch's warnings; `rng` replaces torch's global
+/// generator.
+///
+/// BoTorch fails when no fantasy point is replaced (a single fantasy:
+/// `torch.multinomial` of zero samples); the initial conditions of
+/// `gen_batch_initial_conditions` are returned then.
+///
+/// # Errors
+/// [`BotorchError::InvalidArgument`] for `frac_random` outside `(0, 1)`
+/// (BoTorch's message), [`BotorchError::Unsupported`] for inter-point
+/// constraints (BoTorch's `NotImplementedError`), and errors of the
+/// optimization and of `gen_batch_initial_conditions`.
+pub fn gen_one_shot_kg_initial_conditions(
+    acq_function: &QKnowledgeGradient,
+    bounds: &Matrix,
+    q: usize,
+    num_restarts: usize,
+    raw_samples: usize,
+    options: &OptimizeAcqfOptions,
+    rng: &mut dyn Rng,
+) -> Result<(Vec<Matrix>, Vec<String>)> {
+    let os = &options.one_shot;
+    let frac_random = os.frac_random;
+    if !(0.0 < frac_random && frac_random < 1.0) {
+        return Err(BotorchError::InvalidArgument(format!(
+            "frac_random must take on values in (0,1). Value: {frac_random}"
+        )));
+    }
+    for (constraints, kind) in [
+        (&options.constraints.inequality, "inequality"),
+        (&options.constraints.equality, "equality"),
+    ] {
+        if constraints.iter().any(|c| c.is_inter_point()) {
+            return Err(BotorchError::Unsupported(format!(
+                "Indices must be one-dimensional in gen_one_shot_kg_initial_conditions. \
+                 Received inter-point indices for {kind} constrained."
+            )));
+        }
+    }
+    let q_aug = acq_function.get_augmented_q_batch_size(q);
+    let ic_options = InitialConditionOptions {
+        seed: options.seed,
+        eta: options.eta,
+        alpha: options.alpha,
+        nonnegative: options.nonnegative,
+        batch_limit: options.init_batch_limit.or(options.batch_limit),
+        fixed_features: options.fixed_features.clone(),
+        inequality_constraints: options.constraints.inequality.clone(),
+        equality_constraints: options.constraints.equality.clone(),
+        n_burnin: options.n_burnin,
+        n_thinning: options.n_thinning,
+    };
+    let mut warnings = Vec::new();
+    let (mut ics, fallback) = gen_batch_initial_conditions_with_fantasies(
+        acq_function,
+        bounds,
+        q_aug,
+        num_restarts,
+        raw_samples,
+        &ic_options,
+        None,
+        rng,
+    )?;
+    fallback_warning(fallback, &mut warnings);
+    // The maximizers of the value function of the current model (BoTorch's
+    // inner `optimize_acqf` with its default options, the fixed features and
+    // the linear constraints).
+    let value_function = acq_function.current_value_function()?;
+    let mut inner = OptimizeAcqfOptions {
+        seed: options.seed,
+        fixed_features: options.fixed_features.clone(),
+        ..Default::default()
+    };
+    inner.constraints.inequality = options.constraints.inequality.clone();
+    inner.constraints.equality = options.constraints.equality.clone();
+    let r = optimize_acqf_detailed(
+        value_function.as_ref(),
+        bounds,
+        1,
+        os.num_inner_restarts,
+        os.raw_inner_samples,
+        &inner,
+    )?;
+    warnings.extend(r.warnings);
+    let (cands, vals): (Vec<Matrix>, Vec<f64>) = r
+        .restarts
+        .into_iter()
+        .map(|r| (r.candidates, r.acq_value))
+        .unzip();
+    let n_value = ((1.0 - frac_random) * (q_aug - q) as f64) as usize;
+    if n_value == 0 {
+        return Ok((ics, warnings));
+    }
+    let eta = os.eta.unwrap_or(DEFAULT_ONE_SHOT_ETA);
+    let idx = boltzmann_sample(&vals, num_restarts * n_value, eta, true, rng)?;
+    for (r, ic) in ics.iter_mut().enumerate() {
+        for j in 0..n_value {
+            let row = cands[idx[r * n_value + j]].row(0).into_owned();
+            ic.row_mut(q_aug - n_value + j).copy_from(&row);
+        }
+    }
+    Ok((ics, warnings))
+}
+
+/// BoTorch's default fraction of random raw samples of
+/// `gen_value_function_initial_conditions` (`options.get("frac_random", 0.6)`).
+pub const DEFAULT_VALUE_FUNCTION_FRAC_RANDOM: f64 = 0.6;
+
+/// The options of [`gen_value_function_initial_conditions`] (the entries of
+/// BoTorch's `options` dictionary of `qKnowledgeGradient.evaluate`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValueFunctionInitialConditionOptions {
+    /// The fraction of raw samples that are random (`frac_random`, in
+    /// `(0, 1)`, default 0.6).
+    pub frac_random: f64,
+    /// Restarts of the optimization of the current value function
+    /// (`num_inner_restarts`, default 20).
+    pub num_inner_restarts: usize,
+    /// Raw samples of the optimization of the current value function
+    /// (`raw_inner_samples`, default 1024).
+    pub raw_inner_samples: usize,
+    /// The Boltzmann temperature of the resampling of the optimized points
+    /// and of `initialize_q_batch` (`eta`, default 2).
+    pub eta: f64,
+    /// The seed of the Sobol raw samples (`seed`).
+    pub seed: Option<u64>,
+}
+
+impl Default for ValueFunctionInitialConditionOptions {
+    fn default() -> Self {
+        Self {
+            frac_random: DEFAULT_VALUE_FUNCTION_FRAC_RANDOM,
+            num_inner_restarts: DEFAULT_NUM_INNER_RESTARTS,
+            raw_inner_samples: DEFAULT_RAW_INNER_SAMPLES,
+            eta: DEFAULT_ONE_SHOT_ETA,
+            seed: None,
+        }
+    }
+}
+
+/// BoTorch's `gen_value_function_initial_conditions(acq_function, bounds,
+/// num_restarts, raw_samples, current_model, options)` for the value
+/// functions of the fantasy models of a knowledge gradient: the current value
+/// function is maximized (`num_inner_restarts`, `raw_inner_samples`), and for
+/// every fantasy `int((1 - frac_random) raw_samples)` raw points are drawn
+/// from its maximizers by Boltzmann sampling and the others from a Sobol
+/// sequence (a block of `raw_samples - n_value` points per fantasy); the
+/// fantasy's value function selects `num_restarts` of them with
+/// `initialize_q_batch` (temperature `eta`). Returns, per fantasy, the
+/// initial conditions (`1 × d` each).
+///
+/// # Errors
+/// [`BotorchError::InvalidArgument`] for `frac_random` outside `(0, 1)`
+/// (BoTorch's message), and errors of the optimization and the selection.
+pub(crate) fn gen_value_function_initial_conditions(
+    acq_function: &QKnowledgeGradient,
+    fantasies: &[FantasyGp<'_>],
+    bounds: &Matrix,
+    num_restarts: usize,
+    raw_samples: usize,
+    options: &ValueFunctionInitialConditionOptions,
+    rng: &mut dyn Rng,
+) -> Result<Vec<Vec<Matrix>>> {
+    let frac_random = options.frac_random;
+    if !(0.0 < frac_random && frac_random < 1.0) {
+        return Err(BotorchError::InvalidArgument(format!(
+            "frac_random must take on values in (0,1). Value: {frac_random}"
+        )));
+    }
+    let n_f = acq_function.num_fantasies();
+    let value_function = acq_function.current_value_function()?;
+    let inner = OptimizeAcqfOptions {
+        seed: options.seed,
+        ..Default::default()
+    };
+    let r = optimize_acqf_detailed(
+        value_function.as_ref(),
+        bounds,
+        1,
+        options.num_inner_restarts,
+        options.raw_inner_samples,
+        &inner,
+    )?;
+    let (cands, vals): (Vec<Matrix>, Vec<f64>) = r
+        .restarts
+        .into_iter()
+        .map(|r| (r.candidates, r.acq_value))
+        .unzip();
+    let n_value = ((1.0 - frac_random) * raw_samples as f64) as usize;
+    let n_random = raw_samples - n_value;
+    let randomized = if n_random > 0 {
+        crate::utils::sampling::draw_sobol_samples(bounds, n_random * n_f, 1, options.seed)?
+    } else {
+        Vec::new()
+    };
+    let mut out = Vec::with_capacity(n_f);
+    for i in 0..n_f {
+        let mut x_rnd: Vec<Matrix> = Vec::with_capacity(raw_samples);
+        if n_value > 0 {
+            let idx = boltzmann_sample(&vals, n_value, options.eta, true, rng)?;
+            x_rnd.extend(idx.iter().map(|&k| cands[k].clone()));
+        }
+        x_rnd.extend(randomized[i * n_random..(i + 1) * n_random].iter().cloned());
+        let acq_vals = x_rnd
+            .iter()
+            .map(|x| {
+                Ok(acq_function
+                    .fantasy_value_and_grad(fantasies, i, x, false)?
+                    .0)
+            })
+            .collect::<Result<Vec<f64>>>()?;
+        let (idcs, _) = crate::optim::initializers::initialize_q_batch(
+            &acq_vals,
+            num_restarts,
+            options.eta,
+            rng,
+        )?;
+        out.push(idcs.into_iter().map(|k| x_rnd[k].clone()).collect());
+    }
+    Ok(out)
+}
+
+/// The inner optimization of BoTorch's `qKnowledgeGradient.evaluate`: one
+/// L-BFGS-B problem over the points of all restarts and fantasies,
+/// maximizing the sum of the fantasies' value functions
+/// (`gen_candidates_scipy(..., use_parallel_mode=False)`), followed by the
+/// largest value of every fantasy over its restarts.
+///
+/// # Errors
+/// Errors of the value functions and of L-BFGS-B.
+pub(crate) fn maximize_fantasy_values(
+    acq_function: &QKnowledgeGradient,
+    fantasies: &[FantasyGp<'_>],
+    initial_conditions: &[Vec<Matrix>],
+    bounds: &Matrix,
+    lbfgsb: &LbfgsbOptions,
+) -> Result<Vec<f64>> {
+    use rayon::prelude::*;
+
+    let d = bounds.ncols();
+    let n_f = initial_conditions.len();
+    if n_f == 0 {
+        return Ok(Vec::new());
+    }
+    let r = initial_conditions[0].len();
+    // Variables in BoTorch's order: restart-major (`num_restarts x n_f x 1 x d`).
+    let mut x0 = Vec::with_capacity(r * n_f * d);
+    let mut lower = Vec::with_capacity(r * n_f * d);
+    let mut upper = Vec::with_capacity(r * n_f * d);
+    for k in 0..r {
+        for ics in initial_conditions {
+            for j in 0..d {
+                x0.push(ics[k][(0, j)].clamp(bounds[(0, j)], bounds[(1, j)]));
+                lower.push(bounds[(0, j)]);
+                upper.push(bounds[(1, j)]);
+            }
+        }
+    }
+    let point = |x: &[f64], k: usize, i: usize| -> Matrix {
+        let off = (k * n_f + i) * d;
+        Matrix::from_row_slice(1, d, &x[off..off + d])
+    };
+    let objective = |x: &[f64]| -> Result<(f64, Vec<f64>)> {
+        let parts = (0..r * n_f)
+            .into_par_iter()
+            .map(|ki| {
+                let (k, i) = (ki / n_f, ki % n_f);
+                acq_function.fantasy_value_and_grad(fantasies, i, &point(x, k, i), true)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut f = 0.0;
+        let mut g = vec![0.0; x.len()];
+        for (ki, (v, gr)) in parts.into_iter().enumerate() {
+            f -= v;
+            let gr = gr.expect("gradient requested");
+            for j in 0..d {
+                g[ki * d + j] = -gr[(0, j)];
+            }
+        }
+        Ok((f, g))
+    };
+    let res = match crate::lbfgsb::minimize(objective, &x0, &lower, &upper, lbfgsb) {
+        Ok(r) => r,
+        Err(crate::lbfgsb::LbfgsbError::Objective(e)) => return Err(e),
+        Err(crate::lbfgsb::LbfgsbError::InvalidInput(msg)) => {
+            return Err(BotorchError::InvalidArgument(msg))
+        }
+    };
+    let mut best = vec![f64::NEG_INFINITY; n_f];
+    for k in 0..r {
+        for (i, b) in best.iter_mut().enumerate() {
+            let mut p = point(&res.x, k, i);
+            for j in 0..d {
+                p[(0, j)] = p[(0, j)].clamp(bounds[(0, j)], bounds[(1, j)]);
+            }
+            let v = acq_function
+                .fantasy_value_and_grad(fantasies, i, &p, false)?
+                .0;
+            if v > *b || b.is_nan() {
+                *b = v;
+            }
+        }
+    }
+    Ok(best)
 }
 
 #[cfg(test)]

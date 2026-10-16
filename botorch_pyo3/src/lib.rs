@@ -34,6 +34,9 @@ mod pathwise;
 mod polytope;
 mod risk_measures;
 mod sampling;
+mod so_acquisition;
+mod so_entropy;
+mod so_wrappers;
 mod specs;
 mod test_functions;
 mod threads;
@@ -109,5 +112,9 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Deterministic models, composite and callable acquisition functions.
     deterministic::register(m)?;
     composite::register(m)?;
+    // Single-objective acquisition functions of phase 8.
+    so_acquisition::register(m)?;
+    so_entropy::register(m)?;
+    so_wrappers::register(m)?;
     Ok(())
 }

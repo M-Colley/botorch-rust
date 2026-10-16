@@ -25,8 +25,12 @@
 //! objective on `X`).
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+
+use rand::rngs::Xoshiro256PlusPlus;
+use rand::{RngExt, SeedableRng};
 
 use crate::acquisition::mc_objective::{McObjective, McSamples, SamplePullback};
 use crate::acquisition::{check_candidates, check_pending, check_unbatched, AcquisitionFunction};
@@ -341,6 +345,39 @@ impl JointSamples {
         McSamples::new(data, k, m).expect("consistent sample shapes")
     }
 
+    /// Joint samples of a given posterior (over the `n` points of `x`) with
+    /// explicit base samples (`S × n·m`); `deterministic` uses the zero root
+    /// (see [`Model::is_deterministic`]).
+    pub fn from_posterior(
+        x: Matrix,
+        posterior: crate::posterior::Posterior,
+        base: Arc<Matrix>,
+        deterministic: bool,
+    ) -> Result<Self> {
+        let n = posterior.num_points();
+        let m = posterior.num_outputs();
+        if base.ncols() != n * m {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "base samples must have {} columns ({n} points x {m} outputs), got {}",
+                n * m,
+                base.ncols()
+            )));
+        }
+        let roots = if deterministic {
+            SampleRoots::Zero
+        } else {
+            SampleRoots::new(&posterior.covariance, n, m)?
+        };
+        Ok(Self {
+            x,
+            n,
+            m,
+            mean: posterior.mean,
+            roots,
+            base,
+        })
+    }
+
     /// Propagates the adjoint `ybar` of the samples of the points `cols` (in
     /// the layout of [`JointSamples::samples`]) to the inputs `grad_rows`
     /// (rows of `x`; `grad_rows.len() × d`).
@@ -351,6 +388,18 @@ impl JointSamples {
         ybar: &Matrix,
         grad_rows: Range<usize>,
     ) -> Result<Matrix> {
+        let (mean_bar, cov_bar) = self.posterior_adjoints(cols, ybar)?;
+        model.joint_posterior_vjp(&self.x, grad_rows, &mean_bar, &cov_bar)
+    }
+
+    /// Propagates the adjoint `ybar` of the samples of the points `cols` to
+    /// the adjoints of the posterior mean (`n·m`) and covariance (`n·m ×
+    /// n·m`, output-major).
+    pub fn posterior_adjoints(
+        &self,
+        cols: Range<usize>,
+        ybar: &Matrix,
+    ) -> Result<(Vector, Matrix)> {
         let (n, m) = (self.num_points(), self.m);
         let k = cols.len();
         let nm = n * m;
@@ -387,7 +436,7 @@ impl JointSamples {
             }
             SampleRoots::Zero => {}
         }
-        model.joint_posterior_vjp(&self.x, grad_rows, &mean_bar, &cov_bar)
+        Ok((mean_bar, cov_bar))
     }
 }
 
@@ -455,6 +504,27 @@ impl SampledObjective {
             obj,
             pullback,
         })
+    }
+
+    /// Propagates the adjoint of the objective values (`n_in × S`) and an
+    /// additional adjoint of the samples to the adjoints of the posterior
+    /// mean and covariance and the direct adjoint of the inputs (`n_in ×
+    /// d`, if the objective depends on them).
+    pub fn posterior_adjoints(
+        self,
+        obj_bar: &Matrix,
+        samples_bar: Option<Matrix>,
+    ) -> Result<(Vector, Matrix, Option<Matrix>)> {
+        let n = self.js.num_points();
+        let (mut sbar, xbar) = match self.pullback {
+            Some(pb) => pb(obj_bar)?,
+            None => (obj_bar.clone(), None),
+        };
+        if let Some(extra) = samples_bar {
+            sbar += extra;
+        }
+        let (mean_bar, cov_bar) = self.js.posterior_adjoints(0..n, &sbar)?;
+        Ok((mean_bar, cov_bar, xbar))
     }
 
     /// Propagates the adjoint of the objective values (`n_in × S`) and an
@@ -593,6 +663,26 @@ impl McCore {
     where
         F: Fn(&Matrix, Option<&Matrix>, bool) -> Reduced,
     {
+        let (v, g) = self.evaluate_weighted(x, None, with_grad, log_indicator, reduce)?;
+        Ok((v, g.map(|(g, _)| g)))
+    }
+
+    /// [`McCore::evaluate`] with the utilities of every point (row of
+    /// `[X; X_pending]`) multiplied by a weight (added to its log utilities
+    /// if `log_indicator`), as BoTorch's `PriorGuidedAcquisitionFunction`
+    /// weights the non-reduced utilities; returns the gradients with respect
+    /// to `X` and to the weights.
+    pub fn evaluate_weighted<F>(
+        &self,
+        x: &Matrix,
+        weights: Option<&[f64]>,
+        with_grad: bool,
+        log_indicator: bool,
+        reduce: F,
+    ) -> Result<crate::acquisition::WeightedEvaluation>
+    where
+        F: Fn(&Matrix, Option<&Matrix>, bool) -> Reduced,
+    {
         let d = self.model.dim();
         check_candidates(x, d, None)?;
         let q = x.nrows();
@@ -600,6 +690,15 @@ impl McCore {
             Some(p) => vstack(&[x, p], d),
             None => x.clone(),
         };
+        let n_full = x_full.nrows();
+        if let Some(w) = weights {
+            if w.len() != n_full {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "expected {n_full} point weights, got {}",
+                    w.len()
+                )));
+            }
+        }
         let so = SampledObjective::new(
             self.model.as_ref(),
             x_full,
@@ -617,18 +716,90 @@ impl McCore {
             )?),
             None => None,
         };
-        let r = reduce(&so.obj, ind.as_ref().map(|i| &i.values), with_grad);
+        let s = so.obj.ncols();
+        let combined = weighted_indicator(
+            ind.as_ref().map(|i| &i.values),
+            weights,
+            log_indicator,
+            n_full,
+            s,
+        );
+        let r = reduce(&so.obj, combined.as_ref(), with_grad);
         if !with_grad {
             return Ok((r.value, None));
         }
         let obj_bar = r.obj_bar.expect("gradient requested");
-        let samples_bar = match (ind, r.ind_bar) {
+        let (ind_bar, w_bar) = split_indicator_adjoint(
+            ind.as_ref().map(|i| &i.values),
+            weights,
+            log_indicator,
+            r.ind_bar,
+        );
+        let samples_bar = match (ind, ind_bar) {
             (Some(ind), Some(ib)) => Some(ind.backward(&ib)?),
             _ => None,
         };
         let grad = so.backward(self.model.as_ref(), &obj_bar, samples_bar, 0..q)?;
-        Ok((r.value, Some(grad)))
+        Ok((r.value, Some((grad, w_bar))))
     }
+}
+
+/// The indicator of the points combined with point weights (multiplied, or
+/// added for log indicators), `n × S`; `None` without both.
+pub(crate) fn weighted_indicator(
+    ind: Option<&Matrix>,
+    weights: Option<&[f64]>,
+    log: bool,
+    n: usize,
+    s: usize,
+) -> Option<Matrix> {
+    match (weights, ind) {
+        (None, Some(i)) => Some(i.clone()),
+        (None, None) => None,
+        (Some(w), Some(i)) => Some(Matrix::from_fn(n, s, |r, c| {
+            if log {
+                i[(r, c)] + w[r]
+            } else {
+                i[(r, c)] * w[r]
+            }
+        })),
+        (Some(w), None) => Some(Matrix::from_fn(n, s, |r, _| w[r])),
+    }
+}
+
+/// Splits the adjoint of a [`weighted_indicator`] into the adjoint of the
+/// indicator and of the weights.
+pub(crate) fn split_indicator_adjoint(
+    ind: Option<&Matrix>,
+    weights: Option<&[f64]>,
+    log: bool,
+    ind_bar: Option<Matrix>,
+) -> (Option<Matrix>, Vec<f64>) {
+    let Some(w) = weights else {
+        return (ind_bar, Vec::new());
+    };
+    let Some(ib) = ind_bar else {
+        return (None, vec![0.0; w.len()]);
+    };
+    let (n, s) = ib.shape();
+    let mut w_bar = vec![0.0; n];
+    for (row, wb) in w_bar.iter_mut().enumerate() {
+        for c in 0..s {
+            *wb += if log {
+                ib[(row, c)]
+            } else {
+                ib[(row, c)] * ind.map_or(1.0, |i| i[(row, c)])
+            };
+        }
+    }
+    let ind_adj = ind.map(|_| {
+        if log {
+            ib.clone()
+        } else {
+            Matrix::from_fn(n, s, |row, c| ib[(row, c)] * w[row])
+        }
+    });
+    (ind_adj, w_bar)
 }
 
 /// Per sample (column), the maximum over points and the weights with which
@@ -712,6 +883,133 @@ where
     }
 }
 
+/// `mean_s max_i (α m_i + β |y_is - m_i|) · ind_is` with the sample means
+/// `m_i = mean_s y_is` (qUpperConfidenceBound: `α = 1`, `β = β'`;
+/// qLowerConfidenceBound: `β = -β'`; qPosteriorStandardDeviation: `α = 0`,
+/// `β = sqrt(π/2)`), optionally weighted by a feasibility indicator.
+pub(crate) fn reduce_centered(
+    y: &Matrix,
+    ind: Option<&Matrix>,
+    alpha: f64,
+    beta: f64,
+    with_grad: bool,
+) -> Reduced {
+    let (n, s) = y.shape();
+    let means: Vec<f64> = (0..n).map(|i| y.row(i).sum() / s as f64).collect();
+    let u = Matrix::from_fn(n, s, |i, c| {
+        alpha * means[i] + beta * (y[(i, c)] - means[i]).abs()
+    });
+    let weighted = ind.map(|w| u.component_mul(w));
+    let (maxima, w) = amax_columns(weighted.as_ref().unwrap_or(&u));
+    let value = mean(&maxima);
+    if !with_grad {
+        return Reduced {
+            value,
+            obj_bar: None,
+            ind_bar: None,
+        };
+    }
+    let sf = s as f64;
+    // Adjoint of the utilities.
+    let a_bar = w / sf;
+    let (u_bar, ind_bar) = match ind {
+        Some(ind) => (a_bar.component_mul(ind), Some(a_bar.component_mul(&u))),
+        None => (a_bar, None),
+    };
+    let mut g = Matrix::zeros(n, s);
+    for i in 0..n {
+        // Contribution through the sample mean m_i.
+        let mut through_mean = 0.0;
+        for c in 0..s {
+            let a = u_bar[(i, c)];
+            let sgn = sign(y[(i, c)] - means[i]);
+            g[(i, c)] = a * beta * sgn;
+            through_mean += a * (alpha - beta * sgn);
+        }
+        for c in 0..s {
+            g[(i, c)] += through_mean / sf;
+        }
+    }
+    Reduced {
+        value,
+        obj_bar: Some(g),
+        ind_bar,
+    }
+}
+
+/// The per-sample utility of a sample-reducing Monte-Carlo acquisition
+/// function (BoTorch's `_sample_forward`), reduced by the maximum over the
+/// points and the mean over the samples, optionally weighted by a smoothed
+/// feasibility indicator (BoTorch's `SampleReducingMCAcquisitionFunction`).
+/// Used by the value functions of the knowledge gradient
+/// ([`crate::acquisition::knowledge_gradient`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SampleUtility {
+    /// `max(obj - best_f, 0)` (qExpectedImprovement).
+    ExpectedImprovement {
+        /// The incumbent.
+        best_f: f64,
+    },
+    /// `sigmoid((obj - best_f) / tau)` (qProbabilityOfImprovement).
+    ProbabilityOfImprovement {
+        /// The incumbent.
+        best_f: f64,
+        /// The temperature.
+        tau: f64,
+    },
+    /// `obj` (qSimpleRegret).
+    SimpleRegret,
+    /// `m + beta_prime |obj - m|` with the sample mean `m`
+    /// (qUpperConfidenceBound with `beta_prime = sqrt(beta π / 2)`,
+    /// qLowerConfidenceBound with `-sqrt(beta π / 2)`).
+    ConfidenceBound {
+        /// `±sqrt(beta π / 2)`.
+        beta_prime: f64,
+    },
+    /// `sqrt(π / 2) |obj - m|` (qPosteriorStandardDeviation).
+    PosteriorStandardDeviation,
+}
+
+impl SampleUtility {
+    /// The reduction of the objective values `y` (`n × S`) with an optional
+    /// (non-log) feasibility indicator.
+    pub(crate) fn reduce(&self, y: &Matrix, ind: Option<&Matrix>, with_grad: bool) -> Reduced {
+        match *self {
+            Self::ExpectedImprovement { best_f: b } => reduce_max_mean(
+                y,
+                ind,
+                with_grad,
+                |v| (v - b).max(0.0),
+                |v| if v - b >= 0.0 { 1.0 } else { 0.0 },
+            ),
+            Self::ProbabilityOfImprovement { best_f: b, tau: t } => reduce_max_mean(
+                y,
+                ind,
+                with_grad,
+                |v| sigmoid((v - b) / t),
+                |v| sigmoid_grad((v - b) / t) / t,
+            ),
+            Self::SimpleRegret => reduce_max_mean(y, ind, with_grad, |v| v, |_| 1.0),
+            Self::ConfidenceBound { beta_prime } => {
+                reduce_centered(y, ind, 1.0, beta_prime, with_grad)
+            }
+            Self::PosteriorStandardDeviation => {
+                reduce_centered(y, ind, 0.0, (std::f64::consts::PI / 2.0).sqrt(), with_grad)
+            }
+        }
+    }
+
+    /// Whether the utilities are known to be non-negative.
+    pub fn is_nonnegative(&self) -> bool {
+        matches!(
+            self,
+            Self::ExpectedImprovement { .. }
+                | Self::ProbabilityOfImprovement { .. }
+                | Self::PosteriorStandardDeviation
+        )
+    }
+}
+
 macro_rules! mc_common {
     () => {
         fn model(&self) -> &Arc<dyn Model> {
@@ -738,6 +1036,34 @@ macro_rules! mc_common {
                 .core
                 .evaluate(x, true, false, |y, w, g| self.reduce(y, w, g))?;
             Ok((v, g.expect("gradient requested")))
+        }
+
+        fn as_sample_reducing(&self) -> Option<&dyn crate::acquisition::SampleReducing> {
+            Some(self)
+        }
+    };
+}
+
+/// [`crate::acquisition::SampleReducing`] of the sample-reducing MC
+/// acquisition functions with non-log utilities.
+macro_rules! sample_reducing {
+    ($t:ty) => {
+        impl crate::acquisition::SampleReducing for $t {
+            fn evaluate_weighted(
+                &self,
+                x: &Matrix,
+                weights: &[f64],
+                with_grad: bool,
+            ) -> Result<crate::acquisition::WeightedEvaluation> {
+                self.core
+                    .evaluate_weighted(x, Some(weights), with_grad, false, |y, w, g| {
+                        self.reduce(y, w, g)
+                    })
+            }
+
+            fn log_utilities(&self) -> bool {
+                false
+            }
         }
     };
 }
@@ -795,6 +1121,8 @@ impl QExpectedImprovement {
         )
     }
 }
+
+sample_reducing!(QExpectedImprovement);
 
 impl AcquisitionFunction for QExpectedImprovement {
     mc_common!();
@@ -857,6 +1185,8 @@ impl QProbabilityOfImprovement {
     }
 }
 
+sample_reducing!(QProbabilityOfImprovement);
+
 impl AcquisitionFunction for QProbabilityOfImprovement {
     mc_common!();
 
@@ -889,6 +1219,8 @@ impl QSimpleRegret {
         reduce_max_mean(y, ind, with_grad, |v| v, |_| 1.0)
     }
 }
+
+sample_reducing!(QSimpleRegret);
 
 impl AcquisitionFunction for QSimpleRegret {
     mc_common!();
@@ -932,40 +1264,8 @@ impl QUpperConfidenceBound {
         self.beta
     }
 
-    fn reduce(&self, y: &Matrix, _ind: Option<&Matrix>, with_grad: bool) -> Reduced {
-        let (n, s) = y.shape();
-        let bp = self.beta_prime;
-        let means: Vec<f64> = (0..n).map(|i| y.row(i).sum() / s as f64).collect();
-        let u = Matrix::from_fn(n, s, |i, c| means[i] + bp * (y[(i, c)] - means[i]).abs());
-        let (maxima, w) = amax_columns(&u);
-        let value = mean(&maxima);
-        if !with_grad {
-            return Reduced {
-                value,
-                obj_bar: None,
-                ind_bar: None,
-            };
-        }
-        let sf = s as f64;
-        let mut g = Matrix::zeros(n, s);
-        for i in 0..n {
-            // Contribution through the sample mean m_i.
-            let mut through_mean = 0.0;
-            for c in 0..s {
-                let a = w[(i, c)] / sf;
-                let sgn = sign(y[(i, c)] - means[i]);
-                g[(i, c)] = a * bp * sgn;
-                through_mean += a * (1.0 - bp * sgn);
-            }
-            for c in 0..s {
-                g[(i, c)] += through_mean / sf;
-            }
-        }
-        Reduced {
-            value,
-            obj_bar: Some(g),
-            ind_bar: None,
-        }
+    fn reduce(&self, y: &Matrix, ind: Option<&Matrix>, with_grad: bool) -> Reduced {
+        reduce_centered(y, ind, 1.0, self.beta_prime, with_grad)
     }
 }
 
@@ -980,6 +1280,780 @@ fn sign(v: f64) -> f64 {
     }
 }
 
+sample_reducing!(QUpperConfidenceBound);
+
 impl AcquisitionFunction for QUpperConfidenceBound {
     mc_common!();
+}
+
+/// MC-based batched Lower Confidence Bound (BoTorch's
+/// `qLowerConfidenceBound`): [`QUpperConfidenceBound`] with `-β'`,
+/// `qLCB(X) = E[max_j (m_j - β' |obj_j - m_j|)]`, a pessimistic (risk-averse)
+/// criterion to be maximized.
+#[derive(Debug)]
+pub struct QLowerConfidenceBound {
+    core: McCore,
+    beta: f64,
+    beta_prime: f64,
+}
+
+impl QLowerConfidenceBound {
+    /// Creates `qLowerConfidenceBound(model, beta, sampler, objective,
+    /// X_pending=...)`.
+    ///
+    /// # Errors
+    /// See [`QUpperConfidenceBound::new`].
+    pub fn new(model: Arc<dyn Model>, beta: f64, options: McAcquisitionOptions) -> Result<Self> {
+        if !(beta >= 0.0 && beta.is_finite()) {
+            return Err(BotorchError::InvalidArgument(format!(
+                "beta must be finite and non-negative, got {beta}"
+            )));
+        }
+        let core = McCore::new(model, options)?;
+        core.reject_constraints("qLowerConfidenceBound")?;
+        Ok(Self {
+            core,
+            beta,
+            beta_prime: -(beta * std::f64::consts::PI / 2.0).sqrt(),
+        })
+    }
+
+    /// The trade-off parameter `beta`.
+    pub fn beta(&self) -> f64 {
+        self.beta
+    }
+
+    fn reduce(&self, y: &Matrix, ind: Option<&Matrix>, with_grad: bool) -> Reduced {
+        reduce_centered(y, ind, 1.0, self.beta_prime, with_grad)
+    }
+}
+
+sample_reducing!(QLowerConfidenceBound);
+
+impl AcquisitionFunction for QLowerConfidenceBound {
+    mc_common!();
+}
+
+/// MC-based batch posterior standard deviation (BoTorch's
+/// `qPosteriorStandardDeviation`), an acquisition function for pure
+/// exploration: `E[max_j sqrt(π/2) |obj_j - m_j| · ind_j]` with the sample
+/// mean `m_j` of `obj_j` (for a Gaussian, `E|Y - μ| = σ sqrt(2/π)`) and the
+/// smoothed feasibility indicator `ind` of optional outcome constraints.
+#[derive(Debug)]
+pub struct QPosteriorStandardDeviation {
+    core: McCore,
+}
+
+impl QPosteriorStandardDeviation {
+    /// Creates `qPosteriorStandardDeviation(model, sampler, objective,
+    /// X_pending, constraints, eta)`.
+    ///
+    /// # Errors
+    /// See [`QExpectedImprovement::new`].
+    pub fn new(model: Arc<dyn Model>, options: McAcquisitionOptions) -> Result<Self> {
+        Ok(Self {
+            core: McCore::new(model, options)?,
+        })
+    }
+
+    fn reduce(&self, y: &Matrix, ind: Option<&Matrix>, with_grad: bool) -> Reduced {
+        SampleUtility::PosteriorStandardDeviation.reduce(y, ind, with_grad)
+    }
+}
+
+sample_reducing!(QPosteriorStandardDeviation);
+
+/// Not in BoTorch's `is_nonnegative` list (so `optimize_acqf` uses the
+/// Boltzmann initialization, as in BoTorch), although the values are
+/// non-negative.
+impl AcquisitionFunction for QPosteriorStandardDeviation {
+    mc_common!();
+}
+
+/// Number of jitter attempts of the Cholesky factorization of the low-rank
+/// update of the cached baseline root (`sample_cached_cholesky(max_tries=6)`).
+const LOW_RANK_MAX_TRIES: usize = 6;
+
+/// Number of uniformly random points at which BoTorch estimates a lower bound
+/// of the objective when no baseline point is feasible.
+const NEI_LOWER_BOUND_POINTS: usize = 32;
+/// Salt of the seed of those points (derived from the sampler's seed).
+const NEI_LOWER_BOUND_SALT: u64 = 0x6e65_695f_6c62_6e64;
+
+/// Options of [`QNoisyExpectedImprovement`] (BoTorch's keyword arguments).
+#[derive(Clone, Debug)]
+pub struct QNoisyExpectedImprovementOptions {
+    /// The sampler of base samples (default: 512 Sobol samples, random seed).
+    pub sampler: Option<Arc<SobolQMCNormalSampler>>,
+    /// Pending points, appended to every candidate set.
+    pub x_pending: Option<Matrix>,
+    /// The MC objective (required for multi-output models without a
+    /// posterior transform).
+    pub objective: Option<Arc<dyn McObjective>>,
+    /// Outcome constraints (BoTorch's `constraints` and `eta`, logistic
+    /// sigmoid); the incumbent of every sample is the best *feasible*
+    /// baseline value.
+    pub constraints: Option<OutcomeConstraints>,
+    /// Remove baseline points that are very unlikely to be the best
+    /// (`prune_inferior_points`, default `true`) under the objective and the
+    /// constraints.
+    pub prune_baseline: bool,
+    /// Settings of the pruning (2048 samples by default).
+    pub prune_options: crate::acquisition::utils::PruneOptions,
+    /// Sample the baseline once and the candidates by a low-rank update of
+    /// the cached root of the baseline covariance (BoTorch's `cache_root`,
+    /// default `true`; see [`QNoisyExpectedImprovement`]). Requires a model
+    /// whose outputs are independent (otherwise the joint posterior is
+    /// sampled with the same base samples).
+    pub cache_root: bool,
+    /// The points (`k × d`) at which the lower bound of the objective is
+    /// estimated when a sample has no feasible baseline point. `None` (the
+    /// default) draws 32 uniformly random points in the expanded bounding box
+    /// of the baseline with a generator seeded by the sampler's seed (BoTorch
+    /// draws them from torch's global generator).
+    pub lower_bound_points: Option<Matrix>,
+}
+
+impl Default for QNoisyExpectedImprovementOptions {
+    fn default() -> Self {
+        Self {
+            sampler: None,
+            x_pending: None,
+            objective: None,
+            constraints: None,
+            prune_baseline: true,
+            prune_options: crate::acquisition::utils::PruneOptions::default(),
+            cache_root: true,
+            lower_bound_points: None,
+        }
+    }
+}
+
+/// The cached quantities of [`QNoisyExpectedImprovement`] with `cache_root`:
+/// the roots of the baseline covariance of every output and the incumbents
+/// of every sample (BoTorch's `_baseline_L` and `_baseline_best_f`).
+#[derive(Debug)]
+struct NeiBaseline {
+    /// Roots of the baseline covariance, one per output (`None` if the
+    /// outputs are not independent or a root is not triangular: the joint
+    /// posterior is sampled instead).
+    roots: Option<Vec<CovarianceRoot>>,
+    /// Base samples of the baseline (`S × N·m`).
+    base: Arc<Matrix>,
+    /// Best feasible baseline objective of every sample.
+    best_f: Vec<f64>,
+}
+
+/// One output's part of the low-rank update: `L_XB`, the factor of the
+/// Schur complement, and the baseline and new base samples (`nb × S`,
+/// `nq × S`).
+type LowRankBlock = (Matrix, crate::linalg::CholeskyFactor, Matrix, Matrix);
+
+/// The samples of the new points and what their reverse pass needs.
+enum NeiSamples {
+    /// Joint samples of `[baseline; X; X_pending]`.
+    Joint(SampledObjective),
+    /// Samples of the new points from the low-rank update of the cached
+    /// baseline roots.
+    LowRank {
+        x_full: Matrix,
+        samples: McSamples,
+        obj: Matrix,
+        pullback: Option<SamplePullback>,
+        /// Posterior points of the baseline and in total.
+        nb: usize,
+        n: usize,
+        blocks: Vec<LowRankBlock>,
+    },
+}
+
+/// MC-based batch Noisy Expected Improvement (BoTorch's
+/// `qNoisyExpectedImprovement`):
+/// `qNEI(X) = E[max_j (max(obj_j - max_i obj_i^baseline, 0) · ind_j)]` over
+/// joint posterior samples of the candidates (with pending points appended)
+/// and the previously evaluated (baseline) points, where the incumbent of
+/// every sample is the best feasible objective value at the (pruned)
+/// baseline and `ind` the smoothed feasibility indicator of outcome
+/// constraints. BoTorch recommends
+/// [`crate::acquisition::QLogNoisyExpectedImprovement`].
+///
+/// With `cache_root` (BoTorch's default for GP models), the baseline is
+/// sampled once with the base samples of the sampler for its `N` points,
+/// which give the incumbents, and the candidates' samples are
+/// `μ_X + L_XB z_B + L_XX z_X` with the cached root `L_B` of the baseline
+/// covariance of every output, `L_XB = Σ_XB L_B⁻ᵀ` and `L_XX = chol(Σ_XX -
+/// L_XB L_XBᵀ)` (BoTorch's `sample_cached_cholesky`; up to six jitter
+/// attempts, falling back to the joint posterior), where `z_B` are the
+/// baseline's base samples and `z_X` rows `N..` of the base samples for all
+/// `N + q` points (BoTorch's `_set_sampler`). Without `cache_root`, the joint
+/// posterior of `[X_baseline; X; X_pending]` is sampled with the base samples
+/// for all points and the incumbents come from the same samples. Incumbents
+/// carry no gradient, as in BoTorch.
+#[derive(Debug)]
+pub struct QNoisyExpectedImprovement {
+    core: McCore,
+    x_baseline: Matrix,
+    cache_root: bool,
+    baseline: Option<NeiBaseline>,
+    /// The base samples of `N + q'` points with the baseline's rows (cache
+    /// root), per number of posterior points.
+    joint_base: Mutex<HashMap<usize, Arc<Matrix>>>,
+    lower_bound: Mutex<Option<f64>>,
+    lower_bound_points: Option<Matrix>,
+}
+
+impl QNoisyExpectedImprovement {
+    /// Creates `qNoisyExpectedImprovement(model, X_baseline, sampler,
+    /// objective, X_pending, prune_baseline, cache_root, constraints, eta)`.
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] for multi-output models without an
+    /// objective, [`BotorchError::InvalidArgument`] for an empty baseline or
+    /// constraints together with a [`crate::acquisition::ConstrainedMcObjective`],
+    /// [`BotorchError::DimensionMismatch`] for inputs of the wrong dimension,
+    /// and model errors from the pruning and the baseline posterior.
+    pub fn new(
+        model: Arc<dyn Model>,
+        x_baseline: &Matrix,
+        options: QNoisyExpectedImprovementOptions,
+    ) -> Result<Self> {
+        let d = model.dim();
+        if x_baseline.ncols() != d {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "X_baseline must have {d} columns, got {}",
+                x_baseline.ncols()
+            )));
+        }
+        if x_baseline.nrows() == 0 {
+            return Err(BotorchError::InvalidArgument(
+                "X_baseline must have at least one point.".into(),
+            ));
+        }
+        if let Some(p) = &options.lower_bound_points {
+            if p.ncols() != d || p.nrows() == 0 {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "lower_bound_points must be k x {d} with k > 0, got {}x{}",
+                    p.nrows(),
+                    p.ncols()
+                )));
+            }
+        }
+        let core = McCore::new(
+            model,
+            McAcquisitionOptions {
+                sampler: options.sampler,
+                x_pending: options.x_pending,
+                objective: options.objective,
+                constraints: options.constraints,
+            },
+        )?;
+        let x_baseline = if options.prune_baseline {
+            let mut prune = options.prune_options;
+            prune.objective = core.objective.clone();
+            prune.constraints = core.constraints.as_ref().map(|c| c.constraints().to_vec());
+            crate::acquisition::utils::prune_inferior_points(
+                core.model.as_ref(),
+                x_baseline,
+                &prune,
+            )?
+        } else {
+            x_baseline.clone()
+        };
+        let mut acqf = Self {
+            core,
+            x_baseline,
+            cache_root: options.cache_root,
+            baseline: None,
+            joint_base: Mutex::new(HashMap::new()),
+            lower_bound: Mutex::new(None),
+            lower_bound_points: options.lower_bound_points,
+        };
+        if acqf.cache_root {
+            acqf.baseline = Some(acqf.sample_baseline()?);
+        }
+        Ok(acqf)
+    }
+
+    /// The (pruned) baseline points (BoTorch's `X_baseline`).
+    pub fn x_baseline(&self) -> &Matrix {
+        &self.x_baseline
+    }
+
+    /// Whether the baseline root is cached (BoTorch's `_cache_root`).
+    pub fn cache_root(&self) -> bool {
+        self.cache_root
+    }
+
+    /// The sampler.
+    pub fn sampler(&self) -> &Arc<SobolQMCNormalSampler> {
+        &self.core.sampler
+    }
+
+    /// The incumbent of every sample computed from the baseline alone
+    /// (BoTorch's `_baseline_best_f`; only with `cache_root`).
+    pub fn baseline_best_f(&self) -> Option<&[f64]> {
+        self.baseline.as_ref().map(|b| b.best_f.as_slice())
+    }
+
+    /// The points at which the lower bound of the objective is estimated for
+    /// infeasible baselines (see
+    /// [`QNoisyExpectedImprovementOptions::lower_bound_points`]).
+    pub fn lower_bound_points(&self) -> Matrix {
+        if let Some(p) = &self.lower_bound_points {
+            return p.clone();
+        }
+        let xb = &self.x_baseline;
+        let d = xb.ncols();
+        let mut rng =
+            Xoshiro256PlusPlus::seed_from_u64(self.core.sampler.seed() ^ NEI_LOWER_BOUND_SALT);
+        let u = Matrix::from_fn(NEI_LOWER_BOUND_POINTS, d, |_, _| rng.random::<f64>());
+        Matrix::from_fn(NEI_LOWER_BOUND_POINTS, d, |i, k| {
+            let col = xb.column(k);
+            let (lo, hi) = (col.min(), col.max());
+            let padding = 0.1 * (hi - lo);
+            lo - padding + u[(i, k)] * (hi - lo + 2.0 * padding)
+        })
+    }
+
+    /// The lower bound of the objective used for infeasible baseline points,
+    /// if an evaluation needed it.
+    pub fn infeasible_lower_bound(&self) -> Option<f64> {
+        *self.lower_bound.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn infeasible_value(&self) -> Result<f64> {
+        let mut lb = self.lower_bound.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(v) = *lb {
+            return Ok(v);
+        }
+        let v = crate::acquisition::utils::estimate_objective_lower_bound(
+            self.core.model.as_ref(),
+            self.core.objective.as_deref(),
+            &self.lower_bound_points(),
+        )?;
+        *lb = Some(v);
+        Ok(v)
+    }
+
+    /// The incumbents of samples of the baseline (objective values `obj` of
+    /// the `N` baseline inputs).
+    fn best_feasible(&self, samples: &McSamples, obj: &Matrix) -> Result<Vec<f64>> {
+        crate::acquisition::utils::compute_best_feasible_objective(
+            samples,
+            obj,
+            self.core.constraints.as_ref().map(|c| c.constraints()),
+            || self.infeasible_value(),
+        )
+    }
+
+    /// Samples the baseline with its own base samples (BoTorch's `__init__`
+    /// with `cache_root`).
+    fn sample_baseline(&self) -> Result<NeiBaseline> {
+        let model = self.core.model.as_ref();
+        let js = JointSamples::new(model, self.x_baseline.clone(), &self.core.sampler)?;
+        let nb = js.num_points();
+        let samples = js.samples(0..nb);
+        let obj = match &self.core.objective {
+            Some(o) => o.evaluate(&samples, Some(&self.x_baseline), false)?.values,
+            None => samples.data().clone(),
+        };
+        let best_f = self.best_feasible(&samples, &obj)?;
+        let roots = match &js.roots {
+            SampleRoots::Blocks(rs)
+                if rs.iter().all(|r| !matches!(r, CovarianceRoot::Eigen(_))) =>
+            {
+                Some(rs.clone())
+            }
+            _ => None,
+        };
+        Ok(NeiBaseline {
+            roots,
+            base: Arc::clone(&js.base),
+            best_f,
+        })
+    }
+
+    /// The base samples of all `n` posterior points with the baseline's
+    /// points' replaced by the baseline's own (BoTorch's
+    /// `_update_base_samples`).
+    fn effective_base(&self, baseline: &NeiBaseline, n: usize) -> Result<Arc<Matrix>> {
+        let mut cache = self.joint_base.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(z) = cache.get(&n) {
+            return Ok(Arc::clone(z));
+        }
+        let m = self.core.model.num_outputs();
+        let all = self.core.sampler.base_samples(n * m)?;
+        let mut z = (*all).clone();
+        let k = baseline.base.ncols();
+        z.columns_mut(0, k).copy_from(baseline.base.as_ref());
+        let z = Arc::new(z);
+        cache.insert(n, Arc::clone(&z));
+        Ok(z)
+    }
+
+    /// Samples of the new points from the low-rank update (`None` if it
+    /// fails, as BoTorch's `NanError` / `NotPSDError` fallback).
+    fn low_rank(
+        &self,
+        roots: &[CovarianceRoot],
+        x_full: Matrix,
+        x_new: &Matrix,
+        z: &Matrix,
+        with_grad: bool,
+    ) -> Result<Option<NeiSamples>> {
+        let model = self.core.model.as_ref();
+        let post = model.posterior(&x_full, false)?;
+        let (n, m) = (post.num_points(), post.num_outputs());
+        if roots.len() != m {
+            return Ok(None);
+        }
+        let nb = roots[0].dim();
+        let nq = n - nb;
+        let s = z.nrows();
+        let mut data = Matrix::zeros(m * nq, s);
+        let mut blocks = Vec::with_capacity(m);
+        for (t, root) in roots.iter().enumerate() {
+            let cov = post.covariance.view((t * n, t * n), (n, n));
+            let bl = cov.view((nb, 0), (nq, nb)).into_owned();
+            let bl_chol = match root {
+                CovarianceRoot::Scalar { root, .. } => bl.map(|v| v / root),
+                CovarianceRoot::Cholesky(f) => {
+                    let mut ct = bl.transpose();
+                    f.solve_lower_mut(&mut ct);
+                    ct.transpose()
+                }
+                CovarianceRoot::Eigen(_) => return Ok(None),
+            };
+            let mut e = cov.view((nb, nb), (nq, nq)).into_owned();
+            e.gemm(-1.0, &bl_chol, &bl_chol.transpose(), 1.0);
+            let br = match crate::linalg::psd_safe_cholesky_with(
+                &e,
+                crate::linalg::CHOLESKY_JITTER,
+                LOW_RANK_MAX_TRIES,
+            ) {
+                Ok(f) => f,
+                Err(BotorchError::NotPsd { .. } | BotorchError::Nan { .. }) => return Ok(None),
+                Err(err) => return Err(err),
+            };
+            let zb = Matrix::from_fn(nb, s, |p, c| z[(c, p * m + t)]);
+            let zx = Matrix::from_fn(nq, s, |p, c| z[(c, (nb + p) * m + t)]);
+            let mut y = &bl_chol * &zb;
+            y.gemm(1.0, br.l(), &zx, 1.0);
+            for p in 0..nq {
+                let mu = post.mean[t * n + nb + p];
+                let mut dst = data.row_mut(t * nq + p);
+                for c in 0..s {
+                    dst[c] = y[(p, c)] + mu;
+                }
+            }
+            blocks.push((bl_chol, br, zb, zx));
+        }
+        if data.iter().any(|v| !v.is_finite()) {
+            return Ok(None);
+        }
+        let samples = McSamples::new(data, nq, m)?;
+        let (obj, pullback) = match &self.core.objective {
+            Some(o) => {
+                let v = o.evaluate(&samples, Some(x_new), with_grad)?;
+                if v.values.shape() != (x_new.nrows(), s) {
+                    return Err(crate::acquisition::mc_objective::q_batch_mismatch(
+                        v.values.nrows(),
+                        x_new.nrows(),
+                    ));
+                }
+                (v.values, v.pullback)
+            }
+            None => {
+                if nq != x_new.nrows() {
+                    return Err(crate::acquisition::mc_objective::q_batch_mismatch(
+                        nq,
+                        x_new.nrows(),
+                    ));
+                }
+                (samples.data().clone(), None)
+            }
+        };
+        Ok(Some(NeiSamples::LowRank {
+            x_full,
+            samples,
+            obj,
+            pullback,
+            nb,
+            n,
+            blocks,
+        }))
+    }
+
+    fn evaluate(&self, x: &Matrix, with_grad: bool) -> Result<(f64, Option<Matrix>)> {
+        let (v, g) = self.evaluate_weighted(x, None, with_grad)?;
+        Ok((v, g.map(|(g, _)| g)))
+    }
+
+    fn evaluate_weighted(
+        &self,
+        x: &Matrix,
+        weights: Option<&[f64]>,
+        with_grad: bool,
+    ) -> Result<crate::acquisition::WeightedEvaluation> {
+        let model = self.core.model.as_ref();
+        let d = model.dim();
+        check_candidates(x, d, None)?;
+        let q = x.nrows();
+        let x_new = match read_lock(&self.core.x_pending).as_ref() {
+            Some(p) => vstack(&[x, p], d),
+            None => x.clone(),
+        };
+        let n_in = self.x_baseline.nrows();
+        let x_full = vstack(&[&self.x_baseline, &x_new], d);
+        // Samples and objective values of the new points; incumbents.
+        let (path, best_f): (NeiSamples, Vec<f64>) = match &self.baseline {
+            Some(bl) => {
+                let n_points = x_full.nrows() * model.points_per_input();
+                let z = self.effective_base(bl, n_points)?;
+                let low = match &bl.roots {
+                    Some(roots) => self.low_rank(roots, x_full.clone(), &x_new, &z, with_grad)?,
+                    None => None,
+                };
+                let path = match low {
+                    Some(p) => p,
+                    None => {
+                        let js = JointSamples::with_base_samples(model, x_full, z)?;
+                        NeiSamples::Joint(SampledObjective::from_joint(
+                            js,
+                            self.core.objective.as_deref(),
+                            with_grad,
+                        )?)
+                    }
+                };
+                (path, bl.best_f.clone())
+            }
+            None => {
+                let so = SampledObjective::new(
+                    model,
+                    x_full,
+                    &self.core.sampler,
+                    self.core.objective.as_deref(),
+                    with_grad,
+                )?;
+                let k = so.js.points_per_input();
+                let best = self.best_feasible(
+                    &so.samples.points(0..n_in * k),
+                    &so.obj.rows(0, n_in).into_owned(),
+                )?;
+                (NeiSamples::Joint(so), best)
+            }
+        };
+        // The objective values and samples of the new points.
+        let (obj, new_samples) = match &path {
+            NeiSamples::Joint(so) => {
+                let k = so.js.points_per_input();
+                let total = so.js.num_points();
+                (
+                    so.obj.rows(n_in, x_new.nrows()).into_owned(),
+                    so.samples.points(n_in * k..total),
+                )
+            }
+            NeiSamples::LowRank { samples, obj, .. } => (obj.clone(), samples.clone()),
+        };
+        let ind = match &self.core.constraints {
+            Some(c) => Some(compute_smoothed_feasibility_indicator(
+                c,
+                &self.core.fat,
+                &new_samples,
+                false,
+                with_grad,
+            )?),
+            None => None,
+        };
+        if let Some(w) = weights {
+            if w.len() != obj.nrows() {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "expected {} point weights, got {}",
+                    obj.nrows(),
+                    w.len()
+                )));
+            }
+        }
+        let combined = weighted_indicator(
+            ind.as_ref().map(|i| &i.values),
+            weights,
+            false,
+            obj.nrows(),
+            obj.ncols(),
+        );
+        let r = noisy_improvement_reduce(&obj, &best_f, combined.as_ref(), with_grad);
+        if !with_grad {
+            return Ok((r.value, None));
+        }
+        let obj_bar_new = r.obj_bar.expect("gradient requested");
+        let (ind_bar, w_bar) =
+            split_indicator_adjoint(ind.as_ref().map(|i| &i.values), weights, false, r.ind_bar);
+        let samples_bar_new = match (ind, ind_bar) {
+            (Some(ind), Some(ib)) => Some(ind.backward(&ib)?),
+            _ => None,
+        };
+        let grad = match path {
+            NeiSamples::Joint(so) => {
+                let k = so.js.points_per_input();
+                let total = so.js.num_points();
+                let n_all = n_in + x_new.nrows();
+                let mut obj_bar = Matrix::zeros(n_all, obj_bar_new.ncols());
+                obj_bar
+                    .rows_mut(n_in, x_new.nrows())
+                    .copy_from(&obj_bar_new);
+                let samples_bar =
+                    samples_bar_new.map(|sb| so.samples.embed_points_adjoint(n_in * k..total, &sb));
+                so.backward(model, &obj_bar, samples_bar, n_in..n_in + q)?
+            }
+            NeiSamples::LowRank {
+                x_full,
+                pullback,
+                nb,
+                n,
+                blocks,
+                ..
+            } => {
+                let nq = n - nb;
+                let (mut sbar, xbar) = match pullback {
+                    Some(pb) => pb(&obj_bar_new)?,
+                    None => (obj_bar_new.clone(), None),
+                };
+                if let Some(extra) = samples_bar_new {
+                    sbar += extra;
+                }
+                let m = blocks.len();
+                let mut mean_bar = Vector::zeros(n * m);
+                let mut cov_bar = Matrix::zeros(n * m, n * m);
+                let roots = self
+                    .baseline
+                    .as_ref()
+                    .and_then(|b| b.roots.as_ref())
+                    .ok_or_else(|| {
+                        BotorchError::Runtime("low-rank samples without cached roots".into())
+                    })?;
+                for (t, ((bl, br, zb, zx), root)) in blocks.iter().zip(roots).enumerate() {
+                    let yb = sbar.rows(t * nq, nq);
+                    for p in 0..nq {
+                        mean_bar[t * n + nb + p] = yb.row(p).sum();
+                    }
+                    let mut blbar = yb * zb.transpose();
+                    let brbar = yb * zx.transpose();
+                    let ebar = crate::linalg::cholesky_backward(br.l(), &brbar);
+                    blbar.gemm(-2.0, &ebar, bl, 1.0);
+                    let cbar = match root {
+                        CovarianceRoot::Scalar { root, .. } => blbar.map(|v| v / root),
+                        CovarianceRoot::Cholesky(f) => {
+                            let mut tb = blbar.transpose();
+                            f.solve_lower_transpose_mut(&mut tb);
+                            tb.transpose()
+                        }
+                        CovarianceRoot::Eigen(_) => {
+                            return Err(BotorchError::Runtime(
+                                "no low-rank path for eigendecomposition roots".into(),
+                            ))
+                        }
+                    };
+                    cov_bar
+                        .view_mut((t * n + nb, t * n), (nq, nb))
+                        .copy_from(&cbar);
+                    cov_bar
+                        .view_mut((t * n + nb, t * n + nb), (nq, nq))
+                        .copy_from(&ebar);
+                }
+                let mut grad =
+                    model.joint_posterior_vjp(&x_full, n_in..n_in + q, &mean_bar, &cov_bar)?;
+                if let Some(xb) = xbar {
+                    grad += xb.rows(0, q);
+                }
+                grad
+            }
+        };
+        Ok((r.value, Some((grad, w_bar))))
+    }
+}
+
+impl crate::acquisition::SampleReducing for QNoisyExpectedImprovement {
+    fn evaluate_weighted(
+        &self,
+        x: &Matrix,
+        weights: &[f64],
+        with_grad: bool,
+    ) -> Result<crate::acquisition::WeightedEvaluation> {
+        QNoisyExpectedImprovement::evaluate_weighted(self, x, Some(weights), with_grad)
+    }
+
+    fn log_utilities(&self) -> bool {
+        false
+    }
+}
+
+/// `mean_s max_j max(obj_js - best_f_s, 0) · ind_js` and the adjoints of
+/// `obj` and `ind` (qNoisyExpectedImprovement's reduction).
+fn noisy_improvement_reduce(
+    obj: &Matrix,
+    best_f: &[f64],
+    ind: Option<&Matrix>,
+    with_grad: bool,
+) -> Reduced {
+    let (n, s) = obj.shape();
+    let u = Matrix::from_fn(n, s, |i, c| (obj[(i, c)] - best_f[c]).max(0.0));
+    let weighted = ind.map(|w| u.component_mul(w));
+    let (maxima, w) = amax_columns(weighted.as_ref().unwrap_or(&u));
+    let value = mean(&maxima);
+    if !with_grad {
+        return Reduced {
+            value,
+            obj_bar: None,
+            ind_bar: None,
+        };
+    }
+    let a_bar = w / s as f64;
+    let ind_bar = ind.map(|_| a_bar.component_mul(&u));
+    let mut g = match ind {
+        Some(ind) => a_bar.component_mul(ind),
+        None => a_bar,
+    };
+    for i in 0..n {
+        for c in 0..s {
+            if g[(i, c)] != 0.0 && obj[(i, c)] - best_f[c] < 0.0 {
+                g[(i, c)] = 0.0;
+            }
+        }
+    }
+    Reduced {
+        value,
+        obj_bar: Some(g),
+        ind_bar,
+    }
+}
+
+impl AcquisitionFunction for QNoisyExpectedImprovement {
+    fn model(&self) -> &Arc<dyn Model> {
+        &self.core.model
+    }
+
+    fn as_sample_reducing(&self) -> Option<&dyn crate::acquisition::SampleReducing> {
+        Some(self)
+    }
+
+    fn forward(&self, x: &Matrix) -> Result<f64> {
+        Ok(self.evaluate(x, false)?.0)
+    }
+
+    fn forward_with_grad(&self, x: &Matrix) -> Result<(f64, Matrix)> {
+        let (v, g) = self.evaluate(x, true)?;
+        Ok((v, g.expect("gradient requested")))
+    }
+
+    fn x_pending(&self) -> Option<Matrix> {
+        self.core.x_pending()
+    }
+
+    fn set_x_pending(&self, x_pending: Option<&Matrix>) -> Result<()> {
+        self.core.set_x_pending(x_pending)
+    }
+
+    fn is_nonnegative(&self) -> bool {
+        true
+    }
 }

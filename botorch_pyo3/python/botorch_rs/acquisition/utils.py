@@ -79,8 +79,74 @@ def prune_inferior_points(
     return from_pair(pruned, kind_of(X))
 
 
+def get_optimal_samples(
+    model: SingleTaskGP | ModelListGP,
+    bounds: Any,
+    num_optima: int,
+    raw_samples: int = 1024,
+    num_restarts: int = 20,
+    posterior_transform: Any = None,
+    objective: Any = None,
+    return_transformed: bool = False,
+    *,
+    num_features: int = 1024,
+    seed: int | None = None,
+    draws: Any = None,
+    candidates: Any = None,
+    maxiter: int | None = None,
+) -> tuple[Any, Any]:
+    r"""Draws ``num_optima`` sample paths (Matheron paths) from the posterior
+    and maximizes them: every path is evaluated at ``raw_samples``
+    quasi-random points, and its ``num_restarts`` best points are optimized
+    with L-BFGS-B (one joint problem over all paths, as BoTorch's
+    ``gen_candidates_scipy(..., use_parallel_mode=False)``). Returns the
+    optimal inputs (``num_optima x d``) and outputs (``num_optima x m``, or
+    the transformed values ``num_optima x 1`` with ``return_transformed``).
+
+    botorch_rs extensions (keyword-only): ``num_features`` of the paths,
+    ``seed`` of the paths and of the Sobol points, explicit ``draws`` of the
+    paths (one ``(frequencies, weights, noise)`` per output with
+    ``num_optima`` samples each, see ``draw_matheron_paths``) and
+    ``candidates`` (``raw_samples x d``, BoTorch's Sobol points), and
+    ``maxiter`` of L-BFGS-B (default 2000).
+    """
+    from botorch_rs.acquisition.objective import ScalarizedPosteriorTransform, transform_arg
+    from botorch_rs.sampling.pathwise.prior_samplers import draws_arg, seed_arg
+
+    if not is_acquisition_model(model) or not isinstance(model, (SingleTaskGP, ModelListGP)):
+        raise UnsupportedError(
+            "get_optimal_samples requires a botorch_rs SingleTaskGP or ModelListGP."
+        )
+    if posterior_transform is not None and not isinstance(
+        posterior_transform, ScalarizedPosteriorTransform
+    ):
+        raise ValueError(
+            "Only the ScalarizedPosteriorTransform is supported for get_optimal_samples."
+        )
+    if posterior_transform is not None and objective is not None:
+        raise ValueError("Only one of `posterior_transform` and `objective` can be specified.")
+    kind = kind_of(bounds)
+    x, f = _rs.get_optimal_samples(
+        model._acquisition_model(None),
+        to_flat(bounds, "bounds"),
+        int(num_optima),
+        raw_samples=int(raw_samples),
+        num_restarts=int(num_restarts),
+        transform=transform_arg(posterior_transform, model.num_outputs),
+        objective=objective_arg(objective),
+        return_transformed=bool(return_transformed),
+        num_features=int(num_features),
+        seed=seed_arg(seed),
+        draws=draws_arg(draws, ("frequencies", "weights", "noise")),
+        candidates=None if candidates is None else to_flat(candidates, "candidates"),
+        maxiter=None if maxiter is None else int(maxiter),
+    )
+    return from_pair(x, kind), from_pair(f, kind)
+
+
 __all__ = [
     "expand_trace_observations",
+    "get_optimal_samples",
     "project_to_target_fidelity",
     "prune_inferior_points",
 ]

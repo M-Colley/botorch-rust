@@ -281,7 +281,7 @@ impl PyCostAwareUtility {
 }
 
 /// A projection from its specification (see the module documentation).
-fn projection_of(
+pub(crate) fn projection_of(
     spec: Option<&Bound<'_, PyAny>>,
     d: usize,
 ) -> PyResult<Option<Arc<dyn InputProjection>>> {

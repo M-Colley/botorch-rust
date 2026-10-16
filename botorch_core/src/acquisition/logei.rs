@@ -342,9 +342,31 @@ impl QLogExpectedImprovement {
     }
 }
 
+impl crate::acquisition::SampleReducing for QLogExpectedImprovement {
+    fn evaluate_weighted(
+        &self,
+        x: &Matrix,
+        weights: &[f64],
+        with_grad: bool,
+    ) -> Result<crate::acquisition::WeightedEvaluation> {
+        self.core
+            .evaluate_weighted(x, Some(weights), with_grad, true, |y, w, g| {
+                self.reduce(y, w, g)
+            })
+    }
+
+    fn log_utilities(&self) -> bool {
+        true
+    }
+}
+
 impl AcquisitionFunction for QLogExpectedImprovement {
     fn model(&self) -> &Arc<dyn Model> {
         &self.core.model
+    }
+
+    fn as_sample_reducing(&self) -> Option<&dyn crate::acquisition::SampleReducing> {
+        Some(self)
     }
 
     fn forward(&self, x: &Matrix) -> Result<f64> {
@@ -700,6 +722,20 @@ impl QLogNoisyExpectedImprovement {
     }
 
     fn evaluate(&self, x: &Matrix, with_grad: bool) -> Result<(f64, Option<Matrix>)> {
+        let (v, g) = self.evaluate_weighted(x, None, with_grad)?;
+        Ok((v, g.map(|(g, _)| g)))
+    }
+
+    /// The value with the log utilities of the candidate points (and
+    /// non-incremental pending points) shifted by `weights` (BoTorch's
+    /// prior-guided weighting) and the gradients with respect to `x` and the
+    /// weights.
+    fn evaluate_weighted(
+        &self,
+        x: &Matrix,
+        weights: Option<&[f64]>,
+        with_grad: bool,
+    ) -> Result<crate::acquisition::WeightedEvaluation> {
         let d = self.model.dim();
         check_candidates(x, d, None)?;
         let state = read_lock(&self.state);
@@ -732,10 +768,26 @@ impl QLogNoisyExpectedImprovement {
             None => None,
         };
         let obj = so.obj.rows(n_bl, n - n_bl).into_owned();
+        if let Some(w) = weights {
+            if w.len() != obj.nrows() {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "expected {} point weights, got {}",
+                    obj.nrows(),
+                    w.len()
+                )));
+            }
+        }
+        let combined = crate::acquisition::monte_carlo::weighted_indicator(
+            ind.as_ref().map(|i| &i.values),
+            weights,
+            true,
+            obj.nrows(),
+            obj.ncols(),
+        );
         let r = log_improvement_reduce(
             &obj,
             |s| best_f[s],
-            ind.as_ref().map(|i| &i.values),
+            combined.as_ref(),
             self.fat,
             self.tau_relu,
             self.tau_max,
@@ -748,7 +800,13 @@ impl QLogNoisyExpectedImprovement {
         obj_bar
             .rows_mut(n_bl, n - n_bl)
             .copy_from(&r.obj_bar.expect("gradient requested"));
-        let samples_bar = match (ind, r.ind_bar) {
+        let (ind_bar, w_bar) = crate::acquisition::monte_carlo::split_indicator_adjoint(
+            ind.as_ref().map(|i| &i.values),
+            weights,
+            true,
+            r.ind_bar,
+        );
+        let samples_bar = match (ind, ind_bar) {
             (Some(ind), Some(ib)) => {
                 let cand_bar = ind.backward(&ib)?;
                 Some(so.samples.embed_points_adjoint(cand, &cand_bar))
@@ -756,13 +814,32 @@ impl QLogNoisyExpectedImprovement {
             _ => None,
         };
         let grad = so.backward(self.model.as_ref(), &obj_bar, samples_bar, n_bl..n_bl + q)?;
-        Ok((r.value, Some(grad)))
+        Ok((r.value, Some((grad, w_bar))))
+    }
+}
+
+impl crate::acquisition::SampleReducing for QLogNoisyExpectedImprovement {
+    fn evaluate_weighted(
+        &self,
+        x: &Matrix,
+        weights: &[f64],
+        with_grad: bool,
+    ) -> Result<crate::acquisition::WeightedEvaluation> {
+        QLogNoisyExpectedImprovement::evaluate_weighted(self, x, Some(weights), with_grad)
+    }
+
+    fn log_utilities(&self) -> bool {
+        true
     }
 }
 
 impl AcquisitionFunction for QLogNoisyExpectedImprovement {
     fn model(&self) -> &Arc<dyn Model> {
         &self.model
+    }
+
+    fn as_sample_reducing(&self) -> Option<&dyn crate::acquisition::SampleReducing> {
+        Some(self)
     }
 
     fn forward(&self, x: &Matrix) -> Result<f64> {
