@@ -48,7 +48,11 @@ Multi-objective tasks (objectives negated for maximization):
   ``qLowerBoundMultiObjectiveJointEntropySearch`` (``estimation_type="LB"``)
   at 256 candidates (q = 1) on the m = 2 DTLZ2 model, with the same 10
   sampled Pareto sets of 10 points in both libraries (points of DTLZ2's
-  Pareto set and their objective values).
+  Pareto set and their objective values);
+* ``NSGA-II``: ``optimize_with_nsgaii`` of ``MultiOutputPosteriorMean`` on the
+  m = 2 DTLZ2 model (population 100, 50 generations; BoTorch needs pymoo, and
+  the libraries' random numbers differ); the result is the hypervolume of the
+  returned front.
 
 Every task is timed with one thread (``torch.set_num_threads(1)``,
 ``botorch_rs.set_num_threads(1)``) and with each library's default number of
@@ -126,10 +130,12 @@ class Library:
             from botorch_rs.acquisition.multi_objective.utils import (
                 compute_sample_box_decomposition,
             )
+            from botorch_rs.acquisition.multioutput_acquisition import MultiOutputPosteriorMean
             from botorch_rs.models.transforms.input import Normalize
             from botorch_rs.test_functions import multi_objective as mo_problems
             from botorch_rs.utils.multi_objective import box_decompositions
             from botorch_rs.utils.multi_objective.hypervolume import Hypervolume
+            from botorch_rs.utils.multi_objective.optimize import optimize_with_nsgaii
             from botorch_rs.utils.multi_objective.pareto import is_non_dominated
             from botorch_rs.utils.sampling import draw_sobol_samples
 
@@ -146,10 +152,12 @@ class Library:
             from botorch.acquisition.multi_objective.utils import (
                 compute_sample_box_decomposition,
             )
+            from botorch.acquisition.multioutput_acquisition import MultiOutputPosteriorMean
             from botorch.models.transforms.input import Normalize
             from botorch.test_functions import multi_objective as mo_problems
             from botorch.utils.multi_objective import box_decompositions
             from botorch.utils.multi_objective.hypervolume import Hypervolume
+            from botorch.utils.multi_objective.optimize import optimize_with_nsgaii
             from botorch.utils.multi_objective.pareto import is_non_dominated
             from botorch.utils.sampling import draw_sobol_samples
             from gpytorch import mlls
@@ -181,6 +189,8 @@ class Library:
         self.qHVKG = mo_acquisition.qHypervolumeKnowledgeGradient
         self.qLowerBoundMOJES = qLowerBoundMultiObjectiveJointEntropySearch
         self.compute_sample_box_decomposition = compute_sample_box_decomposition
+        self.MultiOutputPosteriorMean = MultiOutputPosteriorMean
+        self.optimize_with_nsgaii = optimize_with_nsgaii
 
     def use_threads(self, single: bool) -> None:
         """One thread, or the library's default number of threads."""
@@ -479,6 +489,19 @@ def multi_objective_tasks(lib: Library) -> list[Task]:
         values.sum().backward()
         return float(values.detach().sum())
 
+    def nsga2(seed: int) -> float:
+        acqf = lib.MultiOutputPosteriorMean(model2)
+        _, front = lib.optimize_with_nsgaii(
+            acqf, bounds, num_objectives=2, population_size=100, max_gen=50, seed=seed
+        )
+        return float(
+            torch.as_tensor(
+                lib.DominatedPartitioning(
+                    ref_point=ref2, Y=torch.as_tensor(front, dtype=DT)
+                ).compute_hypervolume()
+            ).reshape(-1)[0]
+        )
+
     tasks = [
         Task(
             f"MOBO loop, qLogNEHVI, {MOBO_ITERATIONS} iterations",
@@ -506,6 +529,12 @@ def multi_objective_tasks(lib: Library) -> list[Task]:
             "Evaluate MO entropy search",
             "JES lower bound, gradients, 256 points",
             mo_jes,
+        ),
+        Task(
+            "optimize_with_nsgaii, posterior mean, m = 2",
+            "NSGA-II",
+            "posterior mean, 100 x 50 generations",
+            nsga2,
         ),
         Task("hypervolume, m = 3, n = 100", "Hypervolume", "m = 3, 100 points", hypervolume_task),
         Task(
