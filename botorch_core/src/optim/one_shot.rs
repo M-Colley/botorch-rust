@@ -401,16 +401,11 @@ pub fn gen_one_shot_hvkg_initial_conditions(
         }
     }
     let ic_options = InitialConditionOptions {
-        seed: options.seed,
-        eta: options.eta,
-        alpha: options.alpha,
-        nonnegative: options.nonnegative,
-        batch_limit: options.init_batch_limit.or(options.batch_limit),
-        fixed_features: options.fixed_features.clone(),
-        inequality_constraints: options.constraints.inequality.clone(),
-        equality_constraints: options.constraints.equality.clone(),
-        n_burnin: options.n_burnin,
-        n_thinning: options.n_thinning,
+        // The one-shot initial conditions do not sample around the best
+        // points or select the top values.
+        topn: None,
+        sample_around_best: None,
+        ..options.initial_condition_options()
     };
     let num_random = num_restarts - num_optim;
     let mut base_ics: Vec<Matrix>;

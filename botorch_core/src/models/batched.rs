@@ -520,6 +520,15 @@ impl BatchedMultiOutputGP {
         Vector::from_vec(flat)
     }
 
+    /// Splits a vector in BoTorch's flat parameter order (e.g. a mask or
+    /// bounds) into the per-element vectors.
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] for a wrong length.
+    pub fn split_flat(&self, values: &[f64]) -> Result<Vec<Vec<f64>>> {
+        self.split(values)
+    }
+
     /// The raw hyperparameters of all elements in BoTorch's flat order.
     pub fn raw_parameters(&self) -> Vector {
         let per: Vec<Vector> = self.models.iter().map(|m| m.raw_parameters()).collect();

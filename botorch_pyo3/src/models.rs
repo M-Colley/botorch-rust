@@ -484,6 +484,11 @@ impl PySingleTaskGP {
         *self.inner.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(model);
     }
 
+    /// Replaces the model (after a fit).
+    pub(crate) fn replace_model(&self, model: BatchedMultiOutputGP) {
+        self.replace(model);
+    }
+
     /// Applies `f` to a copy of the model and installs the copy on success.
     fn update<F>(&self, f: F) -> PyResult<()>
     where

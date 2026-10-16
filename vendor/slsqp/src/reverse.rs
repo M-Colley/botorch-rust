@@ -384,4 +384,37 @@ mod tests {
         assert_eq!(r.mode, 9);
         assert_eq!(r.message(), "Iteration limit reached");
     }
+
+    /// A merit function that is not finite at every trial point ends the
+    /// line search after 10 trials (Kraft's `LINE > 10` test, as in SciPy)
+    /// instead of halving the step forever (NLopt's translation).
+    #[test]
+    fn non_finite_line_search_terminates() {
+        // Finite only at the first evaluation.
+        let mut calls = 0;
+        let eval = |x: &[f64], _: bool| -> Result<Evaluation, ()> {
+            calls += 1;
+            let f = if calls == 1 { 1.0 } else { f64::NAN };
+            Ok(Evaluation {
+                f,
+                c: vec![],
+                g: vec![2.0 * x[0]],
+                a: vec![],
+            })
+        };
+        let r = minimize_kraft(
+            eval,
+            &[1.0],
+            &[-5.0],
+            &[5.0],
+            0,
+            0,
+            &KraftOptions {
+                maxiter: 20,
+                acc: 1e-6,
+            },
+        )
+        .unwrap();
+        assert!(r.evaluations <= 20 * 12 + 1, "{}", r.evaluations);
+    }
 }

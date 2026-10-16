@@ -3092,6 +3092,13 @@ unsafe fn slsqpb_(
                                 alpha = if d__1 >= alfmin { d__1 } else { alfmin };
                                 current_block = 11187960484546229445;
                             }
+                        } else if line > 10 as ::core::ffi::c_int {
+                            // botorch-rs patch: a non-finite merit function
+                            // ends the line search after 10 trials like a
+                            // finite one (Kraft's `LINE.GT.10` test, as in
+                            // SciPy); NLopt halves `alpha` without a limit,
+                            // which never ends when the step is NaN.
+                            current_block = 2101818066333513453;
                         } else {
                             alpha = if alpha * 0.5f64 >= alfmin {
                                 alpha * 0.5f64
@@ -3152,6 +3159,13 @@ unsafe fn slsqpb_(
                                 alpha = if d__1 >= alfmin { d__1 } else { alfmin };
                                 current_block = 11187960484546229445;
                             }
+                        } else if line > 10 as ::core::ffi::c_int {
+                            // botorch-rs patch: a non-finite merit function
+                            // ends the line search after 10 trials like a
+                            // finite one (Kraft's `LINE.GT.10` test, as in
+                            // SciPy); NLopt halves `alpha` without a limit,
+                            // which never ends when the step is NaN.
+                            current_block = 2101818066333513453;
                         } else {
                             alpha = if alpha * 0.5f64 >= alfmin {
                                 alpha * 0.5f64

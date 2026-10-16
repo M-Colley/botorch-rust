@@ -80,9 +80,12 @@ def fit_gpytorch_mll(
         )
     if closure is not None or closure_kwargs is not None:
         raise UnsupportedError("Custom closures are not supported by botorch_rs.")
-    if optimizer is not None:
+    if optimizer is not None and getattr(optimizer, "__name__", None) == "fit_gpytorch_mll_torch":
+        return _fit_with_optimizer(mll, optimizer, optimizer_kwargs, kwargs)
+    if optimizer is not None and getattr(optimizer, "__name__", None) != "fit_gpytorch_mll_scipy":
         raise UnsupportedError(
-            "Only the default L-BFGS-B optimizer is available in botorch_rs (optimizer=None)."
+            "botorch_rs fits with fit_gpytorch_mll_scipy (L-BFGS-B, the default) or "
+            "fit_gpytorch_mll_torch."
         )
     opt_kwargs = dict(optimizer_kwargs or {})
     method = opt_kwargs.pop("method", "L-BFGS-B")
@@ -139,6 +142,43 @@ def fit_gpytorch_mll(
         ],
     }
     return mll.eval()
+
+
+def _fit_with_optimizer(
+    mll: ExactMarginalLogLikelihood,
+    optimizer: Any,
+    optimizer_kwargs: dict[str, Any] | None,
+    kwargs: dict[str, Any],
+) -> MarginalLogLikelihood:
+    """BoTorch's ``_fit_fallback`` with ``fit_gpytorch_mll_torch``: attempts
+    that raise a numerical error are retried from hyperparameters sampled from
+    their priors, up to ``max_attempts`` times."""
+    from botorch_rs.exceptions.errors import ModelFittingError, NotPSDError
+    from botorch_rs.optim.fit import fit_gpytorch_mll_torch
+    from botorch_rs.optim.utils.model_utils import sample_all_priors
+
+    max_attempts = int(kwargs.pop("max_attempts", 5))
+    seed = kwargs.pop("seed", None)
+    raw = list(mll.model._rs.raw_parameters())
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            sample_all_priors(mll.model, seed=None if seed is None else int(seed) + attempt)
+        mll.train()
+        try:
+            with warnings.catch_warnings(record=True) as ws:
+                warnings.simplefilter("always", category=OptimizationWarning)
+                result = fit_gpytorch_mll_torch(mll, **(optimizer_kwargs or {}))
+        except NotPSDError:
+            mll.model._rs.set_raw_parameters(raw)
+            continue
+        failed = [w for w in ws if issubclass(w.category, OptimizationWarning)]
+        for w in ws:
+            warnings.warn_explicit(str(w.message), w.category, w.filename, w.lineno)
+        if not failed:
+            mll._fit_result = result
+            return mll.eval()
+        mll.model._rs.set_raw_parameters(raw)
+    raise ModelFittingError("All attempts to fit the model have failed.")
 
 
 __all__ = ["fit_gpytorch_mll"]

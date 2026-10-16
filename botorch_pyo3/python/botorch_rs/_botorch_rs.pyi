@@ -12,7 +12,7 @@ size (``ArrayOut``) return a list. Use the BoTorch-style classes of the
 """
 
 from array import array
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 Array = tuple[Sequence[float], Sequence[int]]
@@ -593,9 +593,35 @@ def optimize_acqf(
     num_inner_restarts: int | None = None,
     raw_inner_samples: int | None = None,
     one_shot_eta: float | None = None,
+    post_processing: Callable[[list[float], list[int]], Any] | None = None,
+    timeout_sec: float | None = None,
+    lbfgsb_aggregation: int | None = None,
+    gen_candidates: str | Callable[..., Any] | None = None,
+    lr: float | None = None,
+    betas: tuple[float, float] | None = None,
+    eps: float | None = None,
+    weight_decay: float | None = None,
+    amsgrad: bool | None = None,
+    maximize: bool | None = None,
+    stop_maxiter: int | None = None,
+    stop_minimize: bool | None = None,
+    n_window: int | None = None,
+    stop_eta: float | None = None,
+    rel_tol: float | None = None,
+    topn: bool = False,
+    largest: bool = True,
+    sorted: bool = True,
+    sample_around_best: Array | None = None,
+    sample_around_best_sigma: float | None = None,
+    sample_around_best_subset_sigma: float | None = None,
+    sample_around_best_prob_perturb: float | None = None,
 ) -> tuple[ArrayOut, list[float], ArrayOut, list[float], list[tuple[str, str]]]:
     """Returns ``(candidates, acq_values, restart_candidates, restart_values,
-    warnings)``."""
+    warnings)``. ``post_processing(data, shape)`` returns the processed
+    ``(data, shape)``; ``gen_candidates`` is ``"scipy"``, ``"torch"`` (Adam
+    with the ``lr`` ... ``rel_tol`` settings) or
+    ``generate(data, shape, timeout_sec, fixed_features)`` returning
+    ``(candidates, acq_values)``."""
 
 def gen_batch_initial_conditions(
     acq_function: AcquisitionFunction,
@@ -615,6 +641,13 @@ def gen_batch_initial_conditions(
     n_burnin: int | None = None,
     n_thinning: int | None = None,
     fixed_x_fantasies: Array | None = None,
+    topn: bool = False,
+    largest: bool = True,
+    sorted: bool = True,
+    sample_around_best: Array | None = None,
+    sample_around_best_sigma: float | None = None,
+    sample_around_best_subset_sigma: float | None = None,
+    sample_around_best_prob_perturb: float | None = None,
 ) -> tuple[ArrayOut, bool]:
     """Returns ``(initial_conditions, selected_randomly)``."""
 
@@ -1329,3 +1362,220 @@ def weighted_log_mean_exp(
     terms: Sequence[AcquisitionFunction], weights: Sequence[float]
 ) -> AcquisitionFunction: ...
 def callable_acquisition_function(callable: Any, dim: int) -> AcquisitionFunction: ...
+
+# Phase 9: optimization and candidate generation.
+
+#: ``(maxiter, minimize, n_window, eta, rel_tol)`` of an
+#: ``ExpMAStoppingCriterion``.
+StoppingSpec = tuple[int, bool, int, float, float]
+#: ``(step, fval, status, runtime, message)`` of an ``OptimizationResult``
+#: (``status``: 1 running, 2 success, 3 failure, 4 stopped).
+ResultOut = tuple[int, float, int, float | None, str | None]
+
+def optimize_acqf_mixed_py(
+    acq_function: AcquisitionFunction,
+    bounds: Array,
+    q: int,
+    num_restarts: int,
+    fixed_features_list: Sequence[dict[int, float]],
+    raw_samples: int | None = None,
+    return_best_only: bool = True,
+    **kwargs: Any,
+) -> tuple[ArrayOut, float, ArrayOut, list[float], list[str]]:
+    """Returns ``(candidates, value, restart_candidates, restart_values,
+    warnings)``; ``kwargs`` are those of ``optimize_acqf``."""
+
+def optimize_acqf_discrete_py(
+    acq_function: AcquisitionFunction,
+    q: int,
+    choices: Array,
+    unique: bool = True,
+    x_avoid: Array | None = None,
+    inequality_constraints: Sequence[LinearConstraint] | None = None,
+) -> tuple[ArrayOut, list[float], list[str]]: ...
+def optimize_acqf_discrete_local_search_py(
+    acq_function: AcquisitionFunction,
+    discrete_choices: Sequence[Sequence[float]],
+    q: int,
+    num_restarts: int = 20,
+    raw_samples: int = 4096,
+    inequality_constraints: Sequence[LinearConstraint] | None = None,
+    x_avoid: Array | None = None,
+    batch_initial_conditions: Array | None = None,
+    max_tries: int = 100,
+    unique: bool = True,
+    return_acq_values: bool = True,
+    lattice_points: Callable[..., Any] | None = None,
+    seed: int | None = None,
+) -> tuple[ArrayOut, list[float]]: ...
+def gen_lattice_points_py(
+    discrete_choices: Sequence[Sequence[float]],
+    raw_samples: int,
+    x_avoid: Array,
+    inequality_constraints: Sequence[LinearConstraint] | None,
+    min_points: int,
+    max_tries: int = 100,
+    seed: int | None = None,
+) -> ArrayOut: ...
+def optimize_acqf_cyclic_py(
+    acq_function: AcquisitionFunction,
+    bounds: Array,
+    q: int,
+    num_restarts: int,
+    raw_samples: int | None,
+    cyclic: StoppingSpec,
+    **kwargs: Any,
+) -> tuple[ArrayOut, list[float], list[str]]: ...
+
+class MixedProblem:
+    """The problem of ``optimize_acqf_mixed_alternating`` after BoTorch's
+    validation and relaxation of large discrete dimensions."""
+
+    def __init__(
+        self,
+        acq_function: AcquisitionFunction,
+        bounds: Array,
+        discrete_dims: Mapping[int, Sequence[float]],
+        cat_dims: Mapping[int, Sequence[float]],
+        num_restarts: int,
+        raw_samples: int,
+        fixed_features: dict[int, float] | None = None,
+        inequality_constraints: Sequence[LinearConstraint] | None = None,
+        equality_constraints: Sequence[LinearConstraint] | None = None,
+        post_processing: Callable[[list[float], list[int]], Any] | None = None,
+        retry_on_optimization_warning: bool = True,
+        x_baseline: Array | None = None,
+        **kwargs: Any,
+    ) -> None: ...
+    @property
+    def discrete_dims(self) -> dict[int, list[float]]: ...
+    @property
+    def cat_dims(self) -> dict[int, list[float]]: ...
+    @property
+    def cont_dims(self) -> list[int]: ...
+    @property
+    def relaxed_dims(self) -> dict[int, list[float]]: ...
+    def generate_starting_points(
+        self, seed: int | None = None
+    ) -> tuple[ArrayOut, list[float], list[str]]: ...
+    def discrete_step(self, x: Array, seed: int | None = None) -> tuple[ArrayOut, list[float]]: ...
+    def continuous_step(self, x: Array) -> tuple[ArrayOut, list[float], list[str]]: ...
+    def sample_feasible_points(self, num_points: int, seed: int | None = None) -> ArrayOut: ...
+    def post_process(self, x: Array) -> ArrayOut: ...
+    def optimize(
+        self,
+        q: int,
+        seed: int | None = None,
+        starting_points: Callable[..., Any] | None = None,
+        return_acq_values: bool = True,
+    ) -> tuple[ArrayOut, float, list[str]]: ...
+
+def round_discrete_dims_py(x: Array, discrete_dims: Mapping[int, Sequence[float]]) -> ArrayOut: ...
+def get_nearest_neighbors_py(
+    current_x: Sequence[float], bounds: Array, discrete_dims: Mapping[int, Sequence[float]]
+) -> list[list[float]]: ...
+def get_categorical_neighbors_py(
+    current_x: Sequence[float],
+    cat_dims: Mapping[int, Sequence[float]],
+    max_num_cat_values: int = 20,
+    seed: int | None = None,
+) -> list[list[float]]: ...
+def get_spray_points_py(
+    x_baseline: Array,
+    cont_dims: Sequence[int],
+    discrete_dims: Mapping[int, Sequence[float]],
+    cat_dims: Mapping[int, Sequence[float]],
+    bounds: Array,
+    num_spray_points: int,
+    std_cont_perturbation: float = 0.1,
+    seed: int | None = None,
+) -> ArrayOut: ...
+def prune_candidates_py(
+    candidates: Array, acq_values: Sequence[float], prune_tolerance: float
+) -> ArrayOut: ...
+def gen_candidates_torch_py(
+    acq_function: AcquisitionFunction,
+    initial_conditions: Array,
+    bounds: Array,
+    fixed_features: dict[int, float] | None = None,
+    callback: Callable[[int, float, list[float] | array[float], list[int]], Any] | None = None,
+    **kwargs: Any,
+) -> tuple[ArrayOut, list[float], int]:
+    """Returns ``(candidates, acq_values, steps)``."""
+
+def gen_candidates_scipy_py(
+    acq_function: AcquisitionFunction,
+    initial_conditions: Array,
+    bounds: Array,
+    fixed_features: dict[int, float] | None = None,
+    aggregation: int | None = None,
+    use_slsqp: bool = False,
+    timeout_sec: float | None = None,
+    **kwargs: Any,
+) -> tuple[ArrayOut, list[float], list[str]]: ...
+def sample_truncated_normal_perturbations_py(
+    x: Array,
+    n_discrete_points: int,
+    sigma: float,
+    bounds: Array,
+    qmc: bool = True,
+    seed: int | None = None,
+) -> ArrayOut: ...
+def truncated_normal_perturbations_py(
+    centers: Array, u: Array, sigma: float, bounds: Array
+) -> ArrayOut: ...
+def sample_perturbed_subset_dims_py(
+    x: Array,
+    bounds: Array,
+    n_discrete_points: int,
+    sigma: float = 0.1,
+    qmc: bool = True,
+    prob_perturb: float | None = None,
+    seed: int | None = None,
+) -> ArrayOut: ...
+def sample_points_around_py(
+    best_x: Array,
+    n_discrete_points: int,
+    sigma: float,
+    bounds: Array,
+    subset_sigma: float = 0.1,
+    prob_perturb: float | None = None,
+    seed: int | None = None,
+) -> ArrayOut: ...
+def maximize_samples_py(
+    obj: Sequence[float], num_samples: int, batch: int, n: int, replacement: bool
+) -> list[int]: ...
+def constrained_scores_py(
+    y: Sequence[float], c: Sequence[float], rows: int, n: int, k: int
+) -> list[float]: ...
+def boltzmann_weights_py(
+    values: Sequence[float], eta: float, temp_decrease: float = 0.5
+) -> tuple[list[float], float]: ...
+def expma_weights_py(eta: float, n_window: int) -> list[float]: ...
+def fit_gpytorch_mll_torch_py(
+    model: SingleTaskGP,
+    mask: Sequence[bool] | None = None,
+    bounds: Sequence[tuple[float, float]] | None = None,
+    step_limit: int | None = None,
+    stopping: StoppingSpec | None = None,
+    timeout_sec: float | None = None,
+    lr: float = 0.001,
+    betas: tuple[float, float] = (0.9, 0.999),
+    eps: float = 1e-8,
+    weight_decay: float = 0.0,
+    amsgrad: bool = False,
+    maximize: bool = False,
+) -> ResultOut: ...
+def fit_gpytorch_mll_scipy_py(
+    model: SingleTaskGP,
+    mask: Sequence[bool] | None = None,
+    bounds: Sequence[tuple[float, float]] | None = None,
+    timeout_sec: float | None = None,
+    maxiter: int | None = None,
+    maxfun: int | None = None,
+    ftol: float | None = None,
+    gtol: float | None = None,
+    maxcor: int | None = None,
+    maxls: int | None = None,
+) -> ResultOut: ...
+def sample_all_priors(model: SingleTaskGP, seed: int | None = None) -> None: ...

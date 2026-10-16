@@ -145,7 +145,7 @@ def test_options(model: SingleTaskGP) -> None:
         acqf, BOUNDS, q=1, num_restarts=4, raw_samples=32, options={**options, "method": "SLSQP"}
     )
     assert shape(X2) == (1, 3) and abs(float(value2) - float(value)) < 1e-4
-    for bad in ({"method": "trust-constr"}, {"sample_around_best": True}, {"with_grad": False}):
+    for bad in ({"method": "trust-constr"}, {"with_grad": False}):
         with pytest.raises(UnsupportedError):
             optimize_acqf(acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, options=bad)
 
@@ -153,9 +153,6 @@ def test_options(model: SingleTaskGP) -> None:
 def test_unsupported_arguments(model: SingleTaskGP) -> None:
     acqf = PosteriorMean(model)
     for kwargs in (
-        {"post_processing_func": lambda x: x},
-        {"gen_candidates": lambda *a: a},
-        {"timeout_sec": 1.0},
         {"acq_function_sequence": [acqf, acqf]},
         {"unknown_ic_kwarg": 1},
     ):

@@ -328,6 +328,7 @@ pub mod acquisition;
 pub mod constraints;
 pub mod error;
 pub mod fit;
+pub mod generation;
 pub mod kernels;
 pub mod lbfgsb;
 pub mod linalg;

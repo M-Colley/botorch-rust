@@ -64,6 +64,25 @@ class InfeasibilityError(BotorchRsError, ValueError):
     """A set of constraints is infeasible (e.g. an empty polytope)."""
 
 
+class OptimizationTimeoutError(BotorchRsError):
+    """An optimization timed out (BoTorch's ``OptimizationTimeoutError``),
+    with the current point and the run time."""
+
+    def __init__(self, /, *args: object, current_x: object, runtime: float, **kwargs: object):
+        super().__init__(*args, **kwargs)
+        self.current_x = current_x
+        self.runtime = runtime
+
+
+class OptimizationGradientError(BotorchRsError, RuntimeError):
+    """An optimization produced NaN gradients (BoTorch's
+    ``OptimizationGradientError``), with the current point."""
+
+    def __init__(self, /, *args: object, current_x: object, **kwargs: object):
+        super().__init__(*args, **kwargs)
+        self.current_x = current_x
+
+
 class DeprecationError(BotorchRsError):
     """A deprecated argument or behavior (e.g. a boolean
     ``observation_noise`` of ``fantasize``)."""
@@ -78,6 +97,8 @@ __all__ = [
     "DeprecationError",
     "InfeasibilityError",
     "InputDataError",
+    "OptimizationGradientError",
+    "OptimizationTimeoutError",
     "InvalidArgumentError",
     "ModelFittingError",
     "NanError",

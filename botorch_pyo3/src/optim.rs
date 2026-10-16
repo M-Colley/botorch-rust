@@ -11,15 +11,18 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use botorch_core::generation::TorchGenOptions;
 use botorch_core::optim::{
     default_lbfgsb_options, evaluate_feasibility, gen_batch_initial_conditions,
     gen_batch_initial_conditions_with_fantasies, optimize_acqf_detailed,
-    sample_q_batches_from_polytope, IcGenerator, InitialConditionOptions, LinearConstraint,
-    NonlinearInequalityConstraint, OneShotInitialConditionOptions, OptimizationMethod,
-    OptimizeAcqfOptions, ParameterConstraints, SlsqpOptions, CONSTRAINT_TOLERANCE,
+    sample_q_batches_from_polytope, AdamOptions, CandidateGenerator, IcGenerator,
+    InitialConditionOptions, LinearConstraint, NonlinearInequalityConstraint,
+    OneShotInitialConditionOptions, OptimizationMethod, OptimizeAcqfOptions, OptimizeAcqfResult,
+    ParameterConstraints, SampleAroundBest, SlsqpOptions, TopnOptions, CONSTRAINT_TOLERANCE,
 };
 use botorch_core::Matrix;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::SeedableRng;
 
@@ -31,7 +34,7 @@ use crate::threads;
 
 /// `(candidates (q x d), acquisition values, all restart candidates
 /// (R x q x d), all restart values, warnings as (category, message))`.
-type OptimizeOut = (
+pub type OptimizeOut = (
     ArrayOut,
     Vec<f64>,
     ArrayOut,
@@ -87,7 +90,7 @@ pub fn linear_constraints(cs: Option<Vec<LinearArg<'_>>>) -> PyResult<Vec<Linear
 }
 
 /// The parameter constraints of an optimization.
-fn parameter_constraints(
+pub fn parameter_constraints(
     inequality: Option<Vec<LinearArg<'_>>>,
     equality: Option<Vec<LinearArg<'_>>>,
     nonlinear: Option<Vec<(Py<PyAny>, bool)>>,
@@ -112,18 +115,7 @@ fn parameter_constraints(
 fn native_ic_generator() -> IcGenerator {
     IcGenerator::new(|req| {
         let o = req.options;
-        let options = InitialConditionOptions {
-            seed: o.seed,
-            eta: o.eta,
-            alpha: o.alpha,
-            nonnegative: o.nonnegative,
-            batch_limit: o.init_batch_limit.or(o.batch_limit),
-            fixed_features: o.fixed_features.clone(),
-            inequality_constraints: o.constraints.inequality.clone(),
-            equality_constraints: o.constraints.equality.clone(),
-            n_burnin: o.n_burnin,
-            n_thinning: o.n_thinning,
-        };
+        let options = o.initial_condition_options();
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(o.seed.unwrap_or(0) ^ 0x6963_5f67_656e);
         Ok(gen_batch_initial_conditions(
             req.acq_function,
@@ -138,103 +130,115 @@ fn native_ic_generator() -> IcGenerator {
     })
 }
 
-/// Optimizes `acq_function` over the box `bounds` (`2 x d`) for `q` points
-/// with `num_restarts` restarts started from the best of `raw_samples` raw
-/// samples (Boltzmann selection), with L-BFGS-B or, with parameter
-/// constraints, SLSQP (`method`: `"L-BFGS-B"` or `"SLSQP"` overrides the
-/// choice).
-#[pyfunction]
-#[pyo3(signature = (
-    acq_function,
-    bounds,
-    q,
-    num_restarts,
-    raw_samples=None,
-    *,
-    seed=None,
-    maxiter=None,
-    maxfun=None,
-    ftol=None,
-    gtol=None,
-    maxcor=None,
-    maxls=None,
-    batch_limit=None,
-    init_batch_limit=None,
-    eta=None,
-    alpha=None,
-    nonnegative=false,
-    fixed_features=None,
-    batch_initial_conditions=None,
-    sequential=false,
-    retry_on_optimization_warning=true,
-    inequality_constraints=None,
-    equality_constraints=None,
-    nonlinear_inequality_constraints=None,
-    ic_generator=None,
-    native_ic_generator=false,
-    method=None,
-    n_burnin=None,
-    n_thinning=None,
-    frac_random=None,
-    num_inner_restarts=None,
-    raw_inner_samples=None,
-    one_shot_eta=None,
-))]
-#[allow(clippy::too_many_arguments)]
-pub fn optimize_acqf(
-    py: Python<'_>,
-    acq_function: PyRef<'_, PyAcquisitionFunction>,
-    bounds: Array,
-    q: usize,
-    num_restarts: usize,
-    raw_samples: Option<usize>,
-    seed: Option<u64>,
-    maxiter: Option<usize>,
-    maxfun: Option<usize>,
-    ftol: Option<f64>,
-    gtol: Option<f64>,
-    maxcor: Option<usize>,
-    maxls: Option<usize>,
-    batch_limit: Option<usize>,
-    init_batch_limit: Option<usize>,
-    eta: Option<f64>,
-    alpha: Option<f64>,
-    nonnegative: bool,
-    fixed_features: Option<BTreeMap<usize, f64>>,
-    batch_initial_conditions: Option<Array>,
-    sequential: bool,
-    retry_on_optimization_warning: bool,
-    inequality_constraints: Option<Vec<LinearArg<'_>>>,
-    equality_constraints: Option<Vec<LinearArg<'_>>>,
-    nonlinear_inequality_constraints: Option<Vec<(Py<PyAny>, bool)>>,
-    ic_generator: Option<Py<PyAny>>,
-    native_ic_generator: bool,
-    method: Option<&str>,
-    n_burnin: Option<usize>,
-    n_thinning: Option<usize>,
-    frac_random: Option<f64>,
-    num_inner_restarts: Option<usize>,
-    raw_inner_samples: Option<usize>,
-    one_shot_eta: Option<f64>,
-) -> PyResult<OptimizeOut> {
-    let bounds = bounds.matrix("bounds")?;
-    let d = bounds.ncols();
+/// Reads an optional keyword argument (`None` values count as missing).
+pub fn kw<'py, T>(kwargs: Option<&Bound<'py, PyDict>>, key: &str) -> PyResult<Option<T>>
+where
+    T: for<'a> FromPyObject<'a, 'py, Error = PyErr>,
+{
+    match kwargs.map(|k| k.get_item(key)).transpose()?.flatten() {
+        Some(v) if !v.is_none() => {
+            Ok(Some(v.extract().map_err(|e| {
+                value_error(format!("invalid value for `{key}`: {e}"))
+            })?))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Reads an optional keyword argument holding a Python object.
+pub fn kw_obj(kwargs: Option<&Bound<'_, PyDict>>, key: &str) -> PyResult<Option<Py<PyAny>>> {
+    match kwargs.map(|k| k.get_item(key)).transpose()?.flatten() {
+        Some(v) if !v.is_none() => Ok(Some(v.unbind())),
+        _ => Ok(None),
+    }
+}
+
+/// The keyword arguments understood by [`acqf_options`].
+const OPTION_KEYS: &[&str] = &[
+    "seed",
+    "maxiter",
+    "maxfun",
+    "ftol",
+    "gtol",
+    "maxcor",
+    "maxls",
+    "batch_limit",
+    "init_batch_limit",
+    "eta",
+    "alpha",
+    "nonnegative",
+    "fixed_features",
+    "batch_initial_conditions",
+    "sequential",
+    "retry_on_optimization_warning",
+    "inequality_constraints",
+    "equality_constraints",
+    "nonlinear_inequality_constraints",
+    "ic_generator",
+    "native_ic_generator",
+    "method",
+    "n_burnin",
+    "n_thinning",
+    "frac_random",
+    "num_inner_restarts",
+    "raw_inner_samples",
+    "one_shot_eta",
+    "post_processing",
+    "timeout_sec",
+    "lbfgsb_aggregation",
+    "gen_candidates",
+    "lr",
+    "betas",
+    "eps",
+    "weight_decay",
+    "amsgrad",
+    "maximize",
+    "stop_maxiter",
+    "stop_minimize",
+    "n_window",
+    "stop_eta",
+    "rel_tol",
+    "topn",
+    "largest",
+    "sorted",
+    "sample_around_best",
+    "sample_around_best_sigma",
+    "sample_around_best_subset_sigma",
+    "sample_around_best_prob_perturb",
+];
+
+/// The options of `optimize_acqf` from keyword arguments (BoTorch's
+/// `options` entries and arguments, prepared by the Python layer).
+pub fn acqf_options(d: usize, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<OptimizeAcqfOptions> {
+    if let Some(k) = kwargs {
+        for key in k.keys() {
+            let key: String = key.extract()?;
+            if !OPTION_KEYS.contains(&key.as_str()) {
+                return Err(value_error(format!("unknown optimize_acqf option `{key}`")));
+            }
+        }
+    }
+    let maxiter: Option<usize> = kw(kwargs, "maxiter")?;
+    let ftol: Option<f64> = kw(kwargs, "ftol")?;
     let mut lbfgsb = default_lbfgsb_options();
     lbfgsb.maxiter = maxiter.unwrap_or(lbfgsb.maxiter);
-    lbfgsb.maxfun = maxfun.unwrap_or(lbfgsb.maxfun);
+    lbfgsb.maxfun = kw(kwargs, "maxfun")?.unwrap_or(lbfgsb.maxfun);
     lbfgsb.ftol = ftol.unwrap_or(lbfgsb.ftol);
-    lbfgsb.gtol = gtol.unwrap_or(lbfgsb.gtol);
-    lbfgsb.maxcor = maxcor.unwrap_or(lbfgsb.maxcor);
-    lbfgsb.maxls = maxls.unwrap_or(lbfgsb.maxls);
+    lbfgsb.gtol = kw(kwargs, "gtol")?.unwrap_or(lbfgsb.gtol);
+    lbfgsb.maxcor = kw(kwargs, "maxcor")?.unwrap_or(lbfgsb.maxcor);
+    lbfgsb.maxls = kw(kwargs, "maxls")?.unwrap_or(lbfgsb.maxls);
     let slsqp_defaults = SlsqpOptions::default();
-    let slsqp_options = SlsqpOptions {
+    let slsqp = SlsqpOptions {
         maxiter: maxiter.unwrap_or(slsqp_defaults.maxiter),
         ftol: ftol.unwrap_or(slsqp_defaults.ftol),
     };
+    let batch_limit: Option<usize> = kw(kwargs, "batch_limit")?;
+    let init_batch_limit: Option<usize> = kw(kwargs, "init_batch_limit")?;
     if batch_limit == Some(0) || init_batch_limit == Some(0) {
         return Err(value_error("batch_limit must be positive"));
     }
-    let method = match method {
+    let method: Option<String> = kw(kwargs, "method")?;
+    let method = match method.as_deref() {
         None => OptimizationMethod::Auto,
         Some("SLSQP") => OptimizationMethod::Slsqp,
         Some("L-BFGS-B") => OptimizationMethod::Lbfgsb,
@@ -245,57 +249,132 @@ pub fn optimize_acqf(
         }
     };
     let defaults = OptimizeAcqfOptions::default();
-    let ics: Option<Vec<Matrix>> = batch_initial_conditions
+    let ics: Option<Array> = kw(kwargs, "batch_initial_conditions")?;
+    let ics: Option<Vec<Matrix>> = ics
         .map(|ic| ic.batches("batch_initial_conditions").map(|(_, mats)| mats))
         .transpose()?;
     let constraints = parameter_constraints(
-        inequality_constraints,
-        equality_constraints,
-        nonlinear_inequality_constraints,
+        kw(kwargs, "inequality_constraints")?,
+        kw(kwargs, "equality_constraints")?,
+        kw(kwargs, "nonlinear_inequality_constraints")?,
         d,
     )?;
-    let ic_generator = match (ic_generator, native_ic_generator) {
+    let ic_gen = kw_obj(kwargs, "ic_generator")?;
+    let native: bool = kw(kwargs, "native_ic_generator")?.unwrap_or(false);
+    let ic_generator = match (ic_gen, native) {
         (_, true) => Some(self::native_ic_generator()),
         (Some(f), false) => Some(crate::callbacks::ic_generator(f)),
         (None, false) => None,
     };
-    let options = OptimizeAcqfOptions {
-        seed,
+    let post_processing = kw_obj(kwargs, "post_processing")?;
+    let generator = kwargs
+        .map(|k| k.get_item("gen_candidates"))
+        .transpose()?
+        .flatten();
+    let gen_candidates = match generator {
+        None => CandidateGenerator::Scipy,
+        Some(v) if v.is_none() => CandidateGenerator::Scipy,
+        Some(v) => {
+            if let Ok(name) = v.extract::<String>() {
+                match name.as_str() {
+                    "scipy" => CandidateGenerator::Scipy,
+                    "torch" => CandidateGenerator::Torch(torch_gen_options(kwargs)?),
+                    other => {
+                        return Err(value_error(format!(
+                            "unknown candidate generator {other:?}"
+                        )))
+                    }
+                }
+            } else {
+                CandidateGenerator::Custom(crate::optim_ext::custom_generator(v.unbind()))
+            }
+        }
+    };
+    let topn = if kw(kwargs, "topn")?.unwrap_or(false) {
+        Some(TopnOptions {
+            largest: kw(kwargs, "largest")?.unwrap_or(true),
+            sorted: kw(kwargs, "sorted")?.unwrap_or(true),
+        })
+    } else {
+        None
+    };
+    let best: Option<Array> = kw(kwargs, "sample_around_best")?;
+    let sample_around_best = match best {
+        Some(b) => {
+            let mut s = SampleAroundBest::new(b.matrix("best_X")?);
+            s.sigma = kw(kwargs, "sample_around_best_sigma")?.unwrap_or(s.sigma);
+            s.subset_sigma =
+                kw(kwargs, "sample_around_best_subset_sigma")?.unwrap_or(s.subset_sigma);
+            s.prob_perturb = kw(kwargs, "sample_around_best_prob_perturb")?;
+            Some(s)
+        }
+        None => None,
+    };
+    Ok(OptimizeAcqfOptions {
+        seed: kw(kwargs, "seed")?,
         lbfgsb,
-        slsqp: slsqp_options,
+        slsqp,
         method,
         batch_limit,
         init_batch_limit,
-        eta: eta.unwrap_or(defaults.eta),
-        alpha: alpha.unwrap_or(defaults.alpha),
-        nonnegative,
-        fixed_features: fixed_features.unwrap_or_default(),
+        eta: kw(kwargs, "eta")?.unwrap_or(defaults.eta),
+        alpha: kw(kwargs, "alpha")?.unwrap_or(defaults.alpha),
+        nonnegative: kw(kwargs, "nonnegative")?.unwrap_or(false),
+        fixed_features: kw::<BTreeMap<usize, f64>>(kwargs, "fixed_features")?.unwrap_or_default(),
         batch_initial_conditions: ics,
-        sequential,
-        retry_on_optimization_warning,
+        sequential: kw(kwargs, "sequential")?.unwrap_or(false),
+        retry_on_optimization_warning: kw(kwargs, "retry_on_optimization_warning")?.unwrap_or(true),
         constraints,
-        n_burnin: n_burnin.unwrap_or(defaults.n_burnin),
-        n_thinning: n_thinning.unwrap_or(defaults.n_thinning),
+        n_burnin: kw(kwargs, "n_burnin")?.unwrap_or(defaults.n_burnin),
+        n_thinning: kw(kwargs, "n_thinning")?.unwrap_or(defaults.n_thinning),
         ic_generator,
         one_shot: OneShotInitialConditionOptions {
-            frac_random: frac_random.unwrap_or(defaults.one_shot.frac_random),
-            num_inner_restarts: num_inner_restarts.unwrap_or(defaults.one_shot.num_inner_restarts),
-            raw_inner_samples: raw_inner_samples.unwrap_or(defaults.one_shot.raw_inner_samples),
-            eta: one_shot_eta,
+            frac_random: kw(kwargs, "frac_random")?.unwrap_or(defaults.one_shot.frac_random),
+            num_inner_restarts: kw(kwargs, "num_inner_restarts")?
+                .unwrap_or(defaults.one_shot.num_inner_restarts),
+            raw_inner_samples: kw(kwargs, "raw_inner_samples")?
+                .unwrap_or(defaults.one_shot.raw_inner_samples),
+            eta: kw(kwargs, "one_shot_eta")?,
         },
-    };
-    let acqf = &acq_function.inner;
-    let result = threads::run(py, || {
-        optimize_acqf_detailed(
-            acqf.as_ref(),
-            &bounds,
-            q,
-            num_restarts,
-            raw_samples.unwrap_or(0),
-            &options,
-        )
+        post_processing: post_processing.map(crate::optim_ext::py_post_processing),
+        timeout_sec: kw(kwargs, "timeout_sec")?,
+        lbfgsb_aggregation: kw(kwargs, "lbfgsb_aggregation")?,
+        gen_candidates,
+        topn,
+        sample_around_best,
     })
-    .into_py_result()?;
+}
+
+/// The Adam and stopping settings of `gen_candidates_torch` from keyword
+/// arguments (`lr`, `betas`, `eps`, `weight_decay`, `amsgrad`, `maximize`,
+/// `stop_maxiter`, `stop_minimize`, `n_window`, `stop_eta`, `rel_tol`,
+/// `timeout_sec`).
+///
+/// # Errors
+/// For values of the wrong type.
+pub fn torch_gen_options(kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<TorchGenOptions> {
+    let d = TorchGenOptions::default();
+    Ok(TorchGenOptions {
+        adam: AdamOptions {
+            lr: kw(kwargs, "lr")?.unwrap_or(d.adam.lr),
+            betas: kw(kwargs, "betas")?.unwrap_or(d.adam.betas),
+            eps: kw(kwargs, "eps")?.unwrap_or(d.adam.eps),
+            weight_decay: kw(kwargs, "weight_decay")?.unwrap_or(d.adam.weight_decay),
+            amsgrad: kw(kwargs, "amsgrad")?.unwrap_or(d.adam.amsgrad),
+            maximize: kw(kwargs, "maximize")?.unwrap_or(d.adam.maximize),
+        },
+        maxiter: kw(kwargs, "stop_maxiter")?.unwrap_or(d.maxiter),
+        minimize: kw(kwargs, "stop_minimize")?.unwrap_or(d.minimize),
+        n_window: kw(kwargs, "n_window")?.unwrap_or(d.n_window),
+        eta: kw(kwargs, "stop_eta")?.unwrap_or(d.eta),
+        rel_tol: kw(kwargs, "rel_tol")?.unwrap_or(d.rel_tol),
+        timeout_sec: kw(kwargs, "timeout_sec")?,
+    })
+}
+
+/// The output of an optimization: candidates, values, all restarts and
+/// warnings.
+pub fn optimize_out(result: OptimizeAcqfResult, q: usize, d: usize) -> OptimizeOut {
     let rq = result.restarts.first().map_or(q, |r| r.candidates.nrows());
     let restart_mats: Vec<Matrix> = result
         .restarts
@@ -308,13 +387,47 @@ pub fn optimize_acqf(
         .into_iter()
         .map(|w| (warning_category(&w), w))
         .collect();
-    Ok((
+    (
         matrix_out(&result.candidates),
         result.acq_values,
         stack_out(&restart_mats, &[restart_mats.len()], rq, d),
         restart_values,
         warnings,
-    ))
+    )
+}
+
+/// Optimizes `acq_function` over the box `bounds` (`2 x d`) for `q` points
+/// with `num_restarts` restarts started from the best of `raw_samples` raw
+/// samples (Boltzmann selection), with L-BFGS-B or, with parameter
+/// constraints, SLSQP (`method`: `"L-BFGS-B"` or `"SLSQP"` overrides the
+/// choice); see [`acqf_options`] for the keyword arguments.
+#[pyfunction]
+#[pyo3(signature = (acq_function, bounds, q, num_restarts, raw_samples=None, **kwargs))]
+pub fn optimize_acqf(
+    py: Python<'_>,
+    acq_function: PyRef<'_, PyAcquisitionFunction>,
+    bounds: Array,
+    q: usize,
+    num_restarts: usize,
+    raw_samples: Option<usize>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<OptimizeOut> {
+    let bounds = bounds.matrix("bounds")?;
+    let d = bounds.ncols();
+    let options = acqf_options(d, kwargs)?;
+    let acqf = &acq_function.inner;
+    let result = threads::run(py, || {
+        optimize_acqf_detailed(
+            acqf.as_ref(),
+            &bounds,
+            q,
+            num_restarts,
+            raw_samples.unwrap_or(0),
+            &options,
+        )
+    })
+    .into_py_result()?;
+    Ok(optimize_out(result, q, d))
 }
 
 /// BoTorch's `gen_batch_initial_conditions`: `num_restarts` initial
@@ -339,6 +452,13 @@ pub fn optimize_acqf(
     n_burnin=None,
     n_thinning=None,
     fixed_x_fantasies=None,
+    topn=false,
+    largest=true,
+    sorted=true,
+    sample_around_best=None,
+    sample_around_best_sigma=None,
+    sample_around_best_subset_sigma=None,
+    sample_around_best_prob_perturb=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn gen_batch_initial_conditions_py(
@@ -359,6 +479,13 @@ pub fn gen_batch_initial_conditions_py(
     n_burnin: Option<usize>,
     n_thinning: Option<usize>,
     fixed_x_fantasies: Option<Array>,
+    topn: bool,
+    largest: bool,
+    sorted: bool,
+    sample_around_best: Option<Array>,
+    sample_around_best_sigma: Option<f64>,
+    sample_around_best_subset_sigma: Option<f64>,
+    sample_around_best_prob_perturb: Option<f64>,
 ) -> PyResult<(ArrayOut, bool)> {
     let bounds = bounds.matrix("bounds")?;
     let d = bounds.ncols();
@@ -377,6 +504,17 @@ pub fn gen_batch_initial_conditions_py(
         equality_constraints: linear_constraints(equality_constraints)?,
         n_burnin: n_burnin.unwrap_or(defaults.n_burnin),
         n_thinning: n_thinning.unwrap_or(defaults.n_thinning),
+        topn: topn.then_some(TopnOptions { largest, sorted }),
+        sample_around_best: match sample_around_best {
+            Some(b) => {
+                let mut s = SampleAroundBest::new(b.matrix("best_X")?);
+                s.sigma = sample_around_best_sigma.unwrap_or(s.sigma);
+                s.subset_sigma = sample_around_best_subset_sigma.unwrap_or(s.subset_sigma);
+                s.prob_perturb = sample_around_best_prob_perturb;
+                Some(s)
+            }
+            None => None,
+        },
     };
     let acqf = &acq_function.inner;
     let (ics, fallback) = threads::run(py, || {

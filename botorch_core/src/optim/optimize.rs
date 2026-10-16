@@ -34,6 +34,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Instant;
 
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::SeedableRng;
@@ -41,10 +42,11 @@ use rayon::prelude::*;
 
 use crate::acquisition::AcquisitionFunction;
 use crate::error::{BotorchError, Result};
+use crate::generation::gen::{gen_candidates_torch, TorchGenOptions};
 use crate::lbfgsb::{self, LbfgsbError, LbfgsbOptions, LbfgsbStatus};
 use crate::optim::initializers::{
-    apply_fixed_features, gen_batch_initial_conditions, InitialConditionOptions, DEFAULT_ALPHA,
-    DEFAULT_ETA, DEFAULT_N_BURNIN, DEFAULT_N_THINNING,
+    apply_fixed_features, gen_batch_initial_conditions, InitialConditionOptions, SampleAroundBest,
+    TopnOptions, DEFAULT_ALPHA, DEFAULT_ETA, DEFAULT_N_BURNIN, DEFAULT_N_THINNING,
 };
 use crate::optim::one_shot::OneShotInitialConditionOptions;
 use crate::optim::parameter_constraints::{
@@ -127,6 +129,100 @@ pub enum OptimizationMethod {
     Lbfgsb,
 }
 
+/// The function type of a [`PostProcessing`].
+pub type PostProcessingFn = dyn Fn(&[Matrix]) -> Result<Vec<Matrix>> + Send + Sync;
+
+/// A post-processing function applied to the optimized candidate sets of all
+/// restarts (BoTorch's `post_processing_func` on the `b × q × d` candidates,
+/// e.g. rounding); the acquisition values are recomputed afterwards.
+#[derive(Clone)]
+pub struct PostProcessing(pub Arc<PostProcessingFn>);
+
+impl Debug for PostProcessing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PostProcessing")
+    }
+}
+
+impl PostProcessing {
+    /// A post-processing function from a closure.
+    pub fn new<F>(f: F) -> Self
+    where
+        F: Fn(&[Matrix]) -> Result<Vec<Matrix>> + Send + Sync + 'static,
+    {
+        Self(Arc::new(f))
+    }
+
+    /// Applies the function and checks the shapes of the result.
+    ///
+    /// # Errors
+    /// Errors of the function, and [`BotorchError::DimensionMismatch`] if
+    /// it changes the number or the shapes of the candidate sets.
+    pub fn apply(&self, sets: &[Matrix]) -> Result<Vec<Matrix>> {
+        let out = (self.0)(sets)?;
+        if out.len() != sets.len() || out.iter().zip(sets).any(|(a, b)| a.shape() != b.shape()) {
+            return Err(BotorchError::DimensionMismatch(
+                "post_processing_func must return candidates of the shape of its input".into(),
+            ));
+        }
+        Ok(out)
+    }
+}
+
+/// What a custom candidate generator is asked for (the arguments BoTorch
+/// passes to `gen_candidates`).
+pub struct GenRequest<'a> {
+    /// The initial conditions of the chunk (`q × d` each).
+    pub initial_conditions: &'a [Matrix],
+    /// The acquisition function.
+    pub acq_function: &'a dyn AcquisitionFunction,
+    /// The bounds (`2 × d`).
+    pub bounds: &'a Matrix,
+    /// The fixed features.
+    pub fixed_features: &'a BTreeMap<usize, f64>,
+    /// The timeout of the chunk.
+    pub timeout_sec: Option<f64>,
+}
+
+/// The function type of a [`CustomGenerator`]: returns the candidate sets and
+/// their acquisition values.
+pub type CustomGeneratorFn =
+    dyn Fn(&GenRequest<'_>) -> Result<(Vec<Matrix>, Vec<f64>)> + Send + Sync;
+
+/// A user-provided candidate generator (BoTorch's `gen_candidates` callable).
+#[derive(Clone)]
+pub struct CustomGenerator(pub Arc<CustomGeneratorFn>);
+
+impl Debug for CustomGenerator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CustomGenerator")
+    }
+}
+
+impl CustomGenerator {
+    /// A generator from a closure.
+    pub fn new<F>(f: F) -> Self
+    where
+        F: Fn(&GenRequest<'_>) -> Result<(Vec<Matrix>, Vec<f64>)> + Send + Sync + 'static,
+    {
+        Self(Arc::new(f))
+    }
+}
+
+/// The candidate generator of [`optimize_acqf`] (BoTorch's `gen_candidates`).
+#[derive(Clone, Debug, Default)]
+pub enum CandidateGenerator {
+    /// `gen_candidates_scipy` (default): L-BFGS-B, or SLSQP with constraints.
+    #[default]
+    Scipy,
+    /// `gen_candidates_torch`: Adam with an exponential-moving-average
+    /// stopping criterion on every chunk of `batch_limit` restarts.
+    Torch(TorchGenOptions),
+    /// A user-provided generator, called for every chunk of `batch_limit`
+    /// restarts.
+    Custom(CustomGenerator),
+}
+
 /// Options of [`optimize_acqf`] (BoTorch's keyword arguments and `options`
 /// dictionary entries).
 #[derive(Clone, Debug)]
@@ -188,6 +284,56 @@ pub struct OptimizeAcqfOptions {
     /// (`options["frac_random"]`, `["num_inner_restarts"]`,
     /// `["raw_inner_samples"]`, `["eta"]`).
     pub one_shot: OneShotInitialConditionOptions,
+    /// Post-processing of the optimized candidates of all restarts
+    /// (`post_processing_func`); the acquisition values are recomputed.
+    pub post_processing: Option<PostProcessing>,
+    /// Time limit in seconds (`timeout_sec`), split evenly over the
+    /// sequential steps, the chunks of `batch_limit` restarts and the
+    /// L-BFGS-B problems of a chunk; the optimizers stop after the
+    /// iteration that exceeds it (not enforced for SLSQP).
+    pub timeout_sec: Option<f64>,
+    /// L-BFGS-B without constraints: `None` optimizes every restart as an
+    /// independent problem (BoTorch's parallel `fmin_l_bfgs_b_batched` path,
+    /// the default); `Some(k)` optimizes groups of `k` restarts of a chunk as
+    /// one problem whose objective is the sum of their values (BoTorch's
+    /// serial `scipy.optimize.minimize` path, taken with `timeout_sec`, with
+    /// options other than `maxiter`, `ftol`, `pgtol`, `factr`, `tol`,
+    /// `max_cor` and `maxls`, and with
+    /// `options["max_optimization_problem_aggregation_size"] = k`; use
+    /// `usize::MAX` for one problem per chunk). In that mode scipy's
+    /// `maxfun` default of 15000 applies, which the caller sets in
+    /// [`OptimizeAcqfOptions::lbfgsb`].
+    pub lbfgsb_aggregation: Option<usize>,
+    /// The candidate generator (`gen_candidates`).
+    pub gen_candidates: CandidateGenerator,
+    /// Select the initial conditions by their top acquisition values
+    /// (`options["topn"]` with `["largest"]` / `["sorted"]`).
+    pub topn: Option<TopnOptions>,
+    /// Add points sampled around the best baseline points to the raw samples
+    /// (`options["sample_around_best"]`; the Python layer finds the best
+    /// points like BoTorch's `sample_points_around_best`).
+    pub sample_around_best: Option<SampleAroundBest>,
+}
+
+impl OptimizeAcqfOptions {
+    /// The settings of [`gen_batch_initial_conditions`] corresponding to
+    /// these options.
+    pub fn initial_condition_options(&self) -> InitialConditionOptions {
+        InitialConditionOptions {
+            seed: self.seed,
+            eta: self.eta,
+            alpha: self.alpha,
+            nonnegative: self.nonnegative,
+            batch_limit: self.init_batch_limit.or(self.batch_limit),
+            fixed_features: self.fixed_features.clone(),
+            inequality_constraints: self.constraints.inequality.clone(),
+            equality_constraints: self.constraints.equality.clone(),
+            n_burnin: self.n_burnin,
+            n_thinning: self.n_thinning,
+            topn: self.topn,
+            sample_around_best: self.sample_around_best.clone(),
+        }
+    }
 }
 
 impl Default for OptimizeAcqfOptions {
@@ -211,6 +357,12 @@ impl Default for OptimizeAcqfOptions {
             n_thinning: DEFAULT_N_THINNING,
             ic_generator: None,
             one_shot: OneShotInitialConditionOptions::default(),
+            post_processing: None,
+            timeout_sec: None,
+            lbfgsb_aggregation: None,
+            gen_candidates: CandidateGenerator::Scipy,
+            topn: None,
+            sample_around_best: None,
         }
     }
 }
@@ -223,6 +375,10 @@ pub enum OptimizerStatus {
     /// SLSQP (parameter constraints) with SciPy's exit mode of the chunk's
     /// joint problem (0: success, 9: iteration limit).
     Slsqp(i32),
+    /// Adam (`gen_candidates_torch`); `true` if it stopped on the timeout.
+    Torch(bool),
+    /// A custom candidate generator.
+    Custom,
 }
 
 /// The result of one restart of [`gen_candidates_lbfgsb`] or of the SLSQP
@@ -415,6 +571,12 @@ pub fn optimize_acqf_detailed(
                 .into(),
         ));
     }
+    // The total timeout is split evenly over the sequential steps.
+    let step_options = OptimizeAcqfOptions {
+        timeout_sec: options.timeout_sec.map(|t| t / q as f64),
+        ..joint_options.clone()
+    };
+    let joint_options = step_options;
     let base_pending = acq_function.x_pending();
     let mut candidates: Vec<Matrix> = Vec::with_capacity(q);
     let mut values = Vec::with_capacity(q);
@@ -512,18 +674,7 @@ fn optimize_batch(
         }
     }
     let required = num_restarts.saturating_sub(provided.len());
-    let ic_options = InitialConditionOptions {
-        seed: options.seed,
-        eta: options.eta,
-        alpha: options.alpha,
-        nonnegative: options.nonnegative,
-        batch_limit: options.init_batch_limit.or(options.batch_limit),
-        fixed_features: options.fixed_features.clone(),
-        inequality_constraints: options.constraints.inequality.clone(),
-        equality_constraints: options.constraints.equality.clone(),
-        n_burnin: options.n_burnin,
-        n_thinning: options.n_thinning,
-    };
+    let ic_options = options.initial_condition_options();
     let generate = raw_samples > 0 && required > 0;
     let mut warnings = Vec::new();
     let make_ics =
@@ -596,20 +747,7 @@ fn optimize_batch(
             Ok(ics)
         };
     let run = |ics: &[Matrix]| -> Result<(Vec<RestartResult>, Vec<String>)> {
-        if use_slsqp {
-            run_slsqp(acq_function, bounds, ics, options)
-        } else {
-            let rs = run_restarts(acq_function, bounds, ics, options)?;
-            let failed = rs
-                .iter()
-                .any(|r| r.status == OptimizerStatus::Lbfgsb(LbfgsbStatus::AbnormalLineSearch));
-            let ws = if failed {
-                vec!["abnormal termination in the line search".to_string()]
-            } else {
-                Vec::new()
-            };
-            Ok((rs, ws))
-        }
+        generate_candidates(acq_function, bounds, ics, num_restarts, use_slsqp, options)
     };
     let ics = make_ics(rng, &mut warnings)?;
     let (mut restarts, opt_warnings) = run(&ics)?;
@@ -636,6 +774,13 @@ fn optimize_batch(
                         .into(),
                 );
             }
+        } else if provided.is_empty() || required > 0 {
+            // BoTorch announces a retry but has no raw samples to retry with.
+            warnings.push(format!(
+                "Optimization failed in `gen_candidates_scipy` with the following \
+                 warning(s):\n{opt_warnings:?}\nTrying again with a new set of initial \
+                 conditions."
+            ));
         } else {
             warnings.push(if use_slsqp {
                 format!(
@@ -653,6 +798,9 @@ fn optimize_batch(
                     .into()
             });
         }
+    }
+    if let Some(pp) = &options.post_processing {
+        post_process(acq_function, &mut restarts, pp)?;
     }
     if constrained {
         enforce_feasibility(acq_function, bounds, &mut restarts, options)?;
@@ -672,6 +820,157 @@ fn optimize_batch(
     })
 }
 
+/// The number of restarts per chunk (BoTorch's `batch_limit`, by default
+/// `num_restarts`, or 1 with nonlinear constraints).
+fn chunk_size(options: &OptimizeAcqfOptions, num_restarts: usize) -> usize {
+    let nonlinear = !options.constraints.nonlinear.is_empty();
+    options
+        .batch_limit
+        .unwrap_or(if nonlinear { 1 } else { num_restarts })
+        .max(1)
+}
+
+/// BoTorch's `_optimize_batch_candidates`: runs the candidate generator on
+/// the initial conditions in chunks of `batch_limit` restarts. Returns the
+/// restarts (in order) and the messages of BoTorch's `OptimizationWarning`s,
+/// which trigger the retry with new initial conditions.
+fn generate_candidates(
+    acq_function: &dyn AcquisitionFunction,
+    bounds: &Matrix,
+    ics: &[Matrix],
+    num_restarts: usize,
+    use_slsqp: bool,
+    options: &OptimizeAcqfOptions,
+) -> Result<(Vec<RestartResult>, Vec<String>)> {
+    let batch_limit = chunk_size(options, num_restarts);
+    let n_chunks = ics.len().div_ceil(batch_limit).max(1);
+    let chunk_timeout = options.timeout_sec.map(|t| t / n_chunks as f64);
+    match &options.gen_candidates {
+        CandidateGenerator::Scipy if use_slsqp => {
+            run_slsqp(acq_function, bounds, ics, options, batch_limit)
+        }
+        CandidateGenerator::Scipy => {
+            let rs = match options.lbfgsb_aggregation {
+                None => run_restarts(acq_function, bounds, ics, options, batch_limit)?,
+                Some(k) => {
+                    let mut out = Vec::with_capacity(ics.len());
+                    for chunk in ics.chunks(batch_limit) {
+                        out.extend(gen_candidates_lbfgsb_joint(
+                            chunk,
+                            acq_function,
+                            bounds,
+                            &options.fixed_features,
+                            &options.lbfgsb,
+                            k,
+                            chunk_timeout,
+                        )?);
+                    }
+                    out
+                }
+            };
+            let failed = rs
+                .iter()
+                .any(|r| r.status == OptimizerStatus::Lbfgsb(LbfgsbStatus::AbnormalLineSearch));
+            let ws = if failed {
+                vec!["abnormal termination in the line search".to_string()]
+            } else {
+                Vec::new()
+            };
+            Ok((rs, ws))
+        }
+        CandidateGenerator::Torch(torch_options) => {
+            if !options.constraints.is_empty() {
+                return Err(BotorchError::Unsupported(
+                    "gen_candidates_torch() got an unexpected keyword argument for the \
+                     parameter constraints: `gen_candidates_torch` does not support \
+                     parameter constraints."
+                        .into(),
+                ));
+            }
+            let mut out = Vec::with_capacity(ics.len());
+            for chunk in ics.chunks(batch_limit) {
+                let opts = TorchGenOptions {
+                    timeout_sec: chunk_timeout,
+                    ..*torch_options
+                };
+                let res = gen_candidates_torch(
+                    chunk,
+                    acq_function,
+                    bounds,
+                    &options.fixed_features,
+                    &opts,
+                    None,
+                )?;
+                for (candidates, acq_value) in res.candidates.into_iter().zip(res.acq_values) {
+                    out.push(RestartResult {
+                        candidates,
+                        acq_value,
+                        iterations: res.steps,
+                        evaluations: res.steps,
+                        status: OptimizerStatus::Torch(res.timed_out),
+                        feasible: true,
+                    });
+                }
+            }
+            Ok((out, Vec::new()))
+        }
+        CandidateGenerator::Custom(generator) => {
+            let mut out = Vec::with_capacity(ics.len());
+            for chunk in ics.chunks(batch_limit) {
+                let request = GenRequest {
+                    initial_conditions: chunk,
+                    acq_function,
+                    bounds,
+                    fixed_features: &options.fixed_features,
+                    timeout_sec: chunk_timeout,
+                };
+                let (cands, values) = (generator.0)(&request)?;
+                if cands.len() != chunk.len()
+                    || values.len() != chunk.len()
+                    || cands.iter().zip(chunk).any(|(a, b)| a.shape() != b.shape())
+                {
+                    return Err(BotorchError::DimensionMismatch(
+                        "gen_candidates must return candidates of the shape of the initial \
+                         conditions and one value per candidate set"
+                            .into(),
+                    ));
+                }
+                for (candidates, acq_value) in cands.into_iter().zip(values) {
+                    out.push(RestartResult {
+                        candidates,
+                        acq_value,
+                        iterations: 0,
+                        evaluations: 0,
+                        status: OptimizerStatus::Custom,
+                        feasible: true,
+                    });
+                }
+            }
+            Ok((out, Vec::new()))
+        }
+    }
+}
+
+/// Applies the post-processing function to the candidates of all restarts and
+/// recomputes their acquisition values (BoTorch's `post_processing_func`).
+fn post_process(
+    acq_function: &dyn AcquisitionFunction,
+    restarts: &mut [RestartResult],
+    pp: &PostProcessing,
+) -> Result<()> {
+    if restarts.is_empty() {
+        return Ok(());
+    }
+    let sets: Vec<Matrix> = restarts.iter().map(|r| r.candidates.clone()).collect();
+    let processed = pp.apply(&sets)?;
+    let values = acq_function.forward_many(&processed)?;
+    for ((r, x), v) in restarts.iter_mut().zip(processed).zip(values) {
+        r.candidates = x;
+        r.acq_value = v;
+    }
+    Ok(())
+}
+
 /// SLSQP over chunks of `batch_limit` restarts (BoTorch's constrained
 /// `_optimize_batch_candidates`); the chunks are independent problems and run
 /// in parallel. Returns the restarts and the optimization warnings.
@@ -680,12 +979,9 @@ fn run_slsqp(
     bounds: &Matrix,
     ics: &[Matrix],
     options: &OptimizeAcqfOptions,
+    batch_limit: usize,
 ) -> Result<(Vec<RestartResult>, Vec<String>)> {
     let nonlinear = !options.constraints.nonlinear.is_empty();
-    let batch_limit = options
-        .batch_limit
-        .unwrap_or(if nonlinear { 1 } else { ics.len() })
-        .max(1);
     if nonlinear && batch_limit != 1 {
         return Err(BotorchError::InvalidArgument(
             "`batch_limit` must be 1 when non-linear inequality constraints are given.".into(),
@@ -744,8 +1040,11 @@ fn enforce_feasibility(
             .iter()
             .map(|&i| restarts[i].candidates.clone())
             .collect();
-        let projected =
+        let mut projected =
             project_to_feasible_space(&sets, bounds, constraints, &options.fixed_features)?;
+        if let Some(pp) = &options.post_processing {
+            projected = pp.apply(&projected)?;
+        }
         let values = acq_function.forward_many(&projected)?;
         for ((&i, x), v) in infeasible.iter().zip(projected).zip(values) {
             restarts[i].feasible = evaluate_feasibility(&x, constraints, CONSTRAINT_TOLERANCE)?;
@@ -786,10 +1085,10 @@ fn run_restarts(
     bounds: &Matrix,
     ics: &[Matrix],
     options: &OptimizeAcqfOptions,
+    chunk: usize,
 ) -> Result<Vec<RestartResult>> {
-    let chunk = options.batch_limit.unwrap_or(ics.len()).max(1);
     let mut out = Vec::with_capacity(ics.len());
-    for c in ics.chunks(chunk) {
+    for c in ics.chunks(chunk.max(1)) {
         out.extend(gen_candidates_lbfgsb(
             c,
             acq_function,
@@ -799,6 +1098,161 @@ fn run_restarts(
         )?);
     }
     Ok(out)
+}
+
+/// Optimizes groups of `aggregation` initial conditions (`q × d` each) as one
+/// L-BFGS-B problem whose objective is the negated sum of their acquisition
+/// values (BoTorch's `gen_candidates_scipy` in its serial mode,
+/// `scipy.optimize.minimize` with `max_optimization_problem_aggregation_size`),
+/// keeping `fixed_features` fixed; the groups run in parallel. With a
+/// `timeout_sec`, every group gets `timeout_sec / n_groups` seconds and stops
+/// after the iteration that exceeds it (BoTorch's `minimize_with_timeout`).
+///
+/// # Errors
+/// See [`gen_candidates_lbfgsb`].
+pub fn gen_candidates_lbfgsb_joint(
+    initial_conditions: &[Matrix],
+    acq_function: &dyn AcquisitionFunction,
+    bounds: &Matrix,
+    fixed_features: &BTreeMap<usize, f64>,
+    options: &LbfgsbOptions,
+    aggregation: usize,
+    timeout_sec: Option<f64>,
+) -> Result<Vec<RestartResult>> {
+    let d = check_bounds(bounds)?;
+    check_fixed_features(fixed_features, bounds)?;
+    let free: Vec<usize> = (0..d).filter(|k| !fixed_features.contains_key(k)).collect();
+    let groups: Vec<&[Matrix]> = initial_conditions.chunks(aggregation.max(1)).collect();
+    let group_timeout = timeout_sec.map(|t| t / groups.len().max(1) as f64);
+    let results = groups
+        .par_iter()
+        .map(|g| {
+            optimize_group(
+                g,
+                acq_function,
+                bounds,
+                &free,
+                fixed_features,
+                options,
+                group_timeout,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(results.into_iter().flatten().collect())
+}
+
+/// One L-BFGS-B problem over several restarts (see
+/// [`gen_candidates_lbfgsb_joint`]).
+fn optimize_group(
+    ics: &[Matrix],
+    acq_function: &dyn AcquisitionFunction,
+    bounds: &Matrix,
+    free: &[usize],
+    fixed: &BTreeMap<usize, f64>,
+    options: &LbfgsbOptions,
+    timeout_sec: Option<f64>,
+) -> Result<Vec<RestartResult>> {
+    let start = Instant::now();
+    let d = bounds.ncols();
+    let b = ics.len();
+    if b == 0 {
+        return Ok(Vec::new());
+    }
+    let q = ics[0].nrows();
+    for ic in ics {
+        if ic.shape() != (q, d) || q == 0 {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "initial conditions must be {q} x {d}, got {}x{}",
+                ic.nrows(),
+                ic.ncols()
+            )));
+        }
+    }
+    let nf = free.len();
+    let per = q * nf;
+    let mut x0 = Vec::with_capacity(b * per);
+    let mut lower = Vec::with_capacity(b * per);
+    let mut upper = Vec::with_capacity(b * per);
+    for ic in ics {
+        let mut c = ic.clone();
+        clamp_to_bounds(&mut c, bounds, true)?;
+        for i in 0..q {
+            for &k in free {
+                x0.push(c[(i, k)]);
+                lower.push(bounds[(0, k)]);
+                upper.push(bounds[(1, k)]);
+            }
+        }
+    }
+    let assemble = |x: &[f64], r: usize| -> Matrix {
+        let mut m = Matrix::zeros(q, d);
+        for i in 0..q {
+            for (j, &k) in free.iter().enumerate() {
+                m[(i, k)] = x[r * per + i * nf + j];
+            }
+        }
+        apply_fixed_features(&mut m, fixed);
+        m
+    };
+    let objective = |x: &[f64]| -> Result<(f64, Vec<f64>)> {
+        if x.iter().any(|v| v.is_nan()) {
+            return Err(BotorchError::Numerical(format!(
+                "{} elements of the {} element array `x` are NaN.",
+                x.iter().filter(|v| v.is_nan()).count(),
+                x.len()
+            )));
+        }
+        let sets: Vec<Matrix> = (0..b).map(|r| assemble(x, r)).collect();
+        let evals = sets
+            .par_iter()
+            .map(|s| acq_function.forward_with_grad(s))
+            .collect::<Result<Vec<_>>>()?;
+        let mut total = 0.0;
+        let mut grad = Vec::with_capacity(b * per);
+        for (v, g) in &evals {
+            total += -v;
+            for i in 0..q {
+                for &k in free {
+                    grad.push(-g[(i, k)]);
+                }
+            }
+        }
+        if grad.iter().any(|v| v.is_nan()) {
+            return Err(BotorchError::Numerical(format!(
+                "{} elements of the {} element gradient array `gradf` are NaN. This often \
+                 indicates numerical issues.",
+                grad.iter().filter(|v| v.is_nan()).count(),
+                grad.len()
+            )));
+        }
+        Ok((total, grad))
+    };
+    let callback = |_: usize, _: &[f64], _: f64| -> bool {
+        timeout_sec.is_some_and(|t| start.elapsed().as_secs_f64() > t)
+    };
+    let res =
+        match lbfgsb::minimize_with_callback(objective, &x0, &lower, &upper, options, callback) {
+            Ok(r) => r,
+            Err(LbfgsbError::Objective(e)) => return Err(e),
+            Err(LbfgsbError::InvalidInput(msg)) => return Err(BotorchError::InvalidArgument(msg)),
+        };
+    let mut sets: Vec<Matrix> = (0..b).map(|r| assemble(&res.x, r)).collect();
+    for s in &mut sets {
+        clamp_to_bounds(s, bounds, true)?;
+    }
+    let values = acq_function.forward_many(&sets)?;
+    Ok(sets
+        .into_iter()
+        .zip(values)
+        .map(|(candidates, acq_value)| RestartResult {
+            candidates,
+            acq_value,
+            iterations: res.iterations,
+            evaluations: res.evaluations,
+            status: OptimizerStatus::Lbfgsb(res.status),
+            feasible: true,
+        })
+        .collect())
 }
 
 /// Optimizes the acquisition function from each of the initial conditions

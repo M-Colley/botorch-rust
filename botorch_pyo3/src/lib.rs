@@ -30,6 +30,7 @@ mod momf;
 mod multi_objective;
 mod nsga2;
 mod optim;
+mod optim_ext;
 mod pathwise;
 mod polytope;
 mod risk_measures;
@@ -109,5 +110,8 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Deterministic models, composite and callable acquisition functions.
     deterministic::register(m)?;
     composite::register(m)?;
+    // Mixed, discrete, cyclic and homotopy optimization, candidate
+    // generation and torch-style fitting (phase 9).
+    optim_ext::register(m)?;
     Ok(())
 }

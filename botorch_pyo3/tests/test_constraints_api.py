@@ -748,8 +748,12 @@ def test_gen_batch_initial_conditions(kind: str, single_model: SingleTaskGP) -> 
         equality_constraints=constraints_of(kind, EQ),
     )
     assert satisfies(eq_ics, eq=EQ, tol=1e-9)
+    # sample_around_best is supported (see test_9_optim.py); with equality
+    # constraints it is not, as in BoTorch.
     with pytest.raises(UnsupportedError):
-        gen_batch_initial_conditions(acqf, bounds, 1, 2, 8, options={"sample_around_best": True})
+        gen_batch_initial_conditions(
+            acqf, bounds, 1, 2, 8, options={"sample_around_best": True}, equality_constraints=EQ
+        )
     with pytest.raises(NotImplementedError, match="finite values"):
         gen_batch_initial_conditions(acqf, as_kind([[0.0, -math.inf], [1.0, 1.0]], kind), 1, 2, 8)
 

@@ -162,6 +162,21 @@ fn sample_all_priors(
     h.to_vector().as_slice().to_vec()
 }
 
+/// BoTorch's `sample_all_priors` on every element of a batched model:
+/// every hyperparameter that has a prior is drawn from it (in place).
+///
+/// # Errors
+/// The errors of [`SingleTaskGP::set_raw_parameters`].
+pub fn sample_all_priors_batched(model: &mut BatchedMultiOutputGP, seed: u64) -> Result<()> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    for m in model.models_mut() {
+        let h = m.hyperparameters().clone();
+        let x = sample_all_priors(m, &h, &mut rng);
+        m.set_raw_parameters(&x)?;
+    }
+    Ok(())
+}
+
 /// Models whose hyperparameters can be fitted by [`fit_gpytorch_mll`].
 pub trait Fittable {
     /// The summary returned by a successful fit.

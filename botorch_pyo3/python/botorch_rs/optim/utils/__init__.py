@@ -1,0 +1,25 @@
+"""Optimization utilities (``botorch.optim.utils``)."""
+
+from botorch_rs.optim.utils.acquisition_utils import (
+    columnwise_clamp,
+    fix_features,
+    get_X_baseline,
+)
+from botorch_rs.optim.utils.model_utils import (
+    TorchAttr,
+    get_name_filter,
+    get_parameters,
+    get_parameters_and_bounds,
+    sample_all_priors,
+)
+
+__all__ = [
+    "TorchAttr",
+    "columnwise_clamp",
+    "fix_features",
+    "get_X_baseline",
+    "get_name_filter",
+    "get_parameters",
+    "get_parameters_and_bounds",
+    "sample_all_priors",
+]

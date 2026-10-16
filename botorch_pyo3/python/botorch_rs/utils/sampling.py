@@ -267,8 +267,165 @@ def sample_simplex(
     )
 
 
+def batched_multinomial(
+    weights: Any,
+    num_samples: int,
+    replacement: bool = False,
+    generator: Any = None,
+    out: Any = None,
+) -> Any:
+    r"""Sample from multinomials with an arbitrary number of batch dimensions
+    (BoTorch's ``batched_multinomial``): for every row of ``weights``
+    (``batch_shape x num_categories``, non-negative, finite, not all zero),
+    ``num_samples`` category indices. Torch tensors are sampled with
+    ``torch.multinomial`` (and ``generator``), other arrays with Python's
+    ``random``.
+
+    Returns:
+        A ``batch_shape x num_samples`` integer array.
+    """
+    from botorch_rs.generation.sampling import batched_multinomial_indices
+
+    kind = first_kind(weights)
+    if kind.lib == "torch":
+        import torch
+
+        w = weights.reshape(-1, weights.shape[-1])
+        res = torch.multinomial(w, num_samples, replacement=replacement, generator=generator)
+        res = res.view(*weights.shape[:-1], num_samples)
+        if out is not None:
+            out.copy_(res)
+            return out
+        return res
+    data, shape = to_flat(weights, "weights")
+    n = shape[-1]
+    rows = len(data) // n if n else 0
+    idcs: list[int] = []
+    for r in range(rows):
+        idcs.extend(
+            batched_multinomial_indices(
+                [float(v) for v in data[r * n : (r + 1) * n]], num_samples, replacement, kind
+            )
+        )
+    out_shape = (*shape[:-1], num_samples)
+    if kind.lib == "numpy":
+        import numpy as np
+
+        return np.asarray(idcs, dtype=np.int64).reshape(out_shape)
+    values: Any = idcs
+    for size in reversed(out_shape[1:]):
+        values = [values[i : i + size] for i in range(0, len(values), size)]
+    return values
+
+
+def boltzmann_sample(
+    function_values: Any,
+    num_samples: int,
+    eta: float,
+    replacement: bool = False,
+    temp_decrease: float = 0.5,
+) -> Any:
+    r"""Boltzmann sampling from a set of function values (BoTorch's
+    ``boltzmann_sample``): indices drawn with weights ``exp(eta *
+    standardize(values))``, ``eta`` multiplied by ``temp_decrease`` while a
+    weight is infinite (one-dimensional ``function_values``).
+
+    Returns:
+        A ``num_samples`` integer array of sampled positions.
+    """
+    data, shape = to_flat(function_values, "function_values")
+    if len(shape) != 1:
+        raise NotImplementedError(
+            "botorch_rs's boltzmann_sample supports one-dimensional function values."
+        )
+    weights, _ = _rs.boltzmann_weights_py(
+        [float(v) for v in data], float(eta), float(temp_decrease)
+    )
+    kind = first_kind(function_values)
+    w = from_flat(list(weights), (len(weights),), kind)
+    return batched_multinomial(w, int(num_samples), replacement=replacement)
+
+
+def sample_truncated_normal_perturbations(
+    X: Any,
+    n_discrete_points: int,
+    sigma: float,
+    bounds: Any,
+    qmc: bool = True,
+    *,
+    seed: int | None = None,
+) -> Any:
+    r"""Sample points around ``X`` (BoTorch's
+    ``sample_truncated_normal_perturbations``): randomly chosen points of
+    ``X`` (``n x d``) perturbed by ``N(0, sigma^2 I)`` noise relative to the
+    bounds, truncated to stay within the bounds (inverse-transform sampling
+    of Sobol points if ``qmc``). ``seed`` (botorch_rs only) seeds the draws.
+
+    Returns:
+        An ``n_discrete_points x d`` array.
+    """
+    out = _rs.sample_truncated_normal_perturbations_py(
+        to_flat(X, "X"),
+        int(n_discrete_points),
+        float(sigma),
+        to_flat(bounds, "bounds"),
+        bool(qmc),
+        _seed(seed),
+    )
+    return from_pair(out, first_kind(X, bounds))
+
+
+def sample_perturbed_subset_dims(
+    X: Any,
+    bounds: Any,
+    n_discrete_points: int,
+    sigma: float = 1e-1,
+    qmc: bool = True,
+    prob_perturb: float | None = None,
+    *,
+    seed: int | None = None,
+) -> Any:
+    r"""Sample around ``X`` by perturbing a subset of the dimensions
+    (BoTorch's ``sample_perturbed_subset_dims``): every dimension of a
+    randomly chosen point of ``X`` is replaced by a truncated normal
+    perturbation of itself with probability ``prob_perturb`` (default
+    ``min(20 / d, 1)``); points without a perturbed dimension get ``ceil(d *
+    prob_perturb)`` random dimensions perturbed.
+
+    Unlike BoTorch, every point is perturbed around itself (BoTorch draws the
+    perturbations around a second, independently chosen point of ``X``).
+
+    Returns:
+        An ``n_discrete_points x d`` array.
+    """
+    bshape = to_flat(bounds, "bounds")[1]
+    xshape = to_flat(X, "X")[1]
+    if len(bshape) != 2:
+        from botorch_rs.exceptions.errors import BotorchTensorDimensionError
+
+        raise BotorchTensorDimensionError("bounds must be a `2 x d`-dim tensor.")
+    if len(xshape) != 2:
+        from botorch_rs.exceptions.errors import BotorchTensorDimensionError
+
+        raise BotorchTensorDimensionError("X must be a `n x d`-dim tensor.")
+    out = _rs.sample_perturbed_subset_dims_py(
+        to_flat(X, "X"),
+        to_flat(bounds, "bounds"),
+        int(n_discrete_points),
+        float(sigma),
+        bool(qmc),
+        None if prob_perturb is None else float(prob_perturb),
+        _seed(seed),
+    )
+    return from_pair(out, first_kind(X, bounds))
+
+
 __all__ = [
     "HitAndRunPolytopeSampler",
+    "batched_multinomial",
+    "boltzmann_sample",
+    "sample_perturbed_subset_dims",
+    "sample_truncated_normal_perturbations",
     "draw_sobol_normal_samples",
     "draw_sobol_samples",
     "find_interior_point",
