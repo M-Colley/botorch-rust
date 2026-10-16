@@ -45,8 +45,6 @@ import math
 import os
 import sys
 import warnings
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import Any
 
 import torch
@@ -88,33 +86,188 @@ def cases() -> list[dict[str, Any]]:
     out = [
         ("rbf_shared_d3", k("RBFKernel"), 3, {}),
         ("matern12_ard_d2", k("MaternKernel", nu=0.5, ard_num_dims=2), 2, {"exact_diagonal": True}),
-        ("matern32_scale_d2", k("ScaleKernel", sub(k("MaternKernel", nu=1.5, ard_num_dims=2))), 2, {}),
+        (
+            "matern32_scale_d2",
+            k("ScaleKernel", sub(k("MaternKernel", nu=1.5, ard_num_dims=2))),
+            2,
+            {},
+        ),
         ("matern52_active_d3", k("MaternKernel", ard_num_dims=2, active_dims=[0, 2]), 3, {}),
         ("rq_ard_d2", k("RQKernel", ard_num_dims=2), 2, {}),
         ("rq_interval_alpha_d2", k("RQKernel", alpha_constraint=con("Interval", 0.1, 5.0)), 2, {}),
         ("periodic_ard_d2", k("PeriodicKernel", ard_num_dims=2), 2, {}),
         ("periodic_shared_d2", k("ScaleKernel", sub(k("PeriodicKernel"))), 2, {}),
         ("linear_ard_d2", k("LinearKernel", ard_num_dims=2), 2, {}),
-        ("linear_plus_rbf_d2", k("AdditiveKernel", sub(k("LinearKernel")), sub(k("RBFKernel", ard_num_dims=2))), 2, {}),
+        (
+            "linear_plus_rbf_d2",
+            k("AdditiveKernel", sub(k("LinearKernel")), sub(k("RBFKernel", ard_num_dims=2))),
+            2,
+            {},
+        ),
         # (BoTorch's fit of this model fails: no fit case.)
-        ("polynomial2_d2", k("PolynomialKernel", power=2, offset_constraint=con("LessThan", 2.0)), 2, {"fit": False}),
+        (
+            "polynomial2_d2",
+            k("PolynomialKernel", power=2, offset_constraint=con("LessThan", 2.0)),
+            2,
+            {"fit": False},
+        ),
         ("cosine_d1", k("CosineKernel", period_length_prior=prior("GammaPrior", 2.0, 1.0)), 1, {}),
-        ("additive_active_d3", k("AdditiveKernel", sub(k("RBFKernel", active_dims=[0])), sub(k("MaternKernel", nu=2.5, ard_num_dims=2, active_dims=[1, 2]))), 3, {}),
-        ("product_scale_d3", k("ScaleKernel", sub(k("ProductKernel", sub(k("RBFKernel", ard_num_dims=2, active_dims=[0, 2])), sub(k("PeriodicKernel", active_dims=[1]))))), 3, {}),
-        ("index_d3", k("ProductKernel", sub(rbf2), sub(k("IndexKernel", num_tasks=3, rank=2, active_dims=[2]))), 3, {"tasks": True}),
-        ("positive_index_d3", k("ProductKernel", sub(rbf2), sub(k("PositiveIndexKernel", num_tasks=3, rank=1, active_dims=[2], task_prior=prior("BetaPrior", 2.5, 1.5)))), 3, {"tasks": True, "n": 18}),
-        ("categorical_d2", k("CategoricalKernel", ard_num_dims=2, lengthscale_prior=prior("GammaPrior", 2.0, 2.0)), 2, {"categorical": True}),
-        ("downsampling_d1", k("DownsamplingKernel", power_prior=prior("GammaPrior", 2.0, 1.0)), 1, {}),
-        ("expdecay_d1", k("ExponentialDecayKernel", offset_prior=prior("HalfNormalPrior", 1.0)), 1, {}),
+        (
+            "additive_active_d3",
+            k(
+                "AdditiveKernel",
+                sub(k("RBFKernel", active_dims=[0])),
+                sub(k("MaternKernel", nu=2.5, ard_num_dims=2, active_dims=[1, 2])),
+            ),
+            3,
+            {},
+        ),
+        (
+            "product_scale_d3",
+            k(
+                "ScaleKernel",
+                sub(
+                    k(
+                        "ProductKernel",
+                        sub(k("RBFKernel", ard_num_dims=2, active_dims=[0, 2])),
+                        sub(k("PeriodicKernel", active_dims=[1])),
+                    )
+                ),
+            ),
+            3,
+            {},
+        ),
+        (
+            "index_d3",
+            k(
+                "ProductKernel",
+                sub(rbf2),
+                sub(k("IndexKernel", num_tasks=3, rank=2, active_dims=[2])),
+            ),
+            3,
+            {"tasks": True},
+        ),
+        (
+            "positive_index_d3",
+            k(
+                "ProductKernel",
+                sub(rbf2),
+                sub(
+                    k(
+                        "PositiveIndexKernel",
+                        num_tasks=3,
+                        rank=1,
+                        active_dims=[2],
+                        task_prior=prior("BetaPrior", 2.5, 1.5),
+                    )
+                ),
+            ),
+            3,
+            {"tasks": True, "n": 18},
+        ),
+        (
+            "categorical_d2",
+            k("CategoricalKernel", ard_num_dims=2, lengthscale_prior=prior("GammaPrior", 2.0, 2.0)),
+            2,
+            {"categorical": True},
+        ),
+        (
+            "downsampling_d1",
+            k("DownsamplingKernel", power_prior=prior("GammaPrior", 2.0, 1.0)),
+            1,
+            {},
+        ),
+        (
+            "expdecay_d1",
+            k("ExponentialDecayKernel", offset_prior=prior("HalfNormalPrior", 1.0)),
+            1,
+            {},
+        ),
         ("bnn_d2", k("InfiniteWidthBNNKernel", depth=3), 2, {}),
         ("ltf1_d3", k("LinearTruncatedFidelityKernel", fidelity_dims=[2], dimension=3), 3, {}),
-        ("ltf2_d3", k("LinearTruncatedFidelityKernel", fidelity_dims=[1, 2], dimension=3, nu=1.5), 3, {}),
+        (
+            "ltf2_d3",
+            k("LinearTruncatedFidelityKernel", fidelity_dims=[1, 2], dimension=3, nu=1.5),
+            3,
+            {},
+        ),
         ("oak_d3", k("OrthogonalAdditiveKernel", dim=3, quad_deg=16, dtype=f64), 3, {}),
-        ("oak2_shared_d2", k("OrthogonalAdditiveKernel", dim=2, quad_deg=8, second_order=True, per_dim_lengthscales=False, dtype=f64, coeffs_1_prior=prior("LogNormalPrior", -1.0, 1.0)), 2, {}),
-        ("priors_mix_d2", k("AdditiveKernel", sub(k("ScaleKernel", sub(k("RBFKernel", ard_num_dims=2, lengthscale_prior=prior("NormalPrior", 0.6, 0.5), lengthscale_constraint=con("GreaterThan", 0.05, transform=None, initial_value=0.4))), outputscale_prior=prior("HalfNormalPrior", 2.0))), sub(k("LinearKernel", variance_prior=prior("HalfCauchyPrior", 0.5), variance_constraint=con("Interval", 1e-3, 4.0)))), 2, {"double_half_cauchy": True}),
-        ("rbf_fixed_noise_d2", k("ScaleKernel", sub(k("RBFKernel", ard_num_dims=2, active_dims=[1, 0]))), 2, {"fixed_noise": True}),
-        ("tree_m2_d2", k("ScaleKernel", sub(k("AdditiveKernel", sub(k("RBFKernel", active_dims=[0])), sub(k("MaternKernel", nu=0.5, active_dims=[1]))))), 2, {"m": 2, "exact_diagonal": True}),
-        ("tree_nostd_d2", k("ProductKernel", sub(k("RBFKernel", active_dims=[0])), sub(k("RQKernel", active_dims=[1]))), 2, {"standardize": False}),
+        (
+            "oak2_shared_d2",
+            k(
+                "OrthogonalAdditiveKernel",
+                dim=2,
+                quad_deg=8,
+                second_order=True,
+                per_dim_lengthscales=False,
+                dtype=f64,
+                coeffs_1_prior=prior("LogNormalPrior", -1.0, 1.0),
+            ),
+            2,
+            {},
+        ),
+        (
+            "priors_mix_d2",
+            k(
+                "AdditiveKernel",
+                sub(
+                    k(
+                        "ScaleKernel",
+                        sub(
+                            k(
+                                "RBFKernel",
+                                ard_num_dims=2,
+                                lengthscale_prior=prior("NormalPrior", 0.6, 0.5),
+                                lengthscale_constraint=con(
+                                    "GreaterThan", 0.05, transform=None, initial_value=0.4
+                                ),
+                            )
+                        ),
+                        outputscale_prior=prior("HalfNormalPrior", 2.0),
+                    )
+                ),
+                sub(
+                    k(
+                        "LinearKernel",
+                        variance_prior=prior("HalfCauchyPrior", 0.5),
+                        variance_constraint=con("Interval", 1e-3, 4.0),
+                    )
+                ),
+            ),
+            2,
+            {"double_half_cauchy": True},
+        ),
+        (
+            "rbf_fixed_noise_d2",
+            k("ScaleKernel", sub(k("RBFKernel", ard_num_dims=2, active_dims=[1, 0]))),
+            2,
+            {"fixed_noise": True},
+        ),
+        (
+            "tree_m2_d2",
+            k(
+                "ScaleKernel",
+                sub(
+                    k(
+                        "AdditiveKernel",
+                        sub(k("RBFKernel", active_dims=[0])),
+                        sub(k("MaternKernel", nu=0.5, active_dims=[1])),
+                    )
+                ),
+            ),
+            2,
+            {"m": 2, "exact_diagonal": True},
+        ),
+        (
+            "tree_nostd_d2",
+            k(
+                "ProductKernel",
+                sub(k("RBFKernel", active_dims=[0])),
+                sub(k("RQKernel", active_dims=[1])),
+            ),
+            2,
+            {"standardize": False},
+        ),
     ]
     return [{"name": n, "spec": s, "d": d, **o} for n, s, d, o in out]
 
@@ -122,50 +275,6 @@ def cases() -> list[dict[str, Any]]:
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
-
-
-@contextmanager
-def double_precision_half_cauchy() -> Iterator[None]:
-    """``HalfCauchyPrior.log_prob`` in double precision: torch's
-    ``HalfCauchy.log_prob`` casts its argument to the dtype of the base
-    ``Cauchy``, which GPyTorch leaves in float32 when the model is cast to
-    double precision. This evaluates the base ``Cauchy`` with its (float32)
-    scale in float64 instead."""
-    from torch.distributions import HalfCauchy
-
-    orig = HalfCauchy.log_prob
-
-    def log_prob(self: Any, value: Any) -> Any:
-        scale = self.base_dist.scale.to(value.dtype)
-        lp = -math.log(math.pi) - scale.log() - ((value / scale) ** 2).log1p() + math.log(2)
-        return torch.where(value >= 0, lp, -math.inf)
-
-    HalfCauchy.log_prob = log_prob
-    try:
-        yield
-    finally:
-        HalfCauchy.log_prob = orig
-
-
-@contextmanager
-def zero_diagonal_distances() -> Iterator[None]:
-    """GPyTorch's ``sq_dist`` with the diagonal of a set's distances to
-    itself zeroed also when the inputs require gradients."""
-    import gpytorch.kernels.kernel as kk
-
-    orig = kk.sq_dist
-
-    def sq_dist(x1: Any, x2: Any, x1_eq_x2: bool = False) -> Any:
-        res = orig(x1, x2, x1_eq_x2=x1_eq_x2)
-        if x1_eq_x2 and (x1.requires_grad or x2.requires_grad):
-            res = res - torch.diag_embed(res.diagonal(dim1=-2, dim2=-1))
-        return res
-
-    kk.sq_dist = sq_dist
-    try:
-        yield
-    finally:
-        kk.sq_dist = orig
 
 
 def make_data(case: dict[str, Any], seed: int) -> tuple[Any, Any, Any]:
@@ -356,7 +465,9 @@ def perturbed_twin(model: Any, case: dict[str, Any], seed: int, rel: float) -> A
     if case.get("tasks"):
         cols = cols[:-1]
     if not case.get("categorical"):
-        X[..., cols] = X[..., cols] * (1 + rel * torch.randn(X[..., cols].shape, generator=g, dtype=DT))
+        X[..., cols] = X[..., cols] * (
+            1 + rel * torch.randn(X[..., cols].shape, generator=g, dtype=DT)
+        )
     twin.train_inputs = (X,)
     twin.prediction_strategy = None
     return twin
@@ -390,11 +501,12 @@ def model_case(case: dict[str, Any], seed: int) -> dict[str, Any]:
     """The fixture of ``case``; with BoTorch's numerical quirks fixed for the
     cases that need it (``exact_diagonal``, ``double_half_cauchy``), and the
     change of the MLL by the fix as ``botorch_noise``."""
+    h = _helpers()
     fixes = []
     if case.get("exact_diagonal"):
-        fixes.append(zero_diagonal_distances)
+        fixes.append(h.zero_diagonal_distances)
     if case.get("double_half_cauchy"):
-        fixes.append(double_precision_half_cauchy)
+        fixes.append(h.double_precision_half_cauchy)
     if not fixes:
         return _model_case(case, seed)
     X, Y, Yvar = make_data(case, seed)
@@ -405,7 +517,7 @@ def model_case(case: dict[str, Any], seed: int) -> dict[str, Any]:
         for fix in fixes:
             stack.enter_context(fix())
         out = _model_case(case, seed)
-    out["botorch_noise"] = max(abs(a - b) for a, b in zip(plain, out["mll"]["value"]))
+    out["botorch_noise"] = max(abs(a - b) for a, b in zip(plain, out["mll"]["value"], strict=True))
     return out
 
 

@@ -231,7 +231,8 @@ impl FeatureMap for KernelFeatureMap {
 /// `num_features` features (BoTorch's `gen_kernel_features`), with
 /// frequencies drawn by
 /// [`draw_fourier_frequencies`] from
-/// `seed` (RBF: standard normal; Matérn-5/2: multivariate Student-t; a
+/// `seed` (RBF: standard normal; Matérn-ν: multivariate Student-t with
+/// `2ν` degrees of freedom; a
 /// `ScaleKernel` scales the features by the square root of its
 /// outputscale).
 ///

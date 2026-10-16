@@ -14,7 +14,12 @@
 //! positive definite even with jitter, or non-finite values) is retried from
 //! hyperparameters resampled from their priors (BoTorch's
 //! `sample_all_priors`; parameters without priors keep their initial values),
-//! up to `max_attempts` attempts in total. Hitting the iteration or evaluation
+//! up to `max_attempts` attempts in total. An invalid argument (a
+//! hyperparameter leaving the support of its prior, torch's `ValueError`)
+//! ends the fit with that error, as in BoTorch. For kernel trees, non-finite
+//! values and gradients go to L-BFGS-B like in BoTorch (whose line search
+//! backtracks from them); models with the standard RBF / Matérn kernels end
+//! the attempt on them. Hitting the iteration or evaluation
 //! limit is not a failure (BoTorch's `OptimizationStatus.STOPPED`).
 //!
 //! L-BFGS-B iterates are sensitive to round-off: on flat or ill-conditioned
@@ -184,7 +189,8 @@ pub trait Fittable {
     /// likelihood (see [`fit_gpytorch_mll`]).
     ///
     /// # Errors
-    /// [`BotorchError::InvalidArgument`] for invalid options and
+    /// [`BotorchError::InvalidArgument`] for invalid options or hyperparameters
+    /// outside the support of their priors, and
     /// [`BotorchError::ModelFitting`] if all attempts fail.
     fn fit_mll(&mut self, options: FitOptions) -> Result<Self::Output>;
 }
@@ -198,7 +204,8 @@ pub trait Fittable {
 /// [module documentation](self) for multi-output, batched and list models.
 ///
 /// # Errors
-/// [`BotorchError::InvalidArgument`] for invalid options and
+/// [`BotorchError::InvalidArgument`] for invalid options or hyperparameters
+/// outside the support of their priors, and
 /// [`BotorchError::ModelFitting`] if all attempts fail.
 pub fn fit_gpytorch_mll<M: Fittable + ?Sized>(
     model: &mut M,
@@ -220,6 +227,11 @@ fn fit_single_task_gp(model: &mut SingleTaskGP, options: FitOptions) -> Result<F
     let initial = model.hyperparameters().clone();
     let x_init = initial.to_vector().as_slice().to_vec();
     let bounds = model.raw_parameter_bounds();
+    // Kernel trees hand non-finite values and gradients to L-BFGS-B, like
+    // BoTorch (scipy's line search backtracks from them; e.g. a periodic
+    // kernel whose lengthscale underflows). The standard RBF / Matérn
+    // kernels keep ending the attempt, as before kernel trees existed.
+    let nan_tolerant = matches!(model.covar_module(), CovarModule::Tree(_));
     let (result, x) = {
         let mll = ExactMarginalLogLikelihood::new(model);
         let model_ref: &SingleTaskGP = model;
@@ -227,7 +239,7 @@ fn fit_single_task_gp(model: &mut SingleTaskGP, options: FitOptions) -> Result<F
             &x_init,
             &bounds,
             options,
-            false,
+            nan_tolerant,
             |x| {
                 mll.value_and_grad(x)
                     .map(|(v, g)| (v, g.as_slice().to_vec()))
@@ -252,7 +264,8 @@ fn fit_single_task_gp(model: &mut SingleTaskGP, options: FitOptions) -> Result<F
 /// to NaN); otherwise they end the attempt.
 ///
 /// # Errors
-/// [`BotorchError::InvalidArgument`] for invalid options and
+/// [`BotorchError::InvalidArgument`] for invalid options or hyperparameters
+/// outside the support of their priors, and
 /// [`BotorchError::ModelFitting`] if all attempts fail.
 pub(crate) fn minimize_with_retries<F, S>(
     x_init: &[f64],
@@ -322,6 +335,10 @@ where
                 }
                 messages.push(format!("attempt {attempt}: {}", res.status.message()));
             }
+            // BoTorch retries only numerical failures (`NotPSDError`); an
+            // invalid argument (e.g. a hyperparameter outside the support of
+            // its prior, torch's `ValueError`) ends the fit.
+            Err(LbfgsbError::Objective(e @ BotorchError::InvalidArgument(_))) => return Err(e),
             Err(LbfgsbError::Objective(e)) => messages.push(format!("attempt {attempt}: {e}")),
             Err(LbfgsbError::InvalidInput(msg)) => return Err(BotorchError::InvalidArgument(msg)),
         }

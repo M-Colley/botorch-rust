@@ -89,7 +89,7 @@ def _active_dims(active_dims: Any) -> tuple[int, ...] | None:
         return None
     data, _ = to_flat(active_dims, "active_dims")
     dims = tuple(int(v) for v in data)
-    if any(d != v for d, v in zip(dims, data)):
+    if any(d != v for d, v in zip(dims, data, strict=True)):
         raise ValueError(f"active_dims must be integers, got {active_dims!r}.")
     return dims
 
@@ -383,9 +383,7 @@ class Kernel(GPModule):
         super()._bind(model)
         self._prefix = prefix
         for name, values in self._local.items():
-            model._set_raw_param(
-                prefix + name, from_flat(values, self._param_shape(name), LIST)
-            )
+            model._set_raw_param(prefix + name, from_flat(values, self._param_shape(name), LIST))
         self._local = {}
         for attr, child in self._children():
             child._bind(model, f"{prefix}{attr}.")
@@ -467,7 +465,8 @@ class Kernel(GPModule):
             raw = raws[_flat_index(idx, kbatch)]
             xa = _batch_matrix(a, idx)
             xb = _batch_matrix(b, idx) if b is not None else None
-            data, shape = node.evaluate(raw, xa, xb, diag)
+            data, out_shape = node.evaluate(raw, xa, xb, diag)
+            shape = tuple(out_shape)
             results.extend(data)
         return from_flat(results, (*out_batch, *shape), kind)
 
@@ -732,7 +731,10 @@ class IndexKernel(Kernel):
     task indices ``i, j`` (``gpytorch.kernels.IndexKernel``); the input is a
     single column (``active_dims=[task_feature]``) truncated to integers."""
 
-    _params = (("covar_factor", None, None), ("raw_var", "raw_var_constraint", None))
+    _params: tuple[tuple[str, str | None, str | None], ...] = (
+        ("covar_factor", None, None),
+        ("raw_var", "raw_var_constraint", None),
+    )
 
     def __init__(
         self,
@@ -744,7 +746,9 @@ class IndexKernel(Kernel):
     ) -> None:
         rank = 1 if rank is None else int(rank)
         if rank > num_tasks:
-            raise RuntimeError("Cannot create a task covariance matrix larger than the number of tasks")
+            raise RuntimeError(
+                "Cannot create a task covariance matrix larger than the number of tasks"
+            )
         super().__init__(**kwargs)
         _check_prior(prior, "prior")
         _check_constraint(var_constraint, "var_constraint")
@@ -793,7 +797,9 @@ def _task_covariance(kernel: Kernel, normalize: int | None) -> Any:
     """The task covariance of an index kernel (per batch element)."""
     t = kernel.num_tasks  # type: ignore[attr-defined]
     r = kernel.rank  # type: ignore[attr-defined]
-    factor_name = "covar_factor" if "covar_factor" in kernel._element_shapes() else "raw_covar_factor"
+    factor_name = (
+        "covar_factor" if "covar_factor" in kernel._element_shapes() else "raw_covar_factor"
+    )
     fc = kernel._constraint_of(factor_name)
     f_raw = kernel._raw_values(factor_name)
     f = f_raw if fc is None else [fc.transform(v) for v in f_raw]
@@ -804,8 +810,11 @@ def _task_covariance(kernel: Kernel, normalize: int | None) -> Any:
     for e in range(nb):
         fe = f[e * t * r : (e + 1) * t * r]
         b = [
-            [sum(fe[i * r + k] * fe[j * r + k] for k in range(r)) + (var[e * t + i] if i == j else 0.0)
-             for j in range(t)]
+            [
+                sum(fe[i * r + k] * fe[j * r + k] for k in range(r))
+                + (var[e * t + i] if i == j else 0.0)
+                for j in range(t)
+            ]
             for i in range(t)
         ]
         if normalize is not None:

@@ -917,14 +917,14 @@ impl KernelNode {
     /// `OrthogonalAdditiveKernel`.
     ///
     /// # Errors
-    /// [`BotorchError::DimensionMismatch`] (BoTorch:
-    /// `BotorchTensorDimensionError`) for inconsistent dimensions and
-    /// [`BotorchError::InvalidArgument`] for out-of-range `active_dims`.
+    /// [`BotorchError::Runtime`] (GPyTorch and torch raise `RuntimeError`)
+    /// for inconsistent dimensions and out-of-range `active_dims`;
+    /// [`BotorchError::InvalidArgument`] for out-of-range fidelity dimensions.
     pub fn validate(&self, input_dim: usize) -> Result<()> {
         let k = match &self.active_dims {
             Some(dims) => {
                 if let Some(&bad) = dims.iter().find(|&&j| j >= input_dim) {
-                    return Err(BotorchError::InvalidArgument(format!(
+                    return Err(BotorchError::Runtime(format!(
                         "active_dims {dims:?} contain index {bad}, but the kernel's inputs have \
                          only {input_dim} dimensions (index out of range)"
                     )));
@@ -936,7 +936,7 @@ impl KernelNode {
         let check_ard = |p: &ParamSpec, what: &str| -> Result<()> {
             let size = *p.shape.last().unwrap_or(&1);
             if size != 1 && size != k {
-                return Err(BotorchError::DimensionMismatch(format!(
+                return Err(BotorchError::Runtime(format!(
                     "The kernel's {what} has {size} entries (ard_num_dims={size}) but its \
                      inputs have d={k} dimensions."
                 )));
@@ -955,7 +955,7 @@ impl KernelNode {
             KernelType::Linear => check_ard(&self.params[0], "variance")?,
             KernelType::Index { .. } | KernelType::PositiveIndex { .. } => {
                 if k != 1 {
-                    return Err(BotorchError::DimensionMismatch(format!(
+                    return Err(BotorchError::Runtime(format!(
                         "An index kernel needs exactly one input dimension (the task \
                          feature, e.g. active_dims=[t]), got {k}."
                     )));
@@ -969,7 +969,7 @@ impl KernelNode {
                     )));
                 }
                 if k <= fidelity_dims.len() {
-                    return Err(BotorchError::InvalidArgument(
+                    return Err(BotorchError::Runtime(
                         "Input to LinearTruncatedFidelityKernel must have at least one \
                          non-fidelity dimension."
                             .into(),
@@ -982,7 +982,7 @@ impl KernelNode {
             }
             KernelType::OrthogonalAdditive { dim, .. } => {
                 if *dim != k {
-                    return Err(BotorchError::DimensionMismatch(format!(
+                    return Err(BotorchError::Runtime(format!(
                         "The OrthogonalAdditiveKernel has dim={dim} but its inputs have \
                          d={k} dimensions."
                     )));

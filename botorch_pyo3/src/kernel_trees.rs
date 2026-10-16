@@ -406,7 +406,9 @@ pub fn leggauss_py(deg: usize) -> (Vec<f64>, Vec<f64>) {
     botorch_core::kernels::oak::leggauss(deg)
 }
 
-/// GPyTorch's `LKJCovariancePrior(n, eta, sd_prior).log_prob(matrix)`.
+/// The log density of GPyTorch's `LKJCovariancePrior(n, eta, sd_prior)` at
+/// `matrix`: the LKJ log density of the correlations plus the log densities
+/// of the standard deviations.
 #[pyfunction]
 #[pyo3(name = "lkj_covariance_log_prob")]
 pub fn lkj_covariance_log_prob_py(

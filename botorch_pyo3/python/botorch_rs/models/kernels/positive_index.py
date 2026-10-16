@@ -29,7 +29,7 @@ class PositiveIndexKernel(IndexKernel):
     default).
     """
 
-    _params = (
+    _params: tuple[tuple[str, str | None, str | None], ...] = (
         ("raw_var", "raw_var_constraint", None),
         ("raw_covar_factor", "raw_covar_factor_constraint", None),
     )
@@ -51,8 +51,7 @@ class PositiveIndexKernel(IndexKernel):
             )
         if not (0 <= target_task_index < num_tasks):
             raise ValueError(
-                f"target_task_index must be between 0 and {num_tasks - 1}, "
-                f"got {target_task_index}"
+                f"target_task_index must be between 0 and {num_tasks - 1}, got {target_task_index}"
             )
         Kernel.__init__(self, **kwargs)
         _check_prior(task_prior, "task_prior")

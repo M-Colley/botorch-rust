@@ -72,8 +72,10 @@ def draw_kernel_feature_paths(
 ) -> GeneralizedLinearPath | PathList:
     r"""Draws functions from a Bayesian-linear-model-based approximation to a
     GP prior: ``f(x) = c + sum_l w_l phi_l(x)`` with ``num_features`` random
-    Fourier features ``phi`` of the model's kernel (RBF or Matérn-5/2, with
-    or without a ``ScaleKernel``), its constant mean ``c`` and standard normal
+    Fourier features ``phi`` of the model's kernel (an RBF or Matérn kernel
+    with any ``nu``, ARD or a shared lengthscale and ``active_dims``, with or
+    without a ``ScaleKernel``; BoTorch raises ``NotImplementedError`` for other
+    kernels, and so does botorch_rs), its constant mean ``c`` and standard normal
     weights ``w``. The paths apply the model's input transform and return
     values in the model's original outcome space.
 

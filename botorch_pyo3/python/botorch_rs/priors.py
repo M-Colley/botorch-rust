@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import struct
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -174,7 +175,9 @@ class HalfCauchyPrior(Prior):
     """Half-Cauchy prior with density ``2 / (pi scale (1 + (x / scale)**2))``
     on ``x >= 0``."""
 
-    def __init__(self, scale: Any, validate_args: bool | None = None, transform: Any = None) -> None:
+    def __init__(
+        self, scale: Any, validate_args: bool | None = None, transform: Any = None
+    ) -> None:
         _check_transform(transform)
         self.scale = as_float(scale, "scale")
         self._rs = _rs.Prior.half_cauchy(self.scale, _float32())
@@ -186,7 +189,9 @@ class HalfCauchyPrior(Prior):
 class HalfNormalPrior(Prior):
     """Half-normal prior with density ``2 Normal(x | 0, scale**2)`` on ``x >= 0``."""
 
-    def __init__(self, scale: Any, validate_args: bool | None = None, transform: Any = None) -> None:
+    def __init__(
+        self, scale: Any, validate_args: bool | None = None, transform: Any = None
+    ) -> None:
         _check_transform(transform)
         self.scale = as_float(scale, "scale")
         f32 = _float32()
@@ -235,16 +240,21 @@ class LKJCholeskyFactorPrior(Prior):
     matrix with concentration ``eta``
     (``gpytorch.priors.LKJCholeskyFactorPrior``)."""
 
-    def __init__(self, n: int, eta: Any, validate_args: bool = False, transform: Any = None) -> None:
+    def __init__(
+        self, n: int, eta: Any, validate_args: bool = False, transform: Any = None
+    ) -> None:
         _check_transform(transform)
         if not isinstance(n, int) or n < 1:
             raise ValueError("n must be a positive integer")
         self.n = n
+        # torch stores eta as a tensor: a float in torch's default dtype, a
+        # tensor in its own dtype. The normalizing constant is evaluated in
+        # double precision (torch: in eta's dtype).
+        dtype = getattr(eta, "dtype", None)
+        single = _float32() if dtype is None else str(dtype) in ("torch.float32", "float32")
         self.eta = float(as_float(eta, "eta"))
-        # torch stores eta as a float32 tensor.
-        import struct
-
-        self.eta = struct.unpack("f", struct.pack("f", self.eta))[0]
+        if single:
+            self.eta = struct.unpack("f", struct.pack("f", self.eta))[0]
 
     def _log_normalizer(self) -> float:
         dm1 = self.n - 1
@@ -304,7 +314,14 @@ class LKJCovariancePrior(LKJPrior):
         self.correlation_prior = LKJPrior(n, eta)
 
     def log_prob(self, x: Any) -> Any:
-        """The log density of the covariance matrices ``x`` (``... x n x n``)."""
+        """The log densities of the covariance matrices ``x`` (``... x n x n``):
+        the LKJ log density of the correlations plus the log densities of the
+        standard deviations.
+
+        Deviation: GPyTorch returns ``... x n`` values for a univariate
+        ``sd_prior`` (the correlation term plus the log density of each
+        standard deviation), whose sum, which a model's MLL adds, counts the
+        correlation term ``n`` times."""
         mats, batch = _matrices(x, self.n)
         values = []
         for m in mats:

@@ -137,7 +137,9 @@ def _check_module_batch_shape(module: Any, aug: tuple[int, ...], what: str) -> N
                 "parameters between the parts of a kernel tree."
             )
         seen.add(id(mod))
-        shape = tuple(mod._batch_shape if isinstance(mod, Kernel) else getattr(mod, "batch_shape", ()))
+        shape = tuple(
+            mod._batch_shape if isinstance(mod, Kernel) else getattr(mod, "batch_shape", ())
+        )
         if shape == aug:
             continue
         if aug and not shape:
@@ -226,8 +228,7 @@ class SingleTaskGP(Model):
                 )
             if covar_module._model is not None:
                 raise UnsupportedError(
-                    "This kernel is already part of another model; create a new one for each "
-                    "model."
+                    "This kernel is already part of another model; create a new one for each model."
                 )
             _check_module_batch_shape(covar_module, aug, "covar_module")
         if mean_module is not None:

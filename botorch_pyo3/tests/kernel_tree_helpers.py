@@ -18,9 +18,12 @@ A *spec* is a JSON-compatible dict ``{"type": <class name>, "args": [...],
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import importlib
+import math
 import random
+from collections.abc import Iterator
 from typing import Any
 
 #: Kernel classes of GPyTorch (``gpytorch.kernels``) and of BoTorch
@@ -233,3 +236,54 @@ def random_spec(r: random.Random, d: int, depth: int = 0) -> dict[str, Any]:
         _add(kw, "outputscale_constraint", _maybe_constraint(r))
         node = kernel("ScaleKernel", sub(node), **kw)
     return node
+
+
+# ----------------------------------------------------------------------
+# BoTorch's numerical quirks, fixed for comparisons
+# ----------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def double_precision_half_cauchy() -> Iterator[None]:
+    """``HalfCauchyPrior.log_prob`` in double precision: torch's
+    ``HalfCauchy.log_prob`` casts its argument to the dtype of the base
+    ``Cauchy``, which GPyTorch leaves in float32 when the model is cast to
+    double precision. This evaluates the base ``Cauchy`` with its (float32)
+    scale in float64 instead."""
+    import torch
+    from torch.distributions import HalfCauchy
+
+    orig = HalfCauchy.log_prob
+
+    def log_prob(self: Any, value: Any) -> Any:
+        scale = self.base_dist.scale.to(value.dtype)
+        lp = -math.log(math.pi) - scale.log() - ((value / scale) ** 2).log1p() + math.log(2)
+        return torch.where(value >= 0, lp, -math.inf)
+
+    HalfCauchy.log_prob = log_prob
+    try:
+        yield
+    finally:
+        HalfCauchy.log_prob = orig
+
+
+@contextlib.contextmanager
+def zero_diagonal_distances() -> Iterator[None]:
+    """GPyTorch's ``sq_dist`` with the diagonal of a set's distances to
+    itself zeroed also when the inputs require gradients."""
+    import gpytorch.kernels.kernel as kk
+    import torch
+
+    orig = kk.sq_dist
+
+    def sq_dist(x1: Any, x2: Any, x1_eq_x2: bool = False) -> Any:
+        res = orig(x1, x2, x1_eq_x2=x1_eq_x2)
+        if x1_eq_x2 and (x1.requires_grad or x2.requires_grad):
+            res = res - torch.diag_embed(res.diagonal(dim1=-2, dim2=-1))
+        return res
+
+    kk.sq_dist = sq_dist
+    try:
+        yield
+    finally:
+        kk.sq_dist = orig

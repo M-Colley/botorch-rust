@@ -303,8 +303,9 @@ impl TreeKernel {
     ///
     /// # Errors
     /// [`BotorchError::DimensionMismatch`] for a wrong number of columns,
-    /// [`BotorchError::InvalidArgument`] for task indices out of range
-    /// (index kernels) and inputs outside the unit cube
+    /// [`BotorchError::Runtime`] for task indices out of range (index
+    /// kernels, torch's `RuntimeError`), [`BotorchError::InvalidArgument`]
+    /// for inputs outside the unit cube
     /// (`OrthogonalAdditiveKernel`, BoTorch's `ValueError`).
     pub fn prepare(&self, x: &Matrix) -> Result<TreePrep> {
         if x.ncols() != self.input_dim {
@@ -680,13 +681,19 @@ fn index_state(
     }
     let b = match target {
         Some(t) => {
+            // A target variance that underflowed to zero gives NaN entries,
+            // as in torch, which BoTorch's fit turns into a NaN loss
+            // (linear_operator's `NanError`).
             let s = c[(t, t)];
-            if s.is_nan() || s <= 0.0 {
-                return Err(BotorchError::InvalidArgument(format!(
-                    "the target task variance of a PositiveIndexKernel must be positive, got {s}"
-                )));
+            let b = c.map(|v| v / s);
+            let count = b.iter().filter(|v| v.is_nan()).count();
+            if count > 0 {
+                return Err(BotorchError::Nan {
+                    count,
+                    total: b.len(),
+                });
             }
-            c.map(|v| v / s)
+            b
         }
         None => c.clone(),
     };
@@ -899,7 +906,7 @@ impl Node {
                 for &v in &local {
                     let t = v.trunc();
                     if !(t >= 0.0 && (t as usize) < st.num_tasks) || v.is_nan() {
-                        return Err(BotorchError::InvalidArgument(format!(
+                        return Err(BotorchError::Runtime(format!(
                             "task index {v} is out of range for {} tasks (index out of range)",
                             st.num_tasks
                         )));
@@ -987,9 +994,9 @@ impl Node {
                 (1.0 + r2 / (2.0 * alpha)).powf(-alpha)
             }
             NodeKind::Periodic { ls, .. } => {
-                if same {
-                    return 1.0;
-                }
+                // GPyTorch clamps every per-dimension distance at 1e-15, also
+                // on the diagonal: `exp(-2 sin²(1e-15) / ℓ)` is 1 unless the
+                // lengthscale is below ~1e-14, and vanishes below ~1e-30.
                 let mut e = 0.0;
                 for ((x, y), l) in a.row(i).iter().zip(b.row(j)).zip(ls) {
                     let s = (x - y).abs().max(MIN_DIST).sin();
@@ -1137,10 +1144,10 @@ impl Node {
     fn diag_mode(&self, a: &NodePrep, i: usize) -> f64 {
         match &self.kind {
             NodeKind::Stationary { kind, .. } => kind.diag_value(),
-            NodeKind::Rq { .. }
-            | NodeKind::Periodic { .. }
-            | NodeKind::Cosine { .. }
-            | NodeKind::Categorical { .. } => 1.0,
+            // Unclamped zero distances: `exp(-2 Σ sin²(0) / ℓ)`, which is NaN
+            // for a lengthscale that underflowed to zero, as in GPyTorch.
+            NodeKind::Periodic { ls, .. } => ls.iter().map(|l| 0.0 / l * -2.0).sum::<f64>().exp(),
+            NodeKind::Rq { .. } | NodeKind::Cosine { .. } | NodeKind::Categorical { .. } => 1.0,
             NodeKind::ExpDecay { power, offset, .. } => {
                 // `torch.linalg.norm(x1 - (-x2))` without clamping.
                 let s: f64 = a.row(i).iter().map(|x| (x + x) * (x + x)).sum();
@@ -1439,17 +1446,18 @@ impl Node {
             } => {
                 let mut gl = vec![0.0; k];
                 let mut gp = vec![0.0; k];
-                for_pairs(w, false, |i, j, wij| {
-                    let v = self.value(a, i, a, j, false);
+                // Including the diagonal and clamped distances (whose sines
+                // enter the lengthscale gradient, not the period gradient).
+                for_pairs(w, true, |i, j, wij| {
+                    let v = self.value(a, i, a, j, i == j);
                     let (x, y) = (a.row(i), a.row(j));
                     for m in 0..k {
                         let d = (x[m] - y[m]).abs();
-                        if d < MIN_DIST {
-                            continue;
-                        }
-                        let s = d.sin();
+                        let s = d.max(MIN_DIST).sin();
                         gl[m] += wij * v * 2.0 * s * s / (ls[m] * ls[m]);
-                        gp[m] += wij * v * 2.0 * (2.0 * d).sin() * d / (ls[m] * period[m]);
+                        if d >= MIN_DIST {
+                            gp[m] += wij * v * 2.0 * (2.0 * d).sin() * d / (ls[m] * period[m]);
+                        }
                     }
                 });
                 let nl = if *ls_shared { 1 } else { k };
@@ -1772,8 +1780,15 @@ fn index_prior(
     }
 }
 
-/// GPyTorch's `LKJCovariancePrior(n, eta, sd_prior).log_prob(B)` and its
-/// gradient with respect to the entries of `B`.
+/// The log density of GPyTorch's `LKJCovariancePrior(n, eta, sd_prior)` at
+/// the covariance matrix `B`, `log p_LKJ(R) + Σᵢ log p_sd(σᵢ)` (correlations
+/// `R`, standard deviations `σ`), and its gradient with respect to the
+/// entries of `B`.
+///
+/// Deviation: with a univariate `sd_prior` (all priors of botorch_rs),
+/// GPyTorch returns the `n` values `log p_LKJ(R) + log p_sd(σᵢ)` (the
+/// correlation term broadcast over the standard deviations), so its MLL,
+/// which adds their sum, counts the correlation term `n` times.
 ///
 /// # Errors
 /// [`BotorchError::InvalidArgument`] for negative variances or a

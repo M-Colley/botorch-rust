@@ -29,8 +29,7 @@ class BetaPrior(Prior):
 
     def __repr__(self) -> str:
         return (
-            f"BetaPrior(concentration1={self.concentration1}, "
-            f"concentration0={self.concentration0})"
+            f"BetaPrior(concentration1={self.concentration1}, concentration0={self.concentration0})"
         )
 
 

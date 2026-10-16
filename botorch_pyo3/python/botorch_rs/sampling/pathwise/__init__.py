@@ -5,7 +5,8 @@ cheaply and with exact gradients (Wilson et al., 2020, 2021).
 Supported: ``draw_matheron_paths`` and ``get_matheron_path_model`` for
 botorch_rs ``SingleTaskGP`` (one or several outputs) and ``ModelListGP``
 models, ``draw_kernel_feature_paths`` (random Fourier features of RBF and
-Matérn-5/2 kernels, with or without ``ScaleKernel``) and ``gaussian_update``.
+Matérn kernels, with ``active_dims``, with or without ``ScaleKernel``) and
+``gaussian_update``.
 The random numbers come from botorch_rs's generators (keyword-only ``seed``)
 or are passed explicitly (keyword-only ``draws``); given BoTorch's draws, the
 paths equal BoTorch's to rounding. ``gen_kernel_features`` and

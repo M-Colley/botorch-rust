@@ -18,7 +18,7 @@
 //!
 //! | BoTorch | botorch_core |
 //! |---|---|
-//! | `gen_kernel_features(kernel, num_inputs, num_outputs)` | [`features::gen_kernel_features`]` -> `[`features::KernelFeatureMap`] (RBF, Matérn-5/2, `ScaleKernel`) |
+//! | `gen_kernel_features(kernel, num_inputs, num_outputs)` | [`features::gen_kernel_features`]` -> `[`features::KernelFeatureMap`] (RBF, Matérn, `active_dims`, `ScaleKernel`) |
 //! | `KernelEvaluationMap(kernel, points)` | [`features::KernelEvaluationMap`] |
 //! | `GeneralizedLinearPath`, `PathList`, `PathDict`, `SamplePath` | [`paths::GeneralizedLinearPath`], [`paths::PathList`], [`paths::PathDict`], the [`paths::SamplePath`] trait |
 //! | `draw_kernel_feature_paths(model, sample_shape)` | [`prior_samplers::draw_kernel_feature_paths`] |
