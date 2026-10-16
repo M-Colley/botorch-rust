@@ -16,15 +16,16 @@ tensors, and Python-level loops around SciPy's optimizers. botorch-rust
 evaluates the same mathematics natively in double precision, with analytic
 gradients and multi-start optimizations running in parallel. A complete
 30-iteration BO loop on Hartmann-6 (model fitting plus acquisition
-optimization in every iteration) takes 165 ms instead of 15.1 s, and a
-`LogExpectedImprovement` optimization with 10 restarts 1.2 ms instead of
-104 ms (single thread, see [Benchmarks](#benchmarks)). This makes BO practical inside tight
+optimization in every iteration) takes 351 ms instead of 16.6 s, a
+`LogExpectedImprovement` optimization with 10 restarts 2.4 ms instead of
+98 ms, and 20 iterations of multi-objective BO with qLogNEHVI 8.3 s instead of
+117 s (single thread, see [Benchmarks](#benchmarks)). This makes BO practical inside tight
 loops: many repetitions for benchmarking, cheap objective functions, or
 interactive use.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-dark.png">
-  <img alt="Dot plot of single-thread wall-clock times on a log scale, botorch-rust versus BoTorch: Bayesian optimization loop 165 ms vs 15.1 s (91×); LogEI optimization 85× faster, with a linear constraint 82×; qLogEI 21×; qLogNEI 7.5×; GP fitting 163×, 9.4× and 1.3× faster for 20, 100 and 300 points." src="docs/assets/benchmark-light.png">
+  <img alt="Dot plot of single-thread wall-clock times on a log scale, botorch-rust versus BoTorch: Bayesian optimization loop 351 ms vs 16.6 s (47×); LogEI optimization 40× faster, with a linear constraint 90×; qLogEI 33×; qLogNEI 9.5×; GP fitting 172×, 11× and 1.4× faster for 20, 100 and 300 points; multi-objective BO loop 14×, qLogNEHVI 9.9×, qLogEHVI 9.2×." src="docs/assets/benchmark-light.png">
 </picture>
 
 ### No PyTorch dependency
@@ -926,7 +927,7 @@ joint problem instead of one problem per restart.
 ## Benchmarks
 
 Wall time through the Python API (`scripts/benchmark.py`): the median over runs
-with different seeds (5 runs, 3 for the BO loop) after a warm-up run, where a
+with different seeds (5 runs, 3 for the BO loops) after a warm-up run, where a
 run of a task shorter than 0.2 s repeats it until the run takes 0.2 s. Measured
 on an Intel Core Ultra 7 155H laptop (22 logical CPUs, Windows 11) with Python
 3.13.12, PyTorch 2.13.0 on the CPU and BoTorch main at
@@ -936,14 +937,17 @@ da00e0401. "1 thread" sets `torch.set_num_threads(1)` and
 
 | Task | botorch-rust, 1 thread | BoTorch, 1 thread | speedup | botorch-rust, 22 threads | BoTorch, 16 threads | speedup |
 |---|---|---|---|---|---|---|
-| BO loop, 30 iterations | 165.0 ms | 15.06 s | 91× | 165.3 ms | 20.20 s | 122× |
-| optimize_acqf, LogEI, q = 1 | 1.2 ms | 104.4 ms | 85× | 997 µs | 122.6 ms | 123× |
-| optimize_acqf, LogEI, q = 1, sum(x) <= 2 | 40.7 ms | 3.34 s | 82× | 59.3 ms | 3.81 s | 64× |
-| optimize_acqf, qLogEI, q = 3 | 76.8 ms | 1.59 s | 21× | 35.9 ms | 4.06 s | 113× |
-| optimize_acqf, qLogNEI, q = 1 | 24.1 ms | 180.7 ms | 7.5× | 13.4 ms | 262.4 ms | 20× |
-| fit, n = 20 | 1.7 ms | 277.5 ms | 163× | 1.5 ms | 353.1 ms | 235× |
-| fit, n = 100 | 16.8 ms | 157.6 ms | 9.4× | 15.0 ms | 226.6 ms | 15× |
-| fit, n = 300 | 252.3 ms | 319.9 ms | 1.3× | 244.2 ms | 317.5 ms | 1.3× |
+| BO loop, 30 iterations | 350.6 ms | 16.59 s | 47× | 165.8 ms | 19.12 s | 115× |
+| optimize_acqf, LogEI, q = 1 | 2.4 ms | 98.3 ms | 40× | 736 µs | 131.3 ms | 178× |
+| optimize_acqf, LogEI, q = 1, sum(x) <= 2 | 39.3 ms | 3.52 s | 90× | 46.6 ms | 3.50 s | 75× |
+| optimize_acqf, qLogEI, q = 3 | 90.3 ms | 3.02 s | 33× | 35.5 ms | 2.73 s | 77× |
+| optimize_acqf, qLogNEI, q = 1 | 24.1 ms | 229.0 ms | 9.5× | 10.2 ms | 208.4 ms | 20× |
+| fit, n = 20 | 1.7 ms | 299.5 ms | 172× | 1.8 ms | 350.2 ms | 199× |
+| fit, n = 100 | 17.2 ms | 192.8 ms | 11× | 17.7 ms | 232.3 ms | 13× |
+| fit, n = 300 | 257.2 ms | 352.2 ms | 1.4× | 260.2 ms | 305.6 ms | 1.2× |
+| MOBO loop, qLogNEHVI, 20 iterations | 8.34 s | 116.98 s | 14× | 1.75 s | 76.88 s | 44× |
+| optimize_acqf, qLogNEHVI, m = 2, q = 2 | 242.9 ms | 2.40 s | 9.9× | 50.3 ms | 4.20 s | 84× |
+| optimize_acqf, qLogEHVI, m = 3, q = 2 | 1.08 s | 9.95 s | 9.2× | 140.4 ms | 4.05 s | 29× |
 
 Tasks (Hartmann-6):
 
@@ -957,21 +961,36 @@ Tasks (Hartmann-6):
 - **`fit`:** `SingleTaskGP` + `fit_gpytorch_mll` on n Weyl points, from
   BoTorch's default initialization.
 
+Multi-objective tasks:
+
+- **MOBO loop:** BoTorch's qLogNEHVI tutorial on BraninCurrin (the loop of
+  `examples/mobo_loop.rs`): 6 Sobol points, then 20 iterations, each fitting a
+  two-output model with `Normalize` and optimizing qLogNEHVI for q = 2
+  sequential candidates. The result is the final hypervolume.
+- **`optimize_acqf`:** 10 restarts and 512 raw samples on 30-point DTLZ2 models
+  (d = 6) with fixed hyperparameters: qLogNEHVI (m = 2, q = 2 sequential) and
+  qLogEHVI (m = 3, q = 2, the same 128 explicit base samples in both
+  libraries).
+
 Both libraries reach the same results (single thread, median over the runs):
 
 | Task | botorch-rust | BoTorch |
 |---|---|---|
-| BO loop, 30 iterations | -3.159930 | -3.152344 |
+| BO loop, 30 iterations | -3.159930 | -3.093440 |
 | optimize_acqf, LogEI, q = 1 | -0.961844 | -0.961844 |
 | optimize_acqf, LogEI, q = 1, sum(x) <= 2 | -1.032489 | -1.032489 |
-| optimize_acqf, qLogEI, q = 3 | -0.900625 | -0.900680 |
+| optimize_acqf, qLogEI, q = 3 | -0.900625 | -0.900679 |
 | optimize_acqf, qLogNEI, q = 1 | -0.939031 | -0.938889 |
 | fit, n = 20 | 1.720727 | 1.720727 |
 | fit, n = 100 | 1.088884 | 1.088884 |
 | fit, n = 300 | 0.817381 | 0.817381 |
+| MOBO loop, qLogNEHVI, 20 iterations | 57.822098 | 57.901275 |
+| optimize_acqf, qLogNEHVI, m = 2, q = 2 | -4.633851 | -4.555190 |
+| optimize_acqf, qLogEHVI, m = 3, q = 2 | -1.493424 | -1.492753 |
 
 The fitted losses and the LogEI optima, with and without the constraint, are
-identical. qLogNEI differs because the libraries' Sobol sequences differ. The BO
+identical. qLogNEI and qLogNEHVI differ because the libraries' Sobol sequences
+differ. The BO
 loop result is from a single design; over 30 designs the loops are statistically
 indistinguishable (median −3.156 vs −3.159).
 
@@ -979,12 +998,13 @@ The speedups are largest where BoTorch's per-call overhead dominates: small
 models and many cheap evaluations. Fitting cost grows as O(n³). At n = 300 the
 dense linear algebra dominates, and BoTorch's optimized BLAS/LAPACK nearly
 catches up (botorch-rust uses `nalgebra`, single-threaded). The restarts of
-`optimize_acqf` run in parallel, which pays off for the MC acquisition functions
-with the default number of threads.
+`optimize_acqf` run in parallel, which pays off for the MC acquisition
+functions with the default number of threads: the multi-objective tasks are
+29-84× faster than BoTorch with all cores.
 
 Optimization runs with different seeds take different numbers of iterations,
-so their times vary: up to 3.6× between the fastest and the slowest run of a
-task (BoTorch's qLogEI). The chart and the tables are generated from
+so their times vary: up to 7.3× between the fastest and the slowest run of a
+task. The chart and the tables are generated from
 [docs/assets/benchmark.json](docs/assets/benchmark.json), which holds every run:
 
 ```console

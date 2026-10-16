@@ -377,7 +377,7 @@ def multi_objective_tasks(lib: Library) -> list[Task]:
         Task(
             f"MOBO loop, qLogNEHVI, {MOBO_ITERATIONS} iterations",
             "Multi-objective BO",
-            f"BraninCurrin, qLogNEHVI, {MOBO_ITERATIONS} iterations",
+            f"BraninCurrin, {MOBO_ITERATIONS} iterations",
             mobo_loop,
         ),
         Task(
@@ -573,7 +573,7 @@ def main() -> None:
         loops = f" ({args.loop_repeats} for the BO loops)" if has_loop else ""
         n_runs = f"{args.repeats} run" + ("s" if args.repeats != 1 else "")
         meta = {
-            "subtitle": f"Hartmann-6, one thread each, median of {n_runs}{loops}. {cpu}.",
+            "subtitle": f"One thread each, median of {n_runs}{loops}. {cpu}.",
             "date": datetime.date.today().isoformat(),
             "repeats": args.repeats,
             "loop_repeats": args.loop_repeats,
