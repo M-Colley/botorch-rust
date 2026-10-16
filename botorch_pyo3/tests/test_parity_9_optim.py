@@ -29,6 +29,9 @@ through the Python API, side by side on identical models and inputs:
   ``fit_gpytorch_mll_scipy`` (single and batched models, parameter subsets,
   bounds), ``ExpMAStoppingCriterion``, the closures and parameter helpers;
 * ``gen_loo_cv_folds`` and ``batch_cross_validation``;
+* ``optimize_acqf`` with ``qKnowledgeGradient`` (phase 8) and the options of
+  this phase (``post_processing_func``, ``timeout_sec``,
+  ``gen_candidates_torch``, ``return_full_tree``);
 * the exceptions of invalid inputs.
 
 All comparisons start from identical inputs (initial conditions, recorded or
@@ -1250,3 +1253,75 @@ def test_errors_match_botorch(p: dict[str, Any]) -> None:
     )
     assert math.isfinite(1.0)
     _ = copy
+
+
+# ---------------------------------------------------------------------------
+# One-shot acquisition functions (phase 8) with the options of this phase
+# ---------------------------------------------------------------------------
+
+
+def _kg_pair(seed: int, n_f: int = 4) -> tuple[Any, Any]:
+    """A ``qKnowledgeGradient`` pair with the same fantasy base samples."""
+    from botorch.acquisition import qKnowledgeGradient as BtKG
+    from botorch.sampling import SobolQMCNormalSampler as BtSobol
+
+    from botorch_rs.acquisition import qKnowledgeGradient as RsKG
+    from botorch_rs.sampling import SobolQMCNormalSampler as RsSobol
+
+    bt, rs, _ = model_pair(ModelSpec(n=10, d=2), seed)
+    base = torch.randn(n_f, 1, 1, dtype=DT, generator=_gen(seed + 1))
+    sb, sr = BtSobol(torch.Size([n_f])), RsSobol(torch.Size([n_f]))
+    sb.base_samples = base.clone()
+    sr.base_samples = base.clone()
+    return BtKG(bt, num_fantasies=n_f, sampler=sb), RsKG(rs, num_fantasies=n_f, sampler=sr)
+
+
+@pytest.mark.parametrize("variant", ["post_processing", "timeout", "torch", "full_tree"])
+def test_knowledge_gradient_with_phase9_options(variant: str) -> None:
+    """``optimize_acqf`` with a ``qKnowledgeGradient`` and the options of this
+    phase from identical augmented initial conditions: BoTorch post-processes
+    and re-evaluates the full trees (``b x (q + num_fantasies) x d``) before
+    choosing the best restart and extracting the candidates. The L-BFGS-B
+    variants run on both of BoTorch's paths where it has them
+    (``lbfgsb_modes``; 0.18.1 with SciPy 1.18 has the serial path only)."""
+    a_bt, a_rs = _kg_pair(31)
+    bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=DT)
+    ics = torch.rand(3, 5, 2, dtype=DT, generator=_gen(32))
+    calls: list[tuple[int, ...]] = []
+
+    def post(X: Any) -> Any:
+        calls.append(tuple(X.shape))
+        return X.clamp(0.1, 0.9)
+
+    kb: dict[str, Any] = {}
+    kr: dict[str, Any] = {}
+    modes: list[dict[str, Any]] = lbfgsb_modes()
+    if variant in ("post_processing", "full_tree"):
+        kb["post_processing_func"] = kr["post_processing_func"] = post
+    if variant == "full_tree":
+        kb["return_full_tree"] = kr["return_full_tree"] = True
+    if variant == "timeout":
+        # Large enough not to stop; selects the serial L-BFGS-B path.
+        kb["timeout_sec"] = kr["timeout_sec"] = 100.0
+        modes = [{}]
+    if variant == "torch":
+        kb["gen_candidates"], kr["gen_candidates"] = (
+            bt_gen.gen_candidates_torch,
+            rs_gen.gen_candidates_torch,
+        )
+        modes = [{}]
+    for options in modes:
+        tag = f"{variant} [{'serial' if options else 'default'}]"
+        calls.clear()
+        bt = bto.optimize_acqf(
+            a_bt, bounds, 1, 3, batch_initial_conditions=ics, options=dict(options), **kb
+        )
+        n_bt = len(calls)
+        rs = rso.optimize_acqf(
+            a_rs, bounds, 1, 3, batch_initial_conditions=ics, options=dict(options), **kr
+        )
+        assert tuple(rs[0].shape) == tuple(bt[0].shape)
+        assert calls[n_bt:] == calls[:n_bt]
+        if variant in ("post_processing", "full_tree"):
+            assert calls[0] == (3, 5, 2)
+        check_pair(f"qKnowledgeGradient {tag}", rs, (bt[0], bt[1].detach()))

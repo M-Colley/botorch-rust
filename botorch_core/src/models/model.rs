@@ -64,6 +64,16 @@ pub trait Model: Send + Sync + Debug {
         None
     }
 
+    /// The numbers of outputs of the sub-models whose fantasies are sampled
+    /// jointly (the groups of [`Model::output_gps`], in order): BoTorch's
+    /// `fantasize` samples the observations of a (multi-output) GP from its
+    /// joint posterior over its outputs, with base samples for all of them,
+    /// and a `ModelList` fantasizes every sub-model on its own with the same
+    /// sampler. The default is one group of all outputs.
+    fn fantasy_output_groups(&self) -> Option<Vec<usize>> {
+        self.output_gps().map(|g| vec![g.len()])
+    }
+
     /// The number of posterior points per input point: `n_w` for a model
     /// with a one-to-many input transform (BoTorch's `InputPerturbation`,
     /// see [`crate::transforms::input`]), 1 otherwise (the default).

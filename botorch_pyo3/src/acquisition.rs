@@ -25,8 +25,8 @@ use botorch_core::acquisition::{
     ProbabilityOfImprovement, PruneOptions, QExpectedImprovement, QLogExpectedImprovement,
     QLogExpectedImprovementOptions, QLogNoisyExpectedImprovement,
     QLogNoisyExpectedImprovementOptions, QLogProbabilityOfFeasibility,
-    QLogProbabilityOfFeasibilityOptions, QProbabilityOfImprovement, QSimpleRegret,
-    QUpperConfidenceBound, UpperConfidenceBound,
+    QLogProbabilityOfFeasibilityOptions, QLowerConfidenceBound, QPosteriorStandardDeviation,
+    QProbabilityOfImprovement, QSimpleRegret, QUpperConfidenceBound, UpperConfidenceBound,
 };
 use botorch_core::utils::objective::{McConstraint, OutcomeConstraints};
 use botorch_core::{Matrix, Model, Vector};
@@ -137,6 +137,7 @@ pub(crate) fn objective_of(
                 .into_py_result()?,
             )
         }
+        "penalized" => crate::so_wrappers::penalized_objective(spec)?,
         "native" => {
             let obj: PyRef<'_, crate::risk_measures::PyRiskMeasure> =
                 spec.get_item(1)?.extract()?;
@@ -180,12 +181,14 @@ const ANALYTIC: [&str; 7] = [
 ];
 
 /// The sample-reducing Monte-Carlo acquisition functions.
-const MONTE_CARLO: [&str; 5] = [
+const MONTE_CARLO: [&str; 7] = [
     "qExpectedImprovement",
     "qProbabilityOfImprovement",
     "qLogExpectedImprovement",
     "qUpperConfidenceBound",
     "qSimpleRegret",
+    "qLowerConfidenceBound",
+    "qPosteriorStandardDeviation",
 ];
 
 /// The `'static` name in `names` equal to `name`.
@@ -321,6 +324,13 @@ impl PyAcquisitionFunction {
                 QUpperConfidenceBound::new(m, require(beta, "beta", name)?, options)
                     .into_py_result()?,
             ),
+            "qLowerConfidenceBound" => Arc::new(
+                QLowerConfidenceBound::new(m, require(beta, "beta", name)?, options)
+                    .into_py_result()?,
+            ),
+            "qPosteriorStandardDeviation" => {
+                Arc::new(QPosteriorStandardDeviation::new(m, options).into_py_result()?)
+            }
             _ => Arc::new(QSimpleRegret::new(m, options).into_py_result()?),
         };
         Ok(Self::new_plain(inner, name))

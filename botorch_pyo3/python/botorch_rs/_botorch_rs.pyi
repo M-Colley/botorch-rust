@@ -1191,6 +1191,16 @@ class HvkgState:
         num_inner_restarts: int | None = None,
         raw_inner_samples: int | None = None,
         one_shot_eta: float | None = None,
+        nonnegative: bool = False,
+        n_burnin: int | None = None,
+        n_thinning: int | None = None,
+        topn: bool = False,
+        largest: bool = True,
+        sorted: bool = True,
+        sample_around_best: Array | None = None,
+        sample_around_best_sigma: float | None = None,
+        sample_around_best_subset_sigma: float | None = None,
+        sample_around_best_prob_perturb: float | None = None,
     ) -> tuple[ArrayBuf, list[str]]: ...
 
 def q_hypervolume_knowledge_gradient(
@@ -1362,6 +1372,229 @@ def weighted_log_mean_exp(
     terms: Sequence[AcquisitionFunction], weights: Sequence[float]
 ) -> AcquisitionFunction: ...
 def callable_acquisition_function(callable: Any, dim: int) -> AcquisitionFunction: ...
+
+# Single-objective acquisition functions (phase 8).
+
+Draws = tuple[Array, Array, Array]
+
+class KnowledgeGradientState:
+    def gen_one_shot_initial_conditions(
+        self,
+        bounds: Array,
+        q: int,
+        num_restarts: int,
+        raw_samples: int,
+        *,
+        fixed_features: dict[int, float] | None = None,
+        inequality_constraints: Sequence[Any] | None = None,
+        equality_constraints: Sequence[Any] | None = None,
+        seed: int | None = None,
+        eta: float | None = None,
+        alpha: float | None = None,
+        batch_limit: int | None = None,
+        init_batch_limit: int | None = None,
+        frac_random: float | None = None,
+        num_inner_restarts: int | None = None,
+        raw_inner_samples: int | None = None,
+        one_shot_eta: float | None = None,
+        nonnegative: bool = False,
+        n_burnin: int | None = None,
+        n_thinning: int | None = None,
+        topn: bool = False,
+        largest: bool = True,
+        sorted: bool = True,
+        sample_around_best: Array | None = None,
+        sample_around_best_sigma: float | None = None,
+        sample_around_best_subset_sigma: float | None = None,
+        sample_around_best_prob_perturb: float | None = None,
+    ) -> tuple[ArrayOut, list[str]]: ...
+    def evaluate(
+        self,
+        x: Array,
+        bounds: Array,
+        num_restarts: int = 20,
+        raw_samples: int = 1024,
+        *,
+        frac_random: float | None = None,
+        num_inner_restarts: int | None = None,
+        raw_inner_samples: int | None = None,
+        eta: float | None = None,
+        seed: int | None = None,
+        maxiter: int | None = None,
+        maxfun: int | None = None,
+        ftol: float | None = None,
+        gtol: float | None = None,
+    ) -> tuple[list[float], list[int]]: ...
+    def current_value_function(self) -> AcquisitionFunction: ...
+    @property
+    def num_fantasies(self) -> int: ...
+    @property
+    def value_function_name(self) -> str: ...
+    @property
+    def inner_sampler_seed(self) -> int | None: ...
+
+def q_knowledge_gradient(
+    model: Model,
+    num_fantasies: int | None = 64,
+    sampler: SobolQMCNormalSampler | None = None,
+    objective: Any = None,
+    transform: tuple[Sequence[float], float] | None = None,
+    inner_sampler: SobolQMCNormalSampler | None = None,
+    x_pending: Array | None = None,
+    current_value: float | None = None,
+    multi_fidelity: bool = False,
+    cost_aware_utility: CostAwareUtility | None = None,
+    project: Any = None,
+    expand: Any = None,
+    value_function: tuple[str, dict[str, Any]] | None = None,
+) -> tuple[AcquisitionFunction, KnowledgeGradientState]: ...
+def projected_acquisition_function(
+    base: AcquisitionFunction, project: Any
+) -> AcquisitionFunction: ...
+
+class NoisyExpectedImprovementState:
+    def x_baseline(self) -> ArrayOut: ...
+    def baseline_best_f(self) -> list[float] | None: ...
+    def lower_bound_points(self) -> ArrayOut: ...
+    def infeasible_lower_bound(self) -> float | None: ...
+    @property
+    def cache_root(self) -> bool: ...
+
+def q_noisy_expected_improvement(
+    model: Model,
+    x_baseline: Array,
+    sampler: SobolQMCNormalSampler | None = None,
+    x_pending: Array | None = None,
+    objective: Any = None,
+    constraints: Sequence[Callable[[Any], Any]] | None = None,
+    eta: Sequence[float] | None = None,
+    prune_baseline: bool = True,
+    prune_num_samples: int = 2048,
+    prune_max_frac: float = 1.0,
+    prune_seed: int | None = None,
+    cache_root: bool = True,
+    lower_bound_points: Array | None = None,
+) -> tuple[AcquisitionFunction, NoisyExpectedImprovementState]: ...
+def log_probability_of_feasibility(
+    model: Model, constraints: Sequence[tuple[int, float | None, float | None]]
+) -> AcquisitionFunction: ...
+def scalarized_posterior_mean(model: Model, weights: Sequence[float]) -> AcquisitionFunction: ...
+def q_analytic_probability_of_improvement(
+    model: Model, best_f: float, maximize: bool = True
+) -> AcquisitionFunction: ...
+def noisy_expected_improvement(
+    model: Model,
+    x_observed: Array,
+    num_fantasies: int = 20,
+    maximize: bool = True,
+    sampler: SobolQMCNormalSampler | None = None,
+    log: bool = False,
+    transform: tuple[Sequence[float], float] | None = None,
+) -> tuple[AcquisitionFunction, list[float]]: ...
+
+class MaxValueEntropyState:
+    def posterior_max_values(self) -> list[float]: ...
+    def set_posterior_max_values(self, values: Sequence[float]) -> None: ...
+    def candidate_set(self) -> ArrayOut: ...
+
+def q_max_value_entropy(
+    model: Model,
+    candidate_set: Array,
+    kind: str,
+    num_fantasies: int = 16,
+    num_mv_samples: int = 10,
+    num_y_samples: int = 128,
+    transform: tuple[Sequence[float], float] | None = None,
+    use_gumbel: bool = True,
+    maximize: bool = True,
+    x_pending: Array | None = None,
+    train_inputs: Array | None = None,
+    sampler: SobolQMCNormalSampler | None = None,
+    fantasies_sampler: SobolQMCNormalSampler | None = None,
+    seed: int | None = None,
+    cost_aware_utility: CostAwareUtility | None = None,
+    project: Any = None,
+    expand: Any = None,
+) -> tuple[AcquisitionFunction, MaxValueEntropyState]: ...
+def sample_max_value_gumbel(
+    model: Model,
+    candidate_set: Array,
+    uniforms: Sequence[float],
+    maximize: bool = True,
+    transform: tuple[Sequence[float], float] | None = None,
+) -> list[float]: ...
+def sample_max_value_thompson(
+    model: Model,
+    candidate_set: Array,
+    base_samples: Array,
+    maximize: bool = True,
+    transform: tuple[Sequence[float], float] | None = None,
+) -> list[float]: ...
+def q_joint_entropy_search(
+    model: Model,
+    optimal_inputs: Array,
+    optimal_outputs: Array,
+    condition_noiseless: bool = True,
+    condition_noise: Sequence[float] | None = None,
+    transform: tuple[Sequence[float], float] | None = None,
+    x_pending: Array | None = None,
+    estimation_type: str = "LB",
+    sampler: SobolQMCNormalSampler | None = None,
+) -> AcquisitionFunction: ...
+def get_optimal_samples(
+    model: Model,
+    bounds: Array,
+    num_optima: int,
+    raw_samples: int = 1024,
+    num_restarts: int = 20,
+    transform: tuple[Sequence[float], float] | None = None,
+    objective: Any = None,
+    return_transformed: bool = False,
+    num_features: int = 1024,
+    seed: int | None = None,
+    draws: Sequence[Draws] | None = None,
+    candidates: Array | None = None,
+    maxiter: int | None = None,
+) -> tuple[ArrayOut, ArrayOut]: ...
+
+class ThompsonSamplingState:
+    def redraw(self, batch_size: int, draws: Sequence[Draws] | None = None) -> None: ...
+    @property
+    def batch_size(self) -> int | None: ...
+
+def pathwise_thompson_sampling(
+    model: Model,
+    objective: Any = None,
+    transform: tuple[Sequence[float], float] | None = None,
+    num_features: int = 1024,
+    seed: int | None = None,
+) -> tuple[AcquisitionFunction, ThompsonSamplingState]: ...
+def q_neg_integrated_posterior_variance(
+    model: Model,
+    mc_points: Array,
+    transform: tuple[Sequence[float], float] | None = None,
+    x_pending: Array | None = None,
+) -> AcquisitionFunction: ...
+def penalized_acquisition_function(
+    raw_acqf: AcquisitionFunction, penalty: Any, regularization_parameter: float
+) -> AcquisitionFunction: ...
+def proximal_acquisition_function(
+    acq_function: AcquisitionFunction,
+    model: Model,
+    proximal_weights: Sequence[float],
+    transformed_weighting: bool = True,
+    beta: float | None = None,
+) -> AcquisitionFunction: ...
+def fixed_feature_acquisition_function(
+    acq_function: AcquisitionFunction, d: int, columns: Sequence[int], values: Array
+) -> AcquisitionFunction: ...
+def prior_guided_acquisition_function(
+    acq_function: AcquisitionFunction,
+    prior_module: Callable[[Any], Any],
+    log: bool = False,
+    prior_exponent: float = 1.0,
+    x_pending: Array | None = None,
+) -> AcquisitionFunction: ...
 
 # Phase 9: optimization and candidate generation.
 

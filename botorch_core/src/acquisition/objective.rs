@@ -207,7 +207,11 @@ impl ScalarizedPosteriorTransform {
 
     /// Pulls adjoints of the scalarized posterior over `q` points back to the
     /// adjoints of the `m`-output posterior (the transpose of the linear map).
-    fn pull_back(&self, mean_adjoint: &Vector, covariance_adjoint: &Matrix) -> (Vector, Matrix) {
+    pub(crate) fn pull_back(
+        &self,
+        mean_adjoint: &Vector,
+        covariance_adjoint: &Matrix,
+    ) -> (Vector, Matrix) {
         let w = &self.weights;
         let m = w.len();
         let q = mean_adjoint.len();

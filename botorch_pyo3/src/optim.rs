@@ -430,6 +430,24 @@ pub fn optimize_acqf(
     Ok(optimize_out(result, q, d))
 }
 
+/// The `sample_around_best` setting of the initialization: the best points
+/// (`best_X`, found by the Python layer) and the perturbation scales.
+pub fn sample_around_best_arg(
+    best_x: Option<Array>,
+    sigma: Option<f64>,
+    subset_sigma: Option<f64>,
+    prob_perturb: Option<f64>,
+) -> PyResult<Option<SampleAroundBest>> {
+    let Some(b) = best_x else {
+        return Ok(None);
+    };
+    let mut s = SampleAroundBest::new(b.matrix("best_X")?);
+    s.sigma = sigma.unwrap_or(s.sigma);
+    s.subset_sigma = subset_sigma.unwrap_or(s.subset_sigma);
+    s.prob_perturb = prob_perturb;
+    Ok(Some(s))
+}
+
 /// BoTorch's `gen_batch_initial_conditions`: `num_restarts` initial
 /// candidate sets (`num_restarts x q x d`) selected from `raw_samples` Sobol
 /// (or, with linear constraints, polytope) samples.
@@ -505,16 +523,12 @@ pub fn gen_batch_initial_conditions_py(
         n_burnin: n_burnin.unwrap_or(defaults.n_burnin),
         n_thinning: n_thinning.unwrap_or(defaults.n_thinning),
         topn: topn.then_some(TopnOptions { largest, sorted }),
-        sample_around_best: match sample_around_best {
-            Some(b) => {
-                let mut s = SampleAroundBest::new(b.matrix("best_X")?);
-                s.sigma = sample_around_best_sigma.unwrap_or(s.sigma);
-                s.subset_sigma = sample_around_best_subset_sigma.unwrap_or(s.subset_sigma);
-                s.prob_perturb = sample_around_best_prob_perturb;
-                Some(s)
-            }
-            None => None,
-        },
+        sample_around_best: sample_around_best_arg(
+            sample_around_best,
+            sample_around_best_sigma,
+            sample_around_best_subset_sigma,
+            sample_around_best_prob_perturb,
+        )?,
     };
     let acqf = &acq_function.inner;
     let (ics, fallback) = threads::run(py, || {

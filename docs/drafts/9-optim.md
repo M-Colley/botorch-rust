@@ -8,7 +8,7 @@ BoTorch, Migration notes). Reference: BoTorch main at da00e0401 and BoTorch
 
 | BoTorch / GPyTorch | botorch_rs | Notes |
 |---|---|---|
-| `botorch.optim.optimize_acqf` (additions) | `botorch_rs.optim.optimize_acqf` | `post_processing_func` (applied to all restarts before the best is chosen, values recomputed), `timeout_sec` (split over sequential steps and chunks; L-BFGS-B and Adam stop after the iteration that exceeds it), `gen_candidates` (`gen_candidates_scipy`, `gen_candidates_torch` natively with Adam, or any callable with BoTorch's signature, called from Rust per chunk), `options`: `topn` (with `largest`, `sorted`), `sample_around_best` (with `sample_around_best_sigma`, `_subset_sigma`, `_prob_perturb`), `max_optimization_problem_aggregation_size` (BoTorch's serial path: groups of restarts as one L-BFGS-B problem, run in parallel), `factr` / `pgtol` / `tol` / `max_cor` aliases, `optimizer_options` / `stopping_criterion_options` for `gen_candidates_torch`. Both of BoTorch's L-BFGS-B paths: independent runs per restart (parallel path) and the aggregated problem (serial path, taken with `timeout_sec` or options outside the parallel path's) |
+| `botorch.optim.optimize_acqf` (additions) | `botorch_rs.optim.optimize_acqf` | `post_processing_func` (applied to all restarts before the best is chosen, values recomputed), `timeout_sec` (split over sequential steps and chunks; L-BFGS-B and Adam stop after the iteration that exceeds it), `gen_candidates` (`gen_candidates_scipy`, `gen_candidates_torch` natively with Adam, or any callable with BoTorch's signature, called from Rust per chunk), `options`: `topn` (with `largest`, `sorted`), `sample_around_best` (with `sample_around_best_sigma`, `_subset_sigma`, `_prob_perturb`), `max_optimization_problem_aggregation_size` (BoTorch's serial path: groups of restarts as one L-BFGS-B problem, run in parallel), `factr` / `pgtol` / `tol` / `max_cor` aliases, `optimizer_options` / `stopping_criterion_options` for `gen_candidates_torch`. All of these work with the one-shot acquisition functions (`qKnowledgeGradient`, `qHypervolumeKnowledgeGradient` and their multi-fidelity variants): post-processing sees and re-evaluates the full trees (`b x q_aug x d`), and `topn` / `sample_around_best` reach the one-shot initial conditions, as in BoTorch. Both of BoTorch's L-BFGS-B paths: independent runs per restart (parallel path) and the aggregated problem (serial path, taken with `timeout_sec` or options outside the parallel path's) |
 | `botorch.optim.optimize.optimize_acqf_mixed` | `botorch_rs.optim.optimize_acqf_mixed` | `fixed_features_list` (the combinations run in parallel), `return_best_only`, sequential `q > 1` with the previous candidates as pending points, parameter constraints, `post_processing_func`, `gen_candidates`, `batch_initial_conditions`, `ic_generator`; combinations that fail with `CandidateGenerationError` are skipped with BoTorch's warning. `optimize_acqf_list` uses it for `fixed_features_list` |
 | `botorch.optim.optimize.optimize_acqf_discrete` | `botorch_rs.optim.optimize_acqf_discrete` | `choices`, `q` (sequential, pending points), `max_batch_size`, `unique`, `X_avoid`, `inequality_constraints`, `return_acq_values`; batched evaluation in Rust |
 | `botorch.optim.optimize.optimize_acqf_discrete_local_search` | `botorch_rs.optim.optimize_acqf_discrete_local_search` | all arguments; the local searches of the restarts run in parallel; random lattice points from botorch_rs's generator (keyword-only `seed`); a replaced `_gen_batch_initial_conditions_local_search` (module attribute) is honored |
@@ -99,6 +99,18 @@ BoTorch, Migration notes). Reference: BoTorch main at da00e0401 and BoTorch
   continuous steps' gradient tolerance (BoTorch main's parallel path); BoTorch
   drops it on the serial path (bug 14). `optimize_acqf` itself mirrors
   BoTorch's option handling on each path.
+- **One-shot initial conditions.** `gen_one_shot_kg_initial_conditions`
+  and `gen_one_shot_hvkg_initial_conditions` (also as the defaults of
+  `optimize_acqf`) pass `topn`, `sample_around_best`, `nonnegative`,
+  `n_burnin` and `n_thinning` on to `gen_batch_initial_conditions`, as
+  BoTorch does with its `options`; `sample_around_best` draws
+  `n * q_aug` points around the best training points. The inner
+  optimization of the hypervolume value function receives the `options`
+  only (not `post_processing_func`, `gen_candidates` or `timeout_sec`, as in
+  BoTorch). Deviation: with `timeout_sec`, the outer call takes the serial
+  L-BFGS-B path, and so does that inner optimization (BoTorch's inner
+  call has no timeout and can take the parallel path); the initial
+  conditions use botorch_rs's random draws in either case.
 - **No global warning filters** are changed (BoTorch's
   `minimize_with_timeout` adds an `error` filter to the global list, bug 10).
 
@@ -236,6 +248,14 @@ Notes:
   with a copying stopping criterion (bug 11); batched
   `fit_gpytorch_mll_scipy` expects `STOPPED` where BoTorch reports `FAILURE`
   (bug 12).
+
+`optimize_acqf` with a `qKnowledgeGradient` (phase 8) and this phase's
+options from identical augmented initial conditions and fantasy base
+samples (`test_knowledge_gradient_with_phase9_options`; post-processing,
+`timeout_sec`, `gen_candidates_torch`, `return_full_tree` with
+post-processing, on both L-BFGS-B paths where BoTorch has them):
+candidates ≤ 5.4e-14 (tolerance 1e-7), values ≤ 6.3e-17 (1e-9) against
+BoTorch main and 0.18.1.
 
 ### Randomized equivalence suite (`test_equivalence_9_optim.py`, `-m equivalence`)
 

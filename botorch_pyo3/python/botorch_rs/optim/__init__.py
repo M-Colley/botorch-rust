@@ -21,6 +21,7 @@ from botorch_rs.optim.homotopy import (
 from botorch_rs.optim.initializers import (
     gen_batch_initial_conditions,
     gen_one_shot_hvkg_initial_conditions,
+    gen_one_shot_kg_initial_conditions,
     initialize_q_batch,
     initialize_q_batch_nonneg,
     initialize_q_batch_topn,
@@ -53,6 +54,7 @@ __all__ = [
     "evaluate_feasibility",
     "gen_batch_initial_conditions",
     "gen_one_shot_hvkg_initial_conditions",
+    "gen_one_shot_kg_initial_conditions",
     "get_loss_closure",
     "get_loss_closure_with_grads",
     "initialize_q_batch",

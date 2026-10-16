@@ -55,6 +55,7 @@ _INIT_KEYS = {
     "topn",
     "sorted",
     "largest",
+    # The one-shot initial conditions (gen_one_shot_(hv)kg_initial_conditions).
     "frac_random",
     "num_inner_restarts",
     "raw_inner_samples",
@@ -386,8 +387,11 @@ def _optimize_kwargs(
     from botorch_rs.optim import initializers
 
     one_shot = isinstance(native_acqf, OneShotAcquisitionFunction)
-    if one_shot and ic_generator is initializers.gen_one_shot_hvkg_initial_conditions:
-        # The default of one-shot acquisition functions, generated natively.
+    if one_shot and ic_generator in (
+        initializers.gen_one_shot_hvkg_initial_conditions,
+        initializers.gen_one_shot_kg_initial_conditions,
+    ):
+        # The defaults of one-shot acquisition functions, generated natively.
         ic_generator = None
     native_generator = ic_generator is initializers.gen_batch_initial_conditions
     if ic_gen_kwargs and (ic_generator is None or native_generator):
@@ -439,11 +443,6 @@ def _optimize_kwargs(
         if equality_constraints:
             raise UnsupportedError(
                 "Option 'sample_around_best' is not supported when equalityconstraints are present."
-            )
-        if one_shot:
-            raise UnsupportedError(
-                "Option 'sample_around_best' is not supported for one-shot acquisition "
-                "functions in botorch_rs."
             )
         best = initializers._best_points(acq_function, d)
         if best is not None:
@@ -555,6 +554,13 @@ def optimize_acqf(
     conditions' ``frac_random``, ``num_inner_restarts`` and
     ``raw_inner_samples``, and for ``gen_candidates_torch``
     ``optimizer_options`` and ``stopping_criterion_options``.
+
+    One-shot acquisition functions (``qKnowledgeGradient``,
+    ``qHypervolumeKnowledgeGradient`` and their multi-fidelity variants) are
+    optimized over augmented candidate sets (``get_augmented_q_batch_size``),
+    starting by default from ``gen_one_shot_kg_initial_conditions`` /
+    ``gen_one_shot_hvkg_initial_conditions``; the candidates are extracted
+    (``extract_candidates``) unless ``return_full_tree=True``.
 
     Returns:
         ``(candidates, acq_value)``: a ``q x d`` candidate set (``num_restarts x

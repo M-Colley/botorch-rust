@@ -473,7 +473,7 @@ impl PyTensorFunction {
     }
 
     /// The adjoints of the arguments for the adjoint of the outputs.
-    fn vjp(handle: &Py<PyAny>, adjoint: &[f64]) -> Result<Vec<Vec<f64>>> {
+    pub(crate) fn vjp(handle: &Py<PyAny>, adjoint: &[f64]) -> Result<Vec<Vec<f64>>> {
         Python::attach(|py| -> PyResult<Vec<Vec<f64>>> {
             let bridge = py.import(BRIDGE)?;
             let res = bridge.call_method1(

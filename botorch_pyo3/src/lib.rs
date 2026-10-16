@@ -35,6 +35,9 @@ mod pathwise;
 mod polytope;
 mod risk_measures;
 mod sampling;
+mod so_acquisition;
+mod so_entropy;
+mod so_wrappers;
 mod specs;
 mod test_functions;
 mod threads;
@@ -113,5 +116,9 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Mixed, discrete, cyclic and homotopy optimization, candidate
     // generation and torch-style fitting (phase 9).
     optim_ext::register(m)?;
+    // Single-objective acquisition functions of phase 8.
+    so_acquisition::register(m)?;
+    so_entropy::register(m)?;
+    so_wrappers::register(m)?;
     Ok(())
 }

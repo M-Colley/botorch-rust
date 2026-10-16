@@ -32,7 +32,27 @@ Multi-objective tasks (objectives negated for maximization):
   ``sequential=True``, 128 Sobol samples; the libraries' Sobol sequences
   differ) and ``qLogExpectedHypervolumeImprovement`` (m = 3, q = 2, the same
   128 explicit base samples in both libraries, the partitioning of the
-  posterior mean at the training points).
+  posterior mean at the training points);
+* ``hypervolume``: ``Hypervolume(ref_point).compute(Y)`` of 100 points near
+  the positive unit sphere (m = 3, most of them Pareto optimal);
+* ``box decomposition``: a ``FastNondominatedPartitioning`` of the same 100
+  points, its ``get_hypercell_bounds()`` and ``compute_hypervolume()``;
+* ``Pareto filter``: ``is_non_dominated`` of a batch of 128 x 200 such points
+  (m = 3);
+* ``qHVKG``: values and gradients (``torch.autograd``) of
+  ``qHypervolumeKnowledgeGradient`` with BoTorch's defaults
+  (``num_fantasies=8``, ``num_pareto=10``, the hypervolume of the posterior
+  mean) at 8 augmented candidate sets of 81 points, on a ``ModelListGP`` of
+  the two DTLZ2 models; each library draws its own fantasies;
+* ``MO entropy search``: values and gradients of
+  ``qLowerBoundMultiObjectiveJointEntropySearch`` (``estimation_type="LB"``)
+  at 256 candidates (q = 1) on the m = 2 DTLZ2 model, with the same 10
+  sampled Pareto sets of 10 points in both libraries (points of DTLZ2's
+  Pareto set and their objective values);
+* ``NSGA-II``: ``optimize_with_nsgaii`` of ``MultiOutputPosteriorMean`` on the
+  m = 2 DTLZ2 model (population 100, 50 generations; BoTorch needs pymoo, and
+  the libraries' random numbers differ); the result is the hypervolume of the
+  returned front.
 
 Every task is timed with one thread (``torch.set_num_threads(1)``,
 ``botorch_rs.set_num_threads(1)``) and with each library's default number of
@@ -52,6 +72,7 @@ Use ``--no-botorch`` to time botorch_rs only and ``-k`` to select tasks.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime
 import json
 import math
@@ -85,6 +106,7 @@ class Task:
     label: str  # row label of the chart
     detail: str  # setting shown under the chart label
     run: Callable[[int], float]  # seed -> result value (for sanity checks)
+    group: str = "Single-objective"  # section of the chart
 
 
 def weyl(n: int, d: int = D) -> torch.Tensor:
@@ -102,9 +124,19 @@ class Library:
         if name == "botorch_rs":
             from botorch_rs import acquisition, fit, mlls, models, optim, sampling, test_functions
             from botorch_rs.acquisition import multi_objective as mo_acquisition
+            from botorch_rs.acquisition.multi_objective.joint_entropy_search import (
+                qLowerBoundMultiObjectiveJointEntropySearch,
+            )
+            from botorch_rs.acquisition.multi_objective.utils import (
+                compute_sample_box_decomposition,
+            )
+            from botorch_rs.acquisition.multioutput_acquisition import MultiOutputPosteriorMean
             from botorch_rs.models.transforms.input import Normalize
             from botorch_rs.test_functions import multi_objective as mo_problems
             from botorch_rs.utils.multi_objective import box_decompositions
+            from botorch_rs.utils.multi_objective.hypervolume import Hypervolume
+            from botorch_rs.utils.multi_objective.optimize import optimize_with_nsgaii
+            from botorch_rs.utils.multi_objective.pareto import is_non_dominated
             from botorch_rs.utils.sampling import draw_sobol_samples
 
             self._set_threads = botorch_rs.set_num_threads
@@ -114,9 +146,19 @@ class Library:
             import botorch
             from botorch import acquisition, fit, models, optim, sampling, test_functions
             from botorch.acquisition import multi_objective as mo_acquisition
+            from botorch.acquisition.multi_objective.joint_entropy_search import (
+                qLowerBoundMultiObjectiveJointEntropySearch,
+            )
+            from botorch.acquisition.multi_objective.utils import (
+                compute_sample_box_decomposition,
+            )
+            from botorch.acquisition.multioutput_acquisition import MultiOutputPosteriorMean
             from botorch.models.transforms.input import Normalize
             from botorch.test_functions import multi_objective as mo_problems
             from botorch.utils.multi_objective import box_decompositions
+            from botorch.utils.multi_objective.hypervolume import Hypervolume
+            from botorch.utils.multi_objective.optimize import optimize_with_nsgaii
+            from botorch.utils.multi_objective.pareto import is_non_dominated
             from botorch.utils.sampling import draw_sobol_samples
             from gpytorch import mlls
 
@@ -141,6 +183,14 @@ class Library:
         self.FastNondominatedPartitioning = box_decompositions.FastNondominatedPartitioning
         self.DominatedPartitioning = box_decompositions.DominatedPartitioning
         self.Normalize = Normalize
+        self.ModelListGP = models.ModelListGP
+        self.Hypervolume = Hypervolume
+        self.is_non_dominated = is_non_dominated
+        self.qHVKG = mo_acquisition.qHypervolumeKnowledgeGradient
+        self.qLowerBoundMOJES = qLowerBoundMultiObjectiveJointEntropySearch
+        self.compute_sample_box_decomposition = compute_sample_box_decomposition
+        self.MultiOutputPosteriorMean = MultiOutputPosteriorMean
+        self.optimize_with_nsgaii = optimize_with_nsgaii
 
     def use_threads(self, single: bool) -> None:
         """One thread, or the library's default number of threads."""
@@ -285,22 +335,37 @@ def tasks(lib: Library) -> list[Task]:
     return out + multi_objective_tasks(lib)
 
 
-def mo_model(lib: Library, m: int, n: int) -> tuple[Any, torch.Tensor, torch.Tensor]:
+def mo_model(
+    lib: Library, m: int, n: int, output: int | None = None
+) -> tuple[Any, torch.Tensor, torch.Tensor]:
     """An m-output SingleTaskGP on DTLZ2 (d = 6) with fixed hyperparameters
     (the values of :func:`fixed_model` for every output) and the reference
-    point."""
+    point; with ``output``, a single-output model of that objective."""
     problem = lib.DTLZ2(dim=D, num_objectives=m, negate=True)
     X = weyl(n)
-    model = lib.SingleTaskGP(X, problem(X, noise=False))
+    Y = torch.as_tensor(problem(X, noise=False), dtype=DT)
+    if output is not None:
+        Y = Y[:, output : output + 1]
+    k = Y.shape[-1]
+    model = lib.SingleTaskGP(X, Y)
     model.initialize(
         **{
-            "likelihood.noise_covar.raw_noise": torch.full((m, 1), 1e-3, dtype=DT),
-            "mean_module.raw_constant": torch.zeros(m, dtype=DT),
-            "covar_module.raw_lengthscale": torch.full((m, 1, D), 0.5, dtype=DT),
+            "likelihood.noise_covar.raw_noise": torch.full((k, 1), 1e-3, dtype=DT).squeeze(0),
+            "mean_module.raw_constant": torch.zeros(k, dtype=DT).squeeze(0),
+            "covar_module.raw_lengthscale": torch.full((k, 1, D), 0.5, dtype=DT).squeeze(0),
         }
     )
     model.eval()
     return model, X, torch.as_tensor(problem.ref_point, dtype=DT)
+
+
+def sphere_points(n: int, m: int, seed: int, batch: tuple[int, ...] = ()) -> torch.Tensor:
+    """``n`` points near the positive unit sphere in ``m`` dimensions (most of
+    them Pareto optimal)."""
+    g = torch.Generator().manual_seed(seed)
+    u = torch.rand(*batch, n, m, generator=g, dtype=DT) + 1e-3
+    u = u / u.norm(dim=-1, keepdim=True)
+    return u * (1.0 - 0.05 * torch.rand(*batch, n, 1, generator=g, dtype=DT))
 
 
 def multi_objective_tasks(lib: Library) -> list[Task]:
@@ -373,7 +438,71 @@ def multi_objective_tasks(lib: Library) -> list[Task]:
         )
         return float(v)
 
-    return [
+    # Utilities on points near the positive unit sphere (m = 3).
+    ref0 = torch.zeros(3, dtype=DT)
+    Y100 = sphere_points(100, 3, seed=0)
+    Y_batch = sphere_points(200, 3, seed=1, batch=(128,))
+
+    def hypervolume_task(seed: int) -> float:
+        return float(lib.Hypervolume(ref_point=ref0).compute(Y100))
+
+    def box_decomposition(seed: int) -> float:
+        partitioning = lib.FastNondominatedPartitioning(ref_point=ref0, Y=Y100)
+        partitioning.get_hypercell_bounds()
+        return float(torch.as_tensor(partitioning.compute_hypervolume()).reshape(-1)[0])
+
+    def pareto_filter(seed: int) -> float:
+        return float(torch.as_tensor(lib.is_non_dominated(Y_batch)).sum())
+
+    # qHVKG on a ModelListGP of the two DTLZ2 models (single-output each).
+    list_model = lib.ModelListGP(*(mo_model(lib, 2, 30, output=k)[0] for k in range(2)))
+    X_hvkg = torch.rand(8, 1 + 8 * 10, D, generator=torch.Generator().manual_seed(0), dtype=DT)
+
+    def hvkg(seed: int) -> float:
+        acqf = lib.qHVKG(list_model, ref_point=ref2, num_fantasies=8, num_pareto=10)
+        X = X_hvkg.clone().requires_grad_(True)
+        values = acqf(X)
+        values.sum().backward()
+        return float(values.detach().sum())
+
+    # MO joint entropy search (LB) with the same Pareto sets in both libraries:
+    # points of DTLZ2's Pareto set (x[1:] = 0.5) and their objective values.
+    g = torch.Generator().manual_seed(2)
+    pareto_sets = torch.full((10, 10, D), 0.5, dtype=DT)
+    pareto_sets[..., 0] = torch.rand(10, 10, generator=g, dtype=DT)
+    dtlz2 = lib.DTLZ2(dim=D, num_objectives=2, negate=True)
+    pareto_fronts = torch.as_tensor(dtlz2(pareto_sets.reshape(-1, D), noise=False), dtype=DT)
+    pareto_fronts = pareto_fronts.reshape(10, 10, 2)
+    hypercell_bounds = torch.as_tensor(lib.compute_sample_box_decomposition(pareto_fronts))
+    X_jes = torch.rand(256, 1, D, generator=torch.Generator().manual_seed(3), dtype=DT)
+
+    def mo_jes(seed: int) -> float:
+        acqf = lib.qLowerBoundMOJES(
+            model=model2,
+            pareto_sets=pareto_sets,
+            pareto_fronts=pareto_fronts,
+            hypercell_bounds=hypercell_bounds,
+            estimation_type="LB",
+        )
+        X = X_jes.clone().requires_grad_(True)
+        values = acqf(X)
+        values.sum().backward()
+        return float(values.detach().sum())
+
+    def nsga2(seed: int) -> float:
+        acqf = lib.MultiOutputPosteriorMean(model2)
+        _, front = lib.optimize_with_nsgaii(
+            acqf, bounds, num_objectives=2, population_size=100, max_gen=50, seed=seed
+        )
+        return float(
+            torch.as_tensor(
+                lib.DominatedPartitioning(
+                    ref_point=ref2, Y=torch.as_tensor(front, dtype=DT)
+                ).compute_hypervolume()
+            ).reshape(-1)[0]
+        )
+
+    tasks = [
         Task(
             f"MOBO loop, qLogNEHVI, {MOBO_ITERATIONS} iterations",
             "Multi-objective BO",
@@ -389,7 +518,39 @@ def multi_objective_tasks(lib: Library) -> list[Task]:
         Task(
             "optimize_acqf, qLogEHVI, m = 3, q = 2", "Optimize qLogEHVI", "m = 3, q = 2", qlogehvi
         ),
+        Task(
+            "qHVKG, values and gradients, 8 x 81 points",
+            "Evaluate qHVKG",
+            "values and gradients, 8 x 81 points",
+            hvkg,
+        ),
+        Task(
+            "MO joint entropy search (LB), values and gradients, 256 points",
+            "Evaluate MO entropy search",
+            "JES lower bound, gradients, 256 points",
+            mo_jes,
+        ),
+        Task(
+            "optimize_with_nsgaii, posterior mean, m = 2",
+            "NSGA-II",
+            "posterior mean, 100 x 50 generations",
+            nsga2,
+        ),
+        Task("hypervolume, m = 3, n = 100", "Hypervolume", "m = 3, 100 points", hypervolume_task),
+        Task(
+            "box decomposition, m = 3, n = 100",
+            "Box decomposition",
+            "m = 3, 100 points",
+            box_decomposition,
+        ),
+        Task(
+            "is_non_dominated, 128 x 200, m = 3",
+            "Pareto filter",
+            "128 x 200 points, m = 3",
+            pareto_filter,
+        ),
     ]
+    return [dataclasses.replace(task, group="Multi-objective") for task in tasks]
 
 
 def time_task(
@@ -595,6 +756,7 @@ def main() -> None:
                     "task": name,
                     "label": task.label,
                     "detail": task.detail,
+                    "group": task.group,
                     # Single-thread medians (the chart).
                     "botorch_rs_s": median_time(name, "botorch_rs", "1"),
                     "botorch_s": median_time(name, "botorch", "1"),

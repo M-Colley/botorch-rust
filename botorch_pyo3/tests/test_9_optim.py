@@ -589,3 +589,92 @@ def test_unsupported_and_errors(model: SingleTaskGP) -> None:
             options={"sample_around_best": True},
             equality_constraints=[([0, 1], [1.0, 1.0], 1.0)],
         )
+
+
+def test_one_shot_with_phase9_options(model: SingleTaskGP) -> None:
+    """qKnowledgeGradient and qHypervolumeKnowledgeGradient (phases 8 and 5c)
+    with the options of this phase: BoTorch hands ``options`` (``topn``,
+    ``sample_around_best``) to ``gen_batch_initial_conditions`` of the
+    one-shot initial conditions and supports ``post_processing_func``,
+    ``timeout_sec`` and ``gen_candidates_torch`` on the augmented sets."""
+    from botorch_rs.acquisition import qKnowledgeGradient
+    from botorch_rs.acquisition.multi_objective import qHypervolumeKnowledgeGradient
+    from botorch_rs.optim.initializers import (
+        gen_one_shot_hvkg_initial_conditions,
+        gen_one_shot_kg_initial_conditions,
+    )
+    from botorch_rs.sampling import ListSampler, SobolQMCNormalSampler
+
+    kg = qKnowledgeGradient(model, num_fantasies=3, sampler=SobolQMCNormalSampler((3,), seed=0))
+    # topn without value-function points (frac_random close to 1): the top
+    # augmented raw samples, sorted.
+    ics = gen_one_shot_kg_initial_conditions(
+        kg, BOUNDS, 1, 4, 16, options={"topn": True, "frac_random": 0.99, "seed": 3}
+    )
+    assert shape(ics) == (4, 4, 3)
+    values = flatten(kg(ics))
+    assert values == sorted(values, reverse=True)
+    plain = gen_one_shot_kg_initial_conditions(
+        kg, BOUNDS, 1, 4, 16, options={"frac_random": 0.99, "seed": 3}
+    )
+    assert flatten(plain) != flatten(ics)
+    # sample_around_best adds points around the best training points.
+    around = gen_one_shot_kg_initial_conditions(
+        kg, BOUNDS, 1, 4, 16, options={"sample_around_best": True, "seed": 3}
+    )
+    assert shape(around) == (4, 4, 3)
+    assert all(0.0 <= v <= 1.0 for v in flatten(around))
+    for kw in (
+        {"options": {"topn": True, "seed": 1}},
+        {"options": {"sample_around_best": True, "seed": 1}},
+        {"options": {"seed": 1}, "gen_candidates": gen_candidates_torch},
+        {"options": {"seed": 1}, "timeout_sec": 100.0},
+    ):
+        cand, value = optimize_acqf(kg, BOUNDS, 1, 2, raw_samples=16, **kw)
+        assert shape(cand) == (1, 3)
+        assert math.isfinite(flatten(value)[0])
+    full, _ = optimize_acqf(
+        kg,
+        BOUNDS,
+        1,
+        2,
+        raw_samples=16,
+        options={"seed": 1},
+        return_full_tree=True,
+        post_processing_func=lambda X: X,
+    )
+    assert shape(full) == (4, 3)
+    # BoTorch's error for sample_around_best with equality constraints.
+    with pytest.raises(UnsupportedError, match="equalityconstraints"):
+        optimize_acqf(
+            kg,
+            BOUNDS,
+            1,
+            2,
+            raw_samples=16,
+            options={"sample_around_best": True},
+            equality_constraints=[([0, 1], [1.0, 1.0], 1.0)],
+        )
+    # The hypervolume knowledge gradient.
+    X, Y = make_data(n=10, d=2, seed=4)
+    Y2 = [[-((x[0] - 0.3) ** 2) - x[1]] for x in X]
+    models = [SingleTaskGP(X, Y), SingleTaskGP(X, Y2)]
+    hv = qHypervolumeKnowledgeGradient(
+        ModelListGP(*models),
+        ref_point=[-1.5, -1.0],
+        num_fantasies=2,
+        num_pareto=2,
+        sampler=ListSampler(*[SobolQMCNormalSampler((2,), seed=k) for k in range(2)]),
+    )
+    bounds = [[0.0, 0.0], [1.0, 1.0]]
+    opts = {"seed": 0, "num_inner_restarts": 2, "raw_inner_samples": 16, "maxiter": 30}
+    for extra in ({"topn": True}, {"sample_around_best": True}):
+        ics = gen_one_shot_hvkg_initial_conditions(hv, bounds, 1, 3, 16, options={**opts, **extra})
+        assert shape(ics) == (3, 5, 2)
+        cand, value = optimize_acqf(hv, bounds, 1, 2, raw_samples=16, options={**opts, **extra})
+        assert shape(cand) == (1, 2)
+        assert math.isfinite(flatten(value)[0])
+    cand, _ = optimize_acqf(
+        hv, bounds, 1, 2, raw_samples=16, options=opts, post_processing_func=lambda X: X
+    )
+    assert shape(cand) == (1, 2)

@@ -74,6 +74,39 @@ def initializer_options(options: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def _selection_options(
+    acq_function: Any, opts: dict[str, Any], d: int, equality_constraints: Any
+) -> dict[str, Any]:
+    """The extension's ``nonnegative``, polytope-sampler, ``topn`` and
+    ``sample_around_best`` arguments from the initialization options
+    ``opts`` (of :func:`initializer_options`); the best points of
+    ``sample_around_best`` are found here (``None`` if there are none)."""
+    out: dict[str, Any] = {}
+    for key in ("nonnegative", "n_burnin", "n_thinning"):
+        if opts.get(key) is not None:
+            out[key] = opts[key]
+    if opts.get("topn"):
+        out["topn"] = True
+        out["largest"] = bool(opts.get("largest", getattr(acq_function, "maximize", True)))
+        out["sorted"] = bool(opts.get("sorted", True))
+    if opts.get("sample_around_best"):
+        if equality_constraints:
+            raise UnsupportedError(
+                "Option 'sample_around_best' is not supported when equalityconstraints are present."
+            )
+        best = _best_points(acq_function, d)
+        if best is not None:
+            out["sample_around_best"] = best
+            for key in (
+                "sample_around_best_sigma",
+                "sample_around_best_subset_sigma",
+                "sample_around_best_prob_perturb",
+            ):
+                if opts.get(key) is not None:
+                    out[key] = float(opts[key])
+    return out
+
+
 def gen_batch_initial_conditions(
     acq_function: AcquisitionFunction,
     bounds: Any,
@@ -123,23 +156,21 @@ def gen_batch_initial_conditions(
     if fixed_features:
         fixed = {int(k) % d: as_float(v, f"fixed_features[{k}]") for k, v in fixed_features.items()}
     opts = initializer_options(options)
-    if opts.get("topn"):
-        opts.setdefault("largest", bool(getattr(acq_function, "maximize", True)))
-    if opts.pop("sample_around_best", False):
-        if equality_constraints:
-            raise UnsupportedError(
-                "Option 'sample_around_best' is not supported when equalityconstraints are present."
-            )
-        best = _best_points(acq_function, d)
-        if best is not None:
-            opts["sample_around_best"] = best
-    else:
-        for key in (
-            "sample_around_best_sigma",
-            "sample_around_best_subset_sigma",
-            "sample_around_best_prob_perturb",
-        ):
-            opts.pop(key, None)
+    selection = _selection_options(acq_function, opts, d, equality_constraints)
+    for key in (
+        "nonnegative",
+        "n_burnin",
+        "n_thinning",
+        "topn",
+        "largest",
+        "sorted",
+        "sample_around_best",
+        "sample_around_best_sigma",
+        "sample_around_best_subset_sigma",
+        "sample_around_best_prob_perturb",
+    ):
+        opts.pop(key, None)
+    opts.update(selection)
     ics, fallback = _rs.gen_batch_initial_conditions(
         acq_function._rs,
         bounds_flat,
@@ -238,6 +269,93 @@ def gen_one_shot_hvkg_initial_conditions(
         num_inner_restarts=None if num_inner is None else int(num_inner),
         raw_inner_samples=None if raw_inner is None else int(raw_inner),
         one_shot_eta=eta,
+        **_selection_options(acq_function, init, d, equality_constraints),
+    )
+    for message in messages:
+        warnings.warn(message, BadInitialCandidatesWarning, stacklevel=2)
+    return from_pair(ics, kind)
+
+
+def gen_one_shot_kg_initial_conditions(
+    acq_function: Any,
+    bounds: Any,
+    q: int,
+    num_restarts: int,
+    raw_samples: int,
+    fixed_features: dict[int, float] | None = None,
+    options: dict[str, Any] | None = None,
+    inequality_constraints: list[tuple[Any, Any, float]] | None = None,
+    equality_constraints: list[tuple[Any, Any, float]] | None = None,
+) -> Any:
+    r"""Generate a batch of smart initializations for qKnowledgeGradient
+    (BoTorch's ``gen_one_shot_kg_initial_conditions``).
+
+    The ``num_restarts x (q + num_fantasies) x d`` initial conditions come
+    from ``gen_batch_initial_conditions`` of the knowledge gradient; the last
+    ``int((1 - frac_random) * num_fantasies)`` fantasy points of every restart
+    are replaced by maximizers of the value function of the current model
+    (``optimize_acqf`` with ``num_inner_restarts`` (20) restarts from
+    ``raw_inner_samples`` (1024) raw samples), drawn by Boltzmann sampling of
+    their values (temperature ``eta``, default 2).
+
+    ``options`` holds the initialization options of
+    ``gen_batch_initial_conditions`` (``seed``, ``eta``, ``alpha``, batch
+    limits, polytope sampler) and ``frac_random`` (0.1),
+    ``num_inner_restarts`` and ``raw_inner_samples``. The random choices use
+    botorch_rs's generator, seeded by ``seed`` (BoTorch uses the global torch
+    generator).
+    """
+    from botorch_rs.acquisition.knowledge_gradient import qKnowledgeGradient
+
+    if not isinstance(acq_function, qKnowledgeGradient):
+        raise UnsupportedError(
+            "gen_one_shot_kg_initial_conditions requires a botorch_rs qKnowledgeGradient."
+        )
+    opts = dict(options or {})
+    frac_random = float(opts.pop("frac_random", 0.1))
+    if not 0 < frac_random < 1:
+        raise ValueError(f"frac_random must take on values in (0,1). Value: {frac_random}")
+    for constraints, kind_ in (
+        (inequality_constraints, "inequality"),
+        (equality_constraints, "equality"),
+    ):
+        for indices, _, _ in constraints or []:
+            if len(getattr(indices, "shape", ())) > 1:
+                raise NotImplementedError(
+                    "Indices must be one-dimensional "
+                    "in gen_one_shot_kg_initial_conditions. "
+                    f"Received indices {indices} "
+                    f"for {kind_} constrained."
+                )
+    num_inner = opts.pop("num_inner_restarts", None)
+    raw_inner = opts.pop("raw_inner_samples", None)
+    init = initializer_options(opts)
+    eta = init.get("eta")
+    kind = first_kind(bounds)
+    bounds_flat = to_flat(bounds, "bounds")
+    d = bounds_flat[1][-1] if bounds_flat[1] else 0
+    fixed = None
+    if fixed_features:
+        fixed = {int(k) % d: as_float(v, f"fixed_features[{k}]") for k, v in fixed_features.items()}
+    ics, messages = acq_function._state.gen_one_shot_initial_conditions(
+        bounds_flat,
+        int(q),
+        int(num_restarts),
+        int(raw_samples),
+        fixed_features=fixed,
+        inequality_constraints=linear_constraints_arg(
+            inequality_constraints, "inequality_constraints"
+        ),
+        equality_constraints=linear_constraints_arg(equality_constraints, "equality_constraints"),
+        seed=init.get("seed"),
+        eta=eta,
+        alpha=init.get("alpha"),
+        batch_limit=init.get("batch_limit"),
+        frac_random=frac_random,
+        num_inner_restarts=None if num_inner is None else int(num_inner),
+        raw_inner_samples=None if raw_inner is None else int(raw_inner),
+        one_shot_eta=eta,
+        **_selection_options(acq_function, init, d, equality_constraints),
     )
     for message in messages:
         warnings.warn(message, BadInitialCandidatesWarning, stacklevel=2)
@@ -676,6 +794,7 @@ def _int_array(values: list[int], kind: Any) -> Any:
 __all__ = [
     "gen_batch_initial_conditions",
     "gen_one_shot_hvkg_initial_conditions",
+    "gen_one_shot_kg_initial_conditions",
     "initialize_q_batch",
     "initialize_q_batch_nonneg",
     "initialize_q_batch_topn",

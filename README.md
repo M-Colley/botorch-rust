@@ -244,6 +244,27 @@ counterpart.
 | `LogConstrainedExpectedImprovement`, `ConstrainedExpectedImprovement` | `botorch_rs.acquisition.*` | analytic, `objective_index`, `constraints={i: (lower, upper)}` (`None`: unbounded), `maximize` |
 | `qExpectedImprovement`, `qProbabilityOfImprovement`, `qUpperConfidenceBound`, `qSimpleRegret`, `qLogExpectedImprovement`, `qLogNoisyExpectedImprovement` | `botorch_rs.acquisition.*` | any `q`, `X_pending` / `set_X_pending`, baseline pruning, `incremental`, `fat` (also a per-constraint list), `tau_max`, `tau_relu`, `posterior_transform`, `objective`; outcome `constraints` (callables, feasible iff `<= 0`) and `eta` (a float or one per constraint) for qEI, qPI, qLogEI and qLogNEI (feasibility-weighted incumbents and BoTorch's lower bound for infeasible baselines) |
 | `qLogProbabilityOfFeasibility` | `botorch_rs.acquisition.qLogProbabilityOfFeasibility` | `constraints`, `eta`, `fat`, `tau_max`, `posterior_transform` |
+| `botorch.acquisition.knowledge_gradient.qKnowledgeGradient` | same path (also `botorch_rs.acquisition`) | one-shot KG: fantasies of the candidates (and pending points) with the sampler's base samples (`SingleTaskGP`, single- and multi-output, `ModelListGP`), value function the posterior mean (through `posterior_transform`) or, with an MC `objective`, `qSimpleRegret` with `inner_sampler`; `current_value`, `X_pending`, `get_augmented_q_batch_size`, `extract_candidates`, `evaluate(X, bounds, num_restarts, raw_samples, options)` (inner maximization: `gen_value_function_initial_conditions` and one joint L-BFGS-B problem). Exact gradients also with MC objectives (BoTorch's are wrong, #3427) |
+| `qMultiFidelityKnowledgeGradient`, `ProjectedAcquisitionFunction` | same path | `cost_aware_utility` (`InverseCostWeightedUtility`, `GenericCostAwareUtility`), `project` / `expand` (native for `functools.partial`s of `project_to_target_fidelity` / `expand_trace_observations`, else torch callables), `valfunc_cls` / `valfunc_argfac` for the native value functions `PosteriorMean`, `PosteriorStandardDeviation`, `UpperConfidenceBound`, `(Log)ExpectedImprovement`, `(Log)ProbabilityOfImprovement`, `ScalarizedPosteriorMean`, `qSimpleRegret`, `qExpectedImprovement`, `qProbabilityOfImprovement`, `qUpper/LowerConfidenceBound`, `qPosteriorStandardDeviation` |
+| `botorch.optim.initializers.gen_one_shot_kg_initial_conditions` | `botorch_rs.optim.initializers` (also used by `optimize_acqf` for qKG / qMFKG) | `frac_random`, `num_inner_restarts`, `raw_inner_samples`, `eta`; fixed features and linear constraints |
+| `botorch.acquisition.monte_carlo.qNoisyExpectedImprovement` | same path | `cache_root` (BoTorch's low-rank update of the cached baseline root with its base-sample layout), `prune_baseline`, `X_pending`, objectives, outcome `constraints` / `eta`, `X_baseline`; keyword-only `lower_bound_points` |
+| `qLowerConfidenceBound`, `qPosteriorStandardDeviation` | same path | sample-reducing like `qUpperConfidenceBound` |
+| `botorch.acquisition.analytic.NoisyExpectedImprovement`, `LogNoisyExpectedImprovement` | same path | noiseless fantasy models of a fixed-noise `SingleTaskGP` (BoTorch's `1e-7` noise); keyword-only `sampler` for explicit fantasy base samples; `best_f` of every fantasy |
+| `LogProbabilityOfFeasibility`, `ScalarizedPosteriorMean` | same path | multi-output constraints `{i: (lower, upper)}`; `weights` of the `q` points |
+| `qAnalyticProbabilityOfImprovement` | same path | MVNXPB (bivariate conditioning, GGE ordering, Genz's bivariate normal) ported step by step; exact gradients by forward-mode dual numbers through MVNXPB. Rust: `botorch_core::utils::mvnxpb::{bvn, bvnmom, mvnxpb_log_prob}` |
+| `botorch.acquisition.max_value_entropy_search.qMaxValueEntropy`, `qLowerBoundMaxValueEntropy`, `qMultiFidelityMaxValueEntropy`, `qMultiFidelityLowerBoundMaxValueEntropy`, `MaxValueBase` | same path | Gumbel or Thompson max values over candidate set, training inputs and pending points; `posterior_max_values` (settable), fantasies of the pending points (qMES), GIBBON's repulsion; `num_fantasies`, `num_y_samples`, `use_gumbel`, `maximize`, `posterior_transform`, `train_inputs`, `cost_aware_utility`, `project`, `expand`. Keyword-only `seed`, `sampler`, `fantasies_sampler` |
+| `_sample_max_value_Gumbel`, `_sample_max_value_Thompson` | same path | keyword-only `uniforms` / `base_samples` or `seed` |
+| `botorch.acquisition.joint_entropy_search.qJointEntropySearch` | same path | `"LB"` and `"MC"`, `condition_noiseless`, `posterior_transform`, `X_pending`, `num_samples` (keyword-only `sampler`); conditioning per optimum and output |
+| `botorch.acquisition.predictive_entropy_search.qPredictiveEntropySearch` | same path | the multi-objective PES with one optimal input per sample; `ep_iterations`, `ep_damping`, `cached_factors` |
+| `botorch.acquisition.utils.get_optimal_samples` | same path | Matheron paths optimized like `optimize_posterior_samples` (raw Sobol points, top-`num_restarts`, one joint L-BFGS-B problem, `maxiter=2000`); `posterior_transform` or `objective`, `return_transformed`; keyword-only `num_features`, `seed`, `draws`, `candidates`, `maxiter` |
+| `botorch.acquisition.thompson_sampling.PathwiseThompsonSampling` | same path | `objective`, `posterior_transform`, `redraw(batch_size)`, `batch_size`, BoTorch's batch-size error; keyword-only `num_features`, `seed`, `redraw(..., draws=...)` |
+| `botorch.acquisition.active_learning.qNegIntegratedPosteriorVariance` | same path | closed form of the variance after conditioning (no fantasies needed for exact GPs; `sampler` accepted), `posterior_transform`, `X_pending` |
+| `botorch.acquisition.penalized.*` | same path | `L2Penalty`, `L1Penalty`, `GaussianPenalty`, `GroupLassoPenalty`, `L0Approximation`, `L0PenaltyApprox` (native in `PenalizedAcquisitionFunction`; BoTorch's own modules and other torch callables through torch), `L1PenaltyObjective`, `L0PenaltyApproxObjective`, `PenalizedMCObjective` (native, also BoTorch's), `group_lasso_regularizer`, `narrow_gaussian`, `nnz_approx` |
+| `botorch.acquisition.proximal.ProximalAcquisitionFunction` | same path | `transformed_weighting`, `beta` (softplus), `Normalize` input transforms, `ModelListGP` with equal training inputs |
+| `botorch.acquisition.fixed_feature.FixedFeatureAcquisitionFunction` | same path | values per fixed column or per point (`q x d_f`), `X_pending` setter, `_construct_X_full` |
+| `botorch.acquisition.prior_guided.PriorGuidedAcquisitionFunction` | same path | prior: a torch callable (gradients by `torch.autograd`); sample-reducing MC acquisition functions with `q > 1` and `X_pending`, analytic ones with `q = 1` |
+| `botorch.acquisition.decoupled.DecoupledAcquisitionFunction` | same path | the abstract base class: `X_evaluation_mask`, `set_X_pending(X_pending, X_pending_evaluation_mask)`, `construct_evaluation_mask` |
+| `botorch.acquisition.OneShotAcquisitionFunction` | `botorch_rs.acquisition` | base class (now exported) |
 | `IdentityMCObjective`, `LinearMCObjective`, `GenericMCObjective`, `ConstrainedMCObjective`, `MCAcquisitionObjective` | `botorch_rs.acquisition.objective.*` | linear objectives are evaluated in Rust; generic objectives, `ConstrainedMCObjective` (`infeasible_cost`, `eta`), subclasses and outcome constraints are callables on torch tensors, evaluated from Rust with gradients from `torch.autograd` (requires torch); BoTorch's own objective objects are accepted too |
 | `botorch.acquisition.objective.ScalarizedPosteriorTransform` | same path | `weights`, `offset`; `evaluate`, `posterior_transform(posterior)`; accepted by `model.posterior`, all acquisition functions and `prune_inferior_points` |
 | `botorch.acquisition.utils.prune_inferior_points` | same path | `objective`, `posterior_transform`, `constraints`, `sampler` |
@@ -301,8 +322,8 @@ Everything else in BoTorch is not ported yet: see
 ## What is not ported yet
 
 botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **222 of the 773
-public classes and functions** defined in BoTorch's modules (29%; BoTorch main
+processes, which is a small part of BoTorch: it provides **262 of the 776
+public classes and functions** defined in BoTorch's modules (34%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
 [docs/api_coverage.md](docs/api_coverage.md); [docs/roadmap.md](docs/roadmap.md)
@@ -347,19 +368,16 @@ orders the remaining work toward a full port. The main gaps:
   - GPU execution and float32 arithmetic: everything runs in float64 on the
     CPU.
 - **Single-objective acquisition functions:**
-  - `qNoisyExpectedImprovement` and the analytic noisy EI variants;
-  - `qLowerConfidenceBound`, `qPosteriorStandardDeviation`,
-    `ScalarizedPosteriorMean`, and the analytic `LogProbabilityOfFeasibility`;
-  - single-objective knowledge gradient (`qKnowledgeGradient` and its
-    multi-fidelity variant), although the fantasy machinery it needs is
-    ported;
-  - single-objective entropy search (max-value entropy search, GIBBON, joint
-    and predictive entropy search), although the pathwise sampling it needs
-    is ported, and `qMultiStepLookahead`;
-  - active learning (`qNegIntegratedPosteriorVariance`, BALD) and preference
-    learning (EUBO);
-  - penalized, proximal, prior-guided, fixed-feature and decoupled wrappers,
-    and pathwise Thompson sampling.
+  - `qMultiStepLookahead`, and the input constructors with
+    `get_acquisition_function`;
+  - active and preference learning that needs pairwise or fully Bayesian
+    models (BALD, EUBO, `PairwiseMCPosteriorVariance`) and
+    `LearnedObjective`;
+  - `SampleReducingMCAcquisitionFunction` as a public base class for Python
+    subclasses;
+  - t-batched candidate sets in max-value entropy search and t-batched fixed
+    values in `FixedFeatureAcquisitionFunction` (see
+    [docs/single-objective-acquisition.md](docs/single-objective-acquisition.md)).
 - **Multi-objective optimization:** all of BoTorch's multi-objective
   acquisition functions are ported: qLogNEHVI, qLogEHVI, qNEHVI, qEHVI,
   analytic EHVI, qLogNParEGO, the hypervolume knowledge gradient (also
@@ -406,7 +424,7 @@ orders the remaining work toward a full port. The main gaps:
 
 | Area | Public classes and functions | In botorch_rs | Share |
 |---|---|---|---|
-| `acquisition` | 145 | 41 | 28% |
+| `acquisition` | 145 | 79 | 54% |
 | `acquisition.multi_objective` | 33 | 33 | 100% |
 | `cross_validation` | 7 | 0 | 0% |
 | `exceptions` | 20 | 16 | 80% |
@@ -420,7 +438,7 @@ orders the remaining work toward a full port. The main gaps:
 | `models.likelihoods` | 5 | 0 | 0% |
 | `models.transforms` | 35 | 6 | 17% |
 | `models.utils` | 26 | 4 | 15% |
-| `optim` | 58 | 7 | 12% |
+| `optim` | 58 | 8 | 14% |
 | `optim.closures` | 5 | 0 | 0% |
 | `optim.utils` | 14 | 0 | 0% |
 | `posteriors` | 13 | 2 | 15% |
@@ -430,9 +448,9 @@ orders the remaining work toward a full port. The main gaps:
 | `test_functions` | 84 | 57 | 68% |
 | `test_utils` | 2 | 0 | 0% |
 | `utils` | 97 | 10 | 10% |
-| `utils.multi_objective` | 22 | 19 | 86% |
+| `utils.multi_objective` | 25 | 20 | 80% |
 | `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **773** | **222** | **29%** |
+| **all of `botorch`** | **776** | **262** | **34%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -913,6 +931,38 @@ all p ≥ 0.23). On 30 fixed data sets per case, BoTorch's own qLogNEI rates
 botorch-rust's suggestions within the spread of BoTorch's suggestions with
 another torch seed.
 
+### Single-objective acquisition functions
+
+**Where the tests are:**
+- Rust fixtures in `botorch_core/tests/so_acquisition_parity.rs`
+  (`--phase 8-so-acquisition`), on six models: single-output RBF, Matérn-5/2
+  with `Normalize`, fixed noise, no outcome transform, two-output, and
+  `ModelListGP`.
+- Live Python tests in `test_parity_so_acquisition.py` (135 tests, against
+  BoTorch main and 0.18.1).
+- A randomized sweep in `test_equivalence_so_acquisition.py` (`-m equivalence`,
+  12 random scenarios).
+
+Values agree to 3e-12 and gradients to 9e-12 in the fixtures. In the live tests
+and the sweep, values agree to 1e-10 and gradients to 8.3e-11.
+
+Where BoTorch is wrong, the reference is a fixed BoTorch or central
+differences:
+- qKG and qMFKG with MC objectives (#3427);
+- `qNegIntegratedPosteriorVariance` (`fast_pred_var`);
+- qAnalyticPI gradients in t-batches or where they are NaN.
+
+qNEI's baseline posterior is nearly singular, so it is compared within the
+regime of BoTorch's outcomes on perturbed twins. Its scaled excess is at most
+0.041.
+
+`get_optimal_samples` and `optimize_acqf` agree to 1e-6 in their values.
+L-BFGS-B stops on rounding-dependent criteria, so candidates agree to 1e-3
+(worst measured: 1.2e-4).
+
+[docs/single-objective-acquisition.md](docs/single-objective-acquisition.md)
+has the full tables, the deviations and ten BoTorch bugs found by these tests.
+
 ### Versions checked
 
 The numbers above come from BoTorch's main branch at da00e04 with GPyTorch
@@ -1117,6 +1167,21 @@ The model fits alone are 140–550× faster.
 
 ## Migration notes and known differences
 
+- **Single-objective acquisition functions.** Where BoTorch is wrong,
+  botorch-rust has the correct behaviour:
+  - exact gradients of qKG / qMFKG with MC objectives,
+    `qNegIntegratedPosteriorVariance` and qAnalyticPI;
+  - max-value entropy search appends the raw training inputs and keeps its
+    Gumbel quantiles in float64;
+  - GIBBON's repulsion uses one outcome space;
+  - qJES conditions on the raw optima, and its `"MC"` estimate is the
+    information gain of the batch (#3399, #3396, #3428).
+
+  Random numbers (max values, Thompson paths, qNEI's pruning samples) come from
+  botorch-rust's generators, with keyword-only `seed`, `draws` or explicit
+  samples to reproduce BoTorch's. `valfunc_argfac` is called once with the
+  current model. See
+  [docs/single-objective-acquisition.md](docs/single-objective-acquisition.md#deviations-from-botorch-migration-notes).
 - **LCEMGP.** botorch-rust's `LCEMGP` deviates from BoTorch's where BoTorch
   fails or depends on torch's global random state:
   - **Contexts without data.** BoTorch's `MultiTaskGP.eval()` initializes
@@ -1459,6 +1524,7 @@ Other scripts:
     meta-pytorch/botorch#3392);
   - `--phase 5d-deterministic`: deterministic models and composite
     acquisition functions (openbo's MO-TAF);
+  - `--phase 8-so-acquisition`: the single-objective acquisition functions;
   - `--phase unity-lcemgp`: `LCEMGP`, the Unity project's
     `ProvidedEmbeddingLCEMGP` and the `Interval` constraint.
 - `python scripts/benchmark.py` measures the timings above;

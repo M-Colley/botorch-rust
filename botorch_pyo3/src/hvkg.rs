@@ -28,7 +28,7 @@ use botorch_core::models::cost::{
     AffineFidelityCostModel, CostModel, FixedCostModel, PosteriorMeanCostModel,
 };
 use botorch_core::models::BoolMatrix;
-use botorch_core::optim::OptimizeAcqfOptions;
+use botorch_core::optim::{OptimizeAcqfOptions, TopnOptions};
 use botorch_core::{Matrix, Vector};
 use pyo3::prelude::*;
 use rand::rngs::Xoshiro256PlusPlus;
@@ -281,7 +281,7 @@ impl PyCostAwareUtility {
 }
 
 /// A projection from its specification (see the module documentation).
-fn projection_of(
+pub(crate) fn projection_of(
     spec: Option<&Bound<'_, PyAny>>,
     d: usize,
 ) -> PyResult<Option<Arc<dyn InputProjection>>> {
@@ -381,6 +381,16 @@ impl PyHvkg {
         num_inner_restarts=None,
         raw_inner_samples=None,
         one_shot_eta=None,
+        nonnegative=false,
+        n_burnin=None,
+        n_thinning=None,
+        topn=false,
+        largest=true,
+        sorted=true,
+        sample_around_best=None,
+        sample_around_best_sigma=None,
+        sample_around_best_subset_sigma=None,
+        sample_around_best_prob_perturb=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn gen_one_shot_initial_conditions(
@@ -403,6 +413,16 @@ impl PyHvkg {
         num_inner_restarts: Option<usize>,
         raw_inner_samples: Option<usize>,
         one_shot_eta: Option<f64>,
+        nonnegative: bool,
+        n_burnin: Option<usize>,
+        n_thinning: Option<usize>,
+        topn: bool,
+        largest: bool,
+        sorted: bool,
+        sample_around_best: Option<Array>,
+        sample_around_best_sigma: Option<f64>,
+        sample_around_best_subset_sigma: Option<f64>,
+        sample_around_best_prob_perturb: Option<f64>,
     ) -> PyResult<(ArrayBuf, Vec<String>)> {
         let bounds = bounds.matrix("bounds")?;
         let d = bounds.ncols();
@@ -435,6 +455,18 @@ impl PyHvkg {
             options.one_shot.raw_inner_samples = n;
         }
         options.one_shot.eta = one_shot_eta;
+        // The selection options of `gen_batch_initial_conditions`, which
+        // BoTorch passes on with `options`.
+        options.nonnegative = nonnegative;
+        options.n_burnin = n_burnin.unwrap_or(options.n_burnin);
+        options.n_thinning = n_thinning.unwrap_or(options.n_thinning);
+        options.topn = topn.then_some(TopnOptions { largest, sorted });
+        options.sample_around_best = crate::optim::sample_around_best_arg(
+            sample_around_best,
+            sample_around_best_sigma,
+            sample_around_best_subset_sigma,
+            sample_around_best_prob_perturb,
+        )?;
         let acqf = self.hvkg();
         let q_aug = acqf.get_augmented_q_batch_size(q);
         let (ics, warnings) = threads::run(py, || {
