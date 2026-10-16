@@ -47,23 +47,25 @@ functions build on them.
 - For every model: `subset_output`, `construct_inputs`,
   `condition_on_observations` and `fantasize`.
 
-## Phase 8: single-objective acquisition functions
+## Phase 8: single-objective acquisition functions (mostly done)
 
-- **Knowledge gradient:** `qKnowledgeGradient`,
-  `qMultiFidelityKnowledgeGradient`. The fantasy machinery is already ported.
-- **Entropy search:** `qMaxValueEntropy`, `qLowerBoundMaxValueEntropy`
-  (GIBBON) and their multi-fidelity variants, `qJointEntropySearch`,
-  `qPredictiveEntropySearch`.
-- **Monte Carlo and analytic:** `qNoisyExpectedImprovement`,
-  `qLowerConfidenceBound`, `qPosteriorStandardDeviation`, the analytic
-  `NoisyExpectedImprovement` / `LogNoisyExpectedImprovement`,
-  `LogProbabilityOfFeasibility`, `ScalarizedPosteriorMean`,
-  `qAnalyticProbabilityOfImprovement`.
-- **Wrappers:** penalized, prior-guided, proximal, fixed-feature and
-  decoupled acquisition functions.
-- **Other:** `PathwiseThompsonSampling`, `qMultiStepLookahead`, active
-  learning (`qNegIntegratedPosteriorVariance`), and the input constructors
-  with `get_acquisition_function`.
+Ported, with equivalence tests ([details](single-objective-acquisition.md)):
+- the knowledge gradient, also multi-fidelity;
+- qNEI, qLCB, qPSD;
+- analytic noisy EI and LogNEI, `LogProbabilityOfFeasibility`,
+  `ScalarizedPosteriorMean`, qAnalyticPI;
+- max-value entropy search and GIBBON, also multi-fidelity;
+- joint and predictive entropy search;
+- Thompson sampling, `qNegIntegratedPosteriorVariance`;
+- the penalized, proximal, prior-guided and fixed-feature wrappers.
+
+Remaining:
+- `qMultiStepLookahead`;
+- the input constructors with `get_acquisition_function`;
+- `SampleReducingMCAcquisitionFunction` as a public base class;
+- t-batched candidate sets in max-value entropy search;
+- the active learning that needs pairwise or fully Bayesian models
+  (Phase 10).
 
 ## Phase 9: optimization and candidate generation
 

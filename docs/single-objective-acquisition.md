@@ -1,15 +1,15 @@
-# Phase 8: single-objective acquisition functions
+# Single-objective acquisition functions
 
-This draft documents the port of BoTorch's single-objective acquisition
-functions (roadmap phase 8) for the README, `docs/api_coverage.md` and the
-migration notes. Everything listed here evaluates natively in Rust with exact
+The port of BoTorch's single-objective acquisition functions (roadmap phase 8):
+the supported API, the deviations from BoTorch, the equivalence results and the
+BoTorch bugs found. Everything listed here evaluates natively in Rust with exact
 gradients with respect to `X`, works with `optimize_acqf` (also from given
 initial conditions), with `SingleTaskGP` (single- and multi-output, with
 `Normalize` / `Standardize`, fixed noise) and `ModelListGP`, accepts
 BoTorch's objectives, posterior transforms, samplers and callables where the
 existing botorch_rs acquisition functions do, and raises BoTorch's exceptions.
 
-## Supported API (rows for the README table)
+## Supported API
 
 | BoTorch | botorch_rs | Notes |
 |---|---|---|
