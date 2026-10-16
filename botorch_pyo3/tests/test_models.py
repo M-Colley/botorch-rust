@@ -307,16 +307,16 @@ def test_custom_modules(kind: str, data: tuple[list, list]) -> None:
         covar_module=get_covar_module_with_dim_scaled_prior(2, use_rbf_kernel=False),
     )
     assert isinstance(matern.covar_module, MaternKernel)
-    with pytest.raises(UnsupportedError):
-        MaternKernel(nu=1.5)
-    with pytest.raises(UnsupportedError):
-        SingleTaskGP(X, Y, covar_module=RBFKernel())  # no ARD
-    with pytest.raises(BotorchTensorDimensionError):
+    with pytest.raises(RuntimeError):  # as GPyTorch
+        MaternKernel(nu=1.0)
+    SingleTaskGP(X, Y, covar_module=RBFKernel())  # a shared lengthscale (kernel tree)
+    with pytest.raises(RuntimeError):  # GPyTorch: a RuntimeError of torch
         SingleTaskGP(X, Y, covar_module=RBFKernel(ard_num_dims=3))
-    with pytest.raises(UnsupportedError):
-        ScaleKernel(custom)
+    nested = ScaleKernel(custom)  # ScaleKernel around any kernel, as in GPyTorch
     with pytest.raises(UnsupportedError):
         SingleTaskGP(X, Y, covar_module=custom)  # already part of a model
+    with pytest.raises(UnsupportedError):
+        SingleTaskGP(X, Y, covar_module=nested)  # contains a kernel of another model
     c = GreaterThan(1e-3, transform=None, initial_value=0.5)
     assert not c.enforced and c.initial_value == pytest.approx(0.5)
     assert Positive().enforced

@@ -26,6 +26,7 @@ use rayon::prelude::*;
 use crate::arrays::{broadcast_indices, broadcast_shapes, broadcast_to, Array, ArrayBuf, ArrayOut};
 use crate::contextual::PyLCEMGP;
 use crate::errors::{dimension_error, unsupported, value_error, IntoPyResult};
+use crate::kernel_trees::PyKernelNode;
 use crate::specs::{PyKernelSpec, PyLikelihoodSpec};
 use crate::threads;
 use crate::transforms::{numel, PyNormalize, PyStandardize};
@@ -560,6 +561,7 @@ impl PySingleTaskGP {
         covar_module=None,
         likelihood=None,
         input_chain=None,
+        covar_tree=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -573,6 +575,7 @@ impl PySingleTaskGP {
         covar_module: Option<PyRef<'_, PyKernelSpec>>,
         likelihood: Option<PyRef<'_, PyLikelihoodSpec>>,
         input_chain: Option<Vec<Bound<'_, PyAny>>>,
+        covar_tree: Option<PyRef<'_, PyKernelNode>>,
     ) -> PyResult<Self> {
         let (batch, xs) = train_x.batches("train_X")?;
         let (ybatch, ys) = train_y.batches("train_Y")?;
@@ -615,6 +618,7 @@ impl PySingleTaskGP {
             input_transform: input_transform.map(|t| t.for_model(&batch)).transpose()?,
             outcome_transform: outcome,
             covar_module: covar_module.map(|c| c.inner),
+            covar_tree: covar_tree.map(|c| c.inner.clone()),
             likelihood: likelihood.map(|l| l.inner),
             input_chain: input_chain
                 .as_deref()
@@ -787,11 +791,22 @@ impl PySingleTaskGP {
         PyStandardize::from_stats(means, stdvs, min_stdv, m.batch_shape().to_vec()).map(Some)
     }
 
-    /// The covariance-module configuration (shared by all elements).
-    fn covar_module(&self) -> PyKernelSpec {
-        PyKernelSpec {
-            inner: *self.snapshot().models()[0].covar_module(),
-        }
+    /// The covariance-module configuration (shared by all elements): the
+    /// `KernelSpec`, or `None` for a kernel tree.
+    fn covar_module(&self) -> Option<PyKernelSpec> {
+        self.snapshot().models()[0]
+            .covar_module()
+            .as_standard()
+            .map(|s| PyKernelSpec { inner: *s })
+    }
+
+    /// The kernel tree (shared by all elements), if the covariance module is
+    /// one.
+    fn covar_tree(&self) -> Option<PyKernelNode> {
+        self.snapshot().models()[0]
+            .covar_module()
+            .as_tree()
+            .map(|t| PyKernelNode { inner: t.clone() })
     }
 
     /// The homoskedastic likelihood configuration (`None` for fixed noise).
@@ -878,7 +893,12 @@ impl PySingleTaskGP {
     fn set_lengthscale(&self, value: Array) -> PyResult<()> {
         let model = self.snapshot();
         let d = model.dim();
-        let constraint = model.models()[0].covar_module().lengthscale_constraint;
+        let Some(spec) = model.models()[0].covar_module().as_standard() else {
+            return Err(unsupported(
+                "set the lengthscales of a kernel tree through its kernels",
+            ));
+        };
+        let constraint = spec.lengthscale_constraint;
         self.set_elementwise(&value, &[1, d], |h, v| {
             for (r, x) in h.raw_lengthscale.iter_mut().zip(v) {
                 *r = constraint.inverse_transform(*x);
@@ -889,7 +909,11 @@ impl PySingleTaskGP {
 
     /// Sets the outputscales from a value broadcastable to `_aug_batch_shape`.
     fn set_outputscale(&self, value: Array) -> PyResult<()> {
-        let Some(scale) = self.snapshot().models()[0].covar_module().scale else {
+        let Some(scale) = self.snapshot().models()[0]
+            .covar_module()
+            .as_standard()
+            .and_then(|s| s.scale)
+        else {
             return Err(unsupported("The covariance module has no outputscale."));
         };
         self.set_elementwise(&value, &[], |h, v| {

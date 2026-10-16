@@ -31,7 +31,7 @@
 use std::ops::Range;
 
 use crate::error::{BotorchError, Result};
-use crate::kernels::{KernelKind, KernelSpec};
+use crate::kernels::{KernelKind, KernelNode, KernelSpec};
 use crate::mll::ExactMarginalLogLikelihood;
 use crate::models::gp::{GaussianLikelihoodSpec, Hyperparameters, Likelihood, ParameterLayout};
 use crate::models::model::check_vjp_shapes_expanded;
@@ -79,6 +79,9 @@ pub struct BatchedMultiOutputGPOptions {
     /// Covariance-module override, applied to every element with independent
     /// hyperparameters.
     pub covar_module: Option<KernelSpec>,
+    /// A general covariance module (kernel tree) instead of `covar_module`,
+    /// applied to every element with independent hyperparameters.
+    pub covar_tree: Option<KernelNode>,
     /// Homoskedastic-likelihood override, applied to every element with
     /// independent noise levels.
     pub likelihood: Option<GaussianLikelihoodSpec>,
@@ -218,6 +221,7 @@ impl BatchedMultiOutputGP {
                     kernel: options.kernel,
                     use_scale_kernel: options.use_scale_kernel,
                     covar_module: options.covar_module,
+                    covar_tree: options.covar_tree.clone(),
                     likelihood: options.likelihood,
                 };
                 models.push(SingleTaskGP::new(
@@ -312,6 +316,7 @@ impl BatchedMultiOutputGP {
                 kernel: options.kernel,
                 use_scale_kernel: options.use_scale_kernel,
                 covar_module: options.covar_module,
+                covar_tree: options.covar_tree,
                 likelihood: options.likelihood,
             },
         )
@@ -438,17 +443,11 @@ impl BatchedMultiOutputGP {
 
     /// Sizes per element of the parameter groups in BoTorch's order.
     fn groups(&self) -> Vec<usize> {
-        let l = self.element_layout();
-        let mut g = Vec::with_capacity(4);
-        if l.has_noise {
-            g.push(1);
-        }
-        g.push(1);
-        if l.has_outputscale {
-            g.push(1);
-        }
-        g.push(l.dim);
-        g
+        self.models[0]
+            .parameter_names()
+            .into_iter()
+            .map(|(_, size)| size)
+            .collect()
     }
 
     /// BoTorch parameter names and total sizes (all elements) in flat order.
@@ -466,15 +465,11 @@ impl BatchedMultiOutputGP {
     pub fn parameter_shapes(&self) -> Vec<(String, Vec<usize>)> {
         let aug = self.aug_batch_shape();
         self.models[0]
-            .parameter_names()
+            .parameter_element_shapes()
             .into_iter()
-            .map(|(name, size)| {
+            .map(|(name, element)| {
                 let mut shape = aug.clone();
-                if name.ends_with("raw_noise") {
-                    shape.push(1);
-                } else if name.ends_with("raw_lengthscale") {
-                    shape.extend([1, size]);
-                }
+                shape.extend(element);
                 (name, shape)
             })
             .collect()

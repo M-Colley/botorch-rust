@@ -41,7 +41,9 @@ def fit_gpytorch_mll(
     that is not positive definite) is retried from hyperparameters sampled from
     their priors, up to ``max_attempts`` times (default 5); if all attempts
     fail, ``ModelFittingError`` is raised and the model keeps its
-    hyperparameters. Hitting the iteration limit is not a failure.
+    hyperparameters. Hitting the iteration limit is not a failure. A
+    hyperparameter leaving the support of its prior (e.g. a ``UniformPrior``)
+    raises ``ValueError``, as in BoTorch, which retries only ``NotPSDError``.
 
     Args:
         mll: An ``ExactMarginalLogLikelihood`` of a ``SingleTaskGP`` or a

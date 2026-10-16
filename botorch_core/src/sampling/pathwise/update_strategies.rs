@@ -62,7 +62,7 @@ pub fn gaussian_update(
         }
     }
     let weights = gp.train_cholesky()?.solve(&errors).transpose();
-    let map = KernelEvaluationMap::new(gp.kernel()?, gp.transformed_train_inputs().clone())?;
+    let map = KernelEvaluationMap::from_covar(gp.covar()?, gp.transformed_train_inputs().clone())?;
     GeneralizedLinearPath::new(
         Arc::new(map),
         weights,

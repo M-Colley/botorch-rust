@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use crate::error::{BotorchError, Result};
+use crate::kernels::{CovarModule, Kernel, KernelType};
 use crate::models::{Model, SingleTaskGP};
 use crate::sampling::pathwise::features::KernelFeatureMap;
 use crate::sampling::pathwise::paths::{GeneralizedLinearPath, PathList, SamplePath};
@@ -28,7 +29,11 @@ pub fn kernel_feature_path(
     weights: Matrix,
     untransform: bool,
 ) -> Result<GeneralizedLinearPath> {
-    let feature_map = KernelFeatureMap::new(gp.kernel()?, frequencies)?;
+    let fk = fourier_kernel(gp)?;
+    let mut feature_map = KernelFeatureMap::new(fk.kernel, frequencies)?;
+    if let Some(dims) = fk.active_dims {
+        feature_map = feature_map.with_active_dims(dims, gp.dim())?;
+    }
     GeneralizedLinearPath::new(
         Arc::new(feature_map),
         weights,
@@ -75,6 +80,81 @@ pub fn draw_kernel_feature_paths(
         })
         .collect::<Result<Vec<_>>>()?;
     PathList::new(paths)
+}
+
+/// The stationary kernel whose random Fourier features BoTorch's
+/// `gen_kernel_features` generates for a GP's covariance module: an RBF or
+/// Matérn kernel (with one lengthscale per active dimension, a shared
+/// lengthscale repeated), possibly in a `ScaleKernel`, and its
+/// `active_dims`.
+pub(crate) struct FourierKernel {
+    /// The kernel on the selected inputs.
+    pub kernel: Kernel,
+    /// The selected input columns, if any.
+    pub active_dims: Option<Vec<usize>>,
+}
+
+impl FourierKernel {
+    /// The number of inputs of the features (the frequency dimension).
+    pub fn feature_dim(&self) -> usize {
+        self.kernel.dim()
+    }
+}
+
+/// The kernel of `gp` for random Fourier features.
+///
+/// # Errors
+/// [`BotorchError::Unsupported`] for kernels other than an RBF or Matérn
+/// kernel, optionally in a `ScaleKernel` (BoTorch's `GenKernelFeatures`
+/// dispatcher raises `NotImplementedError` for them).
+pub(crate) fn fourier_kernel(gp: &SingleTaskGP) -> Result<FourierKernel> {
+    let tree = match gp.covar_module() {
+        CovarModule::Standard(_) => {
+            return Ok(FourierKernel {
+                kernel: gp.kernel()?,
+                active_dims: None,
+            })
+        }
+        CovarModule::Tree(tree) => tree,
+    };
+    let unsupported = |name: &KernelType| {
+        BotorchError::Unsupported(format!(
+            "Could not find signature for gen_kernel_features: <{name:?}> (random Fourier \
+             features exist for RBF and Matern kernels, possibly in a ScaleKernel)"
+        ))
+    };
+    let built = gp.covar()?;
+    let values = built
+        .as_tree()
+        .expect("a kernel tree builds a tree kernel")
+        .values()
+        .to_vec();
+    let (leaf, outputscale, dims) = match tree.kind() {
+        KernelType::Stationary(_) => (tree, None, tree.active_dims()),
+        KernelType::Scale => {
+            let base = &tree.children()[0];
+            if !matches!(base.kind(), KernelType::Stationary(_)) {
+                return Err(unsupported(base.kind()));
+            }
+            (base, Some(values[0]), tree.active_dims())
+        }
+        other => return Err(unsupported(other)),
+    };
+    let KernelType::Stationary(kind) = leaf.kind() else {
+        unreachable!("checked above");
+    };
+    let k = dims.map_or(gp.dim(), <[usize]>::len);
+    let off = usize::from(outputscale.is_some());
+    let ls_len = leaf.params()[0].numel();
+    let ls: Vec<f64> = if ls_len == 1 {
+        vec![values[off]; k]
+    } else {
+        values[off..off + ls_len].to_vec()
+    };
+    Ok(FourierKernel {
+        kernel: Kernel::new(*kind, crate::Vector::from_vec(ls), outputscale)?,
+        active_dims: dims.map(<[usize]>::to_vec),
+    })
 }
 
 /// The independent single-output GPs of an unbatched model.

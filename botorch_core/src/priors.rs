@@ -1,6 +1,18 @@
-//! Hyperparameter priors mirroring `gpytorch.priors.LogNormalPrior` and
-//! `gpytorch.priors.GammaPrior` (i.e. `torch.distributions.LogNormal` and
-//! `torch.distributions.Gamma`), including all normalizing constants.
+//! Hyperparameter priors mirroring GPyTorch's `LogNormalPrior`,
+//! `GammaPrior`, `NormalPrior`, `UniformPrior`, `HalfCauchyPrior` and
+//! `HalfNormalPrior` and BoTorch's `BetaPrior` (i.e. the corresponding
+//! `torch.distributions`), including all normalizing constants.
+//!
+//! GPyTorch stores prior parameters given as Python floats in float32;
+//! [`Prior::rounded_to_f32`] reproduces that rounding, and for the priors
+//! whose torch distribution keeps (part of) its float32 state when the model
+//! is cast to double precision (`LogNormal`, `HalfNormal`: the base
+//! `Normal`; `Uniform`: `low` and `high`) the single-precision parts of the
+//! evaluation as well. `HalfCauchyPrior` is the exception: torch evaluates
+//! it entirely in single precision (`HalfCauchy.log_prob` casts its argument
+//! to the float32 dtype of the base `Cauchy`); this crate evaluates it in
+//! double precision with the float32-rounded scale (see the deviations in
+//! the documentation of [`Prior::HalfCauchy`]).
 
 use rand::Rng;
 use rand_distr::Distribution;
@@ -11,6 +23,8 @@ use crate::error::{BotorchError, Result};
 
 /// `log(sqrt(2π))`, the normalizing constant of the standard normal density.
 const LN_SQRT_2PI: f64 = 0.918_938_533_204_672_7;
+/// `log(π)` (`math.log(math.pi)`).
+const LN_PI: f64 = 1.144_729_885_849_400_2;
 
 /// A univariate prior over a positive hyperparameter.
 ///
@@ -29,6 +43,9 @@ pub enum Prior {
         /// to double precision, so `scale²` and `log(scale)` are evaluated in
         /// single precision (set by [`Prior::rounded_to_f32`]).
         float32: bool,
+        /// The float32 `log(scale)` as torch computes it (its single-precision
+        /// `log` is not always correctly rounded); `None`: computed here.
+        torch_log: Option<f64>,
     },
     /// Gamma prior with density `rate^c / Γ(c) · x^(c-1) · exp(-rate·x)`.
     Gamma {
@@ -36,6 +53,61 @@ pub enum Prior {
         concentration: f64,
         /// Rate `> 0` (inverse scale).
         rate: f64,
+    },
+    /// Normal prior `Normal(loc, scale²)` (`gpytorch.priors.NormalPrior`).
+    Normal {
+        /// Mean.
+        loc: f64,
+        /// Standard deviation (> 0).
+        scale: f64,
+    },
+    /// Uniform prior on `[low, high)` (`gpytorch.priors.UniformPrior`): the
+    /// log density is `-log(high - low)` inside and `-inf` outside; values
+    /// outside `[low, high]` are rejected (torch validates the argument).
+    Uniform {
+        /// Lower end.
+        low: f64,
+        /// Upper end (> `low`).
+        high: f64,
+        /// Emulate GPyTorch's float32 `low` and `high`, which are not cast
+        /// with the model: `log(high - low)` is evaluated in single precision.
+        float32: bool,
+        /// The float32 `log(high - low)` as torch computes it; `None`:
+        /// computed here.
+        torch_log: Option<f64>,
+    },
+    /// Half-Cauchy prior with density `2 / (π s (1 + (x/s)²))` on `x ≥ 0`
+    /// (`gpytorch.priors.HalfCauchyPrior`); negative values are rejected.
+    ///
+    /// Deviation: torch's `HalfCauchy.log_prob` casts its argument to the
+    /// dtype of its base distribution, which GPyTorch leaves in float32 when
+    /// the model is cast to double precision, so BoTorch evaluates this prior
+    /// (and its gradient) in single precision. It is evaluated in double
+    /// precision here (with the float32-rounded scale).
+    HalfCauchy {
+        /// Scale `s > 0`.
+        scale: f64,
+    },
+    /// Half-normal prior with density `2 N(x | 0, s²)` on `x ≥ 0`
+    /// (`gpytorch.priors.HalfNormalPrior`); negative values are rejected.
+    HalfNormal {
+        /// Scale `s > 0`.
+        scale: f64,
+        /// Emulate GPyTorch's float32 base `Normal` (as for
+        /// [`Prior::LogNormal`]): `s²` and `log(s)` in single precision.
+        float32: bool,
+        /// The float32 `log(scale)` as torch computes it; `None`: computed
+        /// here.
+        torch_log: Option<f64>,
+    },
+    /// Beta prior `Beta(concentration1, concentration0)` on `[0, 1]`
+    /// (`botorch.models.utils.priors.BetaPrior`), with density
+    /// `x^(α-1) (1-x)^(β-1) / B(α, β)`.
+    Beta {
+        /// `α = concentration1 > 0`.
+        concentration1: f64,
+        /// `β = concentration0 > 0`.
+        concentration0: f64,
     },
 }
 
@@ -54,6 +126,7 @@ impl Prior {
             loc,
             scale,
             float32: false,
+            torch_log: None,
         })
     }
 
@@ -73,6 +146,87 @@ impl Prior {
         })
     }
 
+    /// Creates a [`Prior::Normal`].
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] unless `loc` is finite and `scale`
+    /// positive and finite.
+    pub fn normal(loc: f64, scale: f64) -> Result<Self> {
+        if !(scale > 0.0 && scale.is_finite()) || !loc.is_finite() {
+            return Err(BotorchError::InvalidArgument(format!(
+                "Normal prior requires finite loc and positive finite scale, got loc={loc}, scale={scale}"
+            )));
+        }
+        Ok(Prior::Normal { loc, scale })
+    }
+
+    /// Creates a [`Prior::Uniform`].
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] unless `low < high` are finite.
+    pub fn uniform(low: f64, high: f64) -> Result<Self> {
+        if !(low.is_finite() && high.is_finite() && low < high) {
+            return Err(BotorchError::InvalidArgument(format!(
+                "Uniform prior requires finite low < high, got low={low}, high={high}"
+            )));
+        }
+        Ok(Prior::Uniform {
+            low,
+            high,
+            float32: false,
+            torch_log: None,
+        })
+    }
+
+    /// Creates a [`Prior::HalfCauchy`].
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] unless `scale` is positive and finite.
+    pub fn half_cauchy(scale: f64) -> Result<Self> {
+        if !(scale > 0.0 && scale.is_finite()) {
+            return Err(BotorchError::InvalidArgument(format!(
+                "HalfCauchy prior requires a positive finite scale, got {scale}"
+            )));
+        }
+        Ok(Prior::HalfCauchy { scale })
+    }
+
+    /// Creates a [`Prior::HalfNormal`].
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] unless `scale` is positive and finite.
+    pub fn half_normal(scale: f64) -> Result<Self> {
+        if !(scale > 0.0 && scale.is_finite()) {
+            return Err(BotorchError::InvalidArgument(format!(
+                "HalfNormal prior requires a positive finite scale, got {scale}"
+            )));
+        }
+        Ok(Prior::HalfNormal {
+            scale,
+            float32: false,
+            torch_log: None,
+        })
+    }
+
+    /// Creates a [`Prior::Beta`].
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] unless both concentrations are
+    /// positive and finite.
+    pub fn beta(concentration1: f64, concentration0: f64) -> Result<Self> {
+        let ok = |c: f64| c > 0.0 && c.is_finite();
+        if !(ok(concentration1) && ok(concentration0)) {
+            return Err(BotorchError::InvalidArgument(format!(
+                "Beta prior requires positive finite concentrations, got {concentration1}, \
+                 {concentration0}"
+            )));
+        }
+        Ok(Prior::Beta {
+            concentration1,
+            concentration0,
+        })
+    }
+
     /// Returns a copy that behaves like a GPyTorch prior created from Python
     /// floats: `torch.distributions` stores such parameters in torch's default
     /// dtype (float32), and casting the model to float64 afterwards does not
@@ -86,6 +240,7 @@ impl Prior {
                 loc: round_to_f32(loc),
                 scale: round_to_f32(scale),
                 float32: true,
+                torch_log: None,
             },
             Prior::Gamma {
                 concentration,
@@ -94,6 +249,117 @@ impl Prior {
                 concentration: round_to_f32(concentration),
                 rate: round_to_f32(rate),
             },
+            Prior::Normal { loc, scale } => Prior::Normal {
+                loc: round_to_f32(loc),
+                scale: round_to_f32(scale),
+            },
+            Prior::Uniform { low, high, .. } => Prior::Uniform {
+                low: round_to_f32(low),
+                high: round_to_f32(high),
+                float32: true,
+                torch_log: None,
+            },
+            Prior::HalfCauchy { scale } => Prior::HalfCauchy {
+                scale: round_to_f32(scale),
+            },
+            Prior::HalfNormal { scale, .. } => Prior::HalfNormal {
+                scale: round_to_f32(scale),
+                float32: true,
+                torch_log: None,
+            },
+            Prior::Beta {
+                concentration1,
+                concentration0,
+            } => Prior::Beta {
+                concentration1: round_to_f32(concentration1),
+                concentration0: round_to_f32(concentration0),
+            },
+        }
+    }
+
+    /// Returns a copy (of a prior emulating float32 torch distributions)
+    /// whose single-precision log term -- `log(scale)` of `LogNormal` and
+    /// `HalfNormal`, `log(high - low)` of `Uniform` -- is `value`, the
+    /// value torch computes (torch's float32 `log`, e.g. MKL's, is not always
+    /// correctly rounded; this crate's is). Other priors are returned
+    /// unchanged.
+    pub fn with_torch_log(self, value: f64) -> Self {
+        match self {
+            Prior::LogNormal {
+                loc,
+                scale,
+                float32: true,
+                ..
+            } => Prior::LogNormal {
+                loc,
+                scale,
+                float32: true,
+                torch_log: Some(value),
+            },
+            Prior::Uniform {
+                low,
+                high,
+                float32: true,
+                ..
+            } => Prior::Uniform {
+                low,
+                high,
+                float32: true,
+                torch_log: Some(value),
+            },
+            Prior::HalfNormal {
+                scale,
+                float32: true,
+                ..
+            } => Prior::HalfNormal {
+                scale,
+                float32: true,
+                torch_log: Some(value),
+            },
+            other => other,
+        }
+    }
+
+    /// The name of the distribution (`"LogNormal"`, `"Gamma"`, `"Normal"`,
+    /// `"Uniform"`, `"HalfCauchy"`, `"HalfNormal"` or `"Beta"`).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Prior::LogNormal { .. } => "LogNormal",
+            Prior::Gamma { .. } => "Gamma",
+            Prior::Normal { .. } => "Normal",
+            Prior::Uniform { .. } => "Uniform",
+            Prior::HalfCauchy { .. } => "HalfCauchy",
+            Prior::HalfNormal { .. } => "HalfNormal",
+            Prior::Beta { .. } => "Beta",
+        }
+    }
+
+    /// The parameters as stored, in GPyTorch's argument order.
+    pub fn parameters(&self) -> Vec<f64> {
+        match *self {
+            Prior::LogNormal { loc, scale, .. } | Prior::Normal { loc, scale } => vec![loc, scale],
+            Prior::Gamma {
+                concentration,
+                rate,
+            } => vec![concentration, rate],
+            Prior::Uniform { low, high, .. } => vec![low, high],
+            Prior::HalfCauchy { scale } | Prior::HalfNormal { scale, .. } => vec![scale],
+            Prior::Beta {
+                concentration1,
+                concentration0,
+            } => vec![concentration1, concentration0],
+        }
+    }
+
+    /// Whether `x` lies in the support that torch validates for this prior
+    /// (GPyTorch's `UniformPrior`, `HalfCauchyPrior` and `HalfNormalPrior`
+    /// validate their arguments; the other priors do not and return their
+    /// log density, possibly `-inf` or NaN).
+    pub fn in_validated_support(&self, x: f64) -> bool {
+        match *self {
+            Prior::Uniform { low, high, .. } => x >= low && x <= high,
+            Prior::HalfCauchy { .. } | Prior::HalfNormal { .. } => x >= 0.0,
+            _ => !x.is_nan(),
         }
     }
 
@@ -113,6 +379,50 @@ impl Prior {
                 xlogy(concentration, rate) + xlogy(concentration - 1.0, x)
                     - rate * x
                     - ln_gamma(concentration)
+            }
+            Prior::Normal { loc, scale } => {
+                let z = x - loc;
+                -(z * z) / (2.0 * (scale * scale)) - scale.ln() - LN_SQRT_2PI
+            }
+            Prior::Uniform {
+                low,
+                high,
+                float32,
+                torch_log,
+            } => {
+                // torch: log(low <= x) * (high > x)) - log(high - low).
+                let inside = if low <= x && high > x {
+                    0.0
+                } else {
+                    f64::NEG_INFINITY
+                };
+                let log_width = match (float32, torch_log) {
+                    (true, Some(v)) => v,
+                    (true, None) => ((high as f32) - (low as f32)).ln() as f64,
+                    (false, _) => (high - low).ln(),
+                };
+                inside - log_width
+            }
+            Prior::HalfCauchy { scale } => {
+                if x < 0.0 {
+                    return f64::NEG_INFINITY;
+                }
+                let z = x / scale;
+                -LN_PI - scale.ln() - (z * z).ln_1p() + std::f64::consts::LN_2
+            }
+            Prior::HalfNormal { .. } => {
+                if x < 0.0 {
+                    return f64::NEG_INFINITY;
+                }
+                let (var, log_scale) = self.half_normal_var_and_log_scale();
+                -(x * x) / (2.0 * var) - log_scale - LN_SQRT_2PI + std::f64::consts::LN_2
+            }
+            Prior::Beta {
+                concentration1: a,
+                concentration0: b,
+            } => {
+                xlogy(a - 1.0, x) + xlogy(b - 1.0, 1.0 - x) + ln_gamma(a + b)
+                    - (ln_gamma(a) + ln_gamma(b))
             }
         }
     }
@@ -134,6 +444,24 @@ impl Prior {
                     (concentration - 1.0) / x - rate
                 }
             }
+            Prior::Normal { loc, scale } => -(x - loc) / (scale * scale),
+            Prior::Uniform { .. } => 0.0,
+            Prior::HalfCauchy { scale } => {
+                let z = x / scale;
+                -2.0 * z / (scale * (1.0 + z * z))
+            }
+            Prior::HalfNormal { .. } => {
+                let (var, _) = self.half_normal_var_and_log_scale();
+                -x / var
+            }
+            Prior::Beta {
+                concentration1: a,
+                concentration0: b,
+            } => {
+                let ga = if a == 1.0 { 0.0 } else { (a - 1.0) / x };
+                let gb = if b == 1.0 { 0.0 } else { (b - 1.0) / (1.0 - x) };
+                ga - gb
+            }
         }
     }
 
@@ -145,6 +473,13 @@ impl Prior {
                 concentration,
                 rate,
             } => ((concentration - 1.0) / rate).max(0.0),
+            Prior::Normal { loc, .. } => loc,
+            Prior::Uniform { low, high, .. } => 0.5 * (low + high),
+            Prior::HalfCauchy { .. } | Prior::HalfNormal { .. } => 0.0,
+            Prior::Beta {
+                concentration1: a,
+                concentration0: b,
+            } => (a - 1.0) / (a + b - 2.0),
         }
     }
 
@@ -164,6 +499,7 @@ impl Prior {
                 let (c, r) = (concentration as f32, rate as f32);
                 ((c - 1.0) / r).max(0.0) as f64
             }
+            other => round_to_f32(other.mode()),
         }
     }
 
@@ -179,6 +515,26 @@ impl Prior {
             } => rand_distr::Gamma::new(concentration, 1.0 / rate)
                 .expect("validated Gamma parameters")
                 .sample(rng),
+            Prior::Normal { loc, scale } => rand_distr::Normal::new(loc, scale)
+                .expect("validated Normal parameters")
+                .sample(rng),
+            Prior::Uniform { low, high, .. } => rand_distr::Uniform::new(low, high)
+                .expect("validated Uniform parameters")
+                .sample(rng),
+            Prior::HalfCauchy { scale } => rand_distr::Cauchy::new(0.0, scale)
+                .expect("validated Cauchy parameters")
+                .sample(rng)
+                .abs(),
+            Prior::HalfNormal { scale, .. } => rand_distr::Normal::new(0.0, scale)
+                .expect("validated Normal parameters")
+                .sample(rng)
+                .abs(),
+            Prior::Beta {
+                concentration1,
+                concentration0,
+            } => rand_distr::Beta::new(concentration1, concentration0)
+                .expect("validated Beta parameters")
+                .sample(rng),
         }
     }
 }
@@ -188,15 +544,40 @@ impl Prior {
     /// emulating a float32 torch distribution.
     fn log_normal_var_and_log_scale(&self) -> (f64, f64) {
         match *self {
-            Prior::LogNormal { scale, float32, .. } => {
+            Prior::LogNormal {
+                scale,
+                float32,
+                torch_log,
+                ..
+            } => {
                 if float32 {
                     let s = scale as f32;
-                    ((s * s) as f64, s.ln() as f64)
+                    ((s * s) as f64, torch_log.unwrap_or(s.ln() as f64))
                 } else {
                     (scale * scale, scale.ln())
                 }
             }
-            Prior::Gamma { .. } => unreachable!("not a LogNormal prior"),
+            _ => unreachable!("not a LogNormal prior"),
+        }
+    }
+
+    /// `(scale², log(scale))` of a HalfNormal prior, in single precision when
+    /// emulating a float32 torch distribution.
+    fn half_normal_var_and_log_scale(&self) -> (f64, f64) {
+        match *self {
+            Prior::HalfNormal {
+                scale,
+                float32,
+                torch_log,
+            } => {
+                if float32 {
+                    let s = scale as f32;
+                    ((s * s) as f64, torch_log.unwrap_or(s.ln() as f64))
+                } else {
+                    (scale * scale, scale.ln())
+                }
+            }
+            _ => unreachable!("not a HalfNormal prior"),
         }
     }
 }
@@ -235,6 +616,7 @@ mod tests {
             loc: std::f64::consts::SQRT_2 + 2f64.ln() * 0.5,
             scale: 3f64.sqrt(),
             float32: false,
+            torch_log: None,
         }
         .rounded_to_f32();
         assert_eq!(p.log_prob(0.3), -1.729238793903073);
@@ -272,10 +654,54 @@ mod tests {
     }
 
     #[test]
+    fn new_priors_match_closed_forms() {
+        use std::f64::consts::PI;
+        let x: f64 = 0.37;
+        let n = Prior::normal(0.3, 1.7).unwrap();
+        let e = -(x - 0.3f64).powi(2) / (2.0 * 1.7 * 1.7) - (1.7f64 * (2.0 * PI).sqrt()).ln();
+        assert!((n.log_prob(x) - e).abs() < 1e-14);
+        let u = Prior::uniform(0.1, 2.3).unwrap();
+        assert!((u.log_prob(x) + 2.2f64.ln()).abs() < 1e-14);
+        assert_eq!(u.log_prob(2.3), f64::NEG_INFINITY);
+        assert!(!u.in_validated_support(2.4));
+        assert!(u.in_validated_support(2.3));
+        let hc = Prior::half_cauchy(0.7).unwrap();
+        let e = (2.0 / (PI * 0.7 * (1.0 + (x / 0.7).powi(2)))).ln();
+        assert!((hc.log_prob(x) - e).abs() < 1e-14);
+        assert!(!hc.in_validated_support(-0.1));
+        let hn = Prior::half_normal(0.7).unwrap();
+        let e = (2.0 / (0.7 * (2.0 * PI).sqrt())).ln() - x * x / (2.0 * 0.49);
+        assert!((hn.log_prob(x) - e).abs() < 1e-14);
+        let b = Prior::beta(2.5, 1.5).unwrap();
+        // B(2.5, 1.5) = Γ(2.5) Γ(1.5) / Γ(4) = (1.329340388 · 0.886226925) / 6.
+        let beta_fn: f64 = 1.329_340_388_179_137 * 0.886_226_925_452_758 / 6.0;
+        let e = 1.5 * x.ln() + 0.5 * (1.0 - x).ln() - beta_fn.ln();
+        assert!((b.log_prob(x) - e).abs() < 1e-13);
+        for p in [n, u, hc, hn, b] {
+            for &x in &[0.15, 0.37, 0.8] {
+                let h = 1e-6;
+                let fd = (p.log_prob(x + h) - p.log_prob(x - h)) / (2.0 * h);
+                assert!((fd - p.grad_log_prob(x)).abs() < 1e-6, "{p:?} {x}");
+            }
+        }
+        // Float32 emulation of GPyTorch's HalfNormalPrior(0.7) on a double model
+        // (torch: HalfNormalPrior(0.7).log_prob(tensor(0.123456789012345, float64))).
+        let hn32 = Prior::half_normal(0.7).unwrap().rounded_to_f32();
+        assert_eq!(hn32.log_prob(0.123456789012345), 0.11533098452750556);
+        let g = hn32.grad_log_prob(0.123456789012345);
+        assert!((g + 0.2519526410577779).abs() < 1e-15, "{g}");
+    }
+
+    #[test]
     fn invalid_parameters_are_rejected() {
         assert!(Prior::log_normal(0.0, 0.0).is_err());
         assert!(Prior::gamma(-1.0, 1.0).is_err());
         assert!(Prior::gamma(1.0, f64::INFINITY).is_err());
+        assert!(Prior::normal(0.0, -1.0).is_err());
+        assert!(Prior::uniform(1.0, 1.0).is_err());
+        assert!(Prior::half_cauchy(0.0).is_err());
+        assert!(Prior::half_normal(f64::NAN).is_err());
+        assert!(Prior::beta(1.0, 0.0).is_err());
     }
 
     #[test]

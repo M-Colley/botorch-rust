@@ -15,6 +15,7 @@
 //! which is what autograd produces in GPyTorch.
 
 use crate::error::{BotorchError, Result};
+use crate::kernels::{BuiltCovar, CovarModule, Prepared};
 use crate::linalg::psd_safe_cholesky;
 use crate::models::{Hyperparameters, Likelihood, SingleTaskGP};
 use crate::Vector;
@@ -83,10 +84,9 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
                 "non-finite raw hyperparameters: {raw_params:?}"
             )));
         }
-        let spec = model.covar_module();
-        let kernel = spec.build(h.raw_lengthscale.as_slice(), h.raw_outputscale)?;
-        let xs = kernel.scale_points(model.transformed_train_inputs());
-        let mut k = kernel.symmetric_scaled(&xs);
+        let covar = model.build_covar(&h)?;
+        let xs = covar.prepare(model.transformed_train_inputs())?;
+        let mut k = covar.symmetric(&xs);
         let n = model.num_train();
         let nf = n as f64;
 
@@ -120,20 +120,34 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
         let mut res = -0.5 * (inv_quad + logdet + nf * LN_2PI);
 
         // Prior terms, in GPyTorch's `named_priors()` order.
-        let lengthscale = kernel.lengthscale();
-        let outputscale = kernel.outputscale();
         if let (Likelihood::Gaussian(lik), Some(noise)) = (model.likelihood(), noise_value) {
             if let Some(prior) = lik.noise_prior {
                 res += prior.log_prob(noise);
             }
         }
-        if let (Some(scale), Some(s)) = (spec.scale, outputscale) {
-            if let Some(prior) = scale.outputscale_prior {
-                res += prior.log_prob(s);
+        let mut tree_prior_grad = None;
+        match (model.covar_module(), &covar) {
+            (CovarModule::Standard(spec), BuiltCovar::Standard(kernel)) => {
+                let lengthscale = kernel.lengthscale();
+                if let (Some(scale), Some(s)) = (spec.scale, kernel.outputscale()) {
+                    if let Some(prior) = scale.outputscale_prior {
+                        res += prior.log_prob(s);
+                    }
+                }
+                if let Some(prior) = spec.lengthscale_prior {
+                    res += lengthscale.iter().map(|&l| prior.log_prob(l)).sum::<f64>();
+                }
             }
-        }
-        if let Some(prior) = spec.lengthscale_prior {
-            res += lengthscale.iter().map(|&l| prior.log_prob(l)).sum::<f64>();
+            (CovarModule::Tree(_), BuiltCovar::Tree(tree)) => {
+                if with_grad {
+                    let (lp, g) = tree.log_prior_and_grad()?;
+                    res += lp;
+                    tree_prior_grad = Some(g);
+                } else {
+                    res += tree.log_prior()?;
+                }
+            }
+            _ => unreachable!("covariance module and kernel of different kinds"),
         }
         let value = res / nf;
         if !with_grad {
@@ -144,7 +158,6 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
         let alpha = chol.solve_lower_transpose_vec(&v);
         let mut w = chol.inverse();
         w.ger(1.0, &alpha, &alpha, -1.0); // W = ααᵀ - K⁻¹
-        let (gl, gs) = kernel.contract_hyper_grad(&xs, &w);
 
         let mut grad = Vector::zeros(layout.len());
         grad[layout.constant_index()] = alpha.sum() / nf;
@@ -158,25 +171,45 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
             let raw = h.raw_noise.expect("raw noise present");
             grad[idx] = g * lik.noise_constraint.transform_derivative(raw) / nf;
         }
-        if let (Some(idx), Some(scale), Some(s), Some(gs)) =
-            (layout.outputscale_index(), spec.scale, outputscale, gs)
-        {
-            let mut g = 0.5 * gs;
-            if let Some(prior) = scale.outputscale_prior {
-                g += prior.grad_log_prob(s);
+        match (model.covar_module(), &covar, &xs) {
+            (
+                CovarModule::Standard(spec),
+                BuiltCovar::Standard(kernel),
+                Prepared::Standard(points),
+            ) => {
+                let (gl, gs) = kernel.contract_hyper_grad(points, &w);
+                let lengthscale = kernel.lengthscale();
+                let outputscale = kernel.outputscale();
+                if let (Some(idx), Some(scale), Some(s), Some(gs)) =
+                    (layout.outputscale_index(), spec.scale, outputscale, gs)
+                {
+                    let mut g = 0.5 * gs;
+                    if let Some(prior) = scale.outputscale_prior {
+                        g += prior.grad_log_prob(s);
+                    }
+                    let raw = h.raw_outputscale.expect("raw outputscale present");
+                    grad[idx] = g * scale.outputscale_constraint.transform_derivative(raw) / nf;
+                }
+                for (j, idx) in layout.lengthscale_range().enumerate() {
+                    let mut g = 0.5 * gl[j];
+                    if let Some(prior) = spec.lengthscale_prior {
+                        g += prior.grad_log_prob(lengthscale[j]);
+                    }
+                    grad[idx] = g * spec
+                        .lengthscale_constraint
+                        .transform_derivative(h.raw_lengthscale[j])
+                        / nf;
+                }
             }
-            let raw = h.raw_outputscale.expect("raw outputscale present");
-            grad[idx] = g * scale.outputscale_constraint.transform_derivative(raw) / nf;
-        }
-        for (j, idx) in layout.lengthscale_range().enumerate() {
-            let mut g = 0.5 * gl[j];
-            if let Some(prior) = spec.lengthscale_prior {
-                g += prior.grad_log_prob(lengthscale[j]);
+            (CovarModule::Tree(spec), BuiltCovar::Tree(tree), Prepared::Tree(points)) => {
+                let gk = tree.contract(points, &w);
+                let gp = tree_prior_grad.expect("prior gradient computed");
+                let derivs = spec.transform_derivatives(h.raw_kernel.as_slice());
+                for (j, idx) in layout.kernel_range().enumerate() {
+                    grad[idx] = (0.5 * gk[j] + gp[j]) * derivs[j] / nf;
+                }
             }
-            grad[idx] = g * spec
-                .lengthscale_constraint
-                .transform_derivative(h.raw_lengthscale[j])
-                / nf;
+            _ => unreachable!("covariance module and kernel of different kinds"),
         }
         Ok((value, Some(grad)))
     }

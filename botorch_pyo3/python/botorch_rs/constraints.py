@@ -1,8 +1,9 @@
 """Parameter constraints (``gpytorch.constraints``).
 
-``GreaterThan`` / ``Positive`` (lower bounds) and ``Interval`` (lower and
-upper bounds). An enforced constraint maps an unconstrained raw parameter
-through a transform: GPyTorch's ``softplus`` for ``GreaterThan``
+``GreaterThan`` / ``Positive`` (lower bounds), ``LessThan`` (upper bounds)
+and ``Interval`` (lower and upper bounds). An enforced constraint maps an
+unconstrained raw parameter through a transform: GPyTorch's ``softplus``
+for ``GreaterThan``
 (``softplus(raw) + lower_bound``) and ``sigmoid`` for ``Interval``
 (``sigmoid(raw) * (upper - lower) + lower``). With ``transform=None`` the
 constraint is not enforced: the raw value is the value, and the optimizer
@@ -21,6 +22,7 @@ from typing import Any
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import as_float
 from botorch_rs.exceptions.errors import UnsupportedError
+from botorch_rs.priors import _float32
 
 #: Marker for GPyTorch's ``softplus`` transform (``torch.nn.functional.softplus``).
 softplus = "softplus"
@@ -98,6 +100,7 @@ class Interval:
                 t,
                 inv,
                 init,
+                _float32(),
             )
         except ValueError as e:  # GPyTorch raises ValueError for invalid bounds
             raise ValueError(str(e)) from None
@@ -162,7 +165,9 @@ class GreaterThan(Interval):
                 "GreaterThan supports the softplus transform (or None) in botorch_rs."
             )
         init = None if initial_value is None else as_float(initial_value, "initial_value")
-        self._rs = _rs.Constraint.greater_than(as_float(lower_bound, "lower_bound"), name, init)
+        self._rs = _rs.Constraint.greater_than(
+            as_float(lower_bound, "lower_bound"), name, init, _float32()
+        )
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.lower_bound:.3E})"
@@ -183,9 +188,35 @@ class Positive(GreaterThan):
         return "Positive()"
 
 
+class LessThan(Interval):
+    """``value <= upper_bound``: enforced with ``upper_bound - softplus(-raw)``
+    by default, or (``transform=None``) a box bound of the optimizer."""
+
+    def __init__(
+        self,
+        upper_bound: Any,
+        transform: Any = softplus,
+        inv_transform: Any = inv_softplus,
+        initial_value: Any = None,
+    ) -> None:
+        name = _transform_name(transform)
+        if name == "sigmoid":
+            raise UnsupportedError(
+                "LessThan supports the softplus transform (or None) in botorch_rs."
+            )
+        init = None if initial_value is None else as_float(initial_value, "initial_value")
+        self._rs = _rs.Constraint.less_than(
+            as_float(upper_bound, "upper_bound"), name, init, _float32()
+        )
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.upper_bound:.3E})"
+
+
 def _from_rs(constraint: _rs.Constraint) -> Interval:
     """A Python constraint object wrapping an extension constraint."""
-    cls: type[Interval] = GreaterThan if constraint.kind == "GreaterThan" else Interval
+    classes: dict[str, type[Interval]] = {"GreaterThan": GreaterThan, "LessThan": LessThan}
+    cls = classes.get(constraint.kind, Interval)
     obj = cls.__new__(cls)
     obj._rs = constraint
     return obj
@@ -194,6 +225,7 @@ def _from_rs(constraint: _rs.Constraint) -> Interval:
 __all__ = [
     "GreaterThan",
     "Interval",
+    "LessThan",
     "Positive",
     "inv_sigmoid",
     "inv_softplus",

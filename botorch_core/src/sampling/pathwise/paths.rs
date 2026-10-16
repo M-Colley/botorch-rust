@@ -147,10 +147,12 @@ impl GeneralizedLinearPath {
     /// The inputs after the input transform.
     pub(crate) fn transform(&self, x: &Matrix) -> Result<Matrix> {
         check_inputs(x, self.feature_map.dim())?;
-        match &self.input_transform {
-            Some(tf) => tf.transform(x),
-            None => Ok(x.clone()),
-        }
+        let z = match &self.input_transform {
+            Some(tf) => tf.transform(x)?,
+            None => x.clone(),
+        };
+        self.feature_map.validate(&z)?;
+        Ok(z)
     }
 
     /// `∂z/∂x` of the input transform (per coordinate).

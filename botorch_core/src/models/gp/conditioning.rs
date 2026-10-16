@@ -28,7 +28,7 @@ use std::sync::{Arc, OnceLock};
 
 use super::{Likelihood, PredictionCache, SingleTaskGP, MIN_FIXED_NOISE};
 use crate::error::{BotorchError, Result};
-use crate::kernels::ScaledPoints;
+use crate::kernels::Prepared;
 use crate::linalg::{psd_safe_cholesky, CholeskyFactor, CovarianceRoot};
 use crate::posterior::Posterior;
 use crate::sampling::SobolQMCNormalSampler;
@@ -45,7 +45,7 @@ fn vstack(a: &Matrix, b: &Matrix) -> Matrix {
 /// The factor and scaled points of a model's training data enlarged by new
 /// (transformed) points with the given noise variances.
 struct Enlarged {
-    full_scaled: ScaledPoints,
+    full_scaled: Prepared,
     chol: CholeskyFactor,
 }
 
@@ -82,17 +82,17 @@ impl SingleTaskGP {
         let cache = self.cache()?;
         let kernel = &cache.kernel;
         let n = self.num_train();
-        let full_scaled = kernel.scale_points(&vstack(&self.train_x_tf, x_tf));
-        let new_scaled = kernel.scale_points(x_tf);
-        let cross = kernel.cross_scaled(&new_scaled, &cache.train_scaled);
-        let mut corner = kernel.symmetric_scaled(&new_scaled);
+        let full_scaled = kernel.prepare(&vstack(&self.train_x_tf, x_tf))?;
+        let new_scaled = kernel.prepare(x_tf)?;
+        let cross = kernel.cross(&new_scaled, &cache.train_scaled);
+        let mut corner = kernel.symmetric(&new_scaled);
         for (j, &v) in noise_tf.iter().enumerate() {
             corner[(j, j)] += v;
         }
         let chol = match cache.chol.bordered(&cross, &corner) {
             Some(c) => c,
             None => {
-                let mut k = kernel.symmetric_scaled(&full_scaled);
+                let mut k = kernel.symmetric(&full_scaled);
                 let noise = self.likelihood_noise();
                 for i in 0..n {
                     k[(i, i)] += self.training_noise(&noise, i);
@@ -277,7 +277,7 @@ impl SingleTaskGP {
                     input_transform: self.input_transform.clone(),
                     input_chain: self.input_chain.clone(),
                     outcome_transform: self.outcome_transform.clone(),
-                    covar_module: self.covar_module,
+                    covar_module: self.covar_module.clone(),
                     likelihood: likelihood.clone(),
                     hyperparameters: self.hyperparameters.clone(),
                     point_noise: point_noise.clone(),
@@ -372,8 +372,8 @@ impl SingleTaskGP {
 pub(crate) struct FantasyPosterior {
     /// Index of the fantasy.
     fantasy: usize,
-    /// The scaled transformed test points.
-    xs: ScaledPoints,
+    /// The prepared transformed test points.
+    xs: Prepared,
     /// `K(X_full, x)` (`N × p`).
     k_full: Matrix,
     /// `K_full⁻¹ K(X_full, x)` (`N × p`), with the covariance only.
@@ -417,7 +417,7 @@ pub(crate) struct FantasyGp<'a> {
     gp: &'a SingleTaskGP,
     cache: &'a PredictionCache,
     x_new: Matrix,
-    full_scaled: Cow<'a, ScaledPoints>,
+    full_scaled: Cow<'a, Prepared>,
     chol: Cow<'a, CholeskyFactor>,
     /// Root of the posterior covariance at `x_new` (with observation noise)
     /// and the base samples (`n_f × n'`); `None` without new points.
@@ -536,15 +536,15 @@ impl<'a> FantasyGp<'a> {
     pub fn posterior(&self, i: usize, x: &Matrix, with_cov: bool) -> Result<FantasyPosterior> {
         let xt = self.gp.transform_inputs(x)?;
         let kernel = &self.cache.kernel;
-        let xs = kernel.scale_points(&xt);
-        let k_full = kernel.cross_scaled(&self.full_scaled, &xs);
+        let xs = kernel.prepare(&xt)?;
+        let k_full = kernel.cross(&self.full_scaled, &xs);
         let (mu, sd) = self.gp.outcome_affine();
         let c = self.gp.constant();
         let mean = k_full.tr_mul(self.alpha(i)).map(|v| mu + sd * (c + v));
         let (w, covariance) = if with_cov {
             let mut v = k_full.clone();
             self.chol.solve_lower_mut(&mut v);
-            let mut cov = kernel.symmetric_scaled(&xs);
+            let mut cov = kernel.symmetric(&xs);
             cov.gemm_tr(-1.0, &v, &v, 1.0);
             self.chol.solve_lower_transpose_mut(&mut v);
             (Some(v), Some(cov.map(|c| sd * c * sd)))
@@ -619,10 +619,10 @@ impl<'a> FantasyGp<'a> {
         let jac = self.gp.input_jacobian();
         let mut out = Matrix::zeros(p, d);
         for t in 0..p {
-            let (_, dk) = kernel.cross_with_grad_scaled(post.xs.row(t), &self.full_scaled);
+            let (_, dk) = kernel.cross_with_grad(&post.xs, t, &self.full_scaled);
             let mut g = dk.tr_mul(&kfull_bar.column(t));
             if let Some(a) = &abar {
-                let (_, dkk) = kernel.cross_with_grad_scaled(post.xs.row(t), &post.xs);
+                let (_, dkk) = kernel.cross_with_grad(&post.xs, t, &post.xs);
                 g += dkk.tr_mul(&a.column(t)) * 2.0;
             }
             for m in 0..d {
@@ -631,8 +631,7 @@ impl<'a> FantasyGp<'a> {
         }
         // The new points' side of K(X_full, x).
         for j in 0..k {
-            let row = self.full_scaled.row(n + j);
-            let (_, dk) = kernel.cross_with_grad_scaled(row, &post.xs);
+            let (_, dk) = kernel.cross_with_grad(&self.full_scaled, n + j, &post.xs);
             let g = dk.tr_mul(&kfull_bar.row(n + j).transpose());
             for m in 0..d {
                 acc.xbar_tf[(j, m)] += g[m];
@@ -659,8 +658,7 @@ impl<'a> FantasyGp<'a> {
         let n = self.gp.num_train();
         let mut xbar_tf = acc.xbar_tf.clone();
         for j in 0..k {
-            let (_, dk) =
-                kernel.cross_with_grad_scaled(self.full_scaled.row(n + j), &self.full_scaled);
+            let (_, dk) = kernel.cross_with_grad(&self.full_scaled, n + j, &self.full_scaled);
             let g = dk.tr_mul(&acc.kbar.row(j).transpose());
             for m in 0..d {
                 xbar_tf[(j, m)] += g[m];

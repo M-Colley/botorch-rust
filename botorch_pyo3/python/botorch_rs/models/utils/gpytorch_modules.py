@@ -22,12 +22,13 @@ def get_covar_module_with_dim_scaled_prior(
     ``LogNormal(sqrt(2) + log(d) / 2, sqrt(3))`` of Hvarfner et al. (2024),
     BoTorch's ``SingleTaskGP`` default."""
     shape = _check_batch_shape(batch_shape)
-    if active_dims is not None:
-        from botorch_rs.exceptions.errors import UnsupportedError
-
-        raise UnsupportedError("`active_dims` is not supported by botorch_rs.")
     spec = _rs.KernelSpec.dim_scaled(ard_num_dims, use_rbf_kernel)
-    return _kernel_from_spec(spec, lambda d: _rs.KernelSpec.dim_scaled(d, use_rbf_kernel), shape)
+    return _kernel_from_spec(
+        spec,
+        lambda d: _rs.KernelSpec.dim_scaled(d, use_rbf_kernel),
+        shape,
+        active_dims=active_dims,
+    )
 
 
 def get_matern_kernel_with_gamma_prior(ard_num_dims: int, batch_shape: Any = None) -> Kernel:

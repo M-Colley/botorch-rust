@@ -350,7 +350,7 @@ pub type Matrix = nalgebra::DMatrix<f64>;
 pub type Vector = nalgebra::DVector<f64>;
 
 pub use acquisition::AcquisitionFunction;
-pub use constraints::{Constraint, GreaterThan, Interval, ParameterTransform};
+pub use constraints::{Constraint, GreaterThan, Interval, LessThan, ParameterTransform};
 pub use error::{BotorchError, Result};
 pub use fit::{fit_gpytorch_mll, BatchedFitResult, FitOptions, FitResult, FitStatus, Fittable};
 pub use kernels::{Kernel, KernelKind, KernelSpec, ScaleKernelSpec};

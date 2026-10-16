@@ -9,7 +9,7 @@
 use std::fmt::Debug;
 
 use crate::error::{BotorchError, Result};
-use crate::kernels::{Kernel, ScaledPoints};
+use crate::kernels::{BuiltCovar, Kernel, Prepared};
 use crate::sampling::pathwise::utils::{check_num_features, draw_fourier_frequencies};
 use crate::{Matrix, Vector};
 
@@ -32,6 +32,16 @@ pub trait FeatureMap: Send + Sync + Debug {
     /// The features of one point (length `L`) and their derivatives with
     /// respect to its coordinates (`L × d`).
     fn features_with_grad(&self, z: &[f64]) -> (Vector, Matrix);
+
+    /// Checks that the rows of `z` are valid inputs (e.g. task indices in
+    /// range for index kernels, the unit cube for an
+    /// `OrthogonalAdditiveKernel`); [`FeatureMap::features`] may assume it.
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] for invalid inputs.
+    fn validate(&self, _z: &Matrix) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Random Fourier features of a stationary kernel (BoTorch's
@@ -47,13 +57,16 @@ pub trait FeatureMap: Send + Sync + Debug {
 /// the kernel's spectral density. `ℓ` are the lengthscales and `s` the
 /// outputscale of a `ScaleKernel` (1 without). The operations follow
 /// BoTorch's `InverseLengthscaleTransform`, `SineCosineTransform` and
-/// `OutputscaleTransform`.
+/// `OutputscaleTransform`; with `active_dims` (BoTorch's `FeatureSelector`),
+/// `z` are the selected inputs.
 #[derive(Clone, Debug)]
 pub struct KernelFeatureMap {
     kernel: Kernel,
     frequencies: Matrix,
     inv_lengthscale: Vec<f64>,
     scale: f64,
+    active_dims: Option<Vec<usize>>,
+    input_dim: usize,
 }
 
 impl KernelFeatureMap {
@@ -82,12 +95,46 @@ impl KernelFeatureMap {
         }
         let num_features = 2 * frequencies.nrows();
         let inv_lengthscale = kernel.lengthscale().iter().map(|l| 1.0 / l).collect();
+        let input_dim = kernel.dim();
         Ok(Self {
             kernel,
             frequencies,
             inv_lengthscale,
             scale: (2.0 / num_features as f64).powf(0.5),
+            active_dims: None,
+            input_dim,
         })
+    }
+
+    /// The map acting on the columns `active_dims` of `input_dim`-dimensional
+    /// inputs (BoTorch's `FeatureSelector(active_dims)` before the
+    /// lengthscales); the kernel has one lengthscale per active dimension.
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] if the kernel does not have one
+    /// lengthscale per active dimension or an index is out of range.
+    pub fn with_active_dims(mut self, active_dims: Vec<usize>, input_dim: usize) -> Result<Self> {
+        if active_dims.len() != self.kernel.dim() || active_dims.iter().any(|&j| j >= input_dim) {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "active_dims {active_dims:?} of {input_dim} inputs do not match a kernel with {} \
+                 lengthscales",
+                self.kernel.dim()
+            )));
+        }
+        self.active_dims = Some(active_dims);
+        self.input_dim = input_dim;
+        Ok(self)
+    }
+
+    /// The `active_dims`, if any.
+    pub fn active_dims(&self) -> Option<&[usize]> {
+        self.active_dims.as_deref()
+    }
+
+    /// The column of the inputs of feature dimension `c`.
+    #[inline]
+    fn column(&self, c: usize) -> usize {
+        self.active_dims.as_ref().map_or(c, |dims| dims[c])
     }
 
     /// The kernel.
@@ -102,10 +149,11 @@ impl KernelFeatureMap {
 
     /// `u = (z ⊙ ℓ⁻¹) ωᵀ` for one point.
     fn projections(&self, z: &[f64]) -> Vec<f64> {
-        let zs: Vec<f64> = z
+        let zs: Vec<f64> = self
+            .inv_lengthscale
             .iter()
-            .zip(&self.inv_lengthscale)
-            .map(|(v, r)| r * v)
+            .enumerate()
+            .map(|(c, r)| r * z[self.column(c)])
             .collect();
         (0..self.frequencies.nrows())
             .map(|l| {
@@ -130,7 +178,7 @@ impl KernelFeatureMap {
 
 impl FeatureMap for KernelFeatureMap {
     fn dim(&self) -> usize {
-        self.kernel.dim()
+        self.input_dim
     }
 
     fn num_features(&self) -> usize {
@@ -142,7 +190,9 @@ impl FeatureMap for KernelFeatureMap {
         debug_assert_eq!(d, self.dim());
         let half = self.frequencies.nrows();
         // (z ⊙ ℓ⁻¹) ωᵀ as one matrix product.
-        let zs = Matrix::from_fn(n, d, |i, k| self.inv_lengthscale[k] * z[(i, k)]);
+        let zs = Matrix::from_fn(n, self.kernel.dim(), |i, k| {
+            self.inv_lengthscale[k] * z[(i, self.column(k))]
+        });
         let u = zs * self.frequencies.transpose();
         let mut out = Matrix::zeros(n, 2 * half);
         for l in 0..half {
@@ -166,10 +216,11 @@ impl FeatureMap for KernelFeatureMap {
             let (s, c) = ul.sin_cos();
             f[l] = self.scaled(s);
             f[half + l] = self.scaled(c);
-            for k in 0..d {
+            for k in 0..self.kernel.dim() {
                 let du = self.frequencies[(l, k)] * self.inv_lengthscale[k];
-                df[(l, k)] = factor * c * du;
-                df[(half + l, k)] = -factor * s * du;
+                let col = self.column(k);
+                df[(l, col)] += factor * c * du;
+                df[(half + l, col)] += -factor * s * du;
             }
         }
         (f, df)
@@ -180,7 +231,8 @@ impl FeatureMap for KernelFeatureMap {
 /// `num_features` features (BoTorch's `gen_kernel_features`), with
 /// frequencies drawn by
 /// [`draw_fourier_frequencies`] from
-/// `seed` (RBF: standard normal; Matérn-5/2: multivariate Student-t; a
+/// `seed` (RBF: standard normal; Matérn-ν: multivariate Student-t with
+/// `2ν` degrees of freedom; a
 /// `ScaleKernel` scales the features by the square root of its
 /// outputscale).
 ///
@@ -207,12 +259,12 @@ pub fn gen_kernel_features(
 
 /// The kernel evaluated at fixed points, `φ(z) = [k(z, p_1), ..., k(z, p_n)]`
 /// (BoTorch's `KernelEvaluationMap`), the basis of the update paths of
-/// Matheron's rule.
+/// Matheron's rule; any covariance module (also a kernel tree).
 #[derive(Clone, Debug)]
 pub struct KernelEvaluationMap {
-    kernel: Kernel,
+    kernel: BuiltCovar,
     points: Matrix,
-    scaled: ScaledPoints,
+    scaled: Prepared,
 }
 
 impl KernelEvaluationMap {
@@ -229,7 +281,15 @@ impl KernelEvaluationMap {
                 kernel.dim()
             )));
         }
-        let scaled = kernel.scale_points(&points);
+        Self::from_covar(BuiltCovar::Standard(kernel), points)
+    }
+
+    /// The map of a covariance module centered at the rows of `points`.
+    ///
+    /// # Errors
+    /// Errors of [`BuiltCovar::prepare`] (e.g. a column mismatch).
+    pub fn from_covar(kernel: BuiltCovar, points: Matrix) -> Result<Self> {
+        let scaled = kernel.prepare(&points)?;
         Ok(Self {
             kernel,
             points,
@@ -237,8 +297,8 @@ impl KernelEvaluationMap {
         })
     }
 
-    /// The kernel.
-    pub fn kernel(&self) -> &Kernel {
+    /// The covariance module.
+    pub fn kernel(&self) -> &BuiltCovar {
         &self.kernel
     }
 
@@ -250,7 +310,7 @@ impl KernelEvaluationMap {
 
 impl FeatureMap for KernelEvaluationMap {
     fn dim(&self) -> usize {
-        self.kernel.dim()
+        self.points.ncols()
     }
 
     fn num_features(&self) -> usize {
@@ -258,13 +318,23 @@ impl FeatureMap for KernelEvaluationMap {
     }
 
     fn features(&self, z: &Matrix) -> Matrix {
-        self.kernel
-            .cross_scaled(&self.kernel.scale_points(z), &self.scaled)
+        let p = self
+            .kernel
+            .prepare(z)
+            .expect("path inputs are validated (FeatureMap::validate)");
+        self.kernel.cross(&p, &self.scaled)
     }
 
     fn features_with_grad(&self, z: &[f64]) -> (Vector, Matrix) {
-        self.kernel
-            .cross_with_grad_scaled(&self.kernel.scale_point(z), &self.scaled)
+        let p = self
+            .kernel
+            .prepare(&Matrix::from_row_slice(1, z.len(), z))
+            .expect("path inputs are validated (FeatureMap::validate)");
+        self.kernel.cross_with_grad(&p, 0, &self.scaled)
+    }
+
+    fn validate(&self, z: &Matrix) -> Result<()> {
+        self.kernel.prepare(z).map(|_| ())
     }
 }
 

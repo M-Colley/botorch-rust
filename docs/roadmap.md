@@ -12,20 +12,12 @@ functions build on them.
 
 ## Phase 6: modeling building blocks
 
-- **6a: kernels, priors and constraints.**
-  - GPyTorch kernels BoTorch users pass as `covar_module`:
-    - Matérn with ν = 0.5, 1.5 and 2.5, RBF, rational quadratic, periodic,
-      linear, polynomial, cosine;
-    - `AdditiveKernel`, `ProductKernel` and `ScaleKernel` on any kernel, with
-      `active_dims`;
-    - `IndexKernel`.
-  - BoTorch's own kernels: `CategoricalKernel`, `LinearTruncatedFidelityKernel`,
-    `DownsamplingKernel`, `ExponentialDecayKernel`, `InfiniteWidthBNNKernel`,
-    `OrthogonalAdditiveKernel`, `PositiveIndexKernel`.
-  - Priors: Normal, Uniform, half-Cauchy, half-normal, LKJ and BoTorch's
-    `BetaPrior`. Constraints: `LessThan`.
-  - `SingleTaskGP` with arbitrary kernel trees: parameter names,
-    `initialize`, fitting and posteriors.
+- **6a: kernels, priors and constraints (done; [details](kernels-and-priors.md)).**
+  Kernel trees in `SingleTaskGP`, the GPyTorch kernels (Matérn ν = 0.5, 1.5,
+  2.5, RBF, RQ, periodic, linear, polynomial, cosine, `IndexKernel`), BoTorch's
+  own kernels, the Normal / Uniform / half-Cauchy / half-normal / LKJ / Beta
+  priors and `LessThan`. Remaining: the kernels of later model phases,
+  `SmoothedBoxPrior` and other priors, `last_dim_is_batch`.
 - **6b: transforms.**
   - Input transforms: `InputStandardize`, `Warp` (Kumaraswamy), `Round`,
     `AppendFeatures`, `FilterFeatures`, `InteractionFeatures`, `Log10`,

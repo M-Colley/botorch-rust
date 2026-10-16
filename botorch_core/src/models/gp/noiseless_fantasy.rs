@@ -46,9 +46,9 @@ impl SingleTaskGP {
             )));
         }
         let x_tf = self.transform_inputs(x)?;
-        let kernel = self.kernel()?;
-        let train_scaled = kernel.scale_points(&x_tf);
-        let mut k = kernel.symmetric_scaled(&train_scaled);
+        let kernel = self.covar()?;
+        let train_scaled = kernel.prepare(&x_tf)?;
+        let mut k = kernel.symmetric(&train_scaled);
         for i in 0..n {
             k[(i, i)] += noise_tf;
         }
@@ -77,7 +77,7 @@ impl SingleTaskGP {
                     input_transform: self.input_transform.clone(),
                     input_chain: self.input_chain.clone(),
                     outcome_transform: self.outcome_transform.clone(),
-                    covar_module: self.covar_module,
+                    covar_module: self.covar_module.clone(),
                     likelihood: Likelihood::FixedNoise {
                         noise: noise.clone(),
                     },
