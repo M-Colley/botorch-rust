@@ -1,29 +1,44 @@
-//! Stationary ARD kernels (RBF and Matérn-5/2) with an optional `ScaleKernel`
+//! Stationary ARD kernels (RBF and Matérn) with an optional `ScaleKernel`
 //! wrapper, following GPyTorch's parameterization exactly:
 //!
 //! * inputs are divided by the lengthscales first (`x / ℓ`), then distances are
 //!   computed on the scaled inputs;
 //! * RBF: `k(x, y) = exp(-r² / 2)` with `r² = Σⱼ ((xⱼ - yⱼ) / ℓⱼ)²`;
-//! * Matérn-5/2: `k(x, y) = (1 + √5 r + 5/3 r²) exp(-√5 r)`, where the distance
-//!   `r` is clamped from below at `1e-15` (as in `gpytorch.kernels.kernel.dist`);
+//! * Matérn-ν (ν = 1/2, 3/2, 5/2): `exp(-r)`, `(1 + √3 r) exp(-√3 r)` and
+//!   `(1 + √5 r + 5/3 r²) exp(-√5 r)`, where the distance `r` is clamped from
+//!   below at `1e-15` (as in `gpytorch.kernels.kernel.dist`);
 //! * `ScaleKernel`: `k_s(x, y) = s · k(x, y)` with outputscale `s`.
 //!
 //! [`KernelSpec`] describes a covariance *module* (kernel type, priors,
 //! constraints, initialization) like a GPyTorch kernel object, whereas
 //! [`Kernel`] is a kernel with concrete hyperparameter values that can be
 //! evaluated, together with its derivatives.
+//!
+//! General covariance modules -- trees of GPyTorch and BoTorch kernels with
+//! `active_dims`, sums, products and `ScaleKernel`s -- are described by
+//! [`KernelNode`] (see [`tree`]); [`CovarModule`] is either kind.
 
 use crate::constraints::{Constraint, GreaterThan};
 use crate::error::{BotorchError, Result};
 use crate::priors::Prior;
 use crate::{Matrix, Vector};
 
+mod covar;
+pub mod eval;
+pub mod oak;
+pub mod tree;
+
+pub use covar::{BuiltCovar, CovarModule, Prepared};
+pub use eval::TreeKernel;
+pub use tree::{KernelNode, KernelType, MatrixPrior, ParamSpec};
+
 /// Lower clamp of the Matérn distance (`gpytorch.kernels.kernel.dist`).
 pub const MATERN_MIN_DISTANCE: f64 = 1e-15;
 
+const SQRT3: f64 = 1.732_050_807_568_877_2;
 const SQRT5: f64 = 2.236_067_977_499_79;
 
-/// The base kernel family.
+/// The base kernel family of a stationary kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum KernelKind {
     /// Squared-exponential kernel (`gpytorch.kernels.RBFKernel`); BoTorch's
@@ -32,6 +47,119 @@ pub enum KernelKind {
     Rbf,
     /// Matérn kernel with smoothness ν = 5/2 (`gpytorch.kernels.MaternKernel(nu=2.5)`).
     Matern52,
+    /// Matérn kernel with smoothness ν = 1/2 (`MaternKernel(nu=0.5)`, the
+    /// exponential kernel).
+    Matern12,
+    /// Matérn kernel with smoothness ν = 3/2 (`MaternKernel(nu=1.5)`).
+    Matern32,
+}
+
+impl KernelKind {
+    /// The Matérn kernel with smoothness `nu` (0.5, 1.5 or 2.5).
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] with GPyTorch's message for other
+    /// values of `nu`.
+    pub fn matern(nu: f64) -> Result<Self> {
+        if nu == 0.5 {
+            Ok(KernelKind::Matern12)
+        } else if nu == 1.5 {
+            Ok(KernelKind::Matern32)
+        } else if nu == 2.5 {
+            Ok(KernelKind::Matern52)
+        } else {
+            Err(BotorchError::InvalidArgument(
+                "nu expected to be 0.5, 1.5, or 2.5".into(),
+            ))
+        }
+    }
+
+    /// The smoothness ν of a Matérn kernel (`None` for RBF).
+    pub fn nu(self) -> Option<f64> {
+        match self {
+            KernelKind::Rbf => None,
+            KernelKind::Matern12 => Some(0.5),
+            KernelKind::Matern32 => Some(1.5),
+            KernelKind::Matern52 => Some(2.5),
+        }
+    }
+
+    /// The kernel value as a function of the squared scaled distance `r²`
+    /// (the Matérn distance clamped at [`MATERN_MIN_DISTANCE`]).
+    #[inline]
+    pub fn value(self, r2: f64) -> f64 {
+        match self {
+            KernelKind::Rbf => (r2 / -2.0).exp(),
+            KernelKind::Matern52 => {
+                let r = r2.sqrt().max(MATERN_MIN_DISTANCE);
+                (SQRT5 * r + 1.0 + 5.0 / 3.0 * (r * r)) * (-SQRT5 * r).exp()
+            }
+            KernelKind::Matern12 => {
+                let r = r2.sqrt().max(MATERN_MIN_DISTANCE);
+                (-r).exp()
+            }
+            KernelKind::Matern32 => {
+                let r = r2.sqrt().max(MATERN_MIN_DISTANCE);
+                (SQRT3 * r + 1.0) * (-SQRT3 * r).exp()
+            }
+        }
+    }
+
+    /// The kernel value in GPyTorch's `diag=True` mode at a point and
+    /// itself: the distance is exactly zero (not clamped), so every kernel
+    /// is 1.
+    #[inline]
+    pub fn diag_value(self) -> f64 {
+        1.0
+    }
+
+    /// The kernel value `k` and the derivative factor `g` such that
+    /// `∂k/∂uⱼ = -g·uⱼ` where `uⱼ` is the scaled coordinate difference.
+    #[inline]
+    pub fn value_and_factor(self, r2: f64) -> (f64, f64) {
+        match self {
+            KernelKind::Rbf => {
+                let k = (r2 / -2.0).exp();
+                (k, k)
+            }
+            KernelKind::Matern52 => {
+                let r_true = r2.sqrt();
+                let r = r_true.max(MATERN_MIN_DISTANCE);
+                let e = (-SQRT5 * r).exp();
+                let k = (SQRT5 * r + 1.0 + 5.0 / 3.0 * (r * r)) * e;
+                // The distance is clamped in GPyTorch, so the gradient vanishes there.
+                let g = if r_true < MATERN_MIN_DISTANCE {
+                    0.0
+                } else {
+                    5.0 / 3.0 * (1.0 + SQRT5 * r) * e
+                };
+                (k, g)
+            }
+            KernelKind::Matern12 => {
+                let r_true = r2.sqrt();
+                let r = r_true.max(MATERN_MIN_DISTANCE);
+                let k = (-r).exp();
+                let g = if r_true < MATERN_MIN_DISTANCE {
+                    0.0
+                } else {
+                    k / r
+                };
+                (k, g)
+            }
+            KernelKind::Matern32 => {
+                let r_true = r2.sqrt();
+                let r = r_true.max(MATERN_MIN_DISTANCE);
+                let e = (-SQRT3 * r).exp();
+                let k = (SQRT3 * r + 1.0) * e;
+                let g = if r_true < MATERN_MIN_DISTANCE {
+                    0.0
+                } else {
+                    3.0 * e
+                };
+                (k, g)
+            }
+        }
+    }
 }
 
 /// Configuration of a `ScaleKernel` wrapper (`gpytorch.kernels.ScaleKernel`).
@@ -171,6 +299,7 @@ pub fn get_covar_module_with_dim_scaled_prior(
         loc: std::f64::consts::SQRT_2 + d.ln() * 0.5,
         scale: 3f64.sqrt(),
         float32: false,
+        torch_log: None,
     }
     .rounded_to_f32();
     let constraint: Constraint = GreaterThan::new(2.5e-2, None, Some(prior.mode_f32()))
@@ -223,13 +352,23 @@ pub struct KernelGradients {
 /// Row-major copy of a point set with every coordinate divided by its
 /// lengthscale (GPyTorch's `x.div(lengthscale)`).
 #[derive(Clone, Debug)]
-pub(crate) struct ScaledPoints {
+pub struct ScaledPoints {
     data: Vec<f64>,
     n: usize,
     d: usize,
 }
 
 impl ScaledPoints {
+    /// The number of points.
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    /// Whether there are no points.
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
     #[inline]
     pub(crate) fn row(&self, i: usize) -> &[f64] {
         &self.data[i * self.d..(i + 1) * self.d]
@@ -338,38 +477,14 @@ impl Kernel {
     /// Base kernel value as a function of the squared scaled distance.
     #[inline]
     fn base_value(&self, r2: f64) -> f64 {
-        match self.kind {
-            KernelKind::Rbf => (r2 / -2.0).exp(),
-            KernelKind::Matern52 => {
-                let r = r2.sqrt().max(MATERN_MIN_DISTANCE);
-                (SQRT5 * r + 1.0 + 5.0 / 3.0 * (r * r)) * (-SQRT5 * r).exp()
-            }
-        }
+        self.kind.value(r2)
     }
 
     /// Base kernel value `k` and the derivative factor `g` such that
     /// `∂k/∂uⱼ = -g·uⱼ` where `uⱼ` is the scaled coordinate difference.
     #[inline]
     fn base_value_and_factor(&self, r2: f64) -> (f64, f64) {
-        match self.kind {
-            KernelKind::Rbf => {
-                let k = (r2 / -2.0).exp();
-                (k, k)
-            }
-            KernelKind::Matern52 => {
-                let r_true = r2.sqrt();
-                let r = r_true.max(MATERN_MIN_DISTANCE);
-                let e = (-SQRT5 * r).exp();
-                let k = (SQRT5 * r + 1.0 + 5.0 / 3.0 * (r * r)) * e;
-                // The distance is clamped in GPyTorch, so the gradient vanishes there.
-                let g = if r_true < MATERN_MIN_DISTANCE {
-                    0.0
-                } else {
-                    5.0 / 3.0 * (1.0 + SQRT5 * r) * e
-                };
-                (k, g)
-            }
-        }
+        self.kind.value_and_factor(r2)
     }
 
     #[inline]
@@ -430,7 +545,9 @@ impl Kernel {
         Ok(Vector::from_element(x.nrows(), self.prior_variance()))
     }
 
-    /// The prior variance `k(x, x)`.
+    /// The prior variance `k(x, x)` (the diagonal of the kernel matrix, which
+    /// BoTorch's posterior variances use for up to
+    /// `gpytorch.settings.max_eager_kernel_size` points).
     pub fn prior_variance(&self) -> f64 {
         self.scale_factor() * self.base_value(0.0)
     }

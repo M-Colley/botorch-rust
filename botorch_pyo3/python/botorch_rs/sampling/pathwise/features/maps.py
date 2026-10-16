@@ -32,8 +32,8 @@ class FeatureMap:
 class KernelFeatureMap(FeatureMap):
     """The random Fourier features ``sqrt(2 / L) [sin(u), cos(u)]`` (times the
     square root of the outputscale) with ``u = (x / lengthscale) @ weight.T``
-    of an RBF or Matérn-5/2 kernel: ``weight`` holds the ``L / 2``
-    frequencies (``[m x] L/2 x d``)."""
+    of an RBF or Matérn kernel (on its ``active_dims``): ``weight`` holds the
+    ``L / 2`` frequencies (``[m x] L/2 x d``)."""
 
     def __init__(self, weight: Any, num_features: int) -> None:
         self.weight = weight

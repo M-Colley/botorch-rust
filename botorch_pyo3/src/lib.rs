@@ -22,6 +22,7 @@ mod errors;
 mod fantasize;
 mod hvkg;
 mod input_perturbation;
+mod kernel_trees;
 mod mo_acquisition;
 mod mo_entropy;
 mod mo_test_functions;
@@ -58,6 +59,12 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<specs::PyConstraint>()?;
     m.add_class::<specs::PyKernelSpec>()?;
     m.add_class::<specs::PyLikelihoodSpec>()?;
+    m.add_class::<kernel_trees::PyKernelNode>()?;
+    m.add_function(wrap_pyfunction!(kernel_trees::leggauss_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        kernel_trees::lkj_covariance_log_prob_py,
+        m
+    )?)?;
     // Acquisition functions and their optimization.
     m.add_class::<acquisition::PyAcquisitionFunction>()?;
     m.add_function(wrap_pyfunction!(acquisition::prune_inferior_points_py, m)?)?;

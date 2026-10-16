@@ -7,7 +7,10 @@
 //!   `Standardize` outcome transform (BoTorch default: `Standardize`);
 //! * `ConstantMean` (initialized to zero, no prior);
 //! * covariance module from [`get_covar_module_with_dim_scaled_prior`]
-//!   (RBF, dimension-scaled LogNormal lengthscale prior) unless overridden;
+//!   (RBF, dimension-scaled LogNormal lengthscale prior) unless overridden,
+//!   either by another [`KernelSpec`] or by a general kernel tree
+//!   ([`KernelNode`]: sums, products and `ScaleKernel`s of GPyTorch's and
+//!   BoTorch's kernels with `active_dims`);
 //! * homoskedastic `GaussianLikelihood` with a `LogNormal(-4, 1)` noise prior
 //!   and `GreaterThan(1e-4)` constraint, or a fixed-noise likelihood when
 //!   observation variances `train_yvar` are given.
@@ -23,8 +26,8 @@ use std::sync::OnceLock;
 use crate::constraints::{Constraint, GreaterThan};
 use crate::error::{BotorchError, Result};
 use crate::kernels::{
-    get_covar_module_with_dim_scaled_prior, Kernel, KernelKind, KernelSpec, ScaleKernelSpec,
-    ScaledPoints,
+    get_covar_module_with_dim_scaled_prior, BuiltCovar, CovarModule, Kernel, KernelKind,
+    KernelNode, KernelSpec, Prepared, ScaleKernelSpec, TreeKernel,
 };
 use crate::linalg::{psd_safe_cholesky, CholeskyFactor};
 use crate::models::model::clamp_variance;
@@ -74,6 +77,7 @@ pub fn get_gaussian_likelihood_with_lognormal_prior() -> GaussianLikelihoodSpec 
         loc: -4.0,
         scale: 1.0,
         float32: false,
+        torch_log: None,
     }
     .rounded_to_f32();
     GaussianLikelihoodSpec {
@@ -118,22 +122,26 @@ pub enum Likelihood {
 /// Layout of the flat raw-parameter vector, which follows the order of
 /// `model.named_parameters()` in BoTorch:
 /// `likelihood.noise_covar.raw_noise` (if the noise is learned),
-/// `mean_module.raw_constant`, `covar_module.raw_outputscale` (if a
-/// `ScaleKernel` is used) and the `d` raw lengthscales.
+/// `mean_module.raw_constant`, then for a [`KernelSpec`]
+/// `covar_module.raw_outputscale` (if a `ScaleKernel` is used) and the `d`
+/// raw lengthscales, or for a kernel tree its `kernel` raw values in
+/// `named_parameters()` order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParameterLayout {
     /// Whether a raw noise parameter is present.
     pub has_noise: bool,
-    /// Whether a raw outputscale parameter is present.
+    /// Whether a raw outputscale parameter is present (standard kernels).
     pub has_outputscale: bool,
-    /// Number of lengthscales (input dimension).
+    /// Number of lengthscales (input dimension; 0 for a kernel tree).
     pub dim: usize,
+    /// Number of raw values of a kernel tree (0 for a [`KernelSpec`]).
+    pub kernel: usize,
 }
 
 impl ParameterLayout {
     /// Total number of raw parameters.
     pub fn len(&self) -> usize {
-        usize::from(self.has_noise) + 1 + usize::from(self.has_outputscale) + self.dim
+        usize::from(self.has_noise) + 1 + usize::from(self.has_outputscale) + self.dim + self.kernel
     }
 
     /// Whether the layout is empty (never true for a valid model).
@@ -161,6 +169,12 @@ impl ParameterLayout {
         let start = self.constant_index() + 1 + usize::from(self.has_outputscale);
         start..start + self.dim
     }
+
+    /// Index range of the raw values of a kernel tree.
+    pub fn kernel_range(&self) -> Range<usize> {
+        let start = self.lengthscale_range().end;
+        start..start + self.kernel
+    }
 }
 
 /// Hyperparameters of a [`SingleTaskGP`] in BoTorch's raw parameterization.
@@ -176,8 +190,12 @@ pub struct Hyperparameters {
     pub raw_constant: f64,
     /// `covar_module.raw_outputscale` (`None` without `ScaleKernel`).
     pub raw_outputscale: Option<f64>,
-    /// `covar_module(.base_kernel).raw_lengthscale` (length `d`).
+    /// `covar_module(.base_kernel).raw_lengthscale` (length `d`; empty for a
+    /// kernel tree).
     pub raw_lengthscale: Vector,
+    /// The raw values of a kernel tree in `named_parameters()` order (empty
+    /// for a [`KernelSpec`]).
+    pub raw_kernel: Vector,
 }
 
 impl Hyperparameters {
@@ -187,6 +205,7 @@ impl Hyperparameters {
             has_noise: self.raw_noise.is_some(),
             has_outputscale: self.raw_outputscale.is_some(),
             dim: self.raw_lengthscale.len(),
+            kernel: self.raw_kernel.len(),
         }
     }
 
@@ -201,6 +220,7 @@ impl Hyperparameters {
             v.push(s);
         }
         v.extend(self.raw_lengthscale.iter());
+        v.extend(self.raw_kernel.iter());
         Vector::from_vec(v)
     }
 
@@ -221,6 +241,7 @@ impl Hyperparameters {
             raw_constant: values[layout.constant_index()],
             raw_outputscale: layout.outputscale_index().map(|i| values[i]),
             raw_lengthscale: Vector::from_column_slice(&values[layout.lengthscale_range()]),
+            raw_kernel: Vector::from_column_slice(&values[layout.kernel_range()]),
         })
     }
 }
@@ -253,6 +274,10 @@ pub struct SingleTaskGPOptions {
     /// Full covariance-module override (BoTorch's `covar_module` argument),
     /// e.g. [`crate::kernels::get_matern_kernel_with_gamma_prior`].
     pub covar_module: Option<KernelSpec>,
+    /// A general covariance module (a kernel tree) instead of
+    /// `covar_module` (BoTorch's `covar_module` argument with any GPyTorch or
+    /// BoTorch kernel).
+    pub covar_tree: Option<KernelNode>,
     /// Override of the homoskedastic likelihood (BoTorch's `likelihood`
     /// argument), e.g. [`get_gaussian_likelihood_with_gamma_prior`]. Must be
     /// `None` when `train_yvar` is given.
@@ -262,8 +287,8 @@ pub struct SingleTaskGPOptions {
 /// Quantities derived from the hyperparameters and cached for prediction.
 #[derive(Clone, Debug)]
 struct PredictionCache {
-    kernel: Kernel,
-    train_scaled: ScaledPoints,
+    kernel: BuiltCovar,
+    train_scaled: Prepared,
     chol: CholeskyFactor,
     /// `K⁻¹ (y - c)` in the transformed outcome space.
     alpha: Vector,
@@ -281,7 +306,7 @@ pub struct SingleTaskGP {
     input_transform: Option<Normalize>,
     input_chain: Option<ChainedInputTransform>,
     outcome_transform: Option<Standardize>,
-    covar_module: KernelSpec,
+    covar_module: CovarModule,
     likelihood: Likelihood,
     hyperparameters: Hyperparameters,
     /// Noise variances (transformed space) of training points that were
@@ -418,33 +443,55 @@ impl SingleTaskGP {
             ),
         };
 
-        let covar_module = match options.covar_module {
-            Some(spec) => spec,
-            None => {
+        let covar_module = match (options.covar_module, options.covar_tree) {
+            (Some(_), Some(_)) => {
+                return Err(BotorchError::InvalidArgument(
+                    "covar_module and covar_tree cannot both be given".into(),
+                ))
+            }
+            (Some(spec), None) => CovarModule::Standard(spec),
+            (None, Some(tree)) => {
+                tree.validate(d)?;
+                CovarModule::Tree(tree)
+            }
+            (None, None) => {
                 let base =
                     get_covar_module_with_dim_scaled_prior(d, options.kernel == KernelKind::Rbf);
-                if options.use_scale_kernel {
+                CovarModule::Standard(if options.use_scale_kernel {
                     base.with_scale_kernel(ScaleKernelSpec::legacy_gamma())
                 } else {
                     base
-                }
+                })
             }
         };
-        if covar_module.ard_num_dims != d {
-            return Err(BotorchError::DimensionMismatch(format!(
-                "covar_module has ard_num_dims = {} but train_x has {d} columns",
-                covar_module.ard_num_dims
-            )));
+        if let CovarModule::Standard(spec) = &covar_module {
+            if spec.ard_num_dims != d {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "covar_module has ard_num_dims = {} but train_x has {d} columns",
+                    spec.ard_num_dims
+                )));
+            }
         }
 
-        let hyperparameters = Hyperparameters {
-            raw_noise: match &likelihood {
-                Likelihood::Gaussian(spec) => Some(spec.initial_raw_noise()),
-                Likelihood::FixedNoise { .. } => None,
+        let raw_noise = match &likelihood {
+            Likelihood::Gaussian(spec) => Some(spec.initial_raw_noise()),
+            Likelihood::FixedNoise { .. } => None,
+        };
+        let hyperparameters = match &covar_module {
+            CovarModule::Standard(spec) => Hyperparameters {
+                raw_noise,
+                raw_constant: 0.0,
+                raw_outputscale: spec.initial_raw_outputscale(),
+                raw_lengthscale: Vector::from_element(d, spec.initial_raw_lengthscale()),
+                raw_kernel: Vector::zeros(0),
             },
-            raw_constant: 0.0,
-            raw_outputscale: covar_module.initial_raw_outputscale(),
-            raw_lengthscale: Vector::from_element(d, covar_module.initial_raw_lengthscale()),
+            CovarModule::Tree(tree) => Hyperparameters {
+                raw_noise,
+                raw_constant: 0.0,
+                raw_outputscale: None,
+                raw_lengthscale: Vector::zeros(0),
+                raw_kernel: Vector::from_vec(tree.initial_raw()),
+            },
         };
 
         Ok(Self {
@@ -564,7 +611,7 @@ impl SingleTaskGP {
     }
 
     /// The covariance-module configuration.
-    pub fn covar_module(&self) -> &KernelSpec {
+    pub fn covar_module(&self) -> &CovarModule {
         &self.covar_module
     }
 
@@ -605,10 +652,7 @@ impl SingleTaskGP {
                 "hyperparameters must be finite".into(),
             ));
         }
-        self.covar_module.build(
-            hyperparameters.raw_lengthscale.as_slice(),
-            hyperparameters.raw_outputscale,
-        )?;
+        self.build_covar(&hyperparameters)?;
         if let (Likelihood::Gaussian(spec), Some(raw)) =
             (&self.likelihood, hyperparameters.raw_noise)
         {
@@ -626,10 +670,20 @@ impl SingleTaskGP {
 
     /// The layout of the flat raw-parameter vector.
     pub fn parameter_layout(&self) -> ParameterLayout {
-        ParameterLayout {
-            has_noise: matches!(self.likelihood, Likelihood::Gaussian(_)),
-            has_outputscale: self.covar_module.scale.is_some(),
-            dim: self.dim(),
+        let has_noise = matches!(self.likelihood, Likelihood::Gaussian(_));
+        match &self.covar_module {
+            CovarModule::Standard(spec) => ParameterLayout {
+                has_noise,
+                has_outputscale: spec.scale.is_some(),
+                dim: self.dim(),
+                kernel: 0,
+            },
+            CovarModule::Tree(tree) => ParameterLayout {
+                has_noise,
+                has_outputscale: false,
+                dim: 0,
+                kernel: tree.num_raw(),
+            },
         }
     }
 
@@ -650,20 +704,37 @@ impl SingleTaskGP {
     /// BoTorch parameter names and sizes in flat-vector order, e.g.
     /// `("covar_module.raw_lengthscale", d)`.
     pub fn parameter_names(&self) -> Vec<(String, usize)> {
+        self.parameter_element_shapes()
+            .into_iter()
+            .map(|(name, shape)| (name, shape.iter().product()))
+            .collect()
+    }
+
+    /// BoTorch parameter names and shapes in flat-vector order (the shapes of
+    /// an unbatched model, e.g. `("covar_module.raw_lengthscale", [1, d])`).
+    pub fn parameter_element_shapes(&self) -> Vec<(String, Vec<usize>)> {
         let layout = self.parameter_layout();
         let mut names = Vec::new();
         if layout.has_noise {
-            names.push(("likelihood.noise_covar.raw_noise".to_string(), 1));
+            names.push(("likelihood.noise_covar.raw_noise".to_string(), vec![1]));
         }
-        names.push(("mean_module.raw_constant".to_string(), 1));
-        if layout.has_outputscale {
-            names.push(("covar_module.raw_outputscale".to_string(), 1));
-            names.push((
-                "covar_module.base_kernel.raw_lengthscale".to_string(),
-                layout.dim,
-            ));
-        } else {
-            names.push(("covar_module.raw_lengthscale".to_string(), layout.dim));
+        names.push(("mean_module.raw_constant".to_string(), vec![]));
+        match &self.covar_module {
+            CovarModule::Standard(_) => {
+                if layout.has_outputscale {
+                    names.push(("covar_module.raw_outputscale".to_string(), vec![]));
+                    names.push((
+                        "covar_module.base_kernel.raw_lengthscale".to_string(),
+                        vec![1, layout.dim],
+                    ));
+                } else {
+                    names.push((
+                        "covar_module.raw_lengthscale".to_string(),
+                        vec![1, layout.dim],
+                    ));
+                }
+            }
+            CovarModule::Tree(tree) => names.extend(tree.param_shapes("covar_module.")),
         }
         names
     }
@@ -678,11 +749,16 @@ impl SingleTaskGP {
             bounds.push(spec.noise_constraint.raw_bounds());
         }
         bounds.push((f64::NEG_INFINITY, f64::INFINITY));
-        if let Some(scale) = &self.covar_module.scale {
-            bounds.push(scale.outputscale_constraint.raw_bounds());
+        match &self.covar_module {
+            CovarModule::Standard(spec) => {
+                if let Some(scale) = &spec.scale {
+                    bounds.push(scale.outputscale_constraint.raw_bounds());
+                }
+                let ls = spec.lengthscale_constraint.raw_bounds();
+                bounds.extend(std::iter::repeat_n(ls, layout.dim));
+            }
+            CovarModule::Tree(tree) => bounds.extend(tree.raw_bounds()),
         }
-        let ls = self.covar_module.lengthscale_constraint.raw_bounds();
-        bounds.extend(std::iter::repeat_n(ls, layout.dim));
         bounds
     }
 
@@ -691,19 +767,25 @@ impl SingleTaskGP {
         self.hyperparameters.raw_constant
     }
 
-    /// The actual lengthscales.
+    /// The actual lengthscales of a standard kernel (empty for a kernel
+    /// tree).
     pub fn lengthscale(&self) -> Vector {
-        self.hyperparameters
-            .raw_lengthscale
-            .map(|r| self.covar_module.lengthscale_constraint.transform(r))
+        match &self.covar_module {
+            CovarModule::Standard(spec) => self
+                .hyperparameters
+                .raw_lengthscale
+                .map(|r| spec.lengthscale_constraint.transform(r)),
+            CovarModule::Tree(_) => Vector::zeros(0),
+        }
     }
 
-    /// The actual outputscale, if a `ScaleKernel` is used.
+    /// The actual outputscale, if a standard kernel with a `ScaleKernel` is
+    /// used.
     pub fn outputscale(&self) -> Option<f64> {
-        match (
-            &self.covar_module.scale,
-            self.hyperparameters.raw_outputscale,
-        ) {
+        let CovarModule::Standard(spec) = &self.covar_module else {
+            return None;
+        };
+        match (&spec.scale, self.hyperparameters.raw_outputscale) {
             (Some(s), Some(raw)) => Some(s.outputscale_constraint.transform(raw)),
             _ => None,
         }
@@ -726,15 +808,44 @@ impl SingleTaskGP {
         }
     }
 
-    /// The kernel with the current hyperparameters.
+    /// The standard kernel with the current hyperparameters.
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] if the hyperparameters are invalid
+    /// and [`BotorchError::Unsupported`] for a kernel tree (see
+    /// [`SingleTaskGP::covar`]).
+    pub fn kernel(&self) -> Result<Kernel> {
+        match &self.covar_module {
+            CovarModule::Standard(spec) => spec.build(
+                self.hyperparameters.raw_lengthscale.as_slice(),
+                self.hyperparameters.raw_outputscale,
+            ),
+            CovarModule::Tree(_) => Err(BotorchError::Unsupported(
+                "the covariance module is a kernel tree, not an RBF or Matern kernel".into(),
+            )),
+        }
+    }
+
+    /// The covariance module with the current hyperparameters.
     ///
     /// # Errors
     /// [`BotorchError::InvalidArgument`] if the hyperparameters are invalid.
-    pub fn kernel(&self) -> Result<Kernel> {
-        self.covar_module.build(
-            self.hyperparameters.raw_lengthscale.as_slice(),
-            self.hyperparameters.raw_outputscale,
-        )
+    pub fn covar(&self) -> Result<BuiltCovar> {
+        self.build_covar(&self.hyperparameters)
+    }
+
+    /// The covariance module with the given hyperparameters.
+    pub(crate) fn build_covar(&self, h: &Hyperparameters) -> Result<BuiltCovar> {
+        Ok(match &self.covar_module {
+            CovarModule::Standard(spec) => {
+                BuiltCovar::Standard(spec.build(h.raw_lengthscale.as_slice(), h.raw_outputscale)?)
+            }
+            CovarModule::Tree(tree) => BuiltCovar::Tree(TreeKernel::build(
+                tree,
+                h.raw_kernel.as_slice(),
+                self.dim(),
+            )?),
+        })
     }
 
     /// Mean and standard deviation of the outcome transform (`(0, 1)` without).
@@ -766,9 +877,9 @@ impl SingleTaskGP {
     // ------------------------------------------------------------------
 
     fn compute_cache(&self) -> Result<PredictionCache> {
-        let kernel = self.kernel()?;
-        let train_scaled = kernel.scale_points(&self.train_x_tf);
-        let mut k = kernel.symmetric_scaled(&train_scaled);
+        let kernel = self.covar()?;
+        let train_scaled = kernel.prepare(&self.train_x_tf)?;
+        let mut k = kernel.symmetric(&train_scaled);
         let noise = self.likelihood_noise();
         let n = self.num_train();
         for i in 0..n {
@@ -853,9 +964,9 @@ impl SingleTaskGP {
         let xt = self.transform_inputs(x)?;
         let cache = self.cache()?;
         let q = xt.nrows();
-        let xs = cache.kernel.scale_points(&xt);
-        let kxs = cache.kernel.cross_scaled(&xs, &cache.train_scaled);
-        let mut cov = cache.kernel.symmetric_scaled(&xs);
+        let xs = cache.kernel.prepare(&xt)?;
+        let kxs = cache.kernel.cross(&xs, &cache.train_scaled);
+        let mut cov = cache.kernel.symmetric(&xs);
         let mean_tf = (&kxs * &cache.alpha).add_scalar(self.constant());
         let mut v = kxs.transpose();
         cache.chol.solve_lower_mut(&mut v);
@@ -935,16 +1046,20 @@ impl SingleTaskGP {
         jac: Option<&Vector>,
     ) -> Result<(f64, f64, Vector, Vector)> {
         let cache = self.cache()?;
-        let xs = cache.kernel.scale_point(xt);
-        let (k, dk) = cache
+        let xs = cache
             .kernel
-            .cross_with_grad_scaled(&xs, &cache.train_scaled);
+            .prepare(&Matrix::from_row_slice(1, xt.len(), xt))?;
+        let (k, dk) = cache.kernel.cross_with_grad(&xs, 0, &cache.train_scaled);
         let mean_tf = self.constant() + k.dot(&cache.alpha);
         let dmean_tf = dk.tr_mul(&cache.alpha);
         let v = cache.chol.solve_lower_vec(&k);
-        let var_tf = cache.kernel.prior_variance() - v.dot(&v);
+        let (kdiag, dkdiag) = cache.kernel.diag_with_grad(&xs, 0);
+        let var_tf = kdiag - v.dot(&v);
         let w = cache.chol.solve_lower_transpose_vec(&v);
-        let dvar_tf = dk.tr_mul(&w) * -2.0;
+        let mut dvar_tf = dk.tr_mul(&w) * -2.0;
+        if let Some(g) = dkdiag {
+            dvar_tf += g;
+        }
         let (mu, sd) = self.outcome_affine();
         let mean = mu + sd * mean_tf;
         let var = sd * sd * var_tf;
@@ -1014,20 +1129,20 @@ impl SingleTaskGP {
         let (q, d) = xt.shape();
         let n = self.num_train();
         let kernel = &cache.kernel;
-        let xs = kernel.scale_points(xt);
+        let xs = kernel.prepare(xt)?;
 
         // Test-train covariances and their derivatives for every test point.
         let mut kxs = Matrix::zeros(q, n);
         let mut dks = Vec::with_capacity(q);
         for p in 0..q {
-            let (k, dk) = kernel.cross_with_grad_scaled(xs.row(p), &cache.train_scaled);
+            let (k, dk) = kernel.cross_with_grad(&xs, p, &cache.train_scaled);
             kxs.set_row(p, &k.transpose());
             dks.push(dk);
         }
         let mean_tf = (&kxs * &cache.alpha).add_scalar(self.constant());
         let mut v = kxs.transpose(); // n × q
         cache.chol.solve_lower_mut(&mut v);
-        let mut cov_tf = kernel.symmetric_scaled(&xs);
+        let mut cov_tf = kernel.symmetric(&xs);
         cov_tf.gemm_tr(-1.0, &v, &v, 1.0);
         let mut w = v; // becomes K⁻¹ K(X, x*) (n × q)
         cache.chol.solve_lower_transpose_mut(&mut w);
@@ -1037,7 +1152,7 @@ impl SingleTaskGP {
         let mut dcov = Vec::with_capacity(q * d);
         for (p, dk) in dks.iter().enumerate() {
             // Derivatives of k(x_p, x_b) with respect to x_p for all test points b.
-            let (_, dkss) = kernel.cross_with_grad_scaled(xs.row(p), &xs);
+            let (_, dkss) = kernel.cross_with_grad(&xs, p, &xs);
             // dk_wᵀ: (d × q) = dkᵀ W
             let dk_w = dk.tr_mul(&w);
             let dk_alpha = dk.tr_mul(&cache.alpha);
@@ -1093,17 +1208,16 @@ impl SingleTaskGP {
         let xt = self.transform_inputs(x)?;
         let cache = self.cache()?;
         let b = xt.nrows();
-        let xs = cache.kernel.scale_points(&xt);
-        let kxs = cache.kernel.cross_scaled(&xs, &cache.train_scaled);
+        let xs = cache.kernel.prepare(&xt)?;
+        let kxs = cache.kernel.cross(&xs, &cache.train_scaled);
         let (mu, sd) = self.outcome_affine();
-        let prior = cache.kernel.prior_variance();
         let mut mean = Vector::zeros(b);
         let mut var = Vector::zeros(b);
         for i in 0..b {
             let k = kxs.row(i).transpose();
             mean[i] = mu + sd * (self.constant() + k.dot(&cache.alpha));
             let v = cache.chol.solve_lower_vec(&k);
-            var[i] = sd * sd * (prior - v.dot(&v));
+            var[i] = sd * sd * (cache.kernel.diag(&xs, i) - v.dot(&v));
         }
         Ok((mean, var))
     }
@@ -1160,13 +1274,13 @@ impl SingleTaskGP {
         let cache = self.cache()?;
         let d = xt.ncols();
         let kernel = &cache.kernel;
-        let xs = kernel.scale_points(xt);
+        let xs = kernel.prepare(xt)?;
         let (_, sd) = self.outcome_affine();
         // Adjoints in the transformed outcome space (symmetrized covariance adjoint).
         let mbar = mean_adjoint * sd;
         let abar = (covariance_adjoint + covariance_adjoint.transpose()) * (0.5 * sd * sd);
         // W = K⁻¹ K(X_train, x) (n × N).
-        let kxs = kernel.cross_scaled(&xs, &cache.train_scaled);
+        let kxs = kernel.cross(&xs, &cache.train_scaled);
         let mut w = kxs.transpose();
         cache.chol.solve_lower_mut(&mut w);
         cache.chol.solve_lower_transpose_mut(&mut w);
@@ -1176,9 +1290,9 @@ impl SingleTaskGP {
             // ∂/∂x_p of ⟨mbar, μ⟩ + ⟨abar, Σ⟩ =
             //   Dk_pᵀ (mbar_p α - 2 W abar[:, p]) + 2 Σ_b abar[p, b] ∂₁k(x_p, x_b).
             let v = &cache.alpha * mbar[p] - (&w * &a_p) * 2.0;
-            let (_, dk) = kernel.cross_with_grad_scaled(xs.row(p), &cache.train_scaled);
+            let (_, dk) = kernel.cross_with_grad(&xs, p, &cache.train_scaled);
             let mut g = dk.tr_mul(&v);
-            let (_, dkk) = kernel.cross_with_grad_scaled(xs.row(p), &xs);
+            let (_, dkk) = kernel.cross_with_grad(&xs, p, &xs);
             g += dkk.tr_mul(&a_p) * 2.0;
             for k in 0..d {
                 out[(r, k)] = match jac {
@@ -1204,11 +1318,8 @@ impl SingleTaskGP {
     pub fn baseline_cache(&self, xb: &Matrix) -> Result<BaselineCache> {
         let xt = self.transform_inputs(xb)?;
         let cache = self.cache()?;
-        let scaled = cache.kernel.scale_points(&xt);
-        let mut v = cache
-            .kernel
-            .cross_scaled(&scaled, &cache.train_scaled)
-            .transpose();
+        let scaled = cache.kernel.prepare(&xt)?;
+        let mut v = cache.kernel.cross(&scaled, &cache.train_scaled).transpose();
         cache.chol.solve_lower_mut(&mut v);
         let mut w = v.clone();
         cache.chol.solve_lower_transpose_mut(&mut w);
@@ -1232,14 +1343,14 @@ impl SingleTaskGP {
     pub fn cross_posterior(&self, baseline: &BaselineCache, x: &Matrix) -> Result<CrossPosterior> {
         let xt = self.transform_inputs(x)?;
         let cache = self.cache()?;
-        let xs = cache.kernel.scale_points(&xt);
-        let kxs = cache.kernel.cross_scaled(&xs, &cache.train_scaled);
+        let xs = cache.kernel.prepare(&xt)?;
+        let kxs = cache.kernel.cross(&xs, &cache.train_scaled);
         let mean_tf = (&kxs * &cache.alpha).add_scalar(self.constant());
         let mut v = kxs.transpose();
         cache.chol.solve_lower_mut(&mut v);
-        let mut cross = cache.kernel.cross_scaled(&xs, &baseline.scaled);
+        let mut cross = cache.kernel.cross(&xs, &baseline.scaled);
         cross.gemm_tr(-1.0, &v, &baseline.v, 1.0);
-        let mut cov = cache.kernel.symmetric_scaled(&xs);
+        let mut cov = cache.kernel.symmetric(&xs);
         cov.gemm_tr(-1.0, &v, &v, 1.0);
         let (mu, sd) = self.outcome_affine();
         Ok(CrossPosterior {
@@ -1314,13 +1425,13 @@ impl SingleTaskGP {
         let cache = self.cache()?;
         let d = xt.ncols();
         let kernel = &cache.kernel;
-        let xs = kernel.scale_points(xt);
+        let xs = kernel.prepare(xt)?;
         let (_, sd) = self.outcome_affine();
         let mbar = mean_adjoint * sd;
         let cbar = cross_adjoint * (sd * sd);
         let dbar = (covariance_adjoint + covariance_adjoint.transpose()) * (0.5 * sd * sd);
         // W = K⁻¹ K(X_train, x) (n × q).
-        let mut w = kernel.cross_scaled(&xs, &cache.train_scaled).transpose();
+        let mut w = kernel.cross(&xs, &cache.train_scaled).transpose();
         cache.chol.solve_lower_mut(&mut w);
         cache.chol.solve_lower_transpose_mut(&mut w);
         let mut out = Matrix::zeros(q, d);
@@ -1330,11 +1441,11 @@ impl SingleTaskGP {
             // ∂/∂x_p = Dk_pᵀ (mbar_p α - 2 W dbar[:, p] - W_B cbar[p, :]ᵀ)
             //        + 2 Σ_b dbar[p, b] ∂₁k(x_p, x_b) + Σ_b cbar[p, b] ∂₁k(x_p, B_b).
             let v = &cache.alpha * mbar[p] - (&w * &d_p) * 2.0 - &baseline.w * &c_p;
-            let (_, dk) = kernel.cross_with_grad_scaled(xs.row(p), &cache.train_scaled);
+            let (_, dk) = kernel.cross_with_grad(&xs, p, &cache.train_scaled);
             let mut g = dk.tr_mul(&v);
-            let (_, dkk) = kernel.cross_with_grad_scaled(xs.row(p), &xs);
+            let (_, dkk) = kernel.cross_with_grad(&xs, p, &xs);
             g += dkk.tr_mul(&d_p) * 2.0;
-            let (_, dkb) = kernel.cross_with_grad_scaled(xs.row(p), &baseline.scaled);
+            let (_, dkb) = kernel.cross_with_grad(&xs, p, &baseline.scaled);
             g += dkb.tr_mul(&c_p);
             for k in 0..d {
                 out[(p, k)] = match jac {
@@ -1352,7 +1463,7 @@ impl SingleTaskGP {
 /// `V_B = L⁻¹ K(X_train, B)` and `W_B = K⁻¹ K(X_train, B)`.
 #[derive(Clone, Debug)]
 pub struct BaselineCache {
-    scaled: ScaledPoints,
+    scaled: Prepared,
     v: Matrix,
     w: Matrix,
     n: usize,

@@ -135,7 +135,13 @@ fn perturbed(model: &SingleTaskGP, seed: u64) -> Vec<f64> {
         p[i] += 0.3;
     }
     for i in layout.lengthscale_range() {
-        p[i] = if model.covar_module().lengthscale_constraint.enforced() {
+        p[i] = if model
+            .covar_module()
+            .as_standard()
+            .unwrap()
+            .lengthscale_constraint
+            .enforced()
+        {
             -0.5 + rng.random::<f64>()
         } else {
             0.2 + 0.6 * rng.random::<f64>()
