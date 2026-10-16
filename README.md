@@ -305,7 +305,8 @@ processes, which is a small part of BoTorch: it provides **222 of the 773
 public classes and functions** defined in BoTorch's modules (29%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
-[docs/api_coverage.md](docs/api_coverage.md). The main gaps:
+[docs/api_coverage.md](docs/api_coverage.md); [docs/roadmap.md](docs/roadmap.md)
+orders the remaining work toward a full port. The main gaps:
 
 - **Models:**
   - multi-task GPs (`MultiTaskGP` itself with its `IndexKernel` task
