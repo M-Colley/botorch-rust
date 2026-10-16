@@ -88,8 +88,8 @@ pub use analytic::{
     ConstrainedExpectedImprovement, ExpectedImprovement, LogConstrainedExpectedImprovement,
     LogExpectedImprovement, LogNoisyExpectedImprovement, LogProbabilityOfFeasibility,
     LogProbabilityOfImprovement, NoisyExpectedImprovement, OutputConstraint, PosteriorMean,
-    PosteriorStandardDeviation, ProbabilityOfImprovement, ScalarizedPosteriorMean,
-    UpperConfidenceBound,
+    PosteriorStandardDeviation, ProbabilityOfImprovement, QAnalyticProbabilityOfImprovement,
+    ScalarizedPosteriorMean, UpperConfidenceBound,
 };
 pub use composite::WeightedLogMeanExp;
 pub use joint_entropy_search::{

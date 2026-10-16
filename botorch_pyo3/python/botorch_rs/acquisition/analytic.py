@@ -282,6 +282,32 @@ class ScalarizedPosteriorMean(AnalyticAcquisitionFunction):
         self._rs = _rs.scalarized_posterior_mean(self._rs_model, [float(v) for v in data])
 
 
+class qAnalyticProbabilityOfImprovement(AnalyticAcquisitionFunction):
+    r"""Approximate, single-outcome batch Probability of Improvement using
+    MVNXPB.
+
+    This implementation uses MVNXPB, a bivariate conditioning algorithm for
+    approximating ``P(a <= Y <= b)`` for multivariate normal ``Y`` (Trinh &
+    Genz, 2015). This (analytic) approximate q-PI is given by ``approx-qPI(X) =
+    P(max Y >= best_f) = 1 - P(Y < best_f), Y ~ f(X), X = (x_1,...,x_q)``,
+    where ``P(Y < best_f)`` is estimated using MVNXPB. Gradients are exact.
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        best_f: Any,
+        posterior_transform: Any = None,
+        maximize: bool = True,
+    ) -> None:
+        super().__init__(model, posterior_transform)
+        self.maximize = maximize
+        self.best_f = best_f
+        self._rs = _rs.q_analytic_probability_of_improvement(
+            self._rs_model, scalar_arg(best_f, "best_f"), bool(maximize)
+        )
+
+
 def _check_noisy_ei_model(model: Any) -> None:
     from botorch_rs.models.gp_regression import SingleTaskGP
 
@@ -408,4 +434,5 @@ __all__ = [
     "ProbabilityOfImprovement",
     "ScalarizedPosteriorMean",
     "UpperConfidenceBound",
+    "qAnalyticProbabilityOfImprovement",
 ]

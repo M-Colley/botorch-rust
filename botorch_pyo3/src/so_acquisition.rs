@@ -1,7 +1,9 @@
 //! Single-objective acquisition functions of phase 8: the knowledge gradient
 //! (`botorch.acquisition.knowledge_gradient`) with its one-shot initial
-//! conditions, `ProjectedAcquisitionFunction`, and
-//! `qNoisyExpectedImprovement`.
+//! conditions, `ProjectedAcquisitionFunction`, `qNoisyExpectedImprovement`
+//! and the analytic `(Log)NoisyExpectedImprovement`,
+//! `LogProbabilityOfFeasibility`, `ScalarizedPosteriorMean` and
+//! `qAnalyticProbabilityOfImprovement`.
 //!
 //! Value functions of the knowledge gradient arrive as `(name, kwargs)`:
 //! the BoTorch class name of a native value function and its arguments
@@ -21,9 +23,9 @@ use botorch_core::acquisition::one_shot::OneShotAcquisitionFunction;
 use botorch_core::acquisition::utils::PruneOptions;
 use botorch_core::acquisition::{
     AcquisitionFunction, LogNoisyExpectedImprovement, LogProbabilityOfFeasibility,
-    NoisyExpectedImprovement, OutputConstraint, QNoisyExpectedImprovement,
-    QNoisyExpectedImprovementOptions, SampleUtility, ScalarizedPosteriorMean,
-    ScalarizedPosteriorTransform,
+    NoisyExpectedImprovement, OutputConstraint, QAnalyticProbabilityOfImprovement,
+    QNoisyExpectedImprovement, QNoisyExpectedImprovementOptions, SampleUtility,
+    ScalarizedPosteriorMean, ScalarizedPosteriorTransform,
 };
 use botorch_core::lbfgsb::LbfgsbOptions;
 use botorch_core::optim::{OptimizeAcqfOptions, ValueFunctionInitialConditionOptions};
@@ -637,6 +639,23 @@ pub fn scalarized_posterior_mean(
     ))
 }
 
+/// `qAnalyticProbabilityOfImprovement(model, best_f, maximize)` (the model
+/// seen through its posterior transform).
+#[pyfunction]
+#[pyo3(signature = (model, best_f, maximize=true))]
+pub fn q_analytic_probability_of_improvement(
+    model: PyRef<'_, PyModel>,
+    best_f: f64,
+    maximize: bool,
+) -> PyResult<PyAcquisitionFunction> {
+    let a = QAnalyticProbabilityOfImprovement::new(model_of(&model), best_f, maximize)
+        .into_py_result()?;
+    Ok(PyAcquisitionFunction::new_plain(
+        Arc::new(a),
+        "qAnalyticProbabilityOfImprovement",
+    ))
+}
+
 /// `NoisyExpectedImprovement(model, X_observed, num_fantasies, maximize)`
 /// or, with `log`, `LogNoisyExpectedImprovement(..., posterior_transform)`;
 /// returns the acquisition function and the incumbents of the fantasies.
@@ -696,6 +715,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(q_noisy_expected_improvement, m)?)?;
     m.add_function(wrap_pyfunction!(log_probability_of_feasibility, m)?)?;
     m.add_function(wrap_pyfunction!(scalarized_posterior_mean, m)?)?;
+    m.add_function(wrap_pyfunction!(q_analytic_probability_of_improvement, m)?)?;
     m.add_function(wrap_pyfunction!(noisy_expected_improvement, m)?)?;
     Ok(())
 }

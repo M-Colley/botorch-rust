@@ -5,6 +5,7 @@
 //! (`botorch.utils.multi_objective`) in [`multi_objective`].
 
 pub mod multi_objective;
+pub mod mvnxpb;
 pub mod objective;
 pub mod polytope;
 pub mod probability;

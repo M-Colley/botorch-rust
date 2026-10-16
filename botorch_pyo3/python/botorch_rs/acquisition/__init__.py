@@ -1,6 +1,6 @@
 """Acquisition functions (``botorch.acquisition``)."""
 
-from botorch_rs.acquisition.acquisition import AcquisitionFunction
+from botorch_rs.acquisition.acquisition import AcquisitionFunction, OneShotAcquisitionFunction
 from botorch_rs.acquisition.active_learning import qNegIntegratedPosteriorVariance
 from botorch_rs.acquisition.analytic import (
     AnalyticAcquisitionFunction,
@@ -17,6 +17,7 @@ from botorch_rs.acquisition.analytic import (
     ProbabilityOfImprovement,
     ScalarizedPosteriorMean,
     UpperConfidenceBound,
+    qAnalyticProbabilityOfImprovement,
 )
 from botorch_rs.acquisition.composite import CallableAcquisitionFunction, WeightedLogMeanExp
 from botorch_rs.acquisition.cost_aware import (
@@ -114,6 +115,7 @@ __all__ = [
     "MCAcquisitionObjective",
     "MaxValueBase",
     "MultiOutputAcquisitionFunction",
+    "OneShotAcquisitionFunction",
     "NoisyExpectedImprovement",
     "PathwiseThompsonSampling",
     "PenalizedAcquisitionFunction",
@@ -131,6 +133,7 @@ __all__ = [
     "WeightedLogMeanExp",
     "get_optimal_samples",
     "prune_inferior_points",
+    "qAnalyticProbabilityOfImprovement",
     "qExpectedImprovement",
     "qJointEntropySearch",
     "qKnowledgeGradient",

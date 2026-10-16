@@ -1426,6 +1426,9 @@ def log_probability_of_feasibility(
     model: Model, constraints: Sequence[tuple[int, float | None, float | None]]
 ) -> AcquisitionFunction: ...
 def scalarized_posterior_mean(model: Model, weights: Sequence[float]) -> AcquisitionFunction: ...
+def q_analytic_probability_of_improvement(
+    model: Model, best_f: float, maximize: bool = True
+) -> AcquisitionFunction: ...
 def noisy_expected_improvement(
     model: Model,
     x_observed: Array,

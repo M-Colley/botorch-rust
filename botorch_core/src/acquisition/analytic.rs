@@ -15,6 +15,8 @@
 //! [`ConstrainedExpectedImprovement`] read the per-output marginals of a
 //! multi-output model directly.
 
+use crate::acquisition::dual::{Dual, Scalar};
+use crate::utils::mvnxpb::mvnxpb_generic;
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -1572,5 +1574,168 @@ mod tests {
             let rel = (log_ei_helper_grad(u) - g).abs() / g;
             assert!(rel < 4e-15, "u = {u}: relative error {rel:e}");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// qAnalyticProbabilityOfImprovement
+// ---------------------------------------------------------------------------
+
+/// Approximate, single-outcome batch probability of improvement (BoTorch's
+/// `qAnalyticProbabilityOfImprovement`): `1 - P(Y < best_f)` for the joint
+/// posterior `Y ~ f(X)` of the `q` points (`P(Y > best_f)` with `maximize =
+/// false`), the probability of no improvement estimated by MVNXPB
+/// ([`crate::utils::mvnxpb`]). Gradients are exact (forward-mode dual
+/// numbers through MVNXPB, then the posterior's reverse mode).
+#[derive(Debug, Clone)]
+pub struct QAnalyticProbabilityOfImprovement {
+    model: Arc<dyn Model>,
+    best_f: f64,
+    maximize: bool,
+}
+
+/// Tangents per forward-mode pass of the qAnalyticPI gradient.
+const QPI_TANGENTS: usize = 16;
+
+impl QAnalyticProbabilityOfImprovement {
+    /// Creates `qAnalyticProbabilityOfImprovement(model, best_f, maximize)`
+    /// for a single-output model (multi-output models through a posterior
+    /// transform, see [`crate::acquisition::ScalarizedModel`]).
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] for multi-output models and
+    /// [`BotorchError::InvalidArgument`] for a NaN `best_f`.
+    pub fn new(model: Arc<dyn Model>, best_f: f64, maximize: bool) -> Result<Self> {
+        check_single_output(model.as_ref())?;
+        check_best_f(best_f)?;
+        Ok(Self {
+            model,
+            best_f,
+            maximize,
+        })
+    }
+
+    /// The incumbent.
+    pub fn best_f(&self) -> f64 {
+        self.best_f
+    }
+
+    /// The bounds of the probability of no improvement for the posterior
+    /// mean `mu` (one `[lower, upper]` pair per point).
+    fn bounds<S: Scalar>(&self, mu: &[S]) -> Vec<[S; 2]> {
+        mu.iter()
+            .map(|m| {
+                let u = -*m + self.best_f;
+                if self.maximize {
+                    [m.lift(f64::NEG_INFINITY), u]
+                } else {
+                    [u, m.lift(f64::INFINITY)]
+                }
+            })
+            .collect()
+    }
+
+    /// `log P(no improvement)` and its derivatives with respect to the
+    /// tangents `offset..offset + N` (the `q` means, then the covariance
+    /// entries `(a, b)`, `a <= b`, row by row).
+    fn log_prob_dual<const N: usize>(
+        &self,
+        mean: &Vector,
+        cov: &Matrix,
+        offset: usize,
+        total: usize,
+    ) -> (f64, Vec<f64>) {
+        let q = mean.len();
+        let n = N.min(total - offset);
+        let var = |v: f64, idx: usize| -> Dual<N> {
+            if idx >= offset && idx < offset + n {
+                Dual::variable(v, idx - offset, n)
+            } else {
+                Dual::constant(v, n)
+            }
+        };
+        let mu: Vec<Dual<N>> = (0..q).map(|i| var(mean[i], i)).collect();
+        let mut c = vec![vec![Dual::constant(0.0, n); q]; q];
+        let mut idx = q;
+        for a in 0..q {
+            for b in a..q {
+                let d = var(cov[(a, b)], idx);
+                c[a][b] = d;
+                c[b][a] = d;
+                idx += 1;
+            }
+        }
+        let lp = mvnxpb_generic(&c, &self.bounds(&mu));
+        (lp.v, lp.grad().to_vec())
+    }
+
+    fn evaluate(&self, x: &Matrix, with_grad: bool) -> Result<(f64, Option<Matrix>)> {
+        check_candidates(x, self.model.dim(), None)?;
+        let post = self.model.posterior(x, false)?;
+        let q = x.nrows();
+        let mean = post.mean.clone();
+        let cov = post.covariance.clone();
+        if !with_grad {
+            let c: Vec<Vec<f64>> = (0..q)
+                .map(|i| (0..q).map(|j| cov[(i, j)]).collect())
+                .collect();
+            let mu: Vec<f64> = mean.iter().copied().collect();
+            let lp = mvnxpb_generic(&c, &self.bounds(&mu));
+            return Ok((-lp.exp_m1(), None));
+        }
+        let total = q + q * (q + 1) / 2;
+        let mut lp = 0.0;
+        let mut g = Vec::with_capacity(total);
+        let mut offset = 0;
+        while offset < total {
+            let (v, part) = self.log_prob_dual::<QPI_TANGENTS>(&mean, &cov, offset, total);
+            lp = v;
+            g.extend(part);
+            offset += QPI_TANGENTS;
+        }
+        let value = -lp.exp_m1();
+        // d value / d lp = -exp(lp) (zero for lp = -inf).
+        let dv = if lp == f64::NEG_INFINITY {
+            0.0
+        } else {
+            -lp.exp()
+        };
+        let mean_adj = Vector::from_fn(q, |i, _| dv * g[i]);
+        let mut cov_adj = Matrix::zeros(q, q);
+        let mut idx = q;
+        for a in 0..q {
+            for b in a..q {
+                if a == b {
+                    cov_adj[(a, a)] = dv * g[idx];
+                } else {
+                    cov_adj[(a, b)] = 0.5 * dv * g[idx];
+                    cov_adj[(b, a)] = 0.5 * dv * g[idx];
+                }
+                idx += 1;
+            }
+        }
+        let grad = self
+            .model
+            .joint_posterior_vjp(x, 0..q, &mean_adj, &cov_adj)?;
+        Ok((value, Some(grad)))
+    }
+}
+
+impl AcquisitionFunction for QAnalyticProbabilityOfImprovement {
+    fn model(&self) -> &Arc<dyn Model> {
+        &self.model
+    }
+
+    fn forward(&self, x: &Matrix) -> Result<f64> {
+        Ok(self.evaluate(x, false)?.0)
+    }
+
+    fn forward_with_grad(&self, x: &Matrix) -> Result<(f64, Matrix)> {
+        let (v, g) = self.evaluate(x, true)?;
+        Ok((v, g.expect("gradient requested")))
+    }
+
+    fn is_nonnegative(&self) -> bool {
+        true
     }
 }

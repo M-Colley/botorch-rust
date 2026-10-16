@@ -78,6 +78,12 @@ pub(crate) trait Scalar:
     /// argument; autograd's `clamp` with tensor bounds passes the gradient
     /// to the bound where it is active).
     fn clamp_min_var(self, lo: Self) -> Self;
+    /// BoTorch's `ndtr` (`erfc(-x / √2) / 2`, accurate in the left tail).
+    fn ndtr(self) -> Self;
+    fn sin(self) -> Self;
+    fn asin(self) -> Self;
+    /// `|x|` (gradient `sign(x)`, zero at zero, as autograd).
+    fn abs(self) -> Self;
 }
 
 impl Scalar for f64 {
@@ -112,6 +118,18 @@ impl Scalar for f64 {
         } else {
             self
         }
+    }
+    fn ndtr(self) -> Self {
+        crate::utils::probability::ndtr(self)
+    }
+    fn sin(self) -> Self {
+        f64::sin(self)
+    }
+    fn asin(self) -> Self {
+        f64::asin(self)
+    }
+    fn abs(self) -> Self {
+        f64::abs(self)
     }
 }
 
@@ -149,6 +167,28 @@ impl<const N: usize> Scalar for Dual<N> {
         } else {
             self
         }
+    }
+    fn ndtr(self) -> Self {
+        self.chain(
+            crate::utils::probability::ndtr(self.v),
+            crate::utils::probability::phi(self.v),
+        )
+    }
+    fn sin(self) -> Self {
+        self.chain(self.v.sin(), self.v.cos())
+    }
+    fn asin(self) -> Self {
+        self.chain(self.v.asin(), 1.0 / (1.0 - self.v * self.v).sqrt())
+    }
+    fn abs(self) -> Self {
+        let s = if self.v > 0.0 {
+            1.0
+        } else if self.v < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
+        self.chain(self.v.abs(), s)
     }
 }
 
