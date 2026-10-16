@@ -64,10 +64,48 @@ def fmt_speedup(ratio: float) -> str:
     return f"{ratio:.1f}×" if ratio < 10 else f"{ratio:.0f}×"
 
 
+MO_TASK_PREFIXES = (
+    "MOBO",
+    "optimize_acqf, qLogNEHVI",
+    "optimize_acqf, qLogEHVI",
+    "qHVKG",
+    "MO ",
+    "hypervolume",
+    "box decomposition",
+    "is_non_dominated",
+)
+
+
+def group_of(row: dict) -> str:
+    """The chart section of a row (older JSON files have no ``group``)."""
+    if "group" in row:
+        return row["group"]
+    return "Multi-objective" if row["task"].startswith(MO_TASK_PREFIXES) else "Single-objective"
+
+
+def row_positions(rows: list[dict]) -> tuple[list[float], list[tuple[float, str]]]:
+    """The y position of every row and the (position, name) of the section
+    headers (only when there is more than one section)."""
+    groups = [group_of(r) for r in rows]
+    sections = len(set(groups)) > 1
+    ys: list[float] = []
+    headers: list[tuple[float, str]] = []
+    y, previous = 0.0, None
+    for g in groups:
+        if sections and g != previous:
+            headers.append((y, g))
+            y += 0.7
+            previous = g
+        ys.append(y)
+        y += 1.0
+    return ys, headers
+
+
 def plot(rows: list[dict], meta: dict, theme: str, out: Path) -> None:
     t = THEMES[theme]
-    n = len(rows)
-    fig_h = 1.15 + 0.62 * n
+    ys, headers = row_positions(rows)
+    span = ys[-1] + 1.0
+    fig_h = 1.15 + 0.62 * span
     fig, ax = plt.subplots(figsize=(9.0, fig_h), dpi=200)
     fig.patch.set_facecolor(t["surface"])
     ax.set_facecolor(t["surface"])
@@ -77,7 +115,7 @@ def plot(rows: list[dict], meta: dict, theme: str, out: Path) -> None:
     lo, hi = min(times) / 2.2, max(times) * 2.6
     ax.set_xscale("log")
     ax.set_xlim(lo, hi)
-    ax.set_ylim(n - 0.45, -0.75)
+    ax.set_ylim(span - 0.45, (headers[0][0] if headers else 0.0) - 0.75)
 
     # Recessive hairline gridlines at the decades, no frame.
     decades = [10.0**k for k in range(math.ceil(math.log10(lo)), math.floor(math.log10(hi)) + 1)]
@@ -94,7 +132,23 @@ def plot(rows: list[dict], meta: dict, theme: str, out: Path) -> None:
 
     # Time labels mask the gridlines behind them.
     label_box = {"boxstyle": "square,pad=0.1", "facecolor": t["surface"], "edgecolor": "none"}
-    for i, r in enumerate(rows):
+    # Section headers (single- and multi-objective) across the whole width.
+    for k, (y, name) in enumerate(headers):
+        if k > 0:
+            ax.axhline(y - 0.45, color=t["grid"], linewidth=0.75, zorder=0)
+        ax.annotate(
+            name.upper(),
+            (0, y),
+            xycoords=("axes fraction", "data"),
+            xytext=(-10, 0),
+            textcoords="offset points",
+            ha="right",
+            va="center",
+            fontsize=8.5,
+            fontweight="bold",
+            color=t["muted"],
+        )
+    for i, r in zip(ys, rows, strict=True):
         rs, bt = r["botorch_rs_s"], r["botorch_s"]
         ax.plot([rs, bt], [i, i], color=t["link"], linewidth=2.2, solid_capstyle="round", zorder=1)
         close = math.log10(bt / rs) < 0.45
