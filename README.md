@@ -89,15 +89,14 @@ balances compatibility and performance:
 
 ### Python
 
-botorch-rust is not yet on PyPI. Released versions come as prebuilt abi3 wheels
-for CPython 3.11 and later: Windows x86_64, macOS arm64 and x86_64, and Linux
-x86_64 and aarch64. They're attached to the
-[GitHub releases](https://github.com/M-Colley/botorch-rust/releases) and need no
-Rust toolchain:
-
 ```console
-$ pip install botorch-rust --find-links https://github.com/M-Colley/botorch-rust/releases/expanded_assets/v0.1.0
+$ pip install botorch-rust
 ```
+
+[PyPI](https://pypi.org/project/botorch-rust/) has prebuilt abi3 wheels for
+CPython 3.11 and later: Windows x86_64, macOS arm64 and x86_64, and Linux x86_64
+and aarch64. They need no Rust toolchain. The wheels are also attached to the
+[GitHub releases](https://github.com/M-Colley/botorch-rust/releases).
 
 From a source checkout (requires a Rust toolchain, see [rustup.rs](https://rustup.rs)):
 
