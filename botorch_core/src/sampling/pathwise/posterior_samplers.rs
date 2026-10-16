@@ -13,7 +13,7 @@ use crate::sampling::pathwise::features::DEFAULT_NUM_FEATURES;
 use crate::sampling::pathwise::paths::{
     check_inputs, GeneralizedLinearPath, PathGradients, PathList, PathValues, SamplePath,
 };
-use crate::sampling::pathwise::prior_samplers::{kernel_feature_path, model_gps};
+use crate::sampling::pathwise::prior_samplers::{fourier_kernel, kernel_feature_path, model_gps};
 use crate::sampling::pathwise::update_strategies::gaussian_update;
 use crate::sampling::pathwise::utils::{derive_seed, MatheronPathDraws, OutcomeUntransform};
 use crate::utils::sampling::random_seed;
@@ -78,7 +78,7 @@ pub(crate) fn output_draws(
                 )));
             }
             for (gp, d) in gps.iter().zip(draws) {
-                d.check(gp.dim(), gp.num_train())?;
+                d.check(fourier_kernel(gp)?.feature_dim(), gp.num_train())?;
                 if d.num_samples() != num_samples {
                     return Err(BotorchError::DimensionMismatch(format!(
                         "expected draws of {num_samples} samples, got {}",
@@ -93,9 +93,10 @@ pub(crate) fn output_draws(
             gps.iter()
                 .enumerate()
                 .map(|(t, gp)| {
+                    let fk = fourier_kernel(gp)?;
                     MatheronPathDraws::sample(
-                        gp.covar_module().kind,
-                        gp.dim(),
+                        fk.kernel.kind(),
+                        fk.feature_dim(),
                         gp.num_train(),
                         num_samples,
                         options.num_features,
@@ -133,7 +134,7 @@ impl MatheronPath {
     /// [`BotorchError::DimensionMismatch`] for draws of the wrong shape and
     /// errors of the model's factorization.
     pub fn new(gp: &SingleTaskGP, draws: MatheronPathDraws) -> Result<Self> {
-        draws.check(gp.dim(), gp.num_train())?;
+        draws.check(fourier_kernel(gp)?.feature_dim(), gp.num_train())?;
         let prior =
             kernel_feature_path(gp, draws.frequencies.clone(), draws.weights.clone(), false)?;
         let sample_values = prior.forward_transformed(gp.transformed_train_inputs());
@@ -485,7 +486,7 @@ mod tests {
             .map(|(t, _)| {
                 let gp = if t == 0 { &a } else { &b };
                 MatheronPathDraws::sample(
-                    gp.covar_module().kind,
+                    gp.covar_module().as_standard().unwrap().kind,
                     2,
                     gp.num_train(),
                     1,

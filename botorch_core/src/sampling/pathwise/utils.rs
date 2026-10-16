@@ -18,9 +18,6 @@ use crate::models::SingleTaskGP;
 use crate::utils::sampling::draw_sobol_normal_samples;
 use crate::Matrix;
 
-/// The smoothness `ν` of the Matérn-5/2 kernel.
-const MATERN_NU: f64 = 2.5;
-
 /// The outcome untransform of a path: BoTorch's `OutcomeUntransformer` of a
 /// `Standardize`, `y = mean + std · f`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,9 +77,9 @@ pub(crate) fn check_num_features(num_features: usize) -> Result<()> {
 /// The frequencies of the random Fourier features of a stationary kernel
 /// (`num_features / 2 × num_inputs`, BoTorch's `KernelFeatureMap.weight`):
 /// quasi-random standard normal vectors (the spectral density of the RBF
-/// kernel), divided for the Matérn-5/2 kernel by the square root of an
-/// independent `Gamma(ν, ν)` variable per vector (a multivariate Student-t
-/// with `2ν` degrees of freedom), as in BoTorch's
+/// kernel), divided for a Matérn-ν kernel (ν = 1/2, 3/2, 5/2) by the square
+/// root of an independent `Gamma(ν, ν)` variable per vector (a multivariate
+/// Student-t with `2ν` degrees of freedom), as in BoTorch's
 /// `_gen_kernel_features_matern`.
 ///
 /// # Errors
@@ -97,8 +94,8 @@ pub fn draw_fourier_frequencies(
     check_num_features(num_features)?;
     let half = num_features / 2;
     let mut w = draw_sobol_normal_samples(num_inputs, half, Some(derive_seed(seed, 0)))?;
-    if kind == KernelKind::Matern52 {
-        let gamma = rand_distr::Gamma::new(MATERN_NU, 1.0 / MATERN_NU)
+    if let Some(nu) = kind.nu() {
+        let gamma = rand_distr::Gamma::new(nu, 1.0 / nu)
             .map_err(|e| BotorchError::InvalidArgument(e.to_string()))?;
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(derive_seed(seed, 1));
         for mut row in w.row_iter_mut() {

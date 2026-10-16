@@ -12,7 +12,7 @@ from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import Pair, broadcast_to, from_flat, from_pair, kind_of, to_flat
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.exceptions.warnings import InputDataWarning
-from botorch_rs.kernels import Kernel, ScaleKernel
+from botorch_rs.kernels import Kernel
 from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood, Likelihood
 from botorch_rs.means import ConstantMean
 from botorch_rs.models.model import Model
@@ -107,15 +107,37 @@ def _validate_input_scaling(x: Pair, y: Pair, n: int) -> None:
         )
 
 
+def _kernels_with_parameters(kernel: Kernel) -> list[Kernel]:
+    """The kernels of a tree that have parameters of their own (not the base
+    kernel of an ``OrthogonalAdditiveKernel``, whose batch shape has an extra
+    input dimension)."""
+    out = []
+    if kernel._own_params():
+        out.append(kernel)
+    if type(kernel).__name__ == "OrthogonalAdditiveKernel":
+        return out
+    for _, child in kernel._children():
+        out.extend(_kernels_with_parameters(child))
+    return out
+
+
 def _check_module_batch_shape(module: Any, aug: tuple[int, ...], what: str) -> None:
     """A module of a multi-output or batched model must have
     ``batch_shape = _aug_batch_shape`` (independent hyperparameters per output
-    and batch element, like BoTorch's default modules)."""
-    modules = [module]
-    if isinstance(module, ScaleKernel):
-        modules.append(module.base_kernel)
+    and batch element, like BoTorch's default modules); for a kernel tree,
+    every kernel with parameters."""
+    modules: list[Any] = (
+        list(_kernels_with_parameters(module)) if isinstance(module, Kernel) else [module]
+    )
+    seen: set[int] = set()
     for mod in modules:
-        shape = tuple(getattr(mod, "batch_shape", ()))
+        if id(mod) in seen:
+            raise UnsupportedError(
+                f"The same kernel object appears twice in `{what}`; botorch_rs does not share "
+                "parameters between the parts of a kernel tree."
+            )
+        seen.add(id(mod))
+        shape = tuple(mod._batch_shape if isinstance(mod, Kernel) else getattr(mod, "batch_shape", ()))
         if shape == aug:
             continue
         if aug and not shape:
@@ -199,8 +221,13 @@ class SingleTaskGP(Model):
         if covar_module is not None:
             if not isinstance(covar_module, Kernel):
                 raise UnsupportedError(
-                    "`covar_module` must be a botorch_rs kernel (RBFKernel, MaternKernel(nu=2.5) "
-                    "or ScaleKernel), e.g. from botorch_rs.models.utils.gpytorch_modules."
+                    "`covar_module` must be a botorch_rs kernel (from botorch_rs.kernels, "
+                    "botorch_rs.models.kernels or botorch_rs.models.utils.gpytorch_modules)."
+                )
+            if covar_module._model is not None:
+                raise UnsupportedError(
+                    "This kernel is already part of another model; create a new one for each "
+                    "model."
                 )
             _check_module_batch_shape(covar_module, aug, "covar_module")
         if mean_module is not None:
@@ -252,7 +279,12 @@ class SingleTaskGP(Model):
             if covar_module is not None
             else get_covar_module_with_dim_scaled_prior(ard_num_dims=d, batch_shape=aug)
         )
-        covar_spec = covar._spec(d) if covar_module is not None else None
+        covar_spec = None
+        covar_tree = None
+        if covar_module is not None:
+            covar_spec = covar._standard_spec(d)
+            if covar_spec is None:
+                covar_tree = covar._node()
         self._rs = _rs.SingleTaskGP(
             x,
             y,
@@ -263,6 +295,7 @@ class SingleTaskGP(Model):
             covar_spec,
             likelihood._spec if likelihood is not None else None,
             input_chain=chain,
+            covar_tree=covar_tree,
         )
         self._kind = kind
         # GP modules bound to the model's hyperparameters.
@@ -273,7 +306,7 @@ class SingleTaskGP(Model):
                 else get_gaussian_likelihood_with_lognormal_prior(batch_shape=aug)
             )
         likelihood._bind(self)
-        covar._bind(self)
+        covar._bind(self, "covar_module.")
         mean = mean_module if mean_module is not None else ConstantMean(batch_shape=aug)
         mean._bind(self)
         self.likelihood: Likelihood = likelihood
@@ -505,37 +538,42 @@ class SingleTaskGP(Model):
 
     # -- parameters --------------------------------------------------------
 
-    def _raw_param(self, suffix: str) -> list[float]:
-        values = self._rs.raw_parameters()
-        offset = 0
-        for name, size in self._rs.parameter_names():
-            if name.endswith(suffix):
-                return values[offset : offset + size]
-            offset += size
+    def _param_index(self, suffix: str) -> tuple[str, int, int]:
+        """The full name, offset and size of the parameter named ``suffix``
+        (a full name, or the end of one)."""
+        names = self._rs.parameter_names()
+        for exact in (True, False):
+            offset = 0
+            for name, size in names:
+                if name == suffix if exact else name.endswith(suffix):
+                    return name, offset, size
+                offset += size
         raise AttributeError(f"The model has no parameter {suffix!r}.")
+
+    def _raw_param(self, suffix: str) -> list[float]:
+        _, offset, size = self._param_index(suffix)
+        return self._rs.raw_parameters()[offset : offset + size]
+
+    def _raw_param_shape(self, suffix: str) -> tuple[int, ...]:
+        name, _, _ = self._param_index(suffix)
+        return tuple(dict(self._rs.parameter_shapes())[name])
 
     def _set_raw_param(self, suffix: str, value: Any) -> None:
         data, shape = to_flat(value, suffix)
+        name, offset, size = self._param_index(suffix)
         values = self._rs.raw_parameters()
-        offset = 0
-        shapes = dict(self._rs.parameter_shapes())
-        for name, size in self._rs.parameter_names():
-            if name.endswith(suffix):
-                target = tuple(shapes[name])
-                try:
-                    new = broadcast_to(data, shape, target)
-                except ValueError:
-                    # GPyTorch's `Module.initialize`: `expand_as`, else `view_as`.
-                    if len(data) != size:
-                        raise BotorchTensorDimensionError(
-                            f"{name} has shape {target}, got a value of shape {tuple(shape)}."
-                        ) from None
-                    new = [float(v) for v in data]
-                values[offset : offset + size] = new
-                self._rs.set_raw_parameters(values)
-                return
-            offset += size
-        raise AttributeError(f"The model has no parameter {suffix!r}.")
+        target = tuple(dict(self._rs.parameter_shapes())[name])
+        try:
+            new = broadcast_to(data, shape, target)
+        except ValueError:
+            # GPyTorch's `Module.initialize`: `expand_as`, else `view_as`.
+            if len(data) != size:
+                raise BotorchTensorDimensionError(
+                    f"{name} has shape {target}, got a value of shape {tuple(shape)}."
+                ) from None
+            new = [float(v) for v in data]
+        values[offset : offset + size] = new
+        self._rs.set_raw_parameters(values)
 
     def named_parameters(self) -> Iterator[tuple[str, Any]]:
         """``(name, raw value)`` of every hyperparameter, with BoTorch's names,

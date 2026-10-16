@@ -44,6 +44,7 @@ use rand::SeedableRng;
 use rayon::prelude::*;
 
 use crate::error::{BotorchError, Result};
+use crate::kernels::CovarModule;
 use crate::lbfgsb::{self, LbfgsbError, LbfgsbOptions, LbfgsbStatus};
 use crate::mll::ExactMarginalLogLikelihood;
 use crate::models::{BatchedMultiOutputGP, Hyperparameters, Likelihood, ModelListGP, SingleTaskGP};
@@ -131,6 +132,12 @@ fn fit_status(status: LbfgsbStatus) -> FitStatus {
 /// BoTorch's `sample_all_priors`: draws every hyperparameter that has a prior
 /// from that prior (keeping all other parameters at `initial`) and returns the
 /// flat raw-parameter vector.
+///
+/// Kernel trees: every parameter with a univariate prior is resampled; the
+/// task factor of a `PositiveIndexKernel` with a task prior is set from
+/// sampled correlations (BoTorch's `_set_lower_triangle_corr`); an
+/// `IndexKernel` task prior has no setting closure in GPyTorch (BoTorch's
+/// `sample_all_priors` raises), so those parameters keep their values.
 fn sample_all_priors(
     model: &SingleTaskGP,
     initial: &Hyperparameters,
@@ -142,21 +149,27 @@ fn sample_all_priors(
             h.raw_noise = Some(spec.noise_constraint.inverse_transform(prior.sample(rng)));
         }
     }
-    let covar = model.covar_module();
-    if let Some(scale) = covar.scale {
-        if let Some(prior) = scale.outputscale_prior {
-            h.raw_outputscale = Some(
-                scale
-                    .outputscale_constraint
-                    .inverse_transform(prior.sample(rng)),
-            );
+    match model.covar_module() {
+        CovarModule::Standard(covar) => {
+            if let Some(scale) = covar.scale {
+                if let Some(prior) = scale.outputscale_prior {
+                    h.raw_outputscale = Some(
+                        scale
+                            .outputscale_constraint
+                            .inverse_transform(prior.sample(rng)),
+                    );
+                }
+            }
+            if let Some(prior) = covar.lengthscale_prior {
+                for v in h.raw_lengthscale.iter_mut() {
+                    *v = covar
+                        .lengthscale_constraint
+                        .inverse_transform(prior.sample(rng));
+                }
+            }
         }
-    }
-    if let Some(prior) = covar.lengthscale_prior {
-        for v in h.raw_lengthscale.iter_mut() {
-            *v = covar
-                .lengthscale_constraint
-                .inverse_transform(prior.sample(rng));
+        CovarModule::Tree(tree) => {
+            crate::kernels::tree::sample_tree_priors(tree, h.raw_kernel.as_mut_slice(), rng);
         }
     }
     h.to_vector().as_slice().to_vec()

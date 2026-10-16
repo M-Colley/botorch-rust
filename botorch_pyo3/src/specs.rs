@@ -7,7 +7,7 @@
 //! double precision; `float32=True` (the default) reproduces that rounding so
 //! that models agree with BoTorch to double precision.
 
-use botorch_core::constraints::{Constraint, Interval, ParameterTransform};
+use botorch_core::constraints::{Constraint, Interval, LessThan, ParameterTransform};
 use botorch_core::kernels::{
     get_covar_module_with_dim_scaled_prior, get_matern_kernel_with_gamma_prior,
 };
@@ -22,7 +22,9 @@ use pyo3::prelude::*;
 
 use crate::errors::{unsupported, value_error, IntoPyResult};
 
-/// A hyperparameter prior (`gpytorch.priors.LogNormalPrior` / `GammaPrior`).
+/// A hyperparameter prior (`gpytorch.priors.LogNormalPrior`, `GammaPrior`,
+/// `NormalPrior`, `UniformPrior`, `HalfCauchyPrior`, `HalfNormalPrior` or
+/// BoTorch's `BetaPrior`).
 #[pyclass(frozen, name = "Prior", module = "botorch_rs._botorch_rs")]
 pub struct PyPrior {
     /// The prior.
@@ -61,30 +63,92 @@ impl PyPrior {
         })
     }
 
-    /// `"LogNormal"` or `"Gamma"`.
-    #[getter]
-    fn kind(&self) -> &'static str {
-        match self.inner {
-            Prior::LogNormal { .. } => "LogNormal",
-            Prior::Gamma { .. } => "Gamma",
-        }
+    /// `NormalPrior(loc, scale)`.
+    #[staticmethod]
+    #[pyo3(signature = (loc, scale, float32=true))]
+    fn normal(loc: f64, scale: f64, float32: bool) -> PyResult<Self> {
+        let p = Prior::normal(loc, scale).into_py_result()?;
+        Ok(Self {
+            inner: if float32 { p.rounded_to_f32() } else { p },
+        })
     }
 
-    /// `(loc, scale)` or `(concentration, rate)` (as stored).
+    /// `UniformPrior(a, b)`.
+    #[staticmethod]
+    #[pyo3(signature = (a, b, float32=true))]
+    fn uniform(a: f64, b: f64, float32: bool) -> PyResult<Self> {
+        let p = Prior::uniform(a, b).into_py_result()?;
+        Ok(Self {
+            inner: if float32 { p.rounded_to_f32() } else { p },
+        })
+    }
+
+    /// `HalfCauchyPrior(scale)`.
+    #[staticmethod]
+    #[pyo3(signature = (scale, float32=true))]
+    fn half_cauchy(scale: f64, float32: bool) -> PyResult<Self> {
+        let p = Prior::half_cauchy(scale).into_py_result()?;
+        Ok(Self {
+            inner: if float32 { p.rounded_to_f32() } else { p },
+        })
+    }
+
+    /// `HalfNormalPrior(scale)`.
+    #[staticmethod]
+    #[pyo3(signature = (scale, float32=true))]
+    fn half_normal(scale: f64, float32: bool) -> PyResult<Self> {
+        let p = Prior::half_normal(scale).into_py_result()?;
+        Ok(Self {
+            inner: if float32 { p.rounded_to_f32() } else { p },
+        })
+    }
+
+    /// BoTorch's `BetaPrior(concentration1, concentration0)`.
+    #[staticmethod]
+    #[pyo3(signature = (concentration1, concentration0, float32=true))]
+    fn beta(concentration1: f64, concentration0: f64, float32: bool) -> PyResult<Self> {
+        let p = Prior::beta(concentration1, concentration0).into_py_result()?;
+        Ok(Self {
+            inner: if float32 { p.rounded_to_f32() } else { p },
+        })
+    }
+
+    /// `"LogNormal"`, `"Gamma"`, `"Normal"`, `"Uniform"`, `"HalfCauchy"`,
+    /// `"HalfNormal"` or `"Beta"`.
     #[getter]
-    fn parameters(&self) -> (f64, f64) {
-        match self.inner {
-            Prior::LogNormal { loc, scale, .. } => (loc, scale),
-            Prior::Gamma {
-                concentration,
-                rate,
-            } => (concentration, rate),
-        }
+    fn kind(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    /// The parameters as stored, in GPyTorch's argument order.
+    #[getter]
+    fn parameters(&self) -> Vec<f64> {
+        self.inner.parameters()
     }
 
     /// The log density at `x`.
     fn log_prob(&self, x: f64) -> f64 {
         self.inner.log_prob(x)
+    }
+
+    /// The derivative of the log density at `x`.
+    fn grad_log_prob(&self, x: f64) -> f64 {
+        self.inner.grad_log_prob(x)
+    }
+
+    /// Whether `x` is in the support that torch validates (BoTorch raises a
+    /// `ValueError` for other values).
+    fn in_support(&self, x: f64) -> bool {
+        self.inner.in_validated_support(x)
+    }
+
+    /// This prior with the single-precision log term computed by torch
+    /// (`log(scale)` of `LogNormal` / `HalfNormal`, `log(high - low)` of
+    /// `Uniform`; other priors are returned unchanged).
+    fn with_torch_log(&self, value: f64) -> Self {
+        Self {
+            inner: self.inner.with_torch_log(value),
+        }
     }
 
     /// The mode.
@@ -202,12 +266,47 @@ impl PyConstraint {
         })
     }
 
-    /// `"GreaterThan"` or `"Interval"`.
+    /// `LessThan(upper_bound, transform, initial_value)`; `transform` is
+    /// `"softplus"` (GPyTorch's default) or `None` (not enforced).
+    #[staticmethod]
+    #[pyo3(signature = (upper_bound, transform=Some("softplus"), initial_value=None, float32=true))]
+    fn less_than(
+        upper_bound: f64,
+        transform: Option<&str>,
+        initial_value: Option<f64>,
+        float32: bool,
+    ) -> PyResult<Self> {
+        let transform = match transform_from_name(transform)? {
+            Some(ParameterTransform::Sigmoid) => {
+                return Err(unsupported(
+                    "LessThan supports the softplus transform (or None) in botorch_rs.",
+                ))
+            }
+            t => t,
+        };
+        if upper_bound.is_nan() || upper_bound == f64::NEG_INFINITY {
+            return Err(value_error(format!("invalid upper bound {upper_bound}")));
+        }
+        if let Some(v) = initial_value {
+            if !(v.is_finite() && v <= upper_bound) {
+                return Err(value_error(format!(
+                    "initial_value {v} violates the upper bound {upper_bound}"
+                )));
+            }
+        }
+        let c = LessThan::new(upper_bound, transform, initial_value);
+        Ok(Self {
+            inner: if float32 { c.rounded_to_f32() } else { c }.into(),
+        })
+    }
+
+    /// `"GreaterThan"`, `"LessThan"` or `"Interval"`.
     #[getter]
     fn kind(&self) -> &'static str {
         match self.inner {
             Constraint::GreaterThan(_) => "GreaterThan",
             Constraint::Interval(_) => "Interval",
+            Constraint::LessThan(_) => "LessThan",
         }
     }
 
@@ -277,11 +376,30 @@ pub struct PyKernelSpec {
     pub inner: KernelSpec,
 }
 
-fn kind_name(kind: KernelKind) -> &'static str {
+pub(crate) fn kind_name(kind: KernelKind) -> &'static str {
     match kind {
         KernelKind::Rbf => "rbf",
         KernelKind::Matern52 => "matern52",
+        KernelKind::Matern12 => "matern12",
+        KernelKind::Matern32 => "matern32",
     }
+}
+
+/// The kernel family of a name (`"rbf"`, `"matern12"`, `"matern32"`,
+/// `"matern52"`).
+pub(crate) fn kind_from_name(kind: &str) -> PyResult<KernelKind> {
+    Ok(match kind {
+        "rbf" => KernelKind::Rbf,
+        "matern52" => KernelKind::Matern52,
+        "matern12" => KernelKind::Matern12,
+        "matern32" => KernelKind::Matern32,
+        other => {
+            return Err(unsupported(format!(
+                "Unsupported kernel {other:?} (RBF and Matern with nu = 0.5, 1.5, 2.5 are \
+                 available)."
+            )))
+        }
+    })
 }
 
 #[pymethods]
@@ -296,8 +414,9 @@ impl PyKernelSpec {
         slf
     }
 
-    /// A base kernel (`"rbf"` or `"matern52"`) with GPyTorch's defaults for
-    /// omitted arguments (no prior, `Positive()` constraint).
+    /// A base kernel (`"rbf"`, `"matern12"`, `"matern32"` or `"matern52"`)
+    /// with GPyTorch's defaults for omitted arguments (no prior,
+    /// `Positive()` constraint).
     #[new]
     #[pyo3(signature = (kind, ard_num_dims, lengthscale_prior=None, lengthscale_constraint=None))]
     fn new(
@@ -306,15 +425,7 @@ impl PyKernelSpec {
         lengthscale_prior: Option<PyRef<'_, PyPrior>>,
         lengthscale_constraint: Option<PyRef<'_, PyConstraint>>,
     ) -> PyResult<Self> {
-        let kind = match kind {
-            "rbf" => KernelKind::Rbf,
-            "matern52" => KernelKind::Matern52,
-            other => {
-                return Err(unsupported(format!(
-                    "Unsupported kernel {other:?} (RBF and Matern-5/2 are available)."
-                )))
-            }
-        };
+        let kind = kind_from_name(kind)?;
         if ard_num_dims == 0 {
             return Err(value_error("ard_num_dims must be positive"));
         }
@@ -374,7 +485,7 @@ impl PyKernelSpec {
         })
     }
 
-    /// `"rbf"` or `"matern52"`.
+    /// `"rbf"`, `"matern12"`, `"matern32"` or `"matern52"`.
     #[getter]
     fn kind(&self) -> &'static str {
         kind_name(self.inner.kind)

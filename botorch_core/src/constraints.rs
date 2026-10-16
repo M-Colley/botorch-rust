@@ -1,11 +1,13 @@
 //! Parameter constraints mirroring `gpytorch.constraints.GreaterThan`,
-//! `gpytorch.constraints.Positive` and `gpytorch.constraints.Interval`.
+//! `gpytorch.constraints.Positive`, `gpytorch.constraints.LessThan` and
+//! `gpytorch.constraints.Interval`.
 //!
 //! A constraint maps an unconstrained *raw* parameter (the value that is
 //! stored and optimized) to the *actual* parameter value. Two flavours exist:
 //!
 //! * **enforced** (a transform, GPyTorch's default): `GreaterThan` maps
-//!   `actual = softplus(raw) + lower_bound`, `Interval` maps
+//!   `actual = softplus(raw) + lower_bound`, `LessThan` maps
+//!   `actual = upper_bound - softplus(-raw)`, `Interval` maps
 //!   `actual = sigmoid(raw) · (upper - lower) + lower`; the raw parameter is
 //!   unbounded.
 //! * **not enforced** (`transform = None`, used by all of BoTorch's
@@ -223,6 +225,124 @@ impl GreaterThan {
     }
 }
 
+/// An upper-bound constraint (`gpytorch.constraints.LessThan`):
+/// `actual <= upper_bound`.
+///
+/// Enforced through a transform (GPyTorch's default `softplus`), the actual
+/// value is `upper_bound - softplus(-raw)` and the raw parameter is
+/// unbounded; not enforced (`transform = None`), `actual = raw` and the
+/// optimizer bounds the raw parameter from above.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LessThan {
+    upper_bound: f64,
+    transform: Option<ParameterTransform>,
+    initial_value: Option<f64>,
+    initial_raw: Option<f64>,
+}
+
+impl LessThan {
+    /// Creates a constraint `actual <= upper_bound`; `initial_value` is in
+    /// the actual space.
+    ///
+    /// The bound is stored exactly; [`LessThan::rounded_to_f32`] reproduces
+    /// GPyTorch's single-precision bound and raw initial value.
+    pub fn new(
+        upper_bound: f64,
+        transform: Option<ParameterTransform>,
+        initial_value: Option<f64>,
+    ) -> Self {
+        let mut c = Self {
+            upper_bound,
+            transform,
+            initial_value,
+            initial_raw: None,
+        };
+        c.initial_raw = initial_value.map(|v| c.inverse_transform(v));
+        c
+    }
+
+    /// Returns a copy that behaves like a GPyTorch `LessThan` created from
+    /// Python floats: the bound and the initial value are float32 tensors,
+    /// and the raw initial value is computed from them in single precision.
+    pub fn rounded_to_f32(self) -> Self {
+        let u = self.upper_bound as f32;
+        let initial_raw = self.initial_value.map(|v| {
+            let v = v as f32;
+            match self.transform {
+                None => v as f64,
+                Some(t) => -(t.inverse_f32(-(v - u))) as f64,
+            }
+        });
+        Self {
+            upper_bound: u as f64,
+            transform: self.transform,
+            initial_value: self.initial_value.map(round_to_f32),
+            initial_raw,
+        }
+    }
+
+    /// The upper bound in actual space.
+    pub fn upper_bound(&self) -> f64 {
+        self.upper_bound
+    }
+
+    /// The transform (None means the constraint is not enforced).
+    pub fn transform_kind(&self) -> Option<ParameterTransform> {
+        self.transform
+    }
+
+    /// The initial value in actual space, if any.
+    pub fn initial_value(&self) -> Option<f64> {
+        self.initial_value
+    }
+
+    /// Whether the constraint is enforced through a transform.
+    pub fn enforced(&self) -> bool {
+        self.transform.is_some()
+    }
+
+    /// Maps a raw parameter value to the actual parameter value
+    /// (`-transform(-raw) + upper_bound`).
+    pub fn transform(&self, raw: f64) -> f64 {
+        match self.transform {
+            Some(t) => -t.apply(-raw) + self.upper_bound,
+            None => raw,
+        }
+    }
+
+    /// Derivative `d actual / d raw`.
+    pub fn transform_derivative(&self, raw: f64) -> f64 {
+        match self.transform {
+            Some(t) => t.derivative(-raw),
+            None => 1.0,
+        }
+    }
+
+    /// Maps an actual parameter value to the raw parameter value
+    /// (`-inverse(-(actual - upper_bound))`).
+    pub fn inverse_transform(&self, actual: f64) -> f64 {
+        match self.transform {
+            Some(t) => -t.inverse(-(actual - self.upper_bound)),
+            None => actual,
+        }
+    }
+
+    /// The raw initial value implied by [`LessThan::initial_value`].
+    pub fn initial_raw_value(&self) -> Option<f64> {
+        self.initial_raw
+    }
+
+    /// Bounds on the raw parameter used by the optimizer
+    /// (`get_parameters_and_bounds`): `(-inf, upper_bound)` if the
+    /// constraint is not enforced, `(-inf, inf)` otherwise.
+    pub fn raw_bounds(&self) -> (f64, f64) {
+        (
+            self.inverse_transform(f64::NEG_INFINITY),
+            self.inverse_transform(self.upper_bound),
+        )
+    }
+}
+
 /// A two-sided constraint (`gpytorch.constraints.Interval`):
 /// `lower_bound <= actual <= upper_bound`.
 ///
@@ -394,14 +514,22 @@ impl Interval {
     }
 }
 
-/// A parameter constraint: GPyTorch's `GreaterThan` / `Positive` or
-/// `Interval`.
+/// A parameter constraint: GPyTorch's `GreaterThan` / `Positive`,
+/// `LessThan` or `Interval`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Constraint {
     /// A lower bound (`GreaterThan`, `Positive`).
     GreaterThan(GreaterThan),
     /// Lower and upper bounds (`Interval`).
     Interval(Interval),
+    /// An upper bound (`LessThan`).
+    LessThan(LessThan),
+}
+
+impl From<LessThan> for Constraint {
+    fn from(c: LessThan) -> Self {
+        Constraint::LessThan(c)
+    }
 }
 
 impl From<GreaterThan> for Constraint {
@@ -427,14 +555,16 @@ impl Constraint {
         match self {
             Constraint::GreaterThan(c) => c.rounded_to_f32().into(),
             Constraint::Interval(c) => c.rounded_to_f32().into(),
+            Constraint::LessThan(c) => c.rounded_to_f32().into(),
         }
     }
 
-    /// The lower bound in actual space.
+    /// The lower bound in actual space (`-inf` for `LessThan`).
     pub fn lower_bound(&self) -> f64 {
         match self {
             Constraint::GreaterThan(c) => c.lower_bound(),
             Constraint::Interval(c) => c.lower_bound(),
+            Constraint::LessThan(_) => f64::NEG_INFINITY,
         }
     }
 
@@ -443,6 +573,7 @@ impl Constraint {
         match self {
             Constraint::GreaterThan(_) => f64::INFINITY,
             Constraint::Interval(c) => c.upper_bound(),
+            Constraint::LessThan(c) => c.upper_bound(),
         }
     }
 
@@ -451,6 +582,7 @@ impl Constraint {
         match self {
             Constraint::GreaterThan(c) => c.transform_kind(),
             Constraint::Interval(c) => c.transform_kind(),
+            Constraint::LessThan(c) => c.transform_kind(),
         }
     }
 
@@ -459,6 +591,7 @@ impl Constraint {
         match self {
             Constraint::GreaterThan(c) => c.initial_value(),
             Constraint::Interval(c) => c.initial_value(),
+            Constraint::LessThan(c) => c.initial_value(),
         }
     }
 
@@ -472,6 +605,7 @@ impl Constraint {
         match self {
             Constraint::GreaterThan(c) => c.transform(raw),
             Constraint::Interval(c) => c.transform(raw),
+            Constraint::LessThan(c) => c.transform(raw),
         }
     }
 
@@ -480,6 +614,7 @@ impl Constraint {
         match self {
             Constraint::GreaterThan(c) => c.transform_derivative(raw),
             Constraint::Interval(c) => c.transform_derivative(raw),
+            Constraint::LessThan(c) => c.transform_derivative(raw),
         }
     }
 
@@ -488,6 +623,7 @@ impl Constraint {
         match self {
             Constraint::GreaterThan(c) => c.inverse_transform(actual),
             Constraint::Interval(c) => c.inverse_transform(actual),
+            Constraint::LessThan(c) => c.inverse_transform(actual),
         }
     }
 
@@ -496,6 +632,7 @@ impl Constraint {
         match self {
             Constraint::GreaterThan(c) => c.initial_raw_value(),
             Constraint::Interval(c) => c.initial_raw_value(),
+            Constraint::LessThan(c) => c.initial_raw_value(),
         }
     }
 
@@ -505,6 +642,7 @@ impl Constraint {
         match self {
             Constraint::GreaterThan(c) => c.raw_bounds(),
             Constraint::Interval(c) => c.raw_bounds(),
+            Constraint::LessThan(c) => c.raw_bounds(),
         }
     }
 }
@@ -588,6 +726,32 @@ mod tests {
         assert_eq!(c.inverse_transform(0.7), 0.7);
         assert_eq!(c.raw_bounds(), (0.02500000037252903, f64::INFINITY));
         assert_eq!(c.initial_raw_value(), Some(0.3f32 as f64));
+    }
+
+    #[test]
+    fn less_than_roundtrip_bounds_and_initial_value() {
+        let c = LessThan::new(1.5, Some(ParameterTransform::Softplus), Some(0.2));
+        assert!(c.enforced());
+        assert_eq!(c.raw_bounds(), (f64::NEG_INFINITY, f64::INFINITY));
+        for &x in &[-8.0, -1.0, 0.0, 0.7, 5.0] {
+            let v = c.transform(x);
+            assert!(v < 1.5);
+            assert!((c.inverse_transform(v) - x).abs() < 1e-9 * (1.0 + f64::abs(x)));
+            let h = 1e-6;
+            let fd = (c.transform(x + h) - c.transform(x - h)) / (2.0 * h);
+            assert!((fd - c.transform_derivative(x)).abs() < 1e-8);
+        }
+        assert!((c.transform(c.initial_raw_value().unwrap()) - 0.2).abs() < 1e-12);
+        // GPyTorch: LessThan(1.5, initial_value=0.2).initial_value (float32).
+        let f = c.rounded_to_f32();
+        let y = -(0.2f32 - 1.5f32);
+        let expected = -(y + (-(-y).exp_m1()).ln());
+        assert_eq!(f.initial_raw_value(), Some(expected as f64));
+        let n: Constraint = LessThan::new(0.3, None, None).into();
+        assert_eq!(n.raw_bounds(), (f64::NEG_INFINITY, 0.3));
+        assert_eq!(n.lower_bound(), f64::NEG_INFINITY);
+        assert_eq!(n.upper_bound(), 0.3);
+        assert_eq!(n.transform(0.1), 0.1);
     }
 
     #[test]
