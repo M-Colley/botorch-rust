@@ -90,9 +90,13 @@ def test_bo_loop_steps_match_botorch() -> None:
       flat likelihood surfaces L-BFGS-B's relative-reduction stopping rule ends
       at round-off-dependent points).
     * Acquisition: with BoTorch's fitted hyperparameters, botorch_rs' LogEI
-      equals BoTorch's, and the best of four `optimize_acqf` runs is at least
-      as good as BoTorch's median run (LogEI is multimodal late in the loop, so
-      single runs of either library can end in different local maxima).
+      equals BoTorch's, and the best of eight `optimize_acqf` runs is at least
+      as good as BoTorch's median of eight runs. LogEI is multimodal late in
+      the loop, so single runs of either library can end in different local
+      maxima. If both libraries had the same distribution of outcomes, all
+      eight runs would fall below BoTorch's median with probability 1/256 per
+      check. With four runs it was 1/16, which made the trajectory's last bits
+      (the platform) decide.
     """
     importorskip_botorch()
     torch = pytest.importorskip("torch")
@@ -141,10 +145,10 @@ def test_bo_loop_steps_match_botorch() -> None:
                 bt_optimize_acqf(
                     a_bt, bounds, q=1, num_restarts=10, raw_samples=512, options={"seed": s}
                 )[1].item()
-                for s in range(4)
+                for s in range(8)
             ]
             rs_values = []
-            for s in range(4):
+            for s in range(8):
                 x, _ = optimize_acqf(
                     a_rs, bounds, q=1, num_restarts=10, raw_samples=512, options={"seed": s}
                 )

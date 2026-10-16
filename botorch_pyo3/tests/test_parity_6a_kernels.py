@@ -86,7 +86,7 @@ from botorch_rs.models import ModelListGP as RsModelListGP  # noqa: E402
 from botorch_rs.models import SingleTaskGP as RsSingleTaskGP  # noqa: E402
 from botorch_rs.sampling import SobolQMCNormalSampler as RsSampler  # noqa: E402
 from botorch_rs.sampling import pathwise as rs_pw  # noqa: E402
-from parity_helpers import Checker, rel_err  # noqa: E402
+from parity_helpers import Checker, perturbed_copy, rel_err  # noqa: E402
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
@@ -119,10 +119,10 @@ def _grad_err(a: Any, e: Any) -> float:
     return (a - e).abs().max().item() / scale
 
 
-def check_grad(quantity: str, a: Any, e: Any) -> None:
+def check_grad(quantity: str, a: Any, e: Any, tol: float = GRAD_TOL) -> None:
     err = _grad_err(a, e)
-    CHECK.record(quantity, err, GRAD_TOL)
-    assert err <= GRAD_TOL, (quantity, err)
+    CHECK.record(quantity, err, tol)
+    assert err <= tol, (quantity, err)
 
 
 # ---------------------------------------------------------------------------
@@ -988,20 +988,32 @@ PATH_MODELS: dict[str, tuple[dict[str, Any], int]] = {
 }
 
 
+def _bt_matheron_paths(model: Any, noises: list[Any] | None = None) -> Any:
+    """BoTorch's Matheron paths of ``model`` with the draws of seed 63
+    (recorded in ``noises``)."""
+    torch.manual_seed(63)
+    with recorded_randn(noises) if noises is not None else contextlib.nullcontext():
+        return bt_pw.draw_matheron_paths(
+            model,
+            torch.Size([3]),
+            prior_sampler=functools.partial(bt_pw.draw_kernel_feature_paths, num_features=FEATURES),
+        )
+
+
 @pytest.mark.parametrize("name", list(PATH_MODELS))
 def test_matheron_paths_match_botorch(name: str) -> None:
+    """Path values and gradients with BoTorch's draws. The Matheron update
+    solves with the training covariance, which is ill-conditioned for the
+    non-smooth Matérn-1/2 kernel: BoTorch's own paths change by a median of
+    2e-9 when the training inputs are perturbed at 1e-14 .. 1e-11 (the other
+    kernels: below 3e-12), so the tolerances are at least 10 times BoTorch's
+    median change on 8 such twins."""
     spec, d = PATH_MODELS[name]
     bt, rs, X, _ = model_pair(spec, d, {}, 61)
     randomize_model(bt, rs, 62)
     bt.eval()
-    torch.manual_seed(63)
     noises: list[Any] = []
-    with recorded_randn(noises):
-        bp = bt_pw.draw_matheron_paths(
-            bt,
-            torch.Size([3]),
-            prior_sampler=functools.partial(bt_pw.draw_kernel_feature_paths, num_features=FEATURES),
-        )
+    bp = _bt_matheron_paths(bt, noises)
     rp = rs_pw.draw_matheron_paths(
         rs,
         torch.Size([3]),
@@ -1009,12 +1021,26 @@ def test_matheron_paths_match_botorch(name: str) -> None:
         draws=bt_path_draws(bp, noises),
     )
     Xt = _data(d, 5, 64, {})[0]
-    CHECK.check("Matheron paths: values", rp(Xt), bp(Xt).detach(), VALUE_TOL)
     Xb = Xt.clone().requires_grad_(True)
     (gb,) = torch.autograd.grad(bp(Xb).sum(), Xb)
+    floor_v, floor_g = [], []
+    for k_ in range(1, 9):
+        twin = perturbed_copy(bt, seed=k_, rel=(1e-14, 1e-13, 1e-12, 1e-11)[(k_ - 1) % 4])
+        twin.eval()
+        tp = _bt_matheron_paths(twin)
+        floor_v.append(rel_err(tp(Xt).detach(), bp(Xt).detach()))
+        Xk = Xt.clone().requires_grad_(True)
+        (gk,) = torch.autograd.grad(tp(Xk).sum(), Xk)
+        floor_g.append(_grad_err(gk, gb))
+    tol_v = max(VALUE_TOL, 10 * statistics.median(floor_v))
+    tol_g = max(GRAD_TOL, 10 * statistics.median(floor_g))
+    CHECK.record(
+        "Matheron paths: BoTorch's median change on twins, values", statistics.median(floor_v), None
+    )
+    CHECK.check("Matheron paths: values", rp(Xt), bp(Xt).detach(), tol_v)
     Xr = Xt.clone().requires_grad_(True)
     (gr,) = torch.autograd.grad(rp(Xr).sum(), Xr)
-    check_grad("Matheron paths: gradients", gr, gb)
+    check_grad("Matheron paths: gradients", gr, gb, tol_g)
     torch.manual_seed(65)
     bq = bt_pw.draw_kernel_feature_paths(bt, torch.Size([2]), num_features=FEATURES)
     rq = rs_pw.draw_kernel_feature_paths(
