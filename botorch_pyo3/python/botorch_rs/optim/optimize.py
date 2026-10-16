@@ -32,7 +32,7 @@ _INT_OPTIONS = {
     "maxls",
     "n_burnin",
     "n_thinning",
-    # The one-shot initial conditions (gen_one_shot_hvkg_initial_conditions).
+    # The one-shot initial conditions (gen_one_shot_(hv)kg_initial_conditions).
     "num_inner_restarts",
     "raw_inner_samples",
 }
@@ -179,11 +179,12 @@ def optimize_acqf(
     ``n_thinning`` (32), and the one-shot initial conditions'
     ``frac_random``, ``num_inner_restarts`` and ``raw_inner_samples``.
 
-    One-shot acquisition functions (``qHypervolumeKnowledgeGradient``) are
+    One-shot acquisition functions (``qKnowledgeGradient``,
+    ``qHypervolumeKnowledgeGradient`` and their multi-fidelity variants) are
     optimized over augmented candidate sets (``get_augmented_q_batch_size``),
-    starting by default from ``gen_one_shot_hvkg_initial_conditions``; the
-    candidates are extracted (``extract_candidates``) unless
-    ``return_full_tree=True``.
+    starting by default from ``gen_one_shot_kg_initial_conditions`` /
+    ``gen_one_shot_hvkg_initial_conditions``; the candidates are extracted
+    (``extract_candidates``) unless ``return_full_tree=True``.
 
     Returns:
         ``(candidates, acq_value)``: a ``q x d`` candidate set (``num_restarts x
@@ -206,8 +207,11 @@ def optimize_acqf(
     from botorch_rs.optim import initializers
 
     one_shot = isinstance(acq_function, OneShotAcquisitionFunction)
-    if one_shot and ic_generator is initializers.gen_one_shot_hvkg_initial_conditions:
-        # The default of one-shot acquisition functions, generated natively.
+    if one_shot and ic_generator in (
+        initializers.gen_one_shot_hvkg_initial_conditions,
+        initializers.gen_one_shot_kg_initial_conditions,
+    ):
+        # The defaults of one-shot acquisition functions, generated natively.
         ic_generator = None
     native_generator = ic_generator is initializers.gen_batch_initial_conditions
     if ic_gen_kwargs and (ic_generator is None or native_generator):

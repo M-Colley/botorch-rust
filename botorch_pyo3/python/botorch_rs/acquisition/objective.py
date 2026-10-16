@@ -367,13 +367,21 @@ def objective_arg(objective: Any) -> tuple[Any, ...] | None:
             spec = ("linear", _floats(objective.weights, "weights"))
         elif name == "IdentityMCObjective":
             spec = ("identity",)
+        elif name == "PenalizedMCObjective" and getattr(objective, "expand_dim", None) is None:
+            from botorch_rs.acquisition.penalized import penalized_objective_spec
+
+            spec = penalized_objective_spec(
+                objective.objective,
+                objective.penalty_objective,
+                objective.regularization_parameter,
+            )
         else:
             from botorch_rs.acquisition.risk_measures import risk_measure_from_botorch
 
             # BoTorch's risk measures are computed in Rust.
             native = risk_measure_from_botorch(objective)
             spec = ("callable", objective) if native is None else native._spec()
-    if spec[0] in ("callable", "constrained"):
+    if spec[0] in ("callable", "constrained", "penalized"):
         from botorch_rs._torch_bridge import require_torch
 
         require_torch()

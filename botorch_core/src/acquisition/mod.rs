@@ -59,43 +59,80 @@ use crate::error::{BotorchError, Result};
 use crate::models::Model;
 use crate::Matrix;
 
+pub mod active_learning;
 pub mod analytic;
 pub mod composite;
 pub mod cost_aware;
+pub(crate) mod dual;
 pub mod fidelity;
+pub mod joint_entropy_search;
+pub mod knowledge_gradient;
 pub mod logei;
+pub mod max_value_entropy_search;
 pub mod mc_objective;
 pub mod monte_carlo;
 pub mod multi_objective;
 pub mod multioutput_acquisition;
 pub mod objective;
 pub mod one_shot;
+pub mod optimal_samples;
+pub mod penalized;
+pub mod predictive_entropy_search;
 pub mod risk_measures;
+pub mod thompson_sampling;
 pub mod utils;
+pub mod wrappers;
 
+pub use active_learning::QNegIntegratedPosteriorVariance;
 pub use analytic::{
     ConstrainedExpectedImprovement, ExpectedImprovement, LogConstrainedExpectedImprovement,
-    LogExpectedImprovement, LogProbabilityOfImprovement, OutputConstraint, PosteriorMean,
-    PosteriorStandardDeviation, ProbabilityOfImprovement, UpperConfidenceBound,
+    LogExpectedImprovement, LogNoisyExpectedImprovement, LogProbabilityOfFeasibility,
+    LogProbabilityOfImprovement, NoisyExpectedImprovement, OutputConstraint, PosteriorMean,
+    PosteriorStandardDeviation, ProbabilityOfImprovement, QAnalyticProbabilityOfImprovement,
+    ScalarizedPosteriorMean, UpperConfidenceBound,
 };
 pub use composite::WeightedLogMeanExp;
+pub use joint_entropy_search::{
+    JesEstimationType, QJointEntropySearch, QJointEntropySearchOptions,
+};
+pub use knowledge_gradient::{
+    KgValueFunction, ProjectedAcquisitionFunction, QKnowledgeGradient, QKnowledgeGradientOptions,
+    QMultiFidelityKnowledgeGradient, QMultiFidelityKnowledgeGradientOptions,
+};
 pub use logei::{
     QLogExpectedImprovement, QLogExpectedImprovementOptions, QLogNoisyExpectedImprovement,
     QLogNoisyExpectedImprovementOptions, QLogProbabilityOfFeasibility,
     QLogProbabilityOfFeasibilityOptions,
+};
+pub use max_value_entropy_search::{
+    MaxValueEntropyOptions, MultiFidelityMaxValueEntropyOptions, QLowerBoundMaxValueEntropy,
+    QMaxValueEntropy, QMultiFidelityLowerBoundMaxValueEntropy, QMultiFidelityMaxValueEntropy,
 };
 pub use mc_objective::{
     ConstrainedMcObjective, GenericMcObjective, IdentityMcObjective, LinearMcObjective,
     McObjective, McSamples, SamplePullback, SampleValues,
 };
 pub use monte_carlo::{
-    McAcquisitionOptions, QExpectedImprovement, QProbabilityOfImprovement, QSimpleRegret,
-    QUpperConfidenceBound,
+    McAcquisitionOptions, QExpectedImprovement, QLowerConfidenceBound, QNoisyExpectedImprovement,
+    QNoisyExpectedImprovementOptions, QPosteriorStandardDeviation, QProbabilityOfImprovement,
+    QSimpleRegret, QUpperConfidenceBound, SampleUtility,
 };
 pub use objective::{ScalarizedModel, ScalarizedPosteriorTransform};
+pub use optimal_samples::{get_optimal_samples, OptimalSamplesOptions, SampleTransform};
+pub use penalized::{
+    GaussianPenalty, GroupLassoPenalty, L0Approximation, L0PenaltyApprox, L0PenaltyApproxObjective,
+    L1Penalty, L1PenaltyObjective, L2Penalty, PenalizedAcquisitionFunction, PenalizedMcObjective,
+    Penalty, PointPenalty,
+};
+pub use predictive_entropy_search::QPredictiveEntropySearch;
+pub use thompson_sampling::{PathwiseThompsonSampling, PathwiseThompsonSamplingOptions};
 pub use utils::{
     compute_best_feasible_objective, estimate_objective_lower_bound, get_infeasible_cost,
     prune_inferior_points, prune_inferior_points_indices, PruneOptions,
+};
+pub use wrappers::{
+    FixedFeatureAcquisitionFunction, PriorGuidedAcquisitionFunction, PriorModule,
+    ProximalAcquisitionFunction,
 };
 
 /// An acquisition function `α(X)` over candidate sets `X` (`q × d`, raw input
@@ -178,6 +215,41 @@ pub trait AcquisitionFunction: Send + Sync + Debug {
     fn as_one_shot(&self) -> Option<&dyn one_shot::OneShotAcquisitionFunction> {
         None
     }
+
+    /// The interface of sample-reducing Monte-Carlo acquisition functions
+    /// (BoTorch's `SampleReducingMCAcquisitionFunction`), which
+    /// [`prior_guided::PriorGuidedAcquisitionFunction`] uses to weight the
+    /// utilities of every point; `None` for all others.
+    fn as_sample_reducing(&self) -> Option<&dyn SampleReducing> {
+        None
+    }
+}
+
+/// The value of a [`SampleReducing`] acquisition function with point
+/// weights and, with gradients, its gradient with respect to the candidates
+/// and the adjoints of the weights.
+pub type WeightedEvaluation = (f64, Option<(Matrix, Vec<f64>)>);
+
+/// A Monte-Carlo acquisition function whose value reduces per-sample,
+/// per-point utilities over the points and the samples (BoTorch's
+/// `SampleReducingMCAcquisitionFunction`).
+pub trait SampleReducing: Send + Sync {
+    /// The value with the utilities of every point (row of `[X; X_pending]`)
+    /// multiplied by `weights` (added to them for log utilities) and, with
+    /// gradients, the gradients with respect to `x` and to the weights.
+    ///
+    /// # Errors
+    /// The errors of [`AcquisitionFunction::forward`] and a
+    /// [`BotorchError::DimensionMismatch`] for a wrong number of weights.
+    fn evaluate_weighted(
+        &self,
+        x: &Matrix,
+        weights: &[f64],
+        with_grad: bool,
+    ) -> Result<WeightedEvaluation>;
+
+    /// Whether the utilities are on a log scale (BoTorch's `_log`).
+    fn log_utilities(&self) -> bool;
 }
 
 /// Checks that `model` is unbatched and has a single output (`message` is

@@ -224,6 +224,57 @@ impl InputProjection for TargetFidelityProjection {
     }
 }
 
+/// [`expand_trace_observations`] as a map of candidate sets (BoTorch's
+/// `expand` argument of `qMultiFidelityKnowledgeGradient`, typically
+/// `lambda X: expand_trace_observations(X, fidelity_dims, num_trace_obs)`):
+/// `q` points become `q (1 + num_trace_obs)` points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TraceObservationExpansion {
+    fidelity_dims: Option<Vec<isize>>,
+    num_trace_obs: usize,
+}
+
+impl TraceObservationExpansion {
+    /// The expansion with `num_trace_obs` trace observations whose fidelity
+    /// columns `fidelity_dims` (default: the last column) are scaled.
+    pub fn new(fidelity_dims: Option<Vec<isize>>, num_trace_obs: usize) -> Self {
+        Self {
+            fidelity_dims,
+            num_trace_obs,
+        }
+    }
+}
+
+impl InputProjection for TraceObservationExpansion {
+    fn project(&self, x: &Matrix) -> Result<Matrix> {
+        expand_trace_observations(x, self.fidelity_dims.as_deref(), self.num_trace_obs)
+    }
+
+    fn backward(&self, x: &Matrix, out_bar: &Matrix) -> Result<Matrix> {
+        let (q, d) = x.shape();
+        let k = self.num_trace_obs;
+        if out_bar.shape() != (q * (1 + k), d) {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "expected an adjoint of shape {}x{d}, got {}x{}",
+                q * (1 + k),
+                out_bar.nrows(),
+                out_bar.ncols()
+            )));
+        }
+        // The expansion is linear: the adjoint of x is the expansion of a
+        // matrix of ones applied to the adjoint, row by row.
+        let ones = Matrix::from_element(q, d, 1.0);
+        let scale = expand_trace_observations(&ones, self.fidelity_dims.as_deref(), k)?;
+        let mut out = Matrix::zeros(q, d);
+        for r in 0..q * (1 + k) {
+            for c in 0..d {
+                out[(r % q, c)] += scale[(r, c)] * out_bar[(r, c)];
+            }
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

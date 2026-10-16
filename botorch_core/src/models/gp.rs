@@ -36,6 +36,7 @@ use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
 use crate::{Matrix, Vector};
 
 mod conditioning;
+mod noiseless_fantasy;
 
 pub(crate) use conditioning::{FantasyAdjoint, FantasyGp, FantasyPosterior};
 
