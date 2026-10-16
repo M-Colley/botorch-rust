@@ -233,9 +233,31 @@ counterpart.
 | `botorch.models.multitask.MultiTaskGP` | same path | only as the base class of `LCEMGP` (task feature, task values and their validation, `get_all_tasks`); creating a `MultiTaskGP` raises `UnsupportedError` |
 | `botorch.models.transforms.Normalize`, `Standardize` | `botorch_rs.models.transforms.Normalize`, `Standardize` | learned or fixed bounds over all inputs, `center=0.5`; `Standardize(m, batch_shape)`, `Normalize(d, batch_shape)` / batched bounds (single-output batched models) |
 | `botorch.models.utils.gpytorch_modules.*` | `botorch_rs.models.utils.gpytorch_modules.*` | BoTorch's default (dimension-scaled LogNormal) and legacy (Gamma) priors |
-| `gpytorch.kernels.RBFKernel`, `MaternKernel(nu=2.5)`, `ScaleKernel` | `botorch_rs.kernels.*` | ARD kernels |
+| `gpytorch.kernels.RBFKernel` | `botorch_rs.kernels.RBFKernel` | ARD or a shared lengthscale, `active_dims`, `batch_shape`, any constraint / prior |
+| `gpytorch.kernels.MaternKernel` | `botorch_rs.kernels.MaternKernel` | `nu` = 0.5, 1.5, 2.5 |
+| `gpytorch.kernels.RQKernel` | `botorch_rs.kernels.RQKernel` | `alpha_constraint` |
+| `gpytorch.kernels.PeriodicKernel` | `botorch_rs.kernels.PeriodicKernel` | ARD lengthscales and period lengths |
+| `gpytorch.kernels.LinearKernel` | `botorch_rs.kernels.LinearKernel` | `variance` per dimension with `ard_num_dims` |
+| `gpytorch.kernels.PolynomialKernel` | `botorch_rs.kernels.PolynomialKernel` | any `power` |
+| `gpytorch.kernels.CosineKernel` | `botorch_rs.kernels.CosineKernel` | |
+| `gpytorch.kernels.IndexKernel` | `botorch_rs.kernels.IndexKernel` | `rank`, `prior` (any univariate prior or `LKJCovariancePrior`); random `covar_factor` from torch's generator |
+| `gpytorch.kernels.ScaleKernel` | `botorch_rs.kernels.ScaleKernel` | around any kernel |
+| `gpytorch.kernels.AdditiveKernel`, `ProductKernel`, `k1 + k2`, `k1 * k2` | same names in `botorch_rs.kernels` | flattened like GPyTorch's `__add__` / `__mul__` |
+| `gpytorch.kernels.Kernel.__call__` | `Kernel.__call__` | `k(x1, x2)`, `k(x1)`, `diag=True`; dense arrays of `x1`'s type |
+| `botorch.models.kernels.CategoricalKernel` | `botorch_rs.models.kernels.CategoricalKernel` | |
+| `botorch.models.kernels.DownsamplingKernel` | `botorch_rs.models.kernels.DownsamplingKernel` | `diag=True` deviates for several inputs (bug below) |
+| `botorch.models.kernels.ExponentialDecayKernel` | `botorch_rs.models.kernels.ExponentialDecayKernel` | |
+| `botorch.models.kernels.InfiniteWidthBNNKernel` | `botorch_rs.models.kernels.InfiniteWidthBNNKernel` | |
+| `botorch.models.kernels.LinearTruncatedFidelityKernel` | `botorch_rs.models.kernels.LinearTruncatedFidelityKernel` | one or two fidelity dimensions, `nu` |
+| `botorch.models.kernels.OrthogonalAdditiveKernel`, `leggauss` | `botorch_rs.models.kernels.OrthogonalAdditiveKernel`, `...orthogonal_additive_kernel.leggauss` | first and second order, `check_hypercube`, shared or per-dimension lengthscales |
+| `botorch.models.kernels.PositiveIndexKernel` | `botorch_rs.models.kernels.PositiveIndexKernel` | `task_prior` on the correlations |
 | `gpytorch.priors.LogNormalPrior`, `GammaPrior` | `botorch_rs.priors.*` | |
 | `gpytorch.constraints.GreaterThan`, `Positive`, `Interval` | `botorch_rs.constraints.*` | softplus, sigmoid or no transform; `Interval(lower_bound, upper_bound, transform, inv_transform, initial_value)` as in GPyTorch (bounds and raw initial values in float32; with `transform=None` the value is the raw parameter, kept in `[l, u]` by `fit_gpytorch_mll`'s L-BFGS-B bounds); usable as lengthscale, outputscale and noise constraints. `GreaterThan` and `Positive` are subclasses of `Interval`, as in GPyTorch |
+| `gpytorch.priors.NormalPrior`, `UniformPrior`, `HalfCauchyPrior`, `HalfNormalPrior` | `botorch_rs.priors.*` | parameters in torch's default dtype, like GPyTorch |
+| `gpytorch.priors.LKJPrior`, `LKJCholeskyFactorPrior`, `LKJCovariancePrior` | `botorch_rs.priors.*` | `LKJCovariancePrior` as `IndexKernel(prior=...)` |
+| `botorch.models.utils.priors.BetaPrior` | `botorch_rs.models.utils.priors.BetaPrior` | |
+| `gpytorch.constraints.LessThan` | `botorch_rs.constraints.LessThan` | softplus or `transform=None` (optimizer bound) |
+| `draw_matheron_paths`, `draw_kernel_feature_paths` with kernel trees | `botorch_rs.sampling.pathwise.*` | RBF and Matérn (any ν) with ARD or a shared lengthscale and `active_dims`, with or without `ScaleKernel`: the kernels BoTorch's pathwise sampling supports; others raise `NotImplementedError` like BoTorch |
 | `gpytorch.likelihoods.GaussianLikelihood`, `gpytorch.means.ConstantMean` | `botorch_rs.likelihoods.*`, `botorch_rs.means.*` | |
 | `gpytorch.likelihoods.HadamardGaussianLikelihood`, `gpytorch.means.MultitaskMean` | `botorch_rs.likelihoods.*`, `botorch_rs.means.*` | the per-task noise and means of an `LCEMGP` (`likelihood.noise`, `mean_module.base_means[t].constant`); not constructible on their own |
 | `gpytorch.mlls.ExactMarginalLogLikelihood`, `SumMarginalLogLikelihood` | `botorch_rs.mlls.*` | `mll()` evaluates it on the training data (one value per output and batch element; the sum over a `ModelListGP`'s sub-models divided by their number) |
@@ -322,8 +344,8 @@ Everything else in BoTorch is not ported yet: see
 ## What is not ported yet
 
 botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **262 of the 776
-public classes and functions** defined in BoTorch's modules (34%; BoTorch main
+processes, which is a small part of BoTorch: it provides **271 of the 776
+public classes and functions** defined in BoTorch's modules (35%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
 [docs/api_coverage.md](docs/api_coverage.md); [docs/roadmap.md](docs/roadmap.md)
@@ -355,11 +377,15 @@ orders the remaining work toward a full port. The main gaps:
     `fantasize`;
   - autograd through models (acquisition values do support `torch.autograd`
     with respect to their inputs);
-  - kernels other than RBF, Matérn-5/2 and `ScaleKernel`, including BoTorch's
-    own kernels for categorical inputs, fidelities and additive structure;
-  - priors other than LogNormal and Gamma, constraints other than
-    `GreaterThan`, `Positive` and `Interval` (`LessThan`), and likelihoods
-    other than Gaussian (and `LCEMGP`'s per-task noise);
+  - the kernels of later model phases (`IntegratedWhiteNoiseKernel`,
+    `LCEAKernel`, `SACKernel`, the heterogeneous multi-task kernels), other
+    GPyTorch kernels (spectral mixture, piecewise polynomial, grid and
+    inducing-point kernels), `last_dim_is_batch`, and kernel trees in models
+    other than `SingleTaskGP` / `ModelListGP` (see
+    [docs/kernels-and-priors.md](docs/kernels-and-priors.md));
+  - the priors `SmoothedBoxPrior`, `MultivariateNormalPrior` and
+    `HorseshoePrior`, prior transforms, and likelihoods other than Gaussian
+    (and `LCEMGP`'s per-task noise);
   - input transforms other than `Normalize`, `InputPerturbation` and their
     chains (`InputStandardize`, `Warp`, `Round`, `AppendFeatures`, ...), and
     `InputPerturbation` in train or fantasize mode;
@@ -409,7 +435,7 @@ orders the remaining work toward a full port. The main gaps:
     `StochasticSampler` (for deterministic models)
     (`IIDNormalSampler`, `StochasticSampler`, ...);
   - pathwise sampling of approximate GPs, ensembles and batched models,
-    and with kernels other than RBF and Matérn-5/2;
+    and with kernels other than RBF and Matérn (as in BoTorch);
   - most of `botorch.utils`: probability (bivariate and truncated
     multivariate normal, elliptical slice sampling), low-rank and dataset
     utilities;
@@ -434,10 +460,10 @@ orders the remaining work toward a full port. The main gaps:
 | `models` | 66 | 11 | 17% |
 | `models.empirical_gps` | 36 | 0 | 0% |
 | `models.hierarchical` | 6 | 0 | 0% |
-| `models.kernels` | 19 | 0 | 0% |
+| `models.kernels` | 19 | 8 | 42% |
 | `models.likelihoods` | 5 | 0 | 0% |
 | `models.transforms` | 35 | 6 | 17% |
-| `models.utils` | 26 | 4 | 15% |
+| `models.utils` | 26 | 5 | 19% |
 | `optim` | 58 | 8 | 14% |
 | `optim.closures` | 5 | 0 | 0% |
 | `optim.utils` | 14 | 0 | 0% |
@@ -450,7 +476,7 @@ orders the remaining work toward a full port. The main gaps:
 | `utils` | 97 | 10 | 10% |
 | `utils.multi_objective` | 25 | 20 | 80% |
 | `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **776** | **262** | **34%** |
+| **all of `botorch`** | **776** | **271** | **35%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -931,6 +957,36 @@ all p ≥ 0.23). On 30 fixed data sets per case, BoTorch's own qLogNEI rates
 botorch-rust's suggestions within the spread of BoTorch's suggestions with
 another torch seed.
 
+### Kernels, priors and constraints
+
+**Where the tests are:**
+- Rust fixtures in `botorch_core/tests/kernels_6a_parity.rs`
+  (`--phase 6a-kernels`, 28 models).
+- Live Python tests in `test_parity_6a_kernels.py`, covering every kernel class
+  and 25 models.
+- A randomized sweep over 40 random kernel trees (`-m equivalence`).
+
+Every kernel, prior and constraint is compared with BoTorch and GPyTorch:
+
+| Quantity | Worst error, fixtures | Worst error, live |
+|---|---|---|
+| MLL | 8.0e-14 | — |
+| MLL gradients for every raw parameter | 1.1e-13 | 4.8e-14 |
+| Posteriors | 6.9e-14 | 6.1e-14 |
+| Input gradients (acquisition functions in the live tests) | 3.9e-14 | 3.2e-14 |
+| Kernel values | — | 3.9e-16 |
+| Matheron paths | — | 7.0e-15 |
+| Priors | — | 2.5e-15 |
+
+The sweep's worst error is 4.1e-13.
+
+Fits are compared with BoTorch's outcomes on 16 perturbed twins. The largest
+scaled error is 0.058 (tolerance 1).
+
+The default `SingleTaskGP` modules stay bitwise identical.
+[docs/kernels-and-priors.md](docs/kernels-and-priors.md) has the full tables
+and nine BoTorch / GPyTorch bugs found.
+
 ### Single-objective acquisition functions
 
 **Where the tests are:**
@@ -1167,6 +1223,23 @@ The model fits alone are 140–550× faster.
 
 ## Migration notes and known differences
 
+- **Kernels and priors.**
+  - Kernel calls return dense arrays of the input's type, not
+    `LinearOperator`s.
+  - A kernel object used twice in a tree raises `UnsupportedError`.
+  - Dimension and task-index mismatches raise `RuntimeError`, as torch does.
+  - `IndexKernel` / `PositiveIndexKernel` draw their initial values from
+    torch's generator.
+  - Where BoTorch or GPyTorch are wrong, botorch-rust has the correct
+    behaviour:
+    - `OrthogonalAdditiveKernel`'s second-order prior;
+    - `LKJCovariancePrior`'s density;
+    - `DownsamplingKernel` with `diag=True`;
+    - double precision for `HalfCauchyPrior` and the LKJ normalizing
+      constants.
+
+  See
+  [docs/kernels-and-priors.md](docs/kernels-and-priors.md#deviations-from-botorch-migration-notes).
 - **Single-objective acquisition functions.** Where BoTorch is wrong,
   botorch-rust has the correct behaviour:
   - exact gradients of qKG / qMFKG with MC objectives,
@@ -1524,6 +1597,7 @@ Other scripts:
     meta-pytorch/botorch#3392);
   - `--phase 5d-deterministic`: deterministic models and composite
     acquisition functions (openbo's MO-TAF);
+  - `--phase 6a-kernels`: kernel trees, kernels, priors and constraints;
   - `--phase 8-so-acquisition`: the single-objective acquisition functions;
   - `--phase unity-lcemgp`: `LCEMGP`, the Unity project's
     `ProvidedEmbeddingLCEMGP` and the `Interval` constraint.
