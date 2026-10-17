@@ -1,4 +1,8 @@
-# Phase 6b: input and outcome transforms
+# Input and outcome transforms
+
+The port of BoTorch's input and outcome transforms (roadmap phase 6b): the
+supported API, the deviations from BoTorch, the equivalence results and the
+BoTorch bugs found. Reference: BoTorch main at da00e0401 and BoTorch 0.18.1.
 
 This phase ports BoTorch's input and outcome transforms
 (`botorch.models.transforms.input`, `.outcome`, `.utils`, `.factory`) and
@@ -23,7 +27,7 @@ log-normal moments. The existing `Normalize` / `Standardize` /
 bitwise-unchanged code paths: plain `Normalize`, `Standardize` and
 `InputPerturbation` use the original implementations).
 
-## Supported API (rows for the README table)
+## Supported API
 
 | BoTorch | botorch_rs | Notes |
 |---|---|---|
@@ -52,7 +56,7 @@ bitwise-unchanged code paths: plain `Normalize`, `Standardize` and
 | `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`, `get_map_saas_model`, `AdditiveMapSaasSingleTaskGP`, `OrthogonalAdditiveGP` (phase 7b) with input and outcome transforms | same | every transform above (they are `SingleTaskGP`s in both libraries), e.g. `Warp` on the non-fidelity inputs, `Normalize(indices)` on the continuous inputs of a mixed model, `Log` / `Bilog` / `Power` outcomes; `subset_output` subsets general outcome transforms as BoTorch (`outcome_transform.subset_output`) |
 | `ModelListGP` and `ModelList` with transformed sub-models | same | posterior a `PosteriorList` (as BoTorch) when a sub-model has a nonlinear outcome transform; `ScalarizedPosteriorTransform` moment-matches at `q = 1` (BoTorch's `scalarize_posterior` of a `PosteriorList`); Monte-Carlo acquisition functions sample every sub-model |
 
-## Unported / unsupported (with BoTorch's behaviour)
+## What remains unported (in this area)
 
 - `Warp` with `reverse=True` in a model (BoTorch: inverse warping of the
   training inputs) raises `UnsupportedError`; stand-alone `untransform`
@@ -94,7 +98,7 @@ bitwise-unchanged code paths: plain `Normalize`, `Standardize` and
   fails with an `AttributeError`: a `TransformedPosterior` has no
   `distribution` for the `GaussianMixturePosterior`).
 
-## Deviations (migration notes)
+## Deviations from BoTorch (migration notes)
 
 - `ScalarizedPosteriorTransform` on the posterior of a single model with a
   nonlinear outcome transform raises BoTorch's message as an
@@ -248,7 +252,7 @@ exceptions and messages; runs without torch and BoTorch).
    per-input statistics (main; fixed by #3389). botorch_rs computes the
    per-point affine maps.
 5. **Conditioning a model with `StratifiedStandardize` uses the raw inputs**
-   (main and 0.18.1; not yet reported).
+   (main and 0.18.1; fixed by meta-pytorch/botorch#3449).
    `BatchedMultiOutputGPyTorchModel.condition_on_observations` calls
    `self.outcome_transform(Y, X=X)` before the input transform, while the
    model fits the transform on the transformed training inputs and
@@ -270,7 +274,7 @@ exceptions and messages; runs without torch and BoTorch).
    botorch_rs uses the transformed inputs throughout
    (`test_stratified_conditioning_uses_the_transformed_inputs`).
 6. **`fit_gpytorch_mll` fails on multi-output models with a `Warp`**
-   (main and 0.18.1; not yet reported). The concentrations (shape `(k,)`)
+   (main and 0.18.1; fixed by meta-pytorch/botorch#3393). The concentrations (shape `(k,)`)
    are shared by the outputs, but the batched fit of a multi-output model
    reshapes every parameter to the model's batch shape:
    ```python

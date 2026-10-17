@@ -237,7 +237,6 @@ counterpart.
 | `gpytorch.kernels.MultitaskKernel` | `botorch_rs.kernels.MultitaskKernel` | The covariance module of `KroneckerMultiTaskGP` (evaluable stand-alone on unbatched inputs). |
 | `gpytorch.priors.SmoothedBoxPrior` | `botorch_rs.priors.SmoothedBoxPrior` | Scalar `a`, `b`, `sigma`. |
 | `PositiveIndexKernel(task_prior=LKJCovariancePrior)` | same | An LKJ prior on the task covariance matrix. |
-| `Normalize(indices=...)` | same | Only the given columns (as BoTorch); for `MultiTaskGP` (a `SingleTaskGP` / transform chain with `indices` raises `UnsupportedError`). |
 | `botorch.models.SingleTaskMultiFidelityGP` | same path (also `botorch_rs.models`) | `data_fidelities`, `iteration_fidelity`, `linear_truncated` (`LinearTruncatedFidelityKernel` with `nu`) or `False` (`ExponentialDecayKernel` × `DownsamplingKernel`s × base kernel), custom `covar_module`, `train_Yvar`, `m ≥ 1` outputs, `Normalize`, `Standardize`; `construct_inputs(training_data, fidelity_features)`; `subset_output`; fits, posteriors, conditioning and fantasies as for `SingleTaskGP`; `qMultiFidelityKnowledgeGradient`, `qMultiFidelityMaxValueEntropy` / `qMultiFidelityLowerBoundMaxValueEntropy` and `qMultiFidelityHypervolumeKnowledgeGradient` on it |
 | `botorch.models.MixedSingleTaskGP` | same path (also `botorch_rs.models`) | `cat_dims` (negative indices too), `cont_kernel_factory`, BoTorch's kernel `ScaleKernel(K_cont + ScaleKernel(K_cat)) + ScaleKernel(K_cont · K_cat)` (or `ScaleKernel(K_cat)` for an all-categorical space), `CategoricalKernel` with `GreaterThan(1e-6)` lengthscales, `train_Yvar`, `m ≥ 1`; `construct_inputs(training_data, categorical_features)`; `optimize_acqf_mixed` and `optimize_acqf_mixed_alternating` |
 | `botorch.models.map_saas.get_map_saas_model`, `add_saas_prior`, `SaasPriorHelper`, `get_additive_map_saas_covar_module`, `get_mean_module_with_normal_prior`, `get_gaussian_likelihood_with_gamma_prior` | `botorch_rs.models.map_saas.*` (`add_saas_prior` also in `botorch_rs.models`) | half-Cauchy SAAS prior on `tau / lengthscale²`, fixed `tau` (float or tensor; a Python float is stored in float32, as in BoTorch) or learned `raw_tau` (`LogTransformedInterval(1e-3, 10, initial_value=0.1)` with `HalfCauchyPrior(0.1)`), BoTorch's `EPS = 1e-8` clamps; `NormalPrior(0, 1)` constant mean, `GammaPrior(0.9, 10)` noise with `LogTransformedInterval(1e-4, 1, initial_value=1e-2)` |
@@ -252,7 +251,29 @@ counterpart.
 | `Model.subset_output`, `Model.construct_inputs` | same names | `subset_output` for `SingleTaskGP` (any covariance module), `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`, the MAP SAAS models, `ModelListGP`, `ModelList`, the deterministic models; `construct_inputs` for every model above with BoTorch's or botorch_rs's `SupervisedDataset` |
 | `botorch.utils.datasets.SupervisedDataset` | same path | `X`, `Y`, `Yvar`, names, validation, `clone`, equality |
 | `botorch.models.additive_gp.OrthogonalAdditiveGP` | same path (not exported from `botorch_rs.models`, as in BoTorch) | `SingleTaskGP` with an `OrthogonalAdditiveKernel` (first and second order); `posterior(..., infer_all_components=True)` raises `UnsupportedError` |
-| `botorch.models.transforms.Normalize`, `Standardize` | `botorch_rs.models.transforms.Normalize`, `Standardize` | learned or fixed bounds over all inputs, `center=0.5`; `Standardize(m, batch_shape)`, `Normalize(d, batch_shape)` / batched bounds (single-output batched models) |
+| `botorch.models.transforms.input.Normalize` | same path | all arguments: `d`, `indices`, `bounds` (also batched), `batch_shape`, `transform_on_train/eval/fantasize`, `reverse`, `min_range`, `learn_bounds`, `almost_zero`, `center`; `bounds`, `offset`, `coefficient`, `learn_coefficients`, `get_init_args` (with `center` and unshifted bounds, meta-pytorch/botorch#3389), `equals`, `preprocess_transform`, `untransform` |
+| `InputStandardize`, `AffineInputTransform`, `ReversibleInputTransform`, `InputTransform` | same paths | `indices`, `batch_shape`, flags, `reverse`, `min_std`; coefficients learned in train mode (BoTorch's `learn_coefficients`), fixed for `AffineInputTransform` |
+| `Warp` | same path | Kumaraswamy CDF warping with learned `concentration0` / `concentration1` (`GreaterThan(1e-4)` without transform, optimizer bounds as BoTorch's), `concentration0_prior` / `concentration1_prior`, `indices`, `bounds`, `eps`, `batch_shape` (single-output batched models), flags; fitted jointly with the GP hyperparameters by `fit_gpytorch_mll` (exact gradients) |
+| `Round` | same path | `integer_indices`, `categorical_features` (one-hot, rounded to the largest entry), `approximate` (BoTorch's `approximate_round` with `tau`), flags |
+| `Log10` | same path | `indices`, `reverse`, flags |
+| `AppendFeatures` | same path | `feature_set` or `f` (a torch callable with `indices`, `fkwargs`), `skip_expand`, flags; one-to-many (`n_f` points per input) in posteriors and Monte-Carlo acquisition functions (e.g. with risk measures); training inputs that already contain the feature columns (BoTorch's usual setup: the model's input dimension is then that of the posterior points) |
+| `InteractionFeatures` | same path | `indices` (all dimensions by default) |
+| `FilterFeatures` | same path | `feature_indices`, flags |
+| `OneHotToNumeric`, `NumericToCategoricalEncoding` | same paths | `dim`, `categorical_features`, `encoders` (one-hot encoders evaluated natively, other callables through torch) |
+| `LearnedFeatureImputation` | same path | `feature_indices`, `d`, `target_task`, `bounds` (BoTorch's `Interval` constraint on the raw values); learned imputation values fitted with the model |
+| `ChainedInputTransform` | same path | any chain of the transforms above (keys, `equals`, `preprocess_transform`, `untransform`); steps in eval mode at construction (e.g. `get_rounding_input_transform`) as BoTorch |
+| `BatchBroadcastedInputTransform` | same path | one chain per batch element of a batched model, `broadcast_index` |
+| `botorch.models.transforms.outcome.Log`, `Power`, `Bilog` | same paths | `outputs` (some outputs only); `Log` transforms observation noise by the delta method, `Power` / `Bilog` raise BoTorch's `NotImplementedError`; `subset_output` re-indexes `outputs` as BoTorch main since meta-pytorch/botorch#3380; `untransform_posterior` gives a `TransformedPosterior` |
+| `Standardize` | same path | `m`, `batch_shape`, `min_stdv`, `outputs` (some outputs only) and `subset_output` (meta-pytorch/botorch#3380) |
+| `StratifiedStandardize` | same path | `stratification_idx`, `all_task_values`, `min_stdv` (strata without data or unknown values are not standardized, as BoTorch) |
+| `ChainedOutcomeTransform`, `OutcomeTransform` | same paths | any chain of the outcome transforms above |
+| `botorch.posteriors.TransformedPosterior`, `PosteriorList` | same paths | `mean` / `variance` (log-normal moments for `Log`; BoTorch's `NotImplementedError("No mean transform provided.")` for `Power` / `Bilog`), `rsample`, `rsample_from_base_samples`, `base_sample_shape` |
+| `botorch.models.transforms.utils.*` | same path | `expand_and_copy_tensor`, `interaction_features`, `kumaraswamy_warp`, `inv_kumaraswamy_warp`, `nanstd`, `subset_transform`, `norm_to_lognorm`, `norm_to_lognorm_mean`, `norm_to_lognorm_variance`, `lognorm_to_norm` (native) |
+| `botorch.models.transforms.factory.get_rounding_input_transform` | same path | `integer_indices`, `categorical_features`, `initialization`, `return_numeric`, `approximate` |
+| `SingleTaskGP(input_transform=..., outcome_transform=...)` | same | every transform above (single- and multi-output, batched with `BatchBroadcastedInputTransform` / batched `Warp`); MLL and its exact gradient with respect to the learned transform parameters (with their priors); posteriors with and without observation noise; `condition_on_observations` and `fantasize` (fantasize mode skips steps with `transform_on_fantasize=False`, e.g. `InputPerturbation`, as BoTorch); analytic acquisition functions use the posterior moments, Monte-Carlo ones the transformed samples (exact gradients) |
+| Monte-Carlo acquisition functions on transformed samples | same | t-batches whose samples are NaN (a `Power` transform whose inverse is undefined at negative base samples) have NaN values and gradients, as BoTorch's torch reductions give (`qExpectedImprovement`, `qProbabilityOfImprovement`, `qSimpleRegret`, `qUpperConfidenceBound`, `qLogExpectedImprovement`, `qNoisyExpectedImprovement`, `qLogNoisyExpectedImprovement`, ...) |
+| `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`, `get_map_saas_model`, `AdditiveMapSaasSingleTaskGP`, `OrthogonalAdditiveGP` (phase 7b) with input and outcome transforms | same | every transform above (they are `SingleTaskGP`s in both libraries), e.g. `Warp` on the non-fidelity inputs, `Normalize(indices)` on the continuous inputs of a mixed model, `Log` / `Bilog` / `Power` outcomes; `subset_output` subsets general outcome transforms as BoTorch (`outcome_transform.subset_output`) |
+| `ModelListGP` and `ModelList` with transformed sub-models | same | posterior a `PosteriorList` (as BoTorch) when a sub-model has a nonlinear outcome transform; `ScalarizedPosteriorTransform` moment-matches at `q = 1` (BoTorch's `scalarize_posterior` of a `PosteriorList`); Monte-Carlo acquisition functions sample every sub-model |
 | `botorch.models.utils.gpytorch_modules.*` | `botorch_rs.models.utils.gpytorch_modules.*` | BoTorch's default (dimension-scaled LogNormal) and legacy (Gamma) priors |
 | `gpytorch.kernels.RBFKernel` | `botorch_rs.kernels.RBFKernel` | ARD or a shared lengthscale, `active_dims`, `batch_shape`, any constraint / prior |
 | `gpytorch.kernels.MaternKernel` | `botorch_rs.kernels.MaternKernel` | `nu` = 0.5, 1.5, 2.5 |
@@ -368,7 +389,7 @@ counterpart.
 | `botorch.acquisition.multi_objective.utils.sample_optimal_points`, `random_search_optimizer`, `compute_sample_box_decomposition` | same paths | the default random search runs in Rust in parallel; custom `optimizer`s; all partitionings, `maximize`, `num_constraints` |
 | `qLowerBoundMultiObjectiveMaxValueEntropySearch`, `qLowerBoundMultiObjectiveJointEntropySearch`, `LowerBoundMultiObjectiveEntropySearch` | `botorch_rs.acquisition.multi_objective.*` | `estimation_type` (`"0"`, `"LB"`, `"LB2"`, `"MC"`), `hypercell_bounds`, `pareto_sets`, `pareto_fronts`, `X_pending`, `num_samples`; values and exact gradients in Rust |
 | `qMultiObjectivePredictiveEntropySearch`, `log_cdf_robust` | same path | BoTorch's expectation propagation (damping, fallbacks, convergence) in Rust; `max_ep_iterations`, `ep_jitter`, `test_jitter`, `threshold`, `X_pending` |
-| `botorch.models.transforms.input.InputPerturbation`, `ChainedInputTransform` | same paths | `perturbation_set` (an array or a torch callable), `bounds`, `indices`, `multiplicative`, `transform_on_eval`; chains of `Normalize` and `InputPerturbation`; posteriors, samples and exact gradients over the `q * n_w` perturbed points of `SingleTaskGP` and `ModelListGP` |
+| `botorch.models.transforms.input.InputPerturbation`, `ChainedInputTransform` | same paths | `perturbation_set` (an array or a torch callable), `bounds`, `indices`, `multiplicative`, `transform_on_eval`, `batch_shape`, `equals`; chains with any input transform below (fantasies skip it, as in BoTorch); posteriors, samples and exact gradients over the `q * n_w` perturbed points of `SingleTaskGP` and `ModelListGP` |
 | `botorch.acquisition.risk_measures.*`: `CVaR`, `VaR`, `WorstCase`, `Expectation` | same path | `preprocessing_function`; usable as objectives of the MC acquisition functions, evaluated in Rust |
 | `botorch.acquisition.multi_objective.multi_output_risk_measures.*`: `MVaR`, `MARS`, `MultiOutputExpectation`, `IndependentCVaR`, `IndependentVaR`, `MultiOutputWorstCase` | same path | `MVaR(expectation, pad_to_n_w, filter_dominated, use_counting)`, `MARS` with `set_baseline_Y`; objectives of qEHVI, qLogEHVI, qNEHVI and qLogNEHVI, evaluated in Rust |
 | `botorch.acquisition.multi_objective.MOMF` | same path | `cost_call` (any torch callable; default BoTorch's affine fidelity cost), `X_pending`, `constraints`, `eta`, `objective` |
@@ -386,8 +407,8 @@ Everything else in BoTorch is not ported yet: see
 ## What is not ported yet
 
 botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **367 of the 776
-public classes and functions** defined in BoTorch's modules (47%; BoTorch main
+processes, which is a small part of BoTorch: it provides **398 of the 776
+public classes and functions** defined in BoTorch's modules (51%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
 [docs/api_coverage.md](docs/api_coverage.md); [docs/roadmap.md](docs/roadmap.md)
@@ -433,11 +454,12 @@ orders the remaining work toward a full port. The main gaps:
   - the priors `MultivariateNormalPrior` and `HorseshoePrior`, prior
     transforms, and likelihoods other than `GaussianLikelihood`,
     `HadamardGaussianLikelihood` and `MultitaskGaussianLikelihood`;
-  - input transforms other than `Normalize`, `InputPerturbation` and their
-    chains (`InputStandardize`, `Warp`, `Round`, `AppendFeatures`, ...), and
-    `InputPerturbation` in train or fantasize mode;
-  - outcome transforms other than `Standardize` (`Log`, `Power`, `Bilog`,
-    chained transforms, ...);
+  - transforms: `Warp(reverse=True)` in a model, learned transform
+    parameters shared by several outputs, `StratifiedStandardize` with a
+    batch shape, transforms other than `Normalize` and `Standardize` on the
+    multi-task models and `LCEMGP`, and nonlinear outcome transforms in the
+    knowledge gradient, max-value and multi-objective entropy search and
+    pathwise sampling (see [docs/transforms.md](docs/transforms.md));
   - GPU execution and float32 arithmetic: everything runs in float64 on the
     CPU.
 - **Single-objective acquisition functions:**
@@ -504,12 +526,12 @@ orders the remaining work toward a full port. The main gaps:
 | `models.hierarchical` | 6 | 0 | 0% |
 | `models.kernels` | 19 | 8 | 42% |
 | `models.likelihoods` | 5 | 0 | 0% |
-| `models.transforms` | 35 | 6 | 17% |
-| `models.utils` | 26 | 5 | 19% |
+| `models.transforms` | 35 | 35 | 100% |
+| `models.utils` | 26 | 6 | 23% |
 | `optim` | 58 | 45 | 78% |
 | `optim.closures` | 5 | 4 | 80% |
 | `optim.utils` | 14 | 8 | 57% |
-| `posteriors` | 13 | 7 | 54% |
+| `posteriors` | 13 | 8 | 62% |
 | `sampling` | 14 | 5 | 36% |
 | `sampling.pathwise` | 25 | 11 | 44% |
 | `settings` | 3 | 0 | 0% |
@@ -518,7 +540,7 @@ orders the remaining work toward a full port. The main gaps:
 | `utils` | 97 | 20 | 21% |
 | `utils.multi_objective` | 25 | 20 | 80% |
 | `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **776** | **367** | **47%** |
+| **all of `botorch`** | **776** | **398** | **51%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -1098,6 +1120,32 @@ L-BFGS-B stops on rounding-dependent criteria, so candidates agree to 1e-3
 [docs/single-objective-acquisition.md](docs/single-objective-acquisition.md)
 has the full tables, the deviations and ten BoTorch bugs found by these tests.
 
+### Input and outcome transforms
+
+**Where the tests are:**
+- Rust fixtures in `botorch_core/tests/transforms_6b_parity.rs`
+  (`--phase 6b-transforms`, 33 models): every input transform alone and in
+  chains, every outcome transform alone and chained, `outputs=` subsets.
+- Live Python tests in `test_parity_6b_transforms.py` (97 tests, against
+  BoTorch main and 0.18.1), including a randomized sweep over 48 random chains
+  of input and outcome transforms (`-m equivalence`), and API and error tests
+  in `test_6b_transforms.py`.
+
+| Quantity | Worst error, fixtures | Worst error, live |
+|---|---|---|
+| MLL | 1.2e-14 | 4.0e-14 |
+| MLL gradients, including learned `Warp` and imputation parameters | 9.7e-14 | 3.1e-13 |
+| Posterior moments (log-normal for `Log`) | 5.0e-15 | 2.4e-14 |
+| Samples from identical base samples | 6.2e-15 | 1.6e-13 |
+| Acquisition values / gradients | 2.6e-15 / 2.2e-14 | 7.3e-15 / 1.6e-13 |
+| Conditioning and fantasies | — | 1.3e-14 |
+
+Fits with learned transform parameters reach BoTorch's best outcome on 16
+perturbed twins (worst scaled error 3.5e-5). The transforms also work on the
+multi-fidelity, mixed and MAP SAAS models (MLL gradients to 1.8e-14).
+[docs/transforms.md](docs/transforms.md) has the full tables, the
+deviations and seven BoTorch bugs found.
+
 ### Multi-task GPs
 
 **Where the tests are:**
@@ -1361,6 +1409,23 @@ The model fits alone are 140–550× faster.
 
 ## Migration notes and known differences
 
+- **Input and outcome transforms.**
+  - Models with transforms of some outputs (`Log(outputs=[0])`) untransform
+    their posteriors per output; BoTorch raises `NotImplementedError`.
+  - Monte-Carlo acquisition functions on a `ModelListGP` with transformed
+    sub-models take one sampler whose base samples stack the outputs, not a
+    `ListSampler`.
+  - A learnable step that is in eval mode when the model is built keeps its
+    coefficients; `Normalize.indices` is a list.
+  - `MultiTaskGP` and `LCEMGP` reject outcome transforms other than a plain
+    `Standardize` (`UnsupportedError`).
+  - Where BoTorch is wrong, botorch-rust has the correct behaviour:
+    `BatchBroadcastedInputTransform` follows the model's mode,
+    `InputStandardize` of one point, `Normalize.get_init_args`, the
+    stratified untransform, and conditioning with `StratifiedStandardize`
+    (#3389, #3449).
+
+  See [docs/transforms.md](docs/transforms.md#deviations-from-botorch-migration-notes).
 - **Multi-task GPs.**
   - `KroneckerMultiTaskGP` acquisition functions sample the exact joint
     posterior: the same distribution as BoTorch's Matheron samples, other
@@ -1786,6 +1851,7 @@ Other scripts:
   - `--phase 5d-deterministic`: deterministic models and composite
     acquisition functions (openbo's MO-TAF);
   - `--phase 6a-kernels`: kernel trees, kernels, priors and constraints;
+  - `--phase 6b-transforms`: input and outcome transforms;
   - `--phase 7a-multitask`: `MultiTaskGP` and `KroneckerMultiTaskGP`;
   - `--phase 7b-models`: multi-fidelity, mixed and MAP SAAS models;
   - `--phase 8-so-acquisition`: the single-objective acquisition functions;
