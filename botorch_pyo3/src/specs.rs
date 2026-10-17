@@ -7,7 +7,9 @@
 //! double precision; `float32=True` (the default) reproduces that rounding so
 //! that models agree with BoTorch to double precision.
 
-use botorch_core::constraints::{Constraint, Interval, LessThan, ParameterTransform};
+use botorch_core::constraints::{
+    Constraint, Interval, LessThan, LogTransformedInterval, ParameterTransform,
+};
 use botorch_core::kernels::{
     get_covar_module_with_dim_scaled_prior, get_matern_kernel_with_gamma_prior,
 };
@@ -300,13 +302,39 @@ impl PyConstraint {
         })
     }
 
-    /// `"GreaterThan"`, `"LessThan"` or `"Interval"`.
+    /// BoTorch's `LogTransformedInterval(lower_bound, upper_bound,
+    /// initial_value)` (raw value `log(value)`, bounds in the optimizer);
+    /// `initial_raw` overrides the raw initial value (torch's float32
+    /// `log`).
+    #[staticmethod]
+    #[pyo3(signature = (lower_bound, upper_bound, initial_value=None, float32=true, initial_raw=None))]
+    fn log_transformed_interval(
+        lower_bound: f64,
+        upper_bound: f64,
+        initial_value: Option<f64>,
+        float32: bool,
+        initial_raw: Option<f64>,
+    ) -> PyResult<Self> {
+        let mut c = LogTransformedInterval::new(lower_bound, upper_bound, initial_value)
+            .map_err(|e| value_error(e.to_string()))?;
+        if float32 {
+            c = c.rounded_to_f32();
+        }
+        if let Some(raw) = initial_raw {
+            c = c.with_initial_raw(raw);
+        }
+        Ok(Self { inner: c.into() })
+    }
+
+    /// `"GreaterThan"`, `"LessThan"`, `"Interval"` or
+    /// `"LogTransformedInterval"`.
     #[getter]
     fn kind(&self) -> &'static str {
         match self.inner {
             Constraint::GreaterThan(_) => "GreaterThan",
             Constraint::Interval(_) => "Interval",
             Constraint::LessThan(_) => "LessThan",
+            Constraint::LogTransformed(_) => "LogTransformedInterval",
         }
     }
 

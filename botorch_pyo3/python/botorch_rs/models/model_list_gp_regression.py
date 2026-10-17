@@ -259,6 +259,24 @@ class ModelListGP(Model):
         )
         return self._with_models(out)
 
+    def _get_group_subset_indices(self, idcs: list[int] | None) -> dict[int, list[int] | None]:
+        """See ``ModelList._get_group_subset_indices``."""
+        from botorch_rs.models.model import ModelList
+
+        return ModelList._get_group_subset_indices(self, idcs)  # type: ignore[arg-type]
+
+    def subset_output(self, idcs: list[int]) -> Model:
+        r"""Subset the model along the output dimension: a ``ModelListGP`` of
+        the (subset) sub-models, or the single (subset) sub-model.
+
+        Args:
+            idcs: The output indices to subset the model to. Relative to the
+                overall number of outputs of the model.
+        """
+        from botorch_rs.models.model import ModelList
+
+        return ModelList.subset_output(self, idcs)  # type: ignore[arg-type]
+
     def _with_models(self, handles: list[Any]) -> ModelListGP:
         """A list of copies of the sub-models around new Rust models."""
         new = self.__class__(*[m._with_rs(h) for m, h in zip(self.models, handles, strict=True)])

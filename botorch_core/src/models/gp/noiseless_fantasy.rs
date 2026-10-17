@@ -81,6 +81,7 @@ impl SingleTaskGP {
                     likelihood: Likelihood::FixedNoise {
                         noise: noise.clone(),
                     },
+                    mean_module: self.mean_module,
                     hyperparameters: self.hyperparameters.clone(),
                     point_noise: None,
                     cache: OnceLock::from(Ok(cache)),

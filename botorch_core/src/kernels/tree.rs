@@ -133,6 +133,24 @@ pub enum MatrixPrior {
     },
 }
 
+/// BoTorch's SAAS prior (`botorch.models.map_saas.add_saas_prior`) on a
+/// kernel with lengthscales: a prior (BoTorch: `HalfCauchyPrior(1.0)`) on
+/// `tau / ℓⱼ²` for every lengthscale `ℓⱼ`, with the global shrinkage `tau`
+/// either fixed or learned as the kernel's parameter `raw_tau` (which has
+/// its own prior, BoTorch: `HalfCauchyPrior(0.1)`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SaasPrior {
+    /// The prior on every `tau / ℓⱼ²`.
+    pub prior: Prior,
+    /// The fixed global shrinkage, or `None` if it is the parameter
+    /// `raw_tau`.
+    pub tau: Option<f64>,
+}
+
+/// BoTorch's clamping margin (`botorch.models.map_saas.EPS`) of the
+/// lengthscales and `tau` set from prior samples.
+pub const SAAS_EPS: f64 = 1e-8;
+
 /// The kernel classes of a [`KernelNode`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum KernelType {
@@ -227,6 +245,7 @@ pub struct KernelNode {
     active_dims: Option<Vec<usize>>,
     params: Vec<ParamSpec>,
     task_prior: Option<MatrixPrior>,
+    saas: Option<SaasPrior>,
     children: Vec<KernelNode>,
 }
 
@@ -258,6 +277,7 @@ impl KernelNode {
             active_dims: None,
             params,
             task_prior: None,
+            saas: None,
             children: Vec::new(),
         }
     }
@@ -504,6 +524,7 @@ impl KernelNode {
             active_dims: None,
             params: vec![ParamSpec::new("raw_power", vec![1], positive())],
             task_prior: None,
+            saas: None,
             children: vec![unbiased, biased],
         })
     }
@@ -582,6 +603,7 @@ impl KernelNode {
             active_dims: None,
             params,
             task_prior: None,
+            saas: None,
             children: vec![base],
         })
     }
@@ -594,6 +616,7 @@ impl KernelNode {
             active_dims,
             params: vec![ParamSpec::new("raw_outputscale", vec![], positive())],
             task_prior: None,
+            saas: None,
             children: vec![base],
         }
     }
@@ -625,6 +648,7 @@ impl KernelNode {
             active_dims: None,
             params: Vec::new(),
             task_prior: None,
+            saas: None,
             children: kernels,
         })
     }
@@ -750,6 +774,132 @@ impl KernelNode {
         Ok(self)
     }
 
+    /// Adds BoTorch's SAAS prior (`add_saas_prior`): `prior` on
+    /// `tau / ℓⱼ²` for every lengthscale, with the fixed global shrinkage
+    /// `tau`, or (`tau = None`) a learned `tau`: the parameter `raw_tau`
+    /// (one value per model element, registered after the lengthscale) with
+    /// the constraint and prior `tau_param`. The lengthscale constraint is
+    /// set separately (BoTorch: `LogTransformedInterval(0.01, 1e4,
+    /// initial_value=1)`).
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] with BoTorch's messages for a kernel
+    /// without lengthscales or with a lengthscale prior (botorch_rs supports
+    /// the SAAS prior on `RBFKernel` and `MaternKernel`);
+    /// [`BotorchError::InvalidArgument`] for a learned `tau` without
+    /// `tau_param`, a second learned `tau`, or a non-finite fixed `tau`.
+    pub fn with_saas_prior(
+        mut self,
+        prior: Prior,
+        tau: Option<f64>,
+        tau_param: Option<(Constraint, Prior)>,
+    ) -> Result<Self> {
+        let has_lengthscale = matches!(
+            self.kind,
+            KernelType::Stationary(_)
+                | KernelType::RationalQuadratic
+                | KernelType::Periodic
+                | KernelType::Categorical
+                | KernelType::ExponentialDecay
+        );
+        if !has_lengthscale {
+            return Err(BotorchError::Unsupported(
+                "base_kernel must have lengthscale(s)".into(),
+            ));
+        }
+        if !matches!(self.kind, KernelType::Stationary(_)) {
+            return Err(BotorchError::Unsupported(
+                "botorch_rs supports the SAAS prior on RBFKernel and MaternKernel".into(),
+            ));
+        }
+        if self.params[0].prior.is_some() {
+            return Err(BotorchError::Unsupported(
+                "base_kernel must not specify a lengthscale prior".into(),
+            ));
+        }
+        match tau {
+            Some(t) if !t.is_finite() => {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "the global shrinkage tau must be finite, got {t}"
+                )))
+            }
+            Some(_) => {}
+            None => {
+                if self.params.iter().any(|p| p.name == "raw_tau") {
+                    return Err(BotorchError::InvalidArgument(
+                        "attribute 'raw_tau' already exists".into(),
+                    ));
+                }
+                let (constraint, tau_prior) = tau_param.ok_or_else(|| {
+                    BotorchError::InvalidArgument(
+                        "a learned tau needs its constraint and prior".into(),
+                    )
+                })?;
+                let mut p = ParamSpec::new("raw_tau", vec![], Some(constraint));
+                p.prior = Some(tau_prior);
+                self.params.push(p);
+            }
+        }
+        self.saas = Some(SaasPrior { prior, tau });
+        Ok(self)
+    }
+
+    /// Sets the fixed `tau` of every SAAS prior with a fixed `tau` in the
+    /// tree (pre-order), e.g. one value per kernel of an
+    /// `AdditiveKernel` of SAAS kernels.
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] if `taus` does not have one value
+    /// per fixed `tau`, [`BotorchError::InvalidArgument`] for non-finite
+    /// values.
+    pub fn set_saas_taus(&mut self, taus: &[f64]) -> Result<()> {
+        let mut i = 0;
+        self.set_saas_taus_from(taus, &mut i)?;
+        if i != taus.len() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "expected {i} fixed SAAS taus, got {}",
+                taus.len()
+            )));
+        }
+        Ok(())
+    }
+
+    fn set_saas_taus_from(&mut self, taus: &[f64], i: &mut usize) -> Result<()> {
+        if let Some(saas) = self.saas.as_mut() {
+            if saas.tau.is_some() {
+                let t = *taus.get(*i).ok_or_else(|| {
+                    BotorchError::DimensionMismatch(format!(
+                        "not enough fixed SAAS taus ({} given)",
+                        taus.len()
+                    ))
+                })?;
+                if !t.is_finite() {
+                    return Err(BotorchError::InvalidArgument(format!(
+                        "the global shrinkage tau must be finite, got {t}"
+                    )));
+                }
+                saas.tau = Some(t);
+                *i += 1;
+            }
+        }
+        for child in &mut self.children {
+            child.set_saas_taus_from(taus, i)?;
+        }
+        Ok(())
+    }
+
+    /// The fixed `tau`s of the SAAS priors in the tree (pre-order).
+    pub fn saas_taus(&self) -> Vec<f64> {
+        let mut out = Vec::new();
+        if let Some(t) = self.saas.and_then(|s| s.tau) {
+            out.push(t);
+        }
+        for child in &self.children {
+            out.extend(child.saas_taus());
+        }
+        out
+    }
+
     // ------------------------------------------------------------------
     // Accessors
     // ------------------------------------------------------------------
@@ -772,6 +922,11 @@ impl KernelNode {
     /// The task prior (`IndexKernel`, `PositiveIndexKernel`).
     pub fn task_prior(&self) -> Option<&MatrixPrior> {
         self.task_prior.as_ref()
+    }
+
+    /// The SAAS prior on the lengthscales, if any.
+    pub fn saas(&self) -> Option<&SaasPrior> {
+        self.saas.as_ref()
     }
 
     /// The sub-kernels.
@@ -877,7 +1032,7 @@ impl KernelNode {
     /// [`crate::KernelSpec`] for `input_dim` inputs.
     pub fn as_kernel_spec(&self, input_dim: usize) -> Option<crate::KernelSpec> {
         let stationary = |n: &KernelNode| -> Option<crate::KernelSpec> {
-            if n.active_dims.is_some() || !n.children.is_empty() {
+            if n.active_dims.is_some() || !n.children.is_empty() || n.saas.is_some() {
                 return None;
             }
             let KernelType::Stationary(kind) = n.kind else {
@@ -1000,6 +1155,7 @@ impl KernelNode {
     /// Whether the node or one of its sub-kernels has a prior.
     pub fn has_priors(&self) -> bool {
         self.task_prior.is_some()
+            || self.saas.is_some()
             || self.params.iter().any(|p| p.prior.is_some())
             || self.children.iter().any(KernelNode::has_priors)
     }
@@ -1028,11 +1184,45 @@ fn sample_node<R: rand::Rng + ?Sized>(
     let start = *off;
     for p in &node.params {
         if let Some(prior) = p.prior {
+            let saas_tau = node.saas.is_some() && p.name == "raw_tau";
             for v in &mut raw[*off..*off + p.numel()] {
-                *v = p.inverse_transform(prior.sample(rng));
+                let mut value = prior.sample(rng);
+                if saas_tau {
+                    // BoTorch's `tau_prior_setting_closure`.
+                    if let Some(c) = &p.constraint {
+                        value = value.clamp(c.lower_bound() + SAAS_EPS, c.upper_bound() - SAAS_EPS);
+                    }
+                }
+                *v = p.inverse_transform(value);
             }
         }
         *off += p.numel();
+    }
+    if let Some(saas) = &node.saas {
+        // BoTorch's `inv_lengthscale_prior_setting_closure`: lengthscales
+        // `sqrt(tau / v)` for samples `v` of the prior, clamped to the
+        // lengthscale constraint (after `tau` was set).
+        let ls = &node.params[0];
+        let tau = saas.tau.unwrap_or_else(|| {
+            let mut t_off = start;
+            let mut t = f64::NAN;
+            for p in &node.params {
+                if p.name == "raw_tau" {
+                    t = p.transform(raw[t_off]);
+                }
+                t_off += p.numel();
+            }
+            t
+        });
+        let (lb, ub) = ls
+            .constraint
+            .as_ref()
+            .map_or((0.0, f64::INFINITY), |c| (c.lower_bound(), c.upper_bound()));
+        for v in &mut raw[start..start + ls.numel()] {
+            let sample = saas.prior.sample(rng);
+            let l = (tau / sample).sqrt().clamp(lb + SAAS_EPS, ub - SAAS_EPS);
+            *v = ls.inverse_transform(l);
+        }
     }
     if let (
         KernelType::PositiveIndex {

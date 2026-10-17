@@ -388,7 +388,10 @@ impl NehviCore {
         if roots.len() != m || gps.len() != m {
             return Ok(None);
         }
-        if roots.iter().any(|r| matches!(r, CovarianceRoot::Eigen(_))) {
+        if roots
+            .iter()
+            .any(|r| matches!(r, CovarianceRoot::Eigen(_) | CovarianceRoot::Zero(_)))
+        {
             return Ok(None);
         }
         // Posterior points of the cached points.
@@ -619,7 +622,7 @@ impl NehviCore {
                     f.solve_lower_mut(&mut ct);
                     ct.transpose()
                 }
-                CovarianceRoot::Eigen(_) => return Ok(None),
+                CovarianceRoot::Eigen(_) | CovarianceRoot::Zero(_) => return Ok(None),
             };
             let mut e = cp.covariance.clone();
             e.gemm(-1.0, &bl, &bl.transpose(), 1.0);
@@ -693,8 +696,8 @@ impl NehviCore {
                             f.solve_lower_transpose_mut(&mut tb);
                             tb.transpose()
                         }
-                        CovarianceRoot::Eigen(_) => {
-                            unreachable!("no low-rank path for Eigen roots")
+                        CovarianceRoot::Eigen(_) | CovarianceRoot::Zero(_) => {
+                            unreachable!("no low-rank path for Eigen or zero roots")
                         }
                     };
                     grad +=

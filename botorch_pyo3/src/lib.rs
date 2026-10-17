@@ -27,6 +27,7 @@ mod mo_acquisition;
 mod mo_entropy;
 mod mo_test_functions;
 mod models;
+mod models_7b;
 mod momf;
 mod multi_objective;
 mod nsga2;
@@ -127,5 +128,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     so_acquisition::register(m)?;
     so_entropy::register(m)?;
     so_wrappers::register(m)?;
+    // Models of phase 7b (deterministic models, ensembles).
+    models_7b::register(m)?;
     Ok(())
 }

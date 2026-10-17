@@ -3,6 +3,8 @@
 
 #![allow(dead_code)]
 
+pub mod kernel_spec;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

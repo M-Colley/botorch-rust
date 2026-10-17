@@ -279,6 +279,7 @@ impl SingleTaskGP {
                     outcome_transform: self.outcome_transform.clone(),
                     covar_module: self.covar_module.clone(),
                     likelihood: likelihood.clone(),
+                    mean_module: self.mean_module,
                     hyperparameters: self.hyperparameters.clone(),
                     point_noise: point_noise.clone(),
                     cache: OnceLock::from(Ok(new_cache)),

@@ -35,6 +35,9 @@
 //! * [`composite`] — [`WeightedLogMeanExp`], the weighted log-mean-exp blend
 //!   of log-scale acquisition functions (a botorch-rust extension for
 //!   transfer acquisition functions).
+//! * [`ensemble`] — [`EnsembleAverage`], the average of the acquisition
+//!   functions of the members of an ensemble model (BoTorch's
+//!   `average_over_ensemble_models`).
 //! * [`cost_aware`] — cost-aware utilities (`InverseCostWeightedUtility`,
 //!   `GenericCostAwareUtility`); [`fidelity`] — `project_to_target_fidelity`
 //!   and `expand_trace_observations`; [`one_shot`] — the interface of one-shot
@@ -64,6 +67,7 @@ pub mod analytic;
 pub mod composite;
 pub mod cost_aware;
 pub(crate) mod dual;
+pub mod ensemble;
 pub mod fidelity;
 pub mod joint_entropy_search;
 pub mod knowledge_gradient;
@@ -92,6 +96,7 @@ pub use analytic::{
     ScalarizedPosteriorMean, UpperConfidenceBound,
 };
 pub use composite::WeightedLogMeanExp;
+pub use ensemble::EnsembleAverage;
 pub use joint_entropy_search::{
     JesEstimationType, QJointEntropySearch, QJointEntropySearchOptions,
 };

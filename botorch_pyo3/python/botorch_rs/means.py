@@ -15,7 +15,14 @@ class Mean(GPModule):
 
 
 class ConstantMean(Mean):
-    """A constant mean (in the model's transformed outcome space)."""
+    """A constant mean (in the model's transformed outcome space).
+
+    ``constant_prior`` (any univariate prior) and ``constant_constraint`` (a
+    constraint that is not enforced through a transform, e.g.
+    ``Interval(-10, 10, transform=None)`` of BoTorch's
+    ``get_mean_module_with_normal_prior``: its bounds are imposed by the
+    optimizer) are supported.
+    """
 
     def __init__(
         self,
@@ -24,12 +31,27 @@ class ConstantMean(Mean):
         batch_shape: Any = (),
         **kwargs: Any,
     ) -> None:
-        if constant_prior is not None or constant_constraint is not None:
-            raise UnsupportedError(
-                "Priors and constraints on the constant mean are not supported by botorch_rs."
+        from botorch_rs.constraints import Interval
+        from botorch_rs.priors import Prior
+
+        if constant_prior is not None and not isinstance(constant_prior, Prior):
+            raise TypeError(
+                f"Expected gpytorch.priors.Prior but got {type(constant_prior).__name__}"
             )
+        if constant_constraint is not None:
+            if not isinstance(constant_constraint, Interval):
+                raise UnsupportedError(
+                    "`constant_constraint` must be a botorch_rs.constraints constraint."
+                )
+            if constant_constraint.enforced:
+                raise UnsupportedError(
+                    "botorch_rs supports constraints on the constant mean that are not "
+                    "enforced through a transform (e.g. Interval(lower, upper, transform=None))."
+                )
         self.batch_shape = _check_batch_shape(batch_shape)
         _check_kwargs(kwargs, "ConstantMean")
+        self.mean_prior = constant_prior
+        self.raw_constant_constraint = constant_constraint
 
     @property
     def constant(self) -> Any:

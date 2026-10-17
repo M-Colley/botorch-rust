@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -56,13 +58,30 @@ def pending_arg(X_pending: Any, d: int) -> Flat | None:
 
 def is_acquisition_model(model: Any) -> bool:
     """Whether botorch_rs acquisition functions can be built on ``model``: a
-    ``SingleTaskGP``, a ``ModelListGP``, an ``LCEMGP``, or a
-    ``PosteriorMeanModel`` or ``GenericDeterministicModel``."""
-    from botorch_rs.models.deterministic import GenericDeterministicModel, PosteriorMeanModel
+    ``SingleTaskGP`` (or one of its subclasses), a ``ModelListGP``, an
+    ``LCEMGP``, a deterministic model (``PosteriorMeanModel``,
+    ``GenericDeterministicModel``, ``AffineDeterministicModel``,
+    ``FixedSingleSampleModel``) or a ``ModelList`` of them."""
+    from botorch_rs.models.deterministic import (
+        AffineDeterministicModel,
+        FixedSingleSampleModel,
+        GenericDeterministicModel,
+        PosteriorMeanModel,
+    )
+    from botorch_rs.models.model import ModelList
 
     return isinstance(
         model,
-        (SingleTaskGP, ModelListGP, LCEMGP, PosteriorMeanModel, GenericDeterministicModel),
+        (
+            SingleTaskGP,
+            ModelListGP,
+            LCEMGP,
+            PosteriorMeanModel,
+            GenericDeterministicModel,
+            AffineDeterministicModel,
+            FixedSingleSampleModel,
+            ModelList,
+        ),
     )
 
 
@@ -73,6 +92,117 @@ ACQUISITION_MODEL_MESSAGE = (
 )
 
 
+#: The acquisition functions whose values on an ensemble model are the
+#: averages (``mean``, or ``logmeanexp`` for log-scale values) of their
+#: values on the members, with the same arguments and Monte-Carlo base
+#: samples (BoTorch's ``average_over_ensemble_models`` and the ensemble
+#: dimension of ``SampleReducingMCAcquisitionFunction``), verified against
+#: BoTorch.
+ENSEMBLE_ACQUISITION_FUNCTIONS = frozenset(
+    {
+        "ExpectedImprovement",
+        "LogExpectedImprovement",
+        "ProbabilityOfImprovement",
+        "LogProbabilityOfImprovement",
+        "UpperConfidenceBound",
+        "PosteriorMean",
+        "PosteriorStandardDeviation",
+        "qExpectedImprovement",
+        "qLogExpectedImprovement",
+        "qProbabilityOfImprovement",
+        "qSimpleRegret",
+        "qUpperConfidenceBound",
+        "qLowerConfidenceBound",
+        "qPosteriorStandardDeviation",
+        "qNoisyExpectedImprovement",
+        "qLogNoisyExpectedImprovement",
+    }
+)
+
+
+def _supports_ensemble(cls: type) -> bool:
+    return any(
+        c.__name__ in ENSEMBLE_ACQUISITION_FUNCTIONS and c.__module__.startswith("botorch_rs.")
+        for c in cls.__mro__
+    )
+
+
+def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any]) -> None:
+    """Builds the acquisition function ``self`` of an ensemble model as the
+    (weighted) average of the acquisition functions of its members (see
+    ``EnsembleAverage``): every member's is built by ``init`` with the same
+    arguments and one shared sampler. For the noisy expected improvements,
+    the baseline is pruned on the ensemble first (BoTorch's
+    ``prune_inferior_points``)."""
+    from botorch_rs.acquisition.utils import _prune_ensemble
+
+    cls = type(self)
+    if not _supports_ensemble(cls):
+        raise UnsupportedError(
+            f"{cls.__name__} does not support ensemble models (EnsembleMapSaasSingleTaskGP, "
+            "EnsembleModel) in botorch_rs; supported are "
+            f"{sorted(ENSEMBLE_ACQUISITION_FUNCTIONS)}."
+        )
+    sig = inspect.signature(init)
+    params = list(sig.parameters.values())
+    bound = sig.bind(None, *args, **kwargs)
+    arguments = dict(bound.arguments)
+    arguments.pop(params[0].name)
+    extra: dict[str, Any] = {}
+    for p in params:
+        if p.kind is inspect.Parameter.VAR_KEYWORD:
+            extra = arguments.pop(p.name, {})
+        elif p.kind is inspect.Parameter.VAR_POSITIONAL:
+            raise UnsupportedError(f"{cls.__name__} is not supported with ensemble models.")
+    names = sig.parameters
+    model_name = params[1].name
+    model = arguments[model_name]
+    deterministic_members = not hasattr(model, "_ensemble_members")
+    if deterministic_members and "sampler" not in names:
+        raise UnsupportedError(
+            "botorch_rs supports the Monte-Carlo acquisition functions of an EnsembleModel "
+            f"(sampled with an IndexSampler), not {cls.__name__}."
+        )
+    members, weights, sampler = model._ensemble_acquisition(arguments.get("sampler"))
+    if "sampler" in names:
+        arguments["sampler"] = sampler
+    if "prune_baseline" in names:
+        prune = arguments.get("prune_baseline", names["prune_baseline"].default)
+        if prune:
+            for key in ("objective", "posterior_transform", "constraints"):
+                if arguments.get(key) is not None:
+                    raise UnsupportedError(
+                        "Pruning the baseline of an ensemble model with an objective, a "
+                        "posterior transform or constraints is not supported by botorch_rs; "
+                        "pass prune_baseline=False."
+                    )
+            arguments["X_baseline"] = _prune_ensemble(
+                model, arguments["X_baseline"], members=members
+            )
+            arguments["prune_baseline"] = False
+    objs = []
+    for member in members:
+        obj = object.__new__(cls)
+        init(obj, **{**arguments, model_name: member}, **extra)
+        objs.append(obj)
+    self.__dict__.update(objs[0].__dict__)
+    self.model = model
+    if "sampler" in names and not deterministic_members:
+        self.sampler = sampler
+    if "prune_baseline" in names:
+        self.prune_baseline = bool(
+            dict(bound.arguments).get("prune_baseline", names["prune_baseline"].default)
+        )
+    self._ensemble_acqfs = objs
+    self._rs = _rs.ensemble_average([o._rs for o in objs], weights)
+
+
+def _is_ensemble_model(model: Any) -> bool:
+    """Whether acquisition functions average over the members of ``model``
+    (an ``EnsembleMapSaasSingleTaskGP`` or an ``EnsembleModel``)."""
+    return hasattr(model, "_ensemble_acquisition")
+
+
 class AcquisitionFunction:
     """Base class of the acquisition functions.
 
@@ -81,10 +211,31 @@ class AcquisitionFunction:
     a single set), like BoTorch. If ``X`` is a torch tensor that requires
     gradients, the result is connected to the autograd graph (with exact
     gradients computed in Rust).
+
+    On an ensemble model (``EnsembleMapSaasSingleTaskGP``), the acquisition
+    functions in ``ENSEMBLE_ACQUISITION_FUNCTIONS`` average their values on
+    the members, as BoTorch's; others raise ``UnsupportedError``.
     """
 
     _rs: _rs.AcquisitionFunction
     _log: bool = False
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        init = cls.__dict__.get("__init__")
+        if init is None or getattr(init, "_ensemble_aware", False):
+            return
+
+        @functools.wraps(init)
+        def __init__(self: Any, *args: Any, **kw: Any) -> None:
+            model = args[0] if args else kw.get("model")
+            if _is_ensemble_model(model):
+                _init_on_ensemble(self, init, args, kw)
+                return
+            init(self, *args, **kw)
+
+        __init__._ensemble_aware = True  # type: ignore[attr-defined]
+        cls.__init__ = __init__  # type: ignore[method-assign]
 
     def __init__(self, model: Any) -> None:
         if not is_acquisition_model(model):
@@ -171,4 +322,4 @@ class OneShotAcquisitionFunction(AcquisitionFunction):
         raise NotImplementedError
 
 
-__all__ = ["AcquisitionFunction", "OneShotAcquisitionFunction"]
+__all__ = ["ENSEMBLE_ACQUISITION_FUNCTIONS", "AcquisitionFunction", "OneShotAcquisitionFunction"]
