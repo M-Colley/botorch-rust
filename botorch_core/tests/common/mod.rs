@@ -305,3 +305,80 @@ impl Report {
         );
     }
 }
+
+/// One-sided significance level of each statistical fit check.
+pub const FIT_ALPHA: f64 = 1e-3;
+/// The standard normal quantile `Φ⁻¹(1 - FIT_ALPHA)`.
+pub const FIT_Z: f64 = 3.090_232_306_167_813;
+
+/// The z statistic of the one-sided Mann–Whitney U test that the values
+/// `a` are stochastically larger than `b`: `U` counts the pairs with
+/// `a_i > b_j + tie` (pairs within `tie` count one half), standardized with
+/// the no-ties variance and a continuity correction. Ties and positive
+/// dependence within twin pairs only reduce the variance of `U`, so the
+/// test is conservative.
+pub fn mann_whitney_z(a: &[f64], b: &[f64], tie: f64) -> f64 {
+    let (n1, n2) = (a.len() as f64, b.len() as f64);
+    let mut u = 0.0;
+    for &x in a {
+        for &y in b {
+            if x > y + tie {
+                u += 1.0;
+            } else if (x - y).abs() <= tie {
+                u += 0.5;
+            }
+        }
+    }
+    let sd = (n1 * n2 * (n1 + n2 + 1.0) / 12.0).sqrt();
+    (u - n1 * n2 / 2.0 - 0.5) / sd
+}
+
+/// The smallest `k` such that all `k` smallest of `n_rs + n_bt`
+/// exchangeable values come from the `n_bt` with probability at most
+/// [`FIT_ALPHA`] (`C(n_bt, k) / C(n_rs + n_bt, k) <= FIT_ALPHA`), or
+/// `n_bt + 1`.
+pub fn rank_bound_k(n_rs: usize, n_bt: usize) -> usize {
+    let mut p = 1.0;
+    for k in 1..=n_bt {
+        p *= (n_bt - k + 1) as f64 / (n_rs + n_bt - k + 1) as f64;
+        if p <= FIT_ALPHA {
+            return k;
+        }
+    }
+    n_bt + 1
+}
+
+/// Statistical comparison of first-attempt fit losses on twins when
+/// BoTorch's own outcomes are chaotic (see `parity_helpers.compare_chaotic_fits`
+/// in the Python tests): a one-sided Mann–Whitney U test at level
+/// [`FIT_ALPHA`] that botorch_rs's losses are not stochastically larger
+/// than BoTorch's, and botorch_rs's best within `tol` of BoTorch's `k`-th
+/// smallest ([`rank_bound_k`]). Under the null hypothesis each check fails
+/// with probability at most [`FIT_ALPHA`].
+pub fn compare_chaotic_fits(
+    report: &mut Report,
+    name: &str,
+    label: &str,
+    bt: &[f64],
+    rs: &[f64],
+    tol: f64,
+) {
+    let z = mann_whitney_z(rs, bt, tol);
+    report.check(
+        name,
+        &format!("{label} (chaotic): Mann-Whitney z"),
+        z.max(0.0),
+        FIT_Z,
+    );
+    let k = rank_bound_k(rs.len(), bt.len());
+    let mut sorted = bt.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let kth = sorted.get(k - 1).copied().unwrap_or(f64::INFINITY);
+    let best = rs.iter().copied().fold(f64::INFINITY, f64::min);
+    report.check(
+        name,
+        &format!("{label} (chaotic): best above BoTorch's k-th best"),
+        (best - kth).max(0.0),
+        tol,
+    );
+}

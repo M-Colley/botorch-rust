@@ -173,17 +173,6 @@ fn grad_err(a: &[f64], e: &[f64]) -> f64 {
         .fold(0.0, f64::max)
 }
 
-fn quantiles(v: &[f64]) -> (f64, f64, f64, f64) {
-    let mut s = v.to_vec();
-    s.sort_by(f64::total_cmp);
-    let q = |p: f64| {
-        let pos = p * (s.len() - 1) as f64;
-        let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
-        s[lo] + (s[hi] - s[lo]) * (pos - lo as f64)
-    };
-    (s[0], q(0.25), q(0.5), q(0.75))
-}
-
 fn check_posteriors(report: &mut Report, name: &str, gp: &BatchedMultiOutputGP, c: &Case) {
     let pf = &c.posterior;
     let nb = gp.batch_size();
@@ -332,19 +321,7 @@ fn check_fit(report: &mut Report, name: &str, c: &Case, f: &Fit) {
     // likelihoods.
     let at_best = bt.iter().filter(|&&l| l <= bt_best + FIT_CLUSTER).count();
     if bt_worst - bt_best > CHAOTIC_RANGE || 4 * at_best < bt.len() {
-        let (bt_q, rs_q) = (quantiles(&bt), quantiles(&rs));
-        report.check(
-            name,
-            "fit (chaotic): best above BoTorch's median",
-            (rs_q.0 - bt_q.2).max(0.0),
-            FIT_TOL,
-        );
-        report.check(
-            name,
-            "fit (chaotic): median above BoTorch's upper quartile",
-            (rs_q.2 - bt_q.3).max(0.0),
-            FIT_TOL,
-        );
+        common::compare_chaotic_fits(report, name, "fit", &bt, &rs, FIT_TOL);
     } else {
         report.check(
             name,
@@ -364,14 +341,16 @@ fn check_fit(report: &mut Report, name: &str, c: &Case, f: &Fit) {
     println!(
         "{name:26} fit: loss {:+.10} (BoTorch {:+.10}), iterations {} (BoTorch {}), \
          attempts {own_attempts} (BoTorch {}), first-attempt outcomes: BoTorch \
-         [{bt_best:+.10}, {bt_worst:+.10}] ({} of 17), botorch_rs best {rs_best:+.10} ({} of 17)",
+         [{bt_best:+.10}, {bt_worst:+.10}] ({} of {}), botorch_rs best {rs_best:+.10} ({} of {})",
         r.loss,
         f.loss,
         r.results[0].iterations,
         f.iterations,
         f.attempts,
         bt.len(),
-        rs.len()
+        f.twin_losses.len() + 1,
+        rs.len(),
+        f.twin_losses.len() + 1
     );
 }
 

@@ -947,18 +947,26 @@ impl LCEMGP {
                 total: k_rows * k_rows,
             });
         }
-        let kt = self.task_kernel(p)?;
+        // Hyperparameters from raw values may underflow to zero; GPyTorch's
+        // NaN entries are injected below (`training_nan`).
+        let kt = self
+            .task_covar_module
+            .build_unchecked(p.task_raw_lengthscale.as_slice(), p.task_raw_outputscale)?;
         let kd = self
             .covar_module
-            .build(p.raw_lengthscale.as_slice(), p.raw_outputscale)?;
+            .build_unchecked(p.raw_lengthscale.as_slice(), p.raw_outputscale)?;
         let renormed = self.renormed_weights(&p.embedding_weights);
         let e = self.embeddings_from(&renormed);
         let es = kt.scale_points(&e);
-        let kernel_cov = kt.symmetric_scaled(&es);
+        let mut kernel_cov = kt.symmetric_scaled(&es);
+        // The embeddings are learned (GPyTorch's autograd path).
+        kt.training_nan(&e, true).inject(&mut kernel_cov);
         let w_ctx = p.raw_context_specific_weight;
         let task_cov = mix_context_covariance(kernel_cov.clone(), w_ctx);
         let xs = kd.scale_points(&self.x_data);
-        let kdata = kd.symmetric_scaled(&xs);
+        let mut kdata = kd.symmetric_scaled(&xs);
+        let data_nan = kd.training_nan(&self.x_data, false);
+        data_nan.inject(&mut kdata);
         let noise = p
             .raw_noise
             .map(|r| self.likelihood.noise_constraint.transform(r));
@@ -1044,6 +1052,10 @@ impl LCEMGP {
             &p.raw_lengthscale,
             nf,
         );
+        let ls_start = grad.len() - p.raw_lengthscale.len();
+        for &j in data_nan.nan_gradients() {
+            grad[ls_start + j] = f64::NAN;
+        }
         // Embeddings: dmll/dE_a = ½ Σ_b (G_ab + G_ba) ∂₁k_e(E_a, E_b), at the
         // renormalized weights (torch's gradient of the looked-up rows).
         let mut ge = Matrix::zeros(kt_count, self.embedding_dim());
@@ -1564,7 +1576,6 @@ impl Fittable for LCEMGP {
                 &x_init,
                 &bounds,
                 options,
-                true,
                 |x| {
                     model
                         .mll_value_and_grad(x)

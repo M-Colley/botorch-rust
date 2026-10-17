@@ -9,7 +9,6 @@ Import only after ``importorskip_botorch()``.
 from __future__ import annotations
 
 import math
-import statistics
 from collections.abc import Callable
 from typing import Any
 
@@ -25,7 +24,7 @@ from botorch_rs.acquisition import PosteriorMean as RsPosteriorMean
 from botorch_rs.acquisition import PosteriorStandardDeviation as RsPSD
 from botorch_rs.fit import fit_gpytorch_mll as rs_fit
 from botorch_rs.mlls import ExactMarginalLogLikelihood as RsMLL
-from parity_helpers import Checker, rel_err
+from parity_helpers import CHAOTIC_TWINS, Checker, compare_chaotic_fits, rel_err
 
 DT = torch.float64
 VALUE_TOL = 1e-9
@@ -215,11 +214,6 @@ def rs_fit_losses(rs: Any) -> tuple[list[float], int]:
     return [-float(v) for v in vr], int(mll._fit_result["attempts"])
 
 
-def quantiles(v: list[float]) -> tuple[float, float, float]:
-    q = statistics.quantiles(sorted(v), n=4, method="inclusive")
-    return min(v), q[1], q[2]
-
-
 def twin_inputs(X0: Any, t: int, cols: list[int] | None = None) -> Any:
     """Twin ``t`` of the training inputs ``X0`` (``t = 0``: ``X0``): the
     columns ``cols`` (all by default) perturbed at a relative 1e-14 .. 1e-11."""
@@ -240,7 +234,7 @@ def compare_fits(
     X0: Any,
     cols: list[int] | None = None,
     twins: int = 4,
-    chaotic_twins: int = 16,
+    chaotic_twins: int = CHAOTIC_TWINS,
 ) -> None:
     """Fits of the model and its twins from identical initial values, per
     model element (outputs, ensemble members): botorch_rs's best
@@ -248,7 +242,8 @@ def compare_fits(
     end above BoTorch's worst, within ``max(1e-6, 10 x`` BoTorch's spread at
     its best optimum``)``; on chaotic likelihoods (BoTorch's outcomes spread
     over more than 1e-3, or fewer than a quarter of them within 1e-4 of the
-    best) statistically."""
+    best) statistically on ``chaotic_twins`` twins
+    (``parity_helpers.compare_chaotic_fits``)."""
     bt_out: list[tuple[list[float], int]] = []
     rs_out: list[tuple[list[float], int]] = []
 
@@ -283,13 +278,7 @@ def compare_fits(
         # statistically like chaotic likelihoods.
         at_best = sum(v <= best + FIT_CLUSTER for v in bt_first)
         if worst - best > CHAOTIC_RANGE or 4 * at_best < len(bt_first):
-            bq, rq = quantiles(bt_first), quantiles(rs_first)
-            check.check_bound(
-                f"{label} (chaotic): best above BoTorch's median", rq[0] - bq[1], FIT_TOL
-            )
-            check.check_bound(
-                f"{label} (chaotic): median above BoTorch's upper quartile", rq[1] - bq[2], FIT_TOL
-            )
+            compare_chaotic_fits(check, label, bt_first, rs_first, FIT_TOL)
         else:
             check.check_bound(
                 f"{label}: best loss above BoTorch's best (scaled)",

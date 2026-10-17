@@ -1031,6 +1031,10 @@ impl MultiTaskGP {
         let tree = TreeKernel::build(&self.covar, &raw[kr.clone()], self.dim() + 1)?;
         let prep = tree.prepare(&self.train_kx)?;
         let mut k = tree.symmetric(&prep);
+        // GPyTorch's NaN entries at extreme hyperparameters (see
+        // `crate::kernels::nonfinite`).
+        let nan = tree.training_nan(&self.train_kx, false);
+        nan.inject(&mut k);
         let noise = self.noise_of(raw);
         for i in 0..n {
             k[(i, i)] += self.train_noise(&noise, i);
@@ -1106,8 +1110,11 @@ impl MultiTaskGP {
         let gk = tree.contract(&prep, &w);
         let gp = tree_prior_grad.expect("prior gradient computed");
         let derivs = self.covar.transform_derivatives(&raw[kr.clone()]);
-        for (j, idx) in kr.enumerate() {
+        for (j, idx) in kr.clone().enumerate() {
             grad[idx] = (0.5 * gk[j] + gp[j]) * derivs[j] / nf;
+        }
+        for &j in nan.nan_gradients() {
+            grad[kr.start + j] = f64::NAN;
         }
         Ok((value, Some(grad)))
     }
@@ -1146,7 +1153,6 @@ impl Fittable for MultiTaskGP {
                 &initial,
                 &bounds,
                 options,
-                true,
                 |x| {
                     model
                         .mll_value_and_grad(x)

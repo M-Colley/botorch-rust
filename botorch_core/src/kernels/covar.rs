@@ -6,6 +6,7 @@
 
 use crate::error::Result;
 use crate::kernels::eval::{TreeKernel, TreePrep};
+use crate::kernels::nonfinite::TrainingNan;
 use crate::kernels::tree::KernelNode;
 use crate::kernels::{Kernel, KernelSpec, ScaledPoints};
 use crate::{Matrix, Vector};
@@ -114,6 +115,19 @@ impl BuiltCovar {
             BuiltCovar::Standard(k) => Prepared::Standard(k.scale_points(x)),
             BuiltCovar::Tree(t) => Prepared::Tree(t.prepare(x)?),
         })
+    }
+
+    /// GPyTorch's NaN entries of the training covariance `K(X, X)` of the
+    /// raw training inputs `x` and the hyperparameters whose gradient is NaN
+    /// (lengthscale indices of a standard kernel, flat offsets in a tree);
+    /// see [`crate::kernels::nonfinite`]. `inputs_require_grad`: the inputs
+    /// depend on learned parameters (an input transform fitted with the
+    /// GP), which selects GPyTorch's autograd path for every kernel.
+    pub fn training_nan(&self, x: &Matrix, inputs_require_grad: bool) -> TrainingNan {
+        match self {
+            BuiltCovar::Standard(k) => k.training_nan(x, inputs_require_grad),
+            BuiltCovar::Tree(t) => t.training_nan(x, inputs_require_grad),
+        }
     }
 
     /// `K(A, B)`.

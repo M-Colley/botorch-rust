@@ -30,7 +30,7 @@ BoTorch's bugs are fixed in the reference (``multitask_helpers``), and
 ``test_botorch_bugs`` measures what they change. Tolerances: values 1e-9,
 gradients 1e-8 (relative); MC acquisition values against the regime of
 BoTorch's outcomes on twins (training inputs perturbed at 1e-14 .. 1e-11);
-fits as in the 6a kernel tests (4 twins, 16 for chaotic likelihoods). The
+fits as in the 6a kernel tests (4 twins, 64 for chaotic likelihoods). The
 randomized sweep is marked ``equivalence``; it evaluates BoTorch with exact
 kernel products (``multitask_helpers.exact_kernel_products``: GPyTorch's
 jittered Cholesky roots of the singular task covariance change the MLL by up
@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import copy
 import random
-import statistics
 from collections.abc import Iterator
 from typing import Any
 
@@ -91,7 +90,7 @@ from botorch_rs.mlls import ExactMarginalLogLikelihood as RsMLL  # noqa: E402
 from botorch_rs.models import ModelListGP as RsModelListGP  # noqa: E402
 from botorch_rs.models import MultiTaskGP as RsMTGP  # noqa: E402
 from botorch_rs.sampling import SobolQMCNormalSampler as RsSampler  # noqa: E402
-from parity_helpers import Checker, rel_err  # noqa: E402
+from parity_helpers import CHAOTIC_TWINS, Checker, compare_chaotic_fits, rel_err  # noqa: E402
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
@@ -104,7 +103,6 @@ FIT_CLUSTER = 1e-4
 CHAOTIC_RANGE = 1e-3
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 4
-CHAOTIC_TWINS = 16
 NUM_SAMPLES = 64
 
 MTGP = {c["name"]: c for c in h.mtgp_cases()}
@@ -470,14 +468,7 @@ def _compare_fits(
     tol = max(FIT_TOL, 10 * spread)
     CHECK.record(f"{label} fit: BoTorch's spread at its best optimum", spread, None)
     if worst - best > CHAOTIC_RANGE:
-        bq = statistics.quantiles(sorted(bt_first), n=4, method="inclusive")
-        rq = statistics.quantiles(sorted(rs_first), n=4, method="inclusive")
-        CHECK.check_bound(
-            f"{label} fit (chaotic): best above BoTorch's median", min(rs_first) - bq[1], FIT_TOL
-        )
-        CHECK.check_bound(
-            f"{label} fit (chaotic): median above BoTorch's upper quartile", rq[1] - bq[2], FIT_TOL
-        )
+        compare_chaotic_fits(CHECK, f"{label} fit", bt_first, rs_first, FIT_TOL)
     else:
         CHECK.check_bound(
             f"{label} fit: best loss above BoTorch's best (scaled)",

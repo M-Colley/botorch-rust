@@ -11,16 +11,26 @@
 //!
 //! Like BoTorch's `_fit_fallback`, an attempt that terminates abnormally (a
 //! line-search failure) or raises a numerical error (a covariance that is not
-//! positive definite even with jitter, or non-finite values) is retried from
+//! positive definite even with jitter) is retried from
 //! hyperparameters resampled from their priors (BoTorch's
 //! `sample_all_priors`; parameters without priors keep their initial values),
 //! up to `max_attempts` attempts in total. An invalid argument (a
 //! hyperparameter leaving the support of its prior, torch's `ValueError`)
-//! ends the fit with that error, as in BoTorch. For kernel trees, non-finite
-//! values and gradients go to L-BFGS-B like in BoTorch (whose line search
-//! backtracks from them); models with the standard RBF / Matérn kernels end
-//! the attempt on them. Hitting the iteration or evaluation
-//! limit is not a failure (BoTorch's `OptimizationStatus.STOPPED`).
+//! ends the fit with that error, as in BoTorch. Hitting the iteration or
+//! evaluation limit is not a failure (BoTorch's `OptimizationStatus.STOPPED`).
+//!
+//! Non-finite values and gradients go to L-BFGS-B exactly as BoTorch's
+//! closure hands them to scipy (the L-BFGS-B port treats them like scipy,
+//! whose line search does not raise on them): at raw hyperparameters where
+//! GPyTorch's covariance is NaN (squared distances that overflow,
+//! lengthscales that underflowed to zero; see [`crate::kernels::nonfinite`])
+//! the loss and all gradients are NaN
+//! (BoTorch's `_handle_numerical_errors` for linear_operator's `NanError`);
+//! where a prior density vanishes (e.g. an outputscale that underflowed to
+//! zero under a `GammaPrior`) the loss is `+inf` with the gradients that
+//! GPyTorch computes (`inf · 0 = NaN` through the softplus). Lengthscales
+//! and outputscales of zero are accepted during the fit; set by the user
+//! (`initialize`, constructors) they still raise.
 //!
 //! L-BFGS-B iterates are sensitive to round-off: on flat or ill-conditioned
 //! likelihood surfaces, long runs can stop at slightly different points than
@@ -40,7 +50,14 @@
 //!   number of function evaluations (`maxfun` is not used, as in BoTorch).
 //!   Failed elements are retried individually from prior samples (BoTorch
 //!   accepts abnormal terminations of individual elements without retrying
-//!   and restarts all elements after a numerical error);
+//!   and restarts all elements after a numerical error). A NaN covariance of
+//!   an element gives that element a NaN loss and NaN gradients, as in
+//!   BoTorch's unbatched closure. This deviates from BoTorch's batched
+//!   closure, which evaluates the elements' trial points in one batch: a NaN
+//!   covariance of any element raises `NanError` for the whole batch and
+//!   gives every element a NaN loss with zero gradients, after which an
+//!   element can stop at that point with "converged" and a NaN loss (a
+//!   BoTorch bug, see `docs/drafts/fit-nonfinite.md`);
 //! * [`ModelListGP`]: every sub-model is fitted on its own, like BoTorch's
 //!   `fit_gpytorch_mll` for a `SumMarginalLogLikelihood`.
 
@@ -256,11 +273,6 @@ fn fit_single_task_gp(model: &mut SingleTaskGP, options: FitOptions) -> Result<F
     let initial = model.hyperparameters().clone();
     let x_init = initial.to_vector().as_slice().to_vec();
     let bounds = model.raw_parameter_bounds();
-    // Kernel trees hand non-finite values and gradients to L-BFGS-B, like
-    // BoTorch (scipy's line search backtracks from them; e.g. a periodic
-    // kernel whose lengthscale underflows). The standard RBF / Matérn
-    // kernels keep ending the attempt, as before kernel trees existed.
-    let nan_tolerant = matches!(model.covar_module(), CovarModule::Tree(_));
     let (result, x) = {
         let mll = ExactMarginalLogLikelihood::new(model);
         let model_ref: &SingleTaskGP = model;
@@ -268,7 +280,6 @@ fn fit_single_task_gp(model: &mut SingleTaskGP, options: FitOptions) -> Result<F
             &x_init,
             &bounds,
             options,
-            nan_tolerant,
             |x| {
                 mll.value_and_grad(x)
                     .map(|(v, g)| (v, g.as_slice().to_vec()))
@@ -287,10 +298,10 @@ fn fit_single_task_gp(model: &mut SingleTaskGP, options: FitOptions) -> Result<F
 /// up to `options.max_attempts` attempts. Returns the summary and the fitted
 /// raw parameters.
 ///
-/// With `nan_tolerant`, a NaN covariance ([`BotorchError::Nan`]) and
-/// non-finite values give NaN values and gradients, from which L-BFGS-B
-/// backtracks, as in BoTorch (whose closure maps linear_operator's `NanError`
-/// to NaN); otherwise they end the attempt.
+/// A NaN covariance ([`BotorchError::Nan`]) gives NaN values and
+/// gradients, and other non-finite values and gradients are passed on
+/// unchanged, as BoTorch's closure (which maps linear_operator's `NanError`
+/// to NaN) passes them to scipy.
 ///
 /// # Errors
 /// [`BotorchError::InvalidArgument`] for invalid options or hyperparameters
@@ -300,7 +311,6 @@ pub(crate) fn minimize_with_retries<F, S>(
     x_init: &[f64],
     bounds: &[(f64, f64)],
     options: FitOptions,
-    nan_tolerant: bool,
     mll: F,
     mut resample: S,
 ) -> Result<(FitResult, Vec<f64>)>
@@ -335,17 +345,11 @@ where
                 Ok(vg) => vg,
                 // BoTorch's `_handle_numerical_errors`: a NaN covariance
                 // (linear_operator's `NanError`) gives NaN values and
-                // gradients, from which L-BFGS-B's line search backtracks.
-                Err(BotorchError::Nan { .. }) if nan_tolerant => {
-                    return Ok((f64::NAN, vec![f64::NAN; x.len()]))
-                }
+                // gradients, which L-BFGS-B's line search handles like
+                // scipy's.
+                Err(BotorchError::Nan { .. }) => return Ok((f64::NAN, vec![f64::NAN; x.len()])),
                 Err(e) => return Err(e),
             };
-            if !nan_tolerant && (!value.is_finite() || grad.iter().any(|g| !g.is_finite())) {
-                return Err(BotorchError::Numerical(format!(
-                    "non-finite marginal log likelihood {value} or gradient at raw parameters {x:?}"
-                )));
-            }
             Ok((-value, grad.iter().map(|g| -g).collect()))
         };
         match lbfgsb::minimize(loss_and_grad, &x0, &lower, &upper, &lb_options) {

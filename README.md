@@ -1200,10 +1200,35 @@ eleven BoTorch / GPyTorch bugs found.
 `optimize_acqf_mixed` / `optimize_acqf_mixed_alternating` find the same
 candidates (7.9e-11). Fits are compared with BoTorch's outcomes on 16 perturbed
 twins; `mixed_last` has a multimodal likelihood (1 of 17 BoTorch fits reaches
-its best) and is compared with BoTorch's spread of outcomes.
+its best) and is compared statistically (see below).
 
 [docs/models.md](docs/models.md) has the full tables, the deviations and six
 BoTorch bugs found (two of them known).
+
+### Fitting at extreme hyperparameters and chaotic fits
+
+When L-BFGS-B tries extreme hyperparameters (a lengthscale or outputscale whose
+softplus underflows to 0, or scaled inputs whose squared distances overflow),
+GPyTorch's covariance is NaN or the loss is infinite, and BoTorch's line search
+backtracks. botorch-rust reproduces these non-finite values for every model
+(`botorch_core::kernels::nonfinite`), so its fits take BoTorch's path:
+
+- On a scan of 8000 fits (eight model configurations, data seeds 7..1006), the
+  seeds that previously raised or ended in another optimum (up to 0.22 worse)
+  now agree to 3e-11. The three remaining gaps (at most 2.3e-5) lie within
+  BoTorch's own spread on rounding-level twins.
+- At 1242 random extreme points, the loss classes (finite, NaN, `+inf`) and
+  the NaN patterns of the gradients equal BoTorch's.
+  `test_parity_fit_nonfinite.py` also has a 200-seed sweep (`-m
+  equivalence`, worst gap 1.1e-8).
+
+Fits whose BoTorch outcomes on twins spread widely (chaotic or multimodal
+likelihoods) are compared statistically, with 64 twins and a one-sided
+Mann–Whitney test at level 1e-3 plus a bound on the best outcome. Each check
+fails by chance with probability at most 1e-3; the earlier median and quartile
+comparison on 17 outcomes was not robust across platforms.
+[docs/fitting.md](docs/fitting.md) has the details and one BoTorch bug found
+(batched fits couple their elements through NaN covariances).
 
 ### Versions checked
 
@@ -1409,6 +1434,17 @@ The model fits alone are 140–550× faster.
 
 ## Migration notes and known differences
 
+- **Fitting.**
+  - Zero lengthscales or outputscales reached from raw values during a fit
+    give BoTorch's NaN or infinite losses instead of an error; values that
+    you set yourself still raise.
+  - Batched fits keep their elements independent at NaN points. BoTorch's
+    batched closure gives every element NaN with zero gradients when one
+    element hits a NaN covariance (bug 1 in
+    [docs/fitting.md](docs/fitting.md)).
+  - GPyTorch's kernel values in its rounding-noise regime (scaled inputs
+    above about 1e8) depend on the BLAS summation order and are not
+    reproduced; botorch-rust keeps the exact values.
 - **Input and outcome transforms.**
   - Models with transforms of some outputs (`Log(outputs=[0])`) untransform
     their posteriors per output; BoTorch raises `NotImplementedError`.

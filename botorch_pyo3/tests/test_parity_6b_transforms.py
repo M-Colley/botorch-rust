@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import math
 import random
-import statistics
 from collections.abc import Iterator
 from typing import Any
 
@@ -92,7 +91,7 @@ from botorch_rs.mlls import ExactMarginalLogLikelihood as RsMLL  # noqa: E402
 from botorch_rs.models import ModelListGP as RsModelListGP  # noqa: E402
 from botorch_rs.models import SingleTaskGP as RsSingleTaskGP  # noqa: E402
 from botorch_rs.sampling import SobolQMCNormalSampler as RsSampler  # noqa: E402
-from parity_helpers import Checker  # noqa: E402
+from parity_helpers import CHAOTIC_TWINS, Checker, compare_chaotic_fits  # noqa: E402
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
@@ -105,7 +104,6 @@ FIT_CLUSTER = 1e-4
 CHAOTIC_RANGE = 1e-3
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 4
-CHAOTIC_TWINS = 16
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -1134,11 +1132,6 @@ def _rs_fit(rs: Any) -> tuple[float, int]:
     return float(mll._fit_result["fval"]), int(mll._fit_result["attempts"])
 
 
-def _quantiles(v: list[float]) -> tuple[float, float, float]:
-    q = statistics.quantiles(sorted(v), n=4, method="inclusive")
-    return min(v), q[1], q[2]
-
-
 def _twin(X0: Any, t: int) -> Any:
     if t == 0:
         return X0
@@ -1174,11 +1167,7 @@ def test_fit_from_identical_initial_values(name: str) -> None:
     tol = max(FIT_TOL, 10 * spread)
     CHECK.record("fit: BoTorch's spread at its best optimum", spread, None)
     if worst - best > CHAOTIC_RANGE:
-        bq, rq = _quantiles(bt_first), _quantiles(rs_first)
-        CHECK.check_bound("fit (chaotic): best above BoTorch's median", rq[0] - bq[1], FIT_TOL)
-        CHECK.check_bound(
-            "fit (chaotic): median above BoTorch's upper quartile", rq[1] - bq[2], FIT_TOL
-        )
+        compare_chaotic_fits(CHECK, "fit", bt_first, rs_first, FIT_TOL)
     else:
         CHECK.check_bound(
             "fit: best loss above BoTorch's best (scaled)", (min(rs_first) - best) / tol, 1.0

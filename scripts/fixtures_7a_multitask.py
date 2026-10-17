@@ -48,6 +48,9 @@ TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 16
 NUM_SAMPLES = 64
 TESTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "botorch_pyo3", "tests")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import fixtures_6a_kernels as f6a  # noqa: E402
 
 
 def enc(x: Any) -> Any:
@@ -219,11 +222,17 @@ def fit_record(
     default = h.flat(bt)
     fitted = fit(copy.deepcopy(bt))
     twins = []
-    for kk in range(1, N_TWINS + 1):
-        tw = twin(bt, case, kk, TWIN_SCALES[(kk - 1) % len(TWIN_SCALES)])
-        h.set_flat(tw, default)
-        r = fit(tw)
-        twins.append((tw.train_inputs[0].clone(), r["loss"], r["attempts"]))
+
+    def add_twins(ks: range) -> None:
+        for kk in ks:
+            tw = twin(bt, case, kk, TWIN_SCALES[(kk - 1) % len(TWIN_SCALES)])
+            h.set_flat(tw, default)
+            r = fit(tw)
+            twins.append((tw.train_inputs[0].clone(), r["loss"], r["attempts"]))
+
+    add_twins(range(1, N_TWINS + 1))
+    if f6a.is_chaotic(fitted, twins):
+        add_twins(range(N_TWINS + 1, f6a.CHAOTIC_TWINS + 1))
     fitted["twin_train_x"] = [t for t, _, _ in twins]
     fitted["twin_losses"] = [loss for _, loss, _ in twins]
     fitted["twin_attempts"] = [a for _, _, a in twins]
@@ -446,16 +455,22 @@ def kron_fit_record(case: dict[str, Any], bt: Any) -> dict[str, Any]:
     default = h.flat(bt)
     fitted = fit(copy.deepcopy(bt))
     twins = []
-    for kk in range(1, N_TWINS + 1):
-        tw = copy.deepcopy(bt)
-        gg = torch.Generator().manual_seed(kk)
-        Xt = tw.train_inputs[0].clone()
-        rel = TWIN_SCALES[(kk - 1) % len(TWIN_SCALES)]
-        Xt = Xt * (1 + rel * torch.randn(Xt.shape, generator=gg, dtype=DT))
-        tw.set_train_data(inputs=(Xt,), strict=False)
-        h.set_flat(tw, default)
-        r = fit(tw)
-        twins.append((Xt, r["loss"], r["attempts"]))
+
+    def add_twins(ks: range) -> None:
+        for kk in ks:
+            tw = copy.deepcopy(bt)
+            gg = torch.Generator().manual_seed(kk)
+            Xt = tw.train_inputs[0].clone()
+            rel = TWIN_SCALES[(kk - 1) % len(TWIN_SCALES)]
+            Xt = Xt * (1 + rel * torch.randn(Xt.shape, generator=gg, dtype=DT))
+            tw.set_train_data(inputs=(Xt,), strict=False)
+            h.set_flat(tw, default)
+            r = fit(tw)
+            twins.append((Xt, r["loss"], r["attempts"]))
+
+    add_twins(range(1, N_TWINS + 1))
+    if f6a.is_chaotic(fitted, twins):
+        add_twins(range(N_TWINS + 1, f6a.CHAOTIC_TWINS + 1))
     fitted["twin_train_x"] = [t for t, _, _ in twins]
     fitted["twin_losses"] = [loss for _, loss, _ in twins]
     fitted["twin_attempts"] = [a for _, _, a in twins]

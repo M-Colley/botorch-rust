@@ -25,11 +25,13 @@ use crate::{Matrix, Vector};
 
 mod covar;
 pub mod eval;
+pub mod nonfinite;
 pub mod oak;
 pub mod tree;
 
 pub use covar::{BuiltCovar, CovarModule, Prepared};
 pub use eval::TreeKernel;
+pub use nonfinite::TrainingNan;
 pub use tree::{KernelNode, KernelType, MatrixPrior, ParamSpec, SaasPrior};
 
 /// Lower clamp of the Matérn distance (`gpytorch.kernels.kernel.dist`).
@@ -282,6 +284,40 @@ impl KernelSpec {
         };
         Kernel::new(self.kind, lengthscale, outputscale)
     }
+
+    /// [`KernelSpec::build`] without the checks that the lengthscales and
+    /// the outputscale are positive and finite, for the hyperparameters that
+    /// raw parameters produce during a fit: softplus underflows to zero for
+    /// raw values below about -745, and GPyTorch evaluates the kernel
+    /// anyway (see [`Kernel::training_nan`]).
+    ///
+    /// # Errors
+    /// The dimension and structure errors of [`KernelSpec::build`].
+    pub(crate) fn build_unchecked(
+        &self,
+        raw_lengthscale: &[f64],
+        raw_outputscale: Option<f64>,
+    ) -> Result<Kernel> {
+        if raw_lengthscale.len() != self.ard_num_dims || raw_lengthscale.is_empty() {
+            return self.build(raw_lengthscale, raw_outputscale);
+        }
+        let lengthscale = Vector::from_iterator(
+            raw_lengthscale.len(),
+            raw_lengthscale
+                .iter()
+                .map(|&r| self.lengthscale_constraint.transform(r)),
+        );
+        let outputscale = match (self.scale, raw_outputscale) {
+            (Some(s), Some(raw)) => Some(s.outputscale_constraint.transform(raw)),
+            (None, None) => None,
+            _ => return self.build(raw_lengthscale, raw_outputscale),
+        };
+        Ok(Kernel {
+            kind: self.kind,
+            lengthscale,
+            outputscale,
+        })
+    }
 }
 
 /// BoTorch's `get_covar_module_with_dim_scaled_prior` (the `SingleTaskGP`
@@ -415,6 +451,32 @@ impl Kernel {
             lengthscale,
             outputscale,
         })
+    }
+
+    /// GPyTorch's NaN entries of the training covariance `K(X, X)` (`X` the
+    /// `n × d` training inputs) and the lengthscales whose gradient is NaN
+    /// (see [`nonfinite`]). `inputs_require_grad`: the inputs are learned
+    /// (e.g. LCEMGP's embeddings), which selects GPyTorch's autograd path
+    /// also for a single lengthscale.
+    pub fn training_nan(&self, x: &Matrix, inputs_require_grad: bool) -> TrainingNan {
+        let (n, d) = x.shape();
+        if n == 0 || d != self.dim() {
+            return TrainingNan::default();
+        }
+        let data: Vec<f64> = (0..n)
+            .flat_map(|i| (0..d).map(move |j| x[(i, j)]))
+            .collect();
+        let function_path = d == 1 && !inputs_require_grad;
+        // A `ScaleKernel` multiplies by a finite outputscale: the base
+        // kernel values are bounded, so its NaN entries are the base's.
+        nonfinite::stationary(
+            self.kind,
+            &data,
+            n,
+            d,
+            self.lengthscale.as_slice(),
+            function_path,
+        )
     }
 
     /// The kernel family.

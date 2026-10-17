@@ -25,8 +25,10 @@ model and 4 twins (training inputs perturbed at 1e-14 .. 1e-11) must reach
 BoTorch's best and its own fit must not end above BoTorch's worst, within
 ``max(1e-6, 10 x`` the spread of BoTorch's outcomes at its best optimum``)``;
 on chaotic likelihoods (BoTorch's outcomes spread over more than 1e-3),
-statistically (botorch_rs's best reaches BoTorch's median, its median
-BoTorch's upper quartile).
+statistically on 64 twins (``parity_helpers.compare_chaotic_fits``: a
+one-sided Mann-Whitney U test at level 1e-3 and botorch_rs's best within
+BoTorch's best ``k`` outcomes, each failing by chance with probability at
+most 1e-3).
 
 BoTorch's numerical quirks are fixed for the comparisons (see the deviations
 in ``docs/drafts/6a-kernels.md``): Matérn-1/2 models are compared with
@@ -86,7 +88,13 @@ from botorch_rs.models import ModelListGP as RsModelListGP  # noqa: E402
 from botorch_rs.models import SingleTaskGP as RsSingleTaskGP  # noqa: E402
 from botorch_rs.sampling import SobolQMCNormalSampler as RsSampler  # noqa: E402
 from botorch_rs.sampling import pathwise as rs_pw  # noqa: E402
-from parity_helpers import Checker, perturbed_copy, rel_err  # noqa: E402
+from parity_helpers import (  # noqa: E402
+    CHAOTIC_TWINS,
+    Checker,
+    compare_chaotic_fits,
+    perturbed_copy,
+    rel_err,
+)
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
@@ -99,7 +107,6 @@ FIT_CLUSTER = 1e-4
 CHAOTIC_RANGE = 1e-3
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 4
-CHAOTIC_TWINS = 16
 F64 = {"__dtype__": "float64"}
 
 
@@ -809,11 +816,6 @@ def _rs_fit(rs: Any) -> tuple[float, int]:
     return float(mll._fit_result["fval"]), int(mll._fit_result["attempts"])
 
 
-def _quantiles(v: list[float]) -> tuple[float, float, float]:
-    q = statistics.quantiles(sorted(v), n=4, method="inclusive")
-    return min(v), q[1], q[2]
-
-
 def _twin(X0: Any, t: int, opts: dict[str, Any]) -> Any:
     """Twin ``t`` of the training inputs ``X0`` (``t = 0``: ``X0``)."""
     if t == 0:
@@ -861,11 +863,7 @@ def test_fit_from_identical_initial_values(name: str) -> None:
     tol = max(FIT_TOL, 10 * spread)
     CHECK.record("fit: BoTorch's spread at its best optimum", spread, None)
     if worst - best > CHAOTIC_RANGE:
-        bq, rq = _quantiles(bt_first), _quantiles(rs_first)
-        CHECK.check_bound("fit (chaotic): best above BoTorch's median", rq[0] - bq[1], FIT_TOL)
-        CHECK.check_bound(
-            "fit (chaotic): median above BoTorch's upper quartile", rq[1] - bq[2], FIT_TOL
-        )
+        compare_chaotic_fits(CHECK, "fit", bt_first, rs_first, FIT_TOL)
     else:
         CHECK.check_bound(
             "fit: best loss above BoTorch's best (scaled)", (min(rs_first) - best) / tol, 1.0
