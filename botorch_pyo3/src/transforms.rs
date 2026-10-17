@@ -437,6 +437,27 @@ impl PyStandardize {
         })
     }
 
+    /// A fitted transform with the statistics `means[b][t]` and
+    /// `stdvs[b][t]` of every batch element and output.
+    #[staticmethod]
+    #[pyo3(name = "fitted")]
+    fn fitted_py(
+        means: Vec<Vec<f64>>,
+        stdvs: Vec<Vec<f64>>,
+        min_stdv: f64,
+        batch_shape: Vec<usize>,
+    ) -> PyResult<Self> {
+        if means.len() != numel(&batch_shape) || stdvs.len() != means.len() {
+            return Err(dimension_error(format!(
+                "expected statistics of {} batch elements, got {} and {}",
+                numel(&batch_shape),
+                means.len(),
+                stdvs.len()
+            )));
+        }
+        Self::from_stats(means, stdvs, min_stdv, batch_shape)
+    }
+
     /// The `min_stdv` setting.
     #[getter]
     fn min_stdv(&self) -> f64 {

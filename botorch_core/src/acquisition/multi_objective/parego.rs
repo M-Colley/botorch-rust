@@ -202,8 +202,13 @@ impl QLogNParEGO {
         // Y_baseline = objective(model.posterior(X_baseline).mean).
         let post = model.posterior(x_baseline, false)?;
         let (n, m) = (x_baseline.nrows(), model.num_outputs());
+        let post_mean = if post.is_transformed() {
+            post.moments()?.0
+        } else {
+            post.mean.clone()
+        };
         let mean = McSamples::new(
-            Matrix::from_column_slice(m * n, 1, post.mean.as_slice()),
+            Matrix::from_column_slice(m * n, 1, post_mean.as_slice()),
             n,
             m,
         )?;

@@ -100,6 +100,17 @@ impl Model for ModelList {
         Some(out)
     }
 
+    fn list_output_sizes(&self) -> Option<Vec<usize>> {
+        Some(self.models.iter().map(|m| m.num_outputs()).collect())
+    }
+
+    fn transformed_outputs(&self) -> Vec<bool> {
+        self.models
+            .iter()
+            .flat_map(|m| m.transformed_outputs())
+            .collect()
+    }
+
     fn fantasy_output_groups(&self) -> Option<Vec<usize>> {
         let mut out = Vec::with_capacity(self.models.len());
         for m in &self.models {

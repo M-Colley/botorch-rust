@@ -119,7 +119,7 @@ def test_input_perturbation_modes_and_errors(kind: str) -> None:
             as_kind(Yt, kind),
             input_transform=InputPerturbation(as_kind(PSET, kind), transform_on_train=True),
         )
-    with pytest.raises(UnsupportedError, match="chains Normalize and InputPerturbation"):
+    with pytest.raises(UnsupportedError, match="chains its own input transforms"):
         ChainedInputTransform(a=Standardize(m=1))  # type: ignore[arg-type]
 
 
@@ -147,9 +147,10 @@ def test_model_posterior_is_plain_posterior_at_perturbed_points(kind: str) -> No
     assert shape(lst.posterior(Xq).mean) == (6, 4)
 
 
-def test_conditioning_and_fantasies_are_rejected(kind: str) -> None:
-    """BoTorch fantasizes in a "fantasize mode" that skips the perturbations;
-    without it the perturbed inputs would not match the observations."""
+def test_conditioning_is_rejected_and_fantasies_skip_perturbations(kind: str) -> None:
+    """BoTorch fantasizes in a "fantasize mode" that skips the perturbations
+    (``transform_on_fantasize=False``); conditioning in eval mode would
+    perturb the inputs, which then do not match the observations."""
     Xt, Yt = data(m=1)
     tf = InputPerturbation(as_kind(PSET, kind))
     model = SingleTaskGP(as_kind(Xt, kind), as_kind(Yt, kind), input_transform=tf)
@@ -157,8 +158,11 @@ def test_conditioning_and_fantasies_are_rejected(kind: str) -> None:
     X = as_kind([[0.2, 0.3]], kind)
     with pytest.raises(UnsupportedError, match="one-to-many"):
         model.condition_on_observations(X, as_kind([[0.1]], kind))
-    with pytest.raises(UnsupportedError, match="one-to-many"):
-        model.fantasize(X, SobolQMCNormalSampler(sample_shape=[4], seed=0))
+    fm = model.fantasize(X, SobolQMCNormalSampler(sample_shape=[4], seed=0))
+    assert fm.batch_shape == (4,)
+    # The fantasy points enter the training data unperturbed.
+    tail = [b[-1] for b in to_list(fm.train_inputs[0])]
+    close(tail, [[0.2, 0.3]] * 4)
 
 
 def test_chained_transform_fits_normalize(kind: str) -> None:

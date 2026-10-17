@@ -47,6 +47,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::error::{BotorchError, Result};
+use crate::transforms::input_steps::{NewStep, StepRecord};
+pub use crate::transforms::input_steps::{TransformFlags, TransformMode};
 use crate::transforms::Normalize;
 use crate::{Matrix, Vector};
 
@@ -435,18 +437,120 @@ struct PerturbationRecord {
 /// A step of a [`ChainedInputTransform`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputTransformStep {
-    /// `Normalize` (applied in train and eval mode; learnable bounds are
-    /// fitted to the training inputs as transformed by the preceding steps).
+    /// `Normalize` of all inputs with BoTorch's defaults (applied in train
+    /// and eval mode; learnable bounds are fitted to the training inputs as
+    /// transformed by the preceding steps).
     Normalize(Normalize),
     /// `InputPerturbation`.
     Perturbation(InputPerturbation),
+    /// Any other transform of `botorch.models.transforms.input` (see
+    /// [`crate::transforms::input_steps`]).
+    Step(NewStep),
+}
+
+impl InputTransformStep {
+    /// Whether the size of the step's output is determined at the first
+    /// evaluation (feature and perturbation functions, interaction features
+    /// of all dimensions).
+    fn sized_by_inputs(&self) -> bool {
+        match self {
+            InputTransformStep::Normalize(_) => false,
+            InputTransformStep::Perturbation(p) => matches!(p.set, PerturbationSet::Function(_)),
+            InputTransformStep::Step(NewStep::Append(a)) => a.sized_by_inputs(),
+            InputTransformStep::Step(_) => false,
+        }
+    }
+
+    /// The transform flags of the step.
+    pub fn flags(&self) -> TransformFlags {
+        match self {
+            InputTransformStep::Normalize(_) => TransformFlags::ALL,
+            InputTransformStep::Perturbation(p) => TransformFlags {
+                train: p.transform_on_train,
+                eval: p.transform_on_eval,
+                fantasize: p.transform_on_fantasize,
+            },
+            InputTransformStep::Step(s) => s.flags(),
+        }
+    }
+
+    /// BoTorch's class name of the step.
+    pub fn name(&self) -> &'static str {
+        match self {
+            InputTransformStep::Normalize(_) => "Normalize",
+            InputTransformStep::Perturbation(_) => "InputPerturbation",
+            InputTransformStep::Step(s) => s.name(),
+        }
+    }
+
+    /// The number of learned parameters of the step (fitted with the GP).
+    pub fn num_params(&self) -> usize {
+        match self {
+            InputTransformStep::Step(s) => s.num_params(),
+            _ => 0,
+        }
+    }
+
+    /// Whether the step learns coefficients from the training inputs in
+    /// train mode.
+    fn learns_coefficients(&self) -> bool {
+        match self {
+            InputTransformStep::Normalize(n) => n.learn_bounds(),
+            InputTransformStep::Perturbation(_) => false,
+            InputTransformStep::Step(s) => s.learns_coefficients(),
+        }
+    }
+
+    /// The number of points per input point if the step applies in `mode`
+    /// (`None` for a callable whose size is not known yet).
+    fn expand(&self, mode: TransformMode) -> Option<usize> {
+        if !self.flags().applies(mode) {
+            return Some(1);
+        }
+        match self {
+            InputTransformStep::Normalize(_) => Some(1),
+            InputTransformStep::Perturbation(p) => p.n_w,
+            InputTransformStep::Step(s) => s.expand(),
+        }
+    }
+
+    /// The output dimension for `d` input dimensions if the step applies.
+    fn out_dim(&self, d: usize) -> Result<usize> {
+        match self {
+            InputTransformStep::Normalize(n) => {
+                if n.dim() != d {
+                    return Err(BotorchError::DimensionMismatch(format!(
+                        "Wrong input dimension. Received {d}, expected {}.",
+                        n.dim()
+                    )));
+                }
+                Ok(d)
+            }
+            InputTransformStep::Perturbation(p) => {
+                p.columns(d)?;
+                Ok(d)
+            }
+            InputTransformStep::Step(s) => s.out_dim(d),
+        }
+    }
 }
 
 /// BoTorch's `ChainedInputTransform` (a single step represents the plain
-/// transform): the steps are applied in order.
+/// transform): the steps are applied in order, each according to its flags
+/// and the mode (see [`TransformMode`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChainedInputTransform {
     steps: Vec<InputTransformStep>,
+    /// Whether each step was in train mode when the model was built
+    /// (BoTorch transforms the training inputs at construction in the
+    /// transforms' current modes; `true` by default).
+    training: Vec<bool>,
+    /// The parameter-name prefix of each step (e.g. `input_transform.` or
+    /// `input_transform.warp.`).
+    prefixes: Vec<String>,
+    /// The dimension of the points of a posterior (determined by
+    /// [`ChainedInputTransform::fit`]; `None`: that of the training inputs).
+    eval_dim: Option<usize>,
 }
 
 /// The record of an evaluation of a [`ChainedInputTransform`] for its
@@ -455,6 +559,8 @@ pub struct ChainedInputTransform {
 pub struct InputTape {
     n: usize,
     d: usize,
+    /// The output dimension.
+    d_out: usize,
     steps: Vec<TapeStep>,
 }
 
@@ -462,6 +568,18 @@ pub struct InputTape {
 enum TapeStep {
     Normalize(Vector),
     Perturbation(PerturbationRecord),
+    /// A new step: its index in the chain, its parameter offset and record.
+    Step(usize, usize, StepRecord),
+}
+
+impl TapeStep {
+    fn expand(&self) -> usize {
+        match self {
+            TapeStep::Perturbation(r) => r.nw,
+            TapeStep::Normalize(_) => 1,
+            TapeStep::Step(_, _, r) => r.expand(),
+        }
+    }
 }
 
 impl ChainedInputTransform {
@@ -475,7 +593,51 @@ impl ChainedInputTransform {
                 "a ChainedInputTransform needs at least one transform".into(),
             ));
         }
-        Ok(Self { steps })
+        let k = steps.len();
+        let prefixes = if k == 1 {
+            vec!["input_transform.".to_string()]
+        } else {
+            (0..k).map(|i| format!("input_transform.{i}.")).collect()
+        };
+        Ok(Self {
+            steps,
+            training: vec![true; k],
+            prefixes,
+            eval_dim: None,
+        })
+    }
+
+    /// Sets whether each step is in train mode when the model is built
+    /// (one flag per step).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] for a wrong number of flags.
+    pub fn with_training(mut self, training: Vec<bool>) -> Result<Self> {
+        if training.len() != self.steps.len() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "expected {} training flags, got {}",
+                self.steps.len(),
+                training.len()
+            )));
+        }
+        self.training = training;
+        Ok(self)
+    }
+
+    /// Sets the parameter-name prefixes of the steps (one per step).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] for a wrong number of prefixes.
+    pub fn with_prefixes(mut self, prefixes: Vec<String>) -> Result<Self> {
+        if prefixes.len() != self.steps.len() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "expected {} prefixes, got {}",
+                self.steps.len(),
+                prefixes.len()
+            )));
+        }
+        self.prefixes = prefixes;
+        Ok(self)
     }
 
     /// The steps.
@@ -483,127 +645,432 @@ impl ChainedInputTransform {
         &self.steps
     }
 
+    /// The modes of the steps at construction (see
+    /// [`ChainedInputTransform::with_training`]).
+    pub fn training(&self) -> &[bool] {
+        &self.training
+    }
+
+    /// Whether every step is a plain `Normalize` or an `InputPerturbation`
+    /// (the transforms that existed before the other transforms were
+    /// ported; all model features support them).
+    pub fn is_basic(&self) -> bool {
+        self.steps
+            .iter()
+            .all(|s| !matches!(s, InputTransformStep::Step(_)))
+    }
+
     /// Whether some step maps a point to several points in eval mode
     /// (BoTorch's `is_one_to_many`, restricted to the steps that apply).
     pub fn is_one_to_many(&self) -> bool {
-        self.steps
-            .iter()
-            .any(|s| matches!(s, InputTransformStep::Perturbation(p) if p.transform_on_eval))
+        self.points_per_input_mode(TransformMode::Eval) > 1
     }
 
     /// The number of points per input point in eval mode: the product of
-    /// `n_w` over the perturbations that apply (1 if none does).
+    /// `n_w` (and `n_f`) over the one-to-many steps that apply (1 if none
+    /// does).
     ///
     /// # Panics
-    /// If a perturbation function has not been probed (see
+    /// If a perturbation or feature function has not been probed (see
     /// [`ChainedInputTransform::fit`]).
     pub fn points_per_input(&self) -> usize {
+        self.points_per_input_mode(TransformMode::Eval)
+    }
+
+    /// [`ChainedInputTransform::points_per_input`] in `mode`.
+    ///
+    /// # Panics
+    /// See [`ChainedInputTransform::points_per_input`].
+    pub fn points_per_input_mode(&self, mode: TransformMode) -> usize {
         self.steps
             .iter()
-            .map(|s| match s {
-                InputTransformStep::Perturbation(p) if p.transform_on_eval => p
-                    .n_w
-                    .expect("perturbation functions are probed when the transform is fitted"),
-                _ => 1,
+            .map(|s| {
+                s.expand(mode).expect(
+                    "perturbation and feature functions are probed when the transform is fitted",
+                )
             })
             .product()
     }
 
-    /// A copy whose `Normalize` bounds are never refitted (to share bounds
-    /// learned from all batch elements of a batched model).
+    /// A copy whose learned coefficients are never refitted (to share
+    /// bounds learned from all batch elements of a batched model).
     pub fn frozen(&self) -> Self {
-        Self {
-            steps: self
-                .steps
-                .iter()
-                .map(|s| match s {
-                    InputTransformStep::Normalize(n) => InputTransformStep::Normalize(n.frozen()),
-                    other => other.clone(),
-                })
-                .collect(),
+        let mut out = self.clone();
+        for s in &mut out.steps {
+            match s {
+                InputTransformStep::Normalize(n) => *n = n.frozen(),
+                InputTransformStep::Step(NewStep::Affine(a)) => {
+                    *a = a.clone().frozen();
+                }
+                InputTransformStep::Step(NewStep::Warp(w)) => {
+                    *w = w.clone().frozen();
+                }
+                _ => {}
+            }
         }
+        out
     }
 
-    /// Fits the chain to training inputs (what BoTorch does in train mode):
-    /// learnable `Normalize` bounds are fitted to the inputs as transformed by
-    /// the preceding steps, and the number of perturbations of perturbation
-    /// functions is determined at the first training point (as transformed
-    /// by the preceding eval-mode steps).
+    // ------------------------------------------------------------------
+    // Learned parameters
+    // ------------------------------------------------------------------
+
+    /// The number of learned parameters (e.g. `Warp`'s concentrations).
+    pub fn num_params(&self) -> usize {
+        self.steps.iter().map(InputTransformStep::num_params).sum()
+    }
+
+    /// The learned parameters in BoTorch's `named_parameters()` order.
+    pub fn params(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.num_params());
+        for s in &self.steps {
+            if let InputTransformStep::Step(n) = s {
+                out.extend(n.params());
+            }
+        }
+        out
+    }
+
+    /// Sets the learned parameters.
     ///
     /// # Errors
-    /// [`BotorchError::Unsupported`] for a perturbation that applies in train
-    /// mode (an exact GP cannot have more inputs than targets),
-    /// [`BotorchError::DimensionMismatch`] for inconsistent dimensions and
-    /// errors of perturbation functions.
-    pub fn fit(&mut self, train_x: &Matrix) -> Result<()> {
-        let mut x = train_x.clone();
-        let mut probe = train_x.rows(0, train_x.nrows().min(1)).into_owned();
-        for step in &mut self.steps {
-            match step {
-                InputTransformStep::Normalize(n) => {
-                    if n.dim() != x.ncols() {
-                        return Err(BotorchError::DimensionMismatch(format!(
-                            "Wrong input dimension. Received {}, expected {}.",
-                            x.ncols(),
-                            n.dim()
-                        )));
-                    }
-                    n.fit(&x)?;
-                    x = n.transform(&x)?;
-                    probe = n.transform(&probe)?;
-                }
-                InputTransformStep::Perturbation(p) => {
-                    if p.transform_on_train {
-                        return Err(BotorchError::Unsupported(
-                            "InputPerturbation with transform_on_train=True is not supported: \
-                             the perturbed training inputs (n * n_w points) would not match the \
-                             n training targets of the model."
-                                .into(),
-                        ));
-                    }
-                    p.probe(&probe)?;
-                    if p.transform_on_eval {
-                        probe = p
-                            .apply(&probe)?
-                            .0
-                            .rows(0, probe.nrows().min(1))
-                            .into_owned();
-                    }
-                }
+    /// [`BotorchError::DimensionMismatch`] for a wrong number of values.
+    pub fn set_params(&mut self, values: &[f64]) -> Result<()> {
+        if values.len() != self.num_params() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "expected {} input transform parameters, got {}",
+                self.num_params(),
+                values.len()
+            )));
+        }
+        let mut o = 0;
+        for s in &mut self.steps {
+            if let InputTransformStep::Step(n) = s {
+                let k = n.num_params();
+                n.set_params(&values[o..o + k])?;
+                o += k;
             }
         }
         Ok(())
     }
 
+    /// A copy with the learned parameters `values`.
+    ///
+    /// # Errors
+    /// See [`ChainedInputTransform::set_params`].
+    pub fn with_params(&self, values: &[f64]) -> Result<Self> {
+        let mut out = self.clone();
+        out.set_params(values)?;
+        Ok(out)
+    }
+
+    /// The names (with the steps' prefixes) and shapes of the learned
+    /// parameters, in order.
+    pub fn param_shapes(&self) -> Vec<(String, Vec<usize>)> {
+        let mut out = Vec::new();
+        for (s, prefix) in self.steps.iter().zip(&self.prefixes) {
+            if let InputTransformStep::Step(n) = s {
+                for (name, shape) in n.param_shapes() {
+                    out.push((format!("{prefix}{name}"), shape));
+                }
+            }
+        }
+        out
+    }
+
+    /// The optimizer bounds of the learned parameters.
+    pub fn param_bounds(&self) -> Vec<(f64, f64)> {
+        let mut out = Vec::new();
+        for s in &self.steps {
+            if let InputTransformStep::Step(n) = s {
+                out.extend(n.param_bounds());
+            }
+        }
+        out
+    }
+
+    /// The priors of the learned parameters (one per parameter).
+    pub fn param_priors(&self) -> Vec<Option<crate::priors::Prior>> {
+        let mut out = Vec::new();
+        for s in &self.steps {
+            if let InputTransformStep::Step(n) = s {
+                out.extend(n.param_priors());
+            }
+        }
+        out
+    }
+
+    /// The log prior density of the learned parameters and its gradient.
+    pub fn log_prior_and_grad(&self) -> (f64, Vec<f64>) {
+        let mut lp = 0.0;
+        let mut g = Vec::with_capacity(self.num_params());
+        for s in &self.steps {
+            if let InputTransformStep::Step(n) = s {
+                let (v, gs) = n.log_prior_and_grad();
+                lp += v;
+                g.extend(gs);
+            }
+        }
+        (lp, g)
+    }
+
+    // ------------------------------------------------------------------
+    // Fitting and application
+    // ------------------------------------------------------------------
+
+    /// Fits the chain to training inputs (what BoTorch does when the model
+    /// is built): every step in train mode (see
+    /// [`ChainedInputTransform::with_training`]) that applies to the
+    /// training inputs learns its coefficients from the inputs as
+    /// transformed by the preceding steps; steps in eval mode transform them
+    /// without learning. The sizes of perturbation and feature functions are
+    /// determined at the first training point (as transformed by the
+    /// preceding eval-mode steps). Returns the training inputs as
+    /// transformed at construction (BoTorch's `transformed_X`).
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] for a one-to-many step that applies in
+    /// train mode (an exact GP cannot have more inputs than targets), for
+    /// steps whose output dimension differs between the modes and for
+    /// learned coefficients that would depend on learned parameters;
+    /// [`BotorchError::DimensionMismatch`] for inconsistent dimensions and
+    /// errors of perturbation and feature functions.
+    pub fn fit(&mut self, train_x: &Matrix) -> Result<Matrix> {
+        let mut x = train_x.clone();
+        // A point as the eval-mode steps see it (`None` once a step cannot
+        // transform the training point: the points of a posterior then have
+        // other dimensions than the training inputs, e.g. with
+        // `AppendFeatures` not applied in training).
+        let mut probe = Some(train_x.rows(0, train_x.nrows().min(1)).into_owned());
+        let mut seen_params = false;
+        for (step, &training) in self.steps.iter_mut().zip(&self.training) {
+            let flags = step.flags();
+            if let InputTransformStep::Perturbation(p) = step {
+                if p.transform_on_train {
+                    return Err(BotorchError::Unsupported(
+                        "InputPerturbation with transform_on_train=True is not supported: the \
+                         perturbed training inputs (n * n_w points) would not match the n \
+                         training targets of the model."
+                            .into(),
+                    ));
+                }
+            }
+            if let InputTransformStep::Step(NewStep::Warp(w)) = step {
+                if w.reverse() {
+                    return Err(BotorchError::Unsupported(
+                        "Warp with reverse=True is not supported in models.".into(),
+                    ));
+                }
+            }
+            if let InputTransformStep::Step(s) = step {
+                if let Some(pr) = &probe {
+                    if s.probe(pr).is_err() {
+                        probe = None;
+                    }
+                }
+                if flags.train && s.expand() != Some(1) {
+                    return Err(BotorchError::Unsupported(format!(
+                        "{} with transform_on_train=True and {} features per point is not \
+                         supported: the training inputs would not match the training targets of \
+                         the model.",
+                        s.name(),
+                        s.expand().unwrap_or(0)
+                    )));
+                }
+            }
+            if step.learns_coefficients() && flags.train && seen_params {
+                return Err(BotorchError::Unsupported(format!(
+                    "a {} that learns its coefficients after a transform with learned parameters \
+                     (e.g. Warp) is not supported: its coefficients would depend on the learned \
+                     parameters.",
+                    step.name()
+                )));
+            }
+            seen_params |= step.num_params() > 0 && flags.train;
+            // The construction-time transform of the training inputs.
+            let applies = if training { flags.train } else { flags.eval };
+            if applies {
+                match step {
+                    InputTransformStep::Normalize(n) => {
+                        if n.dim() != x.ncols() {
+                            return Err(BotorchError::DimensionMismatch(format!(
+                                "Wrong input dimension. Received {}, expected {}.",
+                                x.ncols(),
+                                n.dim()
+                            )));
+                        }
+                        if training {
+                            n.fit(&x)?;
+                        }
+                        x = n.transform(&x)?;
+                    }
+                    InputTransformStep::Perturbation(p) => {
+                        p.probe(probe.as_ref().unwrap_or(&x))?;
+                        x = p.apply(&x)?.0;
+                    }
+                    InputTransformStep::Step(s) => {
+                        if training && flags.train {
+                            s.fit(&x)?;
+                        }
+                        x = s.apply(&x)?.0;
+                    }
+                }
+            } else if let (InputTransformStep::Perturbation(p), Some(pr)) = (&mut *step, &probe) {
+                if p.probe(pr).is_err() {
+                    probe = None;
+                }
+            }
+            // The probe point follows the eval-mode steps.
+            if flags.eval {
+                probe = probe.and_then(|pr| Self::probe_step(step, &pr).ok());
+            }
+        }
+        let d = train_x.ncols();
+        let eval_dim = self.find_eval_dim(d)?;
+        if eval_dim != d && self.steps.iter().any(InputTransformStep::sized_by_inputs) {
+            return Err(BotorchError::Unsupported(
+                "feature or perturbation functions (and InteractionFeatures of all \
+                 dimensions) in an input transform whose posterior points have other \
+                 dimensions than the training inputs are not supported"
+                    .into(),
+            ));
+        }
+        self.eval_dim = (eval_dim != d).then_some(eval_dim);
+        Ok(x)
+    }
+
+    /// The first transformed point of `probe` under `step` in eval mode.
+    fn probe_step(step: &mut InputTransformStep, probe: &Matrix) -> Result<Matrix> {
+        let out = match step {
+            InputTransformStep::Normalize(n) => n.transform(probe)?,
+            InputTransformStep::Perturbation(p) => {
+                p.probe(probe)?;
+                p.apply(probe)?.0
+            }
+            InputTransformStep::Step(s) => s.apply(probe)?.0,
+        };
+        Ok(out.rows(0, out.nrows().min(1)).into_owned())
+    }
+
+    /// The dimension of the points of a posterior: that of the training
+    /// inputs (`d`) if the chain maps them in eval mode to the dimension of
+    /// the transformed training inputs (which the kernel sees), otherwise the
+    /// smallest dimension it maps there (BoTorch's `AppendFeatures` with
+    /// training inputs that include the features).
+    fn find_eval_dim(&self, d: usize) -> Result<usize> {
+        let dt = self.out_dim_mode(d, TransformMode::Train)?;
+        if self.out_dim_mode(d, TransformMode::Eval).ok() == Some(dt) {
+            return Ok(d);
+        }
+        (1..=d + dt)
+            .find(|&de| self.out_dim_mode(de, TransformMode::Eval).ok() == Some(dt))
+            .ok_or_else(|| {
+                BotorchError::Unsupported(format!(
+                    "the input transform maps the training inputs to {dt} dimensions but no \
+                     points of a posterior (eval mode) to {dt}; a model needs the same number \
+                     of dimensions"
+                ))
+            })
+    }
+
+    /// The dimension of the points of a posterior for training inputs of
+    /// `d` dimensions (see [`ChainedInputTransform::fit`]).
+    pub fn input_dim(&self, d: usize) -> usize {
+        self.eval_dim.unwrap_or(d)
+    }
+
+    /// Checks that the chain maps `d`-dimensional points in `mode` to the
+    /// `d_tf` dimensions of the transformed training inputs.
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] otherwise.
+    pub fn check_mode_dim(&self, d: usize, d_tf: usize, mode: TransformMode) -> Result<()> {
+        let dm = self.out_dim_mode(d, mode)?;
+        if dm != d_tf {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "the input transform maps the points ({mode:?} mode) to {dm} dimensions, but \
+                 the transformed training inputs have {d_tf}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The output dimension of the chain in `mode` for `d` input dimensions.
+    ///
+    /// # Errors
+    /// Dimension errors of the steps.
+    pub fn out_dim_mode(&self, d: usize, mode: TransformMode) -> Result<usize> {
+        let mut dim = d;
+        for s in &self.steps {
+            if s.flags().applies(mode) {
+                dim = s.out_dim(dim)?;
+            }
+        }
+        Ok(dim)
+    }
+
+    /// The Jacobian of the chain in `mode` for `d`-dimensional inputs if it
+    /// is constant and diagonal (only `Normalize` and other affine steps
+    /// apply): the factor of every dimension; `None` otherwise.
+    pub fn constant_diag_jacobian(&self, mode: TransformMode, d: usize) -> Option<Vec<f64>> {
+        let mut jac = vec![1.0; d];
+        for s in &self.steps {
+            if !s.flags().applies(mode) {
+                continue;
+            }
+            let f: Vec<f64> = match s {
+                InputTransformStep::Normalize(n) => {
+                    n.coefficient().iter().map(|c| 1.0 / c).collect()
+                }
+                InputTransformStep::Step(NewStep::Affine(a)) => a.diag_jacobian(),
+                _ => return None,
+            };
+            if f.len() != d {
+                return None;
+            }
+            for (j, v) in jac.iter_mut().zip(&f) {
+                *j *= v;
+            }
+        }
+        Some(jac)
+    }
+
+    /// The output dimension of the chain in eval mode.
+    ///
+    /// # Errors
+    /// Dimension errors of the steps.
+    pub fn out_dim(&self, d: usize) -> Result<usize> {
+        self.out_dim_mode(d, TransformMode::Eval)
+    }
+
     /// The training inputs as the model sees them (BoTorch's
-    /// `preprocess_transform`: the steps that apply in train mode, with the
-    /// current bounds).
+    /// `preprocess_transform` and the train-mode transform: the steps that
+    /// apply in train mode, with the current coefficients and parameters).
     ///
     /// # Errors
     /// [`BotorchError::DimensionMismatch`] for inconsistent dimensions.
     pub fn preprocess(&self, train_x: &Matrix) -> Result<Matrix> {
-        let mut x = train_x.clone();
-        for step in &self.steps {
-            match step {
-                InputTransformStep::Normalize(n) => x = n.transform(&x)?,
-                InputTransformStep::Perturbation(p) => {
-                    if p.transform_on_train {
-                        x = p.apply(&x)?.0;
-                    }
-                }
-            }
-        }
-        Ok(x)
+        Ok(self
+            .transform_with_tape_mode(train_x, TransformMode::Train)?
+            .0)
     }
 
-    /// The transformed points of `x` (`n × d`) in eval mode: `(n·N) × d` for
-    /// `N` = [`ChainedInputTransform::points_per_input`].
+    /// The transformed points of `x` (`n × d`) in eval mode: `(n·N) × d'`
+    /// for `N` = [`ChainedInputTransform::points_per_input`].
     ///
     /// # Errors
     /// [`BotorchError::DimensionMismatch`] for inconsistent dimensions and
-    /// errors of perturbation functions.
+    /// errors of perturbation and feature functions.
     pub fn transform(&self, x: &Matrix) -> Result<Matrix> {
         Ok(self.transform_with_tape(x)?.0)
+    }
+
+    /// The transformed points of `x` in `mode`.
+    ///
+    /// # Errors
+    /// See [`ChainedInputTransform::transform`].
+    pub fn transform_mode(&self, x: &Matrix, mode: TransformMode) -> Result<Matrix> {
+        Ok(self.transform_with_tape_mode(x, mode)?.0)
     }
 
     /// [`ChainedInputTransform::transform`] with the record of its
@@ -612,31 +1079,90 @@ impl ChainedInputTransform {
     /// # Errors
     /// See [`ChainedInputTransform::transform`].
     pub fn transform_with_tape(&self, x: &Matrix) -> Result<(Matrix, InputTape)> {
+        self.transform_with_tape_mode(x, TransformMode::Eval)
+    }
+
+    /// [`ChainedInputTransform::transform_mode`] with the record of its
+    /// derivatives.
+    ///
+    /// # Errors
+    /// See [`ChainedInputTransform::transform`].
+    pub fn transform_with_tape_mode(
+        &self,
+        x: &Matrix,
+        mode: TransformMode,
+    ) -> Result<(Matrix, InputTape)> {
         let mut cur = x.clone();
         let mut steps = Vec::with_capacity(self.steps.len());
-        for step in &self.steps {
-            match step {
-                InputTransformStep::Normalize(n) => {
-                    cur = n.transform(&cur)?;
-                    steps.push(TapeStep::Normalize(n.coefficient().clone()));
-                }
-                InputTransformStep::Perturbation(p) => {
-                    if p.transform_on_eval {
+        let mut poff = 0;
+        for (si, step) in self.steps.iter().enumerate() {
+            let np = step.num_params();
+            if step.flags().applies(mode) {
+                match step {
+                    InputTransformStep::Normalize(n) => {
+                        cur = n.transform(&cur)?;
+                        steps.push(TapeStep::Normalize(n.coefficient().clone()));
+                    }
+                    InputTransformStep::Perturbation(p) => {
                         let (out, rec) = p.apply(&cur)?;
                         cur = out;
                         steps.push(TapeStep::Perturbation(rec));
                     }
+                    InputTransformStep::Step(s) => {
+                        let (out, rec) = s.apply(&cur)?;
+                        cur = out;
+                        steps.push(TapeStep::Step(si, poff, rec));
+                    }
                 }
             }
+            poff += np;
         }
+        let d_out = cur.ncols();
         Ok((
             cur,
             InputTape {
                 n: x.nrows(),
                 d: x.ncols(),
+                d_out,
                 steps,
             },
         ))
+    }
+
+    /// Inverts the steps in reverse order (BoTorch's `untransform`; every
+    /// step is inverted, as in BoTorch).
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] (`NotImplementedError`) for steps
+    /// without an inverse.
+    pub fn untransform(&self, x: &Matrix) -> Result<Matrix> {
+        let mut cur = x.clone();
+        for step in self.steps.iter().rev() {
+            cur = match step {
+                InputTransformStep::Normalize(n) => n.untransform(&cur)?,
+                InputTransformStep::Perturbation(_) => {
+                    return Err(BotorchError::Unsupported(
+                        "InputPerturbation does not implement the `untransform` method.".into(),
+                    ))
+                }
+                InputTransformStep::Step(s) => s.untransform(&cur)?,
+            };
+        }
+        Ok(cur)
+    }
+
+    /// The reverse pass of a tape, with the adjoint of the learned
+    /// parameters (see [`InputTape::backward_with_params`]).
+    ///
+    /// # Errors
+    /// See [`InputTape::backward`].
+    pub fn backward_with_params(
+        &self,
+        tape: &InputTape,
+        rows: Range<usize>,
+        adjoint: &Matrix,
+    ) -> Result<(Matrix, Vec<f64>)> {
+        tape.backward_impl(self, rows, adjoint, true)
     }
 }
 
@@ -646,32 +1172,91 @@ impl InputTape {
         self.n
     }
 
+    /// The raw input dimension.
+    pub fn input_dim(&self) -> usize {
+        self.d
+    }
+
+    /// The transformed dimension.
+    pub fn output_dim(&self) -> usize {
+        self.d_out
+    }
+
     /// The number of transformed points per raw point.
     pub fn points_per_input(&self) -> usize {
-        self.steps
-            .iter()
-            .map(|s| match s {
-                TapeStep::Perturbation(r) => r.nw,
-                TapeStep::Normalize(_) => 1,
-            })
-            .product()
+        self.steps.iter().map(TapeStep::expand).product()
     }
 
     /// Reverse-mode derivative: for the adjoint of the transformed points of
-    /// the raw points `rows` (`rows.len()·N × d`, the rows `rows.start·N ..
+    /// the raw points `rows` (`rows.len()·N × d'`, the rows `rows.start·N ..
     /// rows.end·N` of the transformed points), the adjoint of those raw
     /// points (`rows.len() × d`).
     ///
+    /// The derivatives of the new steps need the chain that recorded the
+    /// tape; use [`InputTape::backward_through`] for chains with them.
+    ///
     /// # Errors
     /// [`BotorchError::DimensionMismatch`] for inconsistent shapes and errors
-    /// of perturbation functions.
+    /// of perturbation functions; [`BotorchError::Unsupported`] for tapes of
+    /// new steps.
     pub fn backward(&self, rows: Range<usize>, adjoint: &Matrix) -> Result<Matrix> {
+        if self.steps.iter().any(|s| matches!(s, TapeStep::Step(..))) {
+            return Err(BotorchError::Unsupported(
+                "the tape records transforms whose reverse pass needs the chain; use \
+                 backward_through"
+                    .into(),
+            ));
+        }
+        let empty = ChainedInputTransform {
+            steps: Vec::new(),
+            training: Vec::new(),
+            prefixes: Vec::new(),
+            eval_dim: None,
+        };
+        Ok(self.backward_impl(&empty, rows, adjoint, false)?.0)
+    }
+
+    /// [`InputTape::backward`] through the steps of `chain` (the chain that
+    /// recorded the tape).
+    ///
+    /// # Errors
+    /// See [`InputTape::backward`].
+    pub fn backward_through(
+        &self,
+        chain: &ChainedInputTransform,
+        rows: Range<usize>,
+        adjoint: &Matrix,
+    ) -> Result<Matrix> {
+        Ok(self.backward_impl(chain, rows, adjoint, false)?.0)
+    }
+
+    /// [`InputTape::backward_through`] with the adjoint of the chain's
+    /// learned parameters.
+    ///
+    /// # Errors
+    /// See [`InputTape::backward`].
+    pub fn backward_with_params(
+        &self,
+        chain: &ChainedInputTransform,
+        rows: Range<usize>,
+        adjoint: &Matrix,
+    ) -> Result<(Matrix, Vec<f64>)> {
+        self.backward_impl(chain, rows, adjoint, true)
+    }
+
+    fn backward_impl(
+        &self,
+        chain: &ChainedInputTransform,
+        rows: Range<usize>,
+        adjoint: &Matrix,
+        with_params: bool,
+    ) -> Result<(Matrix, Vec<f64>)> {
         let total = self.points_per_input();
-        if rows.end > self.n || adjoint.shape() != (rows.len() * total, self.d) {
+        if rows.end > self.n || adjoint.shape() != (rows.len() * total, self.d_out) {
             return Err(BotorchError::DimensionMismatch(format!(
                 "the adjoint of the transformed points of rows {rows:?} must be {}x{}, got {}x{}",
                 rows.len() * total,
-                self.d,
+                self.d_out,
                 adjoint.nrows(),
                 adjoint.ncols()
             )));
@@ -681,18 +1266,14 @@ impl InputTape {
         per.push(1usize);
         for s in &self.steps {
             let last = *per.last().expect("non-empty");
-            per.push(
-                last * match s {
-                    TapeStep::Perturbation(r) => r.nw,
-                    TapeStep::Normalize(_) => 1,
-                },
-            );
+            per.push(last * s.expand());
         }
+        let mut pbar = vec![0.0; if with_params { chain.num_params() } else { 0 }];
         let mut bar = adjoint.clone();
         for (s, step) in self.steps.iter().enumerate().rev() {
             match step {
                 TapeStep::Normalize(coef) => {
-                    for j in 0..self.d {
+                    for j in 0..bar.ncols() {
                         let c = coef[j];
                         for r in 0..bar.nrows() {
                             bar[(r, j)] /= c;
@@ -700,33 +1281,61 @@ impl InputTape {
                     }
                 }
                 TapeStep::Perturbation(rec) => {
-                    // Input rows of this step for the raw rows `rows`.
                     let start = rows.start * per[s];
                     let n_in = rows.len() * per[s];
                     bar = rec.backward(start, n_in, &bar)?;
                 }
+                TapeStep::Step(si, poff, rec) => {
+                    let InputTransformStep::Step(ns) = &chain.steps[*si] else {
+                        return Err(BotorchError::InvalidArgument(
+                            "the tape was not recorded by this chain".into(),
+                        ));
+                    };
+                    let start = rows.start * per[s];
+                    let n_in = rows.len() * per[s];
+                    let np = ns.num_params();
+                    let slot = if with_params && np > 0 {
+                        Some(&mut pbar[*poff..*poff + np])
+                    } else {
+                        None
+                    };
+                    bar = ns.backward(rec, start, n_in, &bar, slot)?;
+                }
             }
         }
-        Ok(bar)
+        Ok((bar, pbar))
     }
 
     /// The Jacobian of every transformed point with respect to its raw point
-    /// (`d × d`, entry `[l, j] = ∂x̃_l / ∂x_j`), in the order of the
+    /// (`d' × d`, entry `[l, j] = ∂x̃_l / ∂x_j`), in the order of the
     /// transformed points.
     ///
     /// # Errors
-    /// Errors of perturbation functions.
+    /// Errors of perturbation and feature functions.
     pub fn jacobians(&self) -> Result<Vec<Matrix>> {
+        self.jacobians_through(&ChainedInputTransform {
+            steps: Vec::new(),
+            training: Vec::new(),
+            prefixes: Vec::new(),
+            eval_dim: None,
+        })
+    }
+
+    /// [`InputTape::jacobians`] through the steps of `chain`.
+    ///
+    /// # Errors
+    /// See [`InputTape::jacobians`].
+    pub fn jacobians_through(&self, chain: &ChainedInputTransform) -> Result<Vec<Matrix>> {
         let total = self.points_per_input();
-        let (n, d) = (self.n, self.d);
-        let mut out = vec![Matrix::zeros(d, d); n * total];
+        let (n, d, dout) = (self.n, self.d, self.d_out);
+        let mut out = vec![Matrix::zeros(dout, d); n * total];
         for slot in 0..total {
-            for l in 0..d {
-                let mut e = Matrix::zeros(n * total, d);
+            for l in 0..dout {
+                let mut e = Matrix::zeros(n * total, dout);
                 for i in 0..n {
                     e[(i * total + slot, l)] = 1.0;
                 }
-                let g = self.backward(0..n, &e)?;
+                let g = self.backward_impl(chain, 0..n, &e, false)?.0;
                 for i in 0..n {
                     let jac = &mut out[i * total + slot];
                     for j in 0..d {

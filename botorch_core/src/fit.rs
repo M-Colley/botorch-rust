@@ -177,6 +177,15 @@ fn sample_all_priors(
             crate::kernels::tree::sample_tree_priors(tree, h.raw_kernel.as_mut_slice(), rng);
         }
     }
+    // Learned input-transform parameters with priors (e.g. `Warp`'s
+    // concentrations, whose constraint has no transform).
+    if let Some(chain) = model.input_chain() {
+        for (v, p) in h.raw_input.iter_mut().zip(chain.param_priors()) {
+            if let Some(p) = p {
+                *v = p.sample(rng);
+            }
+        }
+    }
     h.to_vector().as_slice().to_vec()
 }
 

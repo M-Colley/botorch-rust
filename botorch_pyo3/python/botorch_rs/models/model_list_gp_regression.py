@@ -112,11 +112,14 @@ class ModelListGP(Model):
         observation_noise: bool = False,
         posterior_transform: Any = None,
         **kwargs: Any,
-    ) -> GPyTorchPosterior:
+    ) -> Any:
         """The posterior at ``X`` (``batch_shape x q x d``) over the outputs
         ``output_indices`` (all by default), scalarized by
         ``posterior_transform`` if given, with the observation noise of every
-        sub-model if ``observation_noise=True``."""
+        sub-model if ``observation_noise=True``. If a sub-model has a
+        nonlinear outcome transform, a ``PosteriorList`` of the sub-models'
+        posteriors (a posterior transform then scalarizes the marginal moments
+        of a single point, as BoTorch's ``scalarize_posterior``)."""
         from botorch_rs.acquisition.objective import transform_arg
 
         if not isinstance(observation_noise, bool):
@@ -141,6 +144,33 @@ class ModelListGP(Model):
                 f"Expected X to be `batch_shape x q x d` with d = {d}, got shape {flat[1]}."
             )
         self.eval()
+        transform = transform_arg(posterior_transform)
+        transformed = self._transformed_outputs()
+        selected = transformed if oi is None else [transformed[t] for t in oi]
+        if any(selected) and transform is None:
+            # BoTorch's `ModelList.posterior`: a `PosteriorList` of the
+            # sub-models' posteriors over their selected outputs.
+            from botorch_rs.posteriors.posterior_list import PosteriorList
+
+            posteriors = []
+            start = 0
+            for sub in self.models:
+                k = sub.num_outputs
+                local = (
+                    list(range(k))
+                    if oi is None
+                    else [t - start for t in oi if start <= t < start + k]
+                )
+                if local:
+                    posteriors.append(
+                        sub.posterior(
+                            X,
+                            output_indices=None if local == list(range(k)) else local,
+                            observation_noise=observation_noise,
+                        )
+                    )
+                start += k
+            return PosteriorList(*posteriors)
         rs_list = self._rs_list()
         return GPyTorchPosterior(
             rs_list,
@@ -150,9 +180,17 @@ class ModelListGP(Model):
             num_outputs=m,
             model_batch_shape=self.batch_shape,
             output_indices=oi,
-            transform=transform_arg(posterior_transform),
+            transform=transform,
             points_per_input=rs_list.points_per_input,
         )
+
+    def _transformed_outputs(self) -> list[bool]:
+        """Whether each output's posterior is a ``TransformedPosterior``."""
+        out: list[bool] = []
+        for sub in self.models:
+            flags = getattr(sub._rs, "transformed_outputs", None)
+            out.extend(list(flags) if flags is not None else [False] * sub.num_outputs)
+        return out
 
     def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:
         """The model handle that acquisition functions are built on."""

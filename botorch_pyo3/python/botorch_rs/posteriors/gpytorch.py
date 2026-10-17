@@ -82,8 +82,10 @@ class GPyTorchPosterior(Posterior):
         output_indices: list[int] | None = None,
         transform: tuple[list[float], float] | None = None,
         points_per_input: int = 1,
+        base: bool = False,
     ) -> None:
         self._rs = source
+        self._base = base
         self._points_per_input = points_per_input
         self._x = X
         self._kind = kind
@@ -116,7 +118,13 @@ class GPyTorchPosterior(Posterior):
         return self._m > 1
 
     def _kwargs(self) -> dict[str, Any]:
-        return {"output_indices": self._output_indices, "transform": self._transform}
+        kwargs: dict[str, Any] = {
+            "output_indices": self._output_indices,
+            "transform": self._transform,
+        }
+        if self._base:
+            kwargs["base"] = True
+        return kwargs
 
     # -- lazily computed quantities -------------------------------------
 
@@ -169,6 +177,27 @@ class GPyTorchPosterior(Posterior):
     @property
     def batch_shape(self) -> tuple[int, ...]:
         return self._batch
+
+    @property
+    def batch_range(self) -> tuple[int, int]:
+        r"""The t-batch range of the base samples (BoTorch's ``batch_range``)."""
+        return (0, -2) if self._is_mt else (0, -1)
+
+    @property
+    def device(self) -> Any:
+        if self._kind.lib == "torch":
+            import importlib
+
+            return self._kind.device or importlib.import_module("torch").device("cpu")
+        return None
+
+    @property
+    def dtype(self) -> Any:
+        if self._kind.lib == "torch":
+            import importlib
+
+            return self._kind.dtype or importlib.import_module("torch").float64
+        return None
 
     @property
     def base_sample_shape(self) -> tuple[int, ...]:

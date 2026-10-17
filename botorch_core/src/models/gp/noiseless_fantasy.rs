@@ -37,6 +37,7 @@ impl SingleTaskGP {
             ));
         }
         self.require_no_perturbation("the noiseless fantasy models")?;
+        self.require_plain_outcome("the noiseless fantasy models")?;
         let n = x.nrows();
         if ys.ncols() != n || n == 0 {
             return Err(BotorchError::DimensionMismatch(format!(
@@ -53,7 +54,7 @@ impl SingleTaskGP {
             k[(i, i)] += noise_tf;
         }
         let chol = psd_safe_cholesky(&k)?;
-        let (mu, sd) = self.outcome_affine();
+        let (mu, sd) = self.outcome_affine()?;
         let c = self.constant();
         let noise = Vector::from_element(n, noise_tf);
         let train_yvar = Some(Matrix::from_element(n, 1, noise_tf * sd * sd));
@@ -76,7 +77,9 @@ impl SingleTaskGP {
                     train_y_tf: y_tf,
                     input_transform: self.input_transform.clone(),
                     input_chain: self.input_chain.clone(),
+                    construction_x_tf: None,
                     outcome_transform: self.outcome_transform.clone(),
+                    outcome_chain: self.outcome_chain.clone(),
                     covar_module: self.covar_module.clone(),
                     likelihood: Likelihood::FixedNoise {
                         noise: noise.clone(),

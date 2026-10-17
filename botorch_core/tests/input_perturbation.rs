@@ -368,7 +368,7 @@ fn rejected_configurations() {
 }
 
 #[test]
-fn conditioning_and_fantasies_need_one_input_per_observation() {
+fn conditioning_needs_one_input_per_observation_and_fantasies_skip_perturbations() {
     let chain = chains(2, 3).remove(0);
     let gp = perturbed_gp(16, chain);
     assert!(gp.points_per_input() > 1);
@@ -378,15 +378,30 @@ fn conditioning_and_fantasies_need_one_input_per_observation() {
         gp.condition_on_observations(&xn, &yn, None),
         Err(BotorchError::Unsupported(_))
     ));
+    // BoTorch's fantasize mode skips perturbations with
+    // transform_on_fantasize=False: the fantasies are at the unperturbed
+    // points, the fantasy models keep perturbing their test points.
     let sampler = botorch_core::sampling::SobolQMCNormalSampler::new(4, Some(0)).unwrap();
-    assert!(matches!(
-        gp.fantasize(&xn, &sampler, None),
-        Err(BotorchError::Unsupported(_))
-    ));
+    let fantasies = gp.fantasize(&xn, &sampler, None).unwrap();
+    assert_eq!(fantasies.len(), 4);
+    let n = gp.num_train();
+    for f in &fantasies {
+        assert_eq!(f.num_train(), n + 2);
+        assert_eq!(f.points_per_input(), gp.points_per_input());
+        let tail = f.transformed_train_inputs().rows(n, 2).into_owned();
+        let unperturbed = gp
+            .input_chain()
+            .unwrap()
+            .transform_mode(
+                &xn,
+                botorch_core::transforms::input::TransformMode::Fantasize,
+            )
+            .unwrap();
+        assert_eq!(tail, unperturbed);
+        assert_eq!(unperturbed, xn);
+    }
     let batched = BatchedMultiOutputGP::from(gp);
     let xb = botorch_core::models::BatchedMatrix::new(Vec::new(), vec![xn]).unwrap();
-    assert!(matches!(
-        batched.fantasize(&xb, &sampler, None),
-        Err(BotorchError::Unsupported(_))
-    ));
+    let fb = batched.fantasize(&xb, &sampler, None).unwrap();
+    assert_eq!(fb.batch_shape(), &[4]);
 }

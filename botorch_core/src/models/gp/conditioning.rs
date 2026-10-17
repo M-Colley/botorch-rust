@@ -9,6 +9,13 @@
 //! their `noise` (observation-noise variances) in the *transformed* space,
 //! as BoTorch's `SingleTaskGP.condition_on_observations` assumes.
 //!
+//! `fantasize` evaluates the input transform in BoTorch's fantasize mode
+//! (steps with `transform_on_fantasize=False`, e.g. `InputPerturbation`, are
+//! skipped) for both the posterior of the fantasized observations and the
+//! new training inputs; with a nonlinear outcome transform the observations
+//! are sampled from the `TransformedPosterior` (original space) and
+//! transformed back by the outcome transform, like in BoTorch.
+//!
 //! The Cholesky factor of the enlarged training covariance is obtained by an
 //! exact rank-`n'` update of the cached factor
 //! ([`CholeskyFactor::bordered`], what GPyTorch's `get_fantasy_strategy`
@@ -26,12 +33,13 @@
 use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
 
-use super::{Likelihood, PredictionCache, SingleTaskGP, MIN_FIXED_NOISE};
+use super::{Likelihood, ObservationNoise, PredictionCache, SingleTaskGP, MIN_FIXED_NOISE};
 use crate::error::{BotorchError, Result};
 use crate::kernels::Prepared;
 use crate::linalg::{psd_safe_cholesky, CholeskyFactor, CovarianceRoot};
 use crate::posterior::Posterior;
 use crate::sampling::SobolQMCNormalSampler;
+use crate::transforms::input::TransformMode;
 use crate::{Matrix, Vector};
 
 /// Rows of `a` followed by the rows of `b` (same number of columns).
@@ -137,10 +145,70 @@ impl SingleTaskGP {
         }
     }
 
-    /// Validates new inputs (`k × d`) and returns them transformed.
-    fn check_new_inputs(&self, x: &Matrix) -> Result<Matrix> {
+    /// Validates new inputs (`k × d`) and returns them transformed (in
+    /// eval or fantasize mode).
+    fn check_new_inputs(&self, x: &Matrix, mode: TransformMode) -> Result<Matrix> {
         super::check_finite(x, "X")?;
-        self.transform_inputs(x)
+        self.transform_inputs_mode(x, mode)
+    }
+
+    /// Errors for a one-to-many input transform in `mode`: conditioning on
+    /// observations needs one model input per observation (BoTorch fails on
+    /// the shapes). In fantasize mode, BoTorch skips the steps with
+    /// `transform_on_fantasize=False` (e.g. `InputPerturbation`).
+    pub(crate) fn require_one_to_one(&self, mode: TransformMode, what: &str) -> Result<()> {
+        if self.dim() != self.train_x.ncols() {
+            return Err(BotorchError::Unsupported(format!(
+                "{what} is not supported for models whose input transform maps points of {} \
+                 dimensions (posteriors) and training inputs of {} to the kernel's dimensions",
+                self.dim(),
+                self.train_x.ncols()
+            )));
+        }
+        let k = self
+            .input_chain
+            .as_ref()
+            .map_or(1, |c| c.points_per_input_mode(mode));
+        if k != 1 {
+            return Err(BotorchError::Unsupported(format!(
+                "{what} is not supported for models with a one-to-many input transform \
+                 (InputPerturbation or AppendFeatures with {k} points per input): the transformed \
+                 inputs would not match the observations"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The new observations `y` (`k × 1`, original space) of the points
+    /// `x_tf` transformed by the outcome transform in eval mode.
+    fn transform_new_targets(&self, y: &Matrix, x_tf: &Matrix) -> Result<Vector> {
+        let k = y.nrows();
+        if let Some(chain) = &self.outcome_chain {
+            let (y_tf, _) = chain.transform(y, None, x_tf)?;
+            return Ok(Vector::from_iterator(k, y_tf.iter().copied()));
+        }
+        let (mu, sd) = self.outcome_affine()?;
+        Ok(Vector::from_iterator(k, y.iter().map(|&v| (v - mu) / sd)))
+    }
+
+    /// The observation-noise variances of new points in the original space
+    /// (the bookkeeping of `train_yvar`): the transformed noise `noise_tf`
+    /// un-transformed at the transformed observations `y_tf`.
+    fn untransform_new_noise(
+        &self,
+        y_tf: &Vector,
+        noise_tf: &[f64],
+        x_tf: &Matrix,
+    ) -> Result<Matrix> {
+        let k = noise_tf.len();
+        if let Some(chain) = &self.outcome_chain {
+            let y = Matrix::from_column_slice(k, 1, y_tf.as_slice());
+            let v = Matrix::from_column_slice(k, 1, noise_tf);
+            let (_, v_u) = chain.untransform(&y, Some(&v), x_tf)?;
+            return Ok(v_u.expect("noise given"));
+        }
+        let (_, sd) = self.outcome_affine()?;
+        Ok(Matrix::from_fn(k, 1, |j, _| noise_tf[j] * sd * sd))
     }
 
     /// The model conditioned on new observations (BoTorch's
@@ -185,7 +253,19 @@ impl SingleTaskGP {
         ys: &[Matrix],
         noise: Option<&Matrix>,
     ) -> Result<Vec<SingleTaskGP>> {
-        self.require_no_perturbation("condition_on_observations")?;
+        self.condition_mode(x, ys, noise, TransformMode::Eval)
+    }
+
+    /// [`SingleTaskGP::condition_on_observations_many`] with the input
+    /// transform in `mode` (eval, or fantasize inside `fantasize`).
+    pub(crate) fn condition_mode(
+        &self,
+        x: &Matrix,
+        ys: &[Matrix],
+        noise: Option<&Matrix>,
+        mode: TransformMode,
+    ) -> Result<Vec<SingleTaskGP>> {
+        self.require_one_to_one(mode, "condition_on_observations")?;
         let k = x.nrows();
         if x.ncols() != self.dim() {
             return Err(BotorchError::DimensionMismatch(format!(
@@ -216,24 +296,23 @@ impl SingleTaskGP {
         if k == 0 {
             return Ok(vec![self.clone(); ys.len()]);
         }
-        let x_tf = self.check_new_inputs(x)?;
+        let x_tf = self.check_new_inputs(x, mode)?;
         let noise_tf = self.new_noise(noise.map(|v| v.as_slice()), k)?;
         let enlarged = self.enlarged(&x_tf, &noise_tf)?;
         let train_x = vstack(&self.train_x, x);
         let train_x_tf = vstack(&self.train_x_tf, &x_tf);
-        let (mu, sd) = self.outcome_affine();
+        let construction_x_tf = self.construction_x_tf.as_ref().map(|c| vstack(c, &x_tf));
+        let fixed = matches!(self.likelihood, Likelihood::FixedNoise { .. });
         // Likelihood and noise bookkeeping of the conditioned model.
-        let (likelihood, point_noise, train_yvar) = match &self.likelihood {
+        let (likelihood, point_noise) = match &self.likelihood {
             Likelihood::FixedNoise { noise: old } => {
                 let mut all = old.as_slice().to_vec();
                 all.extend_from_slice(&noise_tf);
-                let new_yvar = Matrix::from_fn(k, 1, |j, _| noise_tf[j] * sd * sd);
                 (
                     Likelihood::FixedNoise {
                         noise: Vector::from_vec(all),
                     },
                     None,
-                    self.train_yvar.as_ref().map(|v| vstack(v, &new_yvar)),
                 )
             }
             Likelihood::Gaussian(_) => {
@@ -248,14 +327,20 @@ impl SingleTaskGP {
                         Some(p)
                     }
                 };
-                (self.likelihood.clone(), point_noise, None)
+                (self.likelihood.clone(), point_noise)
             }
         };
         let cache = self.cache()?;
         let c = self.constant();
         ys.iter()
             .map(|y| {
-                let y_tf = Vector::from_iterator(k, y.iter().map(|&v| (v - mu) / sd));
+                let y_tf = self.transform_new_targets(y, &x_tf)?;
+                let train_yvar = if fixed {
+                    let new_yvar = self.untransform_new_noise(&y_tf, &noise_tf, &x_tf)?;
+                    self.train_yvar.as_ref().map(|v| vstack(v, &new_yvar))
+                } else {
+                    None
+                };
                 let mut train_y_tf = Vector::zeros(self.num_train() + k);
                 train_y_tf
                     .rows_mut(0, self.num_train())
@@ -271,12 +356,14 @@ impl SingleTaskGP {
                 Ok(SingleTaskGP {
                     train_x: train_x.clone(),
                     train_y: vstack(&self.train_y, y),
-                    train_yvar: train_yvar.clone(),
+                    train_yvar,
                     train_x_tf: train_x_tf.clone(),
                     train_y_tf,
                     input_transform: self.input_transform.clone(),
                     input_chain: self.input_chain.clone(),
+                    construction_x_tf: construction_x_tf.clone(),
                     outcome_transform: self.outcome_transform.clone(),
+                    outcome_chain: self.outcome_chain.clone(),
                     covar_module: self.covar_module.clone(),
                     likelihood: likelihood.clone(),
                     hyperparameters: self.hyperparameters.clone(),
@@ -302,12 +389,7 @@ impl SingleTaskGP {
                 noise.len()
             )));
         }
-        let mut p = self.posterior(x, false)?;
-        let (_, sd) = self.outcome_affine();
-        for (i, &v) in noise.iter().enumerate() {
-            p.covariance[(i, i)] += sd * sd * v;
-        }
-        Ok(p)
+        self.posterior_impl(x, ObservationNoise::Explicit(noise), TransformMode::Eval)
     }
 
     /// Fantasy models (BoTorch's `model.fantasize(X, sampler,
@@ -327,7 +409,7 @@ impl SingleTaskGP {
         sampler: &SobolQMCNormalSampler,
         observation_noise: Option<&[f64]>,
     ) -> Result<Vec<SingleTaskGP>> {
-        self.require_no_perturbation("fantasize")?;
+        self.require_one_to_one(TransformMode::Fantasize, "fantasize")?;
         let k = x.nrows();
         let n_f = sampler.num_samples();
         if x.ncols() != self.dim() {
@@ -351,9 +433,10 @@ impl SingleTaskGP {
             }
             None => self.default_fantasy_noise().map(|v| vec![v; k]),
         };
+        let mode = TransformMode::Fantasize;
         let post = match &noise {
-            Some(v) => self.posterior_with_noise(x, v)?,
-            None => self.posterior(x, true)?,
+            Some(v) => self.posterior_impl(x, ObservationNoise::Explicit(v), mode)?,
+            None => self.posterior_impl(x, ObservationNoise::Likelihood, mode)?,
         };
         let z = sampler.base_samples(k)?;
         let ys = post.rsample_from_base_samples(&z)?;
@@ -362,7 +445,7 @@ impl SingleTaskGP {
             .map(|i| Matrix::from_fn(k, 1, |j, _| data[(j, i)]))
             .collect();
         let noise_m = noise.map(|v| Matrix::from_column_slice(k, 1, &v));
-        self.condition_on_observations_many(x, &sets, noise_m.as_ref())
+        self.condition_mode(x, &sets, noise_m.as_ref(), mode)
     }
 }
 
@@ -443,6 +526,8 @@ impl<'a> FantasyGp<'a> {
         num_fantasies: usize,
     ) -> Result<Self> {
         gp.require_no_perturbation("fantasize")?;
+        gp.require_plain_outcome("fantasy models with input derivatives")?;
+        gp.require_affine_inputs("fantasy models with input derivatives")?;
         let cache = gp.cache()?;
         let k = x_new.nrows();
         let d = gp.dim();
@@ -477,11 +562,11 @@ impl<'a> FantasyGp<'a> {
             None => gp.posterior(x_new, true)?,
         };
         let root = CovarianceRoot::new(&post.covariance)?;
-        let x_new_tf = gp.check_new_inputs(x_new)?;
+        let x_new_tf = gp.check_new_inputs(x_new, TransformMode::Eval)?;
         let noise_tf = gp.new_noise(noise.map(|v| vec![v; k]).as_deref(), k)?;
         let enlarged = gp.enlarged(&x_new_tf, &noise_tf)?;
         let n = gp.num_train();
-        let (mu, sd) = gp.outcome_affine();
+        let (mu, sd) = gp.outcome_affine()?;
         let c = gp.constant();
         let r = root.to_matrix();
         let mut r_full = gp.train_y_tf.add_scalar(-c);
@@ -538,7 +623,7 @@ impl<'a> FantasyGp<'a> {
         let kernel = &self.cache.kernel;
         let xs = kernel.prepare(&xt)?;
         let k_full = kernel.cross(&self.full_scaled, &xs);
-        let (mu, sd) = self.gp.outcome_affine();
+        let (mu, sd) = self.gp.outcome_affine()?;
         let c = self.gp.constant();
         let mean = k_full.tr_mul(self.alpha(i)).map(|v| mu + sd * (c + v));
         let (w, covariance) = if with_cov {
@@ -590,7 +675,11 @@ impl<'a> FantasyGp<'a> {
         let n_full = n + k;
         let p = post.mean.len();
         let d = self.gp.dim();
-        let (_, sd) = self.gp.outcome_affine();
+        let sd = self
+            .gp
+            .outcome_affine()
+            .expect("checked when the fantasy models were built")
+            .1;
         let alpha = self.alpha(post.fantasy);
         let mbar = mean_bar * sd;
         // Adjoint of K(X_full, x) (N × p) and of K(x, x) (p × p).
@@ -616,7 +705,10 @@ impl<'a> FantasyGp<'a> {
             }
         }
         // Gradient with respect to the test points (transformed space).
-        let jac = self.gp.input_jacobian();
+        let jac = self
+            .gp
+            .input_jacobian()
+            .expect("checked when the fantasy models were built");
         let mut out = Matrix::zeros(p, d);
         for t in 0..p {
             let (_, dk) = kernel.cross_with_grad(&post.xs, t, &self.full_scaled);
@@ -664,7 +756,10 @@ impl<'a> FantasyGp<'a> {
                 xbar_tf[(j, m)] += g[m];
             }
         }
-        let jac = self.gp.input_jacobian();
+        let jac = self
+            .gp
+            .input_jacobian()
+            .expect("checked when the fantasy models were built");
         let mut out = Matrix::from_fn(k, d, |j, m| xbar_tf[(j, m)] * jac[m]);
         // Through the fantasized observations y_i = μ + R z_i.
         let mean_bar = Vector::from_fn(k, |j, _| acc.ybar.row(j).sum());

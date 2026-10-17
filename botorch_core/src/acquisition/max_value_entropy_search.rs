@@ -727,6 +727,7 @@ impl MaxValueBase {
                 "Multi-output models are not supported by {name}."
             )));
         }
+        crate::acquisition::require_gaussian_model(model.as_ref(), name)?;
         if let Some(t) = &o.posterior_transform {
             if t.num_outputs() != 1 {
                 return Err(BotorchError::DimensionMismatch(format!(

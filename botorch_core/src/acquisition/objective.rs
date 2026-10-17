@@ -160,6 +160,9 @@ impl ScalarizedPosteriorTransform {
     /// outputs.
     pub fn transform_posterior(&self, posterior: &Posterior) -> Result<Posterior> {
         self.check_outputs(posterior.num_outputs())?;
+        if posterior.is_transformed() {
+            return Err(BotorchError::Unsupported(SCALARIZE_TRANSFORMED.into()));
+        }
         let q = posterior.num_points();
         Ok(Posterior::single_output(
             self.scalarize_mean(&posterior.mean, q, true),
@@ -223,14 +226,31 @@ impl ScalarizedPosteriorTransform {
     }
 }
 
+/// BoTorch's error for scalarizing a `TransformedPosterior` (it has no
+/// `distribution`).
+pub const SCALARIZE_TRANSFORMED_MESSAGE: &str = SCALARIZE_TRANSFORMED;
+
+/// See [`SCALARIZE_TRANSFORMED_MESSAGE`].
+pub(crate) const SCALARIZE_TRANSFORMED: &str = "scalarize_posterior only works with a posterior \
+     that has an attribute `distribution`, such as a GPyTorchPosterior, or a posterior that \
+     contains sub-posteriors in an attribute `posteriors`, as in a PosteriorList.";
+
 /// A model seen through a [`ScalarizedPosteriorTransform`]: a single-output
 /// [`Model`] whose posterior is the scalarized posterior of the wrapped
 /// model (what BoTorch's acquisition functions evaluate with
 /// `posterior_transform=...`).
+///
+/// For a model list of single-output models with nonlinear outcome
+/// transforms (BoTorch's `PosteriorList` of `TransformedPosterior`s),
+/// BoTorch's `scalarize_posterior` builds a Gaussian posterior from the
+/// marginal moments of one point (`q = 1`): mean `offset + Σ w_t μ_t`,
+/// variance `Σ w_t² σ_t²`; this model does the same.
 #[derive(Clone, Debug)]
 pub struct ScalarizedModel {
     model: Arc<dyn Model>,
     transform: ScalarizedPosteriorTransform,
+    /// Whether the posterior is moment-matched (see above).
+    moments: bool,
 }
 
 impl ScalarizedModel {
@@ -241,7 +261,88 @@ impl ScalarizedModel {
     /// per model output.
     pub fn new(model: Arc<dyn Model>, transform: ScalarizedPosteriorTransform) -> Result<Self> {
         transform.check_outputs(model.num_outputs())?;
-        Ok(Self { model, transform })
+        let transformed = model.transformed_outputs().iter().any(|&t| t);
+        let moments = if transformed {
+            match model.list_output_sizes() {
+                Some(sizes) if sizes.iter().all(|&k| k == 1) => true,
+                Some(_) => {
+                    return Err(BotorchError::Unsupported(
+                        "scalarize_posterior only works with a PosteriorList if each \
+                         sub-posterior has one outcome."
+                            .into(),
+                    ))
+                }
+                None => return Err(BotorchError::Unsupported(SCALARIZE_TRANSFORMED.into())),
+            }
+        } else {
+            false
+        };
+        Ok(Self {
+            model,
+            transform,
+            moments,
+        })
+    }
+
+    /// The moment-matched scalarized posterior at one point and its
+    /// derivatives (see the type documentation).
+    fn moment_posterior(&self, x: &[f64]) -> Result<JointPosteriorGrad> {
+        let g = self.model.point_posterior_with_grad(x)?;
+        let transformed = self.model.transformed_outputs();
+        let w = &self.transform.weights;
+        let d = x.len();
+        let mut mean = 0.0;
+        let mut var = 0.0;
+        let mut dmean = vec![0.0; d];
+        let mut dvar = vec![0.0; d];
+        for (t, &wt) in w.iter().enumerate() {
+            mean += g.mean[t] * wt;
+            let v = g.covariance[(t, t)];
+            // GPyTorchPosterior.variance is clamped; TransformedPosterior's is not.
+            let clamped = !transformed[t] && v < crate::posterior::MIN_VARIANCE;
+            var += if clamped {
+                crate::posterior::MIN_VARIANCE
+            } else {
+                v
+            } * (wt * wt);
+            for k in 0..d {
+                dmean[k] += g.dmean[k][t] * wt;
+                if !clamped {
+                    dvar[k] += g.dcov[k][(t, t)] * (wt * wt);
+                }
+            }
+        }
+        Ok(JointPosteriorGrad {
+            mean: Vector::from_element(1, self.transform.offset + mean),
+            covariance: Matrix::from_element(1, 1, var),
+            dmean: dmean
+                .into_iter()
+                .map(|v| Vector::from_element(1, v))
+                .collect(),
+            dcov: dvar
+                .into_iter()
+                .map(|v| Matrix::from_element(1, 1, v))
+                .collect(),
+            num_outputs: 1,
+        })
+    }
+
+    fn require_q1(&self, x: &Matrix, observation_noise: bool) -> Result<()> {
+        if x.nrows() * self.model.points_per_input() != 1 {
+            return Err(BotorchError::Unsupported(
+                "scalarize_posterior only works with a PosteriorList if each sub-posterior has \
+                 q=1."
+                    .into(),
+            ));
+        }
+        if observation_noise {
+            return Err(BotorchError::Unsupported(
+                "the moment-matched scalarization of a PosteriorList with observation noise is \
+                 not supported"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     /// The model seen through `transform`, or `model` itself without a
@@ -292,11 +393,20 @@ impl Model for ScalarizedModel {
     }
 
     fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {
+        if self.moments {
+            self.require_q1(x, observation_noise)?;
+            let g = self.moment_posterior(&x.row(0).iter().copied().collect::<Vec<_>>())?;
+            return Ok(Posterior::single_output(g.mean, g.covariance));
+        }
         let p = self.model.posterior(x, observation_noise)?;
         self.transform.transform_posterior(&p)
     }
 
     fn joint_posterior_with_grad(&self, x: &Matrix) -> Result<JointPosteriorGrad> {
+        if self.moments {
+            self.require_q1(x, false)?;
+            return self.moment_posterior(&x.row(0).iter().copied().collect::<Vec<_>>());
+        }
         let g = self.model.joint_posterior_with_grad(x)?;
         self.transform.transform_grad(&g)
     }
@@ -316,16 +426,40 @@ impl Model for ScalarizedModel {
             1,
             self.model.points_per_input(),
         )?;
+        if self.moments {
+            let g = self.joint_posterior_with_grad(x)?;
+            let d = x.ncols();
+            let mut out = Matrix::zeros(rows.len(), d);
+            for k in 0..d {
+                out[(0, k)] = mean_adjoint[0] * g.dmean[k][0]
+                    + covariance_adjoint[(0, 0)] * g.dcov[k][(0, 0)];
+            }
+            return Ok(out);
+        }
         let (ma, ca) = self.transform.pull_back(mean_adjoint, covariance_adjoint);
         self.model.joint_posterior_vjp(x, rows, &ma, &ca)
     }
 
     fn point_posteriors(&self, x: &Matrix) -> Result<PointPosteriors> {
+        if self.moments {
+            let b = x.nrows();
+            let mut mean = Vector::zeros(b);
+            let mut var = Vector::zeros(b);
+            for i in 0..b {
+                let g = self.moment_posterior(&x.row(i).iter().copied().collect::<Vec<_>>())?;
+                mean[i] = g.mean[0];
+                var[i] = g.covariance[(0, 0)];
+            }
+            return Ok(PointPosteriors::single_output(&mean, &var));
+        }
         let pp = self.model.point_posteriors(x)?;
         self.transform.transform_point_posteriors(&pp)
     }
 
     fn point_posterior_with_grad(&self, x: &[f64]) -> Result<JointPosteriorGrad> {
+        if self.moments {
+            return self.moment_posterior(x);
+        }
         let g = self.model.point_posterior_with_grad(x)?;
         self.transform.transform_grad(&g)
     }

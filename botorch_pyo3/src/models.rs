@@ -30,6 +30,7 @@ use crate::kernel_trees::PyKernelNode;
 use crate::specs::{PyKernelSpec, PyLikelihoodSpec};
 use crate::threads;
 use crate::transforms::{numel, PyNormalize, PyStandardize};
+use pyo3::IntoPyObjectExt;
 
 /// Rows per parallel work item of the marginal posterior.
 const MARGINAL_CHUNK: usize = 256;
@@ -102,6 +103,27 @@ impl ModelRef {
         }
     }
 
+    /// Whether the posterior of each output is a `TransformedPosterior`.
+    fn transformed_outputs(&self) -> Vec<bool> {
+        match self {
+            ModelRef::Gp(m) => m.transformed_outputs(),
+            ModelRef::List(l) => Model::transformed_outputs(l),
+            ModelRef::Dyn(m) => m.transformed_outputs(),
+        }
+    }
+
+    /// Whether the model is a list of single-output models (whose posterior
+    /// with transformed outputs is a `PosteriorList` that BoTorch scalarizes
+    /// by moments).
+    fn is_list_of_single_outputs(&self) -> bool {
+        let sizes = match self {
+            ModelRef::Gp(_) => None,
+            ModelRef::List(l) => Model::list_output_sizes(l),
+            ModelRef::Dyn(m) => m.list_output_sizes(),
+        };
+        sizes.is_some_and(|s| s.iter().all(|&k| k == 1))
+    }
+
     fn posterior_at(&self, b: usize, x: &Matrix, noise: bool) -> botorch_core::Result<Posterior> {
         match self {
             ModelRef::Gp(m) => m.posterior_at(b, x, noise),
@@ -149,9 +171,53 @@ struct View {
     outputs: Option<Vec<usize>>,
     transform: Option<ScalarizedPosteriorTransform>,
     num_outputs: usize,
+    /// Whether each selected output is a `TransformedPosterior` (before a
+    /// posterior transform).
+    transformed: Vec<bool>,
+    /// Whether the posterior transform scalarizes the marginal moments of a
+    /// `PosteriorList` (BoTorch's `scalarize_posterior` of a model list with
+    /// transformed outputs, `q = 1`).
+    moments: bool,
+    /// Report the Gaussian base posterior of transformed outputs (the
+    /// `_posterior` of a `TransformedPosterior`).
+    base: bool,
 }
 
 impl View {
+    fn for_model(
+        model: &ModelRef,
+        output_indices: Option<Vec<usize>>,
+        transform: Option<TransformArg>,
+    ) -> PyResult<Self> {
+        let mut view = Self::new(model.num_outputs(), output_indices, transform)?;
+        let all = model.transformed_outputs();
+        view.transformed = match &view.outputs {
+            Some(o) => o.iter().map(|&t| all[t]).collect(),
+            None => all,
+        };
+        if view.transform.is_some() && view.transformed.iter().any(|&t| t) {
+            if !model.is_list_of_single_outputs() {
+                return Err(unsupported(
+                    botorch_core::acquisition::SCALARIZE_TRANSFORMED_MESSAGE,
+                ));
+            }
+            view.moments = true;
+        }
+        Ok(view)
+    }
+
+    /// The view of the Gaussian base posteriors (no sample transforms).
+    fn base(mut self) -> PyResult<Self> {
+        if self.transform.is_some() && self.transformed.iter().any(|&t| t) {
+            return Err(unsupported(
+                "the base posterior of a scalarized TransformedPosterior is not defined",
+            ));
+        }
+        self.base = true;
+        self.transformed = vec![false; self.transformed.len()];
+        Ok(self)
+    }
+
     fn new(
         m: usize,
         output_indices: Option<Vec<usize>>,
@@ -182,29 +248,77 @@ impl View {
             outputs: output_indices,
             transform,
             num_outputs,
+            transformed: vec![false; selected],
+            moments: false,
+            base: false,
         })
     }
 
     fn posterior(&self, p: Posterior) -> botorch_core::Result<Posterior> {
-        let p = match &self.outputs {
+        let mut p = match &self.outputs {
             Some(o) => p.select_outputs(o)?,
             None => p,
         };
+        if self.base {
+            p.sample_transform = None;
+        }
         match &self.transform {
+            Some(t) if self.moments => {
+                // BoTorch's `scalarize_posterior` of a `PosteriorList`: a
+                // Gaussian of the scalarized marginal moments of one point.
+                if p.num_points() != 1 {
+                    return Err(botorch_core::BotorchError::Unsupported(
+                        "scalarize_posterior only works with a PosteriorList if each \
+                         sub-posterior has q=1."
+                            .into(),
+                    ));
+                }
+                let (mean, var) = p.moments()?;
+                let pp = PointPosteriors::independent(
+                    Matrix::from_row_slice(1, mean.len(), mean.as_slice()),
+                    &Matrix::from_row_slice(1, var.len(), var.as_slice()),
+                );
+                let s = t.transform_point_posteriors(&pp)?;
+                Ok(Posterior::single_output(
+                    Vector::from_element(1, s.mean[(0, 0)]),
+                    Matrix::from_element(1, 1, s.variance(0, 0)),
+                ))
+            }
             Some(t) => t.transform_posterior(&p),
             None => Ok(p),
         }
     }
 
     fn points(&self, pp: PointPosteriors) -> botorch_core::Result<PointPosteriors> {
-        let pp = match &self.outputs {
+        let mut pp = match &self.outputs {
             Some(o) => pp.select_outputs(o)?,
             None => pp,
         };
         match &self.transform {
-            Some(t) => t.transform_point_posteriors(&pp),
+            Some(t) => {
+                if self.moments {
+                    // The variances of the Gaussian outputs of a
+                    // `PosteriorList` are clamped (`posterior.variance`).
+                    let m = pp.num_outputs();
+                    for i in 0..pp.len() {
+                        for (k, &tr) in self.transformed.iter().enumerate() {
+                            let c = &mut pp.covariance[(i, k * m + k)];
+                            if !tr && *c < MIN_VARIANCE {
+                                *c = MIN_VARIANCE;
+                            }
+                        }
+                    }
+                }
+                t.transform_point_posteriors(&pp)
+            }
             None => Ok(pp),
         }
+    }
+
+    /// Whether the variance of selected output `t` is a moment of a
+    /// `TransformedPosterior` (reported unclamped).
+    fn unclamped(&self, t: usize) -> bool {
+        self.transform.is_none() && self.transformed.get(t).copied().unwrap_or(false)
     }
 }
 
@@ -292,7 +406,11 @@ fn marginals(
                     let idx = (o * qk + p) * mo + t;
                     mean[idx] = part.mean[(i, t)];
                     let v = part.variance(i, t);
-                    var[idx] = if v < MIN_VARIANCE { MIN_VARIANCE } else { v };
+                    var[idx] = if v < MIN_VARIANCE && !view.unclamped(t) {
+                        MIN_VARIANCE
+                    } else {
+                        v
+                    };
                 }
             }
         }
@@ -345,6 +463,36 @@ fn joint_out(shape: Vec<usize>, posts: &[Posterior], q: usize, mo: usize) -> (Ar
     let mut cshape = shape;
     cshape.extend([q * mo, q * mo]);
     (ArrayBuf(mean, mshape), ArrayBuf(cov, cshape))
+}
+
+/// The marginal means and (clamped) variances of the Gaussian base
+/// posteriors (the `_posterior` of a `TransformedPosterior`), from the joint
+/// posteriors of the point sets of `x`: two arrays of shape `out_batch x q·k
+/// x m'`.
+fn base_marginals(
+    py: Python<'_>,
+    model: &ModelRef,
+    x: &Array,
+    noise: bool,
+    view: View,
+) -> PyResult<(ArrayBuf, ArrayBuf)> {
+    let q = x.1.get(x.1.len().wrapping_sub(2)).copied().unwrap_or(0) * model.points_per_input();
+    let mo = view.num_outputs;
+    let (shape, posts) = threads::run(py, || joints(model, x, noise, &view))?;
+    let mut mean = Vec::with_capacity(posts.len() * q * mo);
+    let mut var = Vec::with_capacity(posts.len() * q * mo);
+    for p in &posts {
+        let v = p.variance();
+        for i in 0..q {
+            for t in 0..mo {
+                mean.push(p.mean[t * q + i]);
+                var.push(v[t * q + i]);
+            }
+        }
+    }
+    let mut out = shape;
+    out.extend([q, mo]);
+    Ok((ArrayBuf(mean, out.clone()), ArrayBuf(var, out)))
 }
 
 /// Posterior samples from base samples `z` of shape `S x q·m'` (shared by all
@@ -562,6 +710,11 @@ impl PySingleTaskGP {
         likelihood=None,
         input_chain=None,
         covar_tree=None,
+        input_chain_training=None,
+        input_chain_prefixes=None,
+        input_chains=None,
+        outcome_chains=None,
+        input_chain_params=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -576,6 +729,11 @@ impl PySingleTaskGP {
         likelihood: Option<PyRef<'_, PyLikelihoodSpec>>,
         input_chain: Option<Vec<Bound<'_, PyAny>>>,
         covar_tree: Option<PyRef<'_, PyKernelNode>>,
+        input_chain_training: Option<Vec<bool>>,
+        input_chain_prefixes: Option<Vec<String>>,
+        input_chains: Option<Vec<Vec<Bound<'_, PyAny>>>>,
+        outcome_chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+        input_chain_params: Option<Vec<Vec<f64>>>,
     ) -> PyResult<Self> {
         let (batch, xs) = train_x.batches("train_X")?;
         let (ybatch, ys) = train_y.batches("train_Y")?;
@@ -598,6 +756,18 @@ impl PySingleTaskGP {
             None => None,
         };
         let outcome = match (outcome_transform, standardize_by_default) {
+            _ if outcome_chains.is_some() => OutcomeTransformChoice::Chains(
+                outcome_chains
+                    .as_ref()
+                    .expect("checked")
+                    .iter()
+                    .map(|steps| {
+                        botorch_core::transforms::outcome::OutcomeChain::new(
+                            steps.iter().map(|s| s.inner.clone()).collect(),
+                        )
+                    })
+                    .collect(),
+            ),
             (Some(st), _) => {
                 if !st.batch_shape.is_empty() && st.batch_shape != batch {
                     return Err(dimension_error(format!(
@@ -622,8 +792,30 @@ impl PySingleTaskGP {
             likelihood: likelihood.map(|l| l.inner),
             input_chain: input_chain
                 .as_deref()
-                .map(crate::input_perturbation::chain_of)
+                .map(|steps| {
+                    crate::input_perturbation::chain_of(
+                        steps,
+                        input_chain_training.clone(),
+                        input_chain_prefixes.clone(),
+                    )
+                })
                 .transpose()?,
+            input_chains: input_chains
+                .as_deref()
+                .map(|chains| {
+                    chains
+                        .iter()
+                        .map(|steps| {
+                            crate::input_perturbation::chain_of(
+                                steps,
+                                input_chain_training.clone(),
+                                input_chain_prefixes.clone(),
+                            )
+                        })
+                        .collect::<PyResult<Vec<_>>>()
+                })
+                .transpose()?,
+            input_chain_params,
             ..Default::default()
         };
         // (A perturbation function is called while the chain is fitted.)
@@ -718,7 +910,8 @@ impl PySingleTaskGP {
         let mats: Vec<Matrix> = (0..m.batch_size())
             .map(|b| m.model(b, 0).transformed_train_inputs().clone())
             .collect();
-        crate::arrays::stack_out(&mats, m.batch_shape(), m.num_train(), m.dim()).into()
+        let d_tf = mats[0].ncols();
+        crate::arrays::stack_out(&mats, m.batch_shape(), m.num_train(), d_tf).into()
     }
 
     /// Training targets after the outcome transform, BoTorch's
@@ -765,11 +958,76 @@ impl PySingleTaskGP {
         self.snapshot().points_per_input()
     }
 
+    /// The fitted steps of the input transform of every batch element (see
+    /// `input_chain_state`), if the model has a general input transform.
+    fn input_chain_states(&self, py: Python<'_>) -> PyResult<Option<Vec<Vec<Py<PyAny>>>>> {
+        let m = self.snapshot();
+        if m.input_chain_of(0).is_none() {
+            return Ok(None);
+        }
+        (0..m.batch_size())
+            .map(|b| {
+                crate::input_perturbation::chain_state(
+                    py,
+                    m.input_chain_of(b).expect("every element has the chain"),
+                )
+            })
+            .collect::<PyResult<Vec<_>>>()
+            .map(Some)
+    }
+
+    /// The training inputs as transformed when the model was built
+    /// (`batch_shape x n x d'`; BoTorch's `transformed_X` in the
+    /// constructor).
+    fn construction_train_inputs(&self) -> ArrayBuf {
+        let m = self.snapshot();
+        let mats: Vec<Matrix> = (0..m.batch_size())
+            .map(|b| m.model(b, 0).construction_train_inputs().clone())
+            .collect();
+        let d = mats[0].ncols();
+        crate::arrays::stack_out(&mats, m.batch_shape(), m.num_train(), d).into()
+    }
+
+    /// The dimension of the transformed inputs.
+    #[getter]
+    fn transformed_dim(&self) -> usize {
+        self.snapshot().models()[0].transformed_dim()
+    }
+
+    /// Whether the posterior of each output is a `TransformedPosterior`.
+    #[getter]
+    fn transformed_outputs(&self) -> Vec<bool> {
+        self.snapshot().transformed_outputs()
+    }
+
+    /// The fitted outcome steps of every element (`_aug_batch_shape`
+    /// elements, row-major), if the model has a general outcome transform.
+    fn outcome_chain_states(&self, py: Python<'_>) -> PyResult<Option<Vec<Vec<Py<PyAny>>>>> {
+        let m = self.snapshot();
+        if m.models()[0].outcome_chain().is_none() {
+            return Ok(None);
+        }
+        m.models()
+            .iter()
+            .map(|g| {
+                g.outcome_chain()
+                    .expect("every element has a chain")
+                    .steps()
+                    .iter()
+                    .map(|s| {
+                        crate::transform_steps::PyOutcomeStep { inner: s.clone() }.into_py_any(py)
+                    })
+                    .collect::<PyResult<Vec<_>>>()
+            })
+            .collect::<PyResult<Vec<_>>>()
+            .map(Some)
+    }
+
     /// The fitted outcome transform, if any (statistics of shape
     /// `batch_shape x 1 x m`).
     fn outcome_transform(&self) -> PyResult<Option<PyStandardize>> {
         let m = self.snapshot();
-        if m.models()[0].outcome_transform().is_none() {
+        if m.models()[0].outcome_transform().is_none() || m.models()[0].outcome_chain().is_some() {
             return Ok(None);
         }
         let mut means = Vec::with_capacity(m.batch_size());
@@ -963,7 +1221,7 @@ impl PySingleTaskGP {
     /// clamped at 1e-10 like `posterior.variance`), where `out_batch` is the
     /// broadcast of the batch shapes of `X` and of the model and `m'` the
     /// number of selected outputs (1 with a posterior transform).
-    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None))]
+    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None, base=false))]
     fn posterior_marginals(
         &self,
         py: Python<'_>,
@@ -971,9 +1229,13 @@ impl PySingleTaskGP {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
+        base: bool,
     ) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let model = self.model_ref();
-        let view = View::new(model.num_outputs(), output_indices, transform)?;
+        let view = View::for_model(&model, output_indices, transform)?;
+        if base {
+            return base_marginals(py, &model, &x, observation_noise, view.base()?);
+        }
         let (mean, var, shape) =
             threads::run(py, || marginals(&model, &x, observation_noise, &view))?;
         Ok((ArrayBuf(mean, shape.clone()), ArrayBuf(var, shape)))
@@ -982,7 +1244,7 @@ impl PySingleTaskGP {
     /// Joint posteriors of the point sets of `X` (`... x q x d`): means
     /// (`out_batch x q x m'`) and covariances (`out_batch x q·m' x q·m'`,
     /// BoTorch's output-major layout).
-    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None))]
+    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None, base=false))]
     fn posterior_joint(
         &self,
         py: Python<'_>,
@@ -990,9 +1252,13 @@ impl PySingleTaskGP {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
+        base: bool,
     ) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let model = self.model_ref();
-        let view = View::new(model.num_outputs(), output_indices, transform)?;
+        let mut view = View::for_model(&model, output_indices, transform)?;
+        if base {
+            view = view.base()?;
+        }
         let q = x.1.get(x.1.len().wrapping_sub(2)).copied().unwrap_or(0) * model.points_per_input();
         let mo = view.num_outputs;
         let (shape, posts) = threads::run(py, || joints(&model, &x, observation_noise, &view))?;
@@ -1001,7 +1267,8 @@ impl PySingleTaskGP {
 
     /// Posterior samples at the point sets of `X` from base samples (see the
     /// module documentation); returns `S x out_batch x q x m'`.
-    #[pyo3(signature = (x, base_samples, observation_noise=false, output_indices=None, transform=None))]
+    #[pyo3(signature = (x, base_samples, observation_noise=false, output_indices=None, transform=None, base=false))]
+    #[allow(clippy::too_many_arguments)]
     fn posterior_samples(
         &self,
         py: Python<'_>,
@@ -1010,9 +1277,13 @@ impl PySingleTaskGP {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
+        base: bool,
     ) -> PyResult<ArrayBuf> {
         let model = self.model_ref();
-        let view = View::new(model.num_outputs(), output_indices, transform)?;
+        let mut view = View::for_model(&model, output_indices, transform)?;
+        if base {
+            view = view.base()?;
+        }
         threads::run(py, || {
             samples(&model, &x, &base_samples, observation_noise, &view)
         })
@@ -1135,7 +1406,7 @@ impl PyModelListGP {
     }
 
     /// See `SingleTaskGP.posterior_marginals`.
-    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None))]
+    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None, base=false))]
     fn posterior_marginals(
         &self,
         py: Python<'_>,
@@ -1143,16 +1414,20 @@ impl PyModelListGP {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
+        base: bool,
     ) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let model = ModelRef::List(self.inner.clone());
-        let view = View::new(model.num_outputs(), output_indices, transform)?;
+        let view = View::for_model(&model, output_indices, transform)?;
+        if base {
+            return base_marginals(py, &model, &x, observation_noise, view.base()?);
+        }
         let (mean, var, shape) =
             threads::run(py, || marginals(&model, &x, observation_noise, &view))?;
         Ok((ArrayBuf(mean, shape.clone()), ArrayBuf(var, shape)))
     }
 
     /// See `SingleTaskGP.posterior_joint`.
-    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None))]
+    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None, base=false))]
     fn posterior_joint(
         &self,
         py: Python<'_>,
@@ -1160,9 +1435,13 @@ impl PyModelListGP {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
+        base: bool,
     ) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let model = ModelRef::List(self.inner.clone());
-        let view = View::new(model.num_outputs(), output_indices, transform)?;
+        let mut view = View::for_model(&model, output_indices, transform)?;
+        if base {
+            view = view.base()?;
+        }
         let q = x.1.get(x.1.len().wrapping_sub(2)).copied().unwrap_or(0) * model.points_per_input();
         let mo = view.num_outputs;
         let (shape, posts) = threads::run(py, || joints(&model, &x, observation_noise, &view))?;
@@ -1170,7 +1449,8 @@ impl PyModelListGP {
     }
 
     /// See `SingleTaskGP.posterior_samples`.
-    #[pyo3(signature = (x, base_samples, observation_noise=false, output_indices=None, transform=None))]
+    #[pyo3(signature = (x, base_samples, observation_noise=false, output_indices=None, transform=None, base=false))]
+    #[allow(clippy::too_many_arguments)]
     fn posterior_samples(
         &self,
         py: Python<'_>,
@@ -1179,9 +1459,13 @@ impl PyModelListGP {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
+        base: bool,
     ) -> PyResult<ArrayBuf> {
         let model = ModelRef::List(self.inner.clone());
-        let view = View::new(model.num_outputs(), output_indices, transform)?;
+        let mut view = View::for_model(&model, output_indices, transform)?;
+        if base {
+            view = view.base()?;
+        }
         threads::run(py, || {
             samples(&model, &x, &base_samples, observation_noise, &view)
         })
@@ -1269,7 +1553,7 @@ impl PyModel {
     }
 
     /// See `SingleTaskGP.posterior_marginals` (unbatched models).
-    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None))]
+    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None, base=false))]
     fn posterior_marginals(
         &self,
         py: Python<'_>,
@@ -1277,16 +1561,20 @@ impl PyModel {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
+        base: bool,
     ) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let model = ModelRef::Dyn(Arc::clone(&self.inner));
-        let view = View::new(model.num_outputs(), output_indices, transform)?;
+        let view = View::for_model(&model, output_indices, transform)?;
+        if base {
+            return base_marginals(py, &model, &x, observation_noise, view.base()?);
+        }
         let (mean, var, shape) =
             threads::run(py, || marginals(&model, &x, observation_noise, &view))?;
         Ok((ArrayBuf(mean, shape.clone()), ArrayBuf(var, shape)))
     }
 
     /// See `SingleTaskGP.posterior_joint` (unbatched models).
-    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None))]
+    #[pyo3(signature = (x, observation_noise=false, output_indices=None, transform=None, base=false))]
     fn posterior_joint(
         &self,
         py: Python<'_>,
@@ -1294,9 +1582,13 @@ impl PyModel {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
+        base: bool,
     ) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let model = ModelRef::Dyn(Arc::clone(&self.inner));
-        let view = View::new(model.num_outputs(), output_indices, transform)?;
+        let mut view = View::for_model(&model, output_indices, transform)?;
+        if base {
+            view = view.base()?;
+        }
         let q = x.1.get(x.1.len().wrapping_sub(2)).copied().unwrap_or(0) * model.points_per_input();
         let mo = view.num_outputs;
         let (shape, posts) = threads::run(py, || joints(&model, &x, observation_noise, &view))?;
@@ -1304,7 +1596,8 @@ impl PyModel {
     }
 
     /// See `SingleTaskGP.posterior_samples` (unbatched models).
-    #[pyo3(signature = (x, base_samples, observation_noise=false, output_indices=None, transform=None))]
+    #[pyo3(signature = (x, base_samples, observation_noise=false, output_indices=None, transform=None, base=false))]
+    #[allow(clippy::too_many_arguments)]
     fn posterior_samples(
         &self,
         py: Python<'_>,
@@ -1313,9 +1606,13 @@ impl PyModel {
         observation_noise: bool,
         output_indices: Option<Vec<usize>>,
         transform: Option<TransformArg>,
+        base: bool,
     ) -> PyResult<ArrayBuf> {
         let model = ModelRef::Dyn(Arc::clone(&self.inner));
-        let view = View::new(model.num_outputs(), output_indices, transform)?;
+        let mut view = View::for_model(&model, output_indices, transform)?;
+        if base {
+            view = view.base()?;
+        }
         threads::run(py, || {
             samples(&model, &x, &base_samples, observation_noise, &view)
         })

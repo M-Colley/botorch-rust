@@ -266,6 +266,7 @@ fn build_member(f: &P4Model) -> BatchedMultiOutputGP {
 }
 
 /// A fixture's model: a (batched, multi-output) `SingleTaskGP` or a `ModelListGP`.
+#[allow(clippy::large_enum_variant)]
 enum TestModel {
     Single(BatchedMultiOutputGP),
     List(ModelListGP),

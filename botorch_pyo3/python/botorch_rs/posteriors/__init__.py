@@ -6,5 +6,14 @@ from botorch_rs.posteriors.gpytorch import (
     MultivariateNormal,
     Posterior,
 )
+from botorch_rs.posteriors.posterior_list import PosteriorList
+from botorch_rs.posteriors.transformed import TransformedPosterior
 
-__all__ = ["GPyTorchPosterior", "MultitaskMultivariateNormal", "MultivariateNormal", "Posterior"]
+__all__ = [
+    "GPyTorchPosterior",
+    "MultitaskMultivariateNormal",
+    "MultivariateNormal",
+    "Posterior",
+    "PosteriorList",
+    "TransformedPosterior",
+]

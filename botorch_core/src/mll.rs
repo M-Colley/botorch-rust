@@ -13,12 +13,20 @@
 //! The Cholesky factorization uses the same jitter fallback as
 //! `psd_safe_cholesky`; the gradient is then that of the jittered objective,
 //! which is what autograd produces in GPyTorch.
+//!
+//! With learned input-transform parameters `φ` (e.g. `Warp`'s
+//! concentrations), the transformed training inputs `X̃(φ)` are recomputed
+//! in train mode at every evaluation (BoTorch transforms the training inputs
+//! in the model's `forward`), the transform's priors are added, and the
+//! gradient with respect to `φ` is `[Σ_a ∂mll/∂x̃_a · ∂x̃_a/∂φ]/n` with
+//! `∂mll/∂x̃_a = Σ_b W_ab ∂₁k(x̃_a, x̃_b)` for `W = ααᵀ - K⁻¹`.
 
 use crate::error::{BotorchError, Result};
 use crate::kernels::{BuiltCovar, CovarModule, Prepared};
 use crate::linalg::psd_safe_cholesky;
 use crate::models::{Hyperparameters, Likelihood, SingleTaskGP};
-use crate::Vector;
+use crate::transforms::input::TransformMode;
+use crate::{Matrix, Vector};
 
 /// `log(2π)`.
 const LN_2PI: f64 = 1.837_877_066_409_345_3;
@@ -85,7 +93,26 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
             )));
         }
         let covar = model.build_covar(&h)?;
-        let xs = covar.prepare(model.transformed_train_inputs())?;
+        // Learned input-transform parameters: the training inputs at `φ`.
+        let input = match model.input_chain() {
+            Some(chain) if layout.input > 0 => {
+                let chain = chain.with_params(h.raw_input.as_slice())?;
+                let (x_tf, tape) =
+                    chain.transform_with_tape_mode(model.train_inputs(), TransformMode::Train)?;
+                if x_tf.iter().any(|v| v.is_nan()) {
+                    return Err(BotorchError::InputData(
+                        "transformed train_x contains NaN values.".into(),
+                    ));
+                }
+                Some((chain, x_tf, tape))
+            }
+            _ => None,
+        };
+        let train_x_tf = match &input {
+            Some((_, x_tf, _)) => x_tf,
+            None => model.transformed_train_inputs(),
+        };
+        let xs = covar.prepare(train_x_tf)?;
         let mut k = covar.symmetric(&xs);
         let n = model.num_train();
         let nf = n as f64;
@@ -149,6 +176,12 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
             }
             _ => unreachable!("covariance module and kernel of different kinds"),
         }
+        let input_prior = input
+            .as_ref()
+            .map(|(chain, _, _)| chain.log_prior_and_grad());
+        if let Some((lp, _)) = &input_prior {
+            res += lp;
+        }
         let value = res / nf;
         if !with_grad {
             return Ok((value, None));
@@ -210,6 +243,22 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
                 }
             }
             _ => unreachable!("covariance module and kernel of different kinds"),
+        }
+        if let (Some((chain, x_tf, tape)), Some((_, prior_grad))) = (&input, &input_prior) {
+            // ∂mll/∂x̃_a = Σ_b W_ab ∂₁k(x̃_a, x̃_b) (symmetric W and k).
+            let dt = x_tf.ncols();
+            let mut gx = Matrix::zeros(n, dt);
+            for a in 0..n {
+                let (_, dk) = covar.cross_with_grad(&xs, a, &xs);
+                let g = dk.tr_mul(&w.row(a).transpose());
+                for k in 0..dt {
+                    gx[(a, k)] = g[k];
+                }
+            }
+            let (_, pbar) = chain.backward_with_params(tape, 0..n, &gx)?;
+            for (j, idx) in layout.input_range().enumerate() {
+                grad[idx] = (pbar[j] + prior_grad[j]) / nf;
+            }
         }
         Ok((value, Some(grad)))
     }

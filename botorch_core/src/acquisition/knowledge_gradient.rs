@@ -1149,6 +1149,7 @@ impl ModelValueFunction {
     fn evaluate(&self, x: &Matrix, with_grad: bool) -> Result<(f64, Option<Matrix>)> {
         check_candidates(x, self.model.dim(), None)?;
         let post = self.model.posterior(x, false)?;
+        post.require_gaussian("the value function")?;
         let n = post.num_points();
         let (pv, transform) = match &self.transform {
             Some(t) => (

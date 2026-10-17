@@ -68,6 +68,13 @@ class Normalize:
 
 class Standardize:
     def __init__(self, min_stdv: float = 1e-8, batch_shape: Sequence[int] = ...) -> None: ...
+    @staticmethod
+    def fitted(
+        means: Sequence[Sequence[float]],
+        stdvs: Sequence[Sequence[float]],
+        min_stdv: float,
+        batch_shape: Sequence[int],
+    ) -> Standardize: ...
     @property
     def min_stdv(self) -> float: ...
     @property
@@ -291,13 +298,25 @@ class SingleTaskGP:
         standardize_by_default: bool = True,
         covar_module: KernelSpec | None = None,
         likelihood: GaussianLikelihoodSpec | None = None,
-        input_chain: Sequence[Normalize | InputPerturbation] | None = None,
+        input_chain: Sequence[Normalize | InputPerturbation | InputStep] | None = None,
         covar_tree: KernelNode | None = None,
+        input_chain_training: Sequence[bool] | None = None,
+        input_chain_prefixes: Sequence[str] | None = None,
+        input_chains: Sequence[Sequence[Normalize | InputPerturbation | InputStep]] | None = None,
+        outcome_chains: Sequence[Sequence[OutcomeStep]] | None = None,
+        input_chain_params: Sequence[Sequence[float]] | None = None,
     ) -> None: ...
     def copy(self) -> SingleTaskGP: ...
     @property
     def points_per_input(self) -> int: ...
     def input_chain_state(self) -> list[Normalize | int | None] | None: ...
+    def input_chain_states(self) -> list[list[Any]] | None: ...
+    def outcome_chain_states(self) -> list[list[OutcomeStep]] | None: ...
+    def construction_train_inputs(self) -> ArrayBuf: ...
+    @property
+    def transformed_dim(self) -> int: ...
+    @property
+    def transformed_outputs(self) -> list[bool]: ...
     @property
     def dim(self) -> int: ...
     @property
@@ -344,6 +363,7 @@ class SingleTaskGP:
         observation_noise: bool = False,
         output_indices: Sequence[int] | None = None,
         transform: Transform | None = None,
+        base: bool = False,
     ) -> tuple[ArrayBuf, ArrayBuf]: ...
     def posterior_joint(
         self,
@@ -351,6 +371,7 @@ class SingleTaskGP:
         observation_noise: bool = False,
         output_indices: Sequence[int] | None = None,
         transform: Transform | None = None,
+        base: bool = False,
     ) -> tuple[ArrayBuf, ArrayBuf]: ...
     def posterior_samples(
         self,
@@ -359,6 +380,7 @@ class SingleTaskGP:
         observation_noise: bool = False,
         output_indices: Sequence[int] | None = None,
         transform: Transform | None = None,
+        base: bool = False,
     ) -> ArrayBuf: ...
     def mll(self, raw_parameters: Sequence[float] | None = None) -> ArrayOut: ...
     def mll_value_and_grad(
@@ -379,6 +401,8 @@ class SingleTaskGP:
 class ModelListGP:
     def __init__(self, models: Sequence[SingleTaskGP]) -> None: ...
     @property
+    def transformed_outputs(self) -> list[bool]: ...
+    @property
     def points_per_input(self) -> int: ...
     @property
     def dim(self) -> int: ...
@@ -392,6 +416,7 @@ class ModelListGP:
         observation_noise: bool = False,
         output_indices: Sequence[int] | None = None,
         transform: Transform | None = None,
+        base: bool = False,
     ) -> tuple[ArrayBuf, ArrayBuf]: ...
     def posterior_joint(
         self,
@@ -399,6 +424,7 @@ class ModelListGP:
         observation_noise: bool = False,
         output_indices: Sequence[int] | None = None,
         transform: Transform | None = None,
+        base: bool = False,
     ) -> tuple[ArrayBuf, ArrayBuf]: ...
     def posterior_samples(
         self,
@@ -407,6 +433,7 @@ class ModelListGP:
         observation_noise: bool = False,
         output_indices: Sequence[int] | None = None,
         transform: Transform | None = None,
+        base: bool = False,
     ) -> ArrayBuf: ...
 
 class LCEMGP:
@@ -521,6 +548,7 @@ class Model:
         observation_noise: bool = False,
         output_indices: Sequence[int] | None = None,
         transform: Transform | None = None,
+        base: bool = False,
     ) -> tuple[ArrayBuf, ArrayBuf]: ...
     def posterior_joint(
         self,
@@ -528,6 +556,7 @@ class Model:
         observation_noise: bool = False,
         output_indices: Sequence[int] | None = None,
         transform: Transform | None = None,
+        base: bool = False,
     ) -> tuple[ArrayBuf, ArrayBuf]: ...
     def posterior_samples(
         self,
@@ -536,6 +565,7 @@ class Model:
         observation_noise: bool = False,
         output_indices: Sequence[int] | None = None,
         transform: Transform | None = None,
+        base: bool = False,
     ) -> ArrayBuf: ...
     @staticmethod
     def from_model_list(model: ModelListGP, transform: Transform | None = None) -> Model: ...
@@ -1908,3 +1938,143 @@ def fit_gpytorch_mll_scipy_py(
     maxls: int | None = None,
 ) -> ResultOut: ...
 def sample_all_priors(model: SingleTaskGP, seed: int | None = None) -> None: ...
+
+# -- Input and outcome transform steps (phase 6b) ----------------------------
+
+Flags = tuple[bool, bool, bool]
+
+class InputStep:
+    @staticmethod
+    def affine(
+        d: int,
+        indices: Sequence[int] | None,
+        offset: Sequence[float],
+        coefficient: Sequence[float],
+        kind: str,
+        learn: bool,
+        reverse: bool,
+        flags: Flags,
+        min_range: float = 1e-8,
+        center: float = 0.5,
+        min_std: float = 1e-8,
+    ) -> InputStep: ...
+    @staticmethod
+    def warp(
+        d: int,
+        indices: Sequence[int],
+        eps: float,
+        bounds: tuple[Sequence[float], Sequence[float]] | None,
+        c0_prior: Prior | None,
+        c1_prior: Prior | None,
+        reverse: bool,
+        flags: Flags,
+        batched: bool = False,
+        concentrations: tuple[Sequence[float], Sequence[float]] | None = None,
+    ) -> InputStep: ...
+    @staticmethod
+    def round(
+        integer_indices: Sequence[int],
+        categorical: Sequence[tuple[int, int]],
+        approximate: bool,
+        tau: float,
+        flags: Flags,
+    ) -> InputStep: ...
+    @staticmethod
+    def log10(indices: Sequence[int], reverse: bool, flags: Flags) -> InputStep: ...
+    @staticmethod
+    def append(
+        feature_set: Array | None,
+        f: Callable[..., Any] | None,
+        indices: Sequence[int] | None,
+        fkwargs: Mapping[str, Any] | None,
+        skip_expand: bool,
+        flags: Flags,
+    ) -> InputStep: ...
+    @staticmethod
+    def interaction(indices: Sequence[int] | None = None) -> InputStep: ...
+    @staticmethod
+    def filter(feature_indices: Sequence[int], flags: Flags) -> InputStep: ...
+    @staticmethod
+    def one_hot_to_numeric(
+        dim: int, categorical: Sequence[tuple[int, int]], flags: Flags
+    ) -> InputStep: ...
+    @staticmethod
+    def numeric_to_categorical(
+        dim: int,
+        categorical: Sequence[tuple[int, int]],
+        encoders: Sequence[Callable[..., Any] | None],
+        flags: Flags,
+    ) -> InputStep: ...
+    @staticmethod
+    def imputation(
+        feature_indices: Sequence[tuple[int, Sequence[int]]],
+        d: int,
+        target_task: int | None,
+        bounds: tuple[Sequence[float], Sequence[float]] | None,
+        flags: Flags,
+        raw: Sequence[float] | None = None,
+    ) -> InputStep: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def flags(self) -> Flags: ...
+    @property
+    def params(self) -> list[float]: ...
+    @property
+    def param_shapes(self) -> list[tuple[str, list[int]]]: ...
+    def with_params(self, values: Sequence[float]) -> InputStep: ...
+    @property
+    def affine_state(self) -> tuple[list[float], list[float]] | None: ...
+    @property
+    def n_f(self) -> int | None: ...
+    @property
+    def imputation_values(self) -> list[float] | None: ...
+    def frozen(self) -> InputStep: ...
+    def out_dim(self, d: int) -> int: ...
+    def fit(self, x: Array) -> InputStep: ...
+    def transform(self, x: Array) -> ArrayBuf: ...
+    def untransform(self, x: Array) -> ArrayBuf: ...
+
+class OutcomeStep:
+    @staticmethod
+    def standardize(min_stdv: float) -> OutcomeStep: ...
+    @staticmethod
+    def standardize_fitted(mean: float, stdv: float, min_stdv: float) -> OutcomeStep: ...
+    @staticmethod
+    def log() -> OutcomeStep: ...
+    @staticmethod
+    def power(power: float) -> OutcomeStep: ...
+    @staticmethod
+    def bilog() -> OutcomeStep: ...
+    @staticmethod
+    def stratified(
+        stratification_idx: int,
+        task_values: Sequence[int],
+        min_stdv: float,
+        stats: tuple[Sequence[float], Sequence[float]] | None = None,
+    ) -> OutcomeStep: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def stats(self) -> tuple[list[float], list[float]] | None: ...
+    @property
+    def is_trained(self) -> bool: ...
+    def fit_transform(
+        self, y: Sequence[float], yvar: Sequence[float] | None = None, x: Array | None = None
+    ) -> tuple[OutcomeStep, list[float], list[float] | None]: ...
+    def apply(
+        self,
+        y: Sequence[float],
+        yvar: Sequence[float] | None = None,
+        x: Array | None = None,
+        inverse: bool = False,
+    ) -> tuple[list[float], list[float] | None]: ...
+
+def norm_to_lognorm_mean_py(mu: Array, var: Array) -> ArrayOut: ...
+def norm_to_lognorm_variance_py(mu: Array, var: Array) -> ArrayOut: ...
+def lognormal_moments_py(mu: Array, cov: Array, inverse: bool) -> tuple[ArrayOut, ArrayOut]: ...
+def kumaraswamy_warp_py(
+    x: Array, c0: Sequence[float], c1: Sequence[float], eps: float, inverse: bool
+) -> ArrayOut: ...
+def interaction_features_py(x: Array) -> ArrayOut: ...
+def nanstd_py(x: Array, dim: int, keepdim: bool) -> ArrayOut: ...

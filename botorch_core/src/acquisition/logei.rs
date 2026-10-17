@@ -784,6 +784,14 @@ impl QLogNoisyExpectedImprovement {
             obj.nrows(),
             obj.ncols(),
         );
+        if crate::acquisition::monte_carlo::has_nan(&so.obj) || best_f.iter().any(|b| b.is_nan()) {
+            return Ok(crate::acquisition::monte_carlo::nan_evaluation(
+                q,
+                d,
+                weights.map_or(0, <[f64]>::len),
+                with_grad,
+            ));
+        }
         let r = log_improvement_reduce(
             &obj,
             |s| best_f[s],

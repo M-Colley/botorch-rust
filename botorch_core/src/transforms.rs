@@ -1,9 +1,14 @@
-//! Input and outcome transforms mirroring
-//! `botorch.models.transforms.input.Normalize` and
-//! `botorch.models.transforms.outcome.Standardize`; `InputPerturbation` and
-//! `ChainedInputTransform` are in [`input`].
+//! Input and outcome transforms mirroring `botorch.models.transforms`:
+//! `Normalize` and `Standardize` here, the chains of input transforms and
+//! `InputPerturbation` in [`input`], the other input transforms in
+//! [`input_steps`], the outcome transforms other than `Standardize` and the
+//! un-transformation of posteriors in [`outcome`], and
+//! `botorch.models.transforms.utils` in [`utils`].
 
 pub mod input;
+pub mod input_steps;
+pub mod outcome;
+pub mod utils;
 
 use crate::error::{BotorchError, Result};
 use crate::{Matrix, Vector};
@@ -420,6 +425,12 @@ pub enum OutcomeTransformChoice {
     /// A user-configured `Standardize` (refitted on the training data, like
     /// BoTorch, which calls `.train()` on the transform during construction).
     Standardize(Standardize),
+    /// A general outcome transform (`Log`, `Power`, `Bilog`,
+    /// `StratifiedStandardize`, `Standardize` of some outputs, or a
+    /// `ChainedOutcomeTransform` of them; see [`outcome`]): the chain of
+    /// every output, or one chain for all outputs. The chains are refitted on
+    /// the training data.
+    Chains(Vec<outcome::OutcomeChain>),
 }
 
 #[cfg(test)]

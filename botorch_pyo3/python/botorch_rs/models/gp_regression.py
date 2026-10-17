@@ -17,14 +17,18 @@ from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelih
 from botorch_rs.means import ConstantMean
 from botorch_rs.models.model import Model
 from botorch_rs.models.transforms.input import (
-    ChainedInputTransform,
-    InputPerturbation,
     InputTransform,
     Normalize,
-    apply_chain_state,
-    chain_steps,
+    apply_chain_states,
+    chain_spec,
 )
-from botorch_rs.models.transforms.outcome import Standardize
+from botorch_rs.models.transforms.outcome import (
+    OutcomeTransform,
+    Standardize,
+    apply_outcome_states,
+    is_plain_standardize,
+    outcome_chains,
+)
 from botorch_rs.models.utils.gpytorch_modules import (
     get_covar_module_with_dim_scaled_prior,
     get_gaussian_likelihood_with_lognormal_prior,
@@ -163,11 +167,14 @@ class SingleTaskGP(Model):
     observation noise is used. The default covariance module is an ARD RBF
     kernel with the dimension-scaled lengthscale prior of Hvarfner et al.
     (2024), the default outcome transform is ``Standardize(m, batch_shape)``
-    and inputs are not transformed unless ``input_transform`` is given
-    (``Normalize``, ``InputPerturbation`` or a ``ChainedInputTransform`` of
-    them). With an ``InputPerturbation`` (``n_w`` perturbations), the
+    and inputs are not transformed unless ``input_transform`` is given (any
+    of :mod:`botorch_rs.models.transforms.input`, e.g. ``Normalize``,
+    ``Warp`` with concentrations fitted with the GP, ``InputPerturbation``,
+    or a ``ChainedInputTransform`` of them). With a one-to-many input
+    transform (``InputPerturbation`` with ``n_w`` perturbations), the
     posterior of ``q`` inputs is over the ``q * n_w`` perturbed points, as in
-    BoTorch.
+    BoTorch. With a nonlinear outcome transform (``Log``, ``Power``,
+    ``Bilog``), the posterior is a ``TransformedPosterior``.
 
     Training data of shape ``batch_shape x n x d`` / ``batch_shape x n x m``
     give ``batch_shape x m`` independent GPs (BoTorch's ``_aug_batch_shape``),
@@ -235,11 +242,24 @@ class SingleTaskGP(Model):
             if not isinstance(mean_module, ConstantMean):
                 raise UnsupportedError("Only a ConstantMean `mean_module` is supported.")
             _check_module_batch_shape(mean_module, aug, "mean_module")
+        ochains: list[list[Any]] | None = None
         if _is_default(outcome_transform):
-            ot_obj: Standardize | None = Standardize(m=m, batch_shape=batch)
+            ot_obj: OutcomeTransform | None = Standardize(m=m, batch_shape=batch)
             ot_rs, std_default = None, True
         elif outcome_transform is None:
             ot_obj, ot_rs, std_default = None, None, False
+        elif isinstance(outcome_transform, OutcomeTransform) and not is_plain_standardize(
+            outcome_transform
+        ):
+            if isinstance(outcome_transform, Standardize):
+                if outcome_transform._m != m:
+                    raise RuntimeError(
+                        f"Wrong output dimension. Y.size(-1) is {m}; expected "
+                        f"{outcome_transform._m}."
+                    )
+            outcome_transform.train()
+            ochains = outcome_chains(outcome_transform, m, batch)
+            ot_obj, ot_rs, std_default = outcome_transform, None, False
         elif isinstance(outcome_transform, Standardize):
             if outcome_transform._m != m:
                 raise BotorchTensorDimensionError(
@@ -252,16 +272,27 @@ class SingleTaskGP(Model):
                 )
             ot_obj, ot_rs, std_default = outcome_transform, outcome_transform._rs, False
         else:
-            raise UnsupportedError("`outcome_transform` must be a Standardize, DEFAULT or None.")
+            raise UnsupportedError(
+                "`outcome_transform` must be a botorch_rs outcome transform, DEFAULT or None."
+            )
         chain: list[Any] | None = None
-        if isinstance(input_transform, (InputPerturbation, ChainedInputTransform)):
-            chain = chain_steps(input_transform, d)
-        elif input_transform is not None:
-            if not isinstance(input_transform, Normalize):
+        chains: list[list[Any]] | None = None
+        spec = None
+        plain_normalize = isinstance(input_transform, Normalize) and input_transform._plain
+        if input_transform is not None and not plain_normalize:
+            if not isinstance(input_transform, InputTransform):
                 raise UnsupportedError(
-                    "`input_transform` must be a Normalize, an InputPerturbation or a "
-                    "ChainedInputTransform of them."
+                    "`input_transform` must be a botorch_rs input transform (from "
+                    "botorch_rs.models.transforms.input)."
                 )
+            spec = chain_spec(input_transform, d, batch)
+            steps = [[st.rs for st in c] for c in spec.chains]
+            if spec.per_batch:
+                chains = steps
+            else:
+                chain = steps[0]
+        elif input_transform is not None:
+            assert isinstance(input_transform, Normalize)
             tf_batch = input_transform.batch_shape
             if tf_batch and tf_batch != batch:
                 raise BotorchTensorDimensionError(
@@ -286,17 +317,31 @@ class SingleTaskGP(Model):
             covar_spec = covar._standard_spec(d)
             if covar_spec is None:
                 covar_tree = covar._node()
+        training = prefixes = None
+        if spec is not None:
+            training = [st.training for st in spec.chains[0]]
+            prefixes = [st.prefix for st in spec.chains[0]]
+        native_normalize = (
+            input_transform._rs
+            if isinstance(input_transform, Normalize) and plain_normalize
+            else None
+        )
         self._rs = _rs.SingleTaskGP(
             x,
             y,
             yvar,
-            input_transform._rs if isinstance(input_transform, Normalize) else None,
+            native_normalize,
             ot_rs,
             std_default,
             covar_spec,
             likelihood._spec if likelihood is not None else None,
             input_chain=chain,
             covar_tree=covar_tree,
+            input_chain_training=training,
+            input_chain_prefixes=prefixes,
+            input_chains=chains,
+            outcome_chains=ochains,
+            input_chain_params=spec.batch_params if spec is not None else None,
         )
         self._kind = kind
         # GP modules bound to the model's hyperparameters.
@@ -313,24 +358,33 @@ class SingleTaskGP(Model):
         self.likelihood: Likelihood = likelihood
         self.covar_module: Kernel = covar
         self.mean_module: ConstantMean = mean
-        if isinstance(input_transform, Normalize):
+        if plain_normalize:
+            assert isinstance(input_transform, Normalize)
             fitted_input = self._rs.input_transform()
             assert fitted_input is not None
             input_transform._set_fitted(fitted_input, kind)
             self.input_transform: InputTransform = input_transform
         elif input_transform is not None:
-            state = self._rs.input_chain_state()
-            assert state is not None
-            apply_chain_state(input_transform, state, kind)
+            assert spec is not None
+            states = self._rs.input_chain_states()
+            assert states is not None
+            apply_chain_states(spec, states, kind, batch)
+            input_transform._bind(self, "input_transform.")
             self.input_transform = input_transform
         if ot_obj is not None:
-            fitted_outcome = self._rs.outcome_transform()
-            assert fitted_outcome is not None
-            ot_obj._set_fitted(fitted_outcome, kind_of(train_Y))
+            if ochains is not None:
+                states = self._rs.outcome_chain_states()
+                assert states is not None
+                apply_outcome_states(ot_obj, states, m, batch, kind_of(train_Y))
+            else:
+                assert isinstance(ot_obj, Standardize)
+                fitted_outcome = self._rs.outcome_transform()
+                assert fitted_outcome is not None
+                ot_obj._set_fitted(fitted_outcome, kind_of(train_Y))
             self.outcome_transform = ot_obj
         if covar_module is None:
             _validate_input_scaling(
-                self._rs.transformed_train_inputs(),
+                self._rs.construction_train_inputs(),
                 self._rs.transformed_train_targets(),
                 self._rs.num_train,
             )
@@ -439,7 +493,7 @@ class SingleTaskGP(Model):
                 f"Expected X with {self._rs.dim} columns (d), got {flat[1][-1]}."
             )
         self.eval()
-        return GPyTorchPosterior(
+        return _model_posterior(
             self._rs,
             flat,
             kind,
@@ -449,6 +503,8 @@ class SingleTaskGP(Model):
             output_indices=oi,
             transform=transform,
             points_per_input=self._rs.points_per_input,
+            transformed=list(self._rs.transformed_outputs),
+            is_list=False,
         )
 
     def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:
@@ -555,6 +611,10 @@ class SingleTaskGP(Model):
         _, offset, size = self._param_index(suffix)
         return self._rs.raw_parameters()[offset : offset + size]
 
+    def _raw_param_array(self, suffix: str) -> Any:
+        """The raw parameter named ``suffix`` as an array of its shape."""
+        return from_flat(self._raw_param(suffix), self._raw_param_shape(suffix), self._kind)
+
     def _raw_param_shape(self, suffix: str) -> tuple[int, ...]:
         name, _, _ = self._param_index(suffix)
         return tuple(dict(self._rs.parameter_shapes())[name])
@@ -627,6 +687,48 @@ class SingleTaskGP(Model):
             f"SingleTaskGP(n={self._rs.num_train}, d={self._rs.dim}{extra}, "
             f"covar_module={self.covar_module!r})"
         )
+
+
+def _model_posterior(
+    source: Any,
+    flat: Any,
+    kind: Any,
+    observation_noise: bool,
+    num_outputs: int,
+    model_batch_shape: tuple[int, ...],
+    output_indices: list[int] | None,
+    transform: Any,
+    points_per_input: int,
+    transformed: list[bool],
+    is_list: bool,
+) -> Any:
+    """The posterior of a model: a ``GPyTorchPosterior``, or a
+    ``TransformedPosterior`` if a selected output has a nonlinear outcome
+    transform (BoTorch's ``untransform_posterior``)."""
+    from botorch_rs.posteriors.transformed import _ModelTransformedPosterior
+
+    selected = transformed if output_indices is None else [transformed[t] for t in output_indices]
+    args = (source, flat, kind, observation_noise)
+    kwargs: dict[str, Any] = {
+        "num_outputs": num_outputs,
+        "model_batch_shape": model_batch_shape,
+        "output_indices": output_indices,
+        "transform": transform,
+        "points_per_input": points_per_input,
+    }
+    native = GPyTorchPosterior(*args, **kwargs)
+    if not any(selected):
+        return native
+    if transform is not None:
+        if not is_list:
+            raise UnsupportedError(
+                "scalarize_posterior only works with a posterior that has an attribute "
+                "`distribution`, such as a GPyTorchPosterior, or a posterior that contains "
+                "sub-posteriors in an attribute `posteriors`, as in a PosteriorList."
+            )
+        return native
+    base = GPyTorchPosterior(*args, base=True, **kwargs)
+    return _ModelTransformedPosterior(native, base, moments=True)
 
 
 __all__ = ["SingleTaskGP"]

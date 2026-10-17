@@ -1176,13 +1176,36 @@ impl AcquisitionFunction for ScalarizedPosteriorMean {
 
     fn forward(&self, x: &Matrix) -> Result<f64> {
         self.check(x)?;
-        Ok(self.model.posterior(x, false)?.mean.dot(&self.weights))
+        let post = self.model.posterior(x, false)?;
+        if post.is_transformed() {
+            // `posterior.mean` of a TransformedPosterior: its moments.
+            return Ok(post.moments()?.0.dot(&self.weights));
+        }
+        Ok(post.mean.dot(&self.weights))
     }
 
     fn forward_with_grad(&self, x: &Matrix) -> Result<(f64, Matrix)> {
         self.check(x)?;
         let q = x.nrows();
         let post = self.model.posterior(x, false)?;
+        if let Some(st) = &post.sample_transform {
+            // The mean of every point is a function of its base mean and
+            // variance: pull the weights back through it.
+            let mut value = 0.0;
+            let mut mean_bar = Vector::zeros(q);
+            let mut cov_bar = Matrix::zeros(q, q);
+            for p in 0..q {
+                let (m, _, dm_dmu, dm_dvar, _, _) =
+                    st.moments(0, p, post.mean[p], post.covariance[(p, p)])?;
+                value += m * self.weights[p];
+                mean_bar[p] = self.weights[p] * dm_dmu;
+                cov_bar[(p, p)] = self.weights[p] * dm_dvar;
+            }
+            let grad = self
+                .model
+                .joint_posterior_vjp(x, 0..q, &mean_bar, &cov_bar)?;
+            return Ok((value, grad));
+        }
         let grad = self
             .model
             .joint_posterior_vjp(x, 0..q, &self.weights, &Matrix::zeros(q, q))?;
@@ -1672,6 +1695,7 @@ impl QAnalyticProbabilityOfImprovement {
     fn evaluate(&self, x: &Matrix, with_grad: bool) -> Result<(f64, Option<Matrix>)> {
         check_candidates(x, self.model.dim(), None)?;
         let post = self.model.posterior(x, false)?;
+        post.require_gaussian("qAnalyticProbabilityOfImprovement")?;
         let q = x.nrows();
         let mean = post.mean.clone();
         let cov = post.covariance.clone();

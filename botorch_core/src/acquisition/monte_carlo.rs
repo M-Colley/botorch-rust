@@ -17,9 +17,14 @@
 //! constraints, reduced over the points (`max`) and averaged over the
 //! samples, exactly as in BoTorch.
 //!
+//! With a nonlinear outcome transform the posterior is BoTorch's
+//! `TransformedPosterior`: the samples are the Gaussian samples mapped by the
+//! posterior's [`crate::transforms::outcome::SampleTransform`] (e.g. `exp`
+//! for `Log`), with the same base samples.
+//!
 //! Gradients are computed in reverse mode: the adjoint of the utilities is
-//! propagated through the objective and the constraints to the samples, to
-//! `μ` and the roots, through the Cholesky factorizations
+//! propagated through the objective and the constraints to the samples
+//! (and through the sample transform), to `μ` and the roots, through the Cholesky factorizations
 //! ([`crate::linalg::cholesky_backward`]) to `Σ`, and finally to `X` with
 //! [`Model::joint_posterior_vjp`] (plus any direct dependence of the
 //! objective on `X`).
@@ -38,6 +43,7 @@ use crate::error::{BotorchError, Result};
 use crate::linalg::CovarianceRoot;
 use crate::models::Model;
 use crate::sampling::{SobolQMCNormalSampler, DEFAULT_MC_SAMPLES};
+use crate::transforms::outcome::SampleTransform;
 use crate::utils::objective::{compute_smoothed_feasibility_indicator, OutcomeConstraints};
 use crate::utils::safe_math::{sigmoid, sigmoid_grad};
 use crate::{Matrix, Vector};
@@ -200,9 +206,45 @@ impl crate::posterior::Posterior {
             mean: self.mean.clone(),
             roots: SampleRoots::new(&self.covariance, q, m)?,
             base: Arc::new(base_samples.clone()),
+            transform: self.sample_transform.clone(),
         };
         Ok(js.samples(0..q))
     }
+}
+
+/// The posterior samples of the inputs `x` (`n_in × d`) from explicit base
+/// samples `base` (`S × n·m` for the `n = n_in·k` posterior points, column
+/// `p·m + t` for output `t` at point `p`; BoTorch's
+/// `posterior.rsample_from_base_samples`, transformed by the sample
+/// transform of a `TransformedPosterior`) and the gradient with respect to
+/// `x` of `Σ weights ⊙ samples` (`weights` in the layout of `base`), as
+/// torch's autograd computes it.
+///
+/// # Errors
+/// Shape errors and errors of the posterior and its covariance roots.
+pub fn posterior_samples_with_vjp(
+    model: &dyn Model,
+    x: &Matrix,
+    base: &Matrix,
+    weights: &Matrix,
+) -> Result<(McSamples, Matrix)> {
+    let js = JointSamples::with_base_samples(model, x.clone(), Arc::new(base.clone()))?;
+    let (n, m) = (js.num_points(), js.m);
+    if weights.shape() != base.shape() {
+        return Err(BotorchError::DimensionMismatch(format!(
+            "the weights must have the shape of the base samples, {}x{}",
+            base.nrows(),
+            base.ncols()
+        )));
+    }
+    let samples = js.samples(0..n);
+    // The adjoint of the samples in their layout (row `t·n + p`, one column
+    // per sample).
+    let ybar = Matrix::from_fn(m * n, base.nrows(), |r, s| {
+        weights[(s, (r % n) * m + r / n)]
+    });
+    let grad = js.backward(model, 0..n, &ybar, 0..x.nrows())?;
+    Ok((samples, grad))
 }
 
 /// Joint posterior samples of a point set together with what is needed to
@@ -225,6 +267,8 @@ pub(crate) struct JointSamples {
     pub roots: SampleRoots,
     /// Base samples (`S × n·m`, column `p·m + t` for output `t` at point `p`).
     pub base: Arc<Matrix>,
+    /// The elementwise map of the samples of a `TransformedPosterior`.
+    pub transform: Option<SampleTransform>,
 }
 
 impl JointSamples {
@@ -260,6 +304,7 @@ impl JointSamples {
             mean: post.mean,
             roots,
             base,
+            transform: post.sample_transform,
         })
     }
 
@@ -297,9 +342,31 @@ impl JointSamples {
         })
     }
 
-    /// Samples of the points `rows` and all outputs: `μ + R z` (see
-    /// [`McSamples`] for the layout).
+    /// Samples of the points `rows` and all outputs: `μ + R z`, mapped by
+    /// the sample transform of a `TransformedPosterior` (see [`McSamples`]
+    /// for the layout).
     pub fn samples(&self, rows: Range<usize>) -> McSamples {
+        let k = rows.len();
+        let mut data = self.raw_samples(rows.clone());
+        if let Some(t) = &self.transform {
+            for o in 0..self.m {
+                if !t.is_transformed(o) {
+                    continue;
+                }
+                for i in 0..k {
+                    let p = rows.start + i;
+                    for v in data.row_mut(o * k + i).iter_mut() {
+                        *v = t.apply(o, p, *v);
+                    }
+                }
+            }
+        }
+        McSamples::new(data, k, self.m).expect("consistent sample shapes")
+    }
+
+    /// The Gaussian samples `μ + R z` of the points `rows` (`m·k × S`, row
+    /// `t·k + i` for output `t` at point `rows.start + i`).
+    fn raw_samples(&self, rows: Range<usize>) -> Matrix {
         let (n, m) = (self.num_points(), self.m);
         let k = rows.len();
         let s = self.num_samples();
@@ -342,7 +409,7 @@ impl JointSamples {
                 }
             }
         }
-        McSamples::new(data, k, m).expect("consistent sample shapes")
+        data
     }
 
     /// Joint samples of a given posterior (over the `n` points of `x`) with
@@ -375,6 +442,7 @@ impl JointSamples {
             mean: posterior.mean,
             roots,
             base,
+            transform: posterior.sample_transform,
         })
     }
 
@@ -402,6 +470,29 @@ impl JointSamples {
     ) -> Result<(Vector, Matrix)> {
         let (n, m) = (self.num_points(), self.m);
         let k = cols.len();
+        // Through the sample transform: the adjoint of the Gaussian samples.
+        let transformed;
+        let ybar = match &self.transform {
+            Some(t) => {
+                let raw = self.raw_samples(cols.clone());
+                let mut yb = ybar.clone();
+                for o in 0..m {
+                    if !t.is_transformed(o) {
+                        continue;
+                    }
+                    for i in 0..k {
+                        let p = cols.start + i;
+                        let r = o * k + i;
+                        for c in 0..yb.ncols() {
+                            yb[(r, c)] *= t.apply_with_derivative(o, p, raw[(r, c)]).1;
+                        }
+                    }
+                }
+                transformed = yb;
+                &transformed
+            }
+            None => ybar,
+        };
         let nm = n * m;
         let mut mean_bar = Vector::zeros(nm);
         for t in 0..m {
@@ -724,6 +815,14 @@ impl McCore {
             n_full,
             s,
         );
+        if has_nan(&so.obj) {
+            return Ok(nan_evaluation(
+                q,
+                d,
+                weights.map_or(0, <[f64]>::len),
+                with_grad,
+            ));
+        }
         let r = reduce(&so.obj, combined.as_ref(), with_grad);
         if !with_grad {
             return Ok((r.value, None));
@@ -742,6 +841,33 @@ impl McCore {
         let grad = so.backward(self.model.as_ref(), &obj_bar, samples_bar, 0..q)?;
         Ok((r.value, Some((grad, w_bar))))
     }
+}
+
+/// Whether objective values contain NaNs (e.g. the samples of a `Power`
+/// outcome transform whose inverse is undefined at negative base samples).
+pub(crate) fn has_nan(values: &Matrix) -> bool {
+    values.iter().any(|v| v.is_nan())
+}
+
+/// BoTorch's evaluation of a t-batch whose objective values contain NaNs:
+/// torch's reductions (`max`, `mean`, `logsumexp`, ...) propagate them, so
+/// the value and every entry of the gradients (`q × d` and one per point
+/// weight) are NaN.
+pub(crate) fn nan_evaluation(
+    q: usize,
+    d: usize,
+    n_weights: usize,
+    with_grad: bool,
+) -> crate::acquisition::WeightedEvaluation {
+    (
+        f64::NAN,
+        with_grad.then(|| {
+            (
+                Matrix::from_element(q, d, f64::NAN),
+                vec![f64::NAN; n_weights],
+            )
+        }),
+    )
 }
 
 /// The indicator of the points combined with point weights (multiplied, or
@@ -1559,10 +1685,13 @@ impl QNoisyExpectedImprovement {
         } else {
             x_baseline.clone()
         };
+        // BoTorch's `supports_cache_root`: models that return a
+        // `TransformedPosterior` do not support the cached root.
+        let transformed = core.model.transformed_outputs().iter().any(|&t| t);
         let mut acqf = Self {
             core,
             x_baseline,
-            cache_root: options.cache_root,
+            cache_root: options.cache_root && !transformed,
             baseline: None,
             joint_base: Mutex::new(HashMap::new()),
             lower_bound: Mutex::new(None),
@@ -1881,6 +2010,14 @@ impl QNoisyExpectedImprovement {
             obj.nrows(),
             obj.ncols(),
         );
+        if has_nan(&obj) || best_f.iter().any(|b| b.is_nan()) {
+            return Ok(nan_evaluation(
+                q,
+                d,
+                weights.map_or(0, <[f64]>::len),
+                with_grad,
+            ));
+        }
         let r = noisy_improvement_reduce(&obj, &best_f, combined.as_ref(), with_grad);
         if !with_grad {
             return Ok((r.value, None));

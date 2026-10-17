@@ -151,10 +151,15 @@ enum SamplePath {
 impl NehviCore {
     pub fn new(
         mc: MoMcCore,
-        cfg: NehviConfig,
+        mut cfg: NehviConfig,
         x_baseline: &Matrix,
         x_pending: Option<Matrix>,
     ) -> Result<Self> {
+        // BoTorch's `supports_cache_root`: models that return a
+        // `TransformedPosterior` do not support the cached root.
+        if mc.model.transformed_outputs().iter().any(|&t| t) {
+            cfg.cache_root = false;
+        }
         if cfg.ref_point.len() < 2 {
             return Err(BotorchError::InvalidArgument(format!(
                 "NoisyExpectedHypervolumeMixin supports m>=2 outcomes but ref_point has length \

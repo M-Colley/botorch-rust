@@ -117,7 +117,7 @@ pub use monte_carlo::{
     QNoisyExpectedImprovementOptions, QPosteriorStandardDeviation, QProbabilityOfImprovement,
     QSimpleRegret, QUpperConfidenceBound, SampleUtility,
 };
-pub use objective::{ScalarizedModel, ScalarizedPosteriorTransform};
+pub use objective::{ScalarizedModel, ScalarizedPosteriorTransform, SCALARIZE_TRANSFORMED_MESSAGE};
 pub use optimal_samples::{get_optimal_samples, OptimalSamplesOptions, SampleTransform};
 pub use penalized::{
     GaussianPenalty, GroupLassoPenalty, L0Approximation, L0PenaltyApprox, L0PenaltyApproxObjective,
@@ -268,6 +268,19 @@ pub(crate) fn check_unbatched(model: &dyn Model) -> Result<()> {
         return Err(BotorchError::Unsupported(format!(
             "acquisition functions require unbatched models, got a model with batch shape {:?}",
             model.batch_shape()
+        )));
+    }
+    Ok(())
+}
+
+/// Errors for models whose posterior is a BoTorch `TransformedPosterior`
+/// (nonlinear outcome transforms), for acquisition functions (`name`) that
+/// need the Gaussian posterior (BoTorch fails on its missing
+/// `distribution`).
+pub(crate) fn require_gaussian_model(model: &dyn Model, name: &str) -> Result<()> {
+    if model.transformed_outputs().iter().any(|&t| t) {
+        return Err(BotorchError::Unsupported(format!(
+            "{name} requires a Gaussian posterior, but the model's nonlinear outcome transform              (e.g. Log, Power or Bilog) makes it a TransformedPosterior"
         )));
     }
     Ok(())

@@ -507,6 +507,7 @@ fn joints(post_at: &dyn Fn(usize) -> Posterior, n_batch: usize) -> (Vec<f64>, Ve
 // ---------------------------------------------------------------------------
 
 /// A conditioned or fantasy model: a (batched) multi-output GP or a list.
+#[allow(clippy::large_enum_variant)]
 enum Conditioned {
     Gp(BatchedMultiOutputGP),
     List(ModelListGP),

@@ -13,6 +13,7 @@
 //! mean and covariance are the familiar `q`-vector and `q × q` matrix.
 
 use crate::error::{BotorchError, Result};
+use crate::transforms::outcome::SampleTransform;
 use crate::{Matrix, Vector};
 
 /// Minimum variance returned by [`Posterior::variance`]
@@ -37,6 +38,12 @@ pub struct Posterior {
     pub covariance: Matrix,
     /// Number of outputs `m` (1 for single-output models).
     pub num_outputs: usize,
+    /// The elementwise maps of the samples of a nonlinear outcome transform
+    /// (BoTorch's `TransformedPosterior`): `mean` and `covariance` are then
+    /// those of the Gaussian *base* posterior, whose samples the transform
+    /// maps (see [`crate::transforms::outcome`]). `None` for a Gaussian
+    /// posterior.
+    pub sample_transform: Option<SampleTransform>,
 }
 
 impl Posterior {
@@ -65,7 +72,78 @@ impl Posterior {
             mean,
             covariance,
             num_outputs,
+            sample_transform: None,
         }
+    }
+
+    /// The posterior with the elementwise sample maps `transform` (a
+    /// `TransformedPosterior` of this Gaussian posterior; `None` keeps it
+    /// Gaussian).
+    ///
+    /// # Panics
+    /// If the transform does not match the numbers of points and outputs.
+    pub fn with_sample_transform(mut self, transform: Option<SampleTransform>) -> Self {
+        if let Some(t) = &transform {
+            assert!(
+                t.num_outputs() == self.num_outputs && t.num_points() == self.num_points(),
+                "sample transform over {} outputs and {} points for a posterior over {} and {}",
+                t.num_outputs(),
+                t.num_points(),
+                self.num_outputs,
+                self.num_points()
+            );
+        }
+        self.sample_transform = transform;
+        self
+    }
+
+    /// Whether the posterior is a `TransformedPosterior` (see
+    /// [`Posterior::sample_transform`]).
+    pub fn is_transformed(&self) -> bool {
+        self.sample_transform.is_some()
+    }
+
+    /// Errors for a `TransformedPosterior`, for computations that need a
+    /// Gaussian posterior (`what` names the computation).
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] if the posterior is transformed.
+    pub fn require_gaussian(&self, what: &str) -> Result<()> {
+        if self.is_transformed() {
+            return Err(BotorchError::Unsupported(format!(
+                "{what} requires a Gaussian posterior, but the model's nonlinear outcome                  transform (e.g. Log, Power or Bilog) makes it a TransformedPosterior"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The marginal means and variances (flat, output-major) as BoTorch's
+    /// `posterior.mean` and `posterior.variance` report them: those of the
+    /// Gaussian posterior (variances clamped at [`MIN_VARIANCE`]), or the
+    /// moments of a `TransformedPosterior` (unclamped, from the clamped base
+    /// variances).
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] (`NotImplementedError`) for transformed
+    /// outputs without moments (`Power`, `Bilog`).
+    pub fn moments(&self) -> Result<(Vector, Vector)> {
+        let q = self.num_points();
+        let mut mean = self.mean.clone();
+        let mut var = self.variance();
+        if let Some(st) = &self.sample_transform {
+            for t in 0..self.num_outputs {
+                if !st.is_transformed(t) {
+                    continue;
+                }
+                for p in 0..q {
+                    let i = t * q + p;
+                    let (m, v, ..) = st.moments(t, p, self.mean[i], self.covariance[(i, i)])?;
+                    mean[i] = m;
+                    var[i] = v;
+                }
+            }
+        }
+        Ok((mean, var))
     }
 
     /// Number of jointly distributed values `q·m`.
@@ -133,7 +211,11 @@ impl Posterior {
         let idx = |i: usize| outputs[i / q] * q + i % q;
         let mean = Vector::from_fn(k * q, |i, _| self.mean[idx(i)]);
         let covariance = Matrix::from_fn(k * q, k * q, |i, j| self.covariance[(idx(i), idx(j))]);
-        Ok(Posterior::multi_output(mean, covariance, k))
+        let transform = self
+            .sample_transform
+            .as_ref()
+            .and_then(|t| t.select_outputs(outputs));
+        Ok(Posterior::multi_output(mean, covariance, k).with_sample_transform(transform))
     }
 }
 
