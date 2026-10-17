@@ -577,7 +577,7 @@ class MultiTaskGP(Model):
     # -- construct_inputs ----------------------------------------------------
 
     @classmethod
-    def construct_inputs(
+    def construct_inputs(  # type: ignore[override]
         cls,
         training_data: Any,
         task_feature: int,
