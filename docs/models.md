@@ -210,7 +210,7 @@ linear_operator 0.6.1), with `torch.set_default_dtype(torch.float64)`.
 
    `_setup_multifidelity_covar_module` loops over the empty list for the
    data-fidelity kernels and multiplies their (empty) product into the
-   kernel. Fix: treat `[]` as `None`.
+   kernel. Fix: treat `[]` as `None` (meta-pytorch/botorch#3443).
 
 2. **`PosteriorStandardDeviation` fails on ensemble models**: the
    `average_over_ensemble_models` decorator sees a `std` of shape
@@ -224,7 +224,7 @@ linear_operator 0.6.1), with `torch.set_default_dtype(torch.float64)`.
 
    Fix: return `std` without `.view(X.shape[:-2])` (as `PosteriorMean`
    returns its mean), so that the decorator averages over the ensemble
-   dimension. botorch_rs averages the members' standard deviations (tested
+   dimension (meta-pytorch/botorch#3444). botorch_rs averages the members' standard deviations (tested
    against that reference).
 
 3. **linear_operator: `MulLinearOperator._mul_constant` uses `if other > 0`
@@ -283,7 +283,8 @@ linear_operator 0.6.1), with `torch.set_default_dtype(torch.float64)`.
    Fix: sample the fantasies from the members' posteriors (the
    `SingleTaskGP` base class's `posterior` on a `num_taus x n' x d` batch of
    `X`). botorch_rs does so; its fantasy posteriors are tested against
-   BoTorch's `fantasize` with that patch.
+   BoTorch's `fantasize` with that patch. meta-pytorch/botorch#3445 fixes
+   it by inserting the ensemble dimension in `condition_on_observations`.
 
 Not a bug but worth knowing: BoTorch's analytic acquisition functions on an
 `EnsembleModel` are *not* averaged over the members (it has no
