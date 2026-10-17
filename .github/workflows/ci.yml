@@ -89,6 +89,15 @@ jobs:
             python-version: "3.13"
             label: numpy
             packages: numpy
+          # The newest CPython.
+          - os: ubuntu-latest
+            python-version: "3.15"
+            label: numpy + torch
+            packages: numpy torch
+          - os: windows-latest
+            python-version: "3.15"
+            label: numpy
+            packages: numpy
           # Parity tests against the released BoTorch.
           - os: ubuntu-latest
             python-version: "3.12"
