@@ -357,6 +357,20 @@ GPyTorch numerical quirk fixed for the sweep comparisons:
 `MulLinearOperator` root decompositions with jitter in products of non-dense
 kernel matrices (see "Tolerances above nominal").
 
+### Upstream status
+
+| Bug | Fix |
+|---|---|
+| 1 | meta-pytorch/botorch#3396 |
+| 2, 5 | meta-pytorch/botorch#3446 |
+| 3 | meta-pytorch/botorch#3447 |
+| 4, 6 | meta-pytorch/botorch#3396 (bug 6: raises `NotImplementedError`) |
+| 7 | GPyTorch fix prepared, not yet submitted |
+| 8 | meta-pytorch/botorch#3389 and #3374 |
+| 9 | meta-pytorch/botorch#3448 (also affects `SingleTaskGP`) |
+| 10 | `fantasize` and qKG: meta-pytorch/botorch#3374; qMES not filed (its `train_inputs` include the task column, which needs a design decision) |
+| 11 | meta-pytorch/botorch#3374 |
+
 ## Verification
 
 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
