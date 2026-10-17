@@ -11,67 +11,87 @@ from botorch_rs.posteriors.gpytorch import Posterior
 
 
 def _cat_last(arrays: list[Any]) -> Any:
-    """Concatenates arrays of equal leading shape along the last dimension."""
-    flats = [to_flat(a, "x") for a in arrays]
+    """Concatenates arrays along the last dimension (``torch.cat(..., -1)``)."""
+    flats = [to_flat(a, "values") for a in arrays]
     lead = tuple(flats[0][1][:-1])
-    for _, shape in flats:
-        if tuple(shape[:-1]) != lead:
-            raise NotImplementedError(
-                "`PosteriorList` is only supported if the constituent posteriors all have the "
-                f"same `batch_shape`. Batch shapes: {[tuple(s[:-1]) for _, s in flats]}."
-            )
-    widths = [shape[-1] for _, shape in flats]
+    if any(tuple(f[1][:-1]) != lead for f in flats):
+        raise NotImplementedError(
+            "`PosteriorList` is only supported if the constituent posteriors all have the "
+            f"same `batch_shape`. Batch shapes: {[tuple(f[1][:-1]) for f in flats]}."
+        )
+    widths = [f[1][-1] for f in flats]
     rows = math.prod(lead)
-    data: list[float] = []
+    out: list[float] = []
     for r in range(rows):
-        for (vals, _), w in zip(flats, widths, strict=True):
-            data.extend(list(vals)[r * w : (r + 1) * w])
-    return from_flat(data, (*lead, sum(widths)), first_kind(*arrays))
+        for (data, _), w in zip(flats, widths, strict=True):
+            out.extend(data[r * w : (r + 1) * w])
+    return from_flat(out, (*lead, sum(widths)), first_kind(*arrays))
 
 
 class PosteriorList(Posterior):
-    r"""A Posterior represented by a list of independent posteriors (what a
-    ``ModelListGP`` returns when a sub-model has a nonlinear outcome
-    transform). ``mean``, ``variance`` and ``rsample`` concatenate those of
-    the posteriors along the output dimension."""
+    r"""A Posterior represented by a list of independent Posteriors (what a
+    ``ModelList`` returns, and a ``ModelListGP`` when a sub-model has a
+    nonlinear outcome transform). ``mean``, ``variance`` and ``rsample``
+    concatenate those of the posteriors along the output dimension."""
 
     def __init__(self, *posteriors: Any) -> None:
+        r"""A Posterior represented by a list of independent Posteriors.
+
+        Args:
+            *posteriors: A variable number of single-outcome posteriors.
+
+        Example:
+            >>> p_1 = model_1.posterior(test_X)
+            >>> p_2 = model_2.posterior(test_X)
+            >>> p_12 = PosteriorList(p_1, p_2)
+
+        Note: This is typically produced automatically in ``ModelList``; it should
+        generally not be necessary for the end user to invoke it manually.
+        """
         self.posteriors: list[Any] = list(posteriors)
 
     @property
     def device(self) -> Any:
+        r"""The torch device of the posterior."""
         return getattr(self.posteriors[0], "device", None)
 
     @property
     def dtype(self) -> Any:
+        r"""The torch dtype of the posterior."""
         return getattr(self.posteriors[0], "dtype", None)
 
     def _extended_shape(self, sample_shape: Any = ()) -> tuple[int, ...]:
-        shapes = [p._extended_shape(sample_shape) for p in self.posteriors]
-        batch = {tuple(s[:-1]) for s in shapes}
-        if len(batch) > 1:
+        shapes = [tuple(p._extended_shape(sample_shape)) for p in self.posteriors]
+        batch_shapes = [s[:-1] for s in shapes]
+        if len(set(batch_shapes)) > 1:
             raise NotImplementedError(
-                "`PosteriorList` is only supported if the constituent posteriors all have the "
-                f"same `batch_shape`. Batch shapes: {sorted(batch)}."
+                "`PosteriorList` is only supported if the constituent posteriors "
+                f"all have the same `batch_shape`. Batch shapes: {batch_shapes}."
             )
-        return (*shapes[0][:-1], sum(s[-1] for s in shapes))
+        return (*batch_shapes[0], sum(s[-1] for s in shapes))
 
     @property
     def mean(self) -> Any:
-        r"""The mean of the posterior (only if all posteriors provide one)."""
+        r"""The mean of the posterior as a ``(b) x n x m``-dim Tensor."""
         return _cat_last([p.mean for p in self.posteriors])
 
     @property
     def variance(self) -> Any:
-        r"""The variance of the posterior (only if all posteriors provide one)."""
+        r"""The variance of the posterior as a ``(b) x n x m``-dim Tensor."""
         return _cat_last([p.variance for p in self.posteriors])
 
     def rsample(self, sample_shape: Any = None) -> Any:
-        r"""Samples of every posterior (with independent base samples),
+        r"""Sample from the posterior: the samples of the posteriors,
         concatenated along the output dimension."""
-        return _cat_last([p.rsample(sample_shape) for p in self.posteriors])
+        return _cat_last([p.rsample(sample_shape=sample_shape) for p in self.posteriors])
 
     def __getattr__(self, name: str) -> Any:
+        r"""A catch-all for attributes not defined on the posterior level.
+
+        Raises an attribute error.
+        """
+        if name.startswith("__"):
+            raise AttributeError(name)
         raise AttributeError(
             f"`PosteriorList` does not define the attribute {name}. "
             "Consider accessing the attributes of the individual posteriors instead."

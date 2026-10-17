@@ -256,8 +256,11 @@ class AffineInputTransform(ReversibleInputTransform):
                 raise ValueError("Elements of `indices` have to be smaller than `d`!")
             if len(set(idx)) != len(idx):
                 raise ValueError("Elements of `indices` tensor must be unique!")
+            idx = [i + d if i < 0 else i for i in idx]
+            if any(i < 0 for i in idx):
+                raise IndexError(f"indices {idx} are out of range for d = {d}.")
         self._d = int(d)
-        self.indices = indices if idx is not None else None
+        self.indices: list[int] | None = idx
         self._idx = idx
         self.transform_on_train = bool(transform_on_train)
         self.transform_on_eval = bool(transform_on_eval)
@@ -458,7 +461,9 @@ class Normalize(AffineInputTransform):
     learned from the inputs in train mode (and from the training inputs when
     a model is built). With a ``batch_shape`` (or bounds of shape
     ``batch_shape x 2 x d``) every batch element has its own bounds;
-    otherwise one normalization is learned from all batch elements.
+    otherwise one normalization is learned from all batch elements. With
+    ``indices``, only those inputs are normalized (``bounds``, ``offset`` and
+    ``coefficient`` then have ``len(indices)`` columns, as in BoTorch).
     """
 
     def __init__(
@@ -483,6 +488,9 @@ class Normalize(AffineInputTransform):
         self.center = float(center)
         self.almost_zero = almost_zero
         shape = tuple(int(b) for b in (batch_shape or ()))
+        native_bounds: Any = None
+        if idx is not None:
+            idx = [i + d if i < 0 else i for i in idx]
         if bounds is not None:
             bdata, bshape = to_flat(bounds, "bounds")
             if idx is not None and bshape[-1] == d:
@@ -498,6 +506,7 @@ class Normalize(AffineInputTransform):
                 )
             if len(bshape) > 2:
                 shape = tuple(bshape[:-2])
+            native_bounds = (list(bdata), tuple(bshape))
             nb = math.prod(shape)
             offs: list[float] = []
             coefs: list[float] = []
@@ -542,11 +551,21 @@ class Normalize(AffineInputTransform):
             reverse=reverse,
         )
         self._kind = first_kind(bounds)
+        # The original native Normalize (of the `k` transformed dimensions):
+        # the transform of the plain configuration in all models, and the one
+        # a MultiTaskGP uses (also with `indices`, phase 7a).
+        self._native = (
+            center == 0.5
+            and not reverse
+            and transform_on_train
+            and transform_on_eval
+            and transform_on_fantasize
+        )
         self._rs: Any = None
-        if self._plain:
+        if self._native:
             self._rs = _rs.Normalize(
-                d,
-                to_flat(bounds, "bounds") if bounds is not None else None,
+                k,
+                native_bounds,
                 learn,
                 min_range,
                 list(shape),
@@ -560,10 +579,20 @@ class Normalize(AffineInputTransform):
     # -- state -------------------------------------------------------------
 
     def _set_fitted(self, fitted: Any, kind: ArrayKind) -> None:
-        """Receives the native ``Normalize`` fitted by a model (plain mode)."""
+        """Receives the native ``Normalize`` fitted by a model (the plain
+        configuration, or a ``MultiTaskGP``'s with ``indices``)."""
         self._rs = fitted
         if kind.lib != "list" or self._kind.lib == "list":
             self._kind = kind
+        if not self._plain:
+            # The general steps follow the model's fit.
+            nb = len(self._steps)
+            k = len(self._coefs[0])
+            off, coef = fitted.offset[0], fitted.coefficient[0]
+            for b in range(nb):
+                self._offs[b] = [float(v) for v in off[b * k : (b + 1) * k]]
+                self._coefs[b] = [float(v) for v in coef[b * k : (b + 1) * k]]
+            self._steps = [self._make_step(b) for b in range(nb)]
 
     @property
     def learn_bounds(self) -> bool:
@@ -697,7 +726,8 @@ class Normalize(AffineInputTransform):
         super()._set_state(state, batch, kind)
 
     def __repr__(self) -> str:
-        return f"Normalize(d={self._d}, learn_bounds={self.learn_bounds})"
+        extra = "" if self.indices is None else f", indices={self.indices}"
+        return f"Normalize(d={self._d}{extra}, learn_bounds={self.learn_bounds})"
 
 
 class InputStandardize(AffineInputTransform):

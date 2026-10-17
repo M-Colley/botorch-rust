@@ -27,8 +27,10 @@ mod mo_acquisition;
 mod mo_entropy;
 mod mo_test_functions;
 mod models;
+mod models_7b;
 mod momf;
 mod multi_objective;
+mod multitask;
 mod nsga2;
 mod optim;
 mod optim_ext;
@@ -130,5 +132,9 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     so_wrappers::register(m)?;
     // Input and outcome transforms of phase 6b.
     transform_steps::register(m)?;
+    // Multi-task GPs (phase 7a).
+    multitask::register(m)?;
+    // Models of phase 7b (deterministic models, ensembles).
+    models_7b::register(m)?;
     Ok(())
 }

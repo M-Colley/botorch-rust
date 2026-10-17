@@ -13,7 +13,7 @@
 use std::sync::{Arc, RwLock};
 
 use botorch_core::acquisition::{ScalarizedModel, ScalarizedPosteriorTransform};
-use botorch_core::models::LcemTaskInputs;
+use botorch_core::models::{ConstantMeanSpec, LcemTaskInputs};
 use botorch_core::posterior::MIN_VARIANCE;
 use botorch_core::{
     fit_gpytorch_mll, BatchedFitResult, BatchedMultiOutputGP, BatchedMultiOutputGPOptions,
@@ -27,7 +27,7 @@ use crate::arrays::{broadcast_indices, broadcast_shapes, broadcast_to, Array, Ar
 use crate::contextual::PyLCEMGP;
 use crate::errors::{dimension_error, unsupported, value_error, IntoPyResult};
 use crate::kernel_trees::PyKernelNode;
-use crate::specs::{PyKernelSpec, PyLikelihoodSpec};
+use crate::specs::{PyConstraint, PyKernelSpec, PyLikelihoodSpec, PyPrior};
 use crate::threads;
 use crate::transforms::{numel, PyNormalize, PyStandardize};
 use pyo3::IntoPyObjectExt;
@@ -128,7 +128,7 @@ impl ModelRef {
         match self {
             ModelRef::Gp(m) => m.posterior_at(b, x, noise),
             ModelRef::List(l) => l.posterior_at(b, x, noise),
-            ModelRef::Dyn(m) => m.posterior(x, noise),
+            ModelRef::Dyn(m) => m.batch_element(b).unwrap_or(m.as_ref()).posterior(x, noise),
         }
     }
 
@@ -141,8 +141,11 @@ impl ModelRef {
         match self {
             ModelRef::Gp(m) => m.point_posteriors_at(b, x, noise),
             ModelRef::List(l) => l.point_posteriors_at(b, x, noise),
-            ModelRef::Dyn(m) if !noise => m.point_posteriors(x),
+            ModelRef::Dyn(m) if !noise => {
+                m.batch_element(b).unwrap_or(m.as_ref()).point_posteriors(x)
+            }
             ModelRef::Dyn(m) => {
+                let m = m.batch_element(b).unwrap_or(m.as_ref());
                 // Every point on its own, with observation noise.
                 let k = m.num_outputs();
                 let mut mean = Matrix::zeros(x.nrows(), k);
@@ -715,6 +718,8 @@ impl PySingleTaskGP {
         input_chains=None,
         outcome_chains=None,
         input_chain_params=None,
+        mean_prior=None,
+        mean_constraint=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -734,6 +739,8 @@ impl PySingleTaskGP {
         input_chains: Option<Vec<Vec<Bound<'_, PyAny>>>>,
         outcome_chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
         input_chain_params: Option<Vec<Vec<f64>>>,
+        mean_prior: Option<PyRef<'_, PyPrior>>,
+        mean_constraint: Option<PyRef<'_, PyConstraint>>,
     ) -> PyResult<Self> {
         let (batch, xs) = train_x.batches("train_X")?;
         let (ybatch, ys) = train_y.batches("train_Y")?;
@@ -816,6 +823,12 @@ impl PySingleTaskGP {
                 })
                 .transpose()?,
             input_chain_params,
+            mean_module: (mean_prior.is_some() || mean_constraint.is_some()).then(|| {
+                ConstantMeanSpec {
+                    prior: mean_prior.map(|p| p.inner),
+                    constraint: mean_constraint.map(|c| c.inner),
+                }
+            }),
             ..Default::default()
         };
         // (A perturbation function is called while the chain is fitted.)
@@ -831,6 +844,24 @@ impl PySingleTaskGP {
         Self {
             inner: RwLock::new(Arc::new((*self.snapshot()).clone())),
         }
+    }
+
+    /// The model of the outputs `idcs` (BoTorch's `subset_output`).
+    fn subset_output(&self, idcs: Vec<usize>) -> PyResult<Self> {
+        let model = self.snapshot().subset_output(&idcs).into_py_result()?;
+        Ok(Self::from_model(model))
+    }
+
+    /// Sets the fixed `tau`s of the SAAS priors of every element's kernel
+    /// tree (`taus[e]`: one value per SAAS prior with a fixed `tau`).
+    fn set_saas_taus(&self, taus: Vec<Vec<f64>>) -> PyResult<()> {
+        self.update(|m| m.set_saas_taus(&taus))
+    }
+
+    /// The unbatched model of batch element `batch` (row-major).
+    fn batch_element(&self, batch: usize) -> PyResult<Self> {
+        let model = self.snapshot().batch_element(batch).into_py_result()?;
+        Ok(Self::from_model(model))
     }
 
     // ------------------------------------------------------------------

@@ -9,8 +9,9 @@ variance, Monte-Carlo samples equal the mean (so the sampler does not matter;
 BoTorch's ``StochasticSampler`` is accepted), and gradients flow through the
 mean only. ``PosteriorMeanModel`` is evaluated in Rust;
 ``GenericDeterministicModel`` calls ``f`` on torch tensors and differentiates
-it with ``torch.autograd``. ``AffineDeterministicModel`` and
-``FixedSingleSampleModel`` are not ported.
+it with ``torch.autograd``. ``AffineDeterministicModel`` (``b + X a``)
+and ``FixedSingleSampleModel`` (``mean + sqrt(variance + jitter) * w`` of
+another model's posterior) are evaluated in Rust.
 """
 
 from __future__ import annotations
@@ -235,6 +236,207 @@ class GenericDeterministicModel(DeterministicModel):
         return _rs.generic_deterministic_model(self._f, self.dim, self._num_outputs)
 
 
+def _randn(n: int) -> list[float]:
+    """``torch.randn(n)`` (float32 values, torch's global generator) or
+    Python's ``random`` without torch."""
+    import importlib
+    import random
+
+    try:
+        torch = importlib.import_module("torch")
+    except ImportError:
+        return [random.gauss(0.0, 1.0) for _ in range(n)]
+    return [float(v) for v in torch.randn(n).tolist()]
+
+
+class AffineDeterministicModel(DeterministicModel):
+    r"""An affine deterministic model."""
+
+    def __init__(self, a: Any, b: Any = 0.01) -> None:
+        r"""Affine deterministic model from weights and offset terms.
+
+        A simple model of the form
+
+            y[..., m] = b[m] + sum_{i=1}^d a[i, m] * X[..., i]
+
+        Args:
+            a: A ``d x m``-dim tensor of linear weights, where ``m`` is the number
+                of outputs (must be explicit if ``m=1``)
+            b: The affine (offset) term. Either a float (for single-output
+                models or if the offset is shared), or a ``m``-dim tensor (with
+                different offset values for the ``m`` different outputs).
+        """
+        from botorch_rs.priors import _float32
+
+        adata, ashape = to_flat(a, "a")
+        if len(ashape) != 2:
+            raise ValueError("a must be two-dimensional")
+        if isinstance(b, (int, float)):
+            value = float(b)
+            if _float32():
+                # BoTorch: ``torch.tensor([b])`` in torch's default dtype.
+                import struct
+
+                value = float(struct.unpack("f", struct.pack("f", value))[0])
+            bdata: list[float] = [value]
+            bshape: tuple[int, ...] = (1,)
+        else:
+            bflat = to_flat(b, "b")
+            bdata, bshape = [float(v) for v in bflat[0]], tuple(bflat[1])
+        if len(bshape) != 1:
+            raise ValueError("b must be one-dimensional")
+        m = ashape[-1]
+        if len(bdata) not in (1, m):
+            raise RuntimeError(
+                f"The expanded size of the tensor ({m}) must match the existing size "
+                f"({len(bdata)}) at non-singleton dimension 0."
+            )
+        self.a = a
+        self._a = (list(adata), tuple(ashape))
+        self._b = [float(v) for v in bdata] * (m if len(bdata) == 1 else 1)
+        self.b = from_flat(self._b, (m,), kind_of(a))
+        self._num_outputs = m
+        self._kind = kind_of(a)
+
+    @property
+    def num_outputs(self) -> int:
+        """The number of outputs ``m``."""
+        return self._num_outputs
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        """The batch shape of the model (empty)."""
+        return ()
+
+    def subset_output(self, idcs: list[int]) -> AffineDeterministicModel:
+        r"""Subset the model along the output dimension.
+
+        Args:
+            idcs: The output indices to subset the model to.
+
+        Returns:
+            The current model, subset to the specified output indices.
+        """
+        adata, (d, m) = self._a
+        a_sub = [adata[i * m + t] for i in range(d) for t in idcs]
+        b_sub = [self._b[t] for t in idcs]
+        kind = kind_of(self.a)
+        return self.__class__(
+            a=from_flat(a_sub, (d, len(idcs)), kind), b=from_flat(b_sub, (len(idcs),), kind)
+        )
+
+    def forward(self, X: Any) -> Any:
+        """``b + X a`` (``batch_shape x n x m``)."""
+        if hasattr(X, "shape") and hasattr(self.a, "shape") and type(X) is type(self.a):
+            try:
+                import torch
+
+                if isinstance(X, torch.Tensor):
+                    b = torch.as_tensor(self._b, dtype=X.dtype)
+                    return b + torch.einsum("...d,dm", X, self.a.to(X))
+            except ImportError:  # pragma: no cover
+                pass
+        data, shape = to_flat(X, "X")
+        adata, (d, m) = self._a
+        if shape[-1] != d:
+            raise RuntimeError(f"einsum(): the input has {shape[-1]} columns, a has {d} rows.")
+        rows = len(data) // d
+        out = [
+            self._b[t] + sum(data[r * d + i] * adata[i * m + t] for i in range(d))
+            for r in range(rows)
+            for t in range(m)
+        ]
+        return from_flat(out, (*shape[:-1], m), kind_of(X))
+
+    def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:
+        """The model handle of acquisition functions (in Rust)."""
+        _reject_transform(posterior_transform)
+        return _rs.affine_deterministic_model(self._a, self._b)
+
+
+class FixedSingleSampleModel(DeterministicModel):
+    r"""
+    A deterministic model defined by a single sample ``w``.
+
+    Given a base model ``f`` and a fixed sample ``w``, the model always outputs
+
+        y = f_mean(x) + f_stddev(x) * w
+
+    We assume the outcomes are uncorrelated here.
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        w: Any = None,
+        dim: int | None = None,
+        jitter: float | None = 1e-8,
+        dtype: Any = None,
+        device: Any = None,
+    ) -> None:
+        r"""
+        Args:
+            model: The base model.
+            w: A 1-d tensor with length model.num_outputs.
+                If None, draw it from a standard normal distribution.
+            dim: dimensionality of w.
+                If None and w is not provided, draw w samples of size model.num_outputs.
+            jitter: jitter value to be added for numerical stability, 1e-8 by default.
+            dtype: dtype for w if specified
+            device: device for w if specified
+        """
+        self.model = model
+        self._num_outputs = model.num_outputs
+        self.jitter = jitter
+        if w is None:
+            n = model.num_outputs if dim is None else int(dim)
+            self.w = from_flat(_randn(n), (n,), getattr(model, "_kind", LIST))
+        else:
+            self.w = w
+
+    @property
+    def num_outputs(self) -> int:
+        """The number of outputs of the model."""
+        return self._num_outputs
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        """The batch shape of the model."""
+        return tuple(self.model.batch_shape)
+
+    @property
+    def _kind(self) -> ArrayKind:
+        return getattr(self.model, "_kind", LIST)
+
+    def forward(self, X: Any) -> Any:
+        """``mean + sqrt(variance + jitter) * w`` of the model's posterior at
+        ``X`` (``batch_shape x n x m``)."""
+        post = self.model.posterior(X)
+        mean, shape = to_flat(post.mean, "mean")
+        var, _ = to_flat(post.variance, "variance")
+        w, _ = to_flat(self.w, "w")
+        m = shape[-1]
+        jitter = 0.0 if self.jitter is None else float(self.jitter)
+        out = [
+            mu + math.sqrt(v + jitter) * w[i % m if len(w) > 1 else 0]
+            for i, (mu, v) in enumerate(zip(mean, var, strict=True))
+        ]
+        return from_flat(out, tuple(shape), kind_of(X))
+
+    def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:
+        """The model handle of acquisition functions (in Rust)."""
+        _reject_transform(posterior_transform)
+        inner = getattr(self.model, "_acquisition_model", None)
+        if inner is None:
+            raise UnsupportedError(
+                "FixedSingleSampleModel requires a botorch_rs model in acquisition functions, "
+                f"got {type(self.model).__name__}."
+            )
+        w = [float(v) for v in to_flat(self.w, "w")[0]]
+        jitter = 0.0 if self.jitter is None else float(self.jitter)
+        return _rs.fixed_single_sample_model(inner(None), w, jitter)
+
+
 def _reject_transform(posterior_transform: Any) -> None:
     if posterior_transform is not None:
         # BoTorch: ``scalarize_posterior`` raises NotImplementedError for the
@@ -343,7 +545,9 @@ class MatheronPathModel(DeterministicModel):
 
 
 __all__ = [
+    "AffineDeterministicModel",
     "DeterministicModel",
+    "FixedSingleSampleModel",
     "GenericDeterministicModel",
     "MatheronPathModel",
     "PosteriorMeanModel",

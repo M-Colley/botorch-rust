@@ -111,7 +111,8 @@ impl Posterior {
     pub fn require_gaussian(&self, what: &str) -> Result<()> {
         if self.is_transformed() {
             return Err(BotorchError::Unsupported(format!(
-                "{what} requires a Gaussian posterior, but the model's nonlinear outcome                  transform (e.g. Log, Power or Bilog) makes it a TransformedPosterior"
+                "{what} requires a Gaussian posterior, but the model's nonlinear outcome \
+                 transform (e.g. Log, Power or Bilog) makes it a TransformedPosterior"
             )));
         }
         Ok(())

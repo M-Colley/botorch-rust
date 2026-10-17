@@ -1789,7 +1789,9 @@ impl QNoisyExpectedImprovement {
         let best_f = self.best_feasible(&samples, &obj)?;
         let roots = match &js.roots {
             SampleRoots::Blocks(rs)
-                if rs.iter().all(|r| !matches!(r, CovarianceRoot::Eigen(_))) =>
+                if rs
+                    .iter()
+                    .all(|r| !matches!(r, CovarianceRoot::Eigen(_) | CovarianceRoot::Zero(_))) =>
             {
                 Some(rs.clone())
             }
@@ -1851,7 +1853,7 @@ impl QNoisyExpectedImprovement {
                     f.solve_lower_mut(&mut ct);
                     ct.transpose()
                 }
-                CovarianceRoot::Eigen(_) => return Ok(None),
+                CovarianceRoot::Eigen(_) | CovarianceRoot::Zero(_) => return Ok(None),
             };
             let mut e = cov.view((nb, nb), (nq, nq)).into_owned();
             e.gemm(-1.0, &bl_chol, &bl_chol.transpose(), 1.0);
@@ -2084,9 +2086,9 @@ impl QNoisyExpectedImprovement {
                             f.solve_lower_transpose_mut(&mut tb);
                             tb.transpose()
                         }
-                        CovarianceRoot::Eigen(_) => {
+                        CovarianceRoot::Eigen(_) | CovarianceRoot::Zero(_) => {
                             return Err(BotorchError::Runtime(
-                                "no low-rank path for eigendecomposition roots".into(),
+                                "no low-rank path for eigendecomposition or zero roots".into(),
                             ))
                         }
                     };

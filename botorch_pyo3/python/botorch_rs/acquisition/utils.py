@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import from_pair, kind_of, to_flat
+from botorch_rs._arrays import from_flat, from_pair, kind_of, to_flat
 from botorch_rs.acquisition._fidelity import (
     expand_trace_observations,
     project_to_target_fidelity,
@@ -45,11 +45,25 @@ def prune_inferior_points(
     require an ``objective`` or a scalarizing ``posterior_transform``. Without
     a ``sampler``, the samples are drawn with a random seed (like BoTorch).
     """
+    if hasattr(model, "_ensemble_acquisition"):
+        # BoTorch marginalizes the ensemble dimension of an ensemble of GPs
+        # (``marginalize_dim``) and samples members with an IndexSampler.
+        if marginalize_dim not in (None, -3):
+            raise UnsupportedError(
+                "botorch_rs marginalizes the ensemble dimension of an ensemble model "
+                "(marginalize_dim=-3)."
+            )
+        if objective is not None or posterior_transform is not None or constraints is not None:
+            raise UnsupportedError(
+                "prune_inferior_points of an ensemble model with an objective, a posterior "
+                "transform or constraints is not supported by botorch_rs."
+            )
+        return _prune_ensemble(model, X, num_samples, max_frac, sampler)
     check_unsupported(marginalize_dim=marginalize_dim)
     if not is_acquisition_model(model):
         raise UnsupportedError(
-            "prune_inferior_points requires a botorch_rs SingleTaskGP, ModelListGP or LCEMGP "
-            "(or a PosteriorMeanModel or GenericDeterministicModel)."
+            "prune_inferior_points requires a botorch_rs SingleTaskGP, ModelListGP, "
+            "MultiTaskGP or LCEMGP (or a PosteriorMeanModel or GenericDeterministicModel)."
         )
     if model.num_outputs > 1 and objective is None and posterior_transform is None:
         raise UnsupportedError(
@@ -77,6 +91,73 @@ def prune_inferior_points(
         constraints=cons,
     )
     return from_pair(pruned, kind_of(X))
+
+
+def _prune_ensemble(
+    model: Any,
+    X: Any,
+    num_samples: int = 2048,
+    max_frac: float = 1.0,
+    sampler: Any = None,
+    members: list[Any] | None = None,
+) -> Any:
+    """``prune_inferior_points`` of an ensemble model (single output, no
+    objective). For an ensemble of GPs the samples of every member (with the
+    same base samples) are averaged over the members before the maximizers
+    are counted (BoTorch's ``marginalize_dim``); for an ``EnsembleModel``
+    every sample is the value of the member chosen by the index samples of
+    an ``IndexSampler``."""
+    import math
+
+    from botorch_rs.sampling.index_sampler import IndexSampler
+
+    data, shape = to_flat(X, "X")
+    if len(shape) != 2:
+        raise UnsupportedError(
+            "Batched inputs `X` are currently unsupported by `prune_inferior_points`"
+        )
+    n = shape[0]
+    if n == 0:
+        raise ValueError("X must have at least one point.")
+    if max_frac <= 0 or max_frac > 1.0:
+        raise ValueError(f"max_frac must take values in (0, 1], is {max_frac}")
+    max_points = math.ceil(max_frac * n)
+    x3 = (data, (1, n, shape[1]))
+    counts: dict[int, int] = {}
+
+    def best(row: list[float]) -> int:
+        return max(range(n), key=lambda i: (row[i], -i))
+
+    if hasattr(model, "_ensemble_members"):
+        gps = model._ensemble_members() if members is None else members
+        if sampler is None:
+            sampler = SobolQMCNormalSampler(sample_shape=(num_samples,))
+        s = sampler.num_samples
+        z = sampler._rs.base_samples(n)
+        total = [0.0] * (s * n)
+        for member in gps:
+            samples = member._rs.posterior_samples(x3, z)[0]
+            for i, v in enumerate(samples):
+                total[i] += v
+        k = len(gps)
+        for j in range(s):
+            b = best([v / k for v in total[j * n : (j + 1) * n]])
+            counts[b] = counts.get(b, 0) + 1
+    else:
+        index_sampler = sampler if sampler is not None else IndexSampler((num_samples,))
+        dets = members
+        if dets is None:
+            dets, _, _ = model._ensemble_acquisition(index_sampler)
+        index_sampler._construct_base_samples(model.posterior(X))
+        idx = [int(v) for v in to_flat(index_sampler.base_samples, "base_samples")[0]]
+        member_best = [best(list(to_flat(m.forward(X), "values")[0])) for m in dets]
+        for k in idx:
+            counts[member_best[k]] = counts.get(member_best[k], 0) + 1
+    keep = sorted(counts)
+    if len(keep) > max_points:
+        keep = sorted(sorted(keep, key=lambda i: -counts[i])[:max_points])
+    rows = [list(data[i * shape[1] : (i + 1) * shape[1]]) for i in keep]
+    return from_flat([v for r in rows for v in r], (len(keep), shape[1]), kind_of(X))
 
 
 def get_optimal_samples(

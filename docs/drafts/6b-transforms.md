@@ -49,7 +49,8 @@ bitwise-unchanged code paths: plain `Normalize`, `Standardize` and
 | `botorch.models.transforms.factory.get_rounding_input_transform` | same path | `integer_indices`, `categorical_features`, `initialization`, `return_numeric`, `approximate` |
 | `SingleTaskGP(input_transform=..., outcome_transform=...)` | same | every transform above (single- and multi-output, batched with `BatchBroadcastedInputTransform` / batched `Warp`); MLL and its exact gradient with respect to the learned transform parameters (with their priors); posteriors with and without observation noise; `condition_on_observations` and `fantasize` (fantasize mode skips steps with `transform_on_fantasize=False`, e.g. `InputPerturbation`, as BoTorch); analytic acquisition functions use the posterior moments, Monte-Carlo ones the transformed samples (exact gradients) |
 | Monte-Carlo acquisition functions on transformed samples | same | t-batches whose samples are NaN (a `Power` transform whose inverse is undefined at negative base samples) have NaN values and gradients, as BoTorch's torch reductions give (`qExpectedImprovement`, `qProbabilityOfImprovement`, `qSimpleRegret`, `qUpperConfidenceBound`, `qLogExpectedImprovement`, `qNoisyExpectedImprovement`, `qLogNoisyExpectedImprovement`, ...) |
-| `ModelListGP` with transformed sub-models | same | posterior a `PosteriorList` (as BoTorch) when a sub-model has a nonlinear outcome transform; `ScalarizedPosteriorTransform` moment-matches at `q = 1` (BoTorch's `scalarize_posterior` of a `PosteriorList`); Monte-Carlo acquisition functions sample every sub-model |
+| `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`, `get_map_saas_model`, `AdditiveMapSaasSingleTaskGP`, `OrthogonalAdditiveGP` (phase 7b) with input and outcome transforms | same | every transform above (they are `SingleTaskGP`s in both libraries), e.g. `Warp` on the non-fidelity inputs, `Normalize(indices)` on the continuous inputs of a mixed model, `Log` / `Bilog` / `Power` outcomes; `subset_output` subsets general outcome transforms as BoTorch (`outcome_transform.subset_output`) |
+| `ModelListGP` and `ModelList` with transformed sub-models | same | posterior a `PosteriorList` (as BoTorch) when a sub-model has a nonlinear outcome transform; `ScalarizedPosteriorTransform` moment-matches at `q = 1` (BoTorch's `scalarize_posterior` of a `PosteriorList`); Monte-Carlo acquisition functions sample every sub-model |
 
 ## Unported / unsupported (with BoTorch's behaviour)
 
@@ -80,8 +81,18 @@ bitwise-unchanged code paths: plain `Normalize`, `Standardize` and
   `LCEMGP` (only `Standardize`). Pathwise sampling supports `Normalize`
   input transforms only.
 - `StratifiedStandardize` with a `batch_shape`.
-- Transforms on multi-task, fidelity, mixed and fully Bayesian models
-  (phases 7a / 7b).
+- Transforms other than `Normalize` (center 0.5, no `reverse`, all
+  `transform_on_*` flags; `indices` for `MultiTaskGP`) and `Standardize` (of
+  all outputs) on `MultiTaskGP`, `KroneckerMultiTaskGP` and `LCEMGP`:
+  `UnsupportedError` (BoTorch supports them, e.g. `StratifiedStandardize` on
+  a `MultiTaskGP`; their Rust models take the plain transforms only).
+  Before the merge, `StratifiedStandardize` and `Standardize(outputs=...)`
+  were silently treated as a plain `Standardize` there.
+- Outcome transforms other than `Standardize` on
+  `EnsembleMapSaasSingleTaskGP`: `posterior` and the members of its
+  acquisition functions raise `UnsupportedError` (BoTorch's `posterior`
+  fails with an `AttributeError`: a `TransformedPosterior` has no
+  `distribution` for the `GaussianMixturePosterior`).
 
 ## Deviations (migration notes)
 
@@ -115,6 +126,14 @@ bitwise-unchanged code paths: plain `Normalize`, `Standardize` and
   torch's autograd (as before this phase); input gradients come through the
   acquisition functions (native exact gradients, compared with BoTorch's
   autograd in the tests), and `posterior_samples_with_vjp` in Rust.
+- `Normalize.indices` (and that of the other affine transforms) is a list
+  of non-negative indices (negative ones are converted, as BoTorch's tensor
+  indexing; phase 7a's convention), not a tensor.
+- The analytic acquisition functions clamp the variance of each output at
+  GPyTorch's `1e-10` only for Gaussian outputs (the moments of a
+  `TransformedPosterior` are not clamped, then `_mean_and_sigma`'s `1e-12`
+  applies, as BoTorch); this per-output rule replaces phase 7b's per-model
+  `clamps_variance` flag where both apply.
 - `SingleTaskGP.dim` is the dimension of the posterior points: for
   `AppendFeatures` not applied in training it is smaller than that of the
   training inputs.
@@ -173,7 +192,7 @@ outcome (+0.6010006267 vs +0.6010006266; +0.8726639843 vs +0.8726639843).
 ### Live parity (`botorch_pyo3/tests/test_parity_6b_transforms.py`)
 
 Against BoTorch main (da00e0401, with the #3389 fixes patched in where
-noted) and 0.18.1; 89 tests including the randomized sweep (48 random
+noted) and 0.18.1; 97 tests including the randomized sweep (48 random
 chains of input transforms of random dimensions with random outcome
 transforms, marked `equivalence`; one of them, `InputStandardize` with
 `Power(2)`, has NaN samples in a t-batch of `qExpectedImprovement`, whose
@@ -195,6 +214,8 @@ matching NaNs required.
 | conditioning / fantasies (`Log`, chains, `StratifiedStandardize`, `Normalize` + `Warp`, `InputPerturbation`) | 1e-9 | 1.1e-14 / 1.3e-14 |
 | batched `Warp` and `BatchBroadcastedInputTransform` (MLL, gradient, posterior) | 1e-9 / 1e-8 | 3.0e-15 / 9.7e-14 |
 | fits (`log`, `warp`, `warp_priors_bounds`; 4 twins) | 1 (scaled) | 2.3e-8 |
+| phase-7b models with transforms (multi-fidelity + `Log`, + `Warp` + `Bilog`/`Standardize`; mixed + `Normalize(indices)` + `Log`; MAP SAAS + `InputStandardize` + `Log`; additive MAP SAAS + `Power`; orthogonal additive + `Log`): MLL / gradient | 1e-9 / 1e-8 | 4.5e-16 / 1.8e-14 |
+| the same: q = 1 mean / variance, samples, `qExpectedImprovement` / gradient, `ExpectedImprovement` / gradient | 1e-9 / 1e-8 | 1.3e-15 / 2.4e-14, 4.1e-15, 4.7e-15 / 8.0e-15, 7.3e-15 / 7.5e-15 |
 
 API and error tests: `botorch_pyo3/tests/test_6b_transforms.py` (closed
 forms of the utilities, stand-alone transforms, `subset_output`,

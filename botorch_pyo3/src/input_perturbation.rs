@@ -286,7 +286,8 @@ pub fn chain_of(
             let n = n.get();
             if !n.batch_shape.is_empty() {
                 return Err(unsupported(
-                    "A Normalize with a batch shape is not supported in a chained or one-to-many                      input transform; use Normalize(d) (bounds shared by all batch elements).",
+                    "A Normalize with a batch shape is not supported in a chained or one-to-many \
+                     input transform; use Normalize(d) (bounds shared by all batch elements).",
                 ));
             }
             match n.for_model(&[])? {

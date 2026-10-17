@@ -185,9 +185,11 @@ class Kernel(GPModule):
         return []
 
     def _own_params(self) -> list[tuple[str, Interval | None, Prior | None]]:
-        """``(raw name, constraint, prior)`` of the kernel's own parameters."""
+        """``(raw name, constraint, prior)`` of the kernel's own parameters
+        (including parameters registered later, e.g. the ``raw_tau`` of a
+        SAAS prior)."""
         out = []
-        for name, c_attr, p_attr in type(self)._params:
+        for name, c_attr, p_attr in (*type(self)._params, *getattr(self, "_extra_params", ())):
             c = getattr(self, c_attr, None) if c_attr else None
             p = getattr(self, p_attr, None) if p_attr else None
             out.append((name, c, p))
@@ -206,7 +208,11 @@ class Kernel(GPModule):
 
     def _node(self) -> _rs.KernelNode:
         """The kernel tree (``botorch_rs._botorch_rs.KernelNode``)."""
-        node = self._configure(self._base_node())
+        node = self._base_node()
+        saas = getattr(self, "_saas", None)
+        if saas is not None:
+            node = saas.apply(self, node)
+        node = self._configure(node)
         if self.active_dims is not None:
             node = node.with_active_dims(list(self.active_dims))
         return node
@@ -417,6 +423,20 @@ class Kernel(GPModule):
     def lengthscale_constraint(self) -> Interval:
         """The lengthscale constraint (GPyTorch's ``raw_lengthscale_constraint``)."""
         return self.raw_lengthscale_constraint
+
+    @property
+    def raw_tau(self) -> Any:
+        """The global shrinkage parameter of a SAAS prior with a learned
+        ``tau`` (``add_saas_prior(kernel, tau=None)``)."""
+        if "raw_tau" not in (name for name, _, _ in self._own_params()):
+            raise AttributeError(f"{type(self).__name__} has no parameter 'raw_tau'.")
+        return self._get_raw("raw_tau")
+
+    @raw_tau.setter
+    def raw_tau(self, value: Any) -> None:
+        if "raw_tau" not in (name for name, _, _ in self._own_params()):
+            raise AttributeError(f"{type(self).__name__} has no parameter 'raw_tau'.")
+        self._set_raw("raw_tau", value)
 
     # -- evaluation ----------------------------------------------------------
 
@@ -850,6 +870,10 @@ class ScaleKernel(Kernel):
         _check_prior(outputscale_prior, "outputscale_prior")
         _check_constraint(outputscale_constraint, "outputscale_constraint")
         self.base_kernel = base_kernel
+        # GPyTorch creates ``raw_outputscale`` with the batch shape broadcast
+        # with the base kernel's (e.g. a ScaleKernel without ``batch_shape``
+        # around a batched kernel has batched outputscales).
+        self._batch_shape = self.batch_shape
         self.outputscale_prior = outputscale_prior
         self.raw_outputscale_constraint = (
             outputscale_constraint if outputscale_constraint is not None else Positive()
@@ -912,6 +936,76 @@ class ProductKernel(_CompositeKernel):
         return _rs.KernelNode.product([k._node() for k in self.kernels])
 
 
+class MultitaskKernel(Kernel):
+    r"""The kernel of a ``KroneckerMultiTaskGP``
+    (``gpytorch.kernels.MultitaskKernel``): ``K_XX kron K_TT`` of a data
+    kernel ``data_covar_module`` and an ``IndexKernel(num_tasks, rank,
+    prior=task_covar_prior)`` ``task_covar_module`` (interleaved: index
+    ``i * num_tasks + t``)."""
+
+    def __init__(
+        self,
+        data_covar_module: Kernel,
+        num_tasks: int,
+        rank: int | None = 1,
+        task_covar_prior: Prior | None = None,
+        **kwargs: Any,
+    ) -> None:
+        if not isinstance(data_covar_module, Kernel):
+            raise UnsupportedError(
+                "MultitaskKernel needs a botorch_rs kernel as data_covar_module."
+            )
+        super().__init__(**kwargs)
+        self.task_covar_module = IndexKernel(
+            num_tasks=num_tasks, batch_shape=self._batch_shape, rank=rank, prior=task_covar_prior
+        )
+        self.data_covar_module = data_covar_module
+        self.num_tasks = int(num_tasks)
+
+    def _children(self) -> list[tuple[str, Kernel]]:
+        return [
+            ("task_covar_module", self.task_covar_module),
+            ("data_covar_module", self.data_covar_module),
+        ]
+
+    def _base_node(self) -> _rs.KernelNode:
+        raise UnsupportedError(
+            "MultitaskKernel is supported as the covariance module of a KroneckerMultiTaskGP only."
+        )
+
+    def __call__(
+        self,
+        x1: Any,
+        x2: Any = None,
+        diag: bool = False,
+        last_dim_is_batch: bool = False,
+        **params: Any,
+    ) -> Any:
+        """``K_XX kron K_TT`` (``n1 m x n2 m``, interleaved); unbatched inputs."""
+        if last_dim_is_batch:
+            raise RuntimeError("MultitaskKernel does not accept the last_dim_is_batch argument.")
+        kx = to_flat(self.data_covar_module(x1, x2, **params), "K")
+        if len(kx[1]) != 2:
+            raise UnsupportedError("MultitaskKernel evaluates unbatched inputs only.")
+        kt = to_flat(self.task_covar_module.covar_matrix, "B")
+        n1, n2 = kx[1]
+        m = self.num_tasks
+        out = [
+            kx[0][i * n2 + j] * kt[0][s * m + t]
+            for i in range(n1)
+            for s in range(m)
+            for j in range(n2)
+            for t in range(m)
+        ]
+        if diag:
+            out = [out[a * n2 * m + a] for a in range(min(n1, n2) * m)]
+            return from_flat(out, (n1 * m,), kind_of(x1))
+        return from_flat(out, (n1 * m, n2 * m), kind_of(x1))
+
+    def __repr__(self) -> str:
+        return f"MultitaskKernel({self.data_covar_module!r}, num_tasks={self.num_tasks})"
+
+
 def _kernel_from_spec(
     spec: _rs.KernelSpec,
     preset: Callable[[int], _rs.KernelSpec],
@@ -963,6 +1057,7 @@ __all__ = [
     "IndexKernel",
     "Kernel",
     "LinearKernel",
+    "MultitaskKernel",
     "MaternKernel",
     "PeriodicKernel",
     "PolynomialKernel",

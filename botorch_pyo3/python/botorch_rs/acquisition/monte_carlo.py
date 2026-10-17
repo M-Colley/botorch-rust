@@ -256,14 +256,15 @@ _CACHE_ROOT_MESSAGE = (
 def supports_cache_root(model: Any) -> bool:
     r"""Checks if a model supports the cache_root functionality (BoTorch's
     ``supports_cache_root``): the models of a ``ModelListGP`` must, and
-    multi-task (``LCEMGP``) and deterministic models do not."""
-    from botorch_rs.models.contextual_multioutput import LCEMGP
+    multi-task (``MultiTaskGP``, ``LCEMGP``, ``KroneckerMultiTaskGP``) and
+    deterministic models do not."""
     from botorch_rs.models.gp_regression import SingleTaskGP
     from botorch_rs.models.model_list_gp_regression import ModelListGP
+    from botorch_rs.models.multitask import KroneckerMultiTaskGP, MultiTaskGP
 
     if isinstance(model, ModelListGP):
         return all(supports_cache_root(m) for m in model.models)
-    if isinstance(model, LCEMGP):
+    if isinstance(model, (MultiTaskGP, KroneckerMultiTaskGP)):
         return False
     return isinstance(model, SingleTaskGP)
 

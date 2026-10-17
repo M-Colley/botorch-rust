@@ -41,6 +41,47 @@ pub struct TreeKernel {
     values: Vec<f64>,
     /// Scalar priors: `(offset, length, prior)` in `named_priors()` order.
     scalar_priors: Vec<(usize, usize, Prior)>,
+    /// SAAS priors on `tau / ℓⱼ²` (see [`crate::kernels::SaasPrior`]).
+    saas_priors: Vec<SaasTerm>,
+}
+
+/// A SAAS prior of a [`TreeKernel`]: the prior on `tau / ℓⱼ²` for the
+/// lengthscales at `ls_off .. ls_off + ls_len` (actual values), with a
+/// fixed `tau` or the one at offset `tau_off`.
+#[derive(Clone, Debug)]
+struct SaasTerm {
+    ls_off: usize,
+    ls_len: usize,
+    tau: Option<f64>,
+    tau_off: usize,
+    prior: Prior,
+}
+
+/// The SAAS priors of a kernel tree (pre-order, offsets in the flat
+/// parameter vector).
+fn collect_saas(node: &KernelNode, off: &mut usize, out: &mut Vec<SaasTerm>) {
+    let start = *off;
+    let mut tau_off = start;
+    let mut pos = start;
+    for p in node.params() {
+        if p.name == "raw_tau" {
+            tau_off = pos;
+        }
+        pos += p.numel();
+    }
+    if let Some(saas) = node.saas() {
+        out.push(SaasTerm {
+            ls_off: start,
+            ls_len: node.params()[0].numel(),
+            tau: saas.tau,
+            tau_off,
+            prior: saas.prior,
+        });
+    }
+    *off = pos;
+    for child in node.children() {
+        collect_saas(child, off, out);
+    }
 }
 
 /// The inputs of a [`TreeKernel`] prepared for evaluation.
@@ -275,11 +316,14 @@ impl TreeKernel {
             }
             off += p.numel();
         }
+        let mut saas_priors = Vec::new();
+        collect_saas(node, &mut 0, &mut saas_priors);
         Ok(Self {
             root,
             input_dim,
             values,
             scalar_priors,
+            saas_priors,
         })
     }
 
@@ -427,6 +471,23 @@ impl TreeKernel {
             }
             total += s;
         }
+        // SAAS priors: `prior(tau / l_j^2)` for every lengthscale.
+        for t in &self.saas_priors {
+            let tau = t.tau.unwrap_or(self.values[t.tau_off]);
+            for j in 0..t.ls_len {
+                let l = self.values[t.ls_off + j];
+                let u = tau / (l * l);
+                check_support(&t.prior, u)?;
+                total += t.prior.log_prob(u);
+                if with_grad {
+                    let g = t.prior.grad_log_prob(u);
+                    grad[t.ls_off + j] += g * (-2.0 * u / l);
+                    if t.tau.is_none() {
+                        grad[t.tau_off] += g / (l * l);
+                    }
+                }
+            }
+        }
         self.root.visit_index(&mut |st| -> Result<()> {
             if let Some(prior) = &st.prior {
                 total += index_prior(st, prior, grad, with_grad)?;
@@ -457,6 +518,10 @@ fn build_node(spec: &KernelNode, cur: &mut Cursor<'_>, parent_dim: usize) -> Res
     let kind = match spec.kind() {
         KernelType::Stationary(kind) => {
             let (_, ls) = cur.take(&params[0]);
+            // (A SAAS prior's `raw_tau` enters the priors only.)
+            for p in &params[1..] {
+                cur.take(p);
+            }
             let (ls, shared) = expand(ls, k);
             NodeKind::Stationary {
                 kind: *kind,
@@ -1722,15 +1787,10 @@ fn index_prior(
     with_grad: bool,
 ) -> Result<f64> {
     let t = st.num_tasks;
-    if st.positive {
-        // The lower-triangle correlations of the (normalized) task covariance.
-        let MatrixPrior::Elementwise(p) = prior else {
-            return Err(BotorchError::Unsupported(
-                "only univariate priors are supported on the correlations of a \
-                 PositiveIndexKernel"
-                    .into(),
-            ));
-        };
+    if let (true, MatrixPrior::Elementwise(p)) = (st.positive, prior) {
+        // The lower-triangle correlations of the (normalized) task covariance
+        // (an LKJ covariance prior acts on the covariance matrix itself, as
+        // on an `IndexKernel`).
         let b = &st.b;
         let mut total = 0.0;
         let mut gb = Matrix::zeros(t, t);

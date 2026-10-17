@@ -634,7 +634,7 @@ def test_outputs_subset_matches_single_output_models() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _list_pair(seed: int) -> tuple[Any, Any]:
+def _list_pair(seed: int, kind: str = "ModelListGP") -> tuple[Any, Any]:
     X, Y, _ = make_data({"m": 2}, seed)
     specs = [[{"type": "Log"}], [{"type": "Bilog"}, {"type": "Standardize"}]]
     bts, rss = [], []
@@ -645,11 +645,19 @@ def _list_pair(seed: int) -> tuple[Any, Any]:
         randomize(b, r, seed + 1 + t)
         bts.append(b)
         rss.append(r)
+    if kind == "ModelList":
+        from botorch.models import ModelList as BtModelList
+
+        from botorch_rs.models import ModelList as RsModelList
+
+        return BtModelList(*bts), RsModelList(*rss)
     return BtModelListGP(*bts), RsModelListGP(*rss)
 
 
-def test_model_list_with_transformed_outputs() -> None:
-    bl, rl = _list_pair(6500)
+@pytest.mark.parametrize("kind", ["ModelListGP", "ModelList"])
+def test_model_list_with_transformed_outputs(kind: str) -> None:
+    """``ModelListGP`` and (phase 7b's) ``ModelList`` of transformed models."""
+    bl, rl = _list_pair(6500, kind)
     bl.eval()
     Xq = query_points({}, 3, 6503)
     pb, pr = bl.posterior(Xq), rl.posterior(Xq)
@@ -831,6 +839,216 @@ def test_stratified_conditioning_uses_the_transformed_inputs() -> None:
         expected.detach(),
         VALUE_TOL,
     )
+
+
+# ---------------------------------------------------------------------------
+# Transforms on the models of phases 7a and 7b
+# ---------------------------------------------------------------------------
+
+
+def _phase7_data(seed: int, categorical: bool = False) -> tuple[Any, Any, Any]:
+    """Data with a fidelity (or categorical) last column, and query points."""
+    g = torch.Generator().manual_seed(seed)
+    X = torch.rand(14, 3, generator=g, dtype=DT)
+    Xq = torch.rand(4, 3, generator=g, dtype=DT)
+    if categorical:
+        X[:, 0] = 3.0 * X[:, 0]
+        X[:, 2] = (torch.arange(14) % 3).to(DT)
+        Xq[:, 0] = 3.0 * Xq[:, 0]
+        Xq[:, 2] = torch.tensor([0.0, 1.0, 2.0, 1.0], dtype=DT)
+    else:
+        X[:, 2] = torch.tensor([0.0, 0.5, 1.0] * 4 + [0.0, 1.0], dtype=DT)
+        Xq[:, 2] = torch.tensor([0.0, 1.0, 0.5, 1.0], dtype=DT)
+    Y = torch.sin(3 * X[:, :1]) + X[:, 1:2] ** 2 + 2.0
+    Y = Y + 0.05 * torch.randn(14, 1, generator=g, dtype=DT)
+    return X, Y, Xq
+
+
+def _phase7_models() -> dict[str, tuple[Any, bool]]:
+    """name -> (model factory taking ``(lib, X, Y)``, categorical data)."""
+    from botorch.models import MixedSingleTaskGP as BtMixed
+    from botorch.models import SingleTaskMultiFidelityGP as BtMF
+    from botorch.models.additive_gp import OrthogonalAdditiveGP as BtOAK
+    from botorch.models.map_saas import AdditiveMapSaasSingleTaskGP as BtAdditiveSaas
+    from botorch.models.map_saas import get_map_saas_model as bt_map_saas
+
+    from botorch_rs.models import MixedSingleTaskGP as RsMixed
+    from botorch_rs.models import SingleTaskMultiFidelityGP as RsMF
+    from botorch_rs.models.additive_gp import OrthogonalAdditiveGP as RsOAK
+    from botorch_rs.models.map_saas import AdditiveMapSaasSingleTaskGP as RsAdditiveSaas
+    from botorch_rs.models.map_saas import get_map_saas_model as rs_map_saas
+
+    def tf(spec: Any, lib: str) -> Any:
+        return build_input(spec, lib)
+
+    def outcome(spec: Any, lib: str) -> Any:
+        return build_outcome(spec, lib, 1)
+
+    log = [{"type": "Log"}]
+    bilog_std = [{"type": "Bilog"}, {"type": "Standardize"}]
+    warp01 = [{"type": "Warp", "d": 3, "indices": [0, 1]}]
+    norm01 = [{"type": "Normalize", "d": 3, "indices": [0, 1]}]
+    std = [{"type": "InputStandardize", "d": 3}]
+    cls = {"bt": (BtMF, BtMixed, bt_map_saas, BtAdditiveSaas, BtOAK)}
+    cls["rs"] = (RsMF, RsMixed, rs_map_saas, RsAdditiveSaas, RsOAK)
+    return {
+        "multi_fidelity_log": (
+            lambda lib, X, Y: cls[lib][0](
+                X, Y, data_fidelities=[2], outcome_transform=outcome(log, lib)
+            ),
+            False,
+        ),
+        "multi_fidelity_warp_bilog": (
+            lambda lib, X, Y: cls[lib][0](
+                X,
+                Y,
+                iteration_fidelity=2,
+                input_transform=tf(warp01, lib),
+                outcome_transform=outcome(bilog_std, lib),
+            ),
+            False,
+        ),
+        "mixed_normalize_indices_log": (
+            lambda lib, X, Y: cls[lib][1](
+                X,
+                Y,
+                cat_dims=[2],
+                input_transform=tf(norm01, lib),
+                outcome_transform=outcome(log, lib),
+            ),
+            True,
+        ),
+        "map_saas_input_standardize_log": (
+            lambda lib, X, Y: cls[lib][2](
+                X, Y, input_transform=tf(std, lib), outcome_transform=outcome(log, lib)
+            ),
+            False,
+        ),
+        "additive_map_saas_power": (
+            lambda lib, X, Y: cls[lib][3](
+                X, Y, num_taus=2, outcome_transform=outcome([{"type": "Power", "power": 0.5}], lib)
+            ),
+            False,
+        ),
+        "orthogonal_additive_log": (
+            lambda lib, X, Y: cls[lib][4](X, Y, outcome_transform=outcome(log, lib)),
+            False,
+        ),
+    }
+
+
+PHASE7_MODELS = [
+    "multi_fidelity_log",
+    "multi_fidelity_warp_bilog",
+    "mixed_normalize_indices_log",
+    "map_saas_input_standardize_log",
+    "additive_map_saas_power",
+    "orthogonal_additive_log",
+]
+
+
+@pytest.mark.parametrize("name", PHASE7_MODELS)
+def test_transforms_on_phase7_models_match_botorch(name: str) -> None:
+    """Input and outcome transforms on the multi-fidelity, mixed, MAP SAAS
+    and orthogonal additive models (``SingleTaskGP`` subclasses, which
+    BoTorch builds through ``SingleTaskGP.__init__`` too). BoTorch's MLLs are
+    evaluated with GPyTorch's ``sq_dist`` diagonal zeroed, as in
+    ``test_parity_7b_models.py``."""
+    from kernel_tree_helpers import zero_diagonal_distances
+
+    make, categorical = _phase7_models()[name]
+    seed = 7500 + PHASE7_MODELS.index(name)
+    X, Y, Xq = _phase7_data(seed, categorical)
+    torch.manual_seed(seed)
+    bt = make("bt", X, Y).to(DT)
+    torch.manual_seed(seed)
+    rs = make("rs", X, Y)
+    compare_structure(bt, rs)
+    with zero_diagonal_distances():
+        compare_mll(f"phase 7 models ({name}): default", bt, rs)
+        randomize(bt, rs, seed + 1)
+        compare_mll(f"phase 7 models ({name}): random parameters,", bt, rs)
+    bt.eval()
+    pb, pr = bt.posterior(Xq.unsqueeze(-2)), rs.posterior(Xq.unsqueeze(-2))
+    mb, mr = _moments(pb), _moments(pr)
+    assert (mb is None) == (mr is None)
+    if mb is not None and mr is not None:
+        CHECK.check("phase 7 models: q=1 mean", mr[0], mb[0].detach(), VALUE_TOL)
+        CHECK.check("phase 7 models: q=1 variance", mr[1], mb[1].detach(), VALUE_TOL)
+    with torch.no_grad():
+        pj, pjr = bt.posterior(Xq), rs.posterior(Xq)
+        Z = torch.randn(
+            8, *pj.base_sample_shape, generator=torch.Generator().manual_seed(seed), dtype=DT
+        )
+        CHECK.check(
+            "phase 7 models: samples (identical base samples)",
+            pjr.rsample_from_base_samples(torch.Size([8]), Z),
+            pj.rsample_from_base_samples(torch.Size([8]), Z),
+            VALUE_TOL,
+        )
+    compare_mc(
+        "phase 7 models: qExpectedImprovement",
+        lambda s: BtQEI(bt, best_f=2.5, sampler=s),
+        lambda s: RsQEI(rs, best_f=2.5, sampler=s),
+        Xq.reshape(2, 2, -1),
+    )
+    if mb is not None:
+        vb, gb = values_and_grads(BtEI(bt, best_f=2.5), Xq.unsqueeze(-2))
+        vr, gr = values_and_grads(RsEI(rs, best_f=2.5), Xq.unsqueeze(-2))
+        CHECK.check("phase 7 models: ExpectedImprovement", vr, vb, VALUE_TOL)
+        check_grad("phase 7 models: ExpectedImprovement d / dx", gr, gb)
+
+
+def test_unsupported_transforms_on_phase7_models() -> None:
+    """Transforms that the phase-7 models do not support raise
+    ``UnsupportedError`` (a ``NotImplementedError``): an outcome transform
+    other than ``Standardize`` on an ``EnsembleMapSaasSingleTaskGP`` (whose
+    posterior BoTorch cannot build either: a ``TransformedPosterior`` has no
+    ``distribution``), and transforms other than ``Normalize`` /
+    ``Standardize`` on the multi-task GPs (supported by BoTorch, not ported)."""
+    from botorch.models.map_saas import EnsembleMapSaasSingleTaskGP as BtEnsembleSaas
+
+    from botorch_rs.exceptions.errors import UnsupportedError
+    from botorch_rs.models import KroneckerMultiTaskGP as RsKronecker
+    from botorch_rs.models import MultiTaskGP as RsMultiTask
+    from botorch_rs.models.map_saas import EnsembleMapSaasSingleTaskGP as RsEnsembleSaas
+
+    X, Y, Xq = _phase7_data(7600)
+    torch.manual_seed(0)
+    bt = BtEnsembleSaas(
+        X, Y, num_taus=2, outcome_transform=build_outcome([{"type": "Log"}], "bt", 1)
+    )
+    with pytest.raises(AttributeError):
+        bt.posterior(Xq)
+    torch.manual_seed(0)
+    rs = RsEnsembleSaas(
+        X, Y, num_taus=2, outcome_transform=build_outcome([{"type": "Log"}], "rs", 1)
+    )
+    with pytest.raises(UnsupportedError, match="Standardize outcome transform only"):
+        rs.posterior(Xq)
+    Xt = X.clone()
+    Xt[:, 2] = (torch.arange(14) % 2).to(DT)
+    with pytest.raises(UnsupportedError, match="not supported by MultiTaskGP"):
+        RsMultiTask(
+            Xt, Y, task_feature=-1, outcome_transform=build_outcome([{"type": "Log"}], "rs", 1)
+        )
+    with pytest.raises(UnsupportedError, match="not supported by MultiTaskGP"):
+        RsMultiTask(
+            Xt,
+            Y,
+            task_feature=-1,
+            input_transform=build_input([{"type": "Warp", "d": 3, "indices": [0]}], "rs"),
+        )
+    with pytest.raises(UnsupportedError, match="center=0.5"):
+        RsMultiTask(
+            Xt,
+            Y,
+            task_feature=-1,
+            input_transform=build_input([{"type": "Normalize", "d": 3, "center": 0.0}], "rs"),
+        )
+    Y2 = torch.cat([Y, -Y], -1)
+    with pytest.raises(UnsupportedError, match="Standardize"):
+        RsKronecker(X, Y2, outcome_transform=build_outcome([{"type": "Log"}], "rs", 2))
 
 
 # ---------------------------------------------------------------------------

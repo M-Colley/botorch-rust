@@ -730,15 +730,24 @@ struct OutputMoments {
     dsigma: Vec<Vector>,
 }
 
-/// The lower clamp of the model's variances before `_mean_and_sigma`'s
-/// (GPyTorch's `min_variance`; none for deterministic models, whose
-/// `EnsemblePosterior` returns zero variances).
-fn variance_floor(model: &dyn Model) -> f64 {
-    if model.is_deterministic() {
-        0.0
-    } else {
-        crate::posterior::MIN_VARIANCE
-    }
+/// The lower clamp of the model's variance of every output before
+/// `_mean_and_sigma`'s (GPyTorch's `min_variance`; none for deterministic
+/// models, whose `EnsemblePosterior` returns zero variances, see
+/// [`Model::clamps_variance`], and for the moments of a
+/// `TransformedPosterior`, see [`Model::transformed_outputs`]).
+fn variance_floors(model: &dyn Model) -> Vec<f64> {
+    let clamps = model.clamps_variance();
+    model
+        .transformed_outputs()
+        .into_iter()
+        .map(|transformed| {
+            if clamps && !transformed {
+                crate::posterior::MIN_VARIANCE
+            } else {
+                0.0
+            }
+        })
+        .collect()
 }
 
 /// The standard deviation of a variance, clamped like `_mean_and_sigma`
@@ -754,14 +763,14 @@ fn output_moments(model: &dyn Model, x: &Matrix) -> Result<OutputMoments> {
     let g = model.point_posterior_with_grad(&point)?;
     let m = model.num_outputs();
     let d = point.len();
-    let floor = variance_floor(model);
+    let floors = variance_floors(model);
     let mut out = OutputMoments {
         mean: Vec::with_capacity(m),
         sigma: Vec::with_capacity(m),
         dmean: Vec::with_capacity(m),
         dsigma: Vec::with_capacity(m),
     };
-    for t in 0..m {
+    for (t, &floor) in floors.iter().enumerate().take(m) {
         let var = g.covariance[(t, t)];
         let sigma = clamped_sigma(var, floor);
         out.mean.push(g.mean[t]);
@@ -787,7 +796,7 @@ where
         check_candidates(x, d, Some(1))?;
     }
     let m = model.num_outputs();
-    let floor = variance_floor(model);
+    let floors = variance_floors(model);
     let chunks: Vec<Result<Vec<f64>>> = xs
         .par_chunks(MARGINAL_CHUNK)
         .map(|chunk| {
@@ -797,7 +806,7 @@ where
                 .map(|i| {
                     let mean: Vec<f64> = (0..m).map(|t| pp.mean[(i, t)]).collect();
                     let sigma: Vec<f64> = (0..m)
-                        .map(|t| clamped_sigma(pp.variance(i, t), floor))
+                        .map(|t| clamped_sigma(pp.variance(i, t), floors[t]))
                         .collect();
                     value(&mean, &sigma)
                 })

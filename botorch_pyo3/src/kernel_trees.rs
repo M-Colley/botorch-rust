@@ -267,6 +267,33 @@ impl PyKernelNode {
             .map(Self::wrap)
     }
 
+    /// This kernel with BoTorch's SAAS prior (`add_saas_prior`): `prior`
+    /// on `tau / lengthscale**2`, with the fixed `tau` or (`tau=None`) the
+    /// learned parameter `raw_tau` with `tau_constraint` and `tau_prior`.
+    #[pyo3(signature = (prior, tau=None, tau_constraint=None, tau_prior=None))]
+    fn with_saas_prior(
+        &self,
+        prior: PyRef<'_, PyPrior>,
+        tau: Option<f64>,
+        tau_constraint: Option<PyRef<'_, PyConstraint>>,
+        tau_prior: Option<PyRef<'_, PyPrior>>,
+    ) -> PyResult<Self> {
+        let tau_param = match (tau_constraint, tau_prior) {
+            (Some(c), Some(p)) => Some((c.inner, p.inner)),
+            _ => None,
+        };
+        self.inner
+            .clone()
+            .with_saas_prior(prior.inner, tau, tau_param)
+            .into_py_result()
+            .map(Self::wrap)
+    }
+
+    /// The fixed `tau`s of the SAAS priors in the tree (pre-order).
+    fn saas_taus(&self) -> Vec<f64> {
+        self.inner.saas_taus()
+    }
+
     /// `(name, element shape, raw initial value)` of the kernel's own
     /// parameters (without those of its sub-kernels).
     fn own_params(&self) -> Vec<(String, Vec<usize>, f64)> {

@@ -30,7 +30,7 @@ pub mod tree;
 
 pub use covar::{BuiltCovar, CovarModule, Prepared};
 pub use eval::TreeKernel;
-pub use tree::{KernelNode, KernelType, MatrixPrior, ParamSpec};
+pub use tree::{KernelNode, KernelType, MatrixPrior, ParamSpec, SaasPrior};
 
 /// Lower clamp of the Matérn distance (`gpytorch.kernels.kernel.dist`).
 pub const MATERN_MIN_DISTANCE: f64 = 1e-15;

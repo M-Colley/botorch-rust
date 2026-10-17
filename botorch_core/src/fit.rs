@@ -149,6 +149,11 @@ fn sample_all_priors(
     rng: &mut StdRng,
 ) -> Vec<f64> {
     let mut h = initial.clone();
+    if let Some(prior) = model.mean_module().prior {
+        // GPyTorch's `ConstantMean` setting closure (the raw constant is the
+        // constant: the constraint is not enforced).
+        h.raw_constant = prior.sample(rng);
+    }
     if let Likelihood::Gaussian(spec) = model.likelihood() {
         if let Some(prior) = spec.noise_prior {
             h.raw_noise = Some(spec.noise_constraint.inverse_transform(prior.sample(rng)));

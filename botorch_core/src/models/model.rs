@@ -54,6 +54,14 @@ pub trait Model: Send + Sync + Debug {
         &[]
     }
 
+    /// The unbatched model of batch element `b` (row-major in
+    /// [`Model::batch_shape`]) of a batch of models such as the fantasies of
+    /// a multi-task GP; `None` (the default) for models that evaluate their
+    /// batch elements themselves or have none.
+    fn batch_element(&self, _b: usize) -> Option<&dyn Model> {
+        None
+    }
+
     /// The independent single-output exact GPs that produce the outputs of
     /// an unbatched model, in output order (`None` otherwise, the default).
     /// Acquisition functions use them to compute joint posteriors with a
@@ -114,6 +122,18 @@ pub trait Model: Send + Sync + Debug {
     /// `PosteriorList`); `None` for other models (the default).
     fn list_output_sizes(&self) -> Option<Vec<usize>> {
         None
+    }
+
+    /// Whether the posterior variances are clamped from below at
+    /// [`MIN_VARIANCE`] (GPyTorch's `min_variance`, applied by
+    /// `MultivariateNormal.variance`) before analytic acquisition functions
+    /// use them. `true` except for deterministic models (see
+    /// [`Model::is_deterministic`]) by default; models whose BoTorch
+    /// posterior is not a GPyTorch distribution (e.g. the moments of an
+    /// `EnsemblePosterior`, [`crate::models::EnsembleMomentsModel`]) return
+    /// `false`.
+    fn clamps_variance(&self) -> bool {
+        !self.is_deterministic()
     }
 
     /// Joint posterior at the `q × d` inputs `x` over all outputs (BoTorch's
@@ -232,15 +252,15 @@ pub trait Model: Send + Sync + Debug {
         require_single_output(self.num_outputs())?;
         let pp = self.point_posteriors(x)?;
         let b = pp.len();
-        let deterministic = self.is_deterministic() || self.transformed_outputs()[0];
+        let clamps = self.clamps_variance() && !self.transformed_outputs()[0];
         Ok((
             Vector::from_fn(b, |i, _| pp.mean[(i, 0)]),
             Vector::from_fn(b, |i, _| {
                 let v = pp.covariance[(i, 0)];
-                if deterministic {
-                    v
-                } else {
+                if clamps {
                     clamp_variance(v)
+                } else {
+                    v
                 }
             }),
         ))
@@ -263,7 +283,7 @@ pub trait Model: Send + Sync + Debug {
         let mean = g.mean[0];
         let var = g.covariance[(0, 0)];
         let dmean = Vector::from_fn(d, |k, _| g.dmean[k][0]);
-        if var < MIN_VARIANCE && !self.is_deterministic() && !self.transformed_outputs()[0] {
+        if var < MIN_VARIANCE && self.clamps_variance() && !self.transformed_outputs()[0] {
             return Ok((mean, MIN_VARIANCE, dmean, Vector::zeros(d)));
         }
         let dvar = Vector::from_fn(d, |k, _| g.dcov[k][(0, 0)]);
