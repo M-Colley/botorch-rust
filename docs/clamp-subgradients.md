@@ -2,7 +2,7 @@
 
 PyTorch 2.14.0 changed the gradients of the `clamp` family exactly at its
 bounds (pytorch#191142, release notes, section "Autograd"). botorch-rust
-follows the PyTorch ≥ 2.14 convention under every torch version. This draft
+follows the PyTorch ≥ 2.14 convention under every torch version. This page
 records the change, the audit of every clamp-like operation on a
 differentiable path of the BoTorch, GPyTorch and linear_operator code that
 botorch_rs ports, the implementation, the tests and the results under torch

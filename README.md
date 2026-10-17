@@ -1239,8 +1239,11 @@ away from BoTorch's optima still fail.
 
 The numbers above come from BoTorch's main branch at da00e04 with GPyTorch
 1.15.2, linear_operator 0.6.1, PyTorch 2.13 (CPU), SciPy 1.18 and Python 3.13
-on Windows 11; CI runs the Python comparisons against the latest BoTorch
-release. An earlier run against the released BoTorch 0.18.1 found two
+on Windows 11; the full suite also passes under PyTorch 2.14.1, and CI runs the
+Python comparisons against the latest BoTorch and PyTorch releases. PyTorch
+2.14 changed the gradients exactly at `clamp` bounds; botorch-rust follows the
+new convention, and under older PyTorch the tests compare with BoTorch's
+gradients computed with it ([docs/clamp-subgradients.md](docs/clamp-subgradients.md)). An earlier run against the released BoTorch 0.18.1 found two
 behaviors that differ from main, which the tests now account for: 0.18.1
 rejects SLSQP starts that violate nonlinear constraints (main and botorch-rust
 accept them), and with SciPy 1.18 it optimizes all L-BFGS-B restarts in one
@@ -1856,7 +1859,7 @@ The model fits alone are 140–550× faster.
   torch ≤ 2.13, BoTorch's gradients differ exactly at such bounds, e.g. at
   fidelities of 0 or 1 in the `LinearTruncatedFidelityKernel`, at inputs of 0
   under `Warp`, or for a qEI sample exactly at `best_f`; away from the bounds
-  nothing changes. See [docs/drafts/torch214-clamp.md](docs/drafts/torch214-clamp.md).
+  nothing changes. See [docs/clamp-subgradients.md](docs/clamp-subgradients.md).
 - **Deliberate deviations.** `prune_inferior_points` with
   `max_frac < 1` keeps the most frequent maximizers (BoTorch indexes the wrong
   points there), the LogEI gradient is accurate far in the tail, and posterior
