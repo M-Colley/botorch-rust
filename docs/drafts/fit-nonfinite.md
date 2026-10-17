@@ -209,7 +209,25 @@ BoTorch's by more than 1e-6, with the twin criterion on 16 twins.
 | `legacy_gamma` 505 | +3.3e-6 | +3.3e-6 | 6.7e-5 | +3.3e-6 (tol 6.7e-4) | within BoTorch's twin spread (rounding-noise regime, deviation 2) |
 | `legacy_gamma` 856 | +2.3e-5 | +2.3e-5 | 5.2e-5 | +2.3e-5 (tol 5.2e-4) | within BoTorch's twin spread (rounding-noise regime, deviation 2) |
 
-No other seed of any configuration fails; no fit raises.
+No other seed of any configuration fails; no fit raises. The same scan
+after merging main (phase 6b) gives the identical three lines.
+
+**torch 2.14.1** (CI's parity job; gradients at clamp bounds changed in
+pytorch#191142), same scan with BoTorch main: four seeds, all within
+BoTorch's twin spread, no fit raises:
+
+| config, seed | gap | BoTorch's spread at its best (twins) | botorch_rs best vs BoTorch best (twins) |
+| --- | --- | --- | --- |
+| `custom_scale_rbf` 400 | +2.2e-6 | 2.3e-6 | -5.8e-15 (tol 2.3e-5) |
+| `custom_scale_rbf` 933 | +3.2e-6 | 3.3e-6 | -1.5e-10 (tol 3.3e-5) |
+| `legacy_gamma` 505 | +3.3e-6 | 6.7e-5 | +3.3e-6 (tol 6.7e-4) |
+| `legacy_gamma` 856 | +2.3e-5 | 5.2e-5 | +2.3e-5 (tol 5.2e-4) |
+
+(`custom_scale_rbf` 933 is a flat ridge on which BoTorch 2.14's first
+outcome lands at the better end.) BoTorch's losses at the regression seeds
+are the same under both torch versions to 4e-13, so the constants of
+`fit_nonfinite.rs` hold for both; `test_parity_fit_nonfinite.py` and
+`test_parity.py` pass under torch 2.14.1 with the same worst errors.
 
 ## Equivalence tables
 
@@ -302,6 +320,15 @@ below BoTorch's 10-th best 0.0924190), the old one on 17 outcomes fails in
 outcomes, so they pass the best-cluster bound; the Mann–Whitney test needs
 their full samples, which match BoTorch's distribution if the platforms'
 outcomes are statistically consistent with it.
+
+**torch 2.14.1** (CI's parity job): the chaotic fixture cases regenerated
+with torch 2.14.1 (BoTorch main) stay chaotic, and botorch_rs's outcomes
+pass the criterion against them: 6a z <= 0.45, 7b `mixed_last` z = 0.81,
+`default_t3_d2` z = 1.89 (11 emulated-platform replicates: z from -0.17 to
++1.89, best 8.7e-6 .. 1.4e-5 below BoTorch 2.14's 10-th best 0.0924177).
+BoTorch's own outcomes shift between the torch versions by z = 0.80
+(`default_t3_d2`; other cases |z| <= 0.75). The Python live fit tests (6a,
+6b, 7a, 7b) pass under torch 2.14.1 (worst z 0.28) as under 2.13.
 
 **`default_t3_d2` and the non-finite fix**: botorch_rs's path for this case
 (1815 evaluations, raw `var` down to -1.1e4 and `covar_factor` up to 7.4e3)
