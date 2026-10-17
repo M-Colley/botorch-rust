@@ -1,7 +1,8 @@
 //! Hyperparameter priors mirroring GPyTorch's `LogNormalPrior`,
-//! `GammaPrior`, `NormalPrior`, `UniformPrior`, `HalfCauchyPrior` and
-//! `HalfNormalPrior` and BoTorch's `BetaPrior` (i.e. the corresponding
-//! `torch.distributions`), including all normalizing constants.
+//! `GammaPrior`, `NormalPrior`, `UniformPrior`, `HalfCauchyPrior`,
+//! `HalfNormalPrior` and `SmoothedBoxPrior` and BoTorch's `BetaPrior` (i.e.
+//! the corresponding `torch.distributions`), including all normalizing
+//! constants.
 //!
 //! GPyTorch stores prior parameters given as Python floats in float32;
 //! [`Prior::rounded_to_f32`] reproduces that rounding, and for the priors
@@ -109,6 +110,19 @@ pub enum Prior {
         /// `β = concentration0 > 0`.
         concentration0: f64,
     },
+    /// GPyTorch's `SmoothedBoxPrior(a, b, sigma)`, a smoothed uniform prior
+    /// on `[a, b]` with Gaussian tails: `log N(dist(x, [a, b]) | 0, σ²) - M`
+    /// with `M = log(1 + (b - a) / (√(2π) σ))`. Its parameters are stored
+    /// (as torch buffers) in the model's precision, so only their float32
+    /// rounding at construction is emulated.
+    SmoothedBox {
+        /// Lower end `a`.
+        a: f64,
+        /// Upper end `b > a`.
+        b: f64,
+        /// Scale `σ > 0` of the tails.
+        sigma: f64,
+    },
 }
 
 impl Prior {
@@ -208,6 +222,25 @@ impl Prior {
         })
     }
 
+    /// Creates a [`Prior::SmoothedBox`].
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] unless `a < b` and `sigma > 0` are
+    /// finite (GPyTorch's "must have that a < b (element-wise)").
+    pub fn smoothed_box(a: f64, b: f64, sigma: f64) -> Result<Self> {
+        if !(a.is_finite() && b.is_finite() && a < b) {
+            return Err(BotorchError::InvalidArgument(
+                "must have that a < b (element-wise)".into(),
+            ));
+        }
+        if !(sigma > 0.0 && sigma.is_finite()) {
+            return Err(BotorchError::InvalidArgument(format!(
+                "SmoothedBoxPrior requires a positive finite sigma, got {sigma}"
+            )));
+        }
+        Ok(Prior::SmoothedBox { a, b, sigma })
+    }
+
     /// Creates a [`Prior::Beta`].
     ///
     /// # Errors
@@ -274,6 +307,11 @@ impl Prior {
                 concentration1: round_to_f32(concentration1),
                 concentration0: round_to_f32(concentration0),
             },
+            Prior::SmoothedBox { a, b, sigma } => Prior::SmoothedBox {
+                a: round_to_f32(a),
+                b: round_to_f32(b),
+                sigma: round_to_f32(sigma),
+            },
         }
     }
 
@@ -321,7 +359,8 @@ impl Prior {
     }
 
     /// The name of the distribution (`"LogNormal"`, `"Gamma"`, `"Normal"`,
-    /// `"Uniform"`, `"HalfCauchy"`, `"HalfNormal"` or `"Beta"`).
+    /// `"Uniform"`, `"HalfCauchy"`, `"HalfNormal"`, `"Beta"` or
+    /// `"SmoothedBox"`).
     pub fn name(&self) -> &'static str {
         match self {
             Prior::LogNormal { .. } => "LogNormal",
@@ -331,6 +370,7 @@ impl Prior {
             Prior::HalfCauchy { .. } => "HalfCauchy",
             Prior::HalfNormal { .. } => "HalfNormal",
             Prior::Beta { .. } => "Beta",
+            Prior::SmoothedBox { .. } => "SmoothedBox",
         }
     }
 
@@ -348,6 +388,7 @@ impl Prior {
                 concentration1,
                 concentration0,
             } => vec![concentration1, concentration0],
+            Prior::SmoothedBox { a, b, sigma } => vec![a, b, sigma],
         }
     }
 
@@ -424,6 +465,16 @@ impl Prior {
                 xlogy(a - 1.0, x) + xlogy(b - 1.0, 1.0 - x) + ln_gamma(a + b)
                     - (ln_gamma(a) + ln_gamma(b))
             }
+            Prior::SmoothedBox { a, b, sigma } => {
+                // GPyTorch: ((x - c).abs() - r).clamp(min=0), the distance
+                // from the box, under Normal(0, σ), minus the normalizer.
+                let c = (a + b) / 2.0;
+                let r = (b - a) / 2.0;
+                let z = ((x - c).abs() - r).max(0.0);
+                let tails = -(z * z) / (2.0 * (sigma * sigma)) - sigma.ln() - LN_SQRT_2PI;
+                let big_m = (1.0 + (b - a) / ((2.0 * std::f64::consts::PI).sqrt() * sigma)).ln();
+                tails - big_m
+            }
         }
     }
 
@@ -462,6 +513,16 @@ impl Prior {
                 let gb = if b == 1.0 { 0.0 } else { (b - 1.0) / (1.0 - x) };
                 ga - gb
             }
+            Prior::SmoothedBox { a, b, sigma } => {
+                let c = (a + b) / 2.0;
+                let r = (b - a) / 2.0;
+                let z = (x - c).abs() - r;
+                if z > 0.0 {
+                    -z / (sigma * sigma) * (x - c).signum()
+                } else {
+                    0.0
+                }
+            }
         }
     }
 
@@ -480,6 +541,7 @@ impl Prior {
                 concentration1: a,
                 concentration0: b,
             } => (a - 1.0) / (a + b - 2.0),
+            Prior::SmoothedBox { a, b, .. } => 0.5 * (a + b),
         }
     }
 
@@ -535,6 +597,22 @@ impl Prior {
             } => rand_distr::Beta::new(concentration1, concentration0)
                 .expect("validated Beta parameters")
                 .sample(rng),
+            Prior::SmoothedBox { a, b, sigma } => {
+                // GPyTorch's `rsample`: the Gaussian tails with probability
+                // 1 / (1 + (b - a) / (√(2π) σ)), else uniform on [a, b].
+                let gauss_max = 1.0 / ((2.0 * std::f64::consts::PI).sqrt() * sigma);
+                let gauss_weight = 1.0 / (gauss_max * (b - a) + 1.0);
+                let u: f64 = rand_distr::StandardUniform.sample(rng);
+                if u < gauss_weight {
+                    let e: f64 = rand_distr::Normal::new(0.0, sigma)
+                        .expect("validated Normal parameters")
+                        .sample(rng);
+                    e + if e < 0.0 { a } else { b }
+                } else {
+                    let v: f64 = rand_distr::StandardUniform.sample(rng);
+                    a + v * (b - a)
+                }
+            }
         }
     }
 }

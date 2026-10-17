@@ -568,8 +568,8 @@ def test_task_values_are_validated() -> None:
         c.rs.posterior(X)
     with pytest.raises(ValueError, match="output_indices"):
         c.rs.posterior(X[:, :], output_indices=[0])
-    with pytest.raises(UnsupportedError):
-        MultiTaskGP(c.X, c.Y, task_feature=-1)
+    # (MultiTaskGP itself is supported since phase 7a.)
+    assert MultiTaskGP(c.X, c.Y, task_feature=-1).num_outputs == 2
     with pytest.raises(ValueError, match="context_emb_feature"):
         ProvidedEmbeddingLCEMGP(c.X, c.Y, task_feature=-1)
     with pytest.raises(RuntimeError, match="All output tasks"):

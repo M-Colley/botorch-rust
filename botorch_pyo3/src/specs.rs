@@ -113,8 +113,18 @@ impl PyPrior {
         })
     }
 
+    /// `SmoothedBoxPrior(a, b, sigma)`.
+    #[staticmethod]
+    #[pyo3(signature = (a, b, sigma, float32=true))]
+    fn smoothed_box(a: f64, b: f64, sigma: f64, float32: bool) -> PyResult<Self> {
+        let p = Prior::smoothed_box(a, b, sigma).into_py_result()?;
+        Ok(Self {
+            inner: if float32 { p.rounded_to_f32() } else { p },
+        })
+    }
+
     /// `"LogNormal"`, `"Gamma"`, `"Normal"`, `"Uniform"`, `"HalfCauchy"`,
-    /// `"HalfNormal"` or `"Beta"`.
+    /// `"HalfNormal"`, `"Beta"` or `"SmoothedBox"`.
     #[getter]
     fn kind(&self) -> &'static str {
         self.inner.name()

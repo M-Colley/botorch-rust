@@ -663,6 +663,46 @@ impl KernelNode {
         Ok(self)
     }
 
+    /// The tree evaluated on the columns `parent` of its inputs: GPyTorch's
+    /// `active_dims` of an enclosing kernel composed with the tree's own.
+    /// The sub-kernels of an `AdditiveKernel` / `ProductKernel` (which have
+    /// no `active_dims` here) receive the composition; every other kernel's
+    /// `active_dims` `c` become `parent[c]` (all of `parent` if it has none).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] for `active_dims` beyond the
+    /// length of `parent`.
+    pub fn with_parent_active_dims(mut self, parent: &[usize]) -> Result<Self> {
+        match self.kind {
+            KernelType::Additive | KernelType::Product => {
+                self.children = self
+                    .children
+                    .into_iter()
+                    .map(|c| c.with_parent_active_dims(parent))
+                    .collect::<Result<Vec<_>>>()?;
+            }
+            _ => {
+                let dims = match &self.active_dims {
+                    None => parent.to_vec(),
+                    Some(own) => own
+                        .iter()
+                        .map(|&i| {
+                            parent.get(i).copied().ok_or_else(|| {
+                                BotorchError::DimensionMismatch(format!(
+                                    "active_dims {own:?} are out of range for a kernel on {} \
+                                     inputs",
+                                    parent.len()
+                                ))
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                };
+                self.active_dims = Some(dims);
+            }
+        }
+        Ok(self)
+    }
+
     fn param_mut(&mut self, name: &str) -> Result<&mut ParamSpec> {
         let kind = format!("{:?}", self.kind);
         self.params
@@ -716,15 +756,20 @@ impl KernelNode {
 
     /// Sets the prior on the task covariance (`IndexKernel`, GPyTorch's
     /// `IndexKernelPrior` on `F Fᵀ + diag(v)`) or on the lower-triangle task
-    /// correlations (`PositiveIndexKernel`, elementwise priors only).
+    /// correlations (`PositiveIndexKernel` with a univariate prior). An LKJ
+    /// covariance prior on a `PositiveIndexKernel` acts on its (normalized)
+    /// task covariance matrix `covar_matrix`, as on an `IndexKernel` (BoTorch
+    /// evaluates it on the vector of correlations, which fails).
     ///
     /// # Errors
-    /// [`BotorchError::Unsupported`] for other kernels and LKJ priors on a
-    /// `PositiveIndexKernel`; [`BotorchError::InvalidArgument`] for an LKJ
-    /// prior of the wrong size.
+    /// [`BotorchError::Unsupported`] for other kernels;
+    /// [`BotorchError::InvalidArgument`] for an LKJ prior of the wrong size.
     pub fn with_task_prior(mut self, prior: MatrixPrior) -> Result<Self> {
         match (&self.kind, &prior) {
-            (KernelType::Index { num_tasks, .. }, MatrixPrior::LkjCovariance { n, .. }) => {
+            (
+                KernelType::Index { num_tasks, .. } | KernelType::PositiveIndex { num_tasks, .. },
+                MatrixPrior::LkjCovariance { n, .. },
+            ) => {
                 if n != num_tasks {
                     return Err(BotorchError::InvalidArgument(format!(
                         "an LKJ prior of size {n} cannot be a prior on {num_tasks} tasks"
@@ -733,13 +778,6 @@ impl KernelNode {
             }
             (KernelType::Index { .. }, MatrixPrior::Elementwise(_)) => {}
             (KernelType::PositiveIndex { .. }, MatrixPrior::Elementwise(_)) => {}
-            (KernelType::PositiveIndex { .. }, MatrixPrior::LkjCovariance { .. }) => {
-                return Err(BotorchError::Unsupported(
-                    "the prior of a PositiveIndexKernel acts on the vector of lower-triangle \
-                     correlations; use a univariate prior such as BetaPrior"
-                        .into(),
-                ))
-            }
             _ => {
                 return Err(BotorchError::Unsupported(
                     "only IndexKernel and PositiveIndexKernel have a task prior".into(),

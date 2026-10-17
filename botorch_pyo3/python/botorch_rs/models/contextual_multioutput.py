@@ -13,6 +13,7 @@ import math
 from collections.abc import Iterator
 from typing import Any
 
+from botorch_rs import _botorch_rs
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import LIST, ArrayKind, Flat, from_flat, kind_of, to_flat
 from botorch_rs.constraints import Interval
@@ -198,6 +199,8 @@ class LCEMGP(MultiTaskGP):
         >>> fit_gpytorch_mll(ExactMarginalLogLikelihood(model.likelihood, model))
         >>> posterior = model.posterior(test_X)  # over task 2
     """
+
+    _rs: _botorch_rs.LCEMGP  # type: ignore[assignment]
 
     def __init__(
         self,
@@ -518,7 +521,7 @@ class LCEMGP(MultiTaskGP):
             transform=transform_arg(posterior_transform),
         )
 
-    def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:
+    def _acquisition_model(self, posterior_transform: Any = None) -> _botorch_rs.Model:
         """The model handle that acquisition functions are built on."""
         from botorch_rs.acquisition.objective import transform_arg
 
@@ -532,6 +535,18 @@ class LCEMGP(MultiTaskGP):
 
     def subset_output(self, idcs: list[int]) -> Any:
         raise UnsupportedError("Subsetting outputs is not supported by `MultiTaskGPyTorchModel`.")
+
+    def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
+        raise UnsupportedError(
+            "condition_on_observations is not supported for LCEMGP in botorch_rs."
+        )
+
+    def fantasize(self, X: Any, sampler: Any, observation_noise: Any = None, **kwargs: Any) -> Any:
+        raise UnsupportedError("fantasize is not supported for LCEMGP in botorch_rs.")
+
+    @classmethod
+    def construct_inputs(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:  # type: ignore[override]
+        raise UnsupportedError("LCEMGP.construct_inputs is not ported to botorch_rs.")
 
     # -- parameters --------------------------------------------------------
 

@@ -29,6 +29,7 @@ mod mo_test_functions;
 mod models;
 mod momf;
 mod multi_objective;
+mod multitask;
 mod nsga2;
 mod optim;
 mod optim_ext;
@@ -127,5 +128,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     so_acquisition::register(m)?;
     so_entropy::register(m)?;
     so_wrappers::register(m)?;
+    // Multi-task GPs (phase 7a).
+    multitask::register(m)?;
     Ok(())
 }

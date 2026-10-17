@@ -1722,15 +1722,10 @@ fn index_prior(
     with_grad: bool,
 ) -> Result<f64> {
     let t = st.num_tasks;
-    if st.positive {
-        // The lower-triangle correlations of the (normalized) task covariance.
-        let MatrixPrior::Elementwise(p) = prior else {
-            return Err(BotorchError::Unsupported(
-                "only univariate priors are supported on the correlations of a \
-                 PositiveIndexKernel"
-                    .into(),
-            ));
-        };
+    if let (true, MatrixPrior::Elementwise(p)) = (st.positive, prior) {
+        // The lower-triangle correlations of the (normalized) task covariance
+        // (an LKJ covariance prior acts on the covariance matrix itself, as
+        // on an `IndexKernel`).
         let b = &st.b;
         let mut total = 0.0;
         let mut gb = Matrix::zeros(t, t);

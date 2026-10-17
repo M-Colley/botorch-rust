@@ -10,9 +10,9 @@ from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import LIST, kind_of, to_flat
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.likelihoods import LikelihoodList
-from botorch_rs.models.contextual_multioutput import LCEMGP
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.model import Model
+from botorch_rs.models.multitask import MultiTaskGP
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 
 
@@ -25,8 +25,8 @@ class ModelListGP(Model):
     block-diagonal joint Gaussian of the sub-model posteriors in BoTorch's
     output-major layout (a ``MultitaskMultivariateNormal`` with
     ``interleaved=False``). Fit it with a ``SumMarginalLogLikelihood``. The
-    sub-models are ``SingleTaskGP``s or ``LCEMGP``s (conditioning and
-    fantasies require ``SingleTaskGP``s).
+    sub-models are ``SingleTaskGP``s, ``MultiTaskGP``s or ``LCEMGP``s
+    (conditioning and fantasies require ``SingleTaskGP``s).
 
     Example:
         >>> model1 = SingleTaskGP(train_X1, train_Y1)
@@ -36,14 +36,14 @@ class ModelListGP(Model):
         >>> fit_gpytorch_mll(mll)
     """
 
-    def __init__(self, *gp_models: SingleTaskGP | LCEMGP) -> None:
+    def __init__(self, *gp_models: SingleTaskGP | MultiTaskGP) -> None:
         if not gp_models:
             raise ValueError("ModelListGP requires at least one model.")
         for m in gp_models:
-            if not isinstance(m, (SingleTaskGP, LCEMGP)):
+            if not isinstance(m, (SingleTaskGP, MultiTaskGP)):
                 raise UnsupportedError(
-                    "The sub-models of a botorch_rs ModelListGP must be botorch_rs SingleTaskGPs "
-                    f"or LCEMGPs (got {type(m).__name__})."
+                    "The sub-models of a botorch_rs ModelListGP must be botorch_rs SingleTaskGPs, "
+                    f"MultiTaskGPs or LCEMGPs (got {type(m).__name__})."
                 )
         dims = {m._rs.dim for m in gp_models}
         if len(dims) > 1:

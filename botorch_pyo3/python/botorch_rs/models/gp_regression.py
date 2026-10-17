@@ -262,6 +262,11 @@ class SingleTaskGP(Model):
                     "`input_transform` must be a Normalize, an InputPerturbation or a "
                     "ChainedInputTransform of them."
                 )
+            if input_transform.indices is not None:
+                raise UnsupportedError(
+                    "Normalize over a subset of the inputs (`indices`) is not supported by "
+                    "SingleTaskGP in botorch_rs."
+                )
             tf_batch = input_transform.batch_shape
             if tf_batch and tf_batch != batch:
                 raise BotorchTensorDimensionError(

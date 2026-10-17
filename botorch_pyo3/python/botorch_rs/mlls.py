@@ -8,9 +8,9 @@ from typing import Any
 from botorch_rs._arrays import broadcast_shapes, broadcast_to, from_flat, to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.likelihoods import Likelihood
-from botorch_rs.models.contextual_multioutput import LCEMGP
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.model_list_gp_regression import ModelListGP
+from botorch_rs.models.multitask import KroneckerMultiTaskGP, MultiTaskGP
 
 
 def _forward_pass(model: Any) -> None:
@@ -53,10 +53,13 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
     (shape ``_aug_batch_shape``) otherwise.
     """
 
-    def __init__(self, likelihood: Likelihood, model: SingleTaskGP | LCEMGP) -> None:
-        if not isinstance(model, (SingleTaskGP, LCEMGP)):
+    def __init__(
+        self, likelihood: Likelihood, model: SingleTaskGP | MultiTaskGP | KroneckerMultiTaskGP
+    ) -> None:
+        if not isinstance(model, (SingleTaskGP, MultiTaskGP, KroneckerMultiTaskGP)):
             raise UnsupportedError(
-                "ExactMarginalLogLikelihood requires a botorch_rs SingleTaskGP or LCEMGP."
+                "ExactMarginalLogLikelihood requires a botorch_rs SingleTaskGP, MultiTaskGP, "
+                "KroneckerMultiTaskGP or LCEMGP."
             )
         if likelihood is not model.likelihood:
             raise UnsupportedError(

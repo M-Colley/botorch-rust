@@ -54,6 +54,14 @@ pub trait Model: Send + Sync + Debug {
         &[]
     }
 
+    /// The unbatched model of batch element `b` (row-major in
+    /// [`Model::batch_shape`]) of a batch of models such as the fantasies of
+    /// a multi-task GP; `None` (the default) for models that evaluate their
+    /// batch elements themselves or have none.
+    fn batch_element(&self, _b: usize) -> Option<&dyn Model> {
+        None
+    }
+
     /// The independent single-output exact GPs that produce the outputs of
     /// an unbatched model, in output order (`None` otherwise, the default).
     /// Acquisition functions use them to compute joint posteriors with a

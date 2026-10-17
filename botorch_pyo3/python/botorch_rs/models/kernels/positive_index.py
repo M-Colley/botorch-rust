@@ -26,7 +26,9 @@ class PositiveIndexKernel(IndexKernel):
 
     ``task_prior`` is a univariate prior on the lower-triangle task
     correlations (e.g. ``BetaPrior(2.5, 1.5)``, BoTorch's ``MultiTaskGP``
-    default).
+    default) or an ``LKJCovariancePrior`` on the task covariance matrix
+    ``covar_matrix`` (as on an ``IndexKernel``; BoTorch evaluates it on the
+    vector of correlations, which fails).
     """
 
     _params: tuple[tuple[str, str | None, str | None], ...] = (
@@ -55,10 +57,10 @@ class PositiveIndexKernel(IndexKernel):
             )
         Kernel.__init__(self, **kwargs)
         _check_prior(task_prior, "task_prior")
-        if isinstance(task_prior, LKJCovariancePrior):
-            raise TypeError(
-                "The prior of a PositiveIndexKernel acts on the lower-triangle correlations; "
-                "use a univariate prior such as BetaPrior."
+        if isinstance(task_prior, LKJCovariancePrior) and task_prior.n != int(num_tasks):
+            raise ValueError(
+                f"An LKJCovariancePrior of size {task_prior.n} cannot be a prior on "
+                f"{num_tasks} tasks."
             )
         _check_constraint(var_constraint, "var_constraint")
         self.num_tasks = int(num_tasks)
@@ -82,8 +84,11 @@ class PositiveIndexKernel(IndexKernel):
 
     def _node(self) -> _rs.KernelNode:
         node = Kernel._node(self)
-        if self.IndexKernelPrior is not None:
-            node = node.with_task_prior(self.IndexKernelPrior._rs)
+        prior = self.IndexKernelPrior
+        if isinstance(prior, LKJCovariancePrior):
+            return node.with_task_prior_lkj(prior.n, prior.eta, prior.sd_prior._rs)
+        if prior is not None:
+            node = node.with_task_prior(prior._rs)
         return node
 
     raw_covar_factor = _properties("raw_covar_factor")[0]

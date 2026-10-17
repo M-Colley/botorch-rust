@@ -1,7 +1,8 @@
 """Hyperparameter priors (``gpytorch.priors``).
 
 Univariate priors (``LogNormalPrior``, ``GammaPrior``, ``NormalPrior``,
-``UniformPrior``, ``HalfCauchyPrior``, ``HalfNormalPrior``; BoTorch's
+``UniformPrior``, ``HalfCauchyPrior``, ``HalfNormalPrior``,
+``SmoothedBoxPrior``; BoTorch's
 ``BetaPrior`` is in :mod:`botorch_rs.models.utils.priors`) on the actual
 (constrained) values of a hyperparameter, and the LKJ priors on correlation
 and covariance matrices (``LKJCholeskyFactorPrior``, ``LKJPrior``,
@@ -334,6 +335,34 @@ class LKJCovariancePrior(LKJPrior):
         return from_flat(values, batch, kind_of(x))
 
 
+class SmoothedBoxPrior(Prior):
+    r"""A smoothed approximation of a uniform prior on ``[a, b]``
+    (``gpytorch.priors.SmoothedBoxPrior``): full support on the reals, with
+    the log density ``log N(d(x) | 0, sigma**2) - log(1 + (b - a) /
+    (sqrt(2 pi) sigma))``, where ``d(x)`` is the distance of ``x`` from the
+    box. Its default ``sigma`` is 0.01. Only scalar ``a``, ``b`` and
+    ``sigma`` are supported."""
+
+    def __init__(
+        self,
+        a: Any,
+        b: Any,
+        sigma: Any = 0.01,
+        validate_args: bool = False,
+        transform: Any = None,
+    ) -> None:
+        _check_transform(transform)
+        self.a = as_float(a, "a")
+        self.b = as_float(b, "b")
+        self.sigma = as_float(sigma, "sigma")
+        if not self.a < self.b:
+            raise ValueError("must have that a < b (element-wise)")
+        self._rs = _rs.Prior.smoothed_box(self.a, self.b, self.sigma, _float32())
+
+    def __repr__(self) -> str:
+        return f"SmoothedBoxPrior(a={self.a}, b={self.b}, sigma={self.sigma})"
+
+
 def _from_rs(prior: _rs.Prior | None) -> Prior | None:
     """A Python prior object wrapping an extension prior."""
     if prior is None:
@@ -359,6 +388,9 @@ def _from_rs(prior: _rs.Prior | None) -> Prior | None:
     elif kind == "HalfNormal":
         obj = HalfNormalPrior.__new__(HalfNormalPrior)
         (obj.scale,) = params
+    elif kind == "SmoothedBox":
+        obj = SmoothedBoxPrior.__new__(SmoothedBoxPrior)
+        obj.a, obj.b, obj.sigma = params
     else:
         from botorch_rs.models.utils.priors import BetaPrior
 
@@ -378,5 +410,6 @@ __all__ = [
     "LogNormalPrior",
     "NormalPrior",
     "Prior",
+    "SmoothedBoxPrior",
     "UniformPrior",
 ]

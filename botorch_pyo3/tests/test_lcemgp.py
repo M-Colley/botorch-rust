@@ -182,8 +182,8 @@ def test_model_list_and_acquisition(kind: str) -> None:
 
 def test_construction_errors() -> None:
     X, Y = contextual_data()
-    with pytest.raises(UnsupportedError):
-        MultiTaskGP(X, Y, task_feature=-1)
+    # (MultiTaskGP itself is supported since phase 7a.)
+    assert MultiTaskGP(X, Y, task_feature=-1).num_outputs == 2
     with pytest.raises(UnsupportedError):
         LCEMGP(X, Y, task_feature=-1, train_Yvar=[[0.1]] * len(Y))
     with pytest.raises(ValueError, match="task_feature"):

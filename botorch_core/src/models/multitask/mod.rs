@@ -8,9 +8,119 @@
 //! Task values are integers; like torch's `.long()`, values in the task
 //! column are truncated towards zero. Task indices are the positions of the
 //! task values in the sorted `all_tasks`.
+//!
+//! The models are in the submodules: [`MultiTaskGP`] (BoTorch's
+//! `MultiTaskGP`, the ICM kernel `k_x(x, x') · B[t, t']` on long-format data,
+//! see [`gp`]).
+
+pub mod gp;
+pub mod kronecker;
+
+pub use gp::{
+    MultiTaskGP, MultiTaskGPOptions, MultiTaskMean, MultiTaskNoise, MultiTaskTaskInputs,
+    TaskCovarPrior,
+};
+pub use kronecker::{KroneckerMultiTaskGP, KroneckerMultiTaskGPOptions};
+
+use std::ops::Range;
+use std::sync::Arc;
 
 use crate::error::{BotorchError, Result};
-use crate::Matrix;
+use crate::models::Model;
+use crate::posterior::{JointPosteriorGrad, Posterior};
+use crate::{Matrix, Vector};
+
+/// A batch of unbatched models with the same inputs and outputs (e.g. the
+/// fantasy models of a [`MultiTaskGP`], BoTorch's fantasy model with batch
+/// shape `[n_f] + batch_shape`), evaluated element by element through
+/// [`Model::batch_element`]. Its own posterior methods require a single
+/// element (acquisition functions require unbatched models).
+#[derive(Clone, Debug)]
+pub struct ModelBatch {
+    batch_shape: Vec<usize>,
+    models: Vec<Arc<dyn Model>>,
+}
+
+impl ModelBatch {
+    /// A batch of shape `batch_shape` of the `models` (row-major).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] if the number of models is not the
+    /// product of `batch_shape` or the models differ in dimension or number
+    /// of outputs.
+    pub fn new(batch_shape: Vec<usize>, models: Vec<Arc<dyn Model>>) -> Result<Self> {
+        let n: usize = batch_shape.iter().product();
+        if models.len() != n || n == 0 {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "a batch of shape {batch_shape:?} needs {n} models, got {}",
+                models.len()
+            )));
+        }
+        let (d, m) = (models[0].dim(), models[0].num_outputs());
+        if models.iter().any(|x| x.dim() != d || x.num_outputs() != m) {
+            return Err(BotorchError::DimensionMismatch(
+                "the models of a batch must have the same inputs and outputs".into(),
+            ));
+        }
+        Ok(Self {
+            batch_shape,
+            models,
+        })
+    }
+
+    /// The models in row-major order of the batch shape.
+    pub fn models(&self) -> &[Arc<dyn Model>] {
+        &self.models
+    }
+
+    fn single(&self) -> Result<&dyn Model> {
+        if self.models.len() == 1 {
+            Ok(self.models[0].as_ref())
+        } else {
+            Err(BotorchError::Unsupported(format!(
+                "a batch of models of shape {:?} is evaluated element by element",
+                self.batch_shape
+            )))
+        }
+    }
+}
+
+impl Model for ModelBatch {
+    fn dim(&self) -> usize {
+        self.models[0].dim()
+    }
+
+    fn num_outputs(&self) -> usize {
+        self.models[0].num_outputs()
+    }
+
+    fn batch_shape(&self) -> &[usize] {
+        &self.batch_shape
+    }
+
+    fn batch_element(&self, b: usize) -> Option<&dyn Model> {
+        self.models.get(b).map(|m| m.as_ref())
+    }
+
+    fn posterior(&self, x: &Matrix, observation_noise: bool) -> Result<Posterior> {
+        self.single()?.posterior(x, observation_noise)
+    }
+
+    fn joint_posterior_with_grad(&self, x: &Matrix) -> Result<JointPosteriorGrad> {
+        self.single()?.joint_posterior_with_grad(x)
+    }
+
+    fn joint_posterior_vjp(
+        &self,
+        x: &Matrix,
+        rows: Range<usize>,
+        mean_adjoint: &Vector,
+        covariance_adjoint: &Matrix,
+    ) -> Result<Matrix> {
+        self.single()?
+            .joint_posterior_vjp(x, rows, mean_adjoint, covariance_adjoint)
+    }
+}
 
 /// The task structure of a multi-task model (see the [module
 /// documentation](self)).
@@ -165,6 +275,82 @@ impl TaskLayout {
     /// Whether task index `k` has training data.
     pub fn is_observed(&self, k: usize) -> bool {
         self.observed[k]
+    }
+
+    /// The indices of the tasks with training data (BoTorch's
+    /// `_observed_task_indices`).
+    pub fn observed_task_indices(&self) -> Vec<usize> {
+        (0..self.num_tasks())
+            .filter(|&k| self.observed[k])
+            .collect()
+    }
+
+    /// The indices of the tasks without training data (BoTorch's
+    /// `_unobserved_task_indices`).
+    pub fn unobserved_task_indices(&self) -> Vec<usize> {
+        (0..self.num_tasks())
+            .filter(|&k| !self.observed[k])
+            .collect()
+    }
+
+    /// The task index of a raw task value: with `validate`, BoTorch's
+    /// `_map_tasks` with `validate_task_values=True` (see
+    /// [`TaskLayout::task_index`]); without, the task mapping alone, where
+    /// values that are not tasks fail like the indexing of BoTorch's task
+    /// mapper or task covariance (torch's `RuntimeError` / `IndexError`).
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] (validated) or
+    /// [`BotorchError::Runtime`] (not validated) for values that are not
+    /// tasks.
+    pub fn map_task(&self, value: f64, validate: bool) -> Result<usize> {
+        if validate {
+            return self.task_index(value);
+        }
+        let v = task_value(value)?;
+        let index = if self.is_identity() {
+            usize::try_from(v).ok().filter(|&k| k < self.num_tasks())
+        } else {
+            self.all_tasks.binary_search(&v).ok()
+        };
+        index.ok_or_else(|| {
+            BotorchError::Runtime(format!(
+                "index {v} is out of bounds: the task value {value} is not one of the tasks {:?}",
+                self.all_tasks
+            ))
+        })
+    }
+
+    /// The column of the task feature among `cols` columns, `None` if the
+    /// inputs do not include it (`cols = d`).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] if `cols` is neither `d` nor
+    /// `d + 1`.
+    pub fn includes_task_feature(&self, cols: usize) -> Result<bool> {
+        let d = self.num_non_task_features;
+        if cols == d + 1 {
+            Ok(true)
+        } else if cols == d {
+            Ok(false)
+        } else {
+            Err(BotorchError::DimensionMismatch(format!(
+                "Expected inputs with {d} columns (the non-task features) or {} (with the task \
+                 feature), got {cols}",
+                d + 1
+            )))
+        }
+    }
+
+    /// Inserts the task value `task` at the task column of every row of `x`
+    /// (`q × d`), BoTorch's `_make_X_full` for one output task.
+    pub fn with_task_column(&self, x: &Matrix, task: f64) -> Matrix {
+        let tf = self.task_feature;
+        Matrix::from_fn(x.nrows(), x.ncols() + 1, |i, j| match j.cmp(&tf) {
+            std::cmp::Ordering::Less => x[(i, j)],
+            std::cmp::Ordering::Equal => task,
+            std::cmp::Ordering::Greater => x[(i, j - 1)],
+        })
     }
 
     /// A copy with other output tasks (task values).

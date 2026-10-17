@@ -6,12 +6,13 @@ from botorch_rs.models.deterministic import GenericDeterministicModel, Posterior
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.model import Model
 from botorch_rs.models.model_list_gp_regression import ModelListGP
-from botorch_rs.models.multitask import MultiTaskGP
+from botorch_rs.models.multitask import KroneckerMultiTaskGP, MultiTaskGP
 
 __all__ = [
     "LCEMGP",
     "AffineFidelityCostModel",
     "GenericDeterministicModel",
+    "KroneckerMultiTaskGP",
     "Model",
     "ModelListGP",
     "MultiTaskGP",

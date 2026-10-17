@@ -8,8 +8,8 @@ from collections.abc import Callable, ItemsView, Iterator, KeysView, ValuesView
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import ArrayKind, first_kind, from_pair, kind_of, to_flat
-from botorch_rs.exceptions.errors import UnsupportedError
+from botorch_rs._arrays import ArrayKind, first_kind, from_flat, from_pair, kind_of, to_flat
+from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.exceptions.warnings import UserInputWarning
 
 
@@ -60,9 +60,11 @@ class Normalize(InputTransform):
     the training inputs when the transform is used by a model (or called in
     train mode). With a ``batch_shape`` (or bounds of shape
     ``batch_shape x 2 x d``) every batch element has its own bounds;
-    otherwise one normalization is learned from all batch elements. Only the
-    arguments of BoTorch's ``Normalize`` that affect all input dimensions with
-    ``center=0.5`` are supported.
+    otherwise one normalization is learned from all batch elements. With
+    ``indices``, only those inputs are normalized (``bounds``, ``offset`` and
+    ``coefficient`` then have ``len(indices)`` columns, as in BoTorch); a
+    ``MultiTaskGP`` uses this to leave its task column alone, the other models
+    support only transforms of all inputs. ``center`` must be 0.5.
     """
 
     def __init__(
@@ -80,12 +82,40 @@ class Normalize(InputTransform):
         almost_zero: float = 1e-12,
         center: float = 0.5,
     ) -> None:
+        self._d = int(d)
+        self.indices: list[int] | None = None
+        transform_dimension = int(d)
         if indices is not None:
             idx = [int(i) for i in to_flat(indices, "indices")[0]]
-            if sorted(i % d for i in idx) != list(range(d)):
-                raise UnsupportedError(
-                    "Normalize over a subset of the inputs (`indices`) is not supported."
-                )
+            # BoTorch's (AffineInputTransform's) checks.
+            if len(idx) == 0:
+                raise ValueError("`indices` list is empty!")
+            if len(idx) > d:
+                raise ValueError("Can provide at most `d` indices!")
+            if any(i > d - 1 for i in idx):
+                raise ValueError("Elements of `indices` have to be smaller than `d`!")
+            if len(set(idx)) != len(idx):
+                raise ValueError("Elements of `indices` tensor must be unique!")
+            idx = [i + d if i < 0 else i for i in idx]
+            if any(i < 0 for i in idx):
+                raise IndexError(f"indices {idx} are out of range for d = {d}.")
+            if idx != list(range(d)):
+                self.indices = idx
+                transform_dimension = len(idx)
+                if bounds is not None:
+                    bdata, bshape = to_flat(bounds, "bounds")
+                    if bshape[-1] == d and len(idx) != d:
+                        rows = len(bdata) // d
+                        bounds = from_flat(
+                            [bdata[r * d + i] for r in range(rows) for i in idx],
+                            (*bshape[:-1], len(idx)),
+                            first_kind(bounds),
+                        )
+        if bounds is not None and to_flat(bounds, "bounds")[1][-1] != transform_dimension:
+            raise BotorchTensorDimensionError(
+                "Dimensions of provided `bounds` are incompatible with "
+                f"transform_dimension = {transform_dimension}!"
+            )
         if not (transform_on_train and transform_on_eval and transform_on_fantasize):
             raise UnsupportedError("transform_on_train/eval/fantasize=False is not supported.")
         if reverse:
@@ -103,7 +133,7 @@ class Normalize(InputTransform):
         shape = tuple(int(b) for b in (batch_shape or ()))
         self._kind: ArrayKind = first_kind(bounds)
         self._rs = _rs.Normalize(
-            d,
+            transform_dimension,
             to_flat(bounds, "bounds") if bounds is not None else None,
             learn,
             min_range,
@@ -159,6 +189,26 @@ class Normalize(InputTransform):
     def _apply(self, X: Any, inverse: bool) -> Any:
         kind = first_kind(X)
         flat = to_flat(X, "X")
+        if self.indices is not None:
+            # Transform the columns `indices` only.
+            data, shape = flat
+            d = shape[-1]
+            if d != self._d:
+                raise BotorchTensorDimensionError(
+                    f"Wrong input dimension. Received {d}, expected {self._d}."
+                )
+            idx = self.indices
+            rows = len(data) // d
+            sub = ([data[r * d + i] for r in range(rows) for i in idx], (*shape[:-1], len(idx)))
+            if not inverse and self.training and self.learn_bounds:
+                self._set_fitted(self._rs.fit(sub), kind if kind.lib != "list" else self._kind)
+            out = self._rs.untransform(sub) if inverse else self._rs.transform(sub)
+            new = list(data)
+            k = len(idx)
+            for r in range(rows):
+                for j, i in enumerate(idx):
+                    new[r * d + i] = out[0][r * k + j]
+            return from_flat(new, tuple(shape), kind)
         if not inverse and self.training and self.learn_bounds:
             self._set_fitted(self._rs.fit(flat), kind if kind.lib != "list" else self._kind)
         out = self._rs.untransform(flat) if inverse else self._rs.transform(flat)
@@ -179,7 +229,8 @@ class Normalize(InputTransform):
         return self._apply(X, inverse=True)
 
     def __repr__(self) -> str:
-        return f"Normalize(d={self._rs.d}, learn_bounds={self.learn_bounds})"
+        extra = "" if self.indices is None else f", indices={self.indices}"
+        return f"Normalize(d={self._d}{extra}, learn_bounds={self.learn_bounds})"
 
 
 class InputPerturbation(InputTransform):
@@ -398,6 +449,11 @@ def chain_steps(transform: InputTransform, d: int) -> list[Any]:
                 raise UnsupportedError(
                     "A Normalize with a batch shape is not supported in a chained or "
                     "one-to-many input transform; use Normalize(d)."
+                )
+            if tf.indices is not None:
+                raise UnsupportedError(
+                    "Normalize over a subset of the inputs (`indices`) is not supported in a "
+                    "chained or one-to-many input transform."
                 )
             steps.append(tf._rs)
         else:  # pragma: no cover - rejected by ChainedInputTransform

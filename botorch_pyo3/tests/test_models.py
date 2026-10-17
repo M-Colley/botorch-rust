@@ -178,8 +178,8 @@ def test_standalone_transforms(kind: str) -> None:
     assert_close(Yvt, [[1.0, 0.01], [1.0, 0.01]])
     with pytest.raises(UnsupportedError):
         Normalize(d=2, center=0.0)
-    with pytest.raises(UnsupportedError):
-        Normalize(d=3, indices=[0, 1])
+    # (Normalize over a subset of the inputs is supported since phase 7a.)
+    assert Normalize(d=3, indices=[0, 1]).indices == [0, 1]
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         Normalize(d=2, learn_bounds=False)

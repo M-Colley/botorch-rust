@@ -106,7 +106,7 @@ impl ModelRef {
         match self {
             ModelRef::Gp(m) => m.posterior_at(b, x, noise),
             ModelRef::List(l) => l.posterior_at(b, x, noise),
-            ModelRef::Dyn(m) => m.posterior(x, noise),
+            ModelRef::Dyn(m) => m.batch_element(b).unwrap_or(m.as_ref()).posterior(x, noise),
         }
     }
 
@@ -119,8 +119,11 @@ impl ModelRef {
         match self {
             ModelRef::Gp(m) => m.point_posteriors_at(b, x, noise),
             ModelRef::List(l) => l.point_posteriors_at(b, x, noise),
-            ModelRef::Dyn(m) if !noise => m.point_posteriors(x),
+            ModelRef::Dyn(m) if !noise => {
+                m.batch_element(b).unwrap_or(m.as_ref()).point_posteriors(x)
+            }
             ModelRef::Dyn(m) => {
+                let m = m.batch_element(b).unwrap_or(m.as_ref());
                 // Every point on its own, with observation noise.
                 let k = m.num_outputs();
                 let mut mean = Matrix::zeros(x.nrows(), k);

@@ -42,4 +42,4 @@ pub use gp::{
 pub use model::Model;
 pub use model_list::ModelListGP;
 pub use model_list_dyn::ModelList;
-pub use multitask::TaskLayout;
+pub use multitask::{MultiTaskGP, MultiTaskGPOptions, TaskLayout};
