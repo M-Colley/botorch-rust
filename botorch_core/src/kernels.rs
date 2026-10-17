@@ -127,8 +127,9 @@ impl KernelKind {
                 let r = r_true.max(MATERN_MIN_DISTANCE);
                 let e = (-SQRT5 * r).exp();
                 let k = (SQRT5 * r + 1.0 + 5.0 / 3.0 * (r * r)) * e;
-                // The distance is clamped in GPyTorch, so the gradient vanishes there.
-                let g = if r_true < MATERN_MIN_DISTANCE {
+                // The distance is clamped in GPyTorch, so the gradient vanishes there
+                // (also at equality: a scalar bound, torch ≥ 2.14).
+                let g = if r_true <= MATERN_MIN_DISTANCE {
                     0.0
                 } else {
                     5.0 / 3.0 * (1.0 + SQRT5 * r) * e
@@ -139,7 +140,7 @@ impl KernelKind {
                 let r_true = r2.sqrt();
                 let r = r_true.max(MATERN_MIN_DISTANCE);
                 let k = (-r).exp();
-                let g = if r_true < MATERN_MIN_DISTANCE {
+                let g = if r_true <= MATERN_MIN_DISTANCE {
                     0.0
                 } else {
                     k / r
@@ -151,7 +152,7 @@ impl KernelKind {
                 let r = r_true.max(MATERN_MIN_DISTANCE);
                 let e = (-SQRT3 * r).exp();
                 let k = (SQRT3 * r + 1.0) * e;
-                let g = if r_true < MATERN_MIN_DISTANCE {
+                let g = if r_true <= MATERN_MIN_DISTANCE {
                     0.0
                 } else {
                     3.0 * e

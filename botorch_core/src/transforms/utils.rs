@@ -65,8 +65,9 @@ pub fn kumaraswamy_warp(x: f64, c0: f64, c1: f64, eps: f64) -> f64 {
 }
 
 /// `clamp(x (1 - 2 eps) + eps, eps, 1 - eps)` and the derivative of the
-/// clamp with respect to `x` (torch's `clamp` passes the gradient on the
-/// closed interval).
+/// clamp with respect to `x`. The bounds are scalars, so torch ≥ 2.14 passes
+/// the gradient on the open interval only: it vanishes at `y == eps` (`x =
+/// 0`) and at `y == 1 - eps` (`x = 1` for some `eps`, e.g. powers of two).
 #[inline]
 fn clamp_unit(x: f64, eps: f64) -> (f64, f64) {
     let range = 1.0 - 2.0 * eps;
@@ -78,6 +79,8 @@ fn clamp_unit(x: f64, eps: f64) -> (f64, f64) {
         (lo, 0.0)
     } else if y > hi {
         (hi, 0.0)
+    } else if y == lo || y == hi {
+        (y, 0.0)
     } else {
         (y, range)
     }
@@ -192,6 +195,15 @@ mod tests {
         assert!((fd(&|t| kumaraswamy_warp(x, 1.7, 0.6 + t, eps)) - dc1).abs() < 1e-8);
         // Outside the unit interval the clamp has a zero derivative.
         assert_eq!(kumaraswamy_warp_with_grad(1.5, 1.7, 0.6, eps).1, 0.0);
+        // So has it at the bounds of the clamp (torch ≥ 2.14): `x = 0` maps
+        // to `eps` exactly; `x = 1` maps to `1 - eps` exactly for `eps = 2^-20`
+        // but not for `1e-7` (where `1 · (1 - 2e-7) + 1e-7 < 1 - 1e-7`).
+        assert_eq!(kumaraswamy_warp_with_grad(0.0, 1.7, 0.6, eps).1, 0.0);
+        assert!(kumaraswamy_warp_with_grad(1.0, 1.7, 0.6, eps).1 > 0.0);
+        let e2 = 2f64.powi(-20);
+        assert_eq!(kumaraswamy_warp_with_grad(0.0, 1.7, 0.6, e2).1, 0.0);
+        assert_eq!(kumaraswamy_warp_with_grad(1.0, 1.7, 0.6, e2).1, 0.0);
+        assert!(kumaraswamy_warp_with_grad(1e-9, 1.7, 0.6, e2).1 > 0.0);
     }
 
     #[test]

@@ -162,7 +162,7 @@ impl QNegIntegratedPosteriorVariance {
             parts.push((cp, chol, w, w2));
         }
         // BoTorch's `posterior.variance` clamp and the mean.
-        let clamped: Vec<bool> = var_total.iter().map(|&v| v < MIN_VARIANCE).collect();
+        let clamped: Vec<bool> = var_total.iter().map(|&v| v <= MIN_VARIANCE).collect();
         let value = -var_total.iter().map(|&v| v.max(MIN_VARIANCE)).sum::<f64>() / n as f64;
         if !with_grad {
             return Ok((value, None));

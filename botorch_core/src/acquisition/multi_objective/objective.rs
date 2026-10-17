@@ -652,8 +652,9 @@ impl FeasibilityWeightedMcMultiOutputObjective {
                         for c in 0..s {
                             let b = bar[(a * n + p, c)];
                             let sh = shifted[(a * n + p, c)];
-                            // clamp_min passes the gradient where sh >= 0.
-                            if sh >= 0.0 {
+                            // clamp_min passes the gradient where sh > 0
+                            // (not at the scalar bound, torch ≥ 2.14).
+                            if sh > 0.0 {
                                 out[(t * n + p, c)] += b * w[(p, c)];
                             }
                             w_bar[(p, c)] += b * clamp_min(sh, 0.0);

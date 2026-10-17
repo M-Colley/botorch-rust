@@ -221,7 +221,7 @@ impl ExpectedHypervolumeImprovement {
             let mut g = 0.0;
             for j in 0..m {
                 g += dmu[j] * post.dmean[k][j];
-                if var[j] >= MIN_EHVI_VARIANCE {
+                if var[j] > MIN_EHVI_VARIANCE {
                     g += dsigma[j] / (2.0 * sigma[j]) * post.dcov[k][(j, j)];
                 }
             }

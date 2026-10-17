@@ -65,6 +65,7 @@ from botorch.models import SingleTaskGP as BtSingleTaskGP  # noqa: E402
 from botorch.optim.utils import get_parameters_and_bounds  # noqa: E402
 from botorch.sampling import ListSampler as BtListSampler  # noqa: E402
 from botorch.sampling.normal import SobolQMCNormalSampler as BtSampler  # noqa: E402
+from clamp_subgradients import torch214_clamp_subgradients  # noqa: E402
 from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL  # noqa: E402
 from transform_helpers import (  # noqa: E402
     botorch_fixes,
@@ -986,17 +987,22 @@ def test_transforms_on_phase7_models_match_botorch(name: str) -> None:
             pj.rsample_from_base_samples(torch.Size([8]), Z),
             VALUE_TOL,
         )
-    compare_mc(
-        "phase 7 models: qExpectedImprovement",
-        lambda s: BtQEI(bt, best_f=2.5, sampler=s),
-        lambda s: RsQEI(rs, best_f=2.5, sampler=s),
-        Xq.reshape(2, 2, -1),
-    )
-    if mb is not None:
-        vb, gb = values_and_grads(BtEI(bt, best_f=2.5), Xq.unsqueeze(-2))
-        vr, gr = values_and_grads(RsEI(rs, best_f=2.5), Xq.unsqueeze(-2))
-        CHECK.check("phase 7 models: ExpectedImprovement", vr, vb, VALUE_TOL)
-        check_grad("phase 7 models: ExpectedImprovement d / dx", gr, gb)
+    # The query points' fidelities are 0 and 1, the bounds of the clamp of
+    # the LinearTruncatedFidelityKernel: BoTorch's input gradients follow
+    # torch ≥ 2.14's subgradients there, as botorch_rs's do, also under
+    # older torch (see test_parity_clamp_bounds.py).
+    with torch214_clamp_subgradients():
+        compare_mc(
+            "phase 7 models: qExpectedImprovement",
+            lambda s: BtQEI(bt, best_f=2.5, sampler=s),
+            lambda s: RsQEI(rs, best_f=2.5, sampler=s),
+            Xq.reshape(2, 2, -1),
+        )
+        if mb is not None:
+            vb, gb = values_and_grads(BtEI(bt, best_f=2.5), Xq.unsqueeze(-2))
+            vr, gr = values_and_grads(RsEI(rs, best_f=2.5), Xq.unsqueeze(-2))
+            CHECK.check("phase 7 models: ExpectedImprovement", vr, vb, VALUE_TOL)
+            check_grad("phase 7 models: ExpectedImprovement d / dx", gr, gb)
 
 
 def test_unsupported_transforms_on_phase7_models() -> None:

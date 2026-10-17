@@ -299,7 +299,7 @@ impl ScalarizedModel {
             mean += g.mean[t] * wt;
             let v = g.covariance[(t, t)];
             // GPyTorchPosterior.variance is clamped; TransformedPosterior's is not.
-            let clamped = !transformed[t] && v < crate::posterior::MIN_VARIANCE;
+            let clamped = !transformed[t] && v <= crate::posterior::MIN_VARIANCE;
             var += if clamped {
                 crate::posterior::MIN_VARIANCE
             } else {

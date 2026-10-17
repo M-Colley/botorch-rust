@@ -467,9 +467,10 @@ fn qehvi_sample(
                 for j in 0..m {
                     let (o, go) = minimum_grad_a(overlap[j], u[j]);
                     let raw = o - l[j];
-                    // clamp_min(0): the gradient passes where raw >= 0.
+                    // clamp_min(0): the gradient passes where raw > 0 (not
+                    // at the scalar bound, torch ≥ 2.14).
                     len[j] = if raw < 0.0 { 0.0 } else { raw };
-                    dlen[j] = if raw >= 0.0 { go } else { 0.0 };
+                    dlen[j] = if raw > 0.0 { go } else { 0.0 };
                 }
                 let area = len.iter().fold(1.0, |acc, v| acc * v);
                 areas_i[k] += area * wprod;

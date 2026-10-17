@@ -1106,7 +1106,7 @@ impl SampleUtility {
                 ind,
                 with_grad,
                 |v| (v - b).max(0.0),
-                |v| if v - b >= 0.0 { 1.0 } else { 0.0 },
+                |v| if v - b > 0.0 { 1.0 } else { 0.0 },
             ),
             Self::ProbabilityOfImprovement { best_f: b, tau: t } => reduce_max_mean(
                 y,
@@ -1243,7 +1243,7 @@ impl QExpectedImprovement {
             ind,
             with_grad,
             |v| (v - b).max(0.0),
-            |v| if v - b >= 0.0 { 1.0 } else { 0.0 },
+            |v| if v - b > 0.0 { 1.0 } else { 0.0 },
         )
     }
 }
@@ -2154,7 +2154,7 @@ fn noisy_improvement_reduce(
     };
     for i in 0..n {
         for c in 0..s {
-            if g[(i, c)] != 0.0 && obj[(i, c)] - best_f[c] < 0.0 {
+            if g[(i, c)] != 0.0 && obj[(i, c)] - best_f[c] <= 0.0 {
                 g[(i, c)] = 0.0;
             }
         }

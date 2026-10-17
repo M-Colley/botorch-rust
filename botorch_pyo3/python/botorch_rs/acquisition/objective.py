@@ -21,6 +21,19 @@ from botorch_rs._arrays import as_float, from_flat, is_torch_tensor, kind_of, to
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 
 
+def _clamp_min_zero(x: Any) -> Any:
+    """``x.clamp_min(0)`` of a torch tensor with PyTorch ≥ 2.14's subgradient
+    at the bound under any torch version: the gradient passes where ``x > 0``
+    only (torch ≤ 2.13 also passed it at ``x == 0``), as in the Rust
+    computations. The value is the native one."""
+    import torch
+
+    clamped = x.clamp_min(0)
+    if not (torch.is_grad_enabled() and x.requires_grad):
+        return clamped
+    return torch.where(x > 0, x, clamped.detach())
+
+
 class PosteriorTransform:
     """Base class of the posterior transforms."""
 
@@ -309,7 +322,7 @@ class ConstrainedMCObjective(GenericMCObjective):
         for constraint, eta in zip(self.constraints, self._eta, strict=True):
             log_ind = log_ind + torch.nn.functional.logsigmoid(-constraint(samples) / eta)
         cost = self._infeasible_cost
-        return obj.add(cost).clamp_min(0).mul(log_ind.exp()).add(-cost)
+        return _clamp_min_zero(obj.add(cost)).mul(log_ind.exp()).add(-cost)
 
     def _spec(self) -> tuple[Any, ...]:
         return (

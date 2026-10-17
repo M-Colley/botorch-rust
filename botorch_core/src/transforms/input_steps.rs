@@ -26,9 +26,10 @@
 //! for `Warp` and `LearnedFeatureImputation`, with respect to the learned
 //! parameters (what the marginal log likelihood's gradient needs). The
 //! derivatives follow torch's autograd, including its conventions at
-//! non-differentiable points (`clamp` passes the gradient on the closed
-//! interval; `round`, `argmax` and `.long()` follow BoTorch's
-//! straight-through estimators or have zero gradient).
+//! non-differentiable points (`clamp` with scalar bounds passes the gradient
+//! on the open interval only, as in torch ≥ 2.14; `round`, `argmax` and
+//! `.long()` follow BoTorch's straight-through estimators or have zero
+//! gradient).
 
 use std::fmt::Debug;
 use std::sync::Arc;

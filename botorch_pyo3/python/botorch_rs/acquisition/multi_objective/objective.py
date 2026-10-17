@@ -21,6 +21,7 @@ from botorch_rs.acquisition.objective import (
     GenericMCObjective,
     MCAcquisitionObjective,
     _botorch_class_names,
+    _clamp_min_zero,
 )
 from botorch_rs.exceptions.errors import (
     BotorchError,
@@ -270,7 +271,7 @@ class FeasibilityWeightedMCMultiOutputObjective(MCMultiOutputObjective):
         log_w = torch.zeros_like(Y[..., 0])
         for i in self.constraint_idcs:
             log_w = log_w + torch.nn.functional.logsigmoid(Y[..., i] / FEASIBILITY_WEIGHTING_ETA)
-        return obj.add(cost).clamp_min(0).mul(log_w.exp().unsqueeze(-1)).add(-cost)
+        return _clamp_min_zero(obj.add(cost)).mul(log_w.exp().unsqueeze(-1)).add(-cost)
 
     def forward(self, samples: Any, X: Any = None) -> Any:
         Y = self._apply_feasibility_weights(samples)

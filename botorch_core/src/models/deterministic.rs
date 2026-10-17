@@ -332,7 +332,7 @@ impl FixedSingleSampleModel {
             let clamped = clamp_variance(v);
             let s = (clamped + self.jitter).sqrt();
             y[i] = mean[i] + s * self.w_of(t);
-            if v >= crate::posterior::MIN_VARIANCE {
+            if v > crate::posterior::MIN_VARIANCE {
                 dv[i] = self.w_of(t) / (2.0 * s);
             }
         }

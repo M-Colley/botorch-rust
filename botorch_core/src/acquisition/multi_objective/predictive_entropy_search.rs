@@ -94,7 +94,8 @@ fn log_cdf_robust_with_grad(x: f64) -> (f64, f64) {
         (-normal_cdf(-x), normal_cdf_grad(-x))
     };
     let v = raw.clamp(NEG_INF, -CLAMP_LB);
-    let active = (NEG_INF..=-CLAMP_LB).contains(&raw);
+    // Scalar bounds: no gradient at either bound (torch ≥ 2.14).
+    let active = NEG_INF < raw && raw < -CLAMP_LB;
     (v, if active { grad } else { 0.0 })
 }
 
@@ -273,7 +274,7 @@ fn update_pair(inputs: &[PairInput], maximize: bool, jitter: f64) -> Option<Vec<
     for (t, tm) in terms.iter_mut().enumerate() {
         let lr = -lz + s - lcs[t] + lps[t];
         let e = lr.exp();
-        let rho_active = (NEG_INF..=f64::MAX).contains(&e);
+        let rho_active = NEG_INF < e && e < f64::MAX;
         let rho = -e.clamp(NEG_INF, f64::MAX);
         let g1 = w * (rho / tm.sd);
         let dm = [g1, -g1];
@@ -324,7 +325,7 @@ fn update_pair_backward(
     let s_raw: f64 = terms.iter().map(|t| log_cdf_robust(t.alpha)).sum();
     let (s, s_active) = clamp_min_active(s_raw, NEG_INF);
     let lz_raw = (-s.exp()).ln_1p();
-    let lz_active = lz_raw >= NEG_INF;
+    let lz_active = lz_raw > NEG_INF;
     let mut alpha_bar = vec![0.0; m];
     let mut v_bar = vec![0.0; m];
     let mut cc_bar = vec![[0.0; 4]; m];
@@ -422,13 +423,14 @@ fn update_pair_backward(
     out
 }
 
-/// `clamp_min(v, lo)` and whether the gradient passes (`v >= lo`).
+/// `clamp_min(v, lo)` and whether the gradient passes (`v > lo`: a scalar
+/// bound has a zero subgradient at equality in torch ≥ 2.14; none for NaN).
 #[inline]
 fn clamp_min_active(v: f64, lo: f64) -> (f64, bool) {
     if v < lo {
         (lo, false)
     } else {
-        (v, v >= lo)
+        (v, v > lo)
     }
 }
 

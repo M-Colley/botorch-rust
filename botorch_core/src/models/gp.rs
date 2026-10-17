@@ -1331,7 +1331,8 @@ impl SingleTaskGP {
     /// original spaces: `(mean, variance, ∂mean/∂x, ∂variance/∂x)`.
     ///
     /// The variance is clamped at [`MIN_VARIANCE`] like BoTorch's
-    /// `posterior.variance` (with a zero gradient when clamped). For a
+    /// `posterior.variance` (with a zero gradient when clamped, also at the
+    /// bound itself as in torch ≥ 2.14). For a
     /// nonlinear outcome transform these are the moments of the
     /// `TransformedPosterior` (where BoTorch defines them), which BoTorch does
     /// not clamp.
@@ -1343,7 +1344,7 @@ impl SingleTaskGP {
     /// `TransformedPosterior` without moments (`Power`, `Bilog`).
     pub fn posterior_q1_with_grad(&self, x: &[f64]) -> Result<(f64, f64, Vector, Vector)> {
         let (mean, var, dmean, dvar) = self.posterior_q1_with_grad_unclamped(x)?;
-        if var < MIN_VARIANCE && !self.has_transformed_posterior() {
+        if var <= MIN_VARIANCE && !self.has_transformed_posterior() {
             return Ok((mean, MIN_VARIANCE, dmean, Vector::zeros(self.dim())));
         }
         Ok((mean, var, dmean, dvar))

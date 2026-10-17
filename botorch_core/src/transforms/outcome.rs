@@ -648,8 +648,9 @@ impl SampleTransform {
         if !self.has_moments(t) {
             return Err(no_moment_transform("mean"));
         }
-        // The base posterior's variance is clamped (zero derivative there).
-        let (mut v, mut dv_dvar) = if var < MIN_VARIANCE {
+        // The base posterior's variance is clamped (zero derivative there and
+        // at the bound, torch ≥ 2.14).
+        let (mut v, mut dv_dvar) = if var <= MIN_VARIANCE {
             (MIN_VARIANCE, 0.0)
         } else {
             (var, 1.0)

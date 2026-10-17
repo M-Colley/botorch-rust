@@ -535,9 +535,10 @@ impl McObjective for ConstrainedMcObjective {
             let obj_pullback = obj.pullback.expect("pullback requested");
             let w = ind.values.clone();
             Some(Box::new(move |bar: &Matrix| {
-                // d/d obj: w where obj + M >= 0 (clamp_min's derivative).
+                // d/d obj: w where obj + M > 0 (clamp_min's derivative; zero
+                // at the scalar bound itself, torch ≥ 2.14).
                 let obj_bar = Matrix::from_fn(bar.nrows(), bar.ncols(), |p, c| {
-                    if shifted[(p, c)] >= 0.0 {
+                    if shifted[(p, c)] > 0.0 {
                         bar[(p, c)] * w[(p, c)]
                     } else {
                         0.0

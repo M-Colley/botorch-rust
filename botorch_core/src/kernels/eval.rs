@@ -1295,7 +1295,7 @@ impl Node {
                     val[j] = v;
                     for m in 0..k {
                         let d = x[m] - y[m];
-                        if d.abs() >= MIN_DIST {
+                        if d.abs() > MIN_DIST {
                             grad[(j, m)] = v * (-2.0 / ls[m]) * (2.0 * d).sin() * (PI / period[m]);
                         }
                     }
@@ -1330,7 +1330,7 @@ impl Node {
                     let y = b.row(j);
                     let r = sq_dist(x, y).sqrt();
                     val[j] = (r.max(MIN_DIST) * PI).cos();
-                    if r >= MIN_DIST {
+                    if r > MIN_DIST {
                         let f = -(r * PI).sin() * PI / r / period;
                         for m in 0..k {
                             grad[(j, m)] = f * (x[m] - y[m]);
@@ -1363,7 +1363,7 @@ impl Node {
                     let dist = s.sqrt();
                     let base = dist.max(MIN_DIST) + 1.0;
                     val[j] = offset + pow(base, -power);
-                    if dist >= MIN_DIST {
+                    if dist > MIN_DIST {
                         let dd = -power * pow(base, -power - 1.0) / dist;
                         for m in 0..k {
                             grad[(j, m)] = dd * (x[m] + y[m]) / ls[m];
@@ -1520,7 +1520,7 @@ impl Node {
                         let d = (x[m] - y[m]).abs();
                         let s = d.max(MIN_DIST).sin();
                         gl[m] += wij * v * 2.0 * s * s / (ls[m] * ls[m]);
-                        if d >= MIN_DIST {
+                        if d > MIN_DIST {
                             gp[m] += wij * v * 2.0 * (2.0 * d).sin() * d / (ls[m] * period[m]);
                         }
                     }
@@ -1569,7 +1569,7 @@ impl Node {
                 let mut g = 0.0;
                 for_pairs(w, false, |i, j, wij| {
                     let r = sq_dist(a.row(i), a.row(j)).sqrt();
-                    if r >= MIN_DIST {
+                    if r > MIN_DIST {
                         g += wij * (r * PI).sin() * PI * r / period;
                     }
                 });
@@ -1634,7 +1634,7 @@ impl Node {
                     let v = pow(base, -power);
                     go += wij;
                     gp += -wij * v * base.ln();
-                    if dist >= MIN_DIST {
+                    if dist > MIN_DIST {
                         let dd = -power * pow(base, -power - 1.0);
                         for m in 0..k {
                             let u = x[m] + y[m];
@@ -2014,11 +2014,7 @@ fn bnn_pair(
         let mut gf = gtt * (PI - lay.theta);
         let gtheta = gtt * (lay.theta.cos() - lay.f);
         gf += gtheta * (-1.0 / (1.0 - lay.f * lay.f).sqrt());
-        let gfr = if lay.fr >= lo && lay.fr <= hi {
-            gf
-        } else {
-            0.0
-        };
+        let gfr = if lay.fr > lo && lay.fr < hi { gf } else { 0.0 };
         let g12_in = gfr / lay.s;
         gs -= gfr * lay.fr / lay.s;
         g11 += gs * lay.k22 / (2.0 * lay.s);
@@ -2047,10 +2043,11 @@ fn bnn_pair(
 
 /// The bias factor of BoTorch's `LinearTruncatedFidelityKernel` for inputs
 /// `x`, `y`: its value, its derivatives with respect to the fidelities of
-/// `x` (zero where the clamp to `[0, 1]` is active) and with respect to the
-/// power.
+/// `x` (zero where the clamp to `[0, 1]` is active, including at the bounds
+/// 0 and 1: scalar bounds have a zero subgradient at equality in torch
+/// ≥ 2.14) and with respect to the power.
 fn ltf_bias(x: &[f64], y: &[f64], fid: &[usize], p: f64) -> (f64, [f64; 2], f64) {
-    let clamp = |v: f64| (v.clamp(0.0, 1.0), (0.0..=1.0).contains(&v));
+    let clamp = |v: f64| (v.clamp(0.0, 1.0), 0.0 < v && v < 1.0);
     let (a1, in1) = clamp(x[fid[0]]);
     let (b1, _) = clamp(y[fid[0]]);
     let c1 = (1.0 - a1) * (1.0 - b1);
@@ -2119,7 +2116,7 @@ impl OakState {
                 }
                 total += self.w[a] * row;
             }
-            self.clamped.push(total < OAK_NORMALIZER_EPS);
+            self.clamped.push(total <= OAK_NORMALIZER_EPS);
             self.norm.push(total.max(OAK_NORMALIZER_EPS));
         }
     }

@@ -287,7 +287,7 @@ impl ValueFunctionCore {
     /// with mean `mean` and (unclamped) variance `var`; `sigma` is BoTorch's
     /// `sqrt(max(variance, 1e-12))` of the clamped variance.
     fn analytic(&self, mean: f64, var: f64) -> PosteriorValue {
-        let clamped = var < MIN_VARIANCE;
+        let clamped = var <= MIN_VARIANCE;
         let v = if clamped { MIN_VARIANCE } else { var };
         let sigma = v.max(crate::acquisition::analytic::MIN_VAR).sqrt();
         // dσ/dvar (zero where the variance is clamped).

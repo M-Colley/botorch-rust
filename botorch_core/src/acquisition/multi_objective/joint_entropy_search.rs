@@ -151,13 +151,14 @@ pub(crate) fn entropy_constant(m: usize) -> f64 {
     0.5 * m as f64 * (1.0 + (2.0 * PI).ln())
 }
 
-/// `clamp_min(v, lo)` and whether the gradient passes (`v >= lo`).
+/// `clamp_min(v, lo)` and whether the gradient passes (`v > lo`: a scalar
+/// bound has a zero subgradient at equality in torch ≥ 2.14; none for NaN).
 #[inline]
 fn clamp_min_active(v: f64, lo: f64) -> (f64, bool) {
     if v < lo {
         (lo, false)
     } else {
-        (v, v >= lo)
+        (v, v > lo)
     }
 }
 
@@ -269,10 +270,11 @@ impl Boxes {
             })
             .collect();
         let total: f64 = wj.iter().sum();
+        // W.clamp_max(1.0): no gradient at W == 1 either (torch ≥ 2.14).
         let (w, w_active) = if total > 1.0 {
             (1.0, false)
         } else {
-            (total, total <= 1.0)
+            (total, total < 1.0)
         };
         Self {
             j,
@@ -694,10 +696,11 @@ fn entropy_monte_carlo(
             })
             .collect();
         let sum: f64 = wj.iter().sum();
+        // W.clamp_max(1.0): no gradient at W == 1 either (torch ≥ 2.14).
         let (w, w_active) = if sum > 1.0 {
             (1.0, false)
         } else {
-            (sum, sum <= 1.0)
+            (sum, sum < 1.0)
         };
         let ratio = (w.ln() - log_w).exp();
         let log_term = w.ln() + log_prob[si];

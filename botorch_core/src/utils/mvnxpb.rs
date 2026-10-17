@@ -126,29 +126,37 @@ fn safe_div<S: Scalar>(a: S, b: S) -> S {
 const MAX_EXP_ARG: f64 = 709.782_712_893_384 - 1e-4;
 
 /// BoTorch's `safe_exp`: `exp(min(x, log(max) - 1e-4))` (zero gradient
-/// where clipped).
+/// where clipped). The bound is a tensor (`get_constants_like`), so torch
+/// ≥ 2.14 passes half of the gradient to `x` at a tie.
 fn safe_exp<S: Scalar>(x: S) -> S {
     if x.value() > MAX_EXP_ARG {
         x.lift(MAX_EXP_ARG).exp()
+    } else if x.value() == MAX_EXP_ARG {
+        x.tie(x.lift(MAX_EXP_ARG)).exp()
     } else {
         x.exp()
     }
 }
 
-/// BoTorch's `safe_log`: `log(max(x, tiny))` (zero gradient where clipped).
+/// BoTorch's `safe_log`: `log(max(x, tiny))` (zero gradient where clipped,
+/// including at `x == tiny`: a scalar bound, torch ≥ 2.14).
 fn safe_log<S: Scalar>(x: S) -> S {
-    if x.value() < f64::MIN_POSITIVE {
-        x.lift(f64::MIN_POSITIVE).ln()
+    if x.value() <= f64::MIN_POSITIVE {
+        x.lift(x.value().max(f64::MIN_POSITIVE)).ln()
     } else {
         x.ln()
     }
 }
 
+/// `x.clip(min=0, max=1)` (scalar bounds: zero gradient where clipped and at
+/// the bounds, torch ≥ 2.14).
 fn clip01<S: Scalar>(x: S) -> S {
     if x.value() < 0.0 {
         x.lift(0.0)
     } else if x.value() > 1.0 {
         x.lift(1.0)
+    } else if x.value() == 0.0 || x.value() == 1.0 {
+        x.lift(x.value())
     } else {
         x
     }
@@ -192,7 +200,14 @@ fn bvnu_taylor<S: Scalar>(r: S, h: S, k: S) -> S {
     let c = (-skh + 4.0) / 8.0;
     let d = (-skh + 12.0) / 80.0;
     let int_from_0_to_s = if r.value() > 0.0 {
-        let m = if h.value() >= k.value() { h } else { k };
+        // torch.maximum(h, k): an even split at a tie.
+        let m = if h.value() > k.value() {
+            h
+        } else if h.value() == k.value() {
+            h.tie(k)
+        } else {
+            k
+        };
         (-m).ndtr()
     } else {
         (sk.ndtr() - h.ndtr()).clamp_min(0.0)
@@ -385,6 +400,8 @@ pub(crate) fn mvnxpb_generic<S: Scalar>(cov: &[Vec<S>], bounds: &[[S; 2]]) -> S 
     let (lo, hi) = STANDARDIZED_RANGE;
     let mut b: Vec<[S; 2]> = (0..n)
         .map(|i| {
+            // `bounds.clip(std * lo, std * hi)`: tensor bounds, so torch
+            // ≥ 2.14 splits the gradient evenly at a tie.
             let clip = |v: S| {
                 let l = std[i] * lo;
                 let u = std[i] * hi;
@@ -392,6 +409,10 @@ pub(crate) fn mvnxpb_generic<S: Scalar>(cov: &[Vec<S>], bounds: &[[S; 2]]) -> S 
                     l
                 } else if v.value() > u.value() {
                     u
+                } else if v.value() == l.value() {
+                    v.tie(l)
+                } else if v.value() == u.value() {
+                    v.tie(u)
                 } else {
                     v
                 }
@@ -527,6 +548,23 @@ mod tests {
             assert!((integral - 2.0 / (k as f64 + 1.0)).abs() < 1e-14, "{n}");
             assert!(x.windows(2).all(|p| p[0] < p[1]));
         }
+    }
+
+    #[test]
+    fn subgradients_at_ties_follow_torch() {
+        // `torch.maximum(h, k)` in the Taylor branch splits the gradient at
+        // h == k: bvnu is symmetric in (h, k), so are its subgradients.
+        let v = |x: f64, i: usize, n: usize| Dual::<3>::variable(x, i, n);
+        let p = bvnu(v(0.95, 0, 3), v(0.3, 1, 3), v(0.3, 2, 3));
+        assert!(p.g[1] != 0.0 && (p.g[1] - p.g[2]).abs() <= 1e-15 * p.g[1].abs());
+        // clip(0, 1), safe_log at tiny (scalar bounds): zero tangent at the
+        // bound, value kept; safe_exp's tensor bound halves it at a tie.
+        assert_eq!(clip01(v(1.0, 0, 1)).g[0], 0.0);
+        assert_eq!(clip01(v(0.5, 0, 1)).g[0], 1.0);
+        let t = safe_log(v(f64::MIN_POSITIVE, 0, 1));
+        assert_eq!((t.v, t.g[0]), (f64::MIN_POSITIVE.ln(), 0.0));
+        let e = safe_exp(v(MAX_EXP_ARG, 0, 1));
+        assert_eq!(e.g[0], 0.5 * e.v);
     }
 
     #[test]

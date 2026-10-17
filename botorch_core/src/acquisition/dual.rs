@@ -72,12 +72,17 @@ pub(crate) trait Scalar:
     fn sqrt(self) -> Self;
     /// `torch.distributions.Normal(0, 1).cdf`.
     fn ncdf(self) -> Self;
-    /// `x.clamp_min(lo)` (zero gradient where clamped, as autograd).
+    /// `x.clamp_min(lo)` with a scalar bound: zero gradient where clamped,
+    /// including at `x == lo` (torch ≥ 2.14: a scalar bound is a fixed
+    /// parameter, so the minimum-norm subgradient `0` applies at equality).
     fn clamp_min(self, lo: f64) -> Self;
-    /// `x.clamp(lo)` with a tensor lower bound (gradient of the active
-    /// argument; autograd's `clamp` with tensor bounds passes the gradient
-    /// to the bound where it is active).
+    /// `x.clamp(lo)` with a tensor lower bound: the gradient of the active
+    /// argument, split evenly between `x` and `lo` at a tie (torch ≥ 2.14).
     fn clamp_min_var(self, lo: Self) -> Self;
+    /// The value of `self` with the gradient `(∂self + ∂other) / 2`: torch
+    /// ≥ 2.14's even split between an input and a tensor bound (or the two
+    /// arguments of `torch.maximum` / `torch.minimum`) that tie.
+    fn tie(self, other: Self) -> Self;
     /// BoTorch's `ndtr` (`erfc(-x / √2) / 2`, accurate in the left tail).
     fn ndtr(self) -> Self;
     fn sin(self) -> Self;
@@ -119,6 +124,9 @@ impl Scalar for f64 {
             self
         }
     }
+    fn tie(self, _other: Self) -> Self {
+        self
+    }
     fn ndtr(self) -> Self {
         crate::utils::probability::ndtr(self)
     }
@@ -157,6 +165,10 @@ impl<const N: usize> Scalar for Dual<N> {
     fn clamp_min(self, lo: f64) -> Self {
         if self.v < lo {
             Self::constant(lo, self.n)
+        } else if self.v == lo {
+            // Torch ≥ 2.14: zero gradient at equality (the value is kept, so
+            // that a signed zero survives).
+            Self::constant(self.v, self.n)
         } else {
             self
         }
@@ -164,9 +176,17 @@ impl<const N: usize> Scalar for Dual<N> {
     fn clamp_min_var(self, lo: Self) -> Self {
         if self.v < lo.v {
             lo
+        } else if self.v == lo.v {
+            self.tie(lo)
         } else {
             self
         }
+    }
+    fn tie(mut self, other: Self) -> Self {
+        for i in 0..self.n {
+            self.g[i] = 0.5 * (self.g[i] + other.g[i]);
+        }
+        self
     }
     fn ndtr(self) -> Self {
         self.chain(
@@ -313,5 +333,22 @@ mod tests {
         assert!((d.v - f(x, y)).abs() < 1e-15);
         assert!((d.grad()[0] - gx).abs() < 1e-8);
         assert!((d.grad()[1] - gy).abs() < 1e-8);
+    }
+
+    #[test]
+    fn clamp_subgradients_follow_torch_2_14() {
+        let x = |v: f64| Dual::<2>::variable(v, 0, 2);
+        // Scalar bound: gradient 1 above the bound, 0 at and below it.
+        assert_eq!(x(0.5).clamp_min(0.5).grad(), &[0.0, 0.0]);
+        assert_eq!(x(0.6).clamp_min(0.5).grad(), &[1.0, 0.0]);
+        assert_eq!(x(0.4).clamp_min(0.5).grad(), &[0.0, 0.0]);
+        // The value is kept at a tie (a signed zero survives).
+        assert!(x(-0.0).clamp_min(0.0).v.is_sign_negative());
+        // Tensor bound: the gradient is split evenly at a tie.
+        let lo = Dual::<2>::variable(0.5, 1, 2);
+        assert_eq!(x(0.5).clamp_min_var(lo).grad(), &[0.5, 0.5]);
+        assert_eq!(x(0.6).clamp_min_var(lo).grad(), &[1.0, 0.0]);
+        assert_eq!(x(0.4).clamp_min_var(lo).grad(), &[0.0, 1.0]);
+        assert_eq!(0.5_f64.clamp_min_var(0.5), 0.5);
     }
 }

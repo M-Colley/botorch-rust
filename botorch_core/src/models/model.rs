@@ -269,7 +269,8 @@ pub trait Model: Send + Sync + Debug {
     /// Posterior mean and (clamped) variance of a *single-output* model at a
     /// single point (length `d`) together with their gradients with respect
     /// to the point: `(mean, variance, ∂mean/∂x, ∂variance/∂x)`. The gradient
-    /// of a clamped variance is zero; deterministic models are not clamped.
+    /// of a clamped variance is zero (also at the bound itself, as in torch
+    /// ≥ 2.14); deterministic models are not clamped.
     ///
     /// The default implementation uses [`Model::point_posterior_with_grad`].
     ///
@@ -283,7 +284,7 @@ pub trait Model: Send + Sync + Debug {
         let mean = g.mean[0];
         let var = g.covariance[(0, 0)];
         let dmean = Vector::from_fn(d, |k, _| g.dmean[k][0]);
-        if var < MIN_VARIANCE && self.clamps_variance() && !self.transformed_outputs()[0] {
+        if var <= MIN_VARIANCE && self.clamps_variance() && !self.transformed_outputs()[0] {
             return Ok((mean, MIN_VARIANCE, dmean, Vector::zeros(d)));
         }
         let dvar = Vector::from_fn(d, |k, _| g.dcov[k][(0, 0)]);

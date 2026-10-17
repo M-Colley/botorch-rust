@@ -129,7 +129,7 @@ fn mean_sigma_with_grad(model: &dyn Model, x: &Matrix) -> Result<(f64, f64, Vect
     let point: Vec<f64> = x.row(0).iter().copied().collect();
     let (mean, var, dmean, dvar) = model.posterior_q1_with_grad(&point)?;
     let sigma = var.max(MIN_VAR).sqrt();
-    let dsigma = if var >= MIN_VAR {
+    let dsigma = if var > MIN_VAR {
         dvar / (2.0 * sigma)
     } else {
         Vector::zeros(point.len())
@@ -776,7 +776,7 @@ fn output_moments(model: &dyn Model, x: &Matrix) -> Result<OutputMoments> {
         out.mean.push(g.mean[t]);
         out.sigma.push(sigma);
         out.dmean.push(Vector::from_fn(d, |k, _| g.dmean[k][t]));
-        out.dsigma.push(if var >= floor.max(MIN_VAR) {
+        out.dsigma.push(if var > floor.max(MIN_VAR) {
             Vector::from_fn(d, |k, _| g.dcov[k][(t, t)] / (2.0 * sigma))
         } else {
             Vector::zeros(d)
@@ -1361,7 +1361,7 @@ impl NoisyEiCore {
                 let floor = crate::posterior::MIN_VARIANCE;
                 let sigma = clamped_sigma(var, floor);
                 let dmean = Vector::from_fn(d, |k, _| w * pg.dmean[k][0]);
-                let dsigma = if var >= floor.max(MIN_VAR) {
+                let dsigma = if var > floor.max(MIN_VAR) {
                     Vector::from_fn(d, |k, _| w * w * pg.dcov[k][(0, 0)] / (2.0 * sigma))
                 } else {
                     Vector::zeros(d)
