@@ -300,6 +300,23 @@ fn sampler(draws: &BTreeMap<String, Vec<Vec<f64>>>) -> Arc<SobolQMCNormalSampler
     Arc::new(s)
 }
 
+/// The 90th percentile of `xs` by linear interpolation between order
+/// statistics (Python's `statistics.quantiles(xs, n=10,
+/// method="inclusive")[-1]`); 0 for none.
+fn quantile_90(mut xs: Vec<f64>) -> f64 {
+    xs.sort_by(f64::total_cmp);
+    match xs.len() {
+        0 => 0.0,
+        1 => xs[0],
+        n => {
+            let pos = 0.9 * (n - 1) as f64;
+            let lo = pos.floor() as usize;
+            let hi = (lo + 1).min(n - 1);
+            xs[lo] + (pos - lo as f64) * (xs[hi] - xs[lo])
+        }
+    }
+}
+
 /// The median of `xs` (the mean of the two middle values for an even count).
 fn median(mut xs: Vec<f64>) -> f64 {
     xs.sort_by(f64::total_cmp);
@@ -362,7 +379,11 @@ fn check_mc(
         let others: Vec<usize> = regime.iter().copied().filter(|&j| j != nearest).collect();
         let spread = |xs: Vec<f64>| if xs.is_empty() { 0.0 } else { median(xs) };
         let floor_v = spread(others.iter().map(|&j| err(ov[j], ov[nearest])).collect());
-        let floor_g = spread(
+        // Gradients can jump inside a regime of values: at a kink (e.g. ties
+        // in the box decomposition), rounding picks a side and BoTorch's twins
+        // split between subgradients while their values agree. The 90th
+        // percentile of the regime's gradient spread covers such splits.
+        let floor_g = quantile_90(
             others
                 .iter()
                 .map(|&j| grad_err(og[j], og[nearest]))

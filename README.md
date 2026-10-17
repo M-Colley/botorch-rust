@@ -953,6 +953,12 @@ training inputs are perturbed at 1e-14 to 1e-11 (16 "twins"):
   BoTorch's outcomes that botorch-rust's value falls into, within 10× that
   regime's own spread. The live tests draw up to 512 twins when
   botorch-rust's outcome falls into a rare regime.
+- **Gradients at kinks.** Gradients can also jump inside one regime of
+  values. For qLogNEHVI with q = 2 on the learned K = 2 model, BoTorch's twins
+  split between two gradients 1.1e-6 apart, while their values agree.
+  botorch-rust's gradient lies on the same line, at 6.4e-7 from BoTorch's.
+  So the gradient tolerance is 10× the 90th percentile of the regime's
+  gradient spread, not the median.
 
 The live test of single fits from identical initial values still compares
 final losses directly; short fits end at the same iterate.

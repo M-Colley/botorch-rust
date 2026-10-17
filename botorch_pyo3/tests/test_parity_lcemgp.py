@@ -727,8 +727,15 @@ def _set_excess(rs_vg: tuple, outcomes: list[tuple], i: int) -> tuple:
     regime = [j for j in range(len(vals)) if log_err(vals[j], vals[nearest]) <= gap]
     others = [j for j in regime if j != nearest]
     floor_v = statistics.median(log_err(vals[j], vals[nearest]) for j in others) if others else 0.0
+    # Gradients can jump inside a regime of values: at a kink (e.g. ties in the
+    # box decomposition), rounding picks a side, and BoTorch's twins split
+    # between subgradients (e.g. 6e-11 vs 1.1e-6 for test_qlognehvi[learned-K2,
+    # q=2]) while their values agree. The 90th percentile covers such splits.
+    spread_g = [rel_err(grads[j], grads[nearest]) for j in others]
     floor_g = (
-        statistics.median(rel_err(grads[j], grads[nearest]) for j in others) if others else 0.0
+        statistics.quantiles(spread_g, n=10, method="inclusive")[-1]
+        if len(spread_g) > 1
+        else sum(spread_g)
     )
     tol_v, tol_g = max(VALUE_TOL, 10 * floor_v), max(GRAD_TOL, 10 * floor_g)
     excess, ev, eg = min(
