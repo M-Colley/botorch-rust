@@ -916,6 +916,18 @@ impl SingleTaskGP {
         })
     }
 
+    /// [`SingleTaskGP::build_covar`] for raw parameters visited during a
+    /// fit: lengthscales and outputscales that underflowed to zero are
+    /// accepted (see [`KernelSpec::build_unchecked`]).
+    pub(crate) fn build_covar_unchecked(&self, h: &Hyperparameters) -> Result<BuiltCovar> {
+        Ok(match &self.covar_module {
+            CovarModule::Standard(spec) => BuiltCovar::Standard(
+                spec.build_unchecked(h.raw_lengthscale.as_slice(), h.raw_outputscale)?,
+            ),
+            CovarModule::Tree(_) => self.build_covar(h)?,
+        })
+    }
+
     /// Mean and standard deviation of the outcome transform (`(0, 1)` without).
     fn outcome_affine(&self) -> (f64, f64) {
         match &self.outcome_transform {

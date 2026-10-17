@@ -55,17 +55,6 @@ const FIT_CLUSTER: f64 = 1e-4;
 const CHAOTIC_RANGE: f64 = 1e-3;
 
 /// `(min, lower quartile, median, upper quartile)` of a sample.
-fn quantiles(v: &[f64]) -> (f64, f64, f64, f64) {
-    let mut s = v.to_vec();
-    s.sort_by(f64::total_cmp);
-    let q = |p: f64| {
-        let pos = p * (s.len() - 1) as f64;
-        let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
-        s[lo] + (s[hi] - s[lo]) * (pos - lo as f64)
-    };
-    (s[0], q(0.25), q(0.5), q(0.75))
-}
-
 #[derive(Deserialize)]
 struct Mll {
     value: Vec<f64>,
@@ -374,19 +363,7 @@ fn kernel_trees_match_botorch() {
             if bt_worst - bt_best > CHAOTIC_RANGE {
                 // A chaotic likelihood: BoTorch's own outcomes are spread over
                 // many optima, compared statistically.
-                let (bt_q, rs_q) = (quantiles(&bt), quantiles(&rs));
-                report.check(
-                    name,
-                    "fit (chaotic): best above BoTorch's median",
-                    (rs_q.0 - bt_q.2).max(0.0),
-                    FIT_TOL,
-                );
-                report.check(
-                    name,
-                    "fit (chaotic): median above BoTorch's upper quartile",
-                    (rs_q.2 - bt_q.3).max(0.0),
-                    FIT_TOL,
-                );
+                common::compare_chaotic_fits(&mut report, name, "fit", &bt, &rs, FIT_TOL);
             } else {
                 report.check(
                     name,
@@ -412,15 +389,17 @@ fn kernel_trees_match_botorch() {
             println!(
                 "{name:26} fit: loss {:+.10} (BoTorch {:+.10}), iterations {} (BoTorch {}), \
                  attempts {own_attempts} (BoTorch {}), max parameter difference {diff:.1e}, \
-                 first-attempt outcomes: BoTorch [{bt_best:+.10}, {bt_worst:+.10}] ({} of 17), \
-                 botorch_rs best {rs_best:+.10} ({} of 17), spread {spread:.1e}",
+                 first-attempt outcomes: BoTorch [{bt_best:+.10}, {bt_worst:+.10}] ({} of {}), \
+                 botorch_rs best {rs_best:+.10} ({} of {}), spread {spread:.1e}",
                 r.loss,
                 f.loss,
                 r.results[0].iterations,
                 f.iterations,
                 f.attempts,
                 bt.len(),
-                rs.len()
+                f.twin_losses.len() + 1,
+                rs.len(),
+                f.twin_losses.len() + 1
             );
         }
     }

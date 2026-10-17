@@ -12,6 +12,7 @@ an error that is absolute below 1 and relative above.
 from __future__ import annotations
 
 import contextlib
+import math
 import random
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -108,6 +109,69 @@ class Checker:
         excess = max(float(excess), 0.0)
         self.record(quantity, excess, tol)
         assert excess <= tol, (quantity, excess, tol)
+
+
+# ---------------------------------------------------------------------------
+# Statistical comparison of chaotic fits
+# ---------------------------------------------------------------------------
+
+#: Number of twins (besides the model itself) whose BoTorch fits are compared
+#: statistically when BoTorch's outcomes are chaotic.
+CHAOTIC_TWINS = 64
+#: One-sided significance level of each statistical fit check.
+FIT_ALPHA = 1e-3
+#: The standard normal quantile ``Φ⁻¹(1 - FIT_ALPHA)``.
+FIT_Z = 3.090232306167813
+
+
+def mann_whitney_z(a: Sequence[float], b: Sequence[float], tie: float) -> float:
+    """The z statistic of the one-sided Mann–Whitney U test that the values
+    ``a`` are stochastically larger than ``b``: ``U`` counts the pairs with
+    ``a_i > b_j + tie`` (pairs within ``tie`` count one half), standardized
+    with the no-ties variance and a continuity correction. Ties and positive
+    dependence within twin pairs only reduce the variance of ``U``, so the
+    test is conservative."""
+    n1, n2 = len(a), len(b)
+    u = sum(1.0 if x > y + tie else (0.5 if abs(x - y) <= tie else 0.0) for x in a for y in b)
+    sd = math.sqrt(n1 * n2 * (n1 + n2 + 1) / 12.0)
+    return (u - n1 * n2 / 2.0 - 0.5) / sd
+
+
+def rank_bound_k(n_rs: int, n_bt: int, alpha: float = FIT_ALPHA) -> int:
+    """The smallest ``k`` such that all ``k`` smallest of ``n_rs + n_bt``
+    exchangeable values come from the ``n_bt`` with probability at most
+    ``alpha``: ``C(n_bt, k) / C(n_rs + n_bt, k) <= alpha``. Then botorch_rs's
+    best of ``n_rs`` outcomes exceeds BoTorch's ``k``-th smallest with
+    probability at most ``alpha`` (``n_bt + 1`` if there is no such ``k``)."""
+    p = 1.0
+    for k in range(1, n_bt + 1):
+        p *= (n_bt - k + 1) / (n_rs + n_bt - k + 1)
+        if p <= alpha:
+            return k
+    return n_bt + 1
+
+
+def compare_chaotic_fits(
+    check: Checker, label: str, bt: Sequence[float], rs: Sequence[float], tol: float
+) -> None:
+    """Statistical comparison of first-attempt fit losses on twins when
+    BoTorch's own outcomes are chaotic (spread over many optima):
+
+    * a one-sided Mann–Whitney U test at level ``FIT_ALPHA`` that botorch_rs's
+      losses are not stochastically larger than BoTorch's (``z <= FIT_Z``);
+    * botorch_rs's best loss reaches BoTorch's ``k``-th smallest (plus
+      ``tol``) with ``k`` from :func:`rank_bound_k`; whenever at least ``k``
+      of BoTorch's outcomes lie in its best cluster, botorch_rs's best lies
+      in it as well.
+
+    Under the null hypothesis (botorch_rs's outcomes are another sample of
+    BoTorch's), each check fails with probability at most ``FIT_ALPHA``, so
+    a chaotic case fails by chance with probability at most ``2e-3``."""
+    z = mann_whitney_z(rs, bt, tol)
+    check.check_bound(f"{label} (chaotic): Mann-Whitney z of botorch_rs's losses", z, FIT_Z)
+    k = rank_bound_k(len(rs), len(bt))
+    kth = sorted(bt)[k - 1] if k <= len(bt) else math.inf
+    check.check_bound(f"{label} (chaotic): best above BoTorch's k-th best", min(rs) - kth, tol)
 
 
 def values_and_grads(acqf: Any, X: Any) -> tuple[Any, Any]:

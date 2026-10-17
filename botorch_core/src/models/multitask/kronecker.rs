@@ -574,7 +574,11 @@ impl KroneckerMultiTaskGP {
         let task = TreeKernel::build(&self.task, &raw[self.task_range()], 1)?;
         let xp = data.prepare(&self.x_tf)?;
         let tp = task.prepare(&self.task_points())?;
-        let kx = data.symmetric(&xp);
+        let mut kx = data.symmetric(&xp);
+        // GPyTorch's NaN entries at extreme hyperparameters (see
+        // `crate::kernels::nonfinite`).
+        let data_nan = data.training_nan(&self.x_tf);
+        data_nan.inject(&mut kx);
         let b = task.symmetric(&tp);
         let noise = self.noise_matrix(raw);
         let k = self.train_covariance(&kx, &b, &noise);
@@ -681,8 +685,11 @@ impl KroneckerMultiTaskGP {
         let dg = dg.expect("prior gradient");
         let dr = self.data_range();
         let dd = self.data.transform_derivatives(&raw[dr.clone()]);
-        for (j, idx) in dr.enumerate() {
+        for (j, idx) in dr.clone().enumerate() {
             grad[idx] = (0.5 * gd[j] + dg[j]) * dd[j] / nm;
+        }
+        for &j in data_nan.nan_gradients() {
+            grad[dr.start + j] = f64::NAN;
         }
         Ok((value, Some(grad)))
     }
@@ -1035,7 +1042,6 @@ impl Fittable for KroneckerMultiTaskGP {
                 &initial,
                 &bounds,
                 options,
-                true,
                 |x| {
                     model
                         .mll_value_and_grad(x)

@@ -532,32 +532,38 @@ def _case(case: dict[str, Any], seed: int) -> dict[str, Any]:
         f6a.set_flat(model, default_raw)
         fitted = f6a.fit(model)
         twins = []
-        for kk in range(1, N_TWINS + 1):
-            m0 = build_model(case, X, Y, Yvar, seed)
-            f6a.set_flat(m0, default_raw)
-            twin = f6a.perturbed_twin(
-                m0,
-                {"categorical": case["kind"] == "mixed"},
-                kk,
-                TWIN_SCALES[(kk - 1) % len(TWIN_SCALES)],
-            )
-            if case["kind"] == "mixed":
-                # Perturb the continuous columns only.
-                d = case["d"]
-                cat_dims = {c + d if c < 0 else c for c in case["cat_dims"]}
-                gg = torch.Generator().manual_seed(kk)
-                Xt = m0.train_inputs[0].clone()
-                rel = TWIN_SCALES[(kk - 1) % len(TWIN_SCALES)]
-                for c in range(d):
-                    if c not in cat_dims:
-                        Xt[:, c] = Xt[:, c] * (
-                            1 + rel * torch.randn(Xt.shape[0], generator=gg, dtype=DT)
-                        )
-                twin = m0
-                twin.train_inputs = (Xt,)
-                twin.prediction_strategy = None
-            r = f6a.fit(twin)
-            twins.append((twin.train_inputs[0].clone(), r["loss"], r["attempts"]))
+
+        def add_twins(ks: range) -> None:
+            for kk in ks:
+                m0 = build_model(case, X, Y, Yvar, seed)
+                f6a.set_flat(m0, default_raw)
+                twin = f6a.perturbed_twin(
+                    m0,
+                    {"categorical": case["kind"] == "mixed"},
+                    kk,
+                    TWIN_SCALES[(kk - 1) % len(TWIN_SCALES)],
+                )
+                if case["kind"] == "mixed":
+                    # Perturb the continuous columns only.
+                    d = case["d"]
+                    cat_dims = {c + d if c < 0 else c for c in case["cat_dims"]}
+                    gg = torch.Generator().manual_seed(kk)
+                    Xt = m0.train_inputs[0].clone()
+                    rel = TWIN_SCALES[(kk - 1) % len(TWIN_SCALES)]
+                    for c in range(d):
+                        if c not in cat_dims:
+                            Xt[:, c] = Xt[:, c] * (
+                                1 + rel * torch.randn(Xt.shape[0], generator=gg, dtype=DT)
+                            )
+                    twin = m0
+                    twin.train_inputs = (Xt,)
+                    twin.prediction_strategy = None
+                r = f6a.fit(twin)
+                twins.append((twin.train_inputs[0].clone(), r["loss"], r["attempts"]))
+
+        add_twins(range(1, N_TWINS + 1))
+        if f6a.is_chaotic(fitted, twins):
+            add_twins(range(N_TWINS + 1, f6a.CHAOTIC_TWINS + 1))
         fitted["twin_train_x"] = [t for t, _, _ in twins]
         fitted["twin_losses"] = [loss for _, loss, _ in twins]
         fitted["twin_attempts"] = [a for _, _, a in twins]

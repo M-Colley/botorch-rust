@@ -246,7 +246,9 @@
 //!   `fmin_l_bfgs_b_batched` (without a `maxfun` limit); a failed element is
 //!   retried on its own from prior samples (BoTorch accepts an abnormal
 //!   termination of an element and restarts all elements after a numerical
-//!   error).
+//!   error). A NaN covariance of one element does not affect the others
+//!   (BoTorch's batched closure gives all elements a NaN loss with zero
+//!   gradients then, a BoTorch bug; see [`fit`]).
 //! * [`ModelListGP`] posteriors are the exact block-diagonal concatenation of
 //!   the sub-model posteriors. BoTorch (with linear_operator 0.6.1) mixes up
 //!   the covariance blocks of multi-output sub-models in some configurations

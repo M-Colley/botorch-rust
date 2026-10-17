@@ -526,6 +526,34 @@ impl Prior {
         }
     }
 
+    /// `scale` times [`Prior::grad_log_prob`] in the order of torch's
+    /// backward pass, which applies the incoming gradient (`scale`, e.g. the
+    /// `1/n` of the marginal log likelihood) before dividing by `x`: for a
+    /// `GammaPrior`, `scale (α - 1) / x - scale β` (`xlogy`'s backward); for
+    /// a `LogNormalPrior`, `(-scale (ln x - μ) / σ² - scale) / x` (`log`'s
+    /// backward). It overflows only where torch's does, e.g. for a softplus
+    /// parameter whose value is subnormal; other priors scale
+    /// [`Prior::grad_log_prob`].
+    pub fn scaled_grad_log_prob(&self, x: f64, scale: f64) -> f64 {
+        match *self {
+            Prior::LogNormal { loc, .. } => {
+                let (var, _) = self.log_normal_var_and_log_scale();
+                (-scale * (x.ln() - loc) / var - scale) / x
+            }
+            Prior::Gamma {
+                concentration,
+                rate,
+            } => {
+                if concentration == 1.0 {
+                    -scale * rate
+                } else {
+                    scale * (concentration - 1.0) / x - scale * rate
+                }
+            }
+            _ => self.grad_log_prob(x) * scale,
+        }
+    }
+
     /// Mode of the distribution (double-precision arithmetic).
     pub fn mode(&self) -> f64 {
         match *self {
