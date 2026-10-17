@@ -398,7 +398,7 @@ its outcomes.
        mll = ExactMarginalLogLikelihood(m.likelihood, m)
        fit_gpytorch_mll(mll)
        m.train()
-       return (-mll(m(X), m.train_targets)).detach().reshape(-1).tolist()
+       return (-mll(m(*m.train_inputs), m.train_targets)).detach().reshape(-1).tolist()
 
    print(fit(torch.cat([Y1, Y2], -1)))  # [1.1416, 4.1846]: output 1 stopped at a NaN point
    print(fit(Y2))                       # [1.4640]: the same output fitted alone
