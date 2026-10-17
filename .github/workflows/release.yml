@@ -151,8 +151,8 @@ jobs:
           if-no-files-found: error
 
   # Installs the native wheels (without NumPy or torch, as most users of the
-  # wheels will not need a Rust toolchain) on the oldest and the newest
-  # supported Python and runs the test suite on nested lists.
+  # wheels will not need a Rust toolchain) on the oldest and the two newest
+  # supported Pythons and runs the test suite on nested lists.
   test:
     name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
     needs: wheels
@@ -161,7 +161,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.11", "3.15"]
+        python-version: ["3.11", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
