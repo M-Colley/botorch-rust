@@ -23,6 +23,7 @@ pub mod batched;
 pub mod contextual_multioutput;
 pub mod cost;
 pub mod deterministic;
+pub mod ensemble;
 pub mod fantasize;
 pub mod gp;
 pub mod model;
@@ -32,12 +33,13 @@ pub mod multitask;
 
 pub use batched::{BatchedInputTransform, BatchedMultiOutputGP, BatchedMultiOutputGPOptions};
 pub use contextual_multioutput::{LCEMGPOptions, LcemParameters, LcemTaskInputs, LCEMGP};
-pub use deterministic::PosteriorMeanModel;
+pub use deterministic::{AffineDeterministicModel, FixedSingleSampleModel, PosteriorMeanModel};
+pub use ensemble::EnsembleMomentsModel;
 pub use fantasize::{BatchedMatrix, BoolMatrix, FantasySampler};
 pub use gp::{
     get_gaussian_likelihood_with_gamma_prior, get_gaussian_likelihood_with_lognormal_prior,
-    GaussianLikelihoodSpec, Hyperparameters, Likelihood, ParameterLayout, SingleTaskGP,
-    SingleTaskGPOptions, MIN_FIXED_NOISE, MIN_INFERRED_NOISE_LEVEL,
+    ConstantMeanSpec, GaussianLikelihoodSpec, Hyperparameters, Likelihood, ParameterLayout,
+    SingleTaskGP, SingleTaskGPOptions, MIN_FIXED_NOISE, MIN_INFERRED_NOISE_LEVEL,
 };
 pub use model::Model;
 pub use model_list::ModelListGP;

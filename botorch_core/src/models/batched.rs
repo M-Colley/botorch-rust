@@ -33,7 +33,9 @@ use std::ops::Range;
 use crate::error::{BotorchError, Result};
 use crate::kernels::{KernelKind, KernelNode, KernelSpec};
 use crate::mll::ExactMarginalLogLikelihood;
-use crate::models::gp::{GaussianLikelihoodSpec, Hyperparameters, Likelihood, ParameterLayout};
+use crate::models::gp::{
+    ConstantMeanSpec, GaussianLikelihoodSpec, Hyperparameters, Likelihood, ParameterLayout,
+};
 use crate::models::model::check_vjp_shapes_expanded;
 use crate::models::{Model, SingleTaskGP, SingleTaskGPOptions};
 use crate::posterior::{JointPosteriorGrad, PointPosteriors, Posterior};
@@ -85,6 +87,8 @@ pub struct BatchedMultiOutputGPOptions {
     /// Homoskedastic-likelihood override, applied to every element with
     /// independent noise levels.
     pub likelihood: Option<GaussianLikelihoodSpec>,
+    /// The prior and constraint of the constant mean of every element.
+    pub mean_module: Option<ConstantMeanSpec>,
 }
 
 /// BoTorch's `SingleTaskGP` with `m ≥ 1` independent outputs and an optional
@@ -223,6 +227,7 @@ impl BatchedMultiOutputGP {
                     covar_module: options.covar_module,
                     covar_tree: options.covar_tree.clone(),
                     likelihood: options.likelihood,
+                    mean_module: options.mean_module,
                 };
                 models.push(SingleTaskGP::new(
                     train_x[b].clone(),
@@ -318,8 +323,84 @@ impl BatchedMultiOutputGP {
                 covar_module: options.covar_module,
                 covar_tree: options.covar_tree,
                 likelihood: options.likelihood,
+                mean_module: options.mean_module,
             },
         )
+    }
+
+    /// The model of the outputs `idcs` (BoTorch's `subset_output`): the GPs
+    /// of these outputs of every batch element, with their hyperparameters,
+    /// transforms and noise, in the order of `idcs` (indices may repeat).
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] for an empty list or an index out
+    /// of range.
+    pub fn subset_output(&self, idcs: &[usize]) -> Result<Self> {
+        let m = self.num_outputs;
+        if idcs.is_empty() || idcs.iter().any(|&i| i >= m) {
+            return Err(BotorchError::InvalidArgument(format!(
+                "invalid output indices {idcs:?} for a model with {m} outputs"
+            )));
+        }
+        let models = (0..self.batch_size())
+            .flat_map(|b| idcs.iter().map(move |&t| (b, t)))
+            .map(|(b, t)| self.models[b * m + t].clone())
+            .collect();
+        Ok(Self::from_elements(
+            self.batch_shape.clone(),
+            idcs.len(),
+            self.input_transform.clone(),
+            models,
+        ))
+    }
+
+    /// Replaces the fixed global shrinkages of the SAAS priors of the
+    /// elements' kernel trees: `taus[e]` for element `e` (one value per SAAS
+    /// prior with a fixed `tau`, see
+    /// [`crate::kernels::KernelNode::set_saas_taus`]).
+    ///
+    /// # Errors
+    /// [`BotorchError::DimensionMismatch`] without one set of values per
+    /// element and the errors of [`SingleTaskGP::set_saas_taus`].
+    pub fn set_saas_taus(&mut self, taus: &[Vec<f64>]) -> Result<()> {
+        if taus.len() != self.models.len() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "expected SAAS taus for {} elements, got {}",
+                self.models.len(),
+                taus.len()
+            )));
+        }
+        for (m, t) in self.models.iter_mut().zip(taus) {
+            m.set_saas_taus(t)?;
+        }
+        Ok(())
+    }
+
+    /// The unbatched model of batch element `batch` (row-major index in
+    /// the batch shape), e.g. one member of an ensemble of GPs.
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] for an index out of range.
+    pub fn batch_element(&self, batch: usize) -> Result<Self> {
+        let nb = self.batch_size();
+        if batch >= nb {
+            return Err(BotorchError::InvalidArgument(format!(
+                "batch element {batch} out of range for {nb} elements"
+            )));
+        }
+        let m = self.num_outputs;
+        let input_transform = match &self.input_transform {
+            Some(BatchedInputTransform::PerBatch(tfs)) => {
+                Some(BatchedInputTransform::PerBatch(vec![tfs[batch].clone()]))
+            }
+            other => other.clone(),
+        };
+        Ok(Self::from_elements(
+            Vec::new(),
+            m,
+            input_transform,
+            self.models[batch * m..(batch + 1) * m].to_vec(),
+        ))
     }
 
     // ------------------------------------------------------------------

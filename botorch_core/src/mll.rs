@@ -125,6 +125,18 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
                 res += prior.log_prob(noise);
             }
         }
+        let mean_prior = model.mean_module().prior;
+        if let Some(prior) = mean_prior {
+            if !prior.in_validated_support(h.raw_constant) {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "Expected value argument ({}) to be within the support of the \
+                     distribution {}Prior, but found invalid values",
+                    h.raw_constant,
+                    prior.name()
+                )));
+            }
+            res += prior.log_prob(h.raw_constant);
+        }
         let mut tree_prior_grad = None;
         match (model.covar_module(), &covar) {
             (CovarModule::Standard(spec), BuiltCovar::Standard(kernel)) => {
@@ -160,7 +172,11 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
         w.ger(1.0, &alpha, &alpha, -1.0); // W = ααᵀ - K⁻¹
 
         let mut grad = Vector::zeros(layout.len());
-        grad[layout.constant_index()] = alpha.sum() / nf;
+        let mut g_constant = alpha.sum();
+        if let Some(prior) = mean_prior {
+            g_constant += prior.grad_log_prob(h.raw_constant);
+        }
+        grad[layout.constant_index()] = g_constant / nf;
         if let (Some(idx), Likelihood::Gaussian(lik), Some(noise)) =
             (layout.noise_index(), model.likelihood(), noise_value)
         {

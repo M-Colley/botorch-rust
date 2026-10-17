@@ -514,8 +514,124 @@ impl Interval {
     }
 }
 
+/// BoTorch's `LogTransformedInterval(lower_bound, upper_bound,
+/// initial_value)` (`botorch.utils.constraints`): the raw parameter is the
+/// logarithm of the actual value (`actual = exp(raw)`, without GPyTorch's
+/// sigmoid mapping into the interval), and the bounds are imposed by the
+/// optimizer on the raw value (`log(lower) <= raw <= log(upper)`). Used by
+/// BoTorch's MAP SAAS models.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogTransformedInterval {
+    lower_bound: f64,
+    upper_bound: f64,
+    initial_value: Option<f64>,
+    initial_raw: Option<f64>,
+}
+
+impl LogTransformedInterval {
+    /// Creates `LogTransformedInterval(lower_bound, upper_bound,
+    /// initial_value)` with exact bounds (see
+    /// [`LogTransformedInterval::rounded_to_f32`]).
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] with GPyTorch's messages for empty
+    /// or non-finite intervals, and for non-positive lower bounds (the log
+    /// of the bounds must be finite) or an `initial_value` outside them.
+    pub fn new(lower_bound: f64, upper_bound: f64, initial_value: Option<f64>) -> Result<Self> {
+        if lower_bound.is_nan() || upper_bound.is_nan() || lower_bound >= upper_bound {
+            return Err(BotorchError::InvalidArgument(
+                "Got parameter bounds with empty intervals.".into(),
+            ));
+        }
+        if !(lower_bound.is_finite() && upper_bound.is_finite()) {
+            return Err(BotorchError::InvalidArgument(
+                "Cannot make an Interval directly with non-finite bounds. Use a derived class \
+                 like GreaterThan or LessThan instead."
+                    .into(),
+            ));
+        }
+        if lower_bound <= 0.0 {
+            return Err(BotorchError::InvalidArgument(format!(
+                "the lower bound of a LogTransformedInterval must be positive, got {lower_bound}"
+            )));
+        }
+        if let Some(v) = initial_value {
+            if !(v.is_finite() && v >= lower_bound && v <= upper_bound) {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "initial_value {v} is outside the interval [{lower_bound}, {upper_bound}]"
+                )));
+            }
+        }
+        Ok(Self {
+            lower_bound,
+            upper_bound,
+            initial_value,
+            initial_raw: initial_value.map(f64::ln),
+        })
+    }
+
+    /// Returns a copy that behaves like the constraint created from Python
+    /// floats: float32 bounds, and the raw initial value `log(initial_value)`
+    /// computed in single precision (GPyTorch's `constraint.initial_value`).
+    pub fn rounded_to_f32(self) -> Self {
+        Self {
+            lower_bound: round_to_f32(self.lower_bound),
+            upper_bound: round_to_f32(self.upper_bound),
+            initial_value: self.initial_value.map(round_to_f32),
+            initial_raw: self.initial_value.map(|v| f64::from((v as f32).ln())),
+        }
+    }
+
+    /// The same constraint with the raw initial value `raw` (e.g. torch's
+    /// float32 `log` of the initial value).
+    pub fn with_initial_raw(mut self, raw: f64) -> Self {
+        self.initial_raw = Some(raw);
+        self
+    }
+
+    /// The lower bound in actual space.
+    pub fn lower_bound(&self) -> f64 {
+        self.lower_bound
+    }
+
+    /// The upper bound in actual space.
+    pub fn upper_bound(&self) -> f64 {
+        self.upper_bound
+    }
+
+    /// The initial value in actual space, if any.
+    pub fn initial_value(&self) -> Option<f64> {
+        self.initial_value
+    }
+
+    /// `exp(raw)`.
+    pub fn transform(&self, raw: f64) -> f64 {
+        raw.exp()
+    }
+
+    /// `d actual / d raw = exp(raw)`.
+    pub fn transform_derivative(&self, raw: f64) -> f64 {
+        raw.exp()
+    }
+
+    /// `log(actual)`.
+    pub fn inverse_transform(&self, actual: f64) -> f64 {
+        actual.ln()
+    }
+
+    /// The raw initial value, if any.
+    pub fn initial_raw_value(&self) -> Option<f64> {
+        self.initial_raw
+    }
+
+    /// `(log(lower), log(upper))`: the optimizer bounds of the raw value.
+    pub fn raw_bounds(&self) -> (f64, f64) {
+        (self.lower_bound.ln(), self.upper_bound.ln())
+    }
+}
+
 /// A parameter constraint: GPyTorch's `GreaterThan` / `Positive`,
-/// `LessThan` or `Interval`.
+/// `LessThan` or `Interval`, or BoTorch's `LogTransformedInterval`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Constraint {
     /// A lower bound (`GreaterThan`, `Positive`).
@@ -524,6 +640,15 @@ pub enum Constraint {
     Interval(Interval),
     /// An upper bound (`LessThan`).
     LessThan(LessThan),
+    /// Lower and upper bounds on a log-scale raw value
+    /// (`LogTransformedInterval`).
+    LogTransformed(LogTransformedInterval),
+}
+
+impl From<LogTransformedInterval> for Constraint {
+    fn from(c: LogTransformedInterval) -> Self {
+        Constraint::LogTransformed(c)
+    }
 }
 
 impl From<LessThan> for Constraint {
@@ -556,6 +681,7 @@ impl Constraint {
             Constraint::GreaterThan(c) => c.rounded_to_f32().into(),
             Constraint::Interval(c) => c.rounded_to_f32().into(),
             Constraint::LessThan(c) => c.rounded_to_f32().into(),
+            Constraint::LogTransformed(c) => c.rounded_to_f32().into(),
         }
     }
 
@@ -565,6 +691,7 @@ impl Constraint {
             Constraint::GreaterThan(c) => c.lower_bound(),
             Constraint::Interval(c) => c.lower_bound(),
             Constraint::LessThan(_) => f64::NEG_INFINITY,
+            Constraint::LogTransformed(c) => c.lower_bound(),
         }
     }
 
@@ -574,6 +701,7 @@ impl Constraint {
             Constraint::GreaterThan(_) => f64::INFINITY,
             Constraint::Interval(c) => c.upper_bound(),
             Constraint::LessThan(c) => c.upper_bound(),
+            Constraint::LogTransformed(c) => c.upper_bound(),
         }
     }
 
@@ -583,6 +711,7 @@ impl Constraint {
             Constraint::GreaterThan(c) => c.transform_kind(),
             Constraint::Interval(c) => c.transform_kind(),
             Constraint::LessThan(c) => c.transform_kind(),
+            Constraint::LogTransformed(_) => None,
         }
     }
 
@@ -592,12 +721,14 @@ impl Constraint {
             Constraint::GreaterThan(c) => c.initial_value(),
             Constraint::Interval(c) => c.initial_value(),
             Constraint::LessThan(c) => c.initial_value(),
+            Constraint::LogTransformed(c) => c.initial_value(),
         }
     }
 
-    /// Whether the constraint is enforced through a transform.
+    /// Whether the constraint is enforced through a transform (the `exp`
+    /// of a `LogTransformedInterval` counts as one, as in GPyTorch).
     pub fn enforced(&self) -> bool {
-        self.transform_kind().is_some()
+        matches!(self, Constraint::LogTransformed(_)) || self.transform_kind().is_some()
     }
 
     /// Maps a raw parameter value to the actual parameter value.
@@ -606,6 +737,7 @@ impl Constraint {
             Constraint::GreaterThan(c) => c.transform(raw),
             Constraint::Interval(c) => c.transform(raw),
             Constraint::LessThan(c) => c.transform(raw),
+            Constraint::LogTransformed(c) => c.transform(raw),
         }
     }
 
@@ -615,6 +747,7 @@ impl Constraint {
             Constraint::GreaterThan(c) => c.transform_derivative(raw),
             Constraint::Interval(c) => c.transform_derivative(raw),
             Constraint::LessThan(c) => c.transform_derivative(raw),
+            Constraint::LogTransformed(c) => c.transform_derivative(raw),
         }
     }
 
@@ -624,6 +757,7 @@ impl Constraint {
             Constraint::GreaterThan(c) => c.inverse_transform(actual),
             Constraint::Interval(c) => c.inverse_transform(actual),
             Constraint::LessThan(c) => c.inverse_transform(actual),
+            Constraint::LogTransformed(c) => c.inverse_transform(actual),
         }
     }
 
@@ -633,6 +767,7 @@ impl Constraint {
             Constraint::GreaterThan(c) => c.initial_raw_value(),
             Constraint::Interval(c) => c.initial_raw_value(),
             Constraint::LessThan(c) => c.initial_raw_value(),
+            Constraint::LogTransformed(c) => c.initial_raw_value(),
         }
     }
 
@@ -643,6 +778,7 @@ impl Constraint {
             Constraint::GreaterThan(c) => c.raw_bounds(),
             Constraint::Interval(c) => c.raw_bounds(),
             Constraint::LessThan(c) => c.raw_bounds(),
+            Constraint::LogTransformed(c) => c.raw_bounds(),
         }
     }
 }
@@ -752,6 +888,28 @@ mod tests {
         assert_eq!(n.lower_bound(), f64::NEG_INFINITY);
         assert_eq!(n.upper_bound(), 0.3);
         assert_eq!(n.transform(0.1), 0.1);
+    }
+
+    #[test]
+    fn log_transformed_interval_is_exp_with_log_bounds() {
+        // BoTorch: LogTransformedInterval(0.01, 1e4, initial_value=10).
+        let c: Constraint = LogTransformedInterval::new(0.01, 1e4, Some(10.0))
+            .unwrap()
+            .rounded_to_f32()
+            .into();
+        assert!(c.enforced());
+        assert_eq!(c.lower_bound(), 0.01f32 as f64);
+        assert_eq!(
+            c.raw_bounds(),
+            ((0.01f32 as f64).ln(), (1e4f32 as f64).ln())
+        );
+        assert_eq!(c.initial_raw_value(), Some(10.0f32.ln() as f64));
+        assert_eq!(c.transform(0.5), 0.5f64.exp());
+        assert_eq!(c.transform_derivative(0.5), 0.5f64.exp());
+        assert_eq!(c.inverse_transform(2.0), 2.0f64.ln());
+        assert!(LogTransformedInterval::new(0.0, 1.0, None).is_err());
+        assert!(LogTransformedInterval::new(1.0, 0.5, None).is_err());
+        assert!(LogTransformedInterval::new(0.1, 1.0, Some(2.0)).is_err());
     }
 
     #[test]

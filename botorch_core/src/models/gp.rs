@@ -105,6 +105,35 @@ pub fn get_gaussian_likelihood_with_gamma_prior() -> GaussianLikelihoodSpec {
     }
 }
 
+/// Configuration of the `ConstantMean` of a [`SingleTaskGP`]: an optional
+/// prior on the constant and an optional constraint (BoTorch's
+/// `get_mean_module_with_normal_prior`: `NormalPrior(0, 1)` and
+/// `Interval(-10, 10, transform=None, initial_value=0)`). Constraints must
+/// not be enforced through a transform (the raw value is the constant); the
+/// bounds are imposed by the optimizer.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct ConstantMeanSpec {
+    /// The prior on the constant.
+    pub prior: Option<Prior>,
+    /// The (non-enforced) constraint on the constant.
+    pub constraint: Option<Constraint>,
+}
+
+impl ConstantMeanSpec {
+    /// The initial raw constant: the constraint's initial value, or 0.
+    pub fn initial_raw(&self) -> f64 {
+        self.constraint
+            .and_then(|c| c.initial_raw_value())
+            .unwrap_or(0.0)
+    }
+
+    /// The optimizer bounds of the raw constant.
+    pub fn raw_bounds(&self) -> (f64, f64) {
+        self.constraint
+            .map_or((f64::NEG_INFINITY, f64::INFINITY), |c| c.raw_bounds())
+    }
+}
+
 /// The likelihood of a [`SingleTaskGP`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Likelihood {
@@ -282,6 +311,10 @@ pub struct SingleTaskGPOptions {
     /// argument), e.g. [`get_gaussian_likelihood_with_gamma_prior`]. Must be
     /// `None` when `train_yvar` is given.
     pub likelihood: Option<GaussianLikelihoodSpec>,
+    /// The prior and constraint of the constant mean (BoTorch's
+    /// `mean_module` argument with a `ConstantMean`); `None`: GPyTorch's
+    /// `ConstantMean()`.
+    pub mean_module: Option<ConstantMeanSpec>,
 }
 
 /// Quantities derived from the hyperparameters and cached for prediction.
@@ -308,6 +341,7 @@ pub struct SingleTaskGP {
     outcome_transform: Option<Standardize>,
     covar_module: CovarModule,
     likelihood: Likelihood,
+    mean_module: ConstantMeanSpec,
     hyperparameters: Hyperparameters,
     /// Noise variances (transformed space) of training points that were
     /// added by conditioning a homoskedastic model on observations with
@@ -477,17 +511,26 @@ impl SingleTaskGP {
             Likelihood::Gaussian(spec) => Some(spec.initial_raw_noise()),
             Likelihood::FixedNoise { .. } => None,
         };
+        let mean_module = options.mean_module.unwrap_or_default();
+        if mean_module.constraint.is_some_and(|c| c.enforced()) {
+            return Err(BotorchError::Unsupported(
+                "constraints of the constant mean must not be enforced through a transform \
+                 (e.g. Interval(lower, upper, transform=None))"
+                    .into(),
+            ));
+        }
+        let raw_constant = mean_module.initial_raw();
         let hyperparameters = match &covar_module {
             CovarModule::Standard(spec) => Hyperparameters {
                 raw_noise,
-                raw_constant: 0.0,
+                raw_constant,
                 raw_outputscale: spec.initial_raw_outputscale(),
                 raw_lengthscale: Vector::from_element(d, spec.initial_raw_lengthscale()),
                 raw_kernel: Vector::zeros(0),
             },
             CovarModule::Tree(tree) => Hyperparameters {
                 raw_noise,
-                raw_constant: 0.0,
+                raw_constant,
                 raw_outputscale: None,
                 raw_lengthscale: Vector::zeros(0),
                 raw_kernel: Vector::from_vec(tree.initial_raw()),
@@ -505,6 +548,7 @@ impl SingleTaskGP {
             outcome_transform,
             covar_module,
             likelihood,
+            mean_module,
             hyperparameters,
             point_noise: None,
             cache: OnceLock::new(),
@@ -618,6 +662,30 @@ impl SingleTaskGP {
     /// The likelihood.
     pub fn likelihood(&self) -> &Likelihood {
         &self.likelihood
+    }
+
+    /// The prior and constraint of the constant mean.
+    pub fn mean_module(&self) -> &ConstantMeanSpec {
+        &self.mean_module
+    }
+
+    /// Replaces the fixed global shrinkages of the SAAS priors of a kernel
+    /// tree (see [`crate::kernels::KernelNode::set_saas_taus`]).
+    ///
+    /// # Errors
+    /// [`BotorchError::Unsupported`] for a standard kernel and the errors
+    /// of [`crate::kernels::KernelNode::set_saas_taus`].
+    pub fn set_saas_taus(&mut self, taus: &[f64]) -> Result<()> {
+        match &mut self.covar_module {
+            CovarModule::Tree(tree) => tree.set_saas_taus(taus)?,
+            CovarModule::Standard(_) => {
+                return Err(BotorchError::Unsupported(
+                    "the covariance module has no SAAS prior".into(),
+                ))
+            }
+        }
+        self.cache = OnceLock::new();
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -748,7 +816,7 @@ impl SingleTaskGP {
         if let Likelihood::Gaussian(spec) = &self.likelihood {
             bounds.push(spec.noise_constraint.raw_bounds());
         }
-        bounds.push((f64::NEG_INFINITY, f64::INFINITY));
+        bounds.push(self.mean_module.raw_bounds());
         match &self.covar_module {
             CovarModule::Standard(spec) => {
                 if let Some(scale) = &spec.scale {

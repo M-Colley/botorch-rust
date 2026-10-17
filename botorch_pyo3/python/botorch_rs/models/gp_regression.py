@@ -155,6 +155,62 @@ def _check_module_batch_shape(module: Any, aug: tuple[int, ...], what: str) -> N
         )
 
 
+def _rs_of(obj: Any) -> Any:
+    """The extension object of a prior or constraint (``None`` for ``None``)."""
+    return None if obj is None else obj._rs
+
+
+def _element_saas_taus(covar: Kernel, num_elements: int) -> list[list[float]] | None:
+    """The fixed SAAS ``tau`` of every SAAS kernel of the tree (pre-order) for
+    every model element (``None`` without SAAS kernels with a fixed ``tau``)."""
+    columns = []
+    for k in covar._all_kernels():
+        saas = getattr(k, "_saas", None)
+        if saas is not None and saas.fixed_taus is not None:
+            values = saas.fixed_taus
+            if len(values) == 1:
+                values = values * num_elements
+            if len(values) != num_elements:
+                raise BotorchTensorDimensionError(
+                    f"Expected one SAAS tau per model element ({num_elements}), got {len(values)}."
+                )
+            columns.append(values)
+    if not columns:
+        return None
+    return [[col[e] for col in columns] for e in range(num_elements)]
+
+
+def _rebatch(model: Any, old_aug: tuple[int, ...]) -> None:
+    """Updates the batch shapes of the modules of ``model`` (a subset or a
+    batch element of a model with ``_aug_batch_shape`` ``old_aug``) and the
+    fitted outcome transform."""
+    new_aug = model._aug_batch_shape
+    for module in _modules_of(model):
+        if isinstance(module, Kernel):
+            if tuple(module._batch_shape) == old_aug:
+                module._batch_shape = new_aug
+        elif tuple(getattr(module, "batch_shape", ())) == old_aug:
+            module.batch_shape = new_aug
+    ot = getattr(model, "outcome_transform", None)
+    if ot is not None:
+        fitted = model._rs.outcome_transform()
+        assert fitted is not None
+        ot._set_fitted(fitted, ot._kind)
+
+
+def _modules_of(model: Any) -> list[Any]:
+    """The GP modules of a model (likelihood, mean and every kernel)."""
+    out: list[Any] = []
+    for name in ("likelihood", "mean_module"):
+        mod = getattr(model, name, None)
+        if mod is not None:
+            out.append(mod)
+    covar = getattr(model, "covar_module", None)
+    if isinstance(covar, Kernel):
+        out.extend(covar._all_kernels())
+    return out
+
+
 class SingleTaskGP(Model):
     r"""A single-task exact GP with BoTorch's defaults.
 
@@ -302,7 +358,13 @@ class SingleTaskGP(Model):
             likelihood._spec if likelihood is not None else None,
             input_chain=chain,
             covar_tree=covar_tree,
+            mean_prior=_rs_of(getattr(mean_module, "mean_prior", None)),
+            mean_constraint=_rs_of(getattr(mean_module, "raw_constant_constraint", None)),
         )
+        if covar_tree is not None:
+            taus = _element_saas_taus(covar, math.prod(aug))
+            if taus is not None:
+                self._rs.set_saas_taus(taus)
         self._kind = kind
         # GP modules bound to the model's hyperparameters.
         if likelihood is None:
@@ -339,7 +401,36 @@ class SingleTaskGP(Model):
                 self._rs.transformed_train_targets(),
                 self._rs.num_train,
             )
+            # Used for subsetting along the output dimension (BoTorch's
+            # `Model.subset_output`; botorch_rs subsets any covariance module).
+            self._subset_batch_dict = {
+                "mean_module.raw_constant": -1,
+                "covar_module.raw_lengthscale": -3,
+            }
+            if yvar is None:
+                self._subset_batch_dict["likelihood.noise_covar.raw_noise"] = -2
         self.training = True
+
+    @staticmethod
+    def get_batch_dimensions(train_X: Any, train_Y: Any) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        r"""Get the raw batch shape and output-augmented batch shape of the inputs.
+
+        Args:
+            train_X: A ``n x d`` or ``batch_shape x n x d`` (batch mode) tensor of
+                training features.
+            train_Y: A ``n x m`` or ``batch_shape x n x m`` (batch mode) tensor of
+                training observations.
+
+        Returns:
+            2-element tuple containing
+
+            - The ``input_batch_shape``
+            - The output-augmented batch shape: ``input_batch_shape x (m)``
+        """
+        input_batch_shape = tuple(to_flat(train_X, "train_X")[1][:-2])
+        num_outputs = to_flat(train_Y, "train_Y")[1][-1]
+        aug_batch_shape = input_batch_shape + ((num_outputs,) if num_outputs > 1 else ())
+        return input_batch_shape, aug_batch_shape
 
     # -- data --------------------------------------------------------------
 
@@ -541,6 +632,59 @@ class SingleTaskGP(Model):
         x = to_flat(X, "X")
         nz = None if observation_noise is None else to_flat(observation_noise, "observation_noise")
         return self._with_rs(_rs.fantasize(self._rs, x, sampler._rs, nz))
+
+    def subset_output(self, idcs: list[int]) -> SingleTaskGP:
+        r"""Subset the model along the output dimension.
+
+        Args:
+            idcs: The output indices to subset the model to.
+
+        Returns:
+            The current model, subset to the specified output indices (with
+            the hyperparameters, noise and outcome transform of these
+            outputs).
+
+        BoTorch subsets only the parameters listed in ``_subset_batch_dict``
+        and raises ``NotImplementedError`` for models without it (e.g. a
+        ``SingleTaskGP`` with a custom ``covar_module``); botorch_rs subsets
+        every module, since all of them have independent parameters per
+        output.
+        """
+        idcs = [int(i) for i in idcs]
+        m = self.num_outputs
+        if m == len(idcs) and idcs == list(range(m)):
+            return copy.deepcopy(self)
+        if not idcs or any(not 0 <= i < m for i in idcs):
+            raise IndexError(f"index out of range in self (output indices {idcs}, m = {m})")
+        old_aug = self._aug_batch_shape
+        new = self._with_rs(self._rs.subset_output(idcs))
+        new.training = self.training
+        _rebatch(new, old_aug)
+        ot = getattr(new, "outcome_transform", None)
+        if ot is not None:
+            ot._m = len(idcs)
+        return new
+
+    def _member(self, k: int) -> SingleTaskGP:
+        """Batch element ``k`` of a batched model (row-major) as an
+        unbatched ``SingleTaskGP`` with its own modules, e.g. a member of an
+        ensemble of GPs."""
+        old_aug = self._aug_batch_shape
+        new = SingleTaskGP.__new__(SingleTaskGP)
+        memo: dict[int, Any] = {id(self): new}
+        for key, value in self.__dict__.items():
+            if key == "_rs":
+                new.__dict__[key] = value.batch_element(k)
+            elif key in ("taus", "_ensemble_cache"):
+                continue
+            else:
+                new.__dict__[key] = copy.deepcopy(value, memo)
+        new.training = self.training
+        _rebatch(new, old_aug)
+        ot = getattr(new, "outcome_transform", None)
+        if ot is not None:
+            ot._batch_shape = ()
+        return new
 
     # -- parameters --------------------------------------------------------
 

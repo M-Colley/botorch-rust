@@ -185,9 +185,11 @@ class Kernel(GPModule):
         return []
 
     def _own_params(self) -> list[tuple[str, Interval | None, Prior | None]]:
-        """``(raw name, constraint, prior)`` of the kernel's own parameters."""
+        """``(raw name, constraint, prior)`` of the kernel's own parameters
+        (including parameters registered later, e.g. the ``raw_tau`` of a
+        SAAS prior)."""
         out = []
-        for name, c_attr, p_attr in type(self)._params:
+        for name, c_attr, p_attr in (*type(self)._params, *getattr(self, "_extra_params", ())):
             c = getattr(self, c_attr, None) if c_attr else None
             p = getattr(self, p_attr, None) if p_attr else None
             out.append((name, c, p))
@@ -206,7 +208,11 @@ class Kernel(GPModule):
 
     def _node(self) -> _rs.KernelNode:
         """The kernel tree (``botorch_rs._botorch_rs.KernelNode``)."""
-        node = self._configure(self._base_node())
+        node = self._base_node()
+        saas = getattr(self, "_saas", None)
+        if saas is not None:
+            node = saas.apply(self, node)
+        node = self._configure(node)
         if self.active_dims is not None:
             node = node.with_active_dims(list(self.active_dims))
         return node
@@ -417,6 +423,20 @@ class Kernel(GPModule):
     def lengthscale_constraint(self) -> Interval:
         """The lengthscale constraint (GPyTorch's ``raw_lengthscale_constraint``)."""
         return self.raw_lengthscale_constraint
+
+    @property
+    def raw_tau(self) -> Any:
+        """The global shrinkage parameter of a SAAS prior with a learned
+        ``tau`` (``add_saas_prior(kernel, tau=None)``)."""
+        if "raw_tau" not in (name for name, _, _ in self._own_params()):
+            raise AttributeError(f"{type(self).__name__} has no parameter 'raw_tau'.")
+        return self._get_raw("raw_tau")
+
+    @raw_tau.setter
+    def raw_tau(self, value: Any) -> None:
+        if "raw_tau" not in (name for name, _, _ in self._own_params()):
+            raise AttributeError(f"{type(self).__name__} has no parameter 'raw_tau'.")
+        self._set_raw("raw_tau", value)
 
     # -- evaluation ----------------------------------------------------------
 
@@ -850,6 +870,10 @@ class ScaleKernel(Kernel):
         _check_prior(outputscale_prior, "outputscale_prior")
         _check_constraint(outputscale_constraint, "outputscale_constraint")
         self.base_kernel = base_kernel
+        # GPyTorch creates ``raw_outputscale`` with the batch shape broadcast
+        # with the base kernel's (e.g. a ScaleKernel without ``batch_shape``
+        # around a batched kernel has batched outputscales).
+        self._batch_shape = self.batch_shape
         self.outputscale_prior = outputscale_prior
         self.raw_outputscale_constraint = (
             outputscale_constraint if outputscale_constraint is not None else Positive()

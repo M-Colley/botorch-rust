@@ -295,6 +295,10 @@ pub enum CovarianceRoot {
     /// `V diag(sqrt(max(λ, 0)))` from the eigendecomposition `Σ = V Λ Vᵀ`
     /// (gpytorch's `symeig` fallback). Not differentiable.
     Eigen(Matrix),
+    /// The zero root of an exactly zero `n × n` covariance (e.g. the block
+    /// of a deterministic sub-model of a model list, whose samples are its
+    /// values, as BoTorch samples a `PosteriorList` posterior by posterior).
+    Zero(usize),
 }
 
 impl CovarianceRoot {
@@ -311,6 +315,9 @@ impl CovarianceRoot {
                 cov.nrows(),
                 cov.ncols()
             )));
+        }
+        if cov.iter().all(|&v| v == 0.0) && n > 1 {
+            return Ok(Self::Zero(n));
         }
         if n == 1 {
             let variance = cov[(0, 0)];
@@ -343,6 +350,7 @@ impl CovarianceRoot {
             Self::Scalar { .. } => 1,
             Self::Cholesky(f) => f.dim(),
             Self::Eigen(r) => r.nrows(),
+            Self::Zero(n) => *n,
         }
     }
 
@@ -361,6 +369,7 @@ impl CovarianceRoot {
             Self::Scalar { root, .. } => Matrix::from_element(1, 1, *root),
             Self::Cholesky(f) => f.l().clone(),
             Self::Eigen(r) => r.clone(),
+            Self::Zero(n) => Matrix::zeros(*n, *n),
         }
     }
 
@@ -370,6 +379,7 @@ impl CovarianceRoot {
             Self::Scalar { root, .. } => Matrix::from_element(rows.len(), 1, *root),
             Self::Cholesky(f) => f.l().rows(rows.start, rows.len()).into_owned(),
             Self::Eigen(r) => r.rows(rows.start, rows.len()).into_owned(),
+            Self::Zero(n) => Matrix::zeros(rows.len(), *n),
         }
     }
 
@@ -391,6 +401,8 @@ impl CovarianceRoot {
                 Ok(Matrix::from_element(1, 1, g))
             }
             Self::Cholesky(f) => Ok(cholesky_backward(f.l(), root_adjoint)),
+            // A constant (zero) covariance: no adjoint.
+            Self::Zero(n) => Ok(Matrix::zeros(*n, *n)),
             Self::Eigen(_) => Err(BotorchError::Numerical(
                 "the posterior covariance is not positive definite even with jitter; \
                  its eigendecomposition root is not differentiable"
@@ -528,6 +540,13 @@ mod tests {
         let b = Matrix::from_row_slice(2, 2, &[1.0, 0.0, 0.0, -1e-3]);
         let e = CovarianceRoot::new(&b).unwrap();
         assert!(matches!(e, CovarianceRoot::Eigen(_)));
+        let z = CovarianceRoot::new(&Matrix::zeros(3, 3)).unwrap();
+        assert!(matches!(z, CovarianceRoot::Zero(3)));
+        assert_eq!(z.rows(1..3), Matrix::zeros(2, 3));
+        assert_eq!(
+            z.backward(&Matrix::identity(3, 3)).unwrap(),
+            Matrix::zeros(3, 3)
+        );
         let em = e.to_matrix();
         let rec = &em * em.transpose();
         assert!((rec[(0, 0)] - 1.0).abs() < 1e-14 && rec[(1, 1)].abs() < 1e-14);

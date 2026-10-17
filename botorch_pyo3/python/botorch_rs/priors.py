@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib
 import math
 import struct
+import sys
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -61,13 +62,23 @@ def _check_transform(transform: Any) -> None:
         raise UnsupportedError("Prior transforms are not supported by botorch_rs.")
 
 
-def _float32() -> bool:
+def _is_double(value: Any) -> bool:
+    """Whether ``value`` is a double-precision tensor or array (which GPyTorch
+    keeps in its dtype)."""
+    return str(getattr(value, "dtype", "")) in ("torch.float64", "float64")
+
+
+def _float32(*values: Any) -> bool:
     """Whether GPyTorch would store prior parameters given as Python floats
     in single precision: torch's default dtype (float32 unless changed with
-    ``torch.set_default_dtype``; float32 without torch)."""
-    try:
-        torch = importlib.import_module("torch")
-    except ImportError:
+    ``torch.set_default_dtype``; float32 without torch). Parameters given as
+    double-precision tensors (or arrays) keep their precision."""
+    if any(_is_double(v) for v in values):
+        return False
+    # (Without torch imported, its default dtype is float32: torch is not
+    # imported here.)
+    torch = sys.modules.get("torch")
+    if torch is None:
         return True
     return bool(torch.get_default_dtype() == torch.float32)
 
@@ -97,7 +108,7 @@ class LogNormalPrior(Prior):
         _check_transform(transform)
         self.loc = as_float(loc, "loc")
         self.scale = as_float(scale, "scale")
-        f32 = _float32()
+        f32 = _float32(loc, scale)
         self._rs = _rs.Prior.log_normal(self.loc, self.scale, f32)
         if f32:
             self._rs = _torch_log(self._rs, self.scale)
@@ -119,7 +130,7 @@ class GammaPrior(Prior):
         _check_transform(transform)
         self.concentration = as_float(concentration, "concentration")
         self.rate = as_float(rate, "rate")
-        self._rs = _rs.Prior.gamma(self.concentration, self.rate, _float32())
+        self._rs = _rs.Prior.gamma(self.concentration, self.rate, _float32(concentration, rate))
 
     def __repr__(self) -> str:
         return f"GammaPrior(concentration={self.concentration}, rate={self.rate})"
@@ -138,7 +149,7 @@ class NormalPrior(Prior):
         _check_transform(transform)
         self.loc = as_float(loc, "loc")
         self.scale = as_float(scale, "scale")
-        self._rs = _rs.Prior.normal(self.loc, self.scale, _float32())
+        self._rs = _rs.Prior.normal(self.loc, self.scale, _float32(loc, scale))
 
     def __repr__(self) -> str:
         return f"NormalPrior(loc={self.loc}, scale={self.scale})"
@@ -157,7 +168,7 @@ class UniformPrior(Prior):
         _check_transform(transform)
         self.low = as_float(a, "a")
         self.high = as_float(b, "b")
-        f32 = _float32()
+        f32 = _float32(a, b)
         self._rs = _rs.Prior.uniform(self.low, self.high, f32)
         if f32:
             import struct
@@ -181,7 +192,7 @@ class HalfCauchyPrior(Prior):
     ) -> None:
         _check_transform(transform)
         self.scale = as_float(scale, "scale")
-        self._rs = _rs.Prior.half_cauchy(self.scale, _float32())
+        self._rs = _rs.Prior.half_cauchy(self.scale, _float32(scale))
 
     def __repr__(self) -> str:
         return f"HalfCauchyPrior(scale={self.scale})"
@@ -195,7 +206,7 @@ class HalfNormalPrior(Prior):
     ) -> None:
         _check_transform(transform)
         self.scale = as_float(scale, "scale")
-        f32 = _float32()
+        f32 = _float32(scale)
         self._rs = _rs.Prior.half_normal(self.scale, f32)
         if f32:
             self._rs = _torch_log(self._rs, self.scale)

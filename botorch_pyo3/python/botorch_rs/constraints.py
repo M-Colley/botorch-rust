@@ -215,7 +215,13 @@ class LessThan(Interval):
 
 def _from_rs(constraint: _rs.Constraint) -> Interval:
     """A Python constraint object wrapping an extension constraint."""
-    classes: dict[str, type[Interval]] = {"GreaterThan": GreaterThan, "LessThan": LessThan}
+    from botorch_rs.utils.constraints import LogTransformedInterval
+
+    classes: dict[str, type[Interval]] = {
+        "GreaterThan": GreaterThan,
+        "LessThan": LessThan,
+        "LogTransformedInterval": LogTransformedInterval,
+    }
     cls = classes.get(constraint.kind, Interval)
     obj = cls.__new__(cls)
     obj._rs = constraint

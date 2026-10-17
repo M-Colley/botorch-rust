@@ -7,6 +7,7 @@ from botorch_rs.posteriors.gpytorch import (
     Posterior,
 )
 from botorch_rs.posteriors.multitask import MultitaskGPPosterior
+from botorch_rs.posteriors.posterior_list import PosteriorList
 
 __all__ = [
     "GPyTorchPosterior",
@@ -14,4 +15,5 @@ __all__ = [
     "MultitaskMultivariateNormal",
     "MultivariateNormal",
     "Posterior",
+    "PosteriorList",
 ]

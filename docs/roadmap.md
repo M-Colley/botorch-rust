@@ -30,14 +30,20 @@ functions build on them.
 
 ## Phase 7: models
 
-- `MultiTaskGP` itself and `KroneckerMultiTaskGP`.
-- `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`.
-- MAP SAAS models: `get_map_saas_model`, `AdditiveMapSaasSingleTaskGP`,
-  `EnsembleMapSaasSingleTaskGP`.
-- `AffineDeterministicModel`, `FixedSingleSampleModel`, `EnsembleModel`,
-  `ModelList`, `ModelDict`.
-- For every model: `subset_output`, `construct_inputs`,
-  `condition_on_observations` and `fantasize`.
+- **7a: multi-task models.** `MultiTaskGP` itself and `KroneckerMultiTaskGP`.
+- **7b: other models (done; [details](models.md)).** Ported:
+  - `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`;
+  - the MAP SAAS models: `get_map_saas_model`, `AdditiveMapSaasSingleTaskGP`,
+    `EnsembleMapSaasSingleTaskGP`;
+  - `AffineDeterministicModel`, `FixedSingleSampleModel`, `EnsembleModel`,
+    `ModelList`, `ModelDict`, `OrthogonalAdditiveGP`;
+  - `subset_output`, `construct_inputs`, `condition_on_observations` and
+    `fantasize` for these models.
+
+  Remaining:
+  - the per-component posteriors of `OrthogonalAdditiveGP`;
+  - the knowledge gradient, entropy search and multi-objective acquisition
+    functions on ensemble models.
 
 ## Phase 8: single-objective acquisition functions (mostly done)
 
