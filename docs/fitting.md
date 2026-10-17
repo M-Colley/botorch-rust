@@ -1,20 +1,23 @@
 # Fitting at extreme hyperparameters
 
 How `fit_gpytorch_mll` in botorch-rust reproduces BoTorch's fits when
-L-BFGS-B visits extreme hyperparameters, and how chaotic fits are compared
-with BoTorch: the bug, GPyTorch's non-finite values reproduced, the
-deviations, the equivalence results, the statistical criterion for chaotic
-fits and the BoTorch bug found. Reference: BoTorch main at da00e0401 and
-BoTorch 0.18.1, with torch 2.13 and 2.14.1.
+L-BFGS-B visits extreme hyperparameters, and how fits are compared with
+BoTorch: the bug, GPyTorch's non-finite values reproduced, the deviations,
+the equivalence results, the two-stage comparison of fits and the BoTorch
+bug found. Reference: BoTorch main at da00e0401 and BoTorch 0.18.1, with
+torch 2.13 and 2.14.1.
 
 Rust: `botorch_core/src/kernels/nonfinite.rs` (new), `fit.rs`, `mll.rs`,
 `kernels.rs`, `kernels/eval.rs`, `kernels/covar.rs`, `priors.rs` and the
 marginal log likelihoods of `LCEMGP`, `MultiTaskGP` and
 `KroneckerMultiTaskGP`. Tests: `botorch_core/tests/fit_nonfinite.rs`,
 `botorch_pyo3/tests/test_parity_fit_nonfinite.py`,
-`botorch_pyo3/tests/test_parity.py`; the statistical comparison of chaotic
-fits in `botorch_pyo3/tests/parity_helpers.py` and
-`botorch_core/tests/common/mod.rs`.
+`botorch_pyo3/tests/test_parity.py`; the comparison of fits in
+`botorch_pyo3/tests/parity_helpers.py` and
+`botorch_core/tests/common/mod.rs`, its tests in
+`botorch_pyo3/tests/test_fit_comparison.py` and
+`botorch_core/tests/kernels_6a_parity.rs`, and its Monte Carlo in
+`scripts/fit_comparison_sim.py`.
 
 ## Supported API
 
@@ -263,78 +266,221 @@ Live (`test_parity_fit_nonfinite.py`, BoTorch main):
 | sweep, 200 random data seeds over the eight `CONFIGS`: loss above BoTorch's | 1e-6, twin criterion where above | 1.1e-8 (1 seed decided by twins: within, 2e-3 of its tolerance) |
 | batched fit (two outputs, one through a NaN covariance): element loss above BoTorch's unbatched fit | 1e-6 | 1.6e-15 (BoTorch's batched fit is 2.72 worse, bug 1) |
 
-`test_parity.py::test_fit_parity` (deterministic seeds, 16 twins): best loss
-above BoTorch's best 3.0e-8 of the tolerance, BoTorch's spread at its best
-optimum up to 9.1e-9, no failed first attempts.
+`test_parity.py::test_fit_parity` (deterministic seeds, 16 twins, all decided
+by stage 1 of the comparison below): best loss above BoTorch's best 3.0e-8
+of the tolerance, BoTorch's spread at its best optimum up to 9.1e-9, no
+failed first attempts.
 
-## Chaotic fits: a statistical criterion
+## Comparing fits
 
-Where BoTorch's own fit outcomes on twins spread over more than 1e-3 (or,
-in the 7b tests, fewer than a quarter of them lie within 1e-4 of the best),
-the fit tests compared botorch_rs's best with BoTorch's median and its
-median with BoTorch's upper quartile, on 17 outcomes each. That is not a
-sound test: with outcomes drawn from the same distribution it fails often.
-Main CI failed it on Linux and macOS for `multitask_7a_parity.rs`, case
-`default_t3_d2` (errors 6.6e-5 and 1.2e-3), and under emulated platform
-differences (below) it fails 3 of 11 times on Windows.
+BoTorch's own fit depends on rounding: on twins whose training inputs are
+perturbed at 1e-14 .. 1e-11, long L-BFGS-B runs end in other optima or stop
+early on flat regions. Every fit test therefore compares botorch_rs's fits
+with BoTorch's on the same twins, first attempts only (retries start from
+prior samples drawn by different random number generators).
 
-The new criterion (`parity_helpers.compare_chaotic_fits`,
-`tests/common/mod.rs::compare_chaotic_fits`), used consistently in the Rust
-6a, 6b, 7a (`MultiTaskGP` and `KroneckerMultiTaskGP`) and 7b fixture tests,
-the Python 6a, 6b, 7a and 7b live tests and `test_parity.py`:
+### The flake
 
-- **64 twins** (plus the model itself) for chaotic cases: the fixture
-  generators (`fixtures_6a_kernels.is_chaotic`, used by 6a, 6b, 7a and 7b)
-  add twins 17..64 when the first 17 outcomes are chaotic or multimodal (no
-  6b fixture is); the live tests run `parity_helpers.CHAOTIC_TWINS = 64`
-  twins (the slowest chaotic live tests: 6a `oak` 104 s, 7a `default_t3_d2`
-  79 s, Kronecker `default_m3_d2` 77 s).
-- **One-sided Mann–Whitney U test** at level `1e-3` that botorch_rs's
-  first-attempt losses are not stochastically larger than BoTorch's:
-  `U = #{(r, b): r > b + 1e-6} + ½ #{|r - b| <= 1e-6}`, `z = (U - n₁n₂/2 -
-  ½) / sqrt(n₁n₂(n₁+n₂+1)/12)`, fail if `z > 3.09`.
-- **Best-cluster bound**: botorch_rs's best loss must not exceed BoTorch's
-  `k`-th smallest by more than 1e-6, with the smallest `k` such that
-  `C(n_bt, k) / C(n_rs + n_bt, k) <= 1e-3` (`k = 10` for 65 against 65,
-  `k = 9` for 17 against 17). If at least `k` BoTorch outcomes lie in its
-  best cluster, botorch_rs's best lies in it as well.
+The fit tests bounded one sample: botorch_rs's fit of the model itself had
+to end no higher than BoTorch's worst of 5 (live tests) or 17 (fixtures)
+outcomes. Wherever both libraries share a tail of outcomes, this fails by
+chance. CI's Linux parity job failed
+`test_parity_6b_transforms.py::test_fit_from_identical_initial_values[warp_priors_bounds]`
+(81.9 × the tolerance). A diagnostic on Linux (torch 2.14.1, the model and
+64 twins in both libraries) showed that both libraries draw their outcomes
+from the same distribution. Most fits reach -0.97612859, and a tail stops
+early on a flat region near -0.97592 (relative-reduction stop): BoTorch 6 of
+65, botorch_rs 4 of 65. The two objectives agree at both optima to 1e-12.
+botorch_rs's fit of the model itself happened to land in the tail. With a
+shared tail of probability `p`, the bound fails with probability about
+`p (1 - p)^5`, 5% here. The median and quartile comparison used before for
+chaotic cases (on 17 outcomes) failed by chance in the same way: on CI for
+7a `default_t3_d2` on Linux and macOS, and in 3 of 11 emulated platform
+replicates.
 
-False-positive rate: under the null hypothesis that botorch_rs's outcomes
-are another sample of BoTorch's (exchangeable values), each check fails with
-probability at most `1e-3`, a chaotic case at most `2e-3`. Ties within
-1e-6 and the positive dependence within a twin pair (both libraries fit the
-same perturbed inputs) only reduce the variance of `U` and the chance that
-the `k` smallest values all come from BoTorch, so both checks are
-conservative. Measured: Monte Carlo with continuous outcomes, 400000
-replications, `z > 3.09` in 0.090% (65 against 65), 0.067% (17), 0.090%
-(33); with a discrete four-mode distribution plus noise and ties at 1e-6,
-20000 replications: 0.13% (Mann–Whitney) and 0.085% (rank bound).
+### The two-stage procedure
 
-Results on the regenerated fixtures (Windows): `default_t3_d2` z = 0.86,
-botorch_rs's best 0.0924066 below BoTorch's best 0.0924093; 6a chaotic
-cases (`index_d3`, `oak_d3`, `periodic_shared_d2`, `positive_index_d3`,
-`product_scale_d3`) z <= 0.81; 7b `mixed_last` z = 0.79; every best within
-BoTorch's 10-th best.
+`parity_helpers.compare_twin_fits` (built on `two_stage_fit_comparisons`) and
+`tests/common/mod.rs::compare_fits` (built on `two_stage_fit_comparison`)
+replace the former checks in every fit test:
 
-**Emulated platform differences** (`scratchpad/fitflake/stability_mt.py`):
-botorch_rs's fits of `default_t3_d2` on all 65 twins with the inputs
-perturbed again at 1e-15 (10 replicates, plus the unperturbed run): the new
-criterion passes in all 11 (z from -1.15 to +0.96, best 1.0e-5 .. 1.6e-5
-below BoTorch's 10-th best 0.0924190), the old one on 17 outcomes fails in
-3 of 11. The CI outcomes reported for Linux (best 0.0924141922) and macOS
-(best 0.0924154162) lie below BoTorch's 10-th best of the 65 fixture
-outcomes, so they pass the best-cluster bound; the Mann–Whitney test needs
-their full samples, which match BoTorch's distribution if the platforms'
-outcomes are statistically consistent with it.
+- live tests, 4 twins in stage 1: 6a, 6b, 7a (`MultiTaskGP`,
+  `KroneckerMultiTaskGP`), 7b (per model element; the all-categorical mixed
+  model has no twins and only stage 1), and LCEMGP (the Unity models and
+  the `Interval` `SingleTaskGP`s, with BoTorch's fit with L-BFGS-B's
+  variables reversed as one more BoTorch outcome); `test_parity.py` and the
+  `test_parity_fit_nonfinite.py` sweep with 16 twins, its regression seeds
+  with 4; `test_equivalence.py::test_fit` with none (the model itself);
+- Rust fixture tests, 16 twins in stage 1: 6a, 6b, 7a (both models), 7b and
+  LCEMGP (the fixtures record no attempts there, so all fits count, as
+  before).
 
-**torch 2.14.1** (CI's parity job): the chaotic fixture cases regenerated
-with torch 2.14.1 (BoTorch main) stay chaotic, and botorch_rs's outcomes
-pass the criterion against them: 6a z <= 0.45, 7b `mixed_last` z = 0.81,
-`default_t3_d2` z = 1.89 (11 emulated-platform replicates: z from -0.17 to
-+1.89, best 8.7e-6 .. 1.4e-5 below BoTorch 2.14's 10-th best 0.0924177).
-BoTorch's own outcomes shift between the torch versions by z = 0.80
-(`default_t3_d2`; other cases |z| <= 0.75). The Python live fit tests (6a,
-6b, 7a, 7b) pass under torch 2.14.1 (worst z 0.28) as under 2.13.
+1. **Stage 1** (deterministic, on the twins fitted anyway): botorch_rs's
+   best loss must reach BoTorch's best, and botorch_rs's fit of the model
+   itself (live tests; if its first attempt succeeded) or every one of its
+   stage-1 fits (fixture tests) must not end above BoTorch's worst, both
+   within `max(1e-6, 10 ×` BoTorch's spread at its best optimum`)` (the
+   spread of BoTorch's outcomes within 1e-4 of its best). If both hold, the
+   case passes.
+2. **Stage 2** (only if stage 1 fails): both libraries fit twins up to 64
+   (the Rust fixtures hold BoTorch's outcomes on 64 twins, and botorch_rs
+   fits the same twins), and on all 65 outcomes per library:
+   - a one-sided Mann–Whitney U test at level `1e-3` that botorch_rs's
+     losses are not stochastically larger than BoTorch's: `U = #{(r, b): r >
+     b + 1e-6} + ½ #{|r - b| <= 1e-6}`, `z = (U - n₁n₂/2 - ½) /
+     sqrt(n₁n₂(n₁+n₂+1)/12)`, fail if `z > 3.09`;
+   - a rank bound: botorch_rs's best loss must not exceed BoTorch's `k`-th
+     smallest by more than 1e-6, with the smallest `k` such that `C(n_bt, k)
+     / C(n_rs + n_bt, k) <= 1e-3` (`k = 10` for 65 against 65 and against
+     66). If at least `k` of BoTorch's outcomes lie in its best cluster,
+     botorch_rs's best lies in it as well.
+
+A case decided by stage 2 prints its diagnostics: stage 1's excesses, `z`,
+`k`, BoTorch's `k`-th best and the sorted outcomes of both libraries. pytest
+shows them for a failing test and repeats them in the assertion message; the
+Rust tests print them before the error table, which lists the
+`fit (stage 2)` rows. The pytest summary and the Rust tables record stage
+1's quantities for cases decided by stage 1 and stage 2's otherwise.
+
+The second check of stage 1 differs because stage 2 costs differ. In the
+fixture tests, stage 2 costs only botorch_rs's fits (fractions of a second), and
+checking every stage-1 fit sends more regressions to stage 2 (power table
+below). In the live tests, stage 2 needs up to 64 BoTorch fits (18 to 32 s
+each for 7a `default_t3_d2`). Checking every stage-1 fit there sent
+`default_t3_d2` to stage 2 on Windows (one of its 5 botorch_rs fits 1.48 ×
+the tolerance above BoTorch's worst of 5; stage 2 then passed with `z =
+-0.71`), and its test took 1074 s instead of about 80 s. The live tests
+therefore keep the former check of the model's own fit.
+
+### False-positive rate
+
+Under the null hypothesis that botorch_rs's outcomes are another sample of
+BoTorch's (exchangeable values), stage 2 alone fails with probability at
+most `2e-3`: each check at most `1e-3`. Ties within 1e-6 and the positive
+dependence within a twin pair (fitted on the same inputs) only reduce the
+variance of `U` and the chance that the `k` smallest values all come from
+BoTorch, so both checks are conservative. Stage 2 uses a fixed set of twins
+(0..64), whatever stage 1 found, and the procedure fails only if both stages
+fail:
+
+`P(fail) = P(stage 1 fails and stage 2 fails) <= P(stage 2 fails) <= 2e-3`.
+
+Stage 1 only adds a way to pass, so the procedure is never less reliable
+than stage 2 alone, for any stage-1 check.
+
+### Power
+
+`P(fail) = P(stage 2 fails) - P(stage 1 passes and stage 2 fails)`. A
+regression that moves botorch_rs's outcomes beyond stage 1's tolerance on
+the stage-1 twins fails stage 1 with certainty and then stage 2 as often as
+stage 2 alone does. This covers botorch_rs never reaching BoTorch's best
+optimum, every fit ending higher, and every fit stopping early. A regression
+that only makes an existing tail or optimum more frequent passes stage 1
+whenever botorch_rs's fits on the stage-1 twins happen to stay within
+BoTorch's range. It is then caught less often than by stage 2 alone. With
+the live tests' check of the model's own fit, it is caught at most as often
+as by the former one-sample bound (which failed on the same events, and on
+chance ones as well). Chaotic cases, which the previous version sent
+straight to stage 2's checks, now pass when stage 1 passes: a doubled spread
+fails 40% of the time in the live tests instead of 59%, the price of not
+fitting 64 twins for every chaotic case. A shift smaller than stage 1's
+tolerance passes by design.
+
+Monte Carlo (`scripts/fit_comparison_sim.py`: 200000 replications under the
+null hypothesis, 20000 per regression; failure rates; "own" checks the
+model's own fit in stage 1 as the live tests do, "every" every stage-1 fit
+as the fixture tests do; `n₁` outcomes per library in stage 1, 65 in stage
+2):
+
+| outcomes of BoTorch and botorch_rs | stage 2 alone | two-stage, own, `n₁ = 5` | own, `n₁ = 17` | every, `n₁ = 17` |
+| --- | --- | --- | --- | --- |
+| *null hypothesis (same distribution)* | | | | |
+| one optimum (spread 1e-9) | 0 | 0 | 0 | 0 |
+| tail of early stops, 8% (Linux, 6b warp) | 0 | 0 (stage 1 fails 7.1%) | 0 (4.3%) | 0 (44%) |
+| tail of early stops, 25% | 0.003% | 0.001% | 0.001% | 0.002% |
+| chaotic (exponential, scale 1e-3) | 0.17% | 0.097% | 0.025% | 0.088% |
+| four optima, 30/30/20/20% | 0.059% | 0.021% | 0.006% | 0.011% |
+| four optima, best rare 5/45/30/20% | 0.045% | 0.025% | 0.025% | 0.026% |
+| *regressions (botorch_rs worse)* | | | | |
+| optimum never reached (tail 8% to 100%) | 100% | 100% | 100% | 100% |
+| optimum 2e-6 higher | 100% | 100% | 100% | 100% |
+| fits stopped early (`maxiter = 5`) | 100% | 100% | 100% | 100% |
+| best optimum never reached (four optima, 30% to 0%) | 99.8% | 85% | 99.6% | 99.6% |
+| tail 8% to 70% | 100% | 59% | 32% | 83% |
+| tail 8% to 40% | 46% | 16% | 11% | 38% |
+| tail 8% to 20% | 0.05% | 0.02% | 0.02% | 0.05% |
+| four optima, best 30% to 10% | 29% | 18% | 7.0% | 7.6% |
+| chaotic, scale 1e-3 to 2e-3 | 59% | 40% | 18% | 53% |
+| chaotic, scale 1e-3 to 1.5e-3 | 12% | 8.3% | 3.0% | 10% |
+
+Real fits: botorch_rs stopped after 5 L-BFGS-B iterations fails both stages
+in `test_fit_comparison.py::test_degraded_fits_fail_both_stages`
+(`test_parity.py`'s `default` configuration: stage 1 8.3e3 × the tolerance;
+stage 2 `z = 9.83`, the largest possible value, every botorch_rs outcome
+above every BoTorch outcome; best 8.3e-3 above BoTorch's 10-th best) and in
+`kernels_6a_parity.rs::degraded_fits_fail_the_two_stage_fit_comparison`
+(`rbf_shared_d3` and `matern32_scale_d2` against their 64-twin fixtures:
+`z = 9.83`, best 7.5e-2 and 7.2e-2 above BoTorch's 10-th best).
+
+### The Linux diagnostic
+
+`test_fit_comparison.py::test_linux_warp_outcomes_fail_stage_one_and_pass_stage_two`
+and `kernels_6a_parity.rs::linux_warp_outcomes_pass_the_two_stage_fit_comparison`
+hold its 65 + 65 outcomes. Stage 1 with 4 twins fails: botorch_rs's fit of
+the model itself ends 213 × the tolerance above BoTorch's worst of 5. Stage
+2 passes: `z = -0.452`, `k = 10`, and botorch_rs's best -0.9761285871 equals
+BoTorch's 10-th best (at the printed 10 decimals).
+
+### Fixtures
+
+`scripts/generate_fixtures.py` (BoTorch main da00e0401, torch 2.13,
+single-threaded) now records 64 twins for every fit case:
+`fixtures_6a_kernels.FIT_TWINS` (used by the 6a, 6b, 7a and 7b generators)
+and `fixtures_lcemgp.FIT_TWINS` (the LCEMGP Monte-Carlo twins stay at 16).
+The regenerated fit cases: 6a 21 (the phase took 1120 s), 6b 6 (173 s), 7a 2
+`MultiTaskGP` and 1 `KroneckerMultiTaskGP` (1939 s, mostly BoTorch's slow fits
+of `mtgp_default_t3_d2`, which had 64 twins before as well, and
+`kron_default_m3_d2`), 7b 9 (394 s), LCEMGP 10 (1012 s). The cases that had
+64 twins already (6a `index_d3`, `oak_d3`, `periodic_shared_d2`,
+`positive_index_d3`, `product_scale_d3`, 7a `default_t3_d2`, 7b `mixed_last`)
+are unchanged. A JSON comparison with the previous fixtures (all 102 files of
+the five phases): the previous twins are a prefix of the new ones (bitwise),
+and every other field is byte-identical (the new file, with its twin arrays
+replaced by the old ones, serializes to the old file's bytes).
+
+### Results
+
+Windows, BoTorch main, torch 2.13:
+
+- Rust fixture tests: every fit case passes. Two go to stage 2: 6a
+  `positive_index_d3` (`z = -0.68`, botorch_rs's best -0.8031547 below
+  BoTorch's 10-th best -0.8030219) and 7b `mixed_last` (`z = 0.79`, best
+  0.4448777 below BoTorch's 10-th best 0.4449453). The cases that were
+  compared statistically before (6a `index_d3`, `oak_d3`,
+  `periodic_shared_d2`, `product_scale_d3`, 7a `default_t3_d2`) pass stage 1
+  on their first 16 twins. The fit tests take as long as before (6a 36 s,
+  7a 32 s, debug build).
+- Live tests (BoTorch main and 0.18.1, the same outcomes): 6a `oak` (`z =
+  -0.23`) and `product_scale` (`z = -0.25`; one botorch_rs twin reaches
+  0.339, far below BoTorch's best 0.787) go to stage 2; every other fit case
+  of `test_parity.py`, `test_parity_fit_nonfinite.py`, 6a, 6b, 7a, 7b, LCEMGP
+  and `test_equivalence.py` passes stage 1. The slowest fit tests: 6a `oak`
+  90 s and `product_scale` 87 s, 7a `default_t3_d2` 76 s, Kronecker
+  `default_m3_d2` 74 s.
+- torch 2.14.1 (BoTorch main, CI's parity job): the live fit tests pass, 6a
+  `oak` (`z = -0.23`) and `product_scale` (`z = 0.28`) by stage 2, all
+  others by stage 1.
+
+Stage 2's checks were measured before as the criterion for chaotic cases
+(`scratchpad/fitflake/stability_mt.py`): botorch_rs's fits of 7a
+`default_t3_d2` on all 65 twins with the inputs perturbed again at 1e-15
+(10 replicates plus the unperturbed run) pass in all 11 (`z` from -1.15 to
++0.96, best 1.0e-5 .. 1.6e-5 below BoTorch's 10-th best), and under torch
+2.14.1 in all 11 against fixtures regenerated with torch 2.14.1 (`z` from
+-0.17 to +1.89). The CI outcomes reported for Linux (best 0.0924141922) and
+macOS (best 0.0924154162) lie below BoTorch's 10-th best of the fixture's 65
+outcomes. BoTorch's own outcomes shift between the torch versions by `z =
+0.80` (`default_t3_d2`; other cases `|z| <= 0.75`).
 
 **`default_t3_d2` and the non-finite fix**: botorch_rs's path for this case
 (1815 evaluations, raw `var` down to -1.1e4 and `covar_factor` up to 7.4e3)
@@ -358,6 +504,11 @@ its outcomes.
   eigendecompositions of the Kronecker factors, whose NaN handling may
   differ from the Cholesky's `NanError`). The torch-order prior derivatives
   cover `SingleTaskGP` (standard kernels and trees, the noise prior) only.
+- The fit comparisons use first attempts only. botorch_rs's first attempt
+  fails more often than BoTorch's on 6a `periodic_shared_d2` (on 32 of its
+  65 twins, BoTorch's on 2), which no test checks; not investigated.
+- The LCEMGP fixtures record no attempts, so their comparison counts all
+  fits (as before); the live LCEMGP tests compare first attempts.
 
 ## BoTorch bugs found
 
