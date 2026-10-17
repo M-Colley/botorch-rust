@@ -1,15 +1,19 @@
-# Phase 7a: multi-task GPs (`MultiTaskGP`, `KroneckerMultiTaskGP`)
+# Multi-task GPs
 
-Draft for README / `docs/api_coverage.md` (phase 7a of the roadmap). Rust:
-`botorch_core/src/models/multitask/` (`mod.rs`: the shared `TaskLayout`,
-extended; `gp.rs`: `MultiTaskGP`; `kronecker.rs`: `KroneckerMultiTaskGP`).
+The port of BoTorch's multi-task GPs, `MultiTaskGP` and `KroneckerMultiTaskGP`
+(roadmap phase 7a): the supported API, the deviations from BoTorch, the
+equivalence results and the BoTorch and GPyTorch bugs found. Reference: BoTorch
+main at da00e0401 and BoTorch 0.18.1 (GPyTorch 1.15.2, linear_operator 0.6.1).
+
+Rust: `botorch_core/src/models/multitask/` (`mod.rs`: the `TaskLayout` shared
+with `LCEMGP`; `gp.rs`: `MultiTaskGP`; `kronecker.rs`: `KroneckerMultiTaskGP`).
 Bindings: `botorch_pyo3/src/multitask.rs`. Python:
 `botorch_rs.models.multitask`, `botorch_rs.posteriors.multitask`,
 `botorch_rs.likelihoods`, `botorch_rs.kernels.MultitaskKernel`,
 `botorch_rs.priors.SmoothedBoxPrior`. `LCEMGP` (which shares `TaskLayout` and
 subclasses `MultiTaskGP` in Python) is unchanged; its fixtures pass bitwise.
 
-## Supported API (rows for README)
+## Supported API
 
 | BoTorch | botorch_rs | Notes |
 | --- | --- | --- |
@@ -23,7 +27,7 @@ subclasses `MultiTaskGP` in Python) is unchanged; its fixtures pass bitwise.
 | `PositiveIndexKernel(task_prior=LKJCovariancePrior)` | same | An LKJ prior on the task covariance matrix. |
 | `Normalize(indices=...)` | same | Only the given columns (as BoTorch); for `MultiTaskGP` (a `SingleTaskGP` / transform chain with `indices` raises `UnsupportedError`). |
 
-## Not ported (and why)
+## What remains unported (in this area)
 
 - **`HeterogeneousMTGP`** and its heterogeneous kernels (`botorch.models.
   heterogeneous_multitask`, `botorch.models.kernels.heterogeneous_multitask`):

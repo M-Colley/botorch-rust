@@ -30,7 +30,11 @@ functions build on them.
 
 ## Phase 7: models
 
-- **7a: multi-task models.** `MultiTaskGP` itself and `KroneckerMultiTaskGP`.
+- **7a: multi-task models (done; [details](multitask.md)).** `MultiTaskGP`
+  and `KroneckerMultiTaskGP`, with `MultitaskGaussianLikelihood`,
+  `HadamardGaussianLikelihood`, `MultitaskKernel` and `SmoothedBoxPrior`.
+  Remaining: `HeterogeneousMTGP` and its kernels, batched training data,
+  candidates with the task column.
 - **7b: other models (done; [details](models.md)).** Ported:
   - `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`;
   - the MAP SAAS models: `get_map_saas_model`, `AdditiveMapSaasSingleTaskGP`,
