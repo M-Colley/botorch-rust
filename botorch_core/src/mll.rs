@@ -150,7 +150,8 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
         };
         let xs = covar.prepare(train_x_tf)?;
         let mut k = covar.symmetric(&xs);
-        let nan = covar.training_nan(train_x_tf);
+        // Inputs from learned transforms require gradients in GPyTorch.
+        let nan = covar.training_nan(train_x_tf, input.is_some());
         nan.inject(&mut k);
         let n = model.num_train();
         let nf = n as f64;

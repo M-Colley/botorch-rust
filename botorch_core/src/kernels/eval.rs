@@ -374,8 +374,10 @@ impl TreeKernel {
     /// the `n × input_dim` training inputs) and the parameters (flat
     /// offsets) whose gradient is NaN, for the RBF, Matérn, rational
     /// quadratic, cosine and periodic kernels of the tree (see
-    /// [`nonfinite`]; other kernels never contribute).
-    pub fn training_nan(&self, x: &Matrix) -> TrainingNan {
+    /// [`nonfinite`]; other kernels never contribute). `inputs_require_grad`:
+    /// the inputs depend on learned parameters, which selects GPyTorch's
+    /// autograd path also for kernels with a single lengthscale.
+    pub fn training_nan(&self, x: &Matrix, inputs_require_grad: bool) -> TrainingNan {
         let mut out = TrainingNan::default();
         let (n, d) = x.shape();
         if n == 0 || d != self.input_dim {
@@ -384,7 +386,8 @@ impl TreeKernel {
         let data: Vec<f64> = (0..n)
             .flat_map(|i| (0..d).map(move |j| x[(i, j)]))
             .collect();
-        self.root.training_nan(&data, n, d, &mut out);
+        self.root
+            .training_nan(&data, n, d, inputs_require_grad, &mut out);
         out
     }
 
@@ -939,10 +942,17 @@ fn for_pairs<F: FnMut(usize, usize, f64)>(w: &Matrix, diagonal: bool, mut f: F) 
 
 impl Node {
     /// See [`TreeKernel::training_nan`]: `data` holds the parent's `n ×
-    /// parent_k` inputs (row-major). The inputs never require gradients,
-    /// so a single lengthscale selects GPyTorch's `RBFCovariance` /
+    /// parent_k` inputs (row-major). Unless the inputs require gradients, a
+    /// single lengthscale selects GPyTorch's `RBFCovariance` /
     /// `MaternCovariance` functions.
-    fn training_nan(&self, data: &[f64], n: usize, parent_k: usize, out: &mut TrainingNan) {
+    fn training_nan(
+        &self,
+        data: &[f64],
+        n: usize,
+        parent_k: usize,
+        grad: bool,
+        out: &mut TrainingNan,
+    ) {
         let k = self.k;
         let local: Vec<f64> = match &self.dims {
             Some(dims) => select(data, n, parent_k, dims),
@@ -950,7 +960,7 @@ impl Node {
         };
         match &self.kind {
             NodeKind::Stationary { kind, ls, shared } => {
-                let r = nonfinite::stationary(*kind, &local, n, k, ls, *shared);
+                let r = nonfinite::stationary(*kind, &local, n, k, ls, *shared && !grad);
                 if r.any() {
                     out.merge(r);
                 } else if !r.nan_gradients().is_empty() {
@@ -964,10 +974,10 @@ impl Node {
                 out.merge(nonfinite::periodic(&local, n, k, ls, period));
             }
             NodeKind::Cosine { period } => out.merge(nonfinite::cosine(&local, n, k, *period)),
-            NodeKind::Scale { base, .. } => base.training_nan(&local, n, k, out),
+            NodeKind::Scale { base, .. } => base.training_nan(&local, n, k, grad, out),
             NodeKind::Additive(kids) | NodeKind::Product(kids) => {
                 for kid in kids {
-                    kid.training_nan(&local, n, k, out);
+                    kid.training_nan(&local, n, k, grad, out);
                 }
             }
             NodeKind::Ltf {
@@ -977,8 +987,8 @@ impl Node {
                 ..
             } => {
                 let sub = select(&local, n, k, nonfid);
-                unbiased.training_nan(&sub, n, nonfid.len(), out);
-                biased.training_nan(&sub, n, nonfid.len(), out);
+                unbiased.training_nan(&sub, n, nonfid.len(), grad, out);
+                biased.training_nan(&sub, n, nonfid.len(), grad, out);
             }
             _ => {}
         }
@@ -2792,11 +2802,11 @@ mod tests {
         );
         let x = points(6, 3, 7);
         let k = TreeKernel::build(&tree, &[0.0, 0.0, 0.0, 0.0], 3).unwrap();
-        assert!(!k.training_nan(&x).any());
+        assert!(!k.training_nan(&x, false).any());
         // A Matérn lengthscale that underflowed to zero: NaN (GPyTorch's
         // x / 0 before the centering of `sq_dist`).
         let k = TreeKernel::build(&tree, &[0.0, 0.0, -800.0, 0.0], 3).unwrap();
-        let nan = k.training_nan(&x);
+        let nan = k.training_nan(&x, false);
         assert!(nan.any());
         let mut m = k.covariance_symmetric(&x).unwrap();
         nan.inject(&mut m);
@@ -2807,8 +2817,13 @@ mod tests {
         // lengthscale derivative `inf · 0` is NaN.
         let rbf = st(KernelKind::Rbf, None);
         let k = TreeKernel::build(&rbf, &[1e-160f64.ln()], 1).unwrap();
-        let nan = k.training_nan(&Matrix::from_row_slice(2, 1, &[-0.5, 0.5]));
+        let nan = k.training_nan(&Matrix::from_row_slice(2, 1, &[-0.5, 0.5]), false);
         assert!(!nan.any());
         assert_eq!(nan.nan_gradients(), &[0]);
+        // Inputs from a learned transform require gradients: GPyTorch's
+        // autograd path computes the diagonal too, `-2c² + c² + c²` with
+        // `c² = inf`, which is NaN.
+        let two = Matrix::from_row_slice(2, 1, &[-0.5, 0.5]);
+        assert!(k.training_nan(&two, true).any());
     }
 }

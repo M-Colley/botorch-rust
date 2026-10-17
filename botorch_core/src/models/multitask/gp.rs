@@ -1033,7 +1033,7 @@ impl MultiTaskGP {
         let mut k = tree.symmetric(&prep);
         // GPyTorch's NaN entries at extreme hyperparameters (see
         // `crate::kernels::nonfinite`).
-        let nan = tree.training_nan(&self.train_kx);
+        let nan = tree.training_nan(&self.train_kx, false);
         nan.inject(&mut k);
         let noise = self.noise_of(raw);
         for i in 0..n {

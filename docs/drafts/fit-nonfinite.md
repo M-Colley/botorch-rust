@@ -125,6 +125,22 @@ wherever GPyTorch's covariance is NaN.
   `KroneckerMultiTaskGP` (kernel trees) inject GPyTorch's NaN entries too;
   the multi-fidelity, mixed and MAP-SAAS models are `SingleTaskGP`s with
   kernel trees and follow the `SingleTaskGP` path.
+- **Learned input transforms** (phase 6b: `Warp`, `LearnedFeatureImputation`
+  fitted jointly with the GP): GPyTorch's NaN entries are computed on the
+  transformed training inputs at the current transform parameters, and
+  non-finite transformed inputs propagate into the covariance (all entries
+  NaN after `sq_dist`'s centering, so the Cholesky raises `Nan` and the fit
+  sees NaN, as BoTorch's closure does) instead of ending the fit with an
+  `InputData` error. Inputs computed by a learned transform require
+  gradients in torch, so GPyTorch evaluates every kernel on its autograd
+  path (no `RBFCovariance` / `MaternCovariance` with their zeroed diagonal),
+  and so does the emulation. `Warp`'s concentrations are bounded below by `1e-4`
+  (L-BFGS-B bounds) and its inputs clamped to `[eps, 1 - eps]`, so the
+  Kumaraswamy CDF stays finite in `[0, 1]` for any concentrations; the
+  imputation values are mapped into their bounds by a sigmoid if bounds are
+  given, else used as they are (extreme values then overflow in the
+  kernel's `sq_dist` like any other input). `Warp` models were probed like
+  the kernels (see the equivalence tables).
 - **Batched fits** (`BatchedMultiOutputGP`, `fit_gpytorch_mll_scipy`): every
   element sees only its own NaN covariances, with NaN gradients. This
   deviates from BoTorch, see bug 1 below.
@@ -144,7 +160,14 @@ wherever GPyTorch's covariance is NaN.
    botorch_rs keeps the exact values. The noise depends on the BLAS
    summation order (no sequential order, with or without FMA, reproduces
    MKL's here), so it cannot be reproduced; BoTorch's own fits vary between
-   twins where it matters (seeds 505 and 856 of `legacy_gamma` below).
+   twins where it matters (seeds 505 and 856 of `legacy_gamma` below). The
+   same holds for last-bit differences of inputs computed by a learned
+   transform (`Warp`'s Kumaraswamy CDF is not bitwise torch's): divided by a
+   lengthscale below ~1e-170 they alone decide whether squared distances
+   overflow (e.g. a saturated warp gives a constant column in one library
+   and not quite in the other), and with subnormal lengthscales
+   botorch_rs's uncentered scaling `x/ℓ` overflows where GPyTorch's Matérn
+   kernel, which centers first, does not (gradients NaN, values equal).
 3. **Gradient NaNs of GPyTorch's autograd path while the covariance is
    finite** are not reproduced: narrow bands around the overflow thresholds
    for RBF / Matérn kernels with several lengthscales; for the `α` of
@@ -156,16 +179,16 @@ wherever GPyTorch's covariance is NaN.
 
 ## Existing fixtures
 
-All fixture comparisons are unchanged (printed outcomes identical), except
-one: in `kernels_6a_parity.rs`, `product_scale_d3`, a twin's fit visits
-points where GPyTorch's covariance is NaN (scaled inputs that overflow in
-the product kernel's RBF factor). With the NaN injection, its first attempt
-succeeds like BoTorch's: botorch_rs's first-attempt successes went from 63
-to 64 of 65 (BoTorch: 65 of 65); every other printed outcome of the 6a, 7a,
-7b, LCEMGP and core fixture tests is identical with and without the
-injection. Instrumenting the fits of all Rust tests shows non-finite values
-only in `kernels_6a_parity.rs` (kernel trees, which passed them to L-BFGS-B
-before as well) and in the new `fit_nonfinite.rs`.
+Instrumenting the fits of all Rust tests shows non-finite losses or
+gradients only in `kernels_6a_parity.rs` (kernel trees, which passed them to
+L-BFGS-B before as well) and in the new `fit_nonfinite.rs`; all other
+fixture fits never reach the changed code paths, and their outcomes are
+unchanged. In `kernels_6a_parity.rs`, one twin of `product_scale_d3` visits
+points where GPyTorch's covariance is NaN but botorch_rs's exact one was
+finite: with the NaN injection its first attempt succeeds like BoTorch's
+(botorch_rs's first-attempt successes went from 63 to 64 of 65; BoTorch:
+65 of 65). Every other printed outcome of the 6a test is identical with and
+without the injection.
 
 ## Scan of seeds 7..1006 (all eight `CONFIGS`, 8000 fits)
 
@@ -209,6 +232,7 @@ Live (`test_parity_fit_nonfinite.py`, BoTorch main):
 | --- | --- | --- |
 | loss class (finite / NaN / `+inf`) at random extreme raw hyperparameters, 60 points each: RBF and Matérn-1/2, 3/2, 5/2 with 1..3 inputs, kernel trees with a shared and with ARD lengthscales, RQ, periodic, cosine | equal | equal at all 1242 classified points (cosine: 18 points where BoTorch or botorch_rs raise `NotPSDError`, whose jitter decision depends on rounding) |
 | NaN pattern of the gradient (RBF, Matérn, trees) | equal | equal |
+| loss class at random extreme raw hyperparameters of `Warp` models (concentrations `1e-4 .. 1e12`, lengthscales down to `1e-169`; legacy Matérn-5/2 with 1 and 2 inputs, RBF tree), 60 points each | equal | equal (180 points) |
 | finite values at moderate points (lengthscales `>= 1e-3`) | 1e-9 | 4.1e-15 |
 | finite gradients at moderate points | 1e-8 | 1.2e-14 |
 | regression seeds (`custom_scale_rbf` 514, `legacy_gamma` 104, 203, 417, 665, 667, 753): botorch_rs's loss minus BoTorch's | 1e-6 (twin criterion) | 3.0e-11 |
@@ -232,13 +256,15 @@ differences (below) it fails 3 of 11 times on Windows.
 
 The new criterion (`parity_helpers.compare_chaotic_fits`,
 `tests/common/mod.rs::compare_chaotic_fits`), used consistently in the Rust
-6a, 7a (`MultiTaskGP` and `KroneckerMultiTaskGP`) and 7b fixture tests, the
-Python 6a, 7a and 7b live tests and `test_parity.py`:
+6a, 6b, 7a (`MultiTaskGP` and `KroneckerMultiTaskGP`) and 7b fixture tests,
+the Python 6a, 6b, 7a and 7b live tests and `test_parity.py`:
 
 - **64 twins** (plus the model itself) for chaotic cases: the fixture
-  generators (`fixtures_6a_kernels.is_chaotic`, used by 6a, 7a and 7b) add
-  twins 17..64 when the first 17 outcomes are chaotic or multimodal; the
-  live tests run `parity_helpers.CHAOTIC_TWINS = 64` twins.
+  generators (`fixtures_6a_kernels.is_chaotic`, used by 6a, 6b, 7a and 7b)
+  add twins 17..64 when the first 17 outcomes are chaotic or multimodal (no
+  6b fixture is); the live tests run `parity_helpers.CHAOTIC_TWINS = 64`
+  twins (the slowest chaotic live tests: 6a `oak` 104 s, 7a `default_t3_d2`
+  79 s, Kronecker `default_m3_d2` 77 s).
 - **One-sided Mann–Whitney U test** at level `1e-3` that botorch_rs's
   first-attempt losses are not stochastically larger than BoTorch's:
   `U = #{(r, b): r > b + 1e-6} + ½ #{|r - b| <= 1e-6}`, `z = (U - n₁n₂/2 -

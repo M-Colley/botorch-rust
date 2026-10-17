@@ -430,7 +430,6 @@ fn log_err(a: f64, e: f64) -> f64 {
     }
 }
 
-/// `(min, lower quartile, median, upper quartile)` of a sample.
 fn median(mut xs: Vec<f64>) -> f64 {
     xs.sort_by(f64::total_cmp);
     let n = xs.len();

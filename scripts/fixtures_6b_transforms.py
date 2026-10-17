@@ -45,6 +45,9 @@ DT = torch.float64
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 16
 TESTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "botorch_pyo3", "tests")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import fixtures_6a_kernels as f6a  # noqa: E402
 
 
 def enc(x: Any) -> Any:
@@ -626,11 +629,17 @@ def model_case(case: dict[str, Any], seed: int) -> dict[str, Any]:
             set_flat(model, default_raw)
             fitted = fit(model)
             twins = []
-            for kk in range(1, N_TWINS + 1):
-                scale = TWIN_SCALES[(kk - 1) % len(TWIN_SCALES)]
-                twin, Xp = perturbed_twin(case, X, Y, Yvar, default_raw, kk, scale)
-                r = fit(twin)
-                twins.append((Xp, r["loss"], r["attempts"]))
+
+            def add_twins(ks: range) -> None:
+                for kk in ks:
+                    scale = TWIN_SCALES[(kk - 1) % len(TWIN_SCALES)]
+                    twin, Xp = perturbed_twin(case, X, Y, Yvar, default_raw, kk, scale)
+                    r = fit(twin)
+                    twins.append((Xp, r["loss"], r["attempts"]))
+
+            add_twins(range(1, N_TWINS + 1))
+            if f6a.is_chaotic(fitted, twins):
+                add_twins(range(N_TWINS + 1, f6a.CHAOTIC_TWINS + 1))
             fitted["twin_train_x"] = [t for t, _, _ in twins]
             fitted["twin_losses"] = [loss for _, loss, _ in twins]
             fitted["twin_attempts"] = [a for _, _, a in twins]

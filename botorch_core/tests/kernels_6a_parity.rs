@@ -26,9 +26,9 @@
 //!   (on the same twins) must reach BoTorch's best and its own fit must not
 //!   end above BoTorch's worst outcome, within max(1e-6, 10 × the spread of
 //!   BoTorch's outcomes at its best optimum); on chaotic likelihoods, where
-//!   BoTorch's outcomes spread over more than 1e-3, statistically: the best
-//!   of botorch_rs's outcomes must reach BoTorch's median and their median
-//!   BoTorch's upper quartile (within 1e-6).
+//!   BoTorch's outcomes spread over more than 1e-3, statistically on 64
+//!   twins (`common::compare_chaotic_fits`: a one-sided Mann-Whitney U test
+//!   at level 1e-3 and botorch_rs's best within BoTorch's best `k`).
 //!
 //! Run with `--nocapture` to print the error tables.
 
@@ -54,7 +54,6 @@ const FIT_CLUSTER: f64 = 1e-4;
 /// depending on rounding), on which the fits are compared statistically.
 const CHAOTIC_RANGE: f64 = 1e-3;
 
-/// `(min, lower quartile, median, upper quartile)` of a sample.
 #[derive(Deserialize)]
 struct Mll {
     value: Vec<f64>,

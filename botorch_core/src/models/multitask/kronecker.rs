@@ -577,7 +577,7 @@ impl KroneckerMultiTaskGP {
         let mut kx = data.symmetric(&xp);
         // GPyTorch's NaN entries at extreme hyperparameters (see
         // `crate::kernels::nonfinite`).
-        let data_nan = data.training_nan(&self.x_tf);
+        let data_nan = data.training_nan(&self.x_tf, false);
         data_nan.inject(&mut kx);
         let b = task.symmetric(&tp);
         let noise = self.noise_matrix(raw);

@@ -9,7 +9,8 @@ vanishes (loss ``+inf``); botorch_rs must hand L-BFGS-B the same values
 
 * ``test_mll_at_extreme_hyperparameters`` (``equivalence``): BoTorch's fit
   closure and botorch_rs's MLL at random extreme raw hyperparameters of RBF
-  and Matérn kernels (1 to 3 inputs, standard modules and kernel trees):
+  and Matérn kernels (1 to 3 inputs, standard modules and kernel trees, also
+  behind a learned ``Warp`` input transform with concentrations up to 1e12):
   the same class of loss (finite, NaN, ``+inf``), the same NaN gradients, and
   finite values within 1e-9 / 1e-8 wherever the scaled inputs are moderate
   (below that GPyTorch's values are BLAS rounding noise). Rational
@@ -117,8 +118,43 @@ def _kernel_pair(name: str, d: int) -> tuple[Any, Any]:
     raise ValueError(name)
 
 
+def _warp_pair(name: str, X: Any, Y: Any) -> tuple[Any, Any]:
+    """`SingleTaskGP`s with `Warp(concentration priors LogNormal(0, 0.75^½))`
+    on all inputs, the legacy Matérn-5/2 module or a `ScaleKernel(RBF)`
+    tree (both with softplus constraints)."""
+    from botorch.models.transforms.input import Warp as BtWarp
+
+    from botorch_rs.models.transforms.input import Warp as RsWarp
+
+    d = X.shape[-1]
+    sd = 0.75**0.5
+    bt_w = BtWarp(
+        d=d,
+        indices=list(range(d)),
+        concentration0_prior=gpytorch.priors.LogNormalPrior(0.0, sd),
+        concentration1_prior=gpytorch.priors.LogNormalPrior(0.0, sd),
+    )
+    rs_w = RsWarp(
+        d=d,
+        indices=list(range(d)),
+        concentration0_prior=rs_priors.LogNormalPrior(0.0, sd),
+        concentration1_prior=rs_priors.LogNormalPrior(0.0, sd),
+    )
+    if name == "warp_matern52":
+        bk = bt_modules.get_matern_kernel_with_gamma_prior(ard_num_dims=d)
+        rk = rs_modules.get_matern_kernel_with_gamma_prior(ard_num_dims=d)
+    else:
+        bk, rk = _kernel_pair("rbf", d)
+    bt = BtSingleTaskGP(X, Y, input_transform=bt_w, covar_module=bk)
+    rs = RsSingleTaskGP(X, Y, input_transform=rs_w, covar_module=rk)
+    return bt, rs
+
+
 EXTREME_MODELS = [(m, d) for m in ("rbf", "matern12", "matern32", "matern52") for d in (1, 2, 3)]
 EXTREME_MODELS += [("tree_shared", 1), ("tree_shared", 2), ("tree_ard", 2)]
+#: Models with a learned `Warp` input transform (concentrations fitted with
+#: the GP): the legacy Matérn module and an RBF kernel tree.
+EXTREME_MODELS += [("warp_matern52", 1), ("warp_matern52", 2), ("warp_rbf", 2)]
 #: Kernels whose gradients at extreme points are not compared (GPyTorch's
 #: autograd overflows in other places, see the draft).
 VALUE_CLASS_ONLY = [("rq", 2), ("periodic", 2), ("cosine", 2)]
@@ -160,10 +196,13 @@ def _rs_eval(rs: Any, raw: list[float]) -> tuple[Any, Any]:
     return -sum(values), -np.asarray(grad)
 
 
-def _random_raw(params: dict[str, Any], g: Any) -> tuple[list[float], bool]:
+def _random_raw(
+    params: dict[str, Any], g: Any, ls_floor: float = -900.0
+) -> tuple[list[float], bool]:
     """Raw values: noise and constant moderate, softplus parameters either
-    moderate or extreme (-900 .. -30); whether every softplus value is
-    moderate (lengthscales and periods at least ~1e-3)."""
+    moderate or extreme (-900 .. -30, lengthscales from `ls_floor`), `Warp`
+    concentrations up to 1e12; whether every softplus value is moderate
+    (lengthscales and periods at least ~1e-3)."""
     raw, moderate = [], True
     for name, p in params.items():
         for _ in range(p.numel()):
@@ -172,11 +211,19 @@ def _random_raw(params: dict[str, Any], g: Any) -> tuple[list[float], bool]:
                 raw.append(1e-4 + 0.5 * u[0])
             elif "raw_constant" in name:
                 raw.append(-2 + 4 * u[0])
+            elif "concentration" in name:
+                # Bounded below by 1e-4 (no transform); up to 1e12.
+                if u[1] < 0.5:
+                    raw.append(10 ** (-1 + 2 * u[0]))
+                else:
+                    raw.append(10 ** (-4 + 16 * u[0]))
+                    moderate = False
             elif u[1] < 0.5:
                 raw.append(-3 + 6 * u[0])
                 moderate &= raw[-1] > -6.9 or "outputscale" in name
             else:
-                raw.append(-900 + 870 * u[0])
+                lo = ls_floor if "lengthscale" in name else -900.0
+                raw.append(lo + (-30 - lo) * u[0])
                 moderate &= "outputscale" in name
     return raw, moderate
 
@@ -189,17 +236,30 @@ def _random_raw(params: dict[str, Any], g: Any) -> tuple[list[float], bool]:
 )
 def test_mll_at_extreme_hyperparameters(name: str, d: int) -> None:
     X, Y, _ = make_data(10, d, seed=5)
-    bk, rk = _kernel_pair(name, d)
-    bt = BtSingleTaskGP(X, Y, covar_module=bk)
-    rs = RsSingleTaskGP(X, Y, covar_module=rk)
+    if name.startswith("warp_"):
+        bt, rs = _warp_pair(name, X, Y)
+    else:
+        bk, rk = _kernel_pair(name, d)
+        bt = BtSingleTaskGP(X, Y, covar_module=bk)
+        rs = RsSingleTaskGP(X, Y, covar_module=rk)
     closure, params = _bt_closure(bt)
     assert [n.removeprefix("model.") for n in params] == [n for n, _ in rs.named_parameters()]
     g = torch.Generator().manual_seed(1000 + 17 * d + len(name))
-    grads_too = (name, d) not in VALUE_CLASS_ONLY
+    # `Warp` models: loss classes and finite values; their gradient NaNs at
+    # extreme lengthscales follow last-bit differences of the warped inputs.
+    warp = name.startswith("warp_")
+    grads_too = (name, d) not in VALUE_CLASS_ONLY and not warp
     counts: dict[str, int] = {}
     worst_v = worst_g = 0.0
     for _ in range(60):
-        raw, moderate = _random_raw(params, g)
+        # Inputs from a learned transform differ from BoTorch's in the last
+        # bits (a saturated warp gives a constant column in one library, not
+        # quite in the other); divided by lengthscales below ~1e-170 such
+        # differences alone overflow, so the lengthscales of `Warp` models
+        # stay above 1e-169, where the squares of non-constant scaled inputs
+        # still overflow (deviation 2 of the draft).
+        floor = -388.0 if warp else -900.0
+        raw, moderate = _random_raw(params, g, floor)
         bv, bg = _bt_eval(closure, params, raw)
         rv, rg = _rs_eval(rs, raw)
         if isinstance(bv, str) or isinstance(rv, str):
@@ -212,7 +272,7 @@ def test_mll_at_extreme_hyperparameters(name: str, d: int) -> None:
         assert _kind(rv) == kind, (bv, rv, raw)
         if grads_too:
             assert (np.isnan(bg) == np.isnan(rg)).all(), (bg, rg, raw)
-        if kind == "finite" and moderate and grads_too:
+        if kind == "finite" and moderate and (grads_too or warp):
             if name == "matern12" and d > 1:
                 # GPyTorch's training diagonal of Matérn-1/2 kernels with
                 # several lengthscales is sqrt of rounding noise (a quirk the
@@ -230,7 +290,7 @@ def test_mll_at_extreme_hyperparameters(name: str, d: int) -> None:
     )
     CHECK.check_bound("extreme MLL: finite values at moderate points", worst_v, VALUE_TOL)
     CHECK.check_bound("extreme MLL: finite gradients at moderate points", worst_g, GRAD_TOL)
-    assert counts.get("nan", 0) > 0, counts
+    assert counts.get("nan", 0) > 0 or warp, counts
 
 
 def test_user_specified_zero_hyperparameters_raise() -> None:

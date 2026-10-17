@@ -120,11 +120,13 @@ impl BuiltCovar {
     /// GPyTorch's NaN entries of the training covariance `K(X, X)` of the
     /// raw training inputs `x` and the hyperparameters whose gradient is NaN
     /// (lengthscale indices of a standard kernel, flat offsets in a tree);
-    /// see [`crate::kernels::nonfinite`].
-    pub fn training_nan(&self, x: &Matrix) -> TrainingNan {
+    /// see [`crate::kernels::nonfinite`]. `inputs_require_grad`: the inputs
+    /// depend on learned parameters (an input transform fitted with the
+    /// GP), which selects GPyTorch's autograd path for every kernel.
+    pub fn training_nan(&self, x: &Matrix, inputs_require_grad: bool) -> TrainingNan {
         match self {
-            BuiltCovar::Standard(k) => k.training_nan(x, false),
-            BuiltCovar::Tree(t) => t.training_nan(x),
+            BuiltCovar::Standard(k) => k.training_nan(x, inputs_require_grad),
+            BuiltCovar::Tree(t) => t.training_nan(x, inputs_require_grad),
         }
     }
 
