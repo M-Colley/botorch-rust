@@ -305,6 +305,14 @@ fn check_fit(report: &mut Report, name: &str, c: &Case, f: &Fit) {
         .filter(|&(_, a)| a == 1)
         .map(|(l, _)| l)
         .collect();
+    let (n_bt, n_rs) = (f.twin_losses.len() + 1, f.twin_train_x.len() + 1);
+    common::compare_first_attempt_failures(
+        report,
+        name,
+        "fit",
+        (n_bt - bt.len(), n_bt),
+        (n_rs - rs.len(), n_rs),
+    );
     let bt_best = bt.iter().copied().fold(f64::INFINITY, f64::min);
     let bt_worst = bt.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let rs_best = rs.iter().copied().fold(f64::INFINITY, f64::min);

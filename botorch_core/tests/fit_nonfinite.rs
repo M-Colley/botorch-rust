@@ -253,10 +253,10 @@ fn lbfgsb_handles_nan_trial_points_like_scipy() {
     // f(x) = x - ln(x), NaN for x <= 0, from x0 = 3: the second step lands
     // at x = -1, the line search extrapolates on NaN values until it hits
     // its maximum step, L-BFGS-B restarts from steepest descent and
-    // converges. scipy 1.18 evaluates f at these 27 points (its
-    // `ScalarFunction` does not call f again at the restored iterate, which
-    // the port does: 29 evaluations) and returns x = 0.9999999603665313,
-    // f = 1.0000000000000009 after 7 iterations.
+    // converges. scipy 1.18 evaluates f at these 27 points (`nfev`; its
+    // `ScalarFunction` does not call f again when the line search returns
+    // to the point evaluated last, and neither does the port) and returns
+    // x = 0.9999999603665313, f = 1.0000000000000009 after 7 iterations.
     let scipy: [f64; 27] = [
         3.0,
         2.0,
@@ -303,9 +303,8 @@ fn lbfgsb_handles_nan_trial_points_like_scipy() {
         &LbfgsbOptions::default(),
     )
     .unwrap();
-    let mut distinct = points.into_inner();
-    distinct.dedup();
-    assert_eq!(distinct, scipy);
+    assert_eq!(points.into_inner(), scipy);
+    assert_eq!(r.evaluations, scipy.len());
     assert_eq!(r.x[0], 0.9999999603665313);
     assert_eq!(r.f, 1.0000000000000009);
     assert_eq!(r.iterations, 7);

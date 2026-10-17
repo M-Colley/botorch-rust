@@ -348,6 +348,41 @@ pub fn rank_bound_k(n_rs: usize, n_bt: usize) -> usize {
     n_bt + 1
 }
 
+/// One-sided Fisher exact test that botorch_rs's first fit attempts fail
+/// (i.e. need a retry from prior samples) more often than BoTorch's on the
+/// same model and twins: `rs_failed` of `rs_total` against `bt_failed` of
+/// `bt_total`. The p value is the hypergeometric probability of at least
+/// `rs_failed` failures among botorch_rs's fits given the total number of
+/// failures; the check (reported as `-log10 p`) fails if `p <= FIT_ALPHA`,
+/// under the null hypothesis of equal failure rates with probability at
+/// most [`FIT_ALPHA`].
+pub fn compare_first_attempt_failures(
+    report: &mut Report,
+    name: &str,
+    label: &str,
+    (bt_failed, bt_total): (usize, usize),
+    (rs_failed, rs_total): (usize, usize),
+) {
+    use statrs::distribution::{DiscreteCDF, Hypergeometric};
+    let p = if rs_failed == 0 {
+        1.0
+    } else {
+        Hypergeometric::new(
+            (bt_total + rs_total) as u64,
+            (bt_failed + rs_failed) as u64,
+            rs_total as u64,
+        )
+        .unwrap()
+        .sf(rs_failed as u64 - 1)
+    };
+    report.check(
+        name,
+        &format!("{label}: first attempts failing more often (-log10 Fisher p)"),
+        0.0 - p.log10(),
+        -FIT_ALPHA.log10(),
+    );
+}
+
 /// Statistical comparison of first-attempt fit losses on twins when
 /// BoTorch's own outcomes are chaotic (see `parity_helpers.compare_chaotic_fits`
 /// in the Python tests): a one-sided Mann–Whitney U test at level

@@ -343,6 +343,54 @@ with botorch_rs's to 4.5e-15 (values) and 1.2e-13 (gradients): the case is
 chaotic through round-off amplification alone, and this fix does not change
 its outcomes.
 
+## Cholesky jitter up to 1e-3 and memoized evaluations
+
+`kernels_6a_parity.rs`, case `periodic_shared_d2` (`ScaleKernel(PeriodicKernel())`,
+one lengthscale and period for both inputs): botorch_rs's first attempt
+failed on 32 of the 65 fits (the model and its 64 twins), BoTorch's on 2;
+the model itself ended at -0.0696477 after two attempts, BoTorch at
+-0.0731887 after its first. The fit tests compare first attempts only, so
+this went unnoticed.
+
+The evaluation sequences (BoTorch's `minimize_with_timeout` instrumented)
+agree to 3e-8 up to the 69th evaluation, where the line search tries a raw
+period length of -49 (a period of 5e-22). There the
+periodic covariance is rounding noise and `K + σ²I` has eigenvalues down to
+-3.6e-4. linear_operator factorizes it with a jitter of 1e-3 and BoTorch's
+line search backtracks from the finite loss 448.5; botorch_rs gave up after
+a jitter of 1e-6, raised `NotPsd` and retried from prior samples. The retry
+rule is BoTorch's (`NotPSDError` retries); the number of jitter tries was
+not: `botorch/__init__.py` sets `linear_operator.settings.cholesky_max_tries`
+to 6 on import (linear_operator's default is 3), and botorch_rs used 3.
+
+- **`linalg::CHOLESKY_MAX_TRIES = 6`**: every `psd_safe_cholesky`
+  (marginal log likelihoods, posteriors, sample roots) tries jitter 1e-8,
+  ..., 1e-3 like linear_operator under BoTorch.
+- **Memoized evaluations in `lbfgsb::minimize`**: the sequences also showed
+  botorch_rs evaluating the MLL twice at the same point. When `dcsrch`
+  returns to its best step (the last trial) before an XTOL warning, scipy's
+  driver asks for that point again and its `ScalarFunction` answers from
+  its cache. The port now does the same, so it makes scipy's calls, counts
+  scipy's `nfev` and applies `maxfun` to it; the iterates are unchanged.
+  (BoTorch's batched `fmin_l_bfgs_b_batched` has no cache and calls its
+  closure again, with the same values; its call count is not exposed.)
+
+Results: the model's first attempt ends at -0.0731886792 (BoTorch
+-0.0731886793, 76 iterations against 77); first attempts succeed on 63 of
+65 fits, as BoTorch's; every other 6a outcome is unchanged. New checks:
+
+- `common::compare_first_attempt_failures` in the 6a, 6b, 7a (both models)
+  and 7b fit tests: a one-sided Fisher exact test at level 1e-3 that
+  botorch_rs's first attempts do not fail more often than BoTorch's (p =
+  3.5e-10 for `periodic_shared_d2` with 3 jitter tries);
+- `linalg` unit test against linear_operator under BoTorch: `1 1ᵀ - 2e-5 I`
+  factorizes with a jitter of 1e-4, `1 1ᵀ - 2e-3 I` raises after 1e-3;
+- `fit_nonfinite.rs::lbfgsb_handles_nan_trial_points_like_scipy`: exactly
+  scipy's 27 evaluations (before: 29, compared after removing repeats);
+- `edge_cases.rs::failing_model` (a covariance that is not positive
+  definite even with jitter) uses an outputscale of 1e14: at 1e12 a jitter
+  of 1e-3 suffices, in linear_operator under BoTorch as well.
+
 ## Not done
 
 - Finite kernel values in GPyTorch's rounding-noise regime (deviation 2)

@@ -12,8 +12,9 @@ use crate::{Matrix, Vector};
 pub const CHOLESKY_JITTER: f64 = 1e-8;
 
 /// Number of jitter attempts, each with ten times the previous jitter
-/// (`linear_operator.settings.cholesky_max_tries`).
-pub const CHOLESKY_MAX_TRIES: usize = 3;
+/// (`linear_operator.settings.cholesky_max_tries` as BoTorch sets it on
+/// import, in `botorch/__init__.py`; linear_operator's own default is 3).
+pub const CHOLESKY_MAX_TRIES: usize = 6;
 
 /// A lower-triangular Cholesky factor `L` with `L Lᵀ = A + jitter·I`.
 #[derive(Clone, Debug, PartialEq)]
@@ -190,9 +191,9 @@ fn try_cholesky(a: &Matrix) -> Option<Matrix> {
 
 /// Cholesky factorization that adds jitter to the diagonal on failure,
 /// mirroring `linear_operator.utils.cholesky.psd_safe_cholesky` with the
-/// double-precision defaults: jitter `1e-8`, `1e-7`, `1e-6` is tried in turn
-/// (the jitter values are cumulative, i.e. the `i`-th retry factorizes
-/// `A + 1e-8·10ⁱ·I`).
+/// double-precision settings under BoTorch: jitter `1e-8`, `1e-7`, ...,
+/// `1e-3` is tried in turn (the jitter values are cumulative, i.e. the
+/// `i`-th retry factorizes `A + 1e-8·10ⁱ·I`).
 ///
 /// # Errors
 /// [`BotorchError::Nan`] if `a` contains NaN values and
@@ -454,6 +455,24 @@ mod tests {
         let rec = f.l() * f.l().transpose();
         let expected = &a + Matrix::identity(3, 3) * f.jitter();
         assert!((rec - expected).norm() < 1e-12);
+    }
+
+    #[test]
+    fn jitter_goes_up_to_1e_3_like_linear_operator_under_botorch() {
+        // BoTorch sets `cholesky_max_tries = 6`: linear_operator factorizes
+        // `1 1ᵀ - 2e-5 I` (3 × 3) with a jitter of 1e-4 and raises
+        // `NotPSDError` ("... adding jitter up to 1.0e-03.") for
+        // `1 1ᵀ - 2e-3 I`.
+        let ones = Matrix::from_element(3, 3, 1.0);
+        let a = &ones - Matrix::identity(3, 3) * 2e-5;
+        let f = psd_safe_cholesky(&a).unwrap();
+        assert!((f.jitter() - 1e-4).abs() < 1e-18, "{}", f.jitter());
+        let rec = f.l() * f.l().transpose();
+        assert!((rec - (&a + Matrix::identity(3, 3) * f.jitter())).norm() < 1e-12);
+        match psd_safe_cholesky(&(&ones - Matrix::identity(3, 3) * 2e-3)) {
+            Err(BotorchError::NotPsd { jitter }) => assert!((jitter - 1e-3).abs() < 1e-18),
+            other => panic!("expected NotPsd, got {other:?}"),
+        }
     }
 
     #[test]

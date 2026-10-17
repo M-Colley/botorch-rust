@@ -314,6 +314,9 @@ fn invalid_inputs_are_rejected() {
 /// A model whose initial hyperparameters make the training covariance
 /// numerically singular even with jitter (huge outputscale and duplicated
 /// inputs), so that the first fitting attempt fails with a non-PSD error.
+/// The rounding errors of an outputscale of 1e14 (a smallest eigenvalue of
+/// -0.04) exceed the largest jitter, 1e-3; linear_operator under BoTorch
+/// raises `NotPSDError` for this covariance too (at 1e12 it does not).
 fn failing_model() -> SingleTaskGP {
     let mut x = grid(6, 2);
     for j in 0..2 {
@@ -331,7 +334,7 @@ fn failing_model() -> SingleTaskGP {
     )
     .unwrap();
     let mut h = model.hyperparameters().clone();
-    h.raw_outputscale = Some(1e12);
+    h.raw_outputscale = Some(1e14);
     model.set_hyperparameters(h).unwrap();
     assert!(matches!(
         model.train_cholesky(),

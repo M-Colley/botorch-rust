@@ -11,7 +11,9 @@
 //! reverse-communication driver is replaced by direct objective calls with the
 //! stopping logic of scipy's driver (`maxiter` and `maxfun` are checked after
 //! every iteration, `factr = ftol / eps`, at most `maxls` function evaluations
-//! per line search).
+//! per line search) and the memoization of its `ScalarFunction` (a repeated
+//! request for the last evaluated point does not call the objective again and
+//! is not counted as an evaluation).
 //!
 //! References:
 //! * R. H. Byrd, P. Lu, J. Nocedal and C. Zhu, "A limited memory algorithm for
@@ -260,8 +262,19 @@ where
     let mut g = V1::new(n);
 
     let mut evaluations = 0usize;
+    // scipy's `ScalarFunction` memoizes the last evaluated point: when the
+    // driver asks for f and g at that point again (`dcsrch` returns to its
+    // best step, the last trial, before an XTOL warning), they are reused
+    // without calling `fun` and without counting an evaluation (`nfev`).
+    let mut last: Option<(Vec<f64>, f64, Vec<f64>)> = None;
     let mut evaluate =
         |x: &V1, g: &mut V1, evaluations: &mut usize| -> Result<f64, LbfgsbError<E>> {
+            if let Some((last_x, last_f, last_g)) = &last {
+                if *last_x == x.0 {
+                    g.0.copy_from_slice(last_g);
+                    return Ok(*last_f);
+                }
+            }
             *evaluations += 1;
             let (f, grad) = fun(&x.0).map_err(LbfgsbError::Objective)?;
             if grad.len() != n {
@@ -271,6 +284,7 @@ where
                 )));
             }
             g.0.copy_from_slice(&grad);
+            last = Some((x.0.clone(), f, grad));
             Ok(f)
         };
 
