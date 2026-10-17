@@ -430,9 +430,9 @@ def test_mixed_fits_match_botorch(name: str) -> None:
     # Twins perturb the continuous columns only (categories stay integers).
     cols = list(range(d_cont)) if d_cont else None
     if cols is None:
-        # All-categorical inputs: twins perturb the targets' model through
-        # the identical inputs; one fit per library is compared.
-        compare_fits(CHECK, f"mixed fit ({name})", make, X0, cols=[], twins=0)
+        # All-categorical inputs: no twins (nothing to perturb); one fit per
+        # library is compared (stage 1 only).
+        compare_fits(CHECK, f"mixed fit ({name})", make, X0, cols=[], twins=0, max_twins=0)
     else:
         compare_fits(CHECK, f"mixed fit ({name})", make, X0, cols=cols)
 

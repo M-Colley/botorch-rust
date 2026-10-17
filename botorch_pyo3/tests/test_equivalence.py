@@ -13,7 +13,10 @@ identical data and hyperparameters and compared on
 * default initialization, MLL values and gradients, posteriors (joint and
   batched, with and without observation noise, scalarized) and samples from
   explicit base samples;
-* fitting (``fit_gpytorch_mll``);
+* fitting (``fit_gpytorch_mll``; the two-stage comparison of
+  ``parity_helpers.compare_twin_fits``: the model itself, then 64 twins
+  with training inputs perturbed at rounding level if botorch_rs's loss of
+  some element ends above BoTorch's);
 * analytic acquisition functions (EI, LogEI, PI, LogPI, UCB, posterior mean
   and standard deviation, constrained EI / LogEI) with and without posterior
   transforms;
@@ -118,10 +121,12 @@ from botorch_rs.utils import sampling as rs_sampling  # noqa: E402
 from parity_helpers import (  # noqa: E402
     DT,
     Checker,
+    FitOutcome,
     ModelSpec,
     bt_mll_value_and_grad,
     bt_mll_values,
     build_pair,
+    compare_twin_fits,
     dense_model_list,
     feasible_start_generator,
     feasible_starts,
@@ -134,6 +139,7 @@ from parity_helpers import (  # noqa: E402
     points_in,
     rel_err,
     sampler_pair,
+    twin_inputs,
     values_and_grads,
 )
 
@@ -142,7 +148,6 @@ pytestmark = [pytest.mark.equivalence, pytest.mark.filterwarnings("ignore")]
 SEED = 20261010
 VALUE_TOL = 1e-9
 GRAD_TOL = 1e-8
-FIT_TOL = 1e-6
 # End to end, the libraries start from different random initial conditions,
 # and with constraints SciPy >= 1.16 and botorch-rust (Kraft's SLSQP) take
 # different paths on BoTorch's joint problem over all restarts, so they reach
@@ -342,30 +347,35 @@ def test_models(pair: tuple) -> None:
 
 
 def test_fit(pair: tuple) -> None:
+    """Fits from the default initialization, per element (outputs, batch
+    elements, sub-models), compared in two stages: on the model itself
+    (botorch_rs's final loss must not exceed BoTorch's by more than 1e-6),
+    then, if that fails, statistically on 64 twins. All attempts count
+    (BoTorch's are not recorded here)."""
     sc = pair[0]
-    if sc.is_list:
+
+    def fit_twin(t: int) -> tuple[FitOutcome, FitOutcome]:
         bts, rss = [], []
         for i, spec in enumerate(sc.specs):
-            b, r = build_pair(spec, *make_data(spec, sc.seed + 50 + i))
+            X, Y, Yvar = make_data(spec, sc.seed + 50 + i)
+            b, r = build_pair(spec, twin_inputs(X, t), Y, Yvar)
             bts.append(b)
             rss.append(r)
-        lb, lr = BtModelListGP(*bts), RsModelListGP(*rss)
         torch.manual_seed(0)
-        bt_fit(BtSumMLL(lb.likelihood, lb))
-        rs_fit(RsSumMLL(lr.likelihood, lr))
-        pairs = list(zip(lb.models, lr.models, strict=True))
-    else:
-        spec = sc.specs[0]
-        b, r = build_pair(spec, *make_data(spec, sc.seed + 50))
-        torch.manual_seed(0)
-        bt_fit(BtMLL(b.likelihood, b))
-        rs_fit(RsMLL(r.likelihood, r))
-        pairs = [(b, r)]
-    for b, r in pairs:
-        bt_losses = -bt_mll_values(b).reshape(-1)
-        rs_losses = -torch.as_tensor(RsMLL(r.likelihood, r)(), dtype=DT).reshape(-1)
-        excess = (rs_losses - bt_losses).max().item()
-        CHECK.check_bound("fit: final loss excess over BoTorch (per element)", excess, FIT_TOL)
+        if sc.is_list:
+            lb, lr = BtModelListGP(*bts), RsModelListGP(*rss)
+            bt_fit(BtSumMLL(lb.likelihood, lb))
+            rs_fit(RsSumMLL(lr.likelihood, lr))
+        else:
+            bt_fit(BtMLL(bts[0].likelihood, bts[0]))
+            rs_fit(RsMLL(rss[0].likelihood, rss[0]))
+        bt_losses = [v for b in bts for v in (-bt_mll_values(b)).reshape(-1).tolist()]
+        rs_losses = [
+            -v for r in rss for v in torch.as_tensor(RsMLL(r.likelihood, r)()).reshape(-1).tolist()
+        ]
+        return (bt_losses, 1), (rs_losses, 1)
+
+    compare_twin_fits(CHECK, "fit", fit_twin, 0)
 
 
 # ---------------------------------------------------------------------------

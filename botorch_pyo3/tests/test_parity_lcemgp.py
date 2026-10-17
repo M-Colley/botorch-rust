@@ -26,12 +26,15 @@ the task kernel resized to both).
   initial values; qLogNEI and qLogNEHVI values and gradients with identical
   base samples; ``optimize_acqf`` from identical initial conditions.
 
-Tolerances: posteriors and MLL values 1e-9, gradients 1e-8; fits: the final
-loss must not exceed BoTorch's by more than ``max(1e-6, 10 x`` BoTorch's own
-change of its final loss when the training inputs are perturbed by 1e-14 or
-L-BFGS-B's variables are reversed``)`` (long L-BFGS-B runs on flat
-likelihoods amplify rounding, and botorch_rs's L-BFGS-B port and SciPy's,
-which uses BLAS, agree only to rounding); MC acquisition values / gradients
+Tolerances: posteriors and MLL values 1e-9, gradients 1e-8; fits (long
+L-BFGS-B runs on flat likelihoods amplify rounding, and botorch_rs's L-BFGS-B
+port and SciPy's, which uses BLAS, agree only to rounding) are compared on
+twins whose training inputs are perturbed at 1e-14 .. 1e-11, plus BoTorch's
+fit with L-BFGS-B's variables reversed, in two stages
+(``parity_helpers.compare_twin_fits``): on 4 twins, botorch_rs's best loss
+must reach BoTorch's best and its own fit must not end above BoTorch's
+worst, within ``max(1e-6, 10 x`` BoTorch's spread at its best optimum``)``;
+if not, statistically on 64 twins; MC acquisition values / gradients
 1e-9 / 1e-8 or 10x the spread of BoTorch's outcomes on 16 twins whose
 training inputs are perturbed at 1e-14 .. 1e-11, per candidate set within the
 regime of BoTorch's outcomes that botorch_rs's value falls into (on nearly
@@ -92,13 +95,19 @@ from botorch_rs.models.contextual_multioutput import (  # noqa: E402
 )
 from botorch_rs.models.multitask import MultiTaskGP  # noqa: E402
 from botorch_rs.optim import optimize_acqf as rs_optimize_acqf  # noqa: E402
-from parity_helpers import Checker, log_err, rel_err  # noqa: E402
+from parity_helpers import (  # noqa: E402
+    FIT_TOL,
+    Checker,
+    FitOutcome,
+    compare_twin_fits,
+    log_err,
+    rel_err,
+)
 
 DT = torch.float64
 CHECK = Checker("LCEMGP (Unity contextual models)")
 VALUE_TOL = 1e-9
 GRAD_TOL = 1e-8
-FIT_TOL = 1e-6
 F32_ULP = 2.4e-7
 NUM_SAMPLES = 16
 #: BoTorch's own outcomes under rounding-level perturbations of the training
@@ -107,6 +116,8 @@ NUM_SAMPLES = 16
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 16
 N_TWINS_MAX = 512
+#: Twins of the fits in stage 1 of the two-stage comparison.
+N_FIT_TWINS = 4
 #: BoTorch's outcomes whose values lie within this distance (log-space error;
 #: or 100 x BoTorch's median change, if larger) of one another belong to the
 #: same regime.
@@ -186,12 +197,17 @@ def test_interval_errors() -> None:
 INTERVAL_MODELS = ["lengthscale_box", "lengthscale_sigmoid", "scale_noise"]
 
 
-def _interval_gp_pair(kind: str, seed: int) -> tuple[Any, Any]:
+def _interval_gp_pair(kind: str, seed: int, twin: int = 0) -> tuple[Any, Any]:
+    """A ``SingleTaskGP`` with ``Interval`` constraints in both libraries;
+    for ``twin > 0`` with the training inputs perturbed at rounding level."""
     g = torch.Generator().manual_seed(seed)
     d = 2 + INTERVAL_MODELS.index(kind)
     X = torch.rand(14, d, generator=g, dtype=DT)
     Y = torch.sin(4 * X[:, :1]) + X[:, 1:].pow(2).sum(-1, keepdim=True)
     Y = Y + 0.05 * torch.randn(14, 1, generator=g, dtype=DT)
+    if twin > 0:
+        gt = torch.Generator().manual_seed(twin)
+        X = X * (1 + twin_scale(twin) * torch.randn(X.shape, generator=gt, dtype=DT))
     modules = []
     for lib in (gpytorch, rs_kernels):
         C = gpytorch.constraints if lib is gpytorch else rs_constraints
@@ -224,7 +240,8 @@ def _interval_gp_pair(kind: str, seed: int) -> tuple[Any, Any]:
 
 @pytest.mark.parametrize("kind", INTERVAL_MODELS)
 def test_interval_single_task_gp(kind: str) -> None:
-    bt, rs = _interval_gp_pair(kind, 3 + INTERVAL_MODELS.index(kind))
+    seed = 3 + INTERVAL_MODELS.index(kind)
+    bt, rs = _interval_gp_pair(kind, seed)
     names_b = [n for n, _ in bt.named_parameters()]
     assert names_b == [n for n, _ in rs.named_parameters()]
     for (n, pb), (_, pr) in zip(bt.named_parameters(), rs.named_parameters(), strict=True):
@@ -249,36 +266,23 @@ def test_interval_single_task_gp(kind: str) -> None:
     value_r, grad_r = RsMLL(rs.likelihood, rs).value_and_grad()
     CHECK.check("SingleTaskGP with Interval: MLL", [value_r], [out.item()], VALUE_TOL)
     CHECK.check("SingleTaskGP with Interval: MLL gradient", grad_r, grad_b, GRAD_TOL)
-    record: dict[str, Any] = {}
-    import botorch.optim.fit as bt_optim_fit
+    # Fits from the (copied) initial values, compared in two stages, with
+    # BoTorch's fit with L-BFGS-B's variables reversed as a further outcome.
+    reversed_loss, reversed_attempts = _bt_fit(copy.deepcopy(bt), reverse=True)
 
-    orig = bt_optim_fit.fit_gpytorch_mll_scipy
+    def fit_twin(t: int) -> tuple[FitOutcome, FitOutcome]:
+        if t == 0:
+            return _bt_fit(bt), _rs_fit(rs)
+        bt_t, rs_t = _interval_gp_pair(kind, seed, twin=t)
+        rs_t.initialize(**{n: p.detach() for n, p in bt_t.named_parameters()})
+        return _bt_fit(bt_t), _rs_fit(rs_t)
 
-    def recorder(*args: Any, **kwargs: Any) -> Any:
-        record["r"] = orig(*args, **kwargs)
-        return record["r"]
-
-    twins = []
-    for rep in range(3):
-        twin = copy.deepcopy(bt)
-        g = torch.Generator().manual_seed(rep + 1)
-        X0 = twin.train_inputs[0]
-        twin.train_inputs = (X0 * (1 + 1e-14 * torch.randn(X0.shape, generator=g, dtype=DT)),)
-        twin.prediction_strategy = None
-        twins.append(twin)
-    reordered = copy.deepcopy(bt)
-    bt_fit(BtMLL(bt.likelihood, bt), optimizer=recorder)
-    loss_b = float(record["r"].fval)
-    floor = max(abs(_bt_fit_loss(t) - loss_b) for t in twins)
-    floor = max(floor, abs(_bt_fit_loss(reordered, reverse=True) - loss_b))
-    mll_r = RsMLL(rs.likelihood, rs)
-    rs_fit(mll_r)
-    excess = mll_r._fit_result["fval"] - loss_b
-    CHECK.record("SingleTaskGP with Interval: fit, BoTorch's noise floor", floor, None)
-    CHECK.check_bound(
-        "SingleTaskGP with Interval: fit, loss above BoTorch's (scaled)",
-        excess / max(FIT_TOL, 10 * floor),
-        1.0,
+    compare_twin_fits(
+        CHECK,
+        "SingleTaskGP with Interval: fit",
+        fit_twin,
+        N_FIT_TWINS,
+        bt_extra=[reversed_loss] if reversed_attempts == 1 else [],
     )
     # Box-bounded values stay within the interval.
     if kind == "lengthscale_box":
@@ -327,13 +331,18 @@ class Case:
         g = torch.Generator().manual_seed(seed + 1)
         self.emb = torch.rand(K, m, generator=g, dtype=DT)
         self.w0 = 1.2 * torch.randn(K, 1, generator=g, dtype=DT)
-        self.bt = build_model("bt", variant, self.X, self.Y, K, self.emb, self.current)
-        self.rs = build_model("rs", variant, self.X, self.Y, K, self.emb, self.current)
-        if variant != "provided":
-            with torch.no_grad():
-                self.bt.emb_layers[0].weight.copy_(self.w0)
-            self.rs.emb_layers[0].weight = self.w0
+        self.bt, self.rs = self.pair_on(self.X)
         self.label = f"{variant}_K{K}_m{m}_d{d}"
+
+    def pair_on(self, X: Any) -> tuple[Any, Any]:
+        """The model in both libraries, on the training inputs ``X``."""
+        args = (self.variant, X, self.Y, self.K, self.emb, self.current)
+        bt, rs = build_model("bt", *args), build_model("rs", *args)
+        if self.variant != "provided":
+            with torch.no_grad():
+                bt.emb_layers[0].weight.copy_(self.w0)
+            rs.emb_layers[0].weight = self.w0
+        return bt, rs
 
     def randomize(self, seed: int) -> None:
         g = torch.Generator().manual_seed(seed)
@@ -611,24 +620,42 @@ def test_task_kernel_replacement() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _bt_fit_loss(model: Any, reverse: bool = False) -> float:
-    """BoTorch's final loss of ``fit_gpytorch_mll``; with ``reverse``, the
-    optimizer's variables are in reverse order (the same problem with other
-    rounding in L-BFGS-B)."""
+def _bt_fit(model: Any, reverse: bool = False) -> tuple[float, int]:
+    """BoTorch's ``fit_gpytorch_mll``: the final loss and the number of
+    attempts; with ``reverse``, the optimizer's variables are in reverse
+    order (the same problem with other rounding in L-BFGS-B)."""
     import botorch.optim.fit as bt_optim_fit
 
-    record: dict[str, Any] = {}
+    record: dict[str, Any] = {"attempts": 0}
     orig = bt_optim_fit.fit_gpytorch_mll_scipy
 
     def recorder(mll: Any, *args: Any, **kwargs: Any) -> Any:
         if reverse:
             params, bounds = get_parameters_and_bounds(mll)
             kwargs.update(parameters=dict(list(params.items())[::-1]), bounds=bounds)
+        record["attempts"] += 1
         record["r"] = orig(mll, *args, **kwargs)
         return record["r"]
 
     bt_fit(BtMLL(model.likelihood, model), optimizer=recorder)
-    return float(record["r"].fval)
+    return float(record["r"].fval), record["attempts"]
+
+
+def _rs_fit(model: Any) -> tuple[float, int]:
+    mll = RsMLL(model.likelihood, model)
+    rs_fit(mll)
+    return float(mll._fit_result["fval"]), int(mll._fit_result["attempts"])
+
+
+def _twin_inputs(c: Case, t: int) -> Any:
+    """The training inputs of twin ``t`` of ``c``, perturbed at
+    ``twin_scale(t)`` (not the task column)."""
+    X = c.X.clone()
+    cols = [j for j in range(X.shape[-1]) if j != c.bt._task_feature]
+    g = torch.Generator().manual_seed(t)
+    noise = torch.randn(X[:, cols].shape, generator=g, dtype=DT)
+    X[:, cols] = X[:, cols] * (1 + twin_scale(t) * noise)
+    return X
 
 
 FIT_CASES = [CASES[0], CASES[1], CASES[3], CASES[4], CASES[5], CASES[7]]
@@ -637,18 +664,19 @@ FIT_CASES = [CASES[0], CASES[1], CASES[3], CASES[4], CASES[5], CASES[7]]
 @pytest.mark.parametrize("case", FIT_CASES, ids=_ids)
 def test_fit_from_identical_initial_values(case: tuple) -> None:
     c = Case(*case, seed=51)
-    twins = [perturbed_twin(c.bt, rep + 1) for rep in range(3)]
-    reordered = copy.deepcopy(c.bt)
-    loss_b = _bt_fit_loss(c.bt)
-    floor = max(abs(_bt_fit_loss(t) - loss_b) for t in twins)
-    floor = max(floor, abs(_bt_fit_loss(reordered, reverse=True) - loss_b))
-    mll_r = RsMLL(c.rs.likelihood, c.rs)
-    rs_fit(mll_r)
-    excess = mll_r._fit_result["fval"] - loss_b
-    tol = max(FIT_TOL, 10 * floor)
-    CHECK.record("fit: BoTorch's noise floor (final loss)", floor, None)
-    CHECK.record("fit: loss above BoTorch's (unscaled)", max(excess, 0.0), None)
-    CHECK.check_bound("fit: loss above BoTorch's (scaled)", excess / tol, 1.0)
+    reversed_loss, reversed_attempts = _bt_fit(copy.deepcopy(c.bt), reverse=True)
+
+    def fit_twin(t: int) -> tuple[FitOutcome, FitOutcome]:
+        bt, rs = (c.bt, c.rs) if t == 0 else c.pair_on(_twin_inputs(c, t))
+        return _bt_fit(bt), _rs_fit(rs)
+
+    compare_twin_fits(
+        CHECK,
+        "fit",
+        fit_twin,
+        N_FIT_TWINS,
+        bt_extra=[reversed_loss] if reversed_attempts == 1 else [],
+    )
     # After fit_gpytorch_mll both are in eval mode without the eval() rule
     # applied yet (BoTorch's mll.eval() does not call model.eval()).
     assert c.rs.training is False

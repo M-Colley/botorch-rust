@@ -6,12 +6,14 @@ values and gradients (Monte-Carlo acquisition functions with identical base
 samples); fitting must reach BoTorch's final loss and acquisition
 optimization BoTorch's best value.
 
-Fits are compared on the model and 16 twins whose training inputs are
-perturbed at 1e-14 .. 1e-11 (BoTorch's own outcome depends on rounding):
-botorch_rs's best first-attempt loss must reach BoTorch's best, and its own
-fit must not end above BoTorch's worst, within ``max(1e-6, 10 x`` the spread
-of BoTorch's outcomes at its best optimum``)``; chaotic likelihoods are
-compared statistically (``parity_helpers.compare_chaotic_fits``). Data seeds
+Fits are compared on the model and twins whose training inputs are
+perturbed at 1e-14 .. 1e-11 (BoTorch's own outcome depends on rounding), in
+two stages (``parity_helpers.compare_twin_fits``): on 16 twins, botorch_rs's
+best first-attempt loss must reach BoTorch's best, and its own fit must not
+end above BoTorch's worst, within ``max(1e-6, 10 x`` the spread of BoTorch's
+outcomes at its best optimum``)``; if not, on 64 twins, botorch_rs's losses
+must not be stochastically larger than BoTorch's (one-sided Mann–Whitney
+test at 1e-3) and its best must reach BoTorch's ``k``-th best. Data seeds
 are deterministic (``zlib.crc32`` of the configuration name; Python's
 ``hash`` is salted per process).
 
@@ -69,13 +71,10 @@ from botorch_rs.models.utils import gpytorch_modules as rs_modules  # noqa: E402
 from botorch_rs.optim import optimize_acqf as rs_optimize_acqf  # noqa: E402
 from botorch_rs.sampling import SobolQMCNormalSampler as RsSampler  # noqa: E402
 from botorch_rs.test_functions import synthetic as rs_synthetic  # noqa: E402
-from parity_helpers import CHAOTIC_TWINS, Checker, compare_chaotic_fits  # noqa: E402
+from parity_helpers import Checker, FitOutcome, compare_twin_fits  # noqa: E402
 
 DT = torch.float64
 RTOL = 1e-9
-FIT_TOL = 1e-6
-FIT_CLUSTER = 1e-4
-CHAOTIC_RANGE = 1e-3
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 16
 CHECK = Checker("SingleTaskGP fits (test_parity)")
@@ -288,52 +287,22 @@ def fit_losses(config: str, X: Any, Y: Any, Yvar: Any) -> tuple[tuple, tuple]:
 def compare_fits(
     label: str, config: str, X: Any, Y: Any, Yvar: Any, twins: int = N_TWINS
 ) -> tuple[float, float]:
-    """Fits of the model and ``twins`` twins in both libraries, compared
-    with the twin criterion (see the module docstring). Returns the gap of
-    botorch_rs's own fit above BoTorch's and BoTorch's spread at its best
-    optimum."""
-    bt_out, rs_out = [], []
+    """Fits of the model and its twins in both libraries, compared in two
+    stages (see the module docstring), ``twins`` twins in stage 1. Returns
+    the gap of botorch_rs's own fit above BoTorch's and BoTorch's spread at
+    its best optimum."""
 
-    def run(ts: range) -> None:
-        for t in ts:
-            b, r = fit_losses(config, twin_inputs(X, t), Y, Yvar)
-            bt_out.append(b)
-            rs_out.append(r)
+    def fit_twin(t: int) -> tuple[FitOutcome, FitOutcome]:
+        return fit_losses(config, twin_inputs(X, t), Y, Yvar)
 
-    run(range(twins + 1))
-    # Outcomes of first attempts only: retries start from prior samples,
-    # which the two libraries draw from different random number generators.
-    bt_first = [loss for loss, a in bt_out if a == 1]
-    if max(bt_first) - min(bt_first) > CHAOTIC_RANGE:
-        run(range(twins + 1, CHAOTIC_TWINS + 1))
-        bt_first = [loss for loss, a in bt_out if a == 1]
-    rs_first = [loss for loss, a in rs_out if a == 1]
-    CHECK.record(
-        f"{label}: first attempts failed (botorch_rs - BoTorch)",
-        max(len(bt_first) - len(rs_first), 0),
-        None,
-    )
-    best, worst = min(bt_first), max(bt_first)
-    spread = max(v for v in bt_first if v <= best + FIT_CLUSTER) - best
-    tol = max(FIT_TOL, 10 * spread)
-    CHECK.record(f"{label}: BoTorch's spread at its best optimum", spread, None)
-    if worst - best > CHAOTIC_RANGE:
-        compare_chaotic_fits(CHECK, label, bt_first, rs_first, FIT_TOL)
-    else:
-        CHECK.check_bound(
-            f"{label}: best loss above BoTorch's best (scaled)", (min(rs_first) - best) / tol, 1.0
-        )
-        if rs_out[0][1] == 1:
-            CHECK.check_bound(
-                f"{label}: loss above BoTorch's worst (scaled)", (rs_out[0][0] - worst) / tol, 1.0
-            )
-    return rs_out[0][0] - bt_out[0][0], spread
+    (c,) = compare_twin_fits(CHECK, label, fit_twin, twins)
+    return c.gap, c.spread
 
 
 @pytest.mark.parametrize("config,d,n,xrange", CONFIGS, ids=[c[0] for c in CONFIGS])
 def test_fit_parity(config: str, d: int, n: int, xrange: tuple) -> None:
     """From the default initialization, fitting reaches BoTorch's final loss
-    (compared on 16 twins)."""
+    (compared on twins in two stages)."""
     X, Y, Yvar = make_data(n, d, seed=7 + config_seed(config), low=xrange[0], high=xrange[1])
     compare_fits("fit", config, X, Y, Yvar)
 

@@ -48,13 +48,13 @@ from botorch.optim.closures import get_loss_closure_with_grads  # noqa: E402
 from botorch.optim.utils import get_parameters_and_bounds  # noqa: E402
 from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL  # noqa: E402
 from kernel_tree_helpers import zero_diagonal_distances  # noqa: E402
-from test_parity import CONFIGS, FIT_TOL, build, compare_fits, fit_losses, make_data  # noqa: E402
+from test_parity import CONFIGS, build, compare_fits, fit_losses, make_data  # noqa: E402
 
 from botorch_rs import kernels as rs_kernels  # noqa: E402
 from botorch_rs import priors as rs_priors  # noqa: E402
 from botorch_rs.models import SingleTaskGP as RsSingleTaskGP  # noqa: E402
 from botorch_rs.models.utils import gpytorch_modules as rs_modules  # noqa: E402
-from parity_helpers import Checker  # noqa: E402
+from parity_helpers import FIT_TOL, Checker  # noqa: E402
 
 DT = torch.float64
 CHECK = Checker("fits through extreme hyperparameters")

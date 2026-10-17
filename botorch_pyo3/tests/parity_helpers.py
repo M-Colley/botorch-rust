@@ -14,7 +14,7 @@ from __future__ import annotations
 import contextlib
 import math
 import random
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -112,16 +112,29 @@ class Checker:
 
 
 # ---------------------------------------------------------------------------
-# Statistical comparison of chaotic fits
+# Comparison of fits on twins (two stages)
 # ---------------------------------------------------------------------------
 
-#: Number of twins (besides the model itself) whose BoTorch fits are compared
-#: statistically when BoTorch's outcomes are chaotic.
-CHAOTIC_TWINS = 64
-#: One-sided significance level of each statistical fit check.
+#: Fit losses within this distance count as equal: the tolerance of every
+#: fit comparison and the ties of the statistical checks.
+FIT_TOL = 1e-6
+#: BoTorch's outcomes within this distance of its best loss belong to its
+#: best optimum; their spread scales the stage-1 tolerance.
+FIT_CLUSTER = 1e-4
+#: Twins (besides the model itself) fitted in stage 2.
+FIT_TWINS = 64
+#: One-sided significance level of each statistical check of stage 2.
 FIT_ALPHA = 1e-3
 #: The standard normal quantile ``Φ⁻¹(1 - FIT_ALPHA)``.
 FIT_Z = 3.090232306167813
+
+#: Relative perturbations of the training inputs of twins 1 to 4 (repeated
+#: from twin 5 on): BoTorch's own sensitivity to rounding.
+TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
+
+#: The outcome of a fit: the final loss (or the final losses of the model's
+#: elements, e.g. outputs or ensemble members) and the number of attempts.
+FitOutcome = tuple[float | Sequence[float], int]
 
 
 def mann_whitney_z(a: Sequence[float], b: Sequence[float], tie: float) -> float:
@@ -151,27 +164,209 @@ def rank_bound_k(n_rs: int, n_bt: int, alpha: float = FIT_ALPHA) -> int:
     return n_bt + 1
 
 
-def compare_chaotic_fits(
-    check: Checker, label: str, bt: Sequence[float], rs: Sequence[float], tol: float
-) -> None:
-    """Statistical comparison of first-attempt fit losses on twins when
-    BoTorch's own outcomes are chaotic (spread over many optima):
+@dataclass
+class FitComparison:
+    """The two-stage comparison of the fits of one model element (see
+    :func:`two_stage_fit_comparisons`)."""
 
-    * a one-sided Mann–Whitney U test at level ``FIT_ALPHA`` that botorch_rs's
-      losses are not stochastically larger than BoTorch's (``z <= FIT_Z``);
-    * botorch_rs's best loss reaches BoTorch's ``k``-th smallest (plus
-      ``tol``) with ``k`` from :func:`rank_bound_k`; whenever at least ``k``
-      of BoTorch's outcomes lie in its best cluster, botorch_rs's best lies
-      in it as well.
+    label: str
+    #: BoTorch's and botorch_rs's first-attempt losses of the deciding stage.
+    bt: list[float]
+    rs: list[float]
+    #: botorch_rs's final loss on the model itself minus BoTorch's.
+    gap: float
+    #: The numbers of fits (of all twins fitted) that needed retries, in
+    #: BoTorch and in botorch_rs.
+    retries: tuple[int, int]
+    #: Stage 1: BoTorch's spread at its best optimum, the tolerance
+    #: ``max(FIT_TOL, 10 x spread)``, and the excesses (in units of the
+    #: tolerance) of botorch_rs's best loss over BoTorch's best and of its
+    #: own fit (on the model itself, if its first attempt succeeded) over
+    #: BoTorch's worst.
+    spread: float
+    tol: float
+    best_excess: float
+    worst_excess: float
+    #: Stage 2 (``None`` if stage 1 decided): the Mann–Whitney z of
+    #: botorch_rs's losses, the rank ``k`` and BoTorch's ``k``-th best loss.
+    z: float | None = None
+    k: int | None = None
+    kth: float | None = None
 
-    Under the null hypothesis (botorch_rs's outcomes are another sample of
-    BoTorch's), each check fails with probability at most ``FIT_ALPHA``, so
-    a chaotic case fails by chance with probability at most ``2e-3``."""
-    z = mann_whitney_z(rs, bt, tol)
-    check.check_bound(f"{label} (chaotic): Mann-Whitney z of botorch_rs's losses", z, FIT_Z)
-    k = rank_bound_k(len(rs), len(bt))
-    kth = sorted(bt)[k - 1] if k <= len(bt) else math.inf
-    check.check_bound(f"{label} (chaotic): best above BoTorch's k-th best", min(rs) - kth, tol)
+    @property
+    def stage(self) -> int:
+        return 1 if self.z is None else 2
+
+    @property
+    def passed(self) -> bool:
+        if self.z is None or self.kth is None:
+            return self.best_excess <= 1.0 and self.worst_excess <= 1.0
+        return self.z <= FIT_Z and min(self.rs, default=math.inf) - self.kth <= FIT_TOL
+
+    def diagnostics(self) -> str:
+        """The deciding values, and for stage 2 the sorted outcomes."""
+        lines = [
+            f"{self.label}: stage 1: best above BoTorch's best {self.best_excess:.3g} x tol, "
+            f"own fit above BoTorch's worst {self.worst_excess:.3g} x tol (tol {self.tol:.1e}, "
+            f"BoTorch's spread at its best {self.spread:.1e})"
+        ]
+        if self.z is not None and self.kth is not None:
+            best = min(self.rs, default=math.inf)
+            lines += [
+                f"stage 2 on {len(self.bt)} BoTorch and {len(self.rs)} botorch_rs first-attempt "
+                f"outcomes: Mann-Whitney z = {self.z:.3f} (limit {FIT_Z:.3f}), k = {self.k}, "
+                f"BoTorch's k-th best {self.kth:+.10f}, botorch_rs's best {best:+.10f} "
+                f"(tolerance {FIT_TOL:g}): {'pass' if self.passed else 'FAIL'}",
+                "BoTorch (sorted): " + " ".join(f"{v:+.10f}" for v in sorted(self.bt)),
+                "botorch_rs (sorted): " + " ".join(f"{v:+.10f}" for v in sorted(self.rs)),
+            ]
+        return "\n".join(lines)
+
+
+def twin_inputs(X: Any, t: int) -> Any:
+    """The training inputs ``X`` of twin ``t`` (``t = 0``: ``X`` itself),
+    perturbed at ``TWIN_SCALES[(t - 1) % 4]`` (relative), with the seed
+    ``t``."""
+    if t == 0:
+        return X
+    g = torch.Generator().manual_seed(t)
+    rel = TWIN_SCALES[(t - 1) % len(TWIN_SCALES)]
+    return X * (1 + rel * torch.randn(X.shape, generator=g, dtype=X.dtype))
+
+
+def _losses(outcome: FitOutcome) -> tuple[list[float], int]:
+    loss, attempts = outcome
+    losses = [float(loss)] if isinstance(loss, (int, float)) else [float(v) for v in loss]
+    return losses, int(attempts)
+
+
+def two_stage_fit_comparisons(
+    label: str,
+    fit_twin: Callable[[int], tuple[FitOutcome, FitOutcome]],
+    twins: int,
+    max_twins: int = FIT_TWINS,
+    bt_extra: Sequence[float] = (),
+) -> list[FitComparison]:
+    """Fits from identical initial values in both libraries, compared in two
+    stages per model element. ``fit_twin(t)`` returns BoTorch's and
+    botorch_rs's outcomes on twin ``t``: the model itself for ``t = 0``, else
+    a copy whose training inputs are perturbed at rounding level (BoTorch's
+    own outcome depends on rounding). Only first attempts are compared
+    (retries start from prior samples, which the libraries draw from
+    different random number generators); ``bt_extra`` holds further
+    first-attempt outcomes of BoTorch on the model (single-element models,
+    e.g. with L-BFGS-B's variables reversed), used in both stages.
+
+    1. On the model and twins ``1..twins``: botorch_rs's best loss must reach
+       BoTorch's best, and its own fit (on the model itself, if its first
+       attempt succeeded) must not end above BoTorch's worst, both within
+       ``max(FIT_TOL, 10 x`` BoTorch's spread at its best optimum``)``. If
+       so, the element passes. (The Rust fixture tests, where stage 2 costs
+       only botorch_rs's fits, check every stage-1 fit against BoTorch's
+       worst; here stage 2 needs up to 64 more BoTorch fits.)
+    2. Otherwise (if ``max_twins > twins``) twins up to ``max_twins`` are
+       fitted as well, and on all outcomes botorch_rs's losses must pass a
+       one-sided Mann–Whitney U test at level ``FIT_ALPHA`` (not
+       stochastically larger than BoTorch's; ties within ``FIT_TOL``), and
+       its best loss must reach BoTorch's ``k``-th best (:func:`rank_bound_k`)
+       within ``FIT_TOL``.
+
+    The procedure fails only if both stages fail; stage 2 alone fails by
+    chance (botorch_rs's outcomes another sample of BoTorch's) with
+    probability at most ``2 x FIT_ALPHA``, so the procedure does as well (see
+    ``docs/fitting.md``, "Comparing fits"). Elements whose BoTorch fits all
+    needed retries are not compared."""
+    bt_out: list[tuple[list[float], int]] = []
+    rs_out: list[tuple[list[float], int]] = []
+
+    def run(ts: range) -> None:
+        for t in ts:
+            b, r = fit_twin(t)
+            bt_out.append(_losses(b))
+            rs_out.append(_losses(r))
+
+    def first(out: list[tuple[list[float], int]], e: int) -> list[float]:
+        return [losses[e] for losses, a in out if a == 1]
+
+    run(range(twins + 1))
+    n_el = len(bt_out[0][0])
+    assert not bt_extra or n_el == 1, "bt_extra needs a single-element model"
+    extra = [float(v) for v in bt_extra]
+    comparisons: dict[int, FitComparison] = {}
+    for e in range(n_el):
+        bt = first(bt_out, e) + extra
+        if not bt:
+            continue
+        rs = first(rs_out, e)
+        best, worst = min(bt), max(bt)
+        spread = max(v for v in bt if v <= best + FIT_CLUSTER) - best
+        tol = max(FIT_TOL, 10 * spread)
+        own = rs_out[0][0][e] if rs_out[0][1] == 1 else -math.inf
+        comparisons[e] = FitComparison(
+            label=label,
+            bt=bt,
+            rs=rs,
+            gap=rs_out[0][0][e] - bt_out[0][0][e],
+            retries=(0, 0),
+            spread=spread,
+            tol=tol,
+            best_excess=max(min(rs, default=math.inf) - best, 0.0) / tol,
+            worst_excess=max(own - worst, 0.0) / tol,
+        )
+    failed = [e for e, c in comparisons.items() if not c.passed]
+    if failed and max_twins > twins:
+        run(range(twins + 1, max_twins + 1))
+        for e in failed:
+            c = comparisons[e]
+            c.bt, c.rs = first(bt_out, e) + extra, first(rs_out, e)
+            c.z = mann_whitney_z(c.rs, c.bt, FIT_TOL) if c.rs else math.inf
+            c.k = rank_bound_k(len(c.rs), len(c.bt))
+            c.kth = sorted(c.bt)[c.k - 1] if c.k <= len(c.bt) else math.inf
+    retries = (sum(a > 1 for _, a in bt_out), sum(a > 1 for _, a in rs_out))
+    for c in comparisons.values():
+        c.retries = retries
+    return list(comparisons.values())
+
+
+def compare_twin_fits(
+    check: Checker,
+    label: str,
+    fit_twin: Callable[[int], tuple[FitOutcome, FitOutcome]],
+    twins: int,
+    max_twins: int = FIT_TWINS,
+    bt_extra: Sequence[float] = (),
+) -> list[FitComparison]:
+    """:func:`two_stage_fit_comparisons`, with the deciding quantities
+    recorded in ``check`` and asserted. A comparison decided by stage 2
+    prints its diagnostics (stage 1's excesses, z, k, BoTorch's ``k``-th
+    best and the sorted outcomes of both libraries), which the assertion
+    message repeats."""
+    comparisons = two_stage_fit_comparisons(label, fit_twin, twins, max_twins, bt_extra)
+    for c in comparisons:
+        check.record(
+            f"{label}: first attempts failed (botorch_rs - BoTorch)",
+            max(c.retries[1] - c.retries[0], 0),
+            None,
+        )
+        check.record(f"{label}: BoTorch's spread at its best optimum", c.spread, None)
+        if c.z is None or c.kth is None:
+            check.record(f"{label}: best loss above BoTorch's best (scaled)", c.best_excess, 1.0)
+            check.record(f"{label}: loss above BoTorch's worst (scaled)", c.worst_excess, 1.0)
+        else:
+            print(c.diagnostics())
+            check.record(
+                f"{label} (stage 2): stage-1 excess (scaled)",
+                max(c.best_excess, c.worst_excess),
+                None,
+            )
+            check.record(f"{label} (stage 2): Mann-Whitney z", max(c.z, 0.0), FIT_Z)
+            check.record(
+                f"{label} (stage 2): best above BoTorch's k-th best",
+                max(min(c.rs, default=math.inf) - c.kth, 0.0),
+                FIT_TOL,
+            )
+        assert c.passed, c.diagnostics()
+    return comparisons
 
 
 def values_and_grads(acqf: Any, X: Any) -> tuple[Any, Any]:

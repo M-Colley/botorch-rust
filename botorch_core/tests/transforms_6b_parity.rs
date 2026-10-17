@@ -21,8 +21,8 @@
 //! * `ExpectedImprovement` and `qExpectedImprovement` (given base samples)
 //!   values and input gradients (1e-9 / 1e-8);
 //! * `fit_gpytorch_mll` from the default parameters, compared with BoTorch's
-//!   outcomes on the model and 16 twins (the rule of
-//!   `kernels_6a_parity.rs`).
+//!   outcomes on the model and its twins in two stages (16 twins, then 64;
+//!   `common::compare_fits`, as in `kernels_6a_parity.rs`).
 //!
 //! Run with `--nocapture` to print the error tables.
 
@@ -55,9 +55,6 @@ use serde_json::Value;
 
 const VALUE_TOL: f64 = 1e-9;
 const GRAD_TOL: f64 = 1e-8;
-const FIT_TOL: f64 = 1e-6;
-const FIT_CLUSTER: f64 = 1e-4;
-const CHAOTIC_RANGE: f64 = 1e-3;
 
 #[derive(Deserialize)]
 struct Mll {
@@ -859,67 +856,45 @@ fn transforms_match_botorch() {
             let mut fitted = build(&c, &c.train_x).unwrap();
             fitted.set_raw_parameters(default_raw).unwrap();
             let r = fit_gpytorch_mll(&mut fitted, FitOptions::default()).unwrap();
-            let bt: Vec<f64> = std::iter::once((f.loss, f.attempts))
+            let bt: Vec<common::FitOutcome> = std::iter::once((f.loss, f.attempts))
                 .chain(
                     f.twin_losses
                         .iter()
                         .copied()
                         .zip(f.twin_attempts.iter().copied()),
                 )
-                .filter(|&(_, a)| a == 1)
-                .map(|(l, _)| l)
                 .collect();
             let own_attempts = r.results[0].attempts;
-            let rs: Vec<f64> = std::iter::once((r.loss, own_attempts))
-                .chain(f.twin_train_x.iter().map(|x| {
-                    let mut twin = build(&c, x).unwrap();
+            let cmp = common::compare_fits(
+                &mut report,
+                name,
+                "fit",
+                &bt,
+                &[],
+                (r.loss, own_attempts),
+                &mut |t| {
+                    let mut twin = build(&c, &f.twin_train_x[t - 1]).unwrap();
                     twin.set_raw_parameters(default_raw).unwrap();
                     let t = fit_gpytorch_mll(&mut twin, FitOptions::default()).unwrap();
                     (t.loss, t.results[0].attempts)
-                }))
-                .filter(|&(_, a)| a == 1)
-                .map(|(l, _)| l)
-                .collect();
-            let bt_best = bt.iter().copied().fold(f64::INFINITY, f64::min);
-            let bt_worst = bt.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let rs_best = rs.iter().copied().fold(f64::INFINITY, f64::min);
-            let spread = bt
-                .iter()
-                .copied()
-                .filter(|&l| l <= bt_best + FIT_CLUSTER)
-                .fold(bt_best, f64::max)
-                - bt_best;
-            let tol = FIT_TOL.max(10.0 * spread);
-            if bt_worst - bt_best > CHAOTIC_RANGE {
-                common::compare_chaotic_fits(&mut report, name, "fit", &bt, &rs, FIT_TOL);
-            } else {
-                report.check(
-                    name,
-                    "fit: best loss above BoTorch's best (scaled)",
-                    (rs_best - bt_best).max(0.0) / tol,
-                    1.0,
-                );
-                if own_attempts == 1 {
-                    report.check(
-                        name,
-                        "fit: loss above BoTorch's worst (scaled)",
-                        (r.loss - bt_worst).max(0.0) / tol,
-                        1.0,
-                    );
-                }
-            }
+                },
+            );
+            let (bt_best, bt_worst) = cmp.bt_range();
             println!(
                 "{name:26} fit: loss {:+.10} (BoTorch {:+.10}), iterations {} (BoTorch {}), \
-                 first-attempt outcomes: BoTorch [{bt_best:+.10}, {bt_worst:+.10}] ({} of {}), \
-                 botorch_rs best {rs_best:+.10} ({} of {}), spread {spread:.1e}",
+                 stage {}: first-attempt outcomes: BoTorch [{bt_best:+.10}, {bt_worst:+.10}] \
+                 ({} of {}), botorch_rs best {:+.10} ({} of {}), spread {:.1e}",
                 r.loss,
                 f.loss,
                 r.results[0].iterations,
                 f.iterations,
-                bt.len(),
-                f.twin_losses.len() + 1,
-                rs.len(),
-                f.twin_losses.len() + 1
+                cmp.stage(),
+                cmp.bt.len(),
+                cmp.twins + 1,
+                cmp.rs_best(),
+                cmp.rs.len(),
+                cmp.twins + 1,
+                cmp.spread
             );
         }
     }

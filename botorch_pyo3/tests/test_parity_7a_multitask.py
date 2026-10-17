@@ -30,7 +30,7 @@ BoTorch's bugs are fixed in the reference (``multitask_helpers``), and
 ``test_botorch_bugs`` measures what they change. Tolerances: values 1e-9,
 gradients 1e-8 (relative); MC acquisition values against the regime of
 BoTorch's outcomes on twins (training inputs perturbed at 1e-14 .. 1e-11);
-fits as in the 6a kernel tests (4 twins, 64 for chaotic likelihoods). The
+fits as in the 6a kernel tests (two stages: 4 twins, then 64). The
 randomized sweep is marked ``equivalence``; it evaluates BoTorch with exact
 kernel products (``multitask_helpers.exact_kernel_products``: GPyTorch's
 jittered Cholesky roots of the singular task covariance change the MLL by up
@@ -90,7 +90,7 @@ from botorch_rs.mlls import ExactMarginalLogLikelihood as RsMLL  # noqa: E402
 from botorch_rs.models import ModelListGP as RsModelListGP  # noqa: E402
 from botorch_rs.models import MultiTaskGP as RsMTGP  # noqa: E402
 from botorch_rs.sampling import SobolQMCNormalSampler as RsSampler  # noqa: E402
-from parity_helpers import CHAOTIC_TWINS, Checker, compare_chaotic_fits, rel_err  # noqa: E402
+from parity_helpers import Checker, FitOutcome, compare_twin_fits, rel_err  # noqa: E402
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
@@ -98,9 +98,6 @@ DT = torch.float64
 CHECK = Checker("multi-task GPs (7a)")
 VALUE_TOL = 1e-9
 GRAD_TOL = 1e-8
-FIT_TOL = 1e-6
-FIT_CLUSTER = 1e-4
-CHAOTIC_RANGE = 1e-3
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 4
 NUM_SAMPLES = 64
@@ -458,49 +455,16 @@ def _rs_fit(model: Any) -> tuple[float, int]:
     return float(mll._fit_result["fval"]), int(mll._fit_result["attempts"])
 
 
-def _compare_fits(
-    label: str, bt_out: list[tuple[float, int]], rs_out: list[tuple[float, int]]
-) -> None:
-    bt_first = [loss for loss, a in bt_out if a == 1]
-    rs_first = [loss for loss, a in rs_out if a == 1]
-    best, worst = min(bt_first), max(bt_first)
-    spread = max(v for v in bt_first if v <= best + FIT_CLUSTER) - best
-    tol = max(FIT_TOL, 10 * spread)
-    CHECK.record(f"{label} fit: BoTorch's spread at its best optimum", spread, None)
-    if worst - best > CHAOTIC_RANGE:
-        compare_chaotic_fits(CHECK, f"{label} fit", bt_first, rs_first, FIT_TOL)
-    else:
-        CHECK.check_bound(
-            f"{label} fit: best loss above BoTorch's best (scaled)",
-            (min(rs_first) - best) / tol,
-            1.0,
-        )
-        if rs_out[0][1] == 1:
-            CHECK.check_bound(
-                f"{label} fit: loss above BoTorch's worst (scaled)",
-                (rs_out[0][0] - worst) / tol,
-                1.0,
-            )
-
-
 @pytest.mark.parametrize("name", [n for n, c in MTGP.items() if c.get("fit")])
 def test_mtgp_fit_from_identical_initial_values(name: str) -> None:
     case = MTGP[name]
     X0 = h.make_data(case, _seed(name, MTGP))[0]
-    bt_out: list[tuple[float, int]] = []
-    rs_out: list[tuple[float, int]] = []
 
-    def run(twins: range) -> None:
-        for t in twins:
-            bt, rs, _, _ = mtgp_pair(name, X=_twin_x(X0, case, t))
-            bt_out.append(_bt_fit(bt))
-            rs_out.append(_rs_fit(rs))
+    def fit_twin(t: int) -> tuple[FitOutcome, FitOutcome]:
+        bt, rs, _, _ = mtgp_pair(name, X=_twin_x(X0, case, t))
+        return _bt_fit(bt), _rs_fit(rs)
 
-    run(range(N_TWINS + 1))
-    first = [loss for loss, a in bt_out if a == 1]
-    if max(first) - min(first) > CHAOTIC_RANGE:
-        run(range(N_TWINS + 1, CHAOTIC_TWINS + 1))
-    _compare_fits("MultiTaskGP", bt_out, rs_out)
+    compare_twin_fits(CHECK, "MultiTaskGP fit", fit_twin, N_TWINS)
 
 
 def _mtgp_twin(bt: Any, case: dict[str, Any], k: int) -> Any:
@@ -714,26 +678,16 @@ def test_kronecker_variance_with_equal_task_noises_matches_botorch() -> None:
 @pytest.mark.parametrize("name", [n for n, c in KRON.items() if c.get("fit")])
 def test_kronecker_fit_from_identical_initial_values(name: str) -> None:
     X0 = kron_pair(name)[3][0]
-    bt_out: list[tuple[float, int]] = []
-    rs_out: list[tuple[float, int]] = []
 
-    def run(twins: range) -> None:
-        for t in twins:
-            X = X0
-            if t > 0:
-                g = torch.Generator().manual_seed(t)
-                X = X0 * (
-                    1 + TWIN_SCALES[(t - 1) % 4] * torch.randn(X0.shape, generator=g, dtype=DT)
-                )
-            bt, rs, _, _ = kron_pair(name, X=X)
-            bt_out.append(_bt_fit(bt))
-            rs_out.append(_rs_fit(rs))
+    def fit_twin(t: int) -> tuple[FitOutcome, FitOutcome]:
+        X = X0
+        if t > 0:
+            g = torch.Generator().manual_seed(t)
+            X = X0 * (1 + TWIN_SCALES[(t - 1) % 4] * torch.randn(X0.shape, generator=g, dtype=DT))
+        bt, rs, _, _ = kron_pair(name, X=X)
+        return _bt_fit(bt), _rs_fit(rs)
 
-    run(range(N_TWINS + 1))
-    first = [loss for loss, a in bt_out if a == 1]
-    if max(first) - min(first) > CHAOTIC_RANGE:
-        run(range(N_TWINS + 1, CHAOTIC_TWINS + 1))
-    _compare_fits("Kronecker", bt_out, rs_out)
+    compare_twin_fits(CHECK, "Kronecker fit", fit_twin, N_TWINS)
 
 
 @pytest.mark.parametrize("name", list(KRON))
