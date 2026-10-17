@@ -95,7 +95,7 @@ def test_torch_dtypes_and_devices() -> None:
 
 
 def test_kind_from_dtype_default_follows_torch_import() -> None:
-    expected = "torch" if "torch" in sys.modules else "list"
+    expected = "torch" if sys.modules.get("torch") is not None else "list"
     assert kind_from_dtype(None).lib == expected
     with pytest.raises(TypeError):
         kind_from_dtype(object())
