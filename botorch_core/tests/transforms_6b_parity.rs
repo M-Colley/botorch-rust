@@ -865,7 +865,7 @@ fn transforms_match_botorch() {
                 )
                 .collect();
             let own_attempts = r.results[0].attempts;
-            let cmp = common::compare_fits(
+            let cmp = common::compare_fits_and_first_attempts(
                 &mut report,
                 name,
                 "fit",

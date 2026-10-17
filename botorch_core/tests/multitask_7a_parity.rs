@@ -842,7 +842,7 @@ fn multitask_gp_matches_botorch() {
                         .zip(f.twin_attempts.iter().copied()),
                 )
                 .collect();
-            let cmp = common::compare_fits(
+            let cmp = common::compare_fits_and_first_attempts(
                 &mut report,
                 name,
                 "fit",
@@ -1257,7 +1257,7 @@ fn kronecker_multitask_gp_matches_botorch() {
                         .zip(f.twin_attempts.iter().copied()),
                 )
                 .collect();
-            let cmp = common::compare_fits(
+            let cmp = common::compare_fits_and_first_attempts(
                 &mut report,
                 name,
                 "Kronecker fit",

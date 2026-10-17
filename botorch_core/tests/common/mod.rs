@@ -361,6 +361,41 @@ pub fn rank_bound_k(n_rs: usize, n_bt: usize) -> usize {
     n_bt + 1
 }
 
+/// One-sided Fisher exact test that botorch_rs's first fit attempts fail
+/// (i.e. need a retry from prior samples) more often than BoTorch's on the
+/// same model and twins: `rs_failed` of `rs_total` against `bt_failed` of
+/// `bt_total`. The p value is the hypergeometric probability of at least
+/// `rs_failed` failures among botorch_rs's fits given the total number of
+/// failures; the check (reported as `-log10 p`) fails if `p <= FIT_ALPHA`,
+/// under the null hypothesis of equal failure rates with probability at
+/// most [`FIT_ALPHA`].
+pub fn compare_first_attempt_failures(
+    report: &mut Report,
+    name: &str,
+    label: &str,
+    (bt_failed, bt_total): (usize, usize),
+    (rs_failed, rs_total): (usize, usize),
+) {
+    use statrs::distribution::{DiscreteCDF, Hypergeometric};
+    let p = if rs_failed == 0 {
+        1.0
+    } else {
+        Hypergeometric::new(
+            (bt_total + rs_total) as u64,
+            (bt_failed + rs_failed) as u64,
+            rs_total as u64,
+        )
+        .unwrap()
+        .sf(rs_failed as u64 - 1)
+    };
+    report.check(
+        name,
+        &format!("{label}: first attempts failing more often (-log10 Fisher p)"),
+        0.0 - p.log10(),
+        -FIT_ALPHA.log10(),
+    );
+}
+
 /// The outcome of a fit: the final loss and the number of attempts.
 pub type FitOutcome = (f64, usize);
 
@@ -600,5 +635,51 @@ pub fn compare_fits(
             );
         }
     }
+    c
+}
+
+/// [`compare_fits`] and a one-sided Fisher exact test that botorch_rs's
+/// first fit attempts do not fail (end in a retry from prior samples) more
+/// often than BoTorch's on the same fits ([`compare_first_attempt_failures`]).
+/// The test runs on the fits of the stage that decided [`compare_fits`]; if
+/// botorch_rs's first attempts failed more often than BoTorch's there,
+/// botorch_rs also fits the remaining twins and the test runs on all of
+/// them. The case fails only if the test on all twins fails, so with
+/// probability at most [`FIT_ALPHA`] under equal failure rates. Each twin is
+/// fitted at most once.
+pub fn compare_fits_and_first_attempts(
+    report: &mut Report,
+    name: &str,
+    label: &str,
+    bt: &[FitOutcome],
+    bt_extra: &[f64],
+    rs_own: FitOutcome,
+    rs_twin: &mut dyn FnMut(usize) -> FitOutcome,
+) -> FitComparison {
+    let n_twins = bt.len() - 1;
+    let mut cache: Vec<Option<FitOutcome>> = vec![None; n_twins + 1];
+    let mut cached = |t: usize, cache: &mut Vec<Option<FitOutcome>>| -> FitOutcome {
+        *cache[t].get_or_insert_with(|| rs_twin(t))
+    };
+    let c = compare_fits(report, name, label, bt, bt_extra, rs_own, &mut |t| {
+        cached(t, &mut cache)
+    });
+    let failed = |out: &[FitOutcome]| out.iter().filter(|&&(_, a)| a != 1).count();
+    let decided = c.twins;
+    let rs_decided: Vec<FitOutcome> = std::iter::once(rs_own)
+        .chain((1..=decided).map(|t| cached(t, &mut cache)))
+        .collect();
+    let (mut rs_all, mut bt_all) = (rs_decided, bt[..=decided].to_vec());
+    if failed(&rs_all) > failed(&bt_all) && decided < n_twins {
+        rs_all.extend((decided + 1..=n_twins).map(|t| cached(t, &mut cache)));
+        bt_all = bt.to_vec();
+    }
+    compare_first_attempt_failures(
+        report,
+        name,
+        label,
+        (failed(&bt_all), bt_all.len()),
+        (failed(&rs_all), rs_all.len()),
+    );
     c
 }

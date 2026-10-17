@@ -289,7 +289,7 @@ fn check_fit(report: &mut Report, name: &str, c: &Case, f: &Fit) {
         )
         .collect();
     let own_attempts = r.results[0].attempts;
-    let cmp = common::compare_fits(
+    let cmp = common::compare_fits_and_first_attempts(
         report,
         name,
         "fit",

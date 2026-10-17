@@ -29,6 +29,11 @@
 //!   at its best optimum); if not, statistically on 64 twins (a one-sided
 //!   Mann-Whitney U test at level 1e-3 and botorch_rs's best within
 //!   BoTorch's best `k`).
+//!   botorch_rs's first attempts must not fail (end in a retry) more often
+//!   than BoTorch's on the same fits (a one-sided Fisher exact test at
+//!   level 1e-3, on all 64 twins when botorch_rs's first attempts fail
+//!   more often on the deciding stage's fits;
+//!   `common::compare_fits_and_first_attempts`).
 //!
 //! Run with `--nocapture` to print the error tables.
 
@@ -329,7 +334,7 @@ fn kernel_trees_match_botorch() {
                         .zip(f.twin_attempts.iter().copied()),
                 )
                 .collect();
-            let cmp = common::compare_fits(
+            let cmp = common::compare_fits_and_first_attempts(
                 &mut report,
                 name,
                 "fit",
