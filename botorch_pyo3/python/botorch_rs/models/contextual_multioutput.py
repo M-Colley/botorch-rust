@@ -23,7 +23,7 @@ from botorch_rs.likelihoods import HadamardGaussianLikelihood
 from botorch_rs.means import MultitaskMean
 from botorch_rs.models.gp_regression import _is_default, _validate_tensor_args
 from botorch_rs.models.multitask import MultiTaskGP
-from botorch_rs.models.transforms.outcome import Standardize
+from botorch_rs.models.transforms.outcome import Standardize, is_plain_standardize
 from botorch_rs.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 from botorch_rs.utils.types import DEFAULT
@@ -280,6 +280,11 @@ class LCEMGP(MultiTaskGP):
         elif outcome_transform is None:
             ot_obj, ot_rs, std_default = None, None, False
         elif isinstance(outcome_transform, Standardize):
+            if not is_plain_standardize(outcome_transform):
+                raise UnsupportedError(
+                    "`outcome_transform` must be a Standardize (of all outputs), DEFAULT or None: "
+                    f"{type(outcome_transform).__name__} is not supported by LCEMGP."
+                )
             if outcome_transform._m != 1:
                 raise BotorchTensorDimensionError(
                     f"The outcome transform is for m = {outcome_transform._m} outputs, got m = 1."

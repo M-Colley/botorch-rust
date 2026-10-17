@@ -378,6 +378,11 @@ impl LCEMGP {
             OutcomeTransformChoice::Default => Some(Standardize::new()),
             OutcomeTransformChoice::None => None,
             OutcomeTransformChoice::Standardize(s) => Some(s),
+            OutcomeTransformChoice::Chains(_) => {
+                return Err(BotorchError::Unsupported(
+                    "LCEMGP supports the Standardize outcome transform only".into(),
+                ))
+            }
         };
         let y_tf = match outcome_transform.as_mut() {
             Some(st) => st.fit_transform(&train_y, None)?.0,

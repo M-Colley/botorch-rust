@@ -48,8 +48,10 @@ da00e0401 and BoTorch 0.18.1 (GPyTorch 1.15.2, linear_operator 0.6.1).
 - `EnsembleModel` with an input or outcome transform in acquisition
   functions (the posterior supports them).
 - Multi-task models: phase 7a.
-- Input and outcome transforms other than `Normalize` and `Standardize` on
-  these models: phase 6b.
+- Outcome transforms other than `Standardize` on
+  `EnsembleMapSaasSingleTaskGP` (`UnsupportedError`; BoTorch cannot build
+  its posterior either). The other models of this phase take every input
+  and outcome transform of phase 6b (see `docs/drafts/6b-transforms.md`).
 
 ## Deviations from BoTorch (migration notes)
 

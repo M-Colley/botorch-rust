@@ -583,7 +583,8 @@ impl KernelNode {
             || base.params[0].numel() != 1
         {
             return Err(BotorchError::Unsupported(
-                "the base kernel of an OrthogonalAdditiveKernel must be an RBFKernel or a                  MaternKernel with a single lengthscale and without active_dims"
+                "the base kernel of an OrthogonalAdditiveKernel must be an RBFKernel or a \
+                 MaternKernel with a single lengthscale and without active_dims"
                     .into(),
             ));
         }

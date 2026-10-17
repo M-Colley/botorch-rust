@@ -25,15 +25,17 @@ subclasses `MultiTaskGP` in Python) is unchanged; its fixtures pass bitwise.
 | `gpytorch.kernels.MultitaskKernel` | `botorch_rs.kernels.MultitaskKernel` | The covariance module of `KroneckerMultiTaskGP` (evaluable stand-alone on unbatched inputs). |
 | `gpytorch.priors.SmoothedBoxPrior` | `botorch_rs.priors.SmoothedBoxPrior` | Scalar `a`, `b`, `sigma`. |
 | `PositiveIndexKernel(task_prior=LKJCovariancePrior)` | same | An LKJ prior on the task covariance matrix. |
-| `Normalize(indices=...)` | same | Only the given columns (as BoTorch); for `MultiTaskGP` (a `SingleTaskGP` / transform chain with `indices` raises `UnsupportedError`). |
+| `Normalize(indices=...)` | same | Only the given columns (as BoTorch); for `MultiTaskGP`, and since phase 6b for `SingleTaskGP` and transform chains too. |
 
 ## What remains unported (in this area)
 
 - **`HeterogeneousMTGP`** and its heterogeneous kernels (`botorch.models.
   heterogeneous_multitask`, `botorch.models.kernels.heterogeneous_multitask`):
   scope 3 of the phase, not reached.
-- `StratifiedStandardize` as `MultiTaskGP` outcome transform (not ported in
-  botorch_rs yet; `UnsupportedError`).
+- Outcome transforms other than `Standardize` (e.g. `StratifiedStandardize`,
+  `Log`) and input transforms other than `Normalize` (center 0.5, no
+  `reverse`, all `transform_on_*` flags) on the multi-task GPs: ported for
+  `SingleTaskGP` in phase 6b, not for these models (`UnsupportedError`).
 - Batched training data (BoTorch blocks batched `MultiTaskGP`s;
   `KroneckerMultiTaskGP` with batched data raises `UnsupportedError`).
 - Acquisition candidates **with** the task column (single-output acquisition
@@ -354,6 +356,20 @@ random in the unit cube with the task column last unless stated.
 GPyTorch numerical quirk fixed for the sweep comparisons:
 `MulLinearOperator` root decompositions with jitter in products of non-dense
 kernel matrices (see "Tolerances above nominal").
+
+### Upstream status
+
+| Bug | Fix |
+|---|---|
+| 1 | meta-pytorch/botorch#3396 |
+| 2, 5 | meta-pytorch/botorch#3446 |
+| 3 | meta-pytorch/botorch#3447 |
+| 4, 6 | meta-pytorch/botorch#3396 (bug 6: raises `NotImplementedError`) |
+| 7 | GPyTorch fix prepared, not yet submitted |
+| 8 | meta-pytorch/botorch#3389 and #3374 |
+| 9 | meta-pytorch/botorch#3448 (also affects `SingleTaskGP`) |
+| 10 | `fantasize` and qKG: meta-pytorch/botorch#3374; qMES not filed (its `train_inputs` include the task column, which needs a design decision) |
+| 11 | meta-pytorch/botorch#3374 |
 
 ## Verification
 

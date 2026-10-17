@@ -19,13 +19,21 @@
 //! [`crate::kernels::nonfinite`]), the value raises [`BotorchError::Nan`]
 //! like linear_operator's `NanError`, and gradients that GPyTorch computes
 //! as NaN are NaN.
+//!
+//! With learned input-transform parameters `φ` (e.g. `Warp`'s
+//! concentrations), the transformed training inputs `X̃(φ)` are recomputed
+//! in train mode at every evaluation (BoTorch transforms the training inputs
+//! in the model's `forward`), the transform's priors are added, and the
+//! gradient with respect to `φ` is `[Σ_a ∂mll/∂x̃_a · ∂x̃_a/∂φ]/n` with
+//! `∂mll/∂x̃_a = Σ_b W_ab ∂₁k(x̃_a, x̃_b)` for `W = ααᵀ - K⁻¹`.
 
 use crate::error::{BotorchError, Result};
 use crate::kernels::{BuiltCovar, CovarModule, Prepared};
 use crate::linalg::psd_safe_cholesky;
 use crate::models::{Hyperparameters, Likelihood, SingleTaskGP};
 use crate::priors::Prior;
-use crate::Vector;
+use crate::transforms::input::TransformMode;
+use crate::{Matrix, Vector};
 
 /// `log(2π)`.
 const LN_2PI: f64 = 1.837_877_066_409_345_3;
@@ -122,10 +130,27 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
         // covariance then has GPyTorch's NaN entries (`training_nan`), and
         // the Cholesky factorization raises `Nan` like linear_operator.
         let covar = model.build_covar_unchecked(&h)?;
-        let x = model.transformed_train_inputs();
-        let xs = covar.prepare(x)?;
+        // Learned input-transform parameters: the training inputs at `φ`.
+        let input = match model.input_chain() {
+            Some(chain) if layout.input > 0 => {
+                let chain = chain.with_params(h.raw_input.as_slice())?;
+                // Non-finite transformed inputs propagate into the
+                // covariance as in GPyTorch (`training_nan` below), where
+                // the Cholesky factorization raises `Nan` (BoTorch's
+                // closure: NaN), rather than ending the fit.
+                let (x_tf, tape) =
+                    chain.transform_with_tape_mode(model.train_inputs(), TransformMode::Train)?;
+                Some((chain, x_tf, tape))
+            }
+            _ => None,
+        };
+        let train_x_tf = match &input {
+            Some((_, x_tf, _)) => x_tf,
+            None => model.transformed_train_inputs(),
+        };
+        let xs = covar.prepare(train_x_tf)?;
         let mut k = covar.symmetric(&xs);
-        let nan = covar.training_nan(x);
+        let nan = covar.training_nan(train_x_tf);
         nan.inject(&mut k);
         let n = model.num_train();
         let nf = n as f64;
@@ -201,6 +226,12 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
             }
             _ => unreachable!("covariance module and kernel of different kinds"),
         }
+        let input_prior = input
+            .as_ref()
+            .map(|(chain, _, _)| chain.log_prior_and_grad());
+        if let Some((lp, _)) = &input_prior {
+            res += lp;
+        }
         let value = res / nf;
         if !with_grad {
             return Ok((value, None));
@@ -274,6 +305,22 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
                 }
             }
             _ => unreachable!("covariance module and kernel of different kinds"),
+        }
+        if let (Some((chain, x_tf, tape)), Some((_, prior_grad))) = (&input, &input_prior) {
+            // ∂mll/∂x̃_a = Σ_b W_ab ∂₁k(x̃_a, x̃_b) (symmetric W and k).
+            let dt = x_tf.ncols();
+            let mut gx = Matrix::zeros(n, dt);
+            for a in 0..n {
+                let (_, dk) = covar.cross_with_grad(&xs, a, &xs);
+                let g = dk.tr_mul(&w.row(a).transpose());
+                for k in 0..dt {
+                    gx[(a, k)] = g[k];
+                }
+            }
+            let (_, pbar) = chain.backward_with_params(tape, 0..n, &gx)?;
+            for (j, idx) in layout.input_range().enumerate() {
+                grad[idx] = (pbar[j] + prior_grad[j]) / nf;
+            }
         }
         // GPyTorch's NaN lengthscale derivatives (`RBFCovariance` /
         // `MaternCovariance` where `inf · 0` occurs).

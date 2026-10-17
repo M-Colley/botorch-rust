@@ -468,8 +468,11 @@ def test_normalize_with_indices() -> None:
     with pytest.raises(BotorchTensorDimensionError):
         MultiTaskGP(X, Y, task_feature=-1, input_transform=Normalize(d=2, indices=[0]))
     Xs, Ys = block_data()
-    with pytest.raises(UnsupportedError):
-        SingleTaskGP(Xs, [y[:1] for y in Ys], input_transform=Normalize(d=2, indices=[0]))
+    # A SingleTaskGP normalizes a subset of the inputs since phase 6b.
+    tf_s = Normalize(d=2, indices=[0])
+    model_s = SingleTaskGP(Xs, [y[:1] for y in Ys], input_transform=tf_s)
+    assert shape(tf_s.bounds) == (2, 1)
+    assert shape(model_s.posterior(points(2, 2)).mean) == (2, 1)
 
 
 @pytest.mark.parametrize("kind", KINDS)

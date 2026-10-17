@@ -28,7 +28,7 @@ from botorch_rs.likelihoods import (
 )
 from botorch_rs.means import ConstantMean, MultitaskMean
 from botorch_rs.models.model import Model
-from botorch_rs.models.transforms.outcome import Standardize
+from botorch_rs.models.transforms.outcome import Standardize, is_plain_standardize
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 from botorch_rs.utils.types import DEFAULT
 
@@ -134,11 +134,18 @@ class MultiTaskGP(Model):
         if input_transform is not None:
             if not isinstance(input_transform, Normalize):
                 raise UnsupportedError(
-                    "`input_transform` of a MultiTaskGP must be a botorch_rs Normalize."
+                    "`input_transform` of a MultiTaskGP must be a botorch_rs Normalize (other "
+                    "input transforms are not supported by MultiTaskGP)."
                 )
             if input_transform.batch_shape:
                 raise UnsupportedError("A Normalize with a batch shape is not supported.")
             it_rs = input_transform._rs
+            if it_rs is None:
+                raise UnsupportedError(
+                    "The input transform of a MultiTaskGP must be a Normalize with center=0.5, "
+                    "reverse=False and all transform_on_* flags (other input transforms are not "
+                    "supported by MultiTaskGP)."
+                )
             if input_transform.indices is not None:
                 if input_transform._d != cols:
                     raise BotorchTensorDimensionError(
@@ -159,6 +166,11 @@ class MultiTaskGP(Model):
         elif outcome_transform is None:
             ot_obj, ot_rs, std_default = None, None, False
         elif isinstance(outcome_transform, Standardize):
+            if not is_plain_standardize(outcome_transform):
+                raise UnsupportedError(
+                    "`outcome_transform` must be a Standardize (of all outputs), DEFAULT or None: "
+                    f"{type(outcome_transform).__name__} is not supported by MultiTaskGP."
+                )
             if outcome_transform._m != 1:
                 raise BotorchTensorDimensionError(
                     f"The outcome transform is for m = {outcome_transform._m} outputs, got m = 1."
@@ -166,8 +178,8 @@ class MultiTaskGP(Model):
             ot_obj, ot_rs, std_default = outcome_transform, outcome_transform._rs, False
         else:
             raise UnsupportedError(
-                "`outcome_transform` must be a Standardize, DEFAULT or None (StratifiedStandardize "
-                "is not ported yet)."
+                "`outcome_transform` must be a Standardize, DEFAULT or None (other outcome "
+                "transforms, e.g. Log or StratifiedStandardize, are not supported by MultiTaskGP)."
             )
         # Likelihood.
         lik_spec, lik_kind = None, "hadamard"
@@ -577,7 +589,7 @@ class MultiTaskGP(Model):
     # -- construct_inputs ----------------------------------------------------
 
     @classmethod
-    def construct_inputs(
+    def construct_inputs(  # type: ignore[override]  # extra arguments, as in BoTorch
         cls,
         training_data: Any,
         task_feature: int,
@@ -840,19 +852,23 @@ class KroneckerMultiTaskGP(Model):
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(unknown)}.")
         it_rs = None
         if input_transform is not None:
-            if not isinstance(input_transform, Normalize) or input_transform.indices is not None:
+            if (
+                not isinstance(input_transform, Normalize)
+                or input_transform.indices is not None
+                or input_transform._rs is None
+            ):
                 raise UnsupportedError(
                     "`input_transform` of a KroneckerMultiTaskGP must be a botorch_rs Normalize "
-                    "of all inputs."
+                    "of all inputs (center=0.5, reverse=False, all transform_on_* flags)."
                 )
             if input_transform.batch_shape:
                 raise UnsupportedError("A Normalize with a batch shape is not supported.")
             it_rs = input_transform._rs
         ot_rs = None
         if outcome_transform is not None:
-            if not isinstance(outcome_transform, Standardize):
+            if not is_plain_standardize(outcome_transform):
                 raise UnsupportedError(
-                    "`outcome_transform` must be a botorch_rs Standardize or None."
+                    "`outcome_transform` must be a botorch_rs Standardize (of all outputs) or None."
                 )
             ot_rs = outcome_transform._rs
         _validate_tensor_args(x[1], y[1], None)

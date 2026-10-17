@@ -1,18 +1,59 @@
 """Input and outcome transforms (``botorch.models.transforms``)."""
 
+from botorch_rs.models.transforms.factory import get_rounding_input_transform
 from botorch_rs.models.transforms.input import (
+    AffineInputTransform,
+    AppendFeatures,
+    BatchBroadcastedInputTransform,
     ChainedInputTransform,
+    FilterFeatures,
     InputPerturbation,
+    InputStandardize,
     InputTransform,
+    InteractionFeatures,
+    LearnedFeatureImputation,
+    Log10,
     Normalize,
+    NumericToCategoricalEncoding,
+    OneHotToNumeric,
+    ReversibleInputTransform,
+    Round,
+    Warp,
 )
-from botorch_rs.models.transforms.outcome import OutcomeTransform, Standardize
+from botorch_rs.models.transforms.outcome import (
+    Bilog,
+    ChainedOutcomeTransform,
+    Log,
+    OutcomeTransform,
+    Power,
+    Standardize,
+    StratifiedStandardize,
+)
 
 __all__ = [
+    "AffineInputTransform",
+    "AppendFeatures",
+    "BatchBroadcastedInputTransform",
+    "Bilog",
     "ChainedInputTransform",
+    "ChainedOutcomeTransform",
+    "FilterFeatures",
     "InputPerturbation",
+    "InputStandardize",
     "InputTransform",
+    "InteractionFeatures",
+    "LearnedFeatureImputation",
+    "Log",
+    "Log10",
     "Normalize",
+    "NumericToCategoricalEncoding",
+    "OneHotToNumeric",
     "OutcomeTransform",
+    "Power",
+    "ReversibleInputTransform",
+    "Round",
+    "StratifiedStandardize",
     "Standardize",
+    "Warp",
+    "get_rounding_input_transform",
 ]

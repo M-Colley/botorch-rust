@@ -586,6 +586,14 @@ class EnsembleMapSaasSingleTaskGP(SingleTaskGP):
             A ``GaussianMixturePosterior`` object (``batch_shape x num_taus x q
             x m``). Includes observation noise if specified.
         """
+        if any(self._rs.transformed_outputs):
+            # BoTorch fails here too (a `TransformedPosterior` has no
+            # `distribution` for the `GaussianMixturePosterior`).
+            raise UnsupportedError(
+                "EnsembleMapSaasSingleTaskGP supports the Standardize outcome transform only: "
+                "a nonlinear outcome transform makes the posterior a TransformedPosterior, which "
+                "has no Gaussian mixture."
+            )
         data, shape = to_flat(X, "X")
         shape = tuple(shape)
         Xu = from_flat(data, (*shape[:-2], 1, *shape[-2:]), kind_of(X))

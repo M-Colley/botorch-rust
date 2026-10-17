@@ -264,16 +264,24 @@ impl PyInputPerturbation {
 }
 
 /// The `ChainedInputTransform` of the steps received from Python
-/// (`Normalize` and `InputPerturbation` objects, in order).
+/// (`Normalize`, `InputPerturbation` and `InputStep` objects, in order),
+/// with the modes of the steps when the model is built (`training`) and the
+/// parameter-name prefixes of the steps (`prefixes`), if given.
 ///
 /// # Errors
 /// `UnsupportedError` for other objects and for a `Normalize` with a batch
-/// shape.
-pub fn chain_of(steps: &[Bound<'_, PyAny>]) -> PyResult<ChainedInputTransform> {
+/// shape; errors of the chain.
+pub fn chain_of(
+    steps: &[Bound<'_, PyAny>],
+    training: Option<Vec<bool>>,
+    prefixes: Option<Vec<String>>,
+) -> PyResult<ChainedInputTransform> {
     let mut out = Vec::with_capacity(steps.len());
     for step in steps {
         if let Ok(p) = step.cast::<PyInputPerturbation>() {
             out.push(InputTransformStep::Perturbation(p.get().inner.clone()));
+        } else if let Ok(s) = step.cast::<crate::transform_steps::PyInputStep>() {
+            out.push(InputTransformStep::Step(s.get().inner.clone()));
         } else if let Ok(n) = step.cast::<PyNormalize>() {
             let n = n.get();
             if !n.batch_shape.is_empty() {
@@ -290,18 +298,24 @@ pub fn chain_of(steps: &[Bound<'_, PyAny>]) -> PyResult<ChainedInputTransform> {
             }
         } else {
             return Err(unsupported(format!(
-                "Unsupported input transform step {}: botorch_rs chains Normalize and \
-                 InputPerturbation.",
+                "Unsupported input transform step {}.",
                 step.get_type().name()?
             )));
         }
     }
-    ChainedInputTransform::new(out).into_py_result()
+    let mut chain = ChainedInputTransform::new(out).into_py_result()?;
+    if let Some(t) = training {
+        chain = chain.with_training(t).into_py_result()?;
+    }
+    if let Some(p) = prefixes {
+        chain = chain.with_prefixes(p).into_py_result()?;
+    }
+    Ok(chain)
 }
 
 /// The fitted steps of a model's chain for the Python layer: a `Normalize`
-/// (with its fitted bounds) per normalization step and `n_w` per
-/// perturbation.
+/// (with its fitted bounds) per normalization step, `n_w` per perturbation
+/// and the fitted `InputStep` of every other step.
 ///
 /// # Errors
 /// Conversion errors.
@@ -317,6 +331,9 @@ pub fn chain_state(py: Python<'_>, chain: &ChainedInputTransform) -> PyResult<Ve
             )
             .into_py_any(py),
             InputTransformStep::Perturbation(p) => p.n_w().into_py_any(py),
+            InputTransformStep::Step(s) => {
+                crate::transform_steps::PyInputStep { inner: s.clone() }.into_py_any(py)
+            }
         })
         .collect()
 }

@@ -405,6 +405,11 @@ impl MultiTaskGP {
             OutcomeTransformChoice::Default => Some(Standardize::new()),
             OutcomeTransformChoice::None => None,
             OutcomeTransformChoice::Standardize(s) => Some(s),
+            OutcomeTransformChoice::Chains(_) => {
+                return Err(BotorchError::Unsupported(
+                    "MultiTaskGP supports the Standardize outcome transform only".into(),
+                ))
+            }
         };
         let (y_tf, yvar_tf) = match outcome_transform.as_mut() {
             Some(st) => st.fit_transform(&train_y, options.train_yvar.as_ref())?,
@@ -435,7 +440,8 @@ impl MultiTaskGP {
                 };
                 if !ok || task.active_dims() != Some(&[tf][..]) {
                     return Err(BotorchError::InvalidArgument(format!(
-                        "the task kernel must be an index kernel on the {k_tasks} tasks with                          active_dims = [{tf}]"
+                        "the task kernel must be an index kernel on the {k_tasks} tasks with \
+                         active_dims = [{tf}]"
                     )));
                 }
                 task

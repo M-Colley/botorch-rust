@@ -20,8 +20,10 @@ use std::sync::Arc;
 
 use crate::error::{BotorchError, Result};
 use crate::models::batched::block_diagonal;
+use crate::models::gp::ObservationNoise;
 use crate::models::{BatchedInputTransform, BatchedMultiOutputGP, ModelListGP, SingleTaskGP};
 use crate::sampling::SobolQMCNormalSampler;
+use crate::transforms::input::TransformMode;
 use crate::Matrix;
 
 /// A boolean matrix, e.g. BoTorch's `evaluation_mask` (`n' × m`: which
@@ -181,7 +183,7 @@ impl BatchedMultiOutputGP {
         y: &BatchedMatrix,
         noise: Option<&BatchedMatrix>,
     ) -> Result<BatchedMultiOutputGP> {
-        self.condition_impl(x, y, noise, NoiseSpace::Transformed)
+        self.condition_impl(x, y, noise, NoiseSpace::Transformed, TransformMode::Eval)
     }
 
     fn condition_impl(
@@ -190,6 +192,7 @@ impl BatchedMultiOutputGP {
         y: &BatchedMatrix,
         noise: Option<&BatchedMatrix>,
         space: NoiseSpace,
+        mode: TransformMode,
     ) -> Result<BatchedMultiOutputGP> {
         let (m, d) = (self.num_outputs(), self.dim());
         let k = x.nrows();
@@ -250,6 +253,26 @@ impl BatchedMultiOutputGP {
                     .iter()
                     .map(|&r| y.matrices()[by[r]].columns(t, 1).into_owned())
                     .collect();
+                // Noise in the original space under a general outcome
+                // transform depends on the observations (e.g. `Log`'s delta
+                // method): transform it with each set of observations.
+                if let (NoiseSpace::Original, Some(v), Some(chain)) =
+                    (space, noise, gp.outcome_chain())
+                {
+                    let x_tf = gp.transform_inputs_mode(&x.matrices()[ix], mode)?;
+                    let col = column_rows(&v.matrices()[inn], t, k);
+                    for (&r, yr) in members.iter().zip(&ys) {
+                        let (_, nz) = chain.transform(yr, Some(&col), &x_tf)?;
+                        let mut c = gp.condition_mode(
+                            &x.matrices()[ix],
+                            std::slice::from_ref(yr),
+                            nz.as_ref(),
+                            mode,
+                        )?;
+                        slots[r * m + t] = c.pop();
+                    }
+                    continue;
+                }
                 let nz = noise.map(|v| {
                     let mut col = column_rows(&v.matrices()[inn], t, k);
                     if space == NoiseSpace::Original {
@@ -260,8 +283,7 @@ impl BatchedMultiOutputGP {
                     }
                     col
                 });
-                let conditioned =
-                    gp.condition_on_observations_many(&x.matrices()[ix], &ys, nz.as_ref())?;
+                let conditioned = gp.condition_mode(&x.matrices()[ix], &ys, nz.as_ref(), mode)?;
                 for (&r, c) in members.iter().zip(conditioned) {
                     slots[r * m + t] = Some(c);
                 }
@@ -301,7 +323,8 @@ impl BatchedMultiOutputGP {
     ) -> Result<BatchedMultiOutputGP> {
         let (m, d) = (self.num_outputs(), self.dim());
         let k = x.nrows();
-        self.model(0, 0).require_no_perturbation("fantasize")?;
+        let mode = TransformMode::Fantasize;
+        self.model(0, 0).require_one_to_one(mode, "fantasize")?;
         if x.ncols() != d {
             return Err(BotorchError::DimensionMismatch(format!(
                 "Expected X with {d} columns (d), got {}",
@@ -365,21 +388,22 @@ impl BatchedMultiOutputGP {
             let z = sampler.base_samples(k * m)?;
             for p in 0..np {
                 let xp = &x.matrices()[bx[p]];
-                let post = match &noise {
-                    Some(nz) => {
-                        let parts = (0..m)
-                            .map(|t| {
+                let parts = (0..m)
+                    .map(|t| {
+                        let gp = self.model(bm[p], t);
+                        match &noise {
+                            Some(nz) => {
                                 let col: Vec<f64> = nz[p].column(t).iter().copied().collect();
-                                self.model(bm[p], t).posterior_with_noise(xp, &col)
-                            })
-                            .collect::<Result<Vec<_>>>()?;
-                        if m == 1 {
-                            parts.into_iter().next().expect("one output")
-                        } else {
-                            block_diagonal(&parts)
+                                gp.posterior_impl(xp, ObservationNoise::Explicit(&col), mode)
+                            }
+                            None => gp.posterior_impl(xp, ObservationNoise::Likelihood, mode),
                         }
-                    }
-                    None => self.posterior_at(bm[p], xp, true)?,
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let post = if m == 1 {
+                    parts.into_iter().next().expect("one output")
+                } else {
+                    block_diagonal(&parts)
                 };
                 let samples = post.rsample_from_base_samples(&z)?;
                 for (i, y) in ys.iter_mut().skip(p).step_by(np).enumerate() {
@@ -393,7 +417,7 @@ impl BatchedMultiOutputGP {
         let nz = noise
             .map(|v| BatchedMatrix::new(post_shape.clone(), v))
             .transpose()?;
-        self.condition_impl(x, &y, nz.as_ref(), NoiseSpace::Transformed)
+        self.condition_impl(x, &y, nz.as_ref(), NoiseSpace::Transformed, mode)
     }
 }
 
@@ -471,8 +495,14 @@ impl ModelListGP {
             .map(|(t, sub)| {
                 let yt = pick(y, t)?;
                 let nt = noise.map(|v| pick(v, t)).transpose()?;
-                sub.condition_impl(&x[t], &yt, nt.as_ref(), NoiseSpace::Original)
-                    .map(Arc::new)
+                sub.condition_impl(
+                    &x[t],
+                    &yt,
+                    nt.as_ref(),
+                    NoiseSpace::Original,
+                    TransformMode::Eval,
+                )
+                .map(Arc::new)
             })
             .collect::<Result<Vec<_>>>()?;
         ModelListGP::from_shared(models)

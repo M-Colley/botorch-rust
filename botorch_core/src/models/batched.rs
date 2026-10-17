@@ -40,6 +40,7 @@ use crate::models::model::check_vjp_shapes_expanded;
 use crate::models::{Model, SingleTaskGP, SingleTaskGPOptions};
 use crate::posterior::{JointPosteriorGrad, PointPosteriors, Posterior};
 use crate::transforms::input::ChainedInputTransform;
+use crate::transforms::outcome::SampleTransform;
 use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
 use crate::{Matrix, Vector};
 
@@ -70,8 +71,20 @@ pub struct BatchedMultiOutputGPOptions {
     /// elements and outputs; learnable `Normalize` bounds are fitted to the
     /// inputs of all batch elements together (BoTorch's `Normalize(d)`).
     pub input_chain: Option<ChainedInputTransform>,
+    /// One general input transform per batch element (BoTorch's
+    /// `BatchBroadcastedInputTransform` over the batch dimension, or a
+    /// batched `Warp`), each fitted to the inputs of its batch element,
+    /// instead of `input_chain`.
+    pub input_chains: Option<Vec<ChainedInputTransform>>,
+    /// The learned parameters of `input_chain` for every batch element (a
+    /// `Warp` with `batch_shape`: one set of concentrations per batch
+    /// element of a single-output model, while its normalization is learned
+    /// from the inputs of all batch elements).
+    pub input_chain_params: Option<Vec<Vec<f64>>>,
     /// Outcome transform (BoTorch default: `Standardize(m, batch_shape)`,
-    /// i.e. one standardization per batch element and output).
+    /// i.e. one standardization per batch element and output). With
+    /// [`OutcomeTransformChoice::Chains`], one chain per output (or one for
+    /// all), fitted per batch element and output.
     pub outcome_transform: OutcomeTransformChoice,
     /// Kernel family of the default covariance module.
     pub kernel: KernelKind,
@@ -200,12 +213,33 @@ impl BatchedMultiOutputGP {
             }
         };
         // A general input transform, fitted to the inputs of all batches.
+        let has_tf = reported_tf.is_some() || per_batch_tf.iter().any(Option::is_some);
+        if (options.input_chain.is_some() || options.input_chains.is_some()) && has_tf
+            || options.input_chain.is_some() && options.input_chains.is_some()
+        {
+            return Err(BotorchError::InvalidArgument(
+                "input_transform and input_chain cannot both be given".into(),
+            ));
+        }
+        let shared_params = "learned input-transform parameters (e.g. Warp's concentrations) \
+                             shared by several outputs or batch elements are not supported: \
+                             BoTorch's batched fitting optimizes every output and batch element on \
+                             its own (use a ModelListGP of single-output models, or a Warp with \
+                             batch_shape for batched single-output models)";
+        let per_batch_params = options.input_chain_params;
+        if let Some(p) = &per_batch_params {
+            if p.len() != n_batch {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "expected the input-transform parameters of {n_batch} batch elements, got {}",
+                    p.len()
+                )));
+            }
+        }
         let input_chain = match options.input_chain {
             Some(mut chain) => {
-                if reported_tf.is_some() || per_batch_tf.iter().any(Option::is_some) {
-                    return Err(BotorchError::InvalidArgument(
-                        "input_transform and input_chain cannot both be given".into(),
-                    ));
+                let batched_ok = per_batch_params.is_some() && m == 1;
+                if chain.num_params() > 0 && n_batch * m > 1 && !batched_ok {
+                    return Err(BotorchError::Unsupported(shared_params.into()));
                 }
                 let all = Matrix::from_fn(n * n_batch, d, |i, j| train_x[i / n][(i % n, j)]);
                 chain.fit(&all)?;
@@ -213,15 +247,52 @@ impl BatchedMultiOutputGP {
             }
             None => None,
         };
-        let element_chain = input_chain.as_ref().map(ChainedInputTransform::frozen);
+        let element_chains: Vec<Option<ChainedInputTransform>> = match options.input_chains {
+            Some(chains) => {
+                if chains.len() != n_batch {
+                    return Err(BotorchError::DimensionMismatch(format!(
+                        "expected {n_batch} input transforms (one per batch element), got {}",
+                        chains.len()
+                    )));
+                }
+                if m > 1 && chains.iter().any(|c| c.num_params() > 0) {
+                    return Err(BotorchError::Unsupported(shared_params.into()));
+                }
+                chains.into_iter().map(Some).collect()
+            }
+            None => match (&input_chain, &per_batch_params) {
+                (Some(chain), Some(params)) => params
+                    .iter()
+                    .map(|p| chain.frozen().with_params(p).map(Some))
+                    .collect::<Result<Vec<_>>>()?,
+                _ => vec![input_chain.as_ref().map(ChainedInputTransform::frozen); n_batch],
+            },
+        };
+        let outcome_for = |t: usize| -> Result<OutcomeTransformChoice> {
+            Ok(match &options.outcome_transform {
+                OutcomeTransformChoice::Chains(chains) => {
+                    let chain = match chains.len() {
+                        1 => chains[0].clone(),
+                        k if k == m => chains[t].clone(),
+                        k => {
+                            return Err(BotorchError::DimensionMismatch(format!(
+                                "expected one outcome chain or one per output ({m}), got {k}"
+                            )))
+                        }
+                    };
+                    OutcomeTransformChoice::Chains(vec![chain])
+                }
+                other => other.clone(),
+            })
+        };
         let mut models = Vec::with_capacity(n_batch * m);
         for (b, tf) in per_batch_tf.into_iter().enumerate() {
             for t in 0..m {
                 let opts = SingleTaskGPOptions {
                     train_yvar: options.train_yvar.as_ref().map(|v| column(&v[b], t)),
                     input_transform: tf.clone(),
-                    input_chain: element_chain.clone(),
-                    outcome_transform: options.outcome_transform.clone(),
+                    input_chain: element_chains[b].clone(),
+                    outcome_transform: outcome_for(t)?,
                     kernel: options.kernel,
                     use_scale_kernel: options.use_scale_kernel,
                     covar_module: options.covar_module,
@@ -253,7 +324,9 @@ impl BatchedMultiOutputGP {
         Ok(Self {
             batch_shape,
             num_outputs: m,
-            dim: d,
+            // The dimension of the points of a posterior (see
+            // `SingleTaskGP::dim`).
+            dim: models[0].dim(),
             train_y,
             train_yvar: options.train_yvar,
             input_transform,
@@ -317,6 +390,8 @@ impl BatchedMultiOutputGP {
                 train_yvar: options.train_yvar.map(|v| vec![v]),
                 input_transform: options.input_transform.map(BatchedInputTransform::Shared),
                 input_chain: options.input_chain,
+                input_chains: None,
+                input_chain_params: None,
                 outcome_transform: options.outcome_transform,
                 kernel: options.kernel,
                 use_scale_kernel: options.use_scale_kernel,
@@ -496,9 +571,27 @@ impl BatchedMultiOutputGP {
     }
 
     /// The fitted general input transform (`ChainedInputTransform` /
-    /// `InputPerturbation`), if any.
+    /// `InputPerturbation`), if any (that of the first batch element for
+    /// per-batch transforms).
     pub fn input_chain(&self) -> Option<&ChainedInputTransform> {
-        self.input_chain.as_ref()
+        self.input_chain
+            .as_ref()
+            .or_else(|| self.models[0].input_chain())
+    }
+
+    /// The general input transform of batch element `batch` (with its
+    /// learned parameters), if any.
+    pub fn input_chain_of(&self, batch: usize) -> Option<&ChainedInputTransform> {
+        self.models[self.element(batch, 0)].input_chain()
+    }
+
+    /// Whether the posterior of each output is a `TransformedPosterior` (see
+    /// [`Model::transformed_outputs`]).
+    pub fn transformed_outputs(&self) -> Vec<bool> {
+        self.models[..self.num_outputs]
+            .iter()
+            .map(SingleTaskGP::has_transformed_posterior)
+            .collect()
     }
 
     /// The number of posterior points per input point (see
@@ -756,15 +849,10 @@ impl BatchedMultiOutputGP {
         let mut mean = Matrix::zeros(b, m);
         let mut var = Matrix::zeros(b, m);
         for (t, g) in outputs.iter().enumerate() {
-            let (mu, v) = g.posterior_marginals_unclamped(x)?;
-            let noise = if observation_noise {
-                g.observation_noise()
-            } else {
-                0.0
-            };
+            let (mu, v) = g.marginals_with_noise(x, observation_noise)?;
             for i in 0..b {
                 mean[(i, t)] = mu[i];
-                var[(i, t)] = v[i] + noise;
+                var[(i, t)] = v[i];
             }
         }
         Ok(PointPosteriors::independent(mean, &var))
@@ -895,7 +983,8 @@ impl From<SingleTaskGP> for BatchedMultiOutputGP {
 }
 
 /// The block-diagonal joint posterior of independent outputs (each part over
-/// the same points, possibly itself multi-output), output-major.
+/// the same points, possibly itself multi-output), output-major, with the
+/// sample transforms of the parts.
 pub(crate) fn block_diagonal(parts: &[Posterior]) -> Posterior {
     let n: usize = parts.iter().map(|p| p.len()).sum();
     let m: usize = parts.iter().map(|p| p.num_outputs()).sum();
@@ -908,7 +997,17 @@ pub(crate) fn block_diagonal(parts: &[Posterior]) -> Posterior {
         cov.view_mut((o, o), (k, k)).copy_from(&p.covariance);
         o += k;
     }
-    Posterior::multi_output(mean, cov, m)
+    let q = parts.first().map_or(0, Posterior::num_points);
+    let transform = if parts.iter().any(Posterior::is_transformed) {
+        let pieces: Vec<_> = parts
+            .iter()
+            .map(|p| (p.sample_transform.as_ref(), p.num_outputs()))
+            .collect();
+        SampleTransform::concat(&pieces, q)
+    } else {
+        None
+    };
+    Posterior::multi_output(mean, cov, m).with_sample_transform(transform)
 }
 
 /// The block-diagonal [`JointPosteriorGrad`] of independent outputs.
@@ -957,9 +1056,12 @@ impl Model for BatchedMultiOutputGP {
     }
 
     fn output_gps(&self) -> Option<Vec<&SingleTaskGP>> {
-        self.batch_shape
-            .is_empty()
+        (self.batch_shape.is_empty() && self.models.iter().all(SingleTaskGP::has_plain_outcome))
             .then(|| self.models.iter().collect())
+    }
+
+    fn transformed_outputs(&self) -> Vec<bool> {
+        BatchedMultiOutputGP::transformed_outputs(self)
     }
 
     fn points_per_input(&self) -> usize {
@@ -1002,7 +1104,7 @@ impl Model for BatchedMultiOutputGP {
         self.require_unbatched()?;
         self.require_one_point_per_input()?;
         if self.num_outputs == 1 {
-            return self.models[0].posterior_marginals(x);
+            return SingleTaskGP::posterior_marginals(&self.models[0], x);
         }
         Err(BotorchError::Unsupported(format!(
             "this method requires a single-output model, got {} outputs",

@@ -165,11 +165,17 @@ pub(crate) fn model_gps(model: &dyn Model) -> Result<Vec<&SingleTaskGP>> {
             model.batch_shape()
         )));
     }
-    model.output_gps().ok_or_else(|| {
+    let gps = model.output_gps().ok_or_else(|| {
         BotorchError::Unsupported(
             "pathwise sampling requires a model of independent exact GPs (a SingleTaskGP or a \
-             ModelListGP)"
+             ModelListGP) with a Standardize outcome transform"
                 .into(),
         )
-    })
+    })?;
+    if gps.iter().any(|g| g.input_chain().is_some()) {
+        return Err(BotorchError::Unsupported(
+            "pathwise sampling supports the Normalize input transform only".into(),
+        ));
+    }
+    Ok(gps)
 }

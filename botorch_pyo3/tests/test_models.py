@@ -176,8 +176,14 @@ def test_standalone_transforms(kind: str) -> None:
     Yt, Yvt = st(Y, as_kind([[2.0, 2.0], [2.0, 2.0]], kind))
     assert_close(Yt, [[-math.sqrt(0.5), -math.sqrt(0.5)], [math.sqrt(0.5), math.sqrt(0.5)]])
     assert_close(Yvt, [[1.0, 0.01], [1.0, 0.01]])
-    with pytest.raises(UnsupportedError):
-        Normalize(d=2, center=0.0)
+    # Centering and subsets of the dimensions (phase 6b).
+    centered = Normalize(d=2, center=0.0)
+    assert_close(centered(as_kind(X, kind)), [[-0.5, -0.5], [0.5, -0.5], [0.0, 0.5]], rtol=1e-15)
+    sub = Normalize(d=3, indices=[0, 1])
+    X3 = [[1.0, 5.0, 7.0], [3.0, 5.0, 8.0], [2.0, 6.0, 9.0]]
+    assert_close(
+        sub(as_kind(X3, kind)), [[0.0, 0.0, 7.0], [1.0, 0.0, 8.0], [0.5, 1.0, 9.0]], rtol=1e-15
+    )
     # (Normalize over a subset of the inputs is supported since phase 7a.)
     assert Normalize(d=3, indices=[0, 1]).indices == [0, 1]
     with warnings.catch_warnings(record=True) as w:

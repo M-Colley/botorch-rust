@@ -44,6 +44,7 @@ mod so_wrappers;
 mod specs;
 mod test_functions;
 mod threads;
+mod transform_steps;
 mod transforms;
 
 /// The `botorch_rs._botorch_rs` extension module.
@@ -129,6 +130,8 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     so_acquisition::register(m)?;
     so_entropy::register(m)?;
     so_wrappers::register(m)?;
+    // Input and outcome transforms of phase 6b.
+    transform_steps::register(m)?;
     // Multi-task GPs (phase 7a).
     multitask::register(m)?;
     // Models of phase 7b (deterministic models, ensembles).

@@ -106,6 +106,24 @@ pub trait Model: Send + Sync + Debug {
         false
     }
 
+    /// Whether the posterior of each output is a BoTorch
+    /// `TransformedPosterior` (a nonlinear outcome transform, see
+    /// [`crate::transforms::outcome`]): [`Model::posterior`] then returns the
+    /// Gaussian base posterior with its [`Posterior::sample_transform`], and
+    /// the point-posterior methods return the moments that BoTorch's
+    /// `posterior.mean` / `.variance` report (unclamped; an error where
+    /// BoTorch defines none). All `false` by default.
+    fn transformed_outputs(&self) -> Vec<bool> {
+        vec![false; self.num_outputs()]
+    }
+
+    /// The numbers of outputs of the sub-models of a model list (BoTorch's
+    /// `ModelList`, whose posterior with nonlinear outcome transforms is a
+    /// `PosteriorList`); `None` for other models (the default).
+    fn list_output_sizes(&self) -> Option<Vec<usize>> {
+        None
+    }
+
     /// Whether the posterior variances are clamped from below at
     /// [`MIN_VARIANCE`] (GPyTorch's `min_variance`, applied by
     /// `MultivariateNormal.variance`) before analytic acquisition functions
@@ -234,7 +252,7 @@ pub trait Model: Send + Sync + Debug {
         require_single_output(self.num_outputs())?;
         let pp = self.point_posteriors(x)?;
         let b = pp.len();
-        let clamps = self.clamps_variance();
+        let clamps = self.clamps_variance() && !self.transformed_outputs()[0];
         Ok((
             Vector::from_fn(b, |i, _| pp.mean[(i, 0)]),
             Vector::from_fn(b, |i, _| {
@@ -265,7 +283,7 @@ pub trait Model: Send + Sync + Debug {
         let mean = g.mean[0];
         let var = g.covariance[(0, 0)];
         let dmean = Vector::from_fn(d, |k, _| g.dmean[k][0]);
-        if var < MIN_VARIANCE && self.clamps_variance() {
+        if var < MIN_VARIANCE && self.clamps_variance() && !self.transformed_outputs()[0] {
             return Ok((mean, MIN_VARIANCE, dmean, Vector::zeros(d)));
         }
         let dvar = Vector::from_fn(d, |k, _| g.dcov[k][(0, 0)]);

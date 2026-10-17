@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from botorch_rs._arrays import from_flat, kind_of, to_flat
+from botorch_rs._arrays import first_kind, from_flat, to_flat
 from botorch_rs.posteriors.gpytorch import Posterior
 
 
@@ -25,11 +25,14 @@ def _cat_last(arrays: list[Any]) -> Any:
     for r in range(rows):
         for (data, _), w in zip(flats, widths, strict=True):
             out.extend(data[r * w : (r + 1) * w])
-    return from_flat(out, (*lead, sum(widths)), kind_of(arrays[0]))
+    return from_flat(out, (*lead, sum(widths)), first_kind(*arrays))
 
 
 class PosteriorList(Posterior):
-    r"""A Posterior represented by a list of independent Posteriors."""
+    r"""A Posterior represented by a list of independent Posteriors (what a
+    ``ModelList`` returns, and a ``ModelListGP`` when a sub-model has a
+    nonlinear outcome transform). ``mean``, ``variance`` and ``rsample``
+    concatenate those of the posteriors along the output dimension."""
 
     def __init__(self, *posteriors: Any) -> None:
         r"""A Posterior represented by a list of independent Posteriors.
@@ -45,7 +48,17 @@ class PosteriorList(Posterior):
         Note: This is typically produced automatically in ``ModelList``; it should
         generally not be necessary for the end user to invoke it manually.
         """
-        self.posteriors = list(posteriors)
+        self.posteriors: list[Any] = list(posteriors)
+
+    @property
+    def device(self) -> Any:
+        r"""The torch device of the posterior."""
+        return getattr(self.posteriors[0], "device", None)
+
+    @property
+    def dtype(self) -> Any:
+        r"""The torch dtype of the posterior."""
+        return getattr(self.posteriors[0], "dtype", None)
 
     def _extended_shape(self, sample_shape: Any = ()) -> tuple[int, ...]:
         shapes = [tuple(p._extended_shape(sample_shape)) for p in self.posteriors]
@@ -83,6 +96,9 @@ class PosteriorList(Posterior):
             f"`PosteriorList` does not define the attribute {name}. "
             "Consider accessing the attributes of the individual posteriors instead."
         )
+
+    def __repr__(self) -> str:
+        return f"PosteriorList({', '.join(repr(p) for p in self.posteriors)})"
 
 
 __all__ = ["PosteriorList"]

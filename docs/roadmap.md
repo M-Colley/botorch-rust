@@ -18,15 +18,17 @@ functions build on them.
   own kernels, the Normal / Uniform / half-Cauchy / half-normal / LKJ / Beta
   priors and `LessThan`. Remaining: the kernels of later model phases,
   `SmoothedBoxPrior` and other priors, `last_dim_is_batch`.
-- **6b: transforms.**
-  - Input transforms: `InputStandardize`, `Warp` (Kumaraswamy), `Round`,
-    `AppendFeatures`, `FilterFeatures`, `InteractionFeatures`, `Log10`,
-    `OneHotToNumeric`, `NumericToCategoricalEncoding`,
-    `AffineInputTransform`, `BatchBroadcastedInputTransform`,
-    `LearnedFeatureImputation`.
-  - Outcome transforms: `Log`, `Power`, `Bilog`, `ChainedOutcomeTransform`,
-    `StratifiedStandardize`.
-  - `botorch.models.transforms.utils`.
+- **6b: transforms (done; [details](transforms.md)).** All 35 names of
+  `botorch.models.transforms`: the input transforms (`Normalize` in full,
+  `InputStandardize`, `Warp`, `Round`, `AppendFeatures`, `FilterFeatures`,
+  `InteractionFeatures`, `Log10`, `OneHotToNumeric`,
+  `NumericToCategoricalEncoding`, `AffineInputTransform`,
+  `BatchBroadcastedInputTransform`, `LearnedFeatureImputation`), the outcome
+  transforms (`Log`, `Power`, `Bilog`, `ChainedOutcomeTransform`,
+  `StratifiedStandardize`), `TransformedPosterior` and the utilities.
+  Remaining: transforms beyond `Normalize` / `Standardize` on the multi-task
+  models and `LCEMGP`, nonlinear outcome transforms in the knowledge
+  gradient and entropy searches, `Warp(reverse=True)` in models.
 
 ## Phase 7: models
 

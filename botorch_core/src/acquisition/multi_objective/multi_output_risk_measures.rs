@@ -895,7 +895,13 @@ impl Mars {
         let mut y = Matrix::zeros(n * k, m);
         for i in 0..n {
             let p = model.posterior(&x_baseline.rows(i, 1).into_owned(), false)?;
-            let mean = p.mean_matrix();
+            let mean = if p.is_transformed() {
+                let q = p.num_points();
+                let mu = p.moments()?.0;
+                Matrix::from_fn(q, m, |w, t| mu[t * q + w])
+            } else {
+                p.mean_matrix()
+            };
             for w in 0..k {
                 for t in 0..m {
                     y[(i * k + w, t)] = mean[(w, t)];
