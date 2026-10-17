@@ -409,4 +409,4 @@ its outcomes.
    gradients and stops after 9 iterations. Fix: on `NanError`, evaluate the
    active elements one at a time (or mask the failing elements) and give
    only the failing ones NaN, with NaN gradients as in the unbatched
-   closure.
+   closure (meta-pytorch/botorch#3450).
