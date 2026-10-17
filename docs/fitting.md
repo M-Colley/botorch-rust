@@ -1,7 +1,13 @@
-# Fits through extreme hyperparameters (`fit-nonfinite`)
+# Fitting at extreme hyperparameters
 
-Draft for README / `docs/api_coverage.md`. Rust:
-`botorch_core/src/kernels/nonfinite.rs` (new), `fit.rs`, `mll.rs`,
+How `fit_gpytorch_mll` in botorch-rust reproduces BoTorch's fits when
+L-BFGS-B visits extreme hyperparameters, and how chaotic fits are compared
+with BoTorch: the bug, GPyTorch's non-finite values reproduced, the
+deviations, the equivalence results, the statistical criterion for chaotic
+fits and the BoTorch bug found. Reference: BoTorch main at da00e0401 and
+BoTorch 0.18.1, with torch 2.13 and 2.14.1.
+
+Rust: `botorch_core/src/kernels/nonfinite.rs` (new), `fit.rs`, `mll.rs`,
 `kernels.rs`, `kernels/eval.rs`, `kernels/covar.rs`, `priors.rs` and the
 marginal log likelihoods of `LCEMGP`, `MultiTaskGP` and
 `KroneckerMultiTaskGP`. Tests: `botorch_core/tests/fit_nonfinite.rs`,
@@ -10,7 +16,7 @@ marginal log likelihoods of `LCEMGP`, `MultiTaskGP` and
 fits in `botorch_pyo3/tests/parity_helpers.py` and
 `botorch_core/tests/common/mod.rs`.
 
-## Supported API (rows for README)
+## Supported API
 
 No new BoTorch names. Behaviour changes of existing rows:
 
