@@ -231,6 +231,20 @@ counterpart.
 | `botorch.models.contextual_multioutput.LCEMGP` | same path (also `botorch_rs.models`) | BoTorch's latent context embedding multi-output GP: learned embeddings (`embs_dim_list`, `torch.nn.Embedding(max_norm=1.0)` with its in-place renormalization) and fixed embeddings (`context_emb_feature`), `context_cat_feature`, `output_tasks`, `all_tasks` (also tasks without data); per-task constant means and noise levels, `Standardize`; `posterior` over the output tasks (`X` without the task column) or the given tasks (with it), batched, exact input gradients; `eval()` / `train()`, `named_parameters`, `initialize`, `emb_layers[i].weight`, `task_covar_module_base` (assignable), `_eval_context_covar()`; fitted with `fit_gpytorch_mll` and usable in every MC acquisition function and in a `ModelListGP`. Keyword-only `seed` for the embedding initialization. Differences: see the migration notes |
 | the Unity project BOforUnity's provided-embedding LCE-M model (`_ProvidedEmbeddingLCEMGP`, not in BoTorch) | `botorch_rs.models.contextual_multioutput.ProvidedEmbeddingLCEMGP` (also `botorch_rs.models`) | botorch-rust extension, same signature as `LCEMGP` with `context_emb_feature` required: no learned embeddings; context covariance `(1 − w) · RBF(E, E) + w · I` on the provided embeddings `E` with a learned `w = context_specific_weight` (`Interval(0, 1, transform=None)`, initially 0); `HAS_PROVIDED_EMBEDDING_LCEMGP = True` in the same module |
 | `botorch.models.multitask.MultiTaskGP` | same path | only as the base class of `LCEMGP` (task feature, task values and their validation, `get_all_tasks`); creating a `MultiTaskGP` raises `UnsupportedError` |
+| `botorch.models.SingleTaskMultiFidelityGP` | same path (also `botorch_rs.models`) | `data_fidelities`, `iteration_fidelity`, `linear_truncated` (`LinearTruncatedFidelityKernel` with `nu`) or `False` (`ExponentialDecayKernel` × `DownsamplingKernel`s × base kernel), custom `covar_module`, `train_Yvar`, `m ≥ 1` outputs, `Normalize`, `Standardize`; `construct_inputs(training_data, fidelity_features)`; `subset_output`; fits, posteriors, conditioning and fantasies as for `SingleTaskGP`; `qMultiFidelityKnowledgeGradient`, `qMultiFidelityMaxValueEntropy` / `qMultiFidelityLowerBoundMaxValueEntropy` and `qMultiFidelityHypervolumeKnowledgeGradient` on it |
+| `botorch.models.MixedSingleTaskGP` | same path (also `botorch_rs.models`) | `cat_dims` (negative indices too), `cont_kernel_factory`, BoTorch's kernel `ScaleKernel(K_cont + ScaleKernel(K_cat)) + ScaleKernel(K_cont · K_cat)` (or `ScaleKernel(K_cat)` for an all-categorical space), `CategoricalKernel` with `GreaterThan(1e-6)` lengthscales, `train_Yvar`, `m ≥ 1`; `construct_inputs(training_data, categorical_features)`; `optimize_acqf_mixed` and `optimize_acqf_mixed_alternating` |
+| `botorch.models.map_saas.get_map_saas_model`, `add_saas_prior`, `SaasPriorHelper`, `get_additive_map_saas_covar_module`, `get_mean_module_with_normal_prior`, `get_gaussian_likelihood_with_gamma_prior` | `botorch_rs.models.map_saas.*` (`add_saas_prior` also in `botorch_rs.models`) | half-Cauchy SAAS prior on `tau / lengthscale²`, fixed `tau` (float or tensor; a Python float is stored in float32, as in BoTorch) or learned `raw_tau` (`LogTransformedInterval(1e-3, 10, initial_value=0.1)` with `HalfCauchyPrior(0.1)`), BoTorch's `EPS = 1e-8` clamps; `NormalPrior(0, 1)` constant mean, `GammaPrior(0.9, 10)` noise with `LogTransformedInterval(1e-4, 1, initial_value=1e-2)` |
+| `botorch.models.map_saas.AdditiveMapSaasSingleTaskGP` | same path (also `botorch_rs.models`) | sum of `num_taus` SAAS kernels with taus drawn as BoTorch does (torch's global generator) |
+| `botorch.models.map_saas.EnsembleMapSaasSingleTaskGP` | same path (also `botorch_rs.models`) | batch of `num_taus` SAAS models (`taus`), `_is_ensemble`, `posterior` → `GaussianMixturePosterior` (`mixture_mean`, `mixture_variance`, `mixture_covariance_matrix`, `quantile`), `construct_inputs(num_taus)`; analytic and MC acquisition functions averaged over the members (`average_over_ensemble_models`), `prune_inferior_points` |
+| `botorch.models.deterministic.AffineDeterministicModel` | same path (also `botorch_rs.models`) | `b + X a`; BoTorch's errors; `b` from a Python float is float32 as in BoTorch; usable as the model of acquisition functions (Rust model with analytic gradients) |
+| `botorch.models.deterministic.FixedSingleSampleModel` | same path | `mean + sqrt(variance + jitter) · w` of a botorch_rs acquisition model (e.g. a `SingleTaskGP`), `w` from `torch.randn` by default; usable as the model of acquisition functions |
+| `botorch.models.ensemble.EnsembleModel` | same path | abstract `forward` (torch); `posterior` → `EnsemblePosterior`; MC acquisition functions with an `IndexSampler` (members evaluated through `forward` with `torch.autograd` gradients); analytic acquisition functions on the mean and variance of the `EnsemblePosterior` (`ExpectedImprovement`, `LogExpectedImprovement`, `ProbabilityOfImprovement`, `LogProbabilityOfImprovement`, `UpperConfidenceBound`, `PosteriorMean`, `PosteriorStandardDeviation`, `ConstrainedExpectedImprovement`, `LogConstrainedExpectedImprovement`, `LogProbabilityOfFeasibility`). Acquisition functions need the attribute `dim` (botorch_rs extension) |
+| `botorch.posteriors.ensemble.EnsemblePosterior`, `botorch.posteriors.fully_bayesian.GaussianMixturePosterior`, `botorch.posteriors.posterior_list.PosteriorList` | same paths (`PosteriorList` also in `botorch_rs.posteriors`) | weights, mixture moments, `rsample`, `rsample_from_base_samples`, quantiles (`batched_bisect`) |
+| `botorch.sampling.index_sampler.IndexSampler` | same path | draws the member indices from torch's generator seeded with `seed` (the same draws as BoTorch) |
+| `botorch.models.model.ModelList`, `ModelDict`, `FantasizeMixin` | same paths (`ModelList` also in `botorch_rs.models`) | `ModelList` of botorch_rs models (GPs and deterministic models): `posterior` (`PosteriorList`), `batch_shape`, `num_outputs`, `subset_output`, `transform_inputs`, `fantasize` (per sub-model), acquisition functions on the joint model; `ModelDict` with BoTorch's `InputDataError` |
+| `Model.subset_output`, `Model.construct_inputs` | same names | `subset_output` for `SingleTaskGP` (any covariance module), `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`, the MAP SAAS models, `ModelListGP`, `ModelList`, the deterministic models; `construct_inputs` for every model above with BoTorch's or botorch_rs's `SupervisedDataset` |
+| `botorch.utils.datasets.SupervisedDataset` | same path | `X`, `Y`, `Yvar`, names, validation, `clone`, equality |
+| `botorch.models.additive_gp.OrthogonalAdditiveGP` | same path (not exported from `botorch_rs.models`, as in BoTorch) | `SingleTaskGP` with an `OrthogonalAdditiveKernel` (first and second order); `posterior(..., infer_all_components=True)` raises `UnsupportedError` |
 | `botorch.models.transforms.Normalize`, `Standardize` | `botorch_rs.models.transforms.Normalize`, `Standardize` | learned or fixed bounds over all inputs, `center=0.5`; `Standardize(m, batch_shape)`, `Normalize(d, batch_shape)` / batched bounds (single-output batched models) |
 | `botorch.models.utils.gpytorch_modules.*` | `botorch_rs.models.utils.gpytorch_modules.*` | BoTorch's default (dimension-scaled LogNormal) and legacy (Gamma) priors |
 | `gpytorch.kernels.RBFKernel` | `botorch_rs.kernels.RBFKernel` | ARD or a shared lengthscale, `active_dims`, `batch_shape`, any constraint / prior |
@@ -257,6 +271,8 @@ counterpart.
 | `gpytorch.priors.LKJPrior`, `LKJCholeskyFactorPrior`, `LKJCovariancePrior` | `botorch_rs.priors.*` | `LKJCovariancePrior` as `IndexKernel(prior=...)` |
 | `botorch.models.utils.priors.BetaPrior` | `botorch_rs.models.utils.priors.BetaPrior` | |
 | `gpytorch.constraints.LessThan` | `botorch_rs.constraints.LessThan` | softplus or `transform=None` (optimizer bound) |
+| `gpytorch.constraints.LogTransformedInterval`, `botorch.utils.constraints.LogTransformedInterval` / `NonTransformedInterval` | `botorch_rs.utils.constraints.*`, `botorch_rs.constraints` | raw = `log(value)`, raw bounds `(log lb, log ub)`, float32 bounds and initial raw value as in BoTorch |
+| `gpytorch.means.ConstantMean(constant_prior, constant_constraint)` | `botorch_rs.means.ConstantMean` | priors on the constant (MLL term, gradient, prior sampling); non-enforced constraints only |
 | `draw_matheron_paths`, `draw_kernel_feature_paths` with kernel trees | `botorch_rs.sampling.pathwise.*` | RBF and Matérn (any ν) with ARD or a shared lengthscale and `active_dims`, with or without `ScaleKernel`: the kernels BoTorch's pathwise sampling supports; others raise `NotImplementedError` like BoTorch |
 | `gpytorch.likelihoods.GaussianLikelihood`, `gpytorch.means.ConstantMean` | `botorch_rs.likelihoods.*`, `botorch_rs.means.*` | |
 | `gpytorch.likelihoods.HadamardGaussianLikelihood`, `gpytorch.means.MultitaskMean` | `botorch_rs.likelihoods.*`, `botorch_rs.means.*` | the per-task noise and means of an `LCEMGP` (`likelihood.noise`, `mean_module.base_means[t].constant`); not constructible on their own |
@@ -363,8 +379,8 @@ Everything else in BoTorch is not ported yet: see
 ## What is not ported yet
 
 botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **337 of the 776
-public classes and functions** defined in BoTorch's modules (43%; BoTorch main
+processes, which is a small part of BoTorch: it provides **365 of the 776
+public classes and functions** defined in BoTorch's modules (47%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
 [docs/api_coverage.md](docs/api_coverage.md); [docs/roadmap.md](docs/roadmap.md)
@@ -374,22 +390,24 @@ orders the remaining work toward a full port. The main gaps:
   - multi-task GPs (`MultiTaskGP` itself with its `IndexKernel` task
     covariance and task priors, `KroneckerMultiTaskGP`, `HeterogeneousMTGP`);
     `LCEMGP` is ported;
-  - multi-fidelity and mixed or categorical GPs (`SingleTaskMultiFidelityGP`,
-    `MixedSingleTaskGP`);
-  - fully Bayesian and MAP SAAS models (`SaasFullyBayesianSingleTaskGP` with
-    NUTS, `get_map_saas_model`);
+  - fully Bayesian models (`SaasFullyBayesianSingleTaskGP` with NUTS; the MAP
+    SAAS models are ported);
   - variational GPs (`SingleTaskVariationalGP`), `HigherOrderGP` and
     `LatentKroneckerGP`;
   - preference learning (`PairwiseGP`);
-  - the additive contextual GPs (`SACGP`, `LCEAGP`) and other additive GPs;
-  - deterministic models other than `MatheronPathModel`, `PosteriorMeanModel`
-    and `GenericDeterministicModel`, ensemble models,
-    and cost models other than `AffineFidelityCostModel` and
-    `FixedCostModel`;
+  - the additive contextual GPs (`SACGP`, `LCEAGP`), and the per-component
+    posteriors of `OrthogonalAdditiveGP`;
+  - cost models other than `AffineFidelityCostModel` and `FixedCostModel`;
   - relevance pursuit, and the empirical and hierarchical model packages.
 - **Model features:**
-  - `subset_output` and `construct_inputs`, and `condition_on_observations` /
-    `fantasize` for multi-output sub-models of a `ModelListGP`;
+  - `subset_output` and `construct_inputs` of `LCEMGP`, and
+    `condition_on_observations` / `fantasize` for multi-output sub-models of a
+    `ModelListGP`;
+  - on ensemble models (`EnsembleModel`, `EnsembleMapSaasSingleTaskGP`): the
+    knowledge gradient, entropy search and the multi-objective acquisition
+    functions, transforms of an `EnsembleModel` in acquisition functions, and
+    pruning an ensemble baseline with an objective or constraints (see
+    [docs/models.md](docs/models.md));
   - for `LCEMGP`: fixed noise (`train_Yvar`), custom `mean_module` /
     `likelihood`, input transforms, outcome transforms other than
     `Standardize`, batched training data and `condition_on_observations` /
@@ -445,9 +463,9 @@ orders the remaining work toward a full port. The main gaps:
   - `loo_cv`, `efficient_loo_cv` and `ensemble_loo_cv` (`batch_cross_validation`
     is ported); see [docs/optimization.md](docs/optimization.md).
 - **Sampling and utilities:**
-  - samplers other than `SobolQMCNormalSampler`, `ListSampler` and
-    `StochasticSampler` (for deterministic models)
-    (`IIDNormalSampler`, `StochasticSampler`, ...);
+  - samplers other than `SobolQMCNormalSampler`, `ListSampler`,
+    `IndexSampler` and `StochasticSampler` (for deterministic models)
+    (`IIDNormalSampler`, `ForkedRNGSampler`, ...);
   - pathwise sampling of approximate GPs, ensembles and batched models,
     and with kernels other than RBF and Matérn (as in BoTorch);
   - most of `botorch.utils`: probability (bivariate and truncated
@@ -471,7 +489,7 @@ orders the remaining work toward a full port. The main gaps:
 | `fit` | 3 | 1 | 33% |
 | `generation` | 8 | 7 | 88% |
 | `logging` | 1 | 0 | 0% |
-| `models` | 66 | 11 | 17% |
+| `models` | 66 | 28 | 42% |
 | `models.empirical_gps` | 36 | 0 | 0% |
 | `models.hierarchical` | 6 | 0 | 0% |
 | `models.kernels` | 19 | 8 | 42% |
@@ -481,16 +499,16 @@ orders the remaining work toward a full port. The main gaps:
 | `optim` | 58 | 45 | 78% |
 | `optim.closures` | 5 | 4 | 80% |
 | `optim.utils` | 14 | 8 | 57% |
-| `posteriors` | 13 | 2 | 15% |
-| `sampling` | 14 | 4 | 29% |
+| `posteriors` | 13 | 6 | 46% |
+| `sampling` | 14 | 5 | 36% |
 | `sampling.pathwise` | 25 | 11 | 44% |
 | `settings` | 3 | 0 | 0% |
 | `test_functions` | 84 | 57 | 68% |
 | `test_utils` | 2 | 0 | 0% |
-| `utils` | 97 | 14 | 14% |
+| `utils` | 97 | 20 | 21% |
 | `utils.multi_objective` | 25 | 20 | 80% |
 | `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **776** | **337** | **43%** |
+| **all of `botorch`** | **776** | **365** | **47%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -1070,6 +1088,36 @@ L-BFGS-B stops on rounding-dependent criteria, so candidates agree to 1e-3
 [docs/single-objective-acquisition.md](docs/single-objective-acquisition.md)
 has the full tables, the deviations and ten BoTorch bugs found by these tests.
 
+### Multi-fidelity, mixed, MAP SAAS and ensemble models
+
+**Where the tests are:**
+- Rust fixtures in `botorch_core/tests/models_7b_parity.rs`
+  (`--phase 7b-models`, 14 models: six multi-fidelity, three mixed, five MAP
+  SAAS).
+- Live Python tests in `test_parity_7b_models.py` (85 tests) and API and error
+  tests in `test_7b_models.py`.
+- A randomized sweep in `test_equivalence_7b_models.py` (`-m equivalence`, 45
+  random multi-fidelity / mixed / MAP SAAS models and 20 random
+  `EnsembleModel`s).
+
+| Quantity | Worst error, fixtures | Worst error, live | Worst error, sweep |
+|---|---|---|---|
+| MLL | 2.1e-14 | 5.2e-15 | 1.0e-13 |
+| MLL gradients | 1.7e-13 | 1.7e-13 | 1.8e-13 |
+| Posteriors | 9.5e-14 | 1.1e-14 | 1.5e-13 |
+| Input gradients | 1.2e-11 | 4.5e-14 | 8.7e-14 |
+| Acquisition values / gradients (ensemble averages, qMFKG, qMFMES, qMFHVKG, mixed qLogNEI) | — | 8.8e-15 / 4.0e-14 | 1.7e-15 / 8.5e-15 |
+| Conditioning and fantasies | — | 1.5e-14 | — |
+
+`IndexSampler` draws the same members as BoTorch for the same seed, and
+`optimize_acqf_mixed` / `optimize_acqf_mixed_alternating` find the same
+candidates (7.9e-11). Fits are compared with BoTorch's outcomes on 16 perturbed
+twins; `mixed_last` has a multimodal likelihood (1 of 17 BoTorch fits reaches
+its best) and is compared with BoTorch's spread of outcomes.
+
+[docs/models.md](docs/models.md) has the full tables, the deviations and six
+BoTorch bugs found (two of them known).
+
 ### Versions checked
 
 The numbers above come from BoTorch's main branch at da00e04 with GPyTorch
@@ -1274,6 +1322,23 @@ The model fits alone are 140–550× faster.
 
 ## Migration notes and known differences
 
+- **Multi-fidelity, mixed, MAP SAAS and ensemble models.**
+  - `subset_output` works for every `SingleTaskGP` covariance module, also
+    custom ones.
+  - An `EnsembleModel` used in acquisition functions needs the attribute `dim`,
+    and the `IndexSampler` uses the same members for every t-batch of one
+    evaluation (BoTorch draws them per t-batch).
+  - A deterministic column of a `ModelList` has an exactly zero covariance
+    block.
+  - Where BoTorch is wrong, botorch-rust has the correct behaviour:
+    - `SingleTaskMultiFidelityGP(..., data_fidelities=[])` is treated as
+      `None`;
+    - `PosteriorStandardDeviation` on an `EnsembleMapSaasSingleTaskGP`
+      averages the members' standard deviations;
+    - `EnsembleMapSaasSingleTaskGP.fantasize` and multi-output
+      `ModelList.fantasize` work.
+
+  See [docs/models.md](docs/models.md#deviations-from-botorch-migration-notes).
 - **Optimization and candidate generation.**
   - Random draws (raw samples, lattice and starting points, perturbations)
     come from botorch-rust's generator (`options["seed"]` or a keyword-only
@@ -1666,6 +1731,7 @@ Other scripts:
   - `--phase 5d-deterministic`: deterministic models and composite
     acquisition functions (openbo's MO-TAF);
   - `--phase 6a-kernels`: kernel trees, kernels, priors and constraints;
+  - `--phase 7b-models`: multi-fidelity, mixed and MAP SAAS models;
   - `--phase 8-so-acquisition`: the single-objective acquisition functions;
   - `--phase 9-optim`: optimization, candidate generation, torch-style fitting
     and cross-validation;

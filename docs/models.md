@@ -1,17 +1,16 @@
-# Phase 7b: models other than multi-task
+# Multi-fidelity, mixed, MAP SAAS, ensemble and list models
 
-Draft for the README and `docs/api_coverage.md` (phase 7b, branch
-`phase7/models`). Ported: `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`,
+The port of BoTorch's models other than the multi-task GPs (roadmap phase 7b):
+the supported API, the deviations from BoTorch, the equivalence results and the
+BoTorch bugs found. Ported: `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`,
 the MAP SAAS models, `AffineDeterministicModel`, `FixedSingleSampleModel`,
 `EnsembleModel` / `EnsemblePosterior` / `IndexSampler`, `ModelList` /
 `ModelDict` / `PosteriorList`, `FantasizeMixin`, `subset_output` and
 `construct_inputs`, `OrthogonalAdditiveGP` (without component posteriors),
-and the ensemble paths of the acquisition functions. Multi-task models
-(phase 7a) and input/outcome transforms (phase 6b) are not part of this
-phase; none of the models here needs a transform that is not ported yet
-(`Normalize` and `Standardize` are).
+and the ensemble paths of the acquisition functions. Reference: BoTorch main at
+da00e0401 and BoTorch 0.18.1 (GPyTorch 1.15.2, linear_operator 0.6.1).
 
-## Supported API (rows for the README)
+## Supported API
 
 | BoTorch | botorch_rs | Notes |
 |---|---|---|
@@ -32,7 +31,7 @@ phase; none of the models here needs a transform that is not ported yet
 | `gpytorch.constraints.LogTransformedInterval`, `botorch.utils.constraints.LogTransformedInterval` / `NonTransformedInterval` | `botorch_rs.utils.constraints.*`, `botorch_rs.constraints` | raw = `log(value)`, raw bounds `(log lb, log ub)`, float32 bounds and initial raw value as in BoTorch |
 | `gpytorch.means.ConstantMean(constant_prior, constant_constraint)` | `botorch_rs.means.ConstantMean` | priors on the constant (MLL term, gradient, prior sampling); non-enforced constraints only |
 
-## Not ported (and why)
+## What remains unported (in this area)
 
 - `OrthogonalAdditiveGP` component posteriors (`infer_all_components=True`)
   and the first-order grid evaluation: they need a component-wise posterior
@@ -49,6 +48,8 @@ phase; none of the models here needs a transform that is not ported yet
 - `EnsembleModel` with an input or outcome transform in acquisition
   functions (the posterior supports them).
 - Multi-task models: phase 7a.
+- Input and outcome transforms other than `Normalize` and `Standardize` on
+  these models: phase 6b.
 
 ## Deviations from BoTorch (migration notes)
 
