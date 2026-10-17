@@ -1809,6 +1809,13 @@ The model fits alone are 140–550× faster.
       evaluates in float32).
     - Without a pull request yet: `C2DTLZ2.gen_pareto_front` returns only
       feasible points. Of BoTorch's front, 57% is feasible for M = 2.
+- **Subgradients at clamp bounds.** botorch-rust follows PyTorch ≥ 2.14's
+  subgradients exactly at the bounds of a `clamp` (pytorch#191142): 0 for a
+  scalar bound, an even split between the input and a tensor bound. With
+  torch ≤ 2.13, BoTorch's gradients differ exactly at such bounds, e.g. at
+  fidelities of 0 or 1 in the `LinearTruncatedFidelityKernel`, at inputs of 0
+  under `Warp`, or for a qEI sample exactly at `best_f`; away from the bounds
+  nothing changes. See [docs/drafts/torch214-clamp.md](docs/drafts/torch214-clamp.md).
 - **Deliberate deviations.** `prune_inferior_points` with
   `max_frac < 1` keeps the most frequent maximizers (BoTorch indexes the wrong
   points there), the LogEI gradient is accurate far in the tail, and posterior
