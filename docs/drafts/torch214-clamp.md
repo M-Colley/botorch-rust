@@ -197,7 +197,43 @@ derivative at an exact clamp bound, and all of them pass unchanged.
 
 ## Results
 
-RESULTS_PLACEHOLDER
+Branch `fix/torch214-clamp` after merging main f3840b8 (with
+`fix/fit-nonfinite`). Before the change, under torch 2.14.1 the full suite
+had exactly two failures against both BoTorch main and 0.18.1 (the
+multi-fidelity cases of `test_transforms_on_phase7_models_match_botorch`).
+
+| Check | torch 2.13.0 (main env) | torch 2.14.1+cpu (scratch venv) |
+|---|---|---|
+| `pytest botorch_pyo3/tests` vs BoTorch main (`BOTORCH_RS_REQUIRE_BOTORCH=1`; includes the 974 `equivalence` tests) | 3527 passed, 36 skipped, 0 failed | 3527 passed, 36 skipped, 0 failed |
+| the same vs BoTorch 0.18.1 | 3507 passed, 56 skipped, 0 failed | 3507 passed, 56 skipped, 0 failed |
+| `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace` | 393 passed, 0 failed | |
+| `scripts/develop.py`, ruff check / format (CI's file list), mypy | pass | |
+| Python 3.11 without torch / NumPy | 462 passed, 74 skipped | |
+
+No Rust fixture changed: none has a derivative at an exact clamp bound.
+
+Worst errors of the new comparisons (identical under both torch versions;
+under 2.13 against BoTorch with the ≥ 2.14 rule):
+
+| Quantity | Tolerance | Worst error |
+|---|---|---|
+| multi-fidelity kernels (4 cases): MLL / MLL gradient | 1e-9 / 1e-8 | 5.0e-16 / 4.7e-15 |
+| multi-fidelity: `PosteriorMean`, `PosteriorStandardDeviation`, EI, qEI (`q = 2`) values | 1e-9 | 5.9e-15 |
+| multi-fidelity: the same, input gradients | 1e-8 | 2.6e-14 |
+| `Warp` (`eps = 1e-7`, `2^-20`): MLL / MLL gradient | 1e-9 / 1e-8 | 3.6e-16 / 6.3e-15 |
+| `Warp`: `PosteriorMean`, EI values / input gradients | 1e-9 / 1e-8 | 4.5e-15 / 5.5e-15 |
+| `optimize_acqf` on a multi-fidelity GP (2 acquisitions × 2 L-BFGS-B paths, 8 restarts each): candidates / values | 1e-7 / 1e-9 | 1.8e-15 / 2.4e-15 |
+| qEI (`q = 1, 2`), qNEI, constrained objectives, qEHVI at the bound: values / gradients | 1e-9 / 1e-8 | 0 / 0 |
+| `test_transforms_on_phase7_models_match_botorch`: EI and qEI values / input gradients | 1e-9 / 1e-8 | 7.3e-15 / 8.1e-15 |
+
+Change of BoTorch's own gradients from the ≤ 2.13 to the ≥ 2.14 rule in
+these cases (relative to the largest component, measured under torch 2.13):
+0.13 – 2.5 for the linear truncated fidelity kernels, 5.5e-7 – 30 for `Warp`
+(small where the warped derivative at `eps` is small: concentration above
+1), 0.5 – 1 for the Monte-Carlo improvements, 0 for the downsampling /
+exponential decay control (9.5e-18 for its qEI: the emulation's graph). In
+`optimize_acqf`, 4 of the 8 restarts leave the fidelity bound under BoTorch
+with torch 2.13; none does with torch 2.14 or botorch_rs.
 
 ## Deviations from BoTorch (migration notes)
 
