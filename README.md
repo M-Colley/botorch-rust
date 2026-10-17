@@ -1222,11 +1222,16 @@ backtracks. botorch-rust reproduces these non-finite values for every model
   `test_parity_fit_nonfinite.py` also has a 200-seed sweep (`-m
   equivalence`, worst gap 1.1e-8).
 
-Fits whose BoTorch outcomes on twins spread widely (chaotic or multimodal
-likelihoods) are compared statistically, with 64 twins and a one-sided
-Mann–Whitney test at level 1e-3 plus a bound on the best outcome. Each check
-fails by chance with probability at most 1e-3; the earlier median and quartile
-comparison on 17 outcomes was not robust across platforms.
+Fits are compared with BoTorch's on twins whose training inputs are perturbed
+at rounding level, in two stages. Stage 1 is deterministic and cheap: on the
+first 4 (live tests) or 16 (fixtures) twins, botorch_rs's best loss must reach
+BoTorch's best, and its fit of the model itself (fixtures: every fit) must not
+end above BoTorch's worst. Only if that fails, stage 2 fits 64 twins and
+applies a one-sided Mann–Whitney test at level 1e-3 plus a bound on the best
+outcome. The procedure fails by chance with probability at most 2e-3. The
+former one-sample bound failed about 5% of the time where both libraries share
+a tail of early stops (as on Linux CI). Regressions that move botorch_rs's fits
+away from BoTorch's optima still fail.
 [docs/fitting.md](docs/fitting.md) has the details and one BoTorch bug found
 (batched fits couple their elements through NaN covariances).
 

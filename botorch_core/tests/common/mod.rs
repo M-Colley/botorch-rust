@@ -306,7 +306,20 @@ impl Report {
     }
 }
 
-/// One-sided significance level of each statistical fit check.
+// ---------------------------------------------------------------------------
+// Comparison of fits on twins (two stages)
+// ---------------------------------------------------------------------------
+
+/// Fit losses within this distance count as equal: the tolerance of every
+/// fit comparison and the ties of the statistical checks.
+pub const FIT_TOL: f64 = 1e-6;
+/// BoTorch's outcomes within this distance of its best loss belong to its
+/// best optimum; their spread scales the stage-1 tolerance.
+pub const FIT_CLUSTER: f64 = 1e-4;
+/// Twins (besides the model itself) compared in stage 1. The fixtures hold
+/// BoTorch's outcomes on 64 twins, all of which stage 2 compares.
+pub const STAGE1_TWINS: usize = 16;
+/// One-sided significance level of each statistical check of stage 2.
 pub const FIT_ALPHA: f64 = 1e-3;
 /// The standard normal quantile `Φ⁻¹(1 - FIT_ALPHA)`.
 pub const FIT_Z: f64 = 3.090_232_306_167_813;
@@ -348,37 +361,244 @@ pub fn rank_bound_k(n_rs: usize, n_bt: usize) -> usize {
     n_bt + 1
 }
 
-/// Statistical comparison of first-attempt fit losses on twins when
-/// BoTorch's own outcomes are chaotic (see `parity_helpers.compare_chaotic_fits`
-/// in the Python tests): a one-sided Mann–Whitney U test at level
-/// [`FIT_ALPHA`] that botorch_rs's losses are not stochastically larger
-/// than BoTorch's, and botorch_rs's best within `tol` of BoTorch's `k`-th
-/// smallest ([`rank_bound_k`]). Under the null hypothesis each check fails
-/// with probability at most [`FIT_ALPHA`].
-pub fn compare_chaotic_fits(
+/// The outcome of a fit: the final loss and the number of attempts.
+pub type FitOutcome = (f64, usize);
+
+/// Stage 2 of a [`FitComparison`]: the Mann–Whitney z of botorch_rs's
+/// losses, the rank `k` ([`rank_bound_k`]) and BoTorch's `k`-th best loss.
+#[derive(Debug, Clone)]
+pub struct Stage2 {
+    pub z: f64,
+    pub k: usize,
+    pub kth: f64,
+}
+
+/// The two-stage comparison of a fit case (see [`two_stage_fit_comparison`]).
+#[derive(Debug, Clone)]
+pub struct FitComparison {
+    /// The number of twins (besides the model) of the deciding stage.
+    pub twins: usize,
+    /// BoTorch's and botorch_rs's first-attempt losses of the deciding stage.
+    pub bt: Vec<f64>,
+    pub rs: Vec<f64>,
+    /// Stage 1: BoTorch's spread at its best optimum, the tolerance
+    /// `max(FIT_TOL, 10 × spread)`, and the excesses (in units of the
+    /// tolerance) of botorch_rs's best loss over BoTorch's best and of its
+    /// worst loss over BoTorch's worst.
+    pub spread: f64,
+    pub tol: f64,
+    pub best_excess: f64,
+    pub worst_excess: f64,
+    /// `None` if stage 1 decided.
+    pub stage2: Option<Stage2>,
+}
+
+impl FitComparison {
+    /// The deciding stage (1 or 2).
+    pub fn stage(&self) -> usize {
+        if self.stage2.is_some() {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// botorch_rs's best first-attempt loss of the deciding stage.
+    pub fn rs_best(&self) -> f64 {
+        self.rs.iter().copied().fold(f64::INFINITY, f64::min)
+    }
+
+    /// BoTorch's best and worst first-attempt losses of the deciding stage.
+    pub fn bt_range(&self) -> (f64, f64) {
+        let best = self.bt.iter().copied().fold(f64::INFINITY, f64::min);
+        let worst = self.bt.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        (best, worst)
+    }
+
+    pub fn passed(&self) -> bool {
+        match &self.stage2 {
+            None => self.best_excess <= 1.0 && self.worst_excess <= 1.0,
+            Some(s) => s.z <= FIT_Z && self.rs_best() - s.kth <= FIT_TOL,
+        }
+    }
+
+    /// The deciding values, and for stage 2 the sorted outcomes of both
+    /// libraries.
+    pub fn diagnostics(&self, label: &str) -> String {
+        let mut out = format!(
+            "{label}: stage 1: best above BoTorch's best {:.3} x tol, worst above BoTorch's \
+             worst {:.3} x tol (tol {:.1e}, BoTorch's spread at its best {:.1e})",
+            self.best_excess, self.worst_excess, self.tol, self.spread
+        );
+        if let Some(s) = &self.stage2 {
+            let sorted = |v: &[f64]| {
+                let mut v = v.to_vec();
+                v.sort_by(f64::total_cmp);
+                v.iter()
+                    .map(|x| format!("{x:+.10}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            out += &format!(
+                "\nstage 2 on {} BoTorch and {} botorch_rs first-attempt outcomes: Mann-Whitney \
+                 z = {:.3} (limit {FIT_Z:.3}), k = {}, BoTorch's k-th best {:+.10}, botorch_rs's \
+                 best {:+.10} (tolerance {FIT_TOL:e}): {}\nBoTorch (sorted): {}\nbotorch_rs \
+                 (sorted): {}",
+                self.bt.len(),
+                self.rs.len(),
+                s.z,
+                s.k,
+                s.kth,
+                self.rs_best(),
+                if self.passed() { "pass" } else { "FAIL" },
+                sorted(&self.bt),
+                sorted(&self.rs)
+            );
+        }
+        out
+    }
+}
+
+/// The two-stage comparison of fits from identical initial values (see
+/// `parity_helpers.two_stage_fit_comparisons` in the Python tests and
+/// `docs/fitting.md`, "Comparing fits"). `bt` holds BoTorch's outcomes on
+/// the model (index 0) and its twins `1..` (training inputs perturbed at
+/// rounding level, 64 in the fixtures), `bt_extra` further first-attempt
+/// outcomes of BoTorch on the model (e.g. with L-BFGS-B's variables
+/// reversed), `rs_own` botorch_rs's outcome on the model and `rs_twin(t)`
+/// its outcome on twin `t`. Only first attempts are compared (retries start
+/// from prior samples drawn by different generators).
+///
+/// 1. On the model and the first [`STAGE1_TWINS`] twins: botorch_rs's best
+///    loss must reach BoTorch's best, and none of its losses may end above
+///    BoTorch's worst (its own fit's, and every twin's), both within
+///    `max(FIT_TOL, 10 × BoTorch's spread at its best optimum)`. If so, the
+///    case passes. (The live Python tests check only botorch_rs's fit of the
+///    model itself against BoTorch's worst, as the former bound did: their
+///    stage 2 needs up to 64 more BoTorch fits. Here stage 2 costs only
+///    botorch_rs's fits, and checking every stage-1 fit sends more
+///    regressions to it; see `docs/fitting.md`.)
+/// 2. Otherwise botorch_rs fits the remaining twins as well, and on all
+///    outcomes its losses must pass a one-sided Mann–Whitney U test at level
+///    [`FIT_ALPHA`] (not stochastically larger than BoTorch's; ties within
+///    [`FIT_TOL`]), and its best loss must reach BoTorch's `k`-th best
+///    ([`rank_bound_k`]) within [`FIT_TOL`].
+///
+/// The case fails only if both stages fail; stage 2 alone fails by chance
+/// (botorch_rs's outcomes another sample of BoTorch's) with probability at
+/// most `2 × FIT_ALPHA`, so the procedure does as well.
+pub fn two_stage_fit_comparison(
+    bt: &[FitOutcome],
+    bt_extra: &[f64],
+    rs_own: FitOutcome,
+    rs_twin: &mut dyn FnMut(usize) -> FitOutcome,
+) -> FitComparison {
+    let first = |out: &[FitOutcome]| -> Vec<f64> {
+        out.iter()
+            .filter(|&&(_, a)| a == 1)
+            .map(|&(l, _)| l)
+            .collect()
+    };
+    let n_twins = bt.len() - 1;
+    let n1 = STAGE1_TWINS.min(n_twins);
+    let mut rs_out = vec![rs_own];
+    rs_out.extend((1..=n1).map(&mut *rs_twin));
+    let mut bt1 = first(&bt[..=n1]);
+    bt1.extend_from_slice(bt_extra);
+    assert!(!bt1.is_empty(), "BoTorch's fits all needed retries");
+    let rs1 = first(&rs_out);
+    let best = bt1.iter().copied().fold(f64::INFINITY, f64::min);
+    let worst = bt1.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let spread = bt1
+        .iter()
+        .copied()
+        .filter(|&l| l <= best + FIT_CLUSTER)
+        .fold(best, f64::max)
+        - best;
+    let tol = FIT_TOL.max(10.0 * spread);
+    let rs_best = rs1.iter().copied().fold(f64::INFINITY, f64::min);
+    let rs_worst = rs1.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let mut c = FitComparison {
+        twins: n1,
+        bt: bt1,
+        rs: rs1,
+        spread,
+        tol,
+        best_excess: (rs_best - best).max(0.0) / tol,
+        worst_excess: (rs_worst - worst).max(0.0) / tol,
+        stage2: None,
+    };
+    if c.passed() || n_twins <= n1 {
+        return c;
+    }
+    rs_out.extend((n1 + 1..=n_twins).map(&mut *rs_twin));
+    c.twins = n_twins;
+    c.bt = first(bt);
+    c.bt.extend_from_slice(bt_extra);
+    c.rs = first(&rs_out);
+    let z = if c.rs.is_empty() {
+        f64::INFINITY
+    } else {
+        mann_whitney_z(&c.rs, &c.bt, FIT_TOL)
+    };
+    let k = rank_bound_k(c.rs.len(), c.bt.len());
+    let mut sorted = c.bt.clone();
+    sorted.sort_by(f64::total_cmp);
+    let kth = sorted.get(k - 1).copied().unwrap_or(f64::INFINITY);
+    c.stage2 = Some(Stage2 { z, k, kth });
+    c
+}
+
+/// [`two_stage_fit_comparison`], with the deciding quantities checked in
+/// `report` under `label`. A case decided by stage 2 prints its diagnostics
+/// (stage 1's excesses, z, k, BoTorch's `k`-th best and the sorted outcomes
+/// of both libraries; visible in the output of a failing test).
+pub fn compare_fits(
     report: &mut Report,
     name: &str,
     label: &str,
-    bt: &[f64],
-    rs: &[f64],
-    tol: f64,
-) {
-    let z = mann_whitney_z(rs, bt, tol);
-    report.check(
-        name,
-        &format!("{label} (chaotic): Mann-Whitney z"),
-        z.max(0.0),
-        FIT_Z,
-    );
-    let k = rank_bound_k(rs.len(), bt.len());
-    let mut sorted = bt.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let kth = sorted.get(k - 1).copied().unwrap_or(f64::INFINITY);
-    let best = rs.iter().copied().fold(f64::INFINITY, f64::min);
-    report.check(
-        name,
-        &format!("{label} (chaotic): best above BoTorch's k-th best"),
-        (best - kth).max(0.0),
-        tol,
-    );
+    bt: &[FitOutcome],
+    bt_extra: &[f64],
+    rs_own: FitOutcome,
+    rs_twin: &mut dyn FnMut(usize) -> FitOutcome,
+) -> FitComparison {
+    let c = two_stage_fit_comparison(bt, bt_extra, rs_own, rs_twin);
+    match &c.stage2 {
+        None => {
+            report.check(
+                name,
+                &format!("{label}: best loss above BoTorch's best (scaled)"),
+                c.best_excess,
+                1.0,
+            );
+            report.check(
+                name,
+                &format!("{label}: worst loss above BoTorch's worst (scaled)"),
+                c.worst_excess,
+                1.0,
+            );
+        }
+        Some(s) => {
+            println!("{name}: {}", c.diagnostics(label));
+            report.check(
+                name,
+                &format!("{label} (stage 2): stage-1 excess (scaled)"),
+                c.best_excess.max(c.worst_excess),
+                f64::INFINITY,
+            );
+            report.check(
+                name,
+                &format!("{label} (stage 2): Mann-Whitney z"),
+                s.z.max(0.0),
+                FIT_Z,
+            );
+            report.check(
+                name,
+                &format!("{label} (stage 2): best above BoTorch's k-th best"),
+                (c.rs_best() - s.kth).max(0.0),
+                FIT_TOL,
+            );
+        }
+    }
+    c
 }

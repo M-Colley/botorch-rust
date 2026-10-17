@@ -20,15 +20,15 @@
 //!   weighted sum of their means and covariances (1e-9 values, 1e-8
 //!   gradients);
 //! * `fit_gpytorch_mll` from the default parameters, compared with BoTorch's
-//!   outcomes on the model and 16 twins whose training inputs are perturbed
-//!   at 1e-14 .. 1e-11 (first attempts only: retries start from prior
-//!   samples drawn by different generators): botorch_rs's best final loss
-//!   (on the same twins) must reach BoTorch's best and its own fit must not
-//!   end above BoTorch's worst outcome, within max(1e-6, 10 × the spread of
-//!   BoTorch's outcomes at its best optimum); on chaotic likelihoods, where
-//!   BoTorch's outcomes spread over more than 1e-3, statistically on 64
-//!   twins (`common::compare_chaotic_fits`: a one-sided Mann-Whitney U test
-//!   at level 1e-3 and botorch_rs's best within BoTorch's best `k`).
+//!   outcomes on the model and its twins (training inputs perturbed at
+//!   1e-14 .. 1e-11; first attempts only: retries start from prior samples
+//!   drawn by different generators) in two stages (`common::compare_fits`):
+//!   on 16 twins, botorch_rs's best final loss (on the same twins) must
+//!   reach BoTorch's best and none of its fits may end above BoTorch's
+//!   worst outcome, within max(1e-6, 10 × the spread of BoTorch's outcomes
+//!   at its best optimum); if not, statistically on 64 twins (a one-sided
+//!   Mann-Whitney U test at level 1e-3 and botorch_rs's best within
+//!   BoTorch's best `k`).
 //!
 //! Run with `--nocapture` to print the error tables.
 
@@ -47,12 +47,6 @@ use serde_json::Value;
 
 const VALUE_TOL: f64 = 1e-9;
 const GRAD_TOL: f64 = 1e-8;
-const FIT_TOL: f64 = 1e-6;
-const FIT_CLUSTER: f64 = 1e-4;
-/// BoTorch's fit outcomes on a model and its twins that spread over more than
-/// this (in the final loss) mark a chaotic likelihood (many optima reached
-/// depending on rounding), on which the fits are compared statistically.
-const CHAOTIC_RANGE: f64 = 1e-3;
 
 #[derive(Deserialize)]
 struct Mll {
@@ -326,59 +320,30 @@ fn kernel_trees_match_botorch() {
             let mut fitted = build(&c, &c.train_x);
             fitted.set_raw_parameters(&c.default_raw).unwrap();
             let r = fit_gpytorch_mll(&mut fitted, FitOptions::default()).unwrap();
-            // Outcomes of first attempts only: retries start from prior
-            // samples, which the two libraries draw from different RNGs.
-            let bt: Vec<f64> = std::iter::once((f.loss, f.attempts))
+            let own_attempts = r.results[0].attempts;
+            let bt: Vec<common::FitOutcome> = std::iter::once((f.loss, f.attempts))
                 .chain(
                     f.twin_losses
                         .iter()
                         .copied()
                         .zip(f.twin_attempts.iter().copied()),
                 )
-                .filter(|&(_, a)| a == 1)
-                .map(|(l, _)| l)
                 .collect();
-            let own_attempts = r.results[0].attempts;
-            let rs: Vec<f64> = std::iter::once((r.loss, own_attempts))
-                .chain(f.twin_train_x.iter().map(|x| {
-                    let mut twin = build(&c, x);
+            let cmp = common::compare_fits(
+                &mut report,
+                name,
+                "fit",
+                &bt,
+                &[],
+                (r.loss, own_attempts),
+                &mut |t| {
+                    let mut twin = build(&c, &f.twin_train_x[t - 1]);
                     twin.set_raw_parameters(&c.default_raw).unwrap();
                     let t = fit_gpytorch_mll(&mut twin, FitOptions::default()).unwrap();
                     (t.loss, t.results[0].attempts)
-                }))
-                .filter(|&(_, a)| a == 1)
-                .map(|(l, _)| l)
-                .collect();
-            let bt_best = bt.iter().copied().fold(f64::INFINITY, f64::min);
-            let bt_worst = bt.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let rs_best = rs.iter().copied().fold(f64::INFINITY, f64::min);
-            let spread = bt
-                .iter()
-                .copied()
-                .filter(|&l| l <= bt_best + FIT_CLUSTER)
-                .fold(bt_best, f64::max)
-                - bt_best;
-            let tol = FIT_TOL.max(10.0 * spread);
-            if bt_worst - bt_best > CHAOTIC_RANGE {
-                // A chaotic likelihood: BoTorch's own outcomes are spread over
-                // many optima, compared statistically.
-                common::compare_chaotic_fits(&mut report, name, "fit", &bt, &rs, FIT_TOL);
-            } else {
-                report.check(
-                    name,
-                    "fit: best loss above BoTorch's best (scaled)",
-                    (rs_best - bt_best).max(0.0) / tol,
-                    1.0,
-                );
-                if own_attempts == 1 {
-                    report.check(
-                        name,
-                        "fit: loss above BoTorch's worst (scaled)",
-                        (r.loss - bt_worst).max(0.0) / tol,
-                        1.0,
-                    );
-                }
-            }
+                },
+            );
+            let (bt_best, bt_worst) = cmp.bt_range();
             let diff = fitted
                 .raw_parameters()
                 .iter()
@@ -388,21 +353,116 @@ fn kernel_trees_match_botorch() {
             println!(
                 "{name:26} fit: loss {:+.10} (BoTorch {:+.10}), iterations {} (BoTorch {}), \
                  attempts {own_attempts} (BoTorch {}), max parameter difference {diff:.1e}, \
-                 first-attempt outcomes: BoTorch [{bt_best:+.10}, {bt_worst:+.10}] ({} of {}), \
-                 botorch_rs best {rs_best:+.10} ({} of {}), spread {spread:.1e}",
+                 stage {}: first-attempt outcomes: BoTorch [{bt_best:+.10}, {bt_worst:+.10}] \
+                 ({} of {}), botorch_rs best {:+.10} ({} of {}), spread {:.1e}",
                 r.loss,
                 f.loss,
                 r.results[0].iterations,
                 f.iterations,
                 f.attempts,
-                bt.len(),
-                f.twin_losses.len() + 1,
-                rs.len(),
-                f.twin_losses.len() + 1
+                cmp.stage(),
+                cmp.bt.len(),
+                cmp.twins + 1,
+                cmp.rs_best(),
+                cmp.rs.len(),
+                cmp.twins + 1,
+                cmp.spread
             );
         }
     }
     report.finish("6a kernels: kernel trees in SingleTaskGP");
+}
+
+/// First-attempt losses of BoTorch and botorch_rs on the model (twin 0) and
+/// 64 twins of the 6b case `warp_priors_bounds` on CI's Linux runner (torch
+/// 2.14.1), with 10 decimals: twins 0..7 in order, the others sorted.
+const LINUX_WARP_BT: &str = "
+    -0.9761285871 -0.9761285871 -0.9761285848 -0.9761285868 -0.9761285867 -0.9761285536
+    -0.9761285593 -0.9761285776 -0.9761285872 -0.9761285871 -0.9761285871 -0.9761285871
+    -0.9761285871 -0.9761285871 -0.9761285871 -0.9761285871 -0.9761285871 -0.9761285871
+    -0.9761285870 -0.9761285870 -0.9761285870 -0.9761285870 -0.9761285869 -0.9761285868
+    -0.9761285868 -0.9761285868 -0.9761285868 -0.9761285866 -0.9761285862 -0.9761285859
+    -0.9761285859 -0.9761285849 -0.9761285848 -0.9761285846 -0.9761285846 -0.9761285843
+    -0.9761285842 -0.9761285830 -0.9761285820 -0.9761285816 -0.9761285816 -0.9761285792
+    -0.9761285759 -0.9761285757 -0.9761285739 -0.9761285639 -0.9761285598 -0.9761285598
+    -0.9761285596 -0.9761285537 -0.9761285503 -0.9761285493 -0.9761284267 -0.9761283722
+    -0.9761282954 -0.9761281886 -0.9761275755 -0.9761263592 -0.9761256537 -0.9759206499
+    -0.9759188063 -0.9759168316 -0.9759164862 -0.9759160175 -0.9759034842";
+const LINUX_WARP_RS: &str = "
+    -0.9759152272 -0.9761285870 -0.9761285800 -0.9761285871 -0.9761285870 -0.9761285614
+    -0.9761285871 -0.9759339203 -0.9761285871 -0.9761285871 -0.9761285871 -0.9761285871
+    -0.9761285871 -0.9761285871 -0.9761285871 -0.9761285871 -0.9761285871 -0.9761285871
+    -0.9761285871 -0.9761285871 -0.9761285870 -0.9761285870 -0.9761285870 -0.9761285870
+    -0.9761285870 -0.9761285869 -0.9761285869 -0.9761285869 -0.9761285867 -0.9761285866
+    -0.9761285866 -0.9761285865 -0.9761285864 -0.9761285860 -0.9761285857 -0.9761285855
+    -0.9761285854 -0.9761285853 -0.9761285851 -0.9761285848 -0.9761285848 -0.9761285847
+    -0.9761285846 -0.9761285832 -0.9761285825 -0.9761285779 -0.9761285752 -0.9761285744
+    -0.9761285718 -0.9761285717 -0.9761285716 -0.9761285671 -0.9761285468 -0.9761285246
+    -0.9761284781 -0.9761284770 -0.9761284680 -0.9761284211 -0.9761283147 -0.9761279780
+    -0.9761276173 -0.9761269717 -0.9761263555 -0.9760761263 -0.9759204257";
+
+/// The outcomes of CI's Linux run that failed the former one-sample bound
+/// (botorch_rs's fit of the model itself landed in the tail of early stops
+/// that both libraries share) fail stage 1 and pass stage 2 of the
+/// two-stage fit comparison.
+#[test]
+fn linux_warp_outcomes_pass_the_two_stage_fit_comparison() {
+    let parse = |s: &str| -> Vec<common::FitOutcome> {
+        s.split_whitespace()
+            .map(|v| (v.parse::<f64>().unwrap(), 1))
+            .collect()
+    };
+    let (bt, rs) = (parse(LINUX_WARP_BT), parse(LINUX_WARP_RS));
+    assert_eq!((bt.len(), rs.len()), (65, 65));
+    let c = common::two_stage_fit_comparison(&bt, &[], rs[0], &mut |t| rs[t]);
+    println!("{}", c.diagnostics("warp_priors_bounds (Linux)"));
+    let s = c.stage2.as_ref().expect("stage 1 fails");
+    assert!(c.passed());
+    assert!(c.worst_excess > 200.0, "{}", c.worst_excess);
+    assert_eq!(s.k, 10);
+    assert!((-0.46..-0.44).contains(&s.z), "{}", s.z);
+}
+
+/// botorch_rs's fits stopped after 5 L-BFGS-B iterations (a systematic
+/// regression) fail both stages of the fit comparison against BoTorch's
+/// outcomes on 64 twins.
+#[test]
+fn degraded_fits_fail_the_two_stage_fit_comparison() {
+    let degraded = FitOptions {
+        maxiter: 5,
+        ..FitOptions::default()
+    };
+    let mut cases = 0;
+    for c in load()
+        .into_iter()
+        .filter(|c| ["rbf_shared_d3", "matern32_scale_d2"].contains(&c.name.as_str()))
+    {
+        let f = c.fit.as_ref().unwrap();
+        assert_eq!(f.twin_losses.len(), 64, "{}", c.name);
+        let bt: Vec<common::FitOutcome> = std::iter::once((f.loss, f.attempts))
+            .chain(
+                f.twin_losses
+                    .iter()
+                    .copied()
+                    .zip(f.twin_attempts.iter().copied()),
+            )
+            .collect();
+        let fit = |x: &[Vec<f64>]| {
+            let mut gp = build(&c, x);
+            gp.set_raw_parameters(&c.default_raw).unwrap();
+            let r = fit_gpytorch_mll(&mut gp, degraded).unwrap();
+            (r.loss, r.results[0].attempts)
+        };
+        let own = fit(&c.train_x);
+        let cmp =
+            common::two_stage_fit_comparison(&bt, &[], own, &mut |t| fit(&f.twin_train_x[t - 1]));
+        println!("{}", cmp.diagnostics(&c.name));
+        let s = cmp.stage2.as_ref().expect("stage 1 fails");
+        assert!(!cmp.passed(), "{}", c.name);
+        assert!(s.z > common::FIT_Z, "{}", c.name);
+        cases += 1;
+    }
+    assert_eq!(cases, 2);
 }
 
 #[test]

@@ -30,9 +30,11 @@ kernel tree from it) and records:
   ``botorch_noise`` records the change of the MLL by these fixes;
 * ``fit_gpytorch_mll`` from the default parameters (single-output cases):
   the final loss, iterations and raw parameters, and BoTorch's final losses
-  on 16 twins whose training inputs are perturbed at 1e-14 .. 1e-11 (with
+  on 64 twins whose training inputs are perturbed at 1e-14 .. 1e-11 (with
   their inputs, so that botorch_rs fits the same twins), and the number of
-  attempts of every fit (retries start from random prior samples).
+  attempts of every fit (retries start from random prior samples). The
+  parity tests compare the first 16 twins and, if that fails, all 64
+  (the two-stage comparison of ``docs/fitting.md``).
 
 Non-finite numbers are written as the strings "inf", "-inf" and "nan".
 """
@@ -51,26 +53,11 @@ import torch
 
 DT = torch.float64
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
-N_TWINS = 16
-#: Twins for chaotic or multimodal fits (compared statistically).
-CHAOTIC_TWINS = 64
-CHAOTIC_RANGE = 1e-3
-FIT_CLUSTER = 1e-4
+#: BoTorch's fits of twins: the parity tests compare botorch_rs's fits on the
+#: first 16 (stage 1) and, if that fails, on all ``FIT_TWINS`` (stage 2,
+#: statistically).
+FIT_TWINS = 64
 TESTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "botorch_pyo3", "tests")
-
-
-def is_chaotic(fitted: dict[str, Any], twins: list[tuple[Any, float, int]]) -> bool:
-    """Whether BoTorch's first-attempt fits of the model and its twins are
-    chaotic (spread over more than ``CHAOTIC_RANGE``) or multimodal (fewer
-    than a quarter within ``FIT_CLUSTER`` of the best): the parity tests then
-    compare them statistically, on ``CHAOTIC_TWINS`` twins."""
-    first = [fitted["loss"]] if fitted["attempts"] == 1 else []
-    first += [loss for _, loss, a in twins if a == 1]
-    if not first:
-        return False
-    best = min(first)
-    at_best = sum(v <= best + FIT_CLUSTER for v in first)
-    return max(first) - best > CHAOTIC_RANGE or 4 * at_best < len(first)
 
 
 def enc(x: Any) -> Any:
@@ -584,9 +571,7 @@ def _model_case(case: dict[str, Any], seed: int) -> dict[str, Any]:
                 r = fit(twin)
                 twins.append((twin.train_inputs[0].clone(), r["loss"], r["attempts"]))
 
-        add_twins(range(1, N_TWINS + 1))
-        if is_chaotic(fitted, twins):
-            add_twins(range(N_TWINS + 1, CHAOTIC_TWINS + 1))
+        add_twins(range(1, FIT_TWINS + 1))
         fitted["twin_train_x"] = [t for t, _, _ in twins]
         fitted["twin_losses"] = [loss for _, loss, _ in twins]
         fitted["twin_attempts"] = [a for _, _, a in twins]

@@ -21,7 +21,7 @@ model from the recorded configuration and the data kernel's spec) records:
 * ``condition_on_observations`` at two new points and ``fantasize`` with
   recorded base samples: the posteriors of the resulting models;
 * for some cases ``fit_gpytorch_mll`` from the default parameters with
-  BoTorch's outcomes on 16 twins (training inputs perturbed at 1e-14 ..
+  BoTorch's outcomes on 64 twins (training inputs perturbed at 1e-14 ..
   1e-11), and acquisition values and gradients (qLogNEI with recorded base
   samples on the model and its twins, qUCB / qSimpleRegret with a
   scalarizing posterior transform, LogEI, PosteriorMean).
@@ -45,7 +45,6 @@ import torch
 
 DT = torch.float64
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
-N_TWINS = 16
 NUM_SAMPLES = 64
 TESTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "botorch_pyo3", "tests")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -230,9 +229,7 @@ def fit_record(
             r = fit(tw)
             twins.append((tw.train_inputs[0].clone(), r["loss"], r["attempts"]))
 
-    add_twins(range(1, N_TWINS + 1))
-    if f6a.is_chaotic(fitted, twins):
-        add_twins(range(N_TWINS + 1, f6a.CHAOTIC_TWINS + 1))
+    add_twins(range(1, f6a.FIT_TWINS + 1))
     fitted["twin_train_x"] = [t for t, _, _ in twins]
     fitted["twin_losses"] = [loss for _, loss, _ in twins]
     fitted["twin_attempts"] = [a for _, _, a in twins]
@@ -468,9 +465,7 @@ def kron_fit_record(case: dict[str, Any], bt: Any) -> dict[str, Any]:
             r = fit(tw)
             twins.append((Xt, r["loss"], r["attempts"]))
 
-    add_twins(range(1, N_TWINS + 1))
-    if f6a.is_chaotic(fitted, twins):
-        add_twins(range(N_TWINS + 1, f6a.CHAOTIC_TWINS + 1))
+    add_twins(range(1, f6a.FIT_TWINS + 1))
     fitted["twin_train_x"] = [t for t, _, _ in twins]
     fitted["twin_losses"] = [loss for _, loss, _ in twins]
     fitted["twin_attempts"] = [a for _, _, a in twins]

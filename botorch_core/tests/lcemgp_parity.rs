@@ -22,12 +22,15 @@
 //!   with respect to the inputs (1e-9);
 //! * `fit_gpytorch_mll` from the default parameters, compared with BoTorch's
 //!   outcomes: its own fit, the fit with the optimizer's variables reversed
-//!   and the fits of 16 twins whose training inputs are perturbed at 1e-14 ..
+//!   and the fits of twins whose training inputs are perturbed at 1e-14 ..
 //!   1e-11 (long L-BFGS-B runs on these likelihoods end in other optima under
 //!   rounding-level changes, in either library). botorch_rs fits the same
-//!   twins; its best final loss must reach BoTorch's best, and its own fit
-//!   must not end above BoTorch's worst outcome, both within max(1e-6, 10 ×
-//!   the spread of BoTorch's outcomes at its best optimum);
+//!   twins, compared in two stages (`common::compare_fits`, as in
+//!   `kernels_6a_parity.rs`; the fixtures record no attempts, all fits
+//!   count): on 16 twins, its best final loss must reach BoTorch's best,
+//!   and none of its fits may end above BoTorch's worst outcome, both within
+//!   max(1e-6, 10 × the spread of BoTorch's outcomes at its best optimum);
+//!   if not, statistically on 64 twins;
 //! * qLogNEI and qLogNEHVI (on a list with a second model) with BoTorch's
 //!   recorded base samples: per candidate set, the nearest of BoTorch's
 //!   outcomes on the model and its 16 twins in the regime botorch_rs's value
@@ -62,15 +65,11 @@ use botorch_core::{
     GaussianLikelihoodSpec, Matrix, Model, ModelList, SingleTaskGP, SingleTaskGPOptions,
     SobolQMCNormalSampler, Vector,
 };
-use common::{fixture_dir, matrix, rel_err, Report};
+use common::{fixture_dir, matrix, rel_err, Report, FIT_TOL};
 use serde::Deserialize;
 
 const VALUE_TOL: f64 = 1e-9;
 const GRAD_TOL: f64 = 1e-8;
-const FIT_TOL: f64 = 1e-6;
-/// BoTorch's fit outcomes within this distance of its best final loss count
-/// as the same optimum; their spread sets the fit tolerance.
-const FIT_CLUSTER: f64 = 1e-4;
 /// BoTorch's MC outcomes whose values lie within this distance (log-space
 /// error; or 100 × BoTorch's median change, if larger) of one another belong
 /// to the same regime.
@@ -467,43 +466,28 @@ fn lcemgp_matches_botorch() {
             0.0,
         );
         let r = fit_gpytorch_mll(&mut fitted, FitOptions::default()).unwrap();
-        // BoTorch's outcomes, and botorch_rs's on the same twins.
-        let bt: Vec<f64> = [c.fit.loss, c.fit.reversed_loss]
-            .into_iter()
+        // BoTorch's outcomes (its own fit and its twins, plus the fit with the
+        // variables reversed), and botorch_rs's on the same twins.
+        let bt: Vec<common::FitOutcome> = std::iter::once(c.fit.loss)
             .chain(c.fit.twin_losses.iter().copied())
+            .map(|l| (l, 1))
             .collect();
-        let rs: Vec<f64> = std::iter::once(r.loss)
-            .chain(c.fit.twin_train_x.iter().map(|x| {
+        let cmp = common::compare_fits(
+            &mut report,
+            name,
+            "fit",
+            &bt,
+            &[c.fit.reversed_loss],
+            (r.loss, 1),
+            &mut |t| {
+                let x = &c.fit.twin_train_x[t - 1];
                 let mut twin = build_on(&c, x, &c.train_y, c.embedding_init.as_ref());
                 twin.renorm_embeddings();
-                fit_gpytorch_mll(&mut twin, FitOptions::default())
-                    .unwrap()
-                    .loss
-            }))
-            .collect();
-        let bt_best = bt.iter().copied().fold(f64::INFINITY, f64::min);
-        let bt_worst = bt.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let rs_best = rs.iter().copied().fold(f64::INFINITY, f64::min);
-        let rs_worst = rs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let spread = bt
-            .iter()
-            .copied()
-            .filter(|&l| l <= bt_best + FIT_CLUSTER)
-            .fold(bt_best, f64::max)
-            - bt_best;
-        let tol = FIT_TOL.max(10.0 * spread);
-        report.check(
-            name,
-            "fit: best loss above BoTorch's best (scaled)",
-            (rs_best - bt_best).max(0.0) / tol,
-            1.0,
+                let t = fit_gpytorch_mll(&mut twin, FitOptions::default()).unwrap();
+                (t.loss, 1)
+            },
         );
-        report.check(
-            name,
-            "fit: loss above BoTorch's worst outcome (scaled)",
-            (r.loss - bt_worst).max(0.0) / tol,
-            1.0,
-        );
+        let (bt_best, bt_worst) = cmp.bt_range();
         let parameter_difference = fitted
             .raw_parameters()
             .iter()
@@ -512,10 +496,17 @@ fn lcemgp_matches_botorch() {
             .fold(0.0, f64::max);
         println!(
             "{name:28} fit: loss {:+.10} (BoTorch {:+.10}), iterations {} (BoTorch {}), max \
-             parameter difference {parameter_difference:.1e}; outcomes with the 16 twins: BoTorch \
-             [{bt_best:+.10}, {bt_worst:+.10}], botorch_rs [{rs_best:+.10}, {rs_worst:+.10}], \
-             spread at BoTorch's best {spread:.1e}",
-            r.loss, c.fit.loss, r.iterations, c.fit.iterations,
+             parameter difference {parameter_difference:.1e}; stage {}, outcomes with {} twins: \
+             BoTorch [{bt_best:+.10}, {bt_worst:+.10}], botorch_rs best {:+.10}, spread at \
+             BoTorch's best {:.1e}",
+            r.loss,
+            c.fit.loss,
+            r.iterations,
+            c.fit.iterations,
+            cmp.stage(),
+            cmp.twins,
+            cmp.rs_best(),
+            cmp.spread,
         );
 
         // Random hyperparameters: MLL, renormalization by a forward pass.

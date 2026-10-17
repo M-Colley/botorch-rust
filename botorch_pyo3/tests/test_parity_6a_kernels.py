@@ -20,15 +20,14 @@ kernels draw theirs from torch's generator in both), and compared:
 * the priors (univariate, LKJ, BoTorch's ``BetaPrior``) and ``LessThan``.
 
 Tolerances: values 1e-9, gradients 1e-8 (relative); fits as in the Rust
-fixture test (``kernels_6a_parity.rs``): botorch_rs's best outcome on the
+fixture test (``kernels_6a_parity.rs``), in two stages
+(``parity_helpers.compare_twin_fits``): botorch_rs's best outcome on the
 model and 4 twins (training inputs perturbed at 1e-14 .. 1e-11) must reach
 BoTorch's best and its own fit must not end above BoTorch's worst, within
 ``max(1e-6, 10 x`` the spread of BoTorch's outcomes at its best optimum``)``;
-on chaotic likelihoods (BoTorch's outcomes spread over more than 1e-3),
-statistically on 64 twins (``parity_helpers.compare_chaotic_fits``: a
-one-sided Mann-Whitney U test at level 1e-3 and botorch_rs's best within
-BoTorch's best ``k`` outcomes, each failing by chance with probability at
-most 1e-3).
+if not, statistically on 64 twins (a one-sided Mann-Whitney U test at level
+1e-3 and botorch_rs's best within BoTorch's best ``k`` outcomes, each
+failing by chance with probability at most 1e-3).
 
 BoTorch's numerical quirks are fixed for the comparisons (see the deviations
 in ``docs/drafts/6a-kernels.md``): Matérn-1/2 models are compared with
@@ -89,9 +88,9 @@ from botorch_rs.models import SingleTaskGP as RsSingleTaskGP  # noqa: E402
 from botorch_rs.sampling import SobolQMCNormalSampler as RsSampler  # noqa: E402
 from botorch_rs.sampling import pathwise as rs_pw  # noqa: E402
 from parity_helpers import (  # noqa: E402
-    CHAOTIC_TWINS,
     Checker,
-    compare_chaotic_fits,
+    FitOutcome,
+    compare_twin_fits,
     perturbed_copy,
     rel_err,
 )
@@ -102,9 +101,6 @@ DT = torch.float64
 CHECK = Checker("kernel trees, kernels, priors and constraints (6a)")
 VALUE_TOL = 1e-9
 GRAD_TOL = 1e-8
-FIT_TOL = 1e-6
-FIT_CLUSTER = 1e-4
-CHAOTIC_RANGE = 1e-3
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 4
 F64 = {"__dtype__": "float64"}
@@ -834,44 +830,13 @@ def test_fit_from_identical_initial_values(name: str) -> None:
     seed = 300 + list(MODELS).index(name)
     with _fixes(opts):
         X0 = _data(d, 10, seed, opts)[0]
-        bt_out: list[tuple[float, int]] = []
-        rs_out: list[tuple[float, int]] = []
 
-        def run(twins: range) -> None:
-            for t in twins:
-                bt, rs, _, defaults = model_pair(spec, d, opts, seed, X=_twin(X0, t, opts))
-                rs.initialize(**defaults)
-                bt_out.append(_bt_fit(bt))
-                rs_out.append(_rs_fit(rs))
+        def fit_twin(t: int) -> tuple[FitOutcome, FitOutcome]:
+            bt, rs, _, defaults = model_pair(spec, d, opts, seed, X=_twin(X0, t, opts))
+            rs.initialize(**defaults)
+            return _bt_fit(bt), _rs_fit(rs)
 
-        run(range(N_TWINS + 1))
-        first = [loss for loss, a in bt_out if a == 1]
-        if max(first) - min(first) > CHAOTIC_RANGE:
-            # Chaotic: more twins for the statistical comparison.
-            run(range(N_TWINS + 1, CHAOTIC_TWINS + 1))
-    # Outcomes of first attempts only: retries start from prior samples,
-    # which the two libraries draw from different random number generators.
-    bt_first = [loss for loss, a in bt_out if a == 1]
-    rs_first = [loss for loss, a in rs_out if a == 1]
-    CHECK.record(
-        "fit: first attempts failed (botorch_rs - BoTorch)",
-        max(len(bt_first) - len(rs_first), 0),
-        None,
-    )
-    best, worst = min(bt_first), max(bt_first)
-    spread = max(v for v in bt_first if v <= best + FIT_CLUSTER) - best
-    tol = max(FIT_TOL, 10 * spread)
-    CHECK.record("fit: BoTorch's spread at its best optimum", spread, None)
-    if worst - best > CHAOTIC_RANGE:
-        compare_chaotic_fits(CHECK, "fit", bt_first, rs_first, FIT_TOL)
-    else:
-        CHECK.check_bound(
-            "fit: best loss above BoTorch's best (scaled)", (min(rs_first) - best) / tol, 1.0
-        )
-        if rs_out[0][1] == 1:
-            CHECK.check_bound(
-                "fit: loss above BoTorch's worst (scaled)", (rs_out[0][0] - worst) / tol, 1.0
-            )
+        compare_twin_fits(CHECK, "fit", fit_twin, N_TWINS)
 
 
 def test_fit_leaving_a_prior_support_raises_like_botorch() -> None:

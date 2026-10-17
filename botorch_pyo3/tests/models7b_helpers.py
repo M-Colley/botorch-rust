@@ -24,14 +24,11 @@ from botorch_rs.acquisition import PosteriorMean as RsPosteriorMean
 from botorch_rs.acquisition import PosteriorStandardDeviation as RsPSD
 from botorch_rs.fit import fit_gpytorch_mll as rs_fit
 from botorch_rs.mlls import ExactMarginalLogLikelihood as RsMLL
-from parity_helpers import CHAOTIC_TWINS, Checker, compare_chaotic_fits, rel_err
+from parity_helpers import FIT_TWINS, Checker, FitOutcome, compare_twin_fits, rel_err
 
 DT = torch.float64
 VALUE_TOL = 1e-9
 GRAD_TOL = 1e-8
-FIT_TOL = 1e-6
-FIT_CLUSTER = 1e-4
-CHAOTIC_RANGE = 1e-3
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 
 
@@ -234,60 +231,18 @@ def compare_fits(
     X0: Any,
     cols: list[int] | None = None,
     twins: int = 4,
-    chaotic_twins: int = CHAOTIC_TWINS,
+    max_twins: int = FIT_TWINS,
 ) -> None:
     """Fits of the model and its twins from identical initial values, per
-    model element (outputs, ensemble members): botorch_rs's best
-    first-attempt loss must reach BoTorch's best and its own loss must not
-    end above BoTorch's worst, within ``max(1e-6, 10 x`` BoTorch's spread at
-    its best optimum``)``; on chaotic likelihoods (BoTorch's outcomes spread
-    over more than 1e-3, or fewer than a quarter of them within 1e-4 of the
-    best) statistically on ``chaotic_twins`` twins
-    (``parity_helpers.compare_chaotic_fits``)."""
-    bt_out: list[tuple[list[float], int]] = []
-    rs_out: list[tuple[list[float], int]] = []
+    model element (outputs, ensemble members), compared in two stages
+    (``parity_helpers.compare_twin_fits``): on ``twins`` twins, botorch_rs's
+    best first-attempt loss must reach BoTorch's best and its own loss must
+    not end above BoTorch's worst, within ``max(1e-6, 10 x`` BoTorch's
+    spread at its best optimum``)``; if not, statistically on ``max_twins``
+    twins."""
 
-    def run(ts: range) -> None:
-        for t in ts:
-            bt, rs = make_pair(twin_inputs(X0, t, cols))
-            bt_out.append(bt_fit_losses(bt))
-            rs_out.append(rs_fit_losses(rs))
+    def fit_twin(t: int) -> tuple[FitOutcome, FitOutcome]:
+        bt, rs = make_pair(twin_inputs(X0, t, cols))
+        return bt_fit_losses(bt), rs_fit_losses(rs)
 
-    run(range(twins + 1))
-    n_el = len(bt_out[0][0])
-
-    def first(out: list[tuple[list[float], int]], e: int) -> list[float]:
-        return [losses[e] for losses, a in out if a == 1]
-
-    if any(max(first(bt_out, e)) - min(first(bt_out, e)) > CHAOTIC_RANGE for e in range(n_el)):
-        run(range(twins + 1, chaotic_twins + 1))
-    check.record(
-        f"{label}: first attempts failed (botorch_rs - BoTorch)",
-        max(sum(a > 1 for _, a in rs_out) - sum(a > 1 for _, a in bt_out), 0),
-        None,
-    )
-    for e in range(n_el):
-        bt_first, rs_first = first(bt_out, e), first(rs_out, e)
-        if not bt_first or not rs_first:
-            continue
-        best, worst = min(bt_first), max(bt_first)
-        spread = max(v for v in bt_first if v <= best + FIT_CLUSTER) - best
-        tol = max(FIT_TOL, 10 * spread)
-        # Multimodal: BoTorch itself rarely reaches its best outcome (fewer
-        # than a quarter of its fits within FIT_CLUSTER of it), compared
-        # statistically like chaotic likelihoods.
-        at_best = sum(v <= best + FIT_CLUSTER for v in bt_first)
-        if worst - best > CHAOTIC_RANGE or 4 * at_best < len(bt_first):
-            compare_chaotic_fits(check, label, bt_first, rs_first, FIT_TOL)
-        else:
-            check.check_bound(
-                f"{label}: best loss above BoTorch's best (scaled)",
-                (min(rs_first) - best) / tol,
-                1.0,
-            )
-            if rs_out[0][1] == 1:
-                check.check_bound(
-                    f"{label}: loss above BoTorch's worst (scaled)",
-                    (rs_out[0][0][e] - worst) / tol,
-                    1.0,
-                )
+    compare_twin_fits(check, label, fit_twin, twins, max_twins)

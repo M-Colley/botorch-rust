@@ -25,8 +25,8 @@ libraries (``transform_helpers.py``) and compared:
 * posteriors of models with transforms of some outputs (``outputs=``),
   which BoTorch cannot untransform (``NotImplementedError``), against
   single-output BoTorch models with the same parameters;
-* fits from identical initial values (the rule of
-  ``test_parity_6a_kernels.py``, with 4 twins).
+* fits from identical initial values (the two-stage comparison of
+  ``test_parity_6a_kernels.py``, with 4 twins in stage 1).
 
 Tolerances: values 1e-9, gradients 1e-8 (relative). BoTorch main's
 transform bugs fixed by meta-pytorch/botorch#3389 are patched for the
@@ -91,7 +91,7 @@ from botorch_rs.mlls import ExactMarginalLogLikelihood as RsMLL  # noqa: E402
 from botorch_rs.models import ModelListGP as RsModelListGP  # noqa: E402
 from botorch_rs.models import SingleTaskGP as RsSingleTaskGP  # noqa: E402
 from botorch_rs.sampling import SobolQMCNormalSampler as RsSampler  # noqa: E402
-from parity_helpers import CHAOTIC_TWINS, Checker, compare_chaotic_fits  # noqa: E402
+from parity_helpers import Checker, FitOutcome, compare_twin_fits  # noqa: E402
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
@@ -99,9 +99,6 @@ DT = torch.float64
 CHECK = Checker("input and outcome transforms (6b)")
 VALUE_TOL = 1e-9
 GRAD_TOL = 1e-8
-FIT_TOL = 1e-6
-FIT_CLUSTER = 1e-4
-CHAOTIC_RANGE = 1e-3
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 4
 
@@ -1145,37 +1142,14 @@ def test_fit_from_identical_initial_values(name: str) -> None:
     input_spec, outcome_spec, opts = CASES[name]
     seed = 6900 + list(CASES).index(name)
     X0 = make_data(opts, seed)[0]
-    bt_out: list[tuple[float, int]] = []
-    rs_out: list[tuple[float, int]] = []
 
-    def run(twins: range) -> None:
-        for t in twins:
-            bt, rs, _, _ = model_pair(input_spec, outcome_spec, opts, seed, X=_twin(X0, t))
-            copy_params(bt, rs)
-            bt_out.append(_bt_fit(bt))
-            rs_out.append(_rs_fit(rs))
+    def fit_twin(t: int) -> tuple[FitOutcome, FitOutcome]:
+        bt, rs, _, _ = model_pair(input_spec, outcome_spec, opts, seed, X=_twin(X0, t))
+        copy_params(bt, rs)
+        return _bt_fit(bt), _rs_fit(rs)
 
     with botorch_fixes():
-        run(range(N_TWINS + 1))
-        first = [loss for loss, a in bt_out if a == 1]
-        if max(first) - min(first) > CHAOTIC_RANGE:
-            run(range(N_TWINS + 1, CHAOTIC_TWINS + 1))
-    bt_first = [loss for loss, a in bt_out if a == 1]
-    rs_first = [loss for loss, a in rs_out if a == 1]
-    best, worst = min(bt_first), max(bt_first)
-    spread = max(v for v in bt_first if v <= best + FIT_CLUSTER) - best
-    tol = max(FIT_TOL, 10 * spread)
-    CHECK.record("fit: BoTorch's spread at its best optimum", spread, None)
-    if worst - best > CHAOTIC_RANGE:
-        compare_chaotic_fits(CHECK, "fit", bt_first, rs_first, FIT_TOL)
-    else:
-        CHECK.check_bound(
-            "fit: best loss above BoTorch's best (scaled)", (min(rs_first) - best) / tol, 1.0
-        )
-        if rs_out[0][1] == 1:
-            CHECK.check_bound(
-                "fit: loss above BoTorch's worst (scaled)", (rs_out[0][0] - worst) / tol, 1.0
-            )
+        compare_twin_fits(CHECK, "fit", fit_twin, N_TWINS)
 
 
 # ---------------------------------------------------------------------------

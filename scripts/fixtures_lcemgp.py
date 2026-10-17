@@ -24,7 +24,7 @@ the task kernel resized to both).
   - the constant means after ``eval()``;
   - ``fit_gpytorch_mll`` from the default parameters: the final loss,
     parameters and iterations, and BoTorch's own outcomes when the training
-    inputs are perturbed at rounding level (16 twins at 1e-14 .. 1e-11, with
+    inputs are perturbed at rounding level (64 twins at 1e-14 .. 1e-11, with
     their inputs, so that botorch_rs fits them too) and when L-BFGS-B's
     variables are reversed (long L-BFGS-B runs on flat or multimodal
     likelihoods amplify rounding into other optima);
@@ -62,9 +62,11 @@ import torch
 DT = torch.float64
 NUM_SAMPLES = 16
 #: BoTorch's own outcomes under rounding-level perturbations of the training
-#: inputs: N_TWINS twins at these relative scales.
+#: inputs: N_TWINS twins at these relative scales (FIT_TWINS for the fits,
+#: whose parity test compares the first 16 and, if that fails, all of them).
 TWIN_SCALES = (1e-14, 1e-13, 1e-12, 1e-11)
 N_TWINS = 16
+FIT_TWINS = 64
 TESTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "botorch_pyo3", "tests")
 
 CASES = [
@@ -218,11 +220,10 @@ def perturbed_twin(model: Any, seed: int, rel: float = 1e-14) -> Any:
     return twin
 
 
-def twins(model: Any) -> list[Any]:
-    """BoTorch's perturbed twins of ``model`` (seeds 1..N_TWINS)."""
+def twins(model: Any, n: int = N_TWINS) -> list[Any]:
+    """BoTorch's perturbed twins of ``model`` (seeds 1..n)."""
     return [
-        perturbed_twin(model, k, TWIN_SCALES[(k - 1) % len(TWIN_SCALES)])
-        for k in range(1, N_TWINS + 1)
+        perturbed_twin(model, k, TWIN_SCALES[(k - 1) % len(TWIN_SCALES)]) for k in range(1, n + 1)
     ]
 
 
@@ -326,7 +327,7 @@ def model_case(
     initial = flat_params(model)
     fitted = fit(copy.deepcopy(model))
     fitted["initial_raw_params"] = initial
-    twin_models = twins(model)
+    twin_models = twins(model, FIT_TWINS)
     fitted["twin_train_x"] = [t.train_inputs[0].clone() for t in twin_models]
     fitted["twin_losses"] = [fit(t)["loss"] for t in twin_models]
     fitted["reversed_loss"] = fit(copy.deepcopy(model), reverse=True)["loss"]
