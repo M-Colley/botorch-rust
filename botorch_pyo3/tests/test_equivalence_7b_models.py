@@ -5,7 +5,9 @@ downsampling kernels, ``nu``, outputs, fixed noise), ``MixedSingleTaskGP``
 fixed or random taus, additive, ensembles) with random data and
 hyperparameters: structure, MLL and its gradient, posteriors and the input
 gradients of ``PosteriorMean`` / ``PosteriorStandardDeviation`` (values
-1e-9, gradients 1e-8)."""
+1e-9, gradients 1e-8); and random ``EnsembleModel`` s (size, weights,
+outputs) with the analytic acquisition functions on the moments of their
+``EnsemblePosterior``."""
 
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ import botorch.models.map_saas as bt_saas  # noqa: E402
 from botorch.acquisition import analytic as bt_an  # noqa: E402
 from botorch.models import MixedSingleTaskGP as BtMixed  # noqa: E402
 from botorch.models import SingleTaskMultiFidelityGP as BtMF  # noqa: E402
+from botorch.models.ensemble import EnsembleModel as BtEnsembleModel  # noqa: E402
 from models7b_helpers import (  # noqa: E402
     DT,
     VALUE_TOL,
@@ -38,6 +41,7 @@ import botorch_rs.models.map_saas as rs_saas  # noqa: E402
 from botorch_rs.acquisition import analytic as rs_an  # noqa: E402
 from botorch_rs.models import MixedSingleTaskGP as RsMixed  # noqa: E402
 from botorch_rs.models import SingleTaskMultiFidelityGP as RsMF  # noqa: E402
+from botorch_rs.models.ensemble import EnsembleModel as RsEnsembleModel  # noqa: E402
 from parity_helpers import Checker  # noqa: E402
 
 pytestmark = [pytest.mark.equivalence, pytest.mark.filterwarnings("ignore")]
@@ -172,3 +176,82 @@ def test_random_models_sweep(scenario: int) -> None:
         check_grad(CHECK, "sweep saas: LogEI on ensemble gradients", gr, gb)
     else:
         compare_posteriors(CHECK, f"sweep {family}", bt, rs, Xt)
+
+
+def _ensemble_forward(X: Any, W: Any, c: Any) -> Any:
+    # ``batch x s x n x m``: member k is c[k] + tanh(X @ W[k]).
+    return c[:, None, :] + torch.tanh(torch.einsum("...nd,sdm->...snm", X, W))
+
+
+class _BtEnsemble(BtEnsembleModel):
+    def __init__(self, W: Any, c: Any, weights: Any) -> None:
+        super().__init__(weights=weights)
+        self.W, self.c, self._num_outputs = W, c, W.shape[-1]
+
+    def forward(self, X: Any) -> Any:
+        return _ensemble_forward(X, self.W, self.c)
+
+
+class _RsEnsemble(RsEnsembleModel):
+    def __init__(self, W: Any, c: Any, weights: Any) -> None:
+        super().__init__(weights=weights)
+        self.W, self.c, self._num_outputs = W, c, W.shape[-1]
+        self.dim = W.shape[-2]
+
+    def forward(self, X: Any) -> Any:
+        return _ensemble_forward(X, self.W, self.c)
+
+
+@pytest.mark.parametrize("scenario", range(20))
+def test_random_ensemble_model_analytic_sweep(scenario: int) -> None:
+    """Analytic acquisition functions of random ``EnsembleModel`` s (1-5
+    members, optional random weights, 1-2 outputs): the mean and unbiased
+    weighted variance of the ``EnsemblePosterior``. With one member the
+    variance is zero and ``sigma`` is ``1e-6``; the log-EI variants are then
+    left out (see the LogEI tail in ``test_parity_7b_models``)."""
+    r = random.Random(7500 + scenario)
+    g = torch.Generator().manual_seed(7500 + scenario)
+    size, d, m = r.randint(1, 5), r.randint(1, 4), r.choice([1, 2])
+    W = torch.randn(size, d, m, generator=g, dtype=DT)
+    c = 0.3 * torch.randn(size, m, generator=g, dtype=DT)
+    weights = None
+    if r.random() < 0.5:
+        weights = 0.1 + torch.rand(size, generator=g, dtype=DT)
+    mb, mr = _BtEnsemble(W, c, weights), _RsEnsemble(W, c, weights)
+    X = torch.rand(8, 1, d, generator=g, dtype=DT)
+    with torch.no_grad():
+        mean = mb.posterior(X).mean[..., 0]
+    best = (mean.median() + 0.1 * torch.randn((), generator=g, dtype=DT)).clone()
+    cases: list[tuple[str, dict[str, Any]]] = [
+        ("ExpectedImprovement", {"best_f": best}),
+        ("ProbabilityOfImprovement", {"best_f": best, "maximize": r.random() < 0.5}),
+        ("LogProbabilityOfImprovement", {"best_f": best}),
+        ("UpperConfidenceBound", {"beta": torch.tensor(r.uniform(0.1, 3.0), dtype=DT)}),
+        ("PosteriorMean", {"maximize": r.random() < 0.5}),
+        ("PosteriorStandardDeviation", {}),
+    ]
+    if size > 1:
+        cases.append(("LogExpectedImprovement", {"best_f": best}))
+    if m == 2:
+        cons = {1: (None, torch.tensor(r.uniform(-0.5, 0.5), dtype=DT))}
+        # Multi-output: the constrained acquisition functions only.
+        cases = [
+            ("ConstrainedExpectedImprovement", {"best_f": best, "objective_index": 0}),
+            ("LogProbabilityOfFeasibility", {}),
+        ]
+        if size > 1:
+            cases.append(
+                ("LogConstrainedExpectedImprovement", {"best_f": best, "objective_index": 0})
+            )
+        for name, kw in cases:
+            kw = {**kw, "constraints": cons}
+            vb, gb = values_and_grads(getattr(bt_an, name)(mb, **kw), X)
+            vr, gr = values_and_grads(getattr(rs_an, name)(mr, **kw), X)
+            CHECK.check(f"sweep EnsembleModel: {name}", vr, vb, VALUE_TOL)
+            check_grad(CHECK, f"sweep EnsembleModel: {name} gradients", gr, gb)
+        return
+    for name, kw in cases:
+        vb, gb = values_and_grads(getattr(bt_an, name)(mb, **kw), X)
+        vr, gr = values_and_grads(getattr(rs_an, name)(mr, **kw), X)
+        CHECK.check(f"sweep EnsembleModel: {name}", vr, vb, VALUE_TOL)
+        check_grad(CHECK, f"sweep EnsembleModel: {name} gradients", gr, gb)

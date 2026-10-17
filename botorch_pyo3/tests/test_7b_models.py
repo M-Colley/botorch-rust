@@ -384,6 +384,28 @@ def test_ensemble_model_errors() -> None:
     v = a(torch.rand(1, 2, 3, dtype=torch.float64))
     assert v.shape == (1,)
 
+    from botorch_rs.acquisition import (
+        ExpectedImprovement,
+        NoisyExpectedImprovement,
+        ScalarizedPosteriorTransform,
+    )
+
+    # Analytic: the Gaussian moments of the EnsemblePosterior.
+    ei = ExpectedImprovement(m, best_f=0.5)
+    assert ei.model is m
+    X = torch.rand(4, 1, 3, dtype=torch.float64)
+    p = m.posterior(X)
+    mu, sigma = p.mean.squeeze(-1).squeeze(-1), p.variance.squeeze(-1).squeeze(-1).sqrt()
+    u = (mu - 0.5) / sigma
+    normal = torch.distributions.Normal(0.0, 1.0)
+    ref = sigma * (normal.log_prob(u).exp() + u * normal.cdf(u))
+    assert torch.allclose(ei(X), ref, rtol=1e-12, atol=0.0)
+    w = torch.ones(1, dtype=torch.float64)
+    with pytest.raises(UnsupportedError, match="Posterior transforms are not supported"):
+        ExpectedImprovement(m, best_f=0.5, posterior_transform=ScalarizedPosteriorTransform(w))
+    with pytest.raises(UnsupportedError, match="does not support ensemble models"):
+        NoisyExpectedImprovement(m, X_observed=torch.rand(3, 3, dtype=torch.float64))
+
 
 def test_supervised_dataset() -> None:
     X, Y = _data(n=4, d=2)

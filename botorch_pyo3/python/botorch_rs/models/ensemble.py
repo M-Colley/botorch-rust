@@ -7,14 +7,17 @@ members are deterministic models evaluated through ``forward`` (with
 gradients from ``torch.autograd``), and the acquisition value is the
 average of the members' values weighted by the number of Monte-Carlo
 samples that select each member (BoTorch's ``IndexSampler`` draws one
-member per sample); see ``ENSEMBLE_ACQUISITION_FUNCTIONS``.
+member per sample); see ``ENSEMBLE_ACQUISITION_FUNCTIONS``. Analytic
+acquisition functions use the Gaussian moments of the ``EnsemblePosterior``
+(its ``mean`` and ``variance``), as BoTorch's.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from botorch_rs._arrays import is_torch_tensor
+from botorch_rs import _botorch_rs as _rs
+from botorch_rs._arrays import LIST, ArrayKind, is_torch_tensor, to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.model import Model
 from botorch_rs.posteriors.ensemble import EnsemblePosterior
@@ -107,15 +110,11 @@ class EnsembleModel(Model):
 
     # -- acquisition functions ------------------------------------------
 
-    def _ensemble_acquisition(self, sampler: Any) -> tuple[list[Any], list[float] | None, Any]:
-        """The members (deterministic models evaluating ``forward``), their
-        weights (the number of Monte-Carlo samples of ``sampler``, an
-        ``IndexSampler``, that select each member for one t-batch) and the
-        sampler of the members' acquisition functions."""
+    def _acquisition_dims(self) -> tuple[int, int]:
+        """``(d, s)``: the input dimension (the attribute ``dim``, a botorch_rs
+        extension) and the ensemble size of a model that acquisition
+        functions support (no input or outcome transforms)."""
         from botorch_rs._torch_bridge import require_torch
-        from botorch_rs.models.deterministic import GenericDeterministicModel
-        from botorch_rs.sampling.index_sampler import IndexSampler
-        from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
         for name in ("input_transform", "outcome_transform"):
             if getattr(self, name, None) is not None:
@@ -133,6 +132,18 @@ class EnsembleModel(Model):
         import torch
 
         size = int(self.forward(torch.zeros(1, 1, int(dim), dtype=torch.float64)).shape[-3])
+        return int(dim), size
+
+    def _ensemble_acquisition(self, sampler: Any) -> tuple[list[Any], list[float] | None, Any]:
+        """The members (deterministic models evaluating ``forward``), their
+        weights (the number of Monte-Carlo samples of ``sampler``, an
+        ``IndexSampler``, that select each member for one t-batch) and the
+        sampler of the members' acquisition functions."""
+        from botorch_rs.models.deterministic import GenericDeterministicModel
+        from botorch_rs.sampling.index_sampler import IndexSampler
+        from botorch_rs.sampling.normal import SobolQMCNormalSampler
+
+        dim, size = self._acquisition_dims()
         if sampler is None:
             sampler = IndexSampler(sample_shape=(512,))
         if not isinstance(sampler, IndexSampler):
@@ -147,6 +158,49 @@ class EnsembleModel(Model):
 
         members = [member(k) for k in range(size)]
         return members, weights, SobolQMCNormalSampler(sample_shape=(1,))
+
+
+class _EnsembleMoments(Model):
+    """The Gaussian moments of the ``EnsemblePosterior`` of an
+    ``EnsembleModel`` (its ``mean`` and unbiased weighted ``variance`` at
+    every point, independent points and outputs), as BoTorch's analytic
+    acquisition functions use them."""
+
+    def __init__(self, model: EnsembleModel) -> None:
+        self.ensemble = model
+        self._kind: ArrayKind = LIST
+
+    @property
+    def num_outputs(self) -> int:
+        return self.ensemble.num_outputs
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        return ()
+
+    def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:
+        """The moments model handle (``forward`` called from Rust)."""
+        if posterior_transform is not None:
+            # BoTorch: ``scalarize_posterior`` raises NotImplementedError for
+            # an ``EnsemblePosterior``.
+            raise UnsupportedError(
+                "Posterior transforms are not supported for ensemble models (BoTorch's "
+                "scalarize_posterior only works with a posterior that has a `distribution`)."
+            )
+        dim, size = self.ensemble._acquisition_dims()
+        m = self.ensemble.num_outputs
+        forward = self.ensemble.forward
+
+        def values(X: Any) -> Any:
+            # ``batch x s x q x m`` -> ``batch x q x (s * m)`` (member ``k``,
+            # output ``t`` at output ``k * m + t``).
+            v = forward(X)
+            return v.transpose(-3, -2).reshape(*v.shape[:-3], v.shape[-2], size * m)
+
+        weights = self.ensemble.ensemble_weights
+        w = None if weights is None else [float(v) for v in to_flat(weights, "weights")[0]]
+        members = _rs.generic_deterministic_model(values, dim, size * m)
+        return _rs.ensemble_moments_model(members, size, w)
 
 
 __all__ = ["EnsembleModel"]

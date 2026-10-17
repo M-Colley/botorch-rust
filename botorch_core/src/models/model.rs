@@ -98,6 +98,18 @@ pub trait Model: Send + Sync + Debug {
         false
     }
 
+    /// Whether the posterior variances are clamped from below at
+    /// [`MIN_VARIANCE`] (GPyTorch's `min_variance`, applied by
+    /// `MultivariateNormal.variance`) before analytic acquisition functions
+    /// use them. `true` except for deterministic models (see
+    /// [`Model::is_deterministic`]) by default; models whose BoTorch
+    /// posterior is not a GPyTorch distribution (e.g. the moments of an
+    /// `EnsemblePosterior`, [`crate::models::EnsembleMomentsModel`]) return
+    /// `false`.
+    fn clamps_variance(&self) -> bool {
+        !self.is_deterministic()
+    }
+
     /// Joint posterior at the `q × d` inputs `x` over all outputs (BoTorch's
     /// `model.posterior(X, observation_noise=...)`), flattened in output-major
     /// order.
@@ -214,15 +226,15 @@ pub trait Model: Send + Sync + Debug {
         require_single_output(self.num_outputs())?;
         let pp = self.point_posteriors(x)?;
         let b = pp.len();
-        let deterministic = self.is_deterministic();
+        let clamps = self.clamps_variance();
         Ok((
             Vector::from_fn(b, |i, _| pp.mean[(i, 0)]),
             Vector::from_fn(b, |i, _| {
                 let v = pp.covariance[(i, 0)];
-                if deterministic {
-                    v
-                } else {
+                if clamps {
                     clamp_variance(v)
+                } else {
+                    v
                 }
             }),
         ))
@@ -245,7 +257,7 @@ pub trait Model: Send + Sync + Debug {
         let mean = g.mean[0];
         let var = g.covariance[(0, 0)];
         let dmean = Vector::from_fn(d, |k, _| g.dmean[k][0]);
-        if var < MIN_VARIANCE && !self.is_deterministic() {
+        if var < MIN_VARIANCE && self.clamps_variance() {
             return Ok((mean, MIN_VARIANCE, dmean, Vector::zeros(d)));
         }
         let dvar = Vector::from_fn(d, |k, _| g.dcov[k][(0, 0)]);

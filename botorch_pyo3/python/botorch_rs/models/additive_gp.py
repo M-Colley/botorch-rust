@@ -88,6 +88,7 @@ class OrthogonalAdditiveGP(SingleTaskGP):
         observation_noise: bool = False,
         posterior_transform: Any = None,
         infer_all_components: bool = False,
+        **kwargs: Any,
     ) -> GPyTorchPosterior:
         """Posterior inference of the additive Gaussian process.
 
@@ -98,6 +99,7 @@ class OrthogonalAdditiveGP(SingleTaskGP):
             posterior_transform: Optional posterior transform.
             infer_all_components: The posteriors of the individual components
                 are not supported by botorch_rs.
+            kwargs: Passed on to ``SingleTaskGP.posterior``.
 
         Returns:
             The posterior distribution at X.
@@ -112,6 +114,7 @@ class OrthogonalAdditiveGP(SingleTaskGP):
             output_indices=output_indices,
             observation_noise=observation_noise,
             posterior_transform=posterior_transform,
+            **kwargs,
         )
 
 

@@ -19,12 +19,13 @@ from botorch.acquisition import PosteriorStandardDeviation as BtPSD
 from botorch.fit import fit_gpytorch_mll as bt_fit
 from botorch.optim.utils import get_parameters_and_bounds
 from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL
+from kernel_tree_helpers import zero_diagonal_distances
 
 from botorch_rs.acquisition import PosteriorMean as RsPosteriorMean
 from botorch_rs.acquisition import PosteriorStandardDeviation as RsPSD
 from botorch_rs.fit import fit_gpytorch_mll as rs_fit
 from botorch_rs.mlls import ExactMarginalLogLikelihood as RsMLL
-from parity_helpers import Checker
+from parity_helpers import Checker, rel_err
 
 DT = torch.float64
 VALUE_TOL = 1e-9
@@ -125,15 +126,31 @@ def rs_mll_value_and_grad(rs: Any) -> tuple[Any, Any]:
 
 
 def compare_mll(check: Checker, label: str, bt: Any, rs: Any) -> None:
-    vb, gb = bt_mll_value_and_grad(bt)
+    """The MLL and its gradient, with BoTorch's evaluated with GPyTorch's
+    ``sq_dist`` zeroing the distances of the training inputs to themselves
+    also when they require gradients (as without gradients; Matérn-1/2
+    kernels, e.g. of ``SingleTaskMultiFidelityGP(nu=0.5)``, see the BoTorch
+    bugs of phase 6a). The change this makes is recorded as BoTorch's
+    noise."""
+    vb_raw, gb_raw = bt_mll_value_and_grad(bt)
+    with zero_diagonal_distances():
+        vb, gb = bt_mll_value_and_grad(bt)
     vr, gr = rs_mll_value_and_grad(rs)
     check.check(f"{label}: MLL", vr, vb, VALUE_TOL)
     check_grad(check, f"{label}: MLL gradient", gr, gb)
+    check.record(f"{label}: BoTorch's sq_dist diagonal noise (MLL)", rel_err(vb_raw, vb), None)
+    check.record(
+        f"{label}: BoTorch's sq_dist diagonal noise (MLL gradient)", grad_err(gb_raw, gb), None
+    )
 
 
 def values_and_grads(acqf: Any, X: Any) -> tuple[Any, Any]:
     Xg = X.detach().clone().requires_grad_(True)
     v = acqf(Xg)
+    if not v.requires_grad:
+        # Constant in X (e.g. the zero standard deviation of a one-member
+        # EnsembleModel in BoTorch).
+        return v.detach(), torch.zeros_like(X)
     (g,) = torch.autograd.grad(v.sum(), Xg, allow_unused=True)
     return v.detach(), torch.zeros_like(X) if g is None else g
 

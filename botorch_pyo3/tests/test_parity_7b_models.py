@@ -456,8 +456,15 @@ def test_mixed_acquisition_and_optimize_acqf_mixed_match_botorch() -> None:
     ics = torch.rand(4, 1, d, generator=_gen(44), dtype=DT)
     rb = bto.optimize_acqf_mixed(e_bt, bounds, 1, 4, ffl, batch_initial_conditions=ics)
     rr = rso.optimize_acqf_mixed(e_rs, bounds, 1, 4, ffl, batch_initial_conditions=ics)
-    CHECK.check("optimize_acqf_mixed on mixed GP: candidates", rr[0], rb[0], 1e-7)
-    CHECK.check("optimize_acqf_mixed on mixed GP: values", rr[1], rb[1], VALUE_TOL)
+    if botorch_parallel_lbfgsb():
+        CHECK.check("optimize_acqf_mixed on mixed GP: candidates", rr[0], rb[0], 1e-7)
+        CHECK.check("optimize_acqf_mixed on mixed GP: values", rr[1], rb[1], VALUE_TOL)
+    else:  # BoTorch 0.18.1: SciPy's gtol on the serial path (see test_parity_9_optim)
+        CHECK.check_bound(
+            "optimize_acqf_mixed on mixed GP (0.18.1): shortfall",
+            (float(rb[1].max()) - float(rr[1].max())) / max(abs(float(rb[1].max())), 1.0),
+            1e-9,
+        )
     # optimize_acqf_mixed_alternating with BoTorch's starting points.
     start = torch.rand(4, d, generator=_gen(45), dtype=DT)
     start[:, -1] = torch.tensor([0.0, 1.0, 2.0, 1.0], dtype=DT)
@@ -892,6 +899,161 @@ def test_ensemble_model_matches_botorch(weighted: bool) -> None:
         a_bt = getattr(module, name)(mb, sampler=BtIndexSampler(torch.Size([64]), seed=3), **kw)
         a_rs = getattr(rmodule, name)(mr, sampler=RsIndexSampler((64,), seed=3), **kw)
         _compare_acqf(f"{name} on EnsembleModel (IndexSampler)", a_rs, a_bt, X1)
+
+
+@pytest.mark.parametrize("members", ["distinct", "weighted", "identical"])
+def test_analytic_acquisition_on_ensemble_model_matches_botorch(members: str) -> None:
+    """Analytic acquisition functions of an ``EnsembleModel`` use the mean and
+    the unbiased weighted variance of its ``EnsemblePosterior`` (not averaged
+    over the members); identical members have zero variance (``sigma`` is
+    clamped at ``1e-6`` by ``_mean_and_sigma`` only). There, ``|u|`` is up
+    to about 1e6 and LogEI's gradient is compared with an exact reference
+    (mpmath, 60 digits) instead of BoTorch's autograd, which loses accuracy
+    (relative error about ``eps * u**2``; see ``log_ei_helper_grad``)."""
+    W = torch.randn(4, 3, 2, generator=_gen(18), dtype=DT)
+    if members == "identical":
+        W = W[:1].expand(4, 3, 2).clone()
+    weights = torch.tensor([0.1, 0.4, 0.2, 0.3], dtype=DT) if members == "weighted" else None
+    mb1, mr1 = _BtEnsemble(W[..., :1], weights), _RsEnsemble(W[..., :1], weights)
+    mb2, mr2 = _BtEnsemble(W, weights), _RsEnsemble(W, weights)
+    X = torch.rand(6, 1, 3, generator=_gen(19), dtype=DT)
+    best = torch.tensor(0.3, dtype=DT)
+    cons = {1: (None, torch.tensor(0.1, dtype=DT))}
+    exact_log_ei_grad = None
+    if members == "identical":
+        mpmath = pytest.importorskip("mpmath")
+        mpmath.mp.dps = 60
+        Xg = X.clone().requires_grad_(True)
+        mu = mb1.posterior(Xg).mean.reshape(-1)
+        (dmu,) = torch.autograd.grad(mu.sum(), Xg)
+        sigma = mpmath.sqrt(mpmath.mpf(1e-12))
+        exact = []
+        for i in range(X.shape[0]):
+            u = (mpmath.mpf(float(mu[i])) - mpmath.mpf(float(best))) / sigma
+            ei = mpmath.npdf(u) + u * mpmath.ncdf(u)
+            exact.append(float(mpmath.ncdf(u) / ei / sigma) * dmu[i])
+        a_bt = bt_an.LogExpectedImprovement(mb1, best_f=best)
+        a_rs = rs_an.LogExpectedImprovement(mr1, best_f=best)
+        vr, gr = values_and_grads(a_rs, X)
+        vb, gb = values_and_grads(a_bt, X)
+        CHECK.check(
+            "LogExpectedImprovement on EnsembleModel (identical): values", vr, vb, VALUE_TOL
+        )
+        CHECK.record(
+            "LogEI on EnsembleModel (identical): BoTorch's gradient error vs exact",
+            rel_err(gb, torch.stack(exact)),
+            None,
+        )
+        exact_log_ei_grad = torch.stack(exact)
+        CHECK.check(
+            "LogExpectedImprovement on EnsembleModel (identical): gradient vs exact",
+            gr,
+            exact_log_ei_grad,
+            1e-10,
+        )
+    for name, kw in (
+        ("ExpectedImprovement", {"best_f": best}),
+        ("LogExpectedImprovement", {"best_f": best}),
+        ("ProbabilityOfImprovement", {"best_f": best, "maximize": False}),
+        ("LogProbabilityOfImprovement", {"best_f": best}),
+        ("UpperConfidenceBound", {"beta": torch.tensor(0.7, dtype=DT)}),
+        ("PosteriorMean", {}),
+        ("PosteriorStandardDeviation", {}),
+    ):
+        if members == "identical" and name == "LogExpectedImprovement":
+            continue
+        a_bt = getattr(bt_an, name)(mb1, **kw)
+        a_rs = getattr(rs_an, name)(mr1, **kw)
+        _compare_acqf(f"{name} on EnsembleModel ({members})", a_rs, a_bt, X)
+    for name, kw in (
+        ("ConstrainedExpectedImprovement", {"best_f": best, "objective_index": 0}),
+        ("LogProbabilityOfFeasibility", {}),
+        ("LogConstrainedExpectedImprovement", {"best_f": best, "objective_index": 0}),
+    ):
+        a_bt = getattr(bt_an, name)(mb2, constraints=cons, **kw)
+        a_rs = getattr(rs_an, name)(mr2, constraints=cons, **kw)
+        label = f"{name} on EnsembleModel ({members})"
+        if exact_log_ei_grad is None or name != "LogConstrainedExpectedImprovement":
+            _compare_acqf(label, a_rs, a_bt, X)
+            continue
+        # log EI of the objective (exact gradient, see above) + log PoF.
+        _, g_pof = values_and_grads(rs_an.LogProbabilityOfFeasibility(mr2, constraints=cons), X)
+        vr, gr = values_and_grads(a_rs, X)
+        CHECK.check(f"{label}: values", vr, values_and_grads(a_bt, X)[0], VALUE_TOL)
+        CHECK.check(f"{label}: gradient vs exact", gr, exact_log_ei_grad + g_pof, 1e-10)
+
+
+# ---------------------------------------------------------------------------
+# condition_on_observations and fantasize
+# ---------------------------------------------------------------------------
+
+COND_CASES = [
+    "mf:ltf_both",
+    "mf:ds_both",
+    "mf:ltf_m2_normalize",
+    "mixed:last",
+    "mixed:m2_fixed",
+    "saas:map",
+    "saas:additive",
+    "saas:ensemble",
+]
+
+
+@pytest.mark.parametrize("case", COND_CASES)
+def test_conditioning_and_fantasies_match_botorch(case: str) -> None:
+    """``condition_on_observations`` and ``fantasize`` (BoTorch's base
+    samples) of the models of phase 7b: posteriors of the conditioned and
+    fantasy models. BoTorch's ``EnsembleMapSaasSingleTaskGP.fantasize``
+    fails for every shape of ``X`` (its posterior adds the ensemble dimension
+    in front of ``X``'s batch, see the draft's BoTorch bugs); the reference is
+    BoTorch's ``fantasize`` with the posterior of the ``SingleTaskGP`` base
+    class (the members' posteriors, a ``num_taus x n' x d`` batch of
+    ``X``)."""
+    family, name = case.split(":")
+    seed = COND_CASES.index(case)
+    g = _gen(1600 + seed)
+    if family == "mf":
+        bt, rs, X = mf_pair(name, seed=seed)
+        Xn = torch.rand(2, X.shape[-1], generator=g, dtype=DT)
+        Xt = torch.rand(3, X.shape[-1], generator=g, dtype=DT)
+        fixed = MF_CASES[name][3]
+    elif family == "mixed":
+        bt, rs, X = mixed_pair(name, seed=seed)
+        Xn, Xt = _mixed_points(name, 2, 1610 + seed), _mixed_points(name, 3, 1620 + seed)
+        fixed = MIXED_CASES[name][4]
+    else:
+        bt, rs, X = saas_pair(name, seed=seed)
+        Xn = torch.rand(2, X.shape[-1], generator=g, dtype=DT)
+        Xt = torch.rand(3, X.shape[-1], generator=g, dtype=DT)
+        fixed = False
+    randomize(bt, rs, 1630 + seed, scale=0.3)
+    m = rs.num_outputs
+    bt.eval()
+    rs.eval()
+    with torch.no_grad():
+        bt.posterior(Xt)
+        rs.posterior(Xt)
+    Yn = torch.randn(2, m, generator=g, dtype=DT)
+    kw = {"noise": torch.full((2, m), 0.02, dtype=DT)} if fixed else {}
+    cb = bt.condition_on_observations(Xn, Yn, **kw)
+    cr = rs.condition_on_observations(Xn, Yn, **kw)
+    sb = BtSampler(sample_shape=torch.Size([3]), seed=1640 + seed)
+    if rs.batch_shape:
+        with patched(bt_saas.EnsembleMapSaasSingleTaskGP, "posterior", BtSingleTaskGP.posterior):
+            fb = bt.fantasize(Xn.expand(*rs.batch_shape, *Xn.shape), sb)
+    else:
+        fb = bt.fantasize(Xn, sb)
+    sr = RsSampler(sample_shape=torch.Size([3]), seed=0)
+    sr.base_samples = sb.base_samples.clone()
+    fr = rs.fantasize(Xn, sr)
+    with torch.no_grad():
+        for label, mb, mr in (("conditioned", cb, cr), ("fantasy", fb, fr)):
+            pb, pr = mb.posterior(Xt), mr.posterior(Xt)
+            assert tuple(pr.mean.shape) == tuple(pb.mean.shape), (label, pr.mean.shape)
+            CHECK.check(f"{family}: {label} posterior mean", pr.mean, pb.mean, VALUE_TOL)
+            CHECK.check(
+                f"{family}: {label} posterior variance", pr.variance, pb.variance, VALUE_TOL
+            )
 
 
 # ---------------------------------------------------------------------------

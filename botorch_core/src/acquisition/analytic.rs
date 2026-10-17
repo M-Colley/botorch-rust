@@ -732,12 +732,13 @@ struct OutputMoments {
 
 /// The lower clamp of the model's variances before `_mean_and_sigma`'s
 /// (GPyTorch's `min_variance`; none for deterministic models, whose
-/// `EnsemblePosterior` returns zero variances).
+/// `EnsemblePosterior` returns zero variances, see
+/// [`Model::clamps_variance`]).
 fn variance_floor(model: &dyn Model) -> f64 {
-    if model.is_deterministic() {
-        0.0
-    } else {
+    if model.clamps_variance() {
         crate::posterior::MIN_VARIANCE
+    } else {
+        0.0
     }
 }
 

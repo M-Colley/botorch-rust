@@ -61,13 +61,15 @@ def is_acquisition_model(model: Any) -> bool:
     ``SingleTaskGP`` (or one of its subclasses), a ``ModelListGP``, an
     ``LCEMGP``, a deterministic model (``PosteriorMeanModel``,
     ``GenericDeterministicModel``, ``AffineDeterministicModel``,
-    ``FixedSingleSampleModel``) or a ``ModelList`` of them."""
+    ``FixedSingleSampleModel``) or a ``ModelList`` of them (and, internally,
+    the moments of an ``EnsembleModel``)."""
     from botorch_rs.models.deterministic import (
         AffineDeterministicModel,
         FixedSingleSampleModel,
         GenericDeterministicModel,
         PosteriorMeanModel,
     )
+    from botorch_rs.models.ensemble import _EnsembleMoments
     from botorch_rs.models.model import ModelList
 
     return isinstance(
@@ -81,6 +83,7 @@ def is_acquisition_model(model: Any) -> bool:
             AffineDeterministicModel,
             FixedSingleSampleModel,
             ModelList,
+            _EnsembleMoments,
         ),
     )
 
@@ -120,11 +123,28 @@ ENSEMBLE_ACQUISITION_FUNCTIONS = frozenset(
 )
 
 
-def _supports_ensemble(cls: type) -> bool:
-    return any(
-        c.__name__ in ENSEMBLE_ACQUISITION_FUNCTIONS and c.__module__.startswith("botorch_rs.")
-        for c in cls.__mro__
-    )
+#: The analytic acquisition functions that only use the marginal means and
+#: variances of the posterior (BoTorch's ``_mean_and_sigma``): on an
+#: ``EnsembleModel`` (whose posterior is an ``EnsemblePosterior``, not an
+#: averaged ensemble), they use the ensemble's mean and variance.
+_GAUSSIAN_MOMENT_ACQUISITION_FUNCTIONS = frozenset(
+    {
+        "ExpectedImprovement",
+        "LogExpectedImprovement",
+        "ProbabilityOfImprovement",
+        "LogProbabilityOfImprovement",
+        "UpperConfidenceBound",
+        "PosteriorMean",
+        "PosteriorStandardDeviation",
+        "ConstrainedExpectedImprovement",
+        "LogConstrainedExpectedImprovement",
+        "LogProbabilityOfFeasibility",
+    }
+)
+
+
+def _supports_ensemble(cls: type, names: frozenset[str] = ENSEMBLE_ACQUISITION_FUNCTIONS) -> bool:
+    return any(c.__name__ in names and c.__module__.startswith("botorch_rs.") for c in cls.__mro__)
 
 
 def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any]) -> None:
@@ -133,15 +153,33 @@ def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any])
     ``EnsembleAverage``): every member's is built by ``init`` with the same
     arguments and one shared sampler. For the noisy expected improvements,
     the baseline is pruned on the ensemble first (BoTorch's
-    ``prune_inferior_points``)."""
+    ``prune_inferior_points``). The analytic acquisition functions of an
+    ``EnsembleModel`` (``_GAUSSIAN_MOMENT_ACQUISITION_FUNCTIONS``) are not
+    averaged: they use the mean and variance of its ``EnsemblePosterior``,
+    as BoTorch's."""
     from botorch_rs.acquisition.utils import _prune_ensemble
 
     cls = type(self)
+    model: Any = args[0] if args else kwargs.get("model")
+    if not hasattr(model, "_ensemble_members") and _supports_ensemble(
+        cls, _GAUSSIAN_MOMENT_ACQUISITION_FUNCTIONS
+    ):
+        # An analytic acquisition function of an EnsembleModel: the Gaussian
+        # moments of its EnsemblePosterior (not an average over members).
+        from botorch_rs.models.ensemble import _EnsembleMoments
+
+        if args:
+            init(self, _EnsembleMoments(model), *args[1:], **kwargs)
+        else:
+            init(self, **{**kwargs, "model": _EnsembleMoments(model)})
+        self.model = model
+        return
     if not _supports_ensemble(cls):
         raise UnsupportedError(
             f"{cls.__name__} does not support ensemble models (EnsembleMapSaasSingleTaskGP, "
             "EnsembleModel) in botorch_rs; supported are "
-            f"{sorted(ENSEMBLE_ACQUISITION_FUNCTIONS)}."
+            f"{sorted(ENSEMBLE_ACQUISITION_FUNCTIONS)} (and, on an EnsembleModel, the analytic "
+            f"acquisition functions {sorted(_GAUSSIAN_MOMENT_ACQUISITION_FUNCTIONS)})."
         )
     sig = inspect.signature(init)
     params = list(sig.parameters.values())
@@ -156,12 +194,13 @@ def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any])
             raise UnsupportedError(f"{cls.__name__} is not supported with ensemble models.")
     names = sig.parameters
     model_name = params[1].name
-    model = arguments[model_name]
     deterministic_members = not hasattr(model, "_ensemble_members")
     if deterministic_members and "sampler" not in names:
         raise UnsupportedError(
-            "botorch_rs supports the Monte-Carlo acquisition functions of an EnsembleModel "
-            f"(sampled with an IndexSampler), not {cls.__name__}."
+            "botorch_rs supports the Monte-Carlo acquisition functions (sampled with an "
+            "IndexSampler) and the analytic acquisition functions "
+            f"{sorted(_GAUSSIAN_MOMENT_ACQUISITION_FUNCTIONS)} of an EnsembleModel, not "
+            f"{cls.__name__}."
         )
     members, weights, sampler = model._ensemble_acquisition(arguments.get("sampler"))
     if "sampler" in names:
@@ -212,9 +251,11 @@ class AcquisitionFunction:
     gradients, the result is connected to the autograd graph (with exact
     gradients computed in Rust).
 
-    On an ensemble model (``EnsembleMapSaasSingleTaskGP``), the acquisition
-    functions in ``ENSEMBLE_ACQUISITION_FUNCTIONS`` average their values on
-    the members, as BoTorch's; others raise ``UnsupportedError``.
+    On an ensemble model (``EnsembleMapSaasSingleTaskGP``, ``EnsembleModel``),
+    the acquisition functions in ``ENSEMBLE_ACQUISITION_FUNCTIONS`` average
+    their values on the members, as BoTorch's (the analytic ones of an
+    ``EnsembleModel`` use the moments of its ``EnsemblePosterior`` instead);
+    others raise ``UnsupportedError``.
     """
 
     _rs: _rs.AcquisitionFunction
