@@ -1,10 +1,12 @@
 # Roadmap to a full port
 
-botorch-rust 0.1.0 covers 222 of BoTorch's 773 public classes and functions
-([coverage report](api_coverage.md)): the GP core, analytic and Monte Carlo
-acquisition, constrained `optimize_acqf`, all of
-`botorch.acquisition.multi_objective`, pathwise sampling, deterministic and
-contextual models. The goal is the whole of BoTorch, with every ported component
+botorch-rust 0.2.0 covers 398 of BoTorch's 776 public classes and functions
+([coverage report](api_coverage.md)): the GP core with kernel trees, priors and
+all input and outcome transforms; multi-task, multi-fidelity, mixed, MAP SAAS,
+ensemble, deterministic and contextual models; the single-objective
+acquisition functions (except `qMultiStepLookahead` and the input
+constructors) and all of `botorch.acquisition.multi_objective`; acquisition
+optimization and candidate generation; and pathwise sampling. The goal is the whole of BoTorch, with every ported component
 tested for equivalence like the existing ones (Rust fixtures generated with
 BoTorch, live side-by-side tests, randomized sweeps). This file orders the
 remaining work. Foundations come first, because most models and acquisition
