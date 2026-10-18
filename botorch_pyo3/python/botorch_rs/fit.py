@@ -75,7 +75,7 @@ def fit_gpytorch_mll(
             results.append(sub_mll._fit_result)
         mll._fit_result = results
         return mll.eval()
-    if not isinstance(mll, ExactMarginalLogLikelihood):
+    if not isinstance(mll, ExactMarginalLogLikelihood) and not getattr(mll, "_rs_fit", False):
         raise UnsupportedError(
             "fit_gpytorch_mll requires a botorch_rs ExactMarginalLogLikelihood or "
             "SumMarginalLogLikelihood."
@@ -83,6 +83,11 @@ def fit_gpytorch_mll(
     if closure is not None or closure_kwargs is not None:
         raise UnsupportedError("Custom closures are not supported by botorch_rs.")
     if optimizer is not None and getattr(optimizer, "__name__", None) == "fit_gpytorch_mll_torch":
+        if not isinstance(mll, ExactMarginalLogLikelihood):
+            raise UnsupportedError(
+                "fit_gpytorch_mll_torch is supported for ExactMarginalLogLikelihood only in "
+                "botorch_rs; fit a PairwiseGP with the default L-BFGS-B optimizer."
+            )
         return _fit_with_optimizer(mll, optimizer, optimizer_kwargs, kwargs)
     if optimizer is not None and getattr(optimizer, "__name__", None) != "fit_gpytorch_mll_scipy":
         raise UnsupportedError(
@@ -104,7 +109,7 @@ def fit_gpytorch_mll(
         raise UnsupportedError(f"Unsupported L-BFGS-B options: {sorted(unknown)}.")
     if kwargs.pop("pick_best_of_all_attempts", False):
         raise UnsupportedError("pick_best_of_all_attempts=True is not supported by botorch_rs.")
-    batched = math.prod(mll.model._aug_batch_shape) > 1
+    batched = math.prod(getattr(mll.model, "_aug_batch_shape", ())) > 1
     if batched and "maxfun" in options:
         warnings.warn(
             "Unrecognized options for batched independent fitting will be ignored: ['maxfun'].",

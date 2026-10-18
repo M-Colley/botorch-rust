@@ -56,6 +56,9 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
     def __init__(
         self, likelihood: Likelihood, model: SingleTaskGP | MultiTaskGP | KroneckerMultiTaskGP
     ) -> None:
+        if type(likelihood).__name__ in ("PairwiseProbitLikelihood", "PairwiseLogitLikelihood"):
+            # GPyTorch's check of the likelihood (e.g. a PairwiseGP).
+            raise RuntimeError("Likelihood must be Gaussian for exact inference")
         if not isinstance(model, (SingleTaskGP, MultiTaskGP, KroneckerMultiTaskGP)):
             raise UnsupportedError(
                 "ExactMarginalLogLikelihood requires a botorch_rs SingleTaskGP, MultiTaskGP, "
@@ -108,6 +111,12 @@ class SumMarginalLogLikelihood(MarginalLogLikelihood):
     ) -> None:
         if not isinstance(model, ModelListGP):
             raise UnsupportedError("SumMarginalLogLikelihood requires a botorch_rs ModelListGP.")
+        for sub in model.models:
+            if type(sub.likelihood).__name__ in (
+                "PairwiseProbitLikelihood",
+                "PairwiseLogitLikelihood",
+            ):
+                raise RuntimeError("Likelihood must be Gaussian for exact inference")
         if likelihood is not model.likelihood:
             raise UnsupportedError(
                 "The likelihood must be the model's likelihood (`model.likelihood`)."

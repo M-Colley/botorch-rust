@@ -39,11 +39,13 @@ class ModelListGP(Model):
     def __init__(self, *gp_models: SingleTaskGP | MultiTaskGP) -> None:
         if not gp_models:
             raise ValueError("ModelListGP requires at least one model.")
+        from botorch_rs.models.pairwise_gp import PairwiseGP
+
         for m in gp_models:
-            if not isinstance(m, (SingleTaskGP, MultiTaskGP)):
+            if not isinstance(m, (SingleTaskGP, MultiTaskGP, PairwiseGP)):
                 raise UnsupportedError(
                     "The sub-models of a botorch_rs ModelListGP must be botorch_rs SingleTaskGPs, "
-                    f"MultiTaskGPs or LCEMGPs (got {type(m).__name__})."
+                    f"MultiTaskGPs, LCEMGPs or PairwiseGPs (got {type(m).__name__})."
                 )
         dims = {m._rs.dim for m in gp_models}
         if len(dims) > 1:
@@ -67,6 +69,10 @@ class ModelListGP(Model):
         return all(isinstance(m, SingleTaskGP) for m in self.models)
 
     def _require_single_task(self, what: str) -> None:
+        if any(type(m).__name__ == "PairwiseGP" for m in self.models):
+            # BoTorch's error: the list's (real-valued) observations reach the
+            # PairwiseGP, which conditions on comparisons only.
+            raise RuntimeError("Conditioning on non-pairwise comparison observations.")
         if not self._all_single_task:
             raise UnsupportedError(f"{what} requires SingleTaskGP sub-models in botorch_rs.")
 

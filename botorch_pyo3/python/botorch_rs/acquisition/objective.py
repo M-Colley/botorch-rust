@@ -440,10 +440,186 @@ def fat_arg(fat: Any) -> tuple[bool, list[bool | None] | None]:
     return bool(fat), None
 
 
+DEFAULT_NUM_PREF_SAMPLES = 16
+
+LEARNED_OBJECTIVE_PREF_MODEL_MIXED_DTYPE_WARN = (
+    "pref_model has double-precision data, but single-precision data "
+    "was passed to the LearnedObjective. Upcasting to double."
+)
+
+
+def _is_deterministic_model(model: Any) -> bool:
+    from botorch_rs.models.deterministic import DeterministicModel
+
+    return isinstance(model, DeterministicModel)
+
+
+def _learned_samples_autograd(handle: Any, Y: Any, z: Any, out_shape: tuple[int, ...]) -> Any:
+    """``LearnedObjective``'s samples connected to torch's autograd (the
+    exact vector-Jacobian product of the preference posterior's samples
+    with respect to the outcome samples, from Rust)."""
+    import torch
+
+    from botorch_rs import _botorch_rs as _rs
+
+    class _LearnedSamples(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx: Any, Yt: Any) -> Any:  # type: ignore[override]
+            ctx.save_for_backward(Yt)
+            (vals, _), _ = _rs.learned_objective_samples(handle, to_flat(Yt), z)
+            return torch.tensor(vals, dtype=Yt.dtype).reshape(out_shape)
+
+        @staticmethod
+        def backward(ctx: Any, grad_out: Any) -> Any:  # type: ignore[override]
+            (Yt,) = ctx.saved_tensors
+            adj = to_flat(grad_out.reshape(out_shape))
+            _, grads = _rs.learned_objective_samples(handle, to_flat(Yt), z, adj)
+            assert grads is not None
+            return torch.tensor(list(grads[0]), dtype=Yt.dtype).reshape(Yt.shape)
+
+    return _LearnedSamples.apply(Y)
+
+
+class LearnedObjective(MCAcquisitionObjective):
+    r"""Learned preference objective constructed from a preference model.
+
+    For input ``samples``, it samples each individual sample again from the
+    latent preference posterior distribution using ``pref_model`` and return the
+    posterior mean.
+
+    The preference posterior is sampled in Rust with the base samples of an
+    ``IIDNormalSampler`` (torch's draws for ``seed``, as in BoTorch), and its
+    exact vector-Jacobian product connects the result to torch's autograd.
+    botorch_rs's Monte-Carlo acquisition functions do not accept it (its
+    values have ``sample_shape`` times more samples than its input).
+
+    Example:
+        >>> train_X = torch.rand(2, 2)
+        >>> train_comps = torch.LongTensor([[0, 1]])
+        >>> pref_model = PairwiseGP(train_X, train_comps)
+        >>> learned_pref_obj = LearnedObjective(pref_model)
+        >>> samples = sampler(posterior)
+        >>> objective = learned_pref_obj(samples)
+    """
+
+    def __init__(
+        self,
+        pref_model: Any,
+        sample_shape: Any = None,
+        seed: int | None = None,
+    ) -> None:
+        r"""
+        Args:
+            pref_model: A BoTorch model, which models the latent preference/utility
+                function. Given an input tensor of size
+                ``sample_size x batch_shape x q x d``, its ``posterior`` method should
+                return a ``Posterior`` object with single outcome representing the
+                utility values of the input.
+            sample_shape: Determines the number of preference-model samples drawn
+                *per outcome-model sample* when the ``LearnedObjective`` is called.
+                Note that this is an additional layer of sampling relative to what
+                is needed when evaluating most MC acquisition functions in order to
+                account for uncertainty in the preference model. If ``None``, it will
+                default to ``torch.Size([16])``, so that 16 samples will be drawn
+                from the preference model at each outcome sample. This number is
+                relatively high because sampling from the preference model is general
+                cheap relative to generating the outcome model posterior.
+            seed: The seed of the sampler.
+        """
+        from botorch_rs.sampling.normal import IIDNormalSampler
+
+        self.pref_model = pref_model
+        self.sampler: Any
+        if _is_deterministic_model(pref_model):
+            if sample_shape is not None:
+                raise ValueError("sample_shape must be None for DeterministicModel.")
+            self.sampler = None
+        else:
+            if sample_shape is None:
+                sample_shape = (DEFAULT_NUM_PREF_SAMPLES,)
+            # using an IIDNormalSampler instead of a SobolQMCNormalSampler by default
+            # because SobolQMCNormalSampler can support up to 21201 total samples and
+            # becomes noticeably slower than uniform sampling when the sample size is
+            # large.
+            self.sampler = IIDNormalSampler(sample_shape=sample_shape, seed=seed)
+            self.sampler.batch_range_override = (1, -1)
+
+    def forward(self, samples: Any, X: Any = None) -> Any:
+        r"""Sample each element of samples.
+
+        Args:
+            samples: A ``sample_size x batch_shape x q x d``-dim Tensors of
+                samples from a model posterior.
+
+        Returns:
+            A ``(sample_size * num_samples) x batch_shape x q``-dim Tensor of
+            objective values sampled from utility posterior using ``pref_model``.
+        """
+        import math
+        import warnings
+
+        from botorch_rs import _botorch_rs as _rs
+        from botorch_rs.exceptions.warnings import InputDataWarning
+
+        if is_torch_tensor(samples):
+            import torch
+
+            if samples.dtype != torch.float64:
+                warnings.warn(
+                    LEARNED_OBJECTIVE_PREF_MODEL_MIXED_DTYPE_WARN,
+                    InputDataWarning,
+                    stacklevel=2,
+                )
+                samples = samples.to(torch.float64)
+        shape = tuple(to_flat(samples, "samples")[1])
+        if len(shape) < 3:
+            raise ValueError("samples should have at least 3 dimensions.")
+        posterior = self.pref_model.posterior(samples)
+        if self.sampler is None:
+            data, mshape = to_flat(posterior.mean, "mean")
+            return from_flat(data, mshape[:-1], kind_of(samples))
+        # The sampler's base samples (sample_shape x S x 1 ... x q, shared
+        # by the t-batches), broadcast to every set of outcome samples.
+        self.sampler(posterior)
+        z_col, _ = to_flat(self.sampler.base_samples, "base_samples")
+        n = math.prod(self.sampler.sample_shape)
+        s0 = shape[0]
+        nb = math.prod(shape[1:-2])
+        q = shape[-2]
+        z: list[float] = []
+        for i in range(n):
+            for s in range(s0):
+                block = list(z_col[(i * s0 + s) * q : (i * s0 + s + 1) * q])
+                for _ in range(nb):
+                    z.extend(block)
+        zpair = (z, (n, s0 * nb, q))
+        handle = self.pref_model._acquisition_model(None)
+        out_shape = (n * s0, *shape[1:-2], q)
+        if is_torch_tensor(samples) and samples.requires_grad:
+            import torch
+
+            if torch.is_grad_enabled():
+                Y = samples.reshape(s0 * nb, q, shape[-1])
+                return _learned_samples_autograd(handle, Y, zpair, out_shape)
+        flat = to_flat(samples, "samples")
+        y = (flat[0], (s0 * nb, q, shape[-1]))
+        (vals, _), _ = _rs.learned_objective_samples(handle, y, zpair)
+        return from_flat(vals, out_shape, kind_of(samples))
+
+    def _spec(self) -> tuple[Any, ...]:
+        raise UnsupportedError(
+            "LearnedObjective is not supported in botorch_rs's Monte-Carlo acquisition "
+            "functions: its values have sample_shape times more samples than the posterior "
+            "samples. Use it directly, or qExpectedUtilityOfBestOption with the preference "
+            "model."
+        )
+
+
 __all__ = [
     "ConstrainedMCObjective",
     "GenericMCObjective",
     "IdentityMCObjective",
+    "LearnedObjective",
     "LinearMCObjective",
     "MCAcquisitionObjective",
     "PosteriorTransform",

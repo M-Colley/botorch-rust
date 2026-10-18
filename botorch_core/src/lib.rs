@@ -334,6 +334,7 @@ pub mod generation;
 pub mod kernels;
 pub mod lbfgsb;
 pub mod linalg;
+pub mod minpack;
 pub mod mll;
 pub mod models;
 pub mod optim;
