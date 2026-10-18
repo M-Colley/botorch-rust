@@ -34,10 +34,10 @@ samplers and t-batched fixed values of `FixedFeatureAcquisitionFunction`.
 ## What remains unported (in this area)
 
 - The input constructors of acquisition functions botorch_rs does not have:
-  `qBayesianActiveLearningByDisagreement` (needs fully Bayesian models,
-  Phase 10a) and `AnalyticExpectedUtilityOfBestOption` /
-  `qExpectedUtilityOfBestOption` (preference models, Phase 10b). They can be
-  registered with `acqf_input_constructor` when those classes land.
+  `AnalyticExpectedUtilityOfBestOption` / `qExpectedUtilityOfBestOption`
+  (preference models, Phase 10b). They can be registered with
+  `acqf_input_constructor` when those classes land
+  (`construct_inputs_BALD` was registered with Phase 10a).
 - `qMultiStepLookahead` with value functions outside the native list above
   (e.g. `qNoisyExpectedImprovement`, entropy searches, user classes), with
   argument factories other than `make_best_f` whose arguments depend on the

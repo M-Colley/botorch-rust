@@ -21,6 +21,7 @@ Pyro.
 | qEHVI, qNEHVI, qLogEHVI, qLogNEHVI, `prune_inferior_points_multi_objective` on a `ModelListGP` of fully Bayesian GPs | same names | `marginalize_dim=-3`: the members' samples averaged over the MCMC samples |
 | `qLogNParEGO` on a `ModelListGP` of fully Bayesian GPs | same | one Chebyshev scalarization normalized by the ensemble's `Y_baseline`; baseline pruning under it |
 | `PathwiseThompsonSampling` on fully Bayesian GPs (and lists of them) | same | `ensemble_indices`; `redraw(batch_size, draws=..., ensemble_indices=...)` (extension) |
+| `botorch.acquisition.input_constructors.construct_inputs_BALD` | same path | registered for `qBayesianActiveLearningByDisagreement`; the other constructors and `get_acquisition_function` work on fully Bayesian GPs (a `best_f` with one value per MCMC sample, as `get_acquisition_function` computes it, applies sample by sample, as BoTorch's broadcasting) |
 | Rust | `botorch_core::fully_bayesian::{PyroModel, PyroModelSpec, PyroKernel, TaskStructure, sample_nuts, NutsOptions, SeededDraws, RecordedDraws, find_valid_initial_params, build_adaptation_schedule}`, `acquisition::QBayesianActiveLearningByDisagreement`, `PathwiseThompsonSampling::new_ensemble`, `QLogNParEGOOptions::y_baseline` | |
 
 ## Not ported (and why)
@@ -38,9 +39,6 @@ Pyro.
 - `botorch_community`'s active-learning functions
   (`qBayesianVarianceReduction`, `qBayesianQueryByComittee`,
   `qStatisticalDistanceActiveLearning`): community package, follow-up.
-- The input constructor of `qBayesianActiveLearningByDisagreement`: the
-  `acqf_input_constructor` registry is ported by phase 8b (follow-up: one
-  registration).
 - Acquisition functions that BoTorch does not support on fully Bayesian
   GPs raise `UnsupportedError` (BoTorch fails with other errors): qKG,
   qMFKG, qHVKG, qNIPV (no `fantasize` on the single-task models), qMES,
@@ -224,6 +222,9 @@ and gradients at rounding noise (at most 2.2e-16 and 1.2e-15).
 | qLogNParEGO on lists: `Y_baseline`, values, gradients | 1e-9 / 1e-8 | 2.9e-15 / 6.4e-15 / 1.1e-13 |
 | PathwiseThompsonSampling (SAAS, Matérn, lists) values / gradients | 1e-9 / 1e-8 | 1.3e-14 / 1.2e-14 |
 | `PyroModel.warp`, kernel helpers, `median_lengthscale` | 1e-9 | 2.0e-16 |
+| `construct_inputs_BALD` kwargs (exact) and qBALD values / gradients from them | 0; 1e-9 / 1e-8 | 0; 6.7e-15 / 3.2e-14 |
+| qLogEI / qLogNEI constructors on fully Bayesian GPs: `best_f`, `X_baseline` (exact), values / gradients | 0; 1e-9 / 1e-8 | 0; 5.0e-14 / 2.2e-13 |
+| `get_acquisition_function` (qLogEI, qLogNEI, qUCB): per-sample `best_f`, `X_baseline`, values / gradients | 1e-9; 0; 1e-9 / 1e-8 | 2.7e-16; 0; 7.6e-16 / 1.7e-13 |
 
 | quantity (sweep: 30 random models) | tolerance | worst |
 | --- | --- | --- |

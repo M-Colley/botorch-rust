@@ -253,12 +253,24 @@ def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any])
                     model, arguments["X_baseline"], members=members
                 )
             arguments["prune_baseline"] = False
+    # One `best_f` per member (BoTorch broadcasts a `best_f` with one value
+    # per MCMC sample against the ensemble dimension, e.g. that of
+    # `get_acquisition_function` from the samples' posterior means).
+    per_member: list[dict[str, Any]] = [{} for _ in members]
+    best_f = arguments.get("best_f")
+    if best_f is not None and not deterministic_members and len(members) > 1:
+        values, _ = to_flat(best_f, "best_f")
+        if len(values) == len(members):
+            kind = kind_of(best_f)
+            per_member = [{"best_f": from_flat([v], (), kind)} for v in values]
     objs = []
-    for member in members:
+    for member, own in zip(members, per_member, strict=True):
         obj = object.__new__(cls)
-        init(obj, **{**arguments, model_name: member}, **extra)
+        init(obj, **{**arguments, model_name: member, **own}, **extra)
         objs.append(obj)
     self.__dict__.update(objs[0].__dict__)
+    if per_member[0]:
+        self.best_f = best_f
     self.model = model
     if "sampler" in names and not deterministic_members:
         self.sampler = sampler

@@ -74,6 +74,7 @@ from fully_bayesian_helpers import (  # noqa: E402
     mt_model_pair,
     numpyro_potential,
     perturbed,
+    raw_box_data,
     rs_class,
 )
 from models7b_helpers import GRAD_TOL, VALUE_TOL, check_grad, values_and_grads  # noqa: E402
@@ -1083,3 +1084,167 @@ def test_pathwise_thompson_sampling_on_map_saas_ensembles_is_unsupported() -> No
         BtTS(bt)(torch.rand(3, 2, 4, generator=g, dtype=DT))
     with pytest.raises(UnsupportedError, match="ensembles of fully Bayesian GPs"):
         RsTS(RsEnsemble(X, Y, num_taus=3))
+
+
+# ---------------------------------------------------------------------------
+# Input constructors
+# ---------------------------------------------------------------------------
+
+
+def _fb_datasets(X: Any, Y: Any) -> tuple[Any, Any]:
+    names = {"feature_names": [f"x{i}" for i in range(X.shape[-1])], "outcome_names": ["y"]}
+    return BtDataset(X, Y, **names), RsDataset(X, Y, **names)
+
+
+def test_bald_input_constructor_matches_botorch() -> None:
+    """``construct_inputs_BALD``: the same keyword arguments (also from the
+    common constructor arguments, which it ignores) and the same values of
+    the acquisition function built from them."""
+    from botorch.acquisition import input_constructors as bic
+    from botorch.acquisition.bayesian_active_learning import (
+        qBayesianActiveLearningByDisagreement as BtBALD,
+    )
+
+    from botorch_rs.acquisition import input_constructors as ric
+    from botorch_rs.acquisition.bayesian_active_learning import (
+        qBayesianActiveLearningByDisagreement as RsBALD,
+    )
+
+    bt, rs, X, _ = model_pair("saas", seed=290, num=4)
+    _, Y, _ = raw_box_data(10, 3, 290, True)  # model_pair's training data
+    lo, hi = X.min(0).values, X.max(0).values
+    g = _gen(291)
+    Xt = lo + (hi - lo) * torch.rand(3, 2, 3, generator=g, dtype=DT)
+    Xp = lo + (hi - lo) * torch.rand(1, 3, generator=g, dtype=DT)
+    s_bt, s_rs = _samplers(64, 3, 292, X=torch.cat([Xt, Xp.expand(3, 1, 3)], dim=-2), bt=bt)
+    cb = bic.get_acqf_input_constructor(BtBALD)
+    cr = ric.get_acqf_input_constructor(RsBALD)
+    assert cr.__closure__ is not None and cb.__closure__ is not None
+    assert (
+        cr.__closure__[1].cell_contents.__name__
+        == cb.__closure__[1].cell_contents.__name__
+        == "construct_inputs_BALD"
+    )
+    d_bt, d_rs = _fb_datasets(X, Y)
+    kb = cb(model=bt, training_data=d_bt, X_pending=Xp, sampler=s_bt)
+    kr = cr(model=rs, training_data=d_rs, X_pending=Xp, sampler=s_rs)
+    assert set(kr) == set(kb) == {"model", "X_pending", "sampler", "posterior_transform"}
+    assert kr["model"] is rs and kr["sampler"] is s_rs
+    assert kr["posterior_transform"] is None and kb["posterior_transform"] is None
+    CHECK.check("construct_inputs_BALD: X_pending", kr["X_pending"], kb["X_pending"], 0.0)
+    _compare_acqf(
+        "qBayesianActiveLearningByDisagreement from its input constructor",
+        RsBALD(**kr),
+        BtBALD(**kb),
+        Xt,
+    )
+    # Defaults: no pending points, the default sampler.
+    kb0, kr0 = cb(model=bt, training_data=d_bt), cr(model=rs, training_data=d_rs)
+    assert kb0 == {"model": bt, "X_pending": None, "sampler": None, "posterior_transform": None}
+    assert kr0 == {"model": rs, "X_pending": None, "sampler": None, "posterior_transform": None}
+
+
+@pytest.mark.parametrize("name", ["qLogExpectedImprovement", "qLogNoisyExpectedImprovement"])
+def test_constructors_on_fully_bayesian_gps_match_botorch(name: str) -> None:
+    """The input constructors of acquisition functions averaged over the
+    samples of a fully Bayesian GP (``best_f`` from the training data,
+    ``X_baseline``) and the values built from them, with identical base
+    samples."""
+    from botorch.acquisition import input_constructors as bic
+
+    from botorch_rs.acquisition import input_constructors as ric
+
+    bt, rs, X, _ = model_pair("matern", seed=300, num=4)
+    _, Y, _ = raw_box_data(10, 3, 300, True)  # model_pair's training data
+    noisy = "Noisy" in name
+    q = 2
+    lo, hi = X.min(0).values, X.max(0).values
+    Xq = lo + (hi - lo) * torch.rand(1 if noisy else 3, q, 3, generator=_gen(301), dtype=DT)
+    k = X.shape[0] + q if noisy else q
+    s_bt, s_rs = _samplers(32, k, 302)
+    bmod = bt_logei
+    cls_bt, cls_rs = getattr(bmod, name), getattr(rs_logei, name)
+    extra: dict[str, Any] = {"prune_baseline": False, "cache_root": False} if noisy else {}
+    d_bt, d_rs = _fb_datasets(X, Y)
+    kb = bic.get_acqf_input_constructor(cls_bt)(model=bt, training_data=d_bt, sampler=s_bt, **extra)
+    kr = ric.get_acqf_input_constructor(cls_rs)(model=rs, training_data=d_rs, sampler=s_rs, **extra)
+    assert set(kr) == set(kb)
+    for key in kb:
+        if key in ("model", "sampler", "objective"):
+            continue
+        if key in ("best_f", "X_baseline"):
+            CHECK.check(
+                f"construct_inputs of {name} (fully Bayesian): {key}", kr[key], kb[key], 0.0
+            )
+        else:
+            assert kr[key] == kb[key], key
+    _compare_acqf(
+        f"{name} (fully Bayesian) from its input constructor",
+        cls_rs(**kr),
+        cls_bt(**kb),
+        Xq,
+        log=True,
+    )
+
+
+@pytest.mark.parametrize("name", ["qLogEI", "qLogNEI", "qUCB"])
+def test_get_acquisition_function_on_fully_bayesian_gps_matches_botorch(name: str) -> None:
+    """``get_acquisition_function`` of a fully Bayesian GP: the same class,
+    ``best_f`` (one per sample: the best posterior mean of every sample at
+    the observed inputs, broadcast against the samples) / ``X_baseline``,
+    and values with identical base samples (Sobol samplers: the mixture
+    posterior is a GPyTorch posterior)."""
+    from botorch.acquisition import factory as bt_factory
+    from botorch.acquisition.objective import IdentityMCObjective as BtIdentity
+
+    from botorch_rs.acquisition import factory as rs_factory
+    from botorch_rs.acquisition.objective import IdentityMCObjective as RsIdentity
+
+    bt, rs, X, _ = model_pair("saas", seed=310, num=4)
+    kw: dict[str, Any] = {"beta": 0.3} if name == "qUCB" else {}
+    if name == "qLogNEI":
+        kw.update(prune_baseline=False, cache_root=False)
+    a_bt = bt_factory.get_acquisition_function(
+        name, bt, BtIdentity(), X, mc_samples=16, seed=0, **kw
+    )
+    a_rs = rs_factory.get_acquisition_function(
+        name, rs, RsIdentity(), X, mc_samples=16, seed=0, **kw
+    )
+    assert type(a_rs).__name__ == type(a_bt).__name__
+    if name == "qLogEI":
+        CHECK.check(
+            "get_acquisition_function(qLogEI, fully Bayesian): best_f",
+            torch.as_tensor(a_rs.best_f).reshape(-1),
+            a_bt.best_f.reshape(-1),
+            VALUE_TOL,
+        )
+    if name == "qLogNEI":
+        CHECK.check(
+            "get_acquisition_function(qLogNEI, fully Bayesian): X_baseline",
+            a_rs.X_baseline,
+            a_bt.X_baseline,
+            0.0,
+        )
+    q = 2
+    k = X.shape[0] + q if name == "qLogNEI" else q
+    s_bt, s_rs = _samplers(16, k, 311)
+    lo, hi = X.min(0).values, X.max(0).values
+    Xq = lo + (hi - lo) * torch.rand(1, q, 3, generator=_gen(312), dtype=DT)
+    module_bt = bt_logei if name != "qUCB" else bt_mc
+    module_rs = rs_logei if name != "qUCB" else rs_mc
+    cls = type(a_bt).__name__
+    args: dict[str, Any] = {}
+    if name == "qLogEI":
+        args["best_f"] = a_bt.best_f
+    elif name == "qLogNEI":
+        args.update(X_baseline=X, prune_baseline=False, cache_root=False)
+    else:
+        args["beta"] = 0.3
+    # The factory's acquisition functions rebuilt with identical samplers.
+    _compare_acqf(
+        f"get_acquisition_function({name}, fully Bayesian)",
+        getattr(module_rs, cls)(rs, sampler=s_rs, **args),
+        getattr(module_bt, cls)(bt, sampler=s_bt, **args),
+        Xq,
+        log=name != "qUCB",
+    )

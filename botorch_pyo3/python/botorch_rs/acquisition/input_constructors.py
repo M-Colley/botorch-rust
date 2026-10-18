@@ -23,8 +23,8 @@ gradients with botorch_rs's ``optimize_acqf`` (pass
 deterministic results).
 
 Not ported: the constructors of the acquisition functions that botorch_rs
-does not have yet (``qBayesianActiveLearningByDisagreement``,
-``AnalyticExpectedUtilityOfBestOption``, ``qExpectedUtilityOfBestOption``).
+does not have yet (``AnalyticExpectedUtilityOfBestOption``,
+``qExpectedUtilityOfBestOption``).
 """
 
 from __future__ import annotations
@@ -57,6 +57,9 @@ from botorch_rs.acquisition.analytic import (
     PosteriorMean,
     ProbabilityOfImprovement,
     UpperConfidenceBound,
+)
+from botorch_rs.acquisition.bayesian_active_learning import (
+    qBayesianActiveLearningByDisagreement,
 )
 from botorch_rs.acquisition.cost_aware import InverseCostWeightedUtility
 from botorch_rs.acquisition.fixed_feature import FixedFeatureAcquisitionFunction
@@ -2151,6 +2154,24 @@ def construct_inputs_qJES(
     return inputs
 
 
+@acqf_input_constructor(qBayesianActiveLearningByDisagreement)
+def construct_inputs_BALD(
+    model: Any,
+    X_pending: Any = None,
+    sampler: Any = None,
+    posterior_transform: Any = None,
+) -> dict[str, Any]:
+    """Construct inputs for ``qBayesianActiveLearningByDisagreement`` (a
+    fully Bayesian model)."""
+    inputs = {
+        "model": model,
+        "X_pending": X_pending,
+        "sampler": sampler,
+        "posterior_transform": posterior_transform,
+    }
+    return inputs
+
+
 @acqf_input_constructor(qNegIntegratedPosteriorVariance)
 def construct_inputs_NIPV(
     model: Any,
@@ -2267,6 +2288,7 @@ __all__ = [
     "ACQF_INPUT_CONSTRUCTOR_REGISTRY",
     "acqf_input_constructor",
     "allow_only_specific_variable_kwargs",
+    "construct_inputs_BALD",
     "construct_inputs_EHVI",
     "construct_inputs_LogPF",
     "construct_inputs_NIPV",

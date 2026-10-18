@@ -402,6 +402,35 @@ def test_thompson_sampling_parego_and_jes_on_fully_bayesian_gps(kind: str) -> No
         qJointEntropySearch(m1, X[:2], [[0.0], [0.0]])
 
 
+def test_bald_input_constructor_and_per_sample_best_f(kind: str) -> None:
+    from botorch_rs.acquisition.input_constructors import (
+        construct_inputs_BALD,
+        get_acqf_input_constructor,
+    )
+    from botorch_rs.acquisition.logei import qLogExpectedImprovement
+
+    model, X, Y = _fitted(seed=3)
+    constructor = get_acqf_input_constructor(qBayesianActiveLearningByDisagreement)
+    assert constructor.__closure__ is not None
+    assert constructor.__closure__[1].cell_contents is construct_inputs_BALD
+    Xp = as_kind([[0.2, 0.3]], kind)
+    kw = constructor(model=model, X_pending=Xp)
+    assert set(kw) == {"model", "X_pending", "sampler", "posterior_transform"}
+    acqf = qBayesianActiveLearningByDisagreement(**kw)
+    Xt = as_kind([[[0.1, 0.2]], [[0.5, 0.5]]], kind)
+    assert shape(acqf(Xt)) == (2,)
+    # A best_f with one value per MCMC sample applies sample by sample.
+    n = model.num_mcmc_samples
+    best = as_kind([0.1 * i for i in range(n)], kind)
+    sampler = SobolQMCNormalSampler(sample_shape=(16,), seed=0)
+    ei = qLogExpectedImprovement(model, best_f=best, sampler=sampler)
+    assert [float(flatten(m.best_f)[0]) for m in ei._ensemble_acqfs] == pytest.approx(
+        [0.1 * i for i in range(n)]
+    )
+    check_kind(ei.best_f, kind)
+    assert shape(ei(Xt)) == (2,)
+
+
 def test_get_fitted_map_saas_model() -> None:
     X, Y, _ = _data(seed=6)
     model = get_fitted_map_saas_model(X, Y)

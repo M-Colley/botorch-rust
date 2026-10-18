@@ -298,13 +298,10 @@ def test_infeasible_cost_and_best_feasible_objective_match_botorch() -> None:
 def test_registry_matches_botorch() -> None:
     names_bt = {c.__name__ for c in bic.ACQF_INPUT_CONSTRUCTOR_REGISTRY}
     names_rs = {c.__name__ for c in ric.ACQF_INPUT_CONSTRUCTOR_REGISTRY}
-    # The constructors of the acquisition functions botorch_rs does not have
-    # (fully Bayesian and preference models) are missing.
-    assert names_bt - names_rs == {
-        "qBayesianActiveLearningByDisagreement",
-        "AnalyticExpectedUtilityOfBestOption",
-        "qExpectedUtilityOfBestOption",
-    }
+    # Only the constructors of the acquisition functions botorch_rs does not
+    # have (yet) are missing.
+    for name in names_bt - names_rs:
+        assert not hasattr(ra, name), name
     assert names_rs <= names_bt
     for cls in ric.ACQF_INPUT_CONSTRUCTOR_REGISTRY:
         fb = bic.ACQF_INPUT_CONSTRUCTOR_REGISTRY[_bt_cls(cls.__name__)]
