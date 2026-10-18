@@ -53,7 +53,7 @@ functions build on them.
   - the knowledge gradient, entropy search and multi-objective acquisition
     functions on ensemble models.
 
-## Phase 8: single-objective acquisition functions (mostly done)
+## Phase 8: single-objective acquisition functions (done)
 
 Ported, with equivalence tests ([details](single-objective-acquisition.md)):
 - the knowledge gradient, also multi-fidelity;
@@ -65,11 +65,14 @@ Ported, with equivalence tests ([details](single-objective-acquisition.md)):
 - Thompson sampling, `qNegIntegratedPosteriorVariance`;
 - the penalized, proximal, prior-guided and fixed-feature wrappers.
 
+Also ported (phase 8b, [details](acquisition-construction.md)): the input
+constructors with `get_acquisition_function`, `qMultiStepLookahead`,
+`SampleReducingMCAcquisitionFunction` as a public base class, and t-batched
+max-value samplers and fixed features.
+
 Remaining:
-- `qMultiStepLookahead`;
-- the input constructors with `get_acquisition_function`;
-- `SampleReducingMCAcquisitionFunction` as a public base class;
-- t-batched candidate sets in max-value entropy search;
+- the input constructors of BALD and EUBO (with Phase 10);
+- `qMultiStepLookahead` with other value functions and models;
 - the active learning that needs pairwise or fully Bayesian models
   (Phase 10).
 

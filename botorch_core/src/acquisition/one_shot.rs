@@ -23,6 +23,15 @@ pub trait OneShotAcquisitionFunction: AcquisitionFunction {
     /// candidates (BoTorch's `get_augmented_q_batch_size`).
     fn get_augmented_q_batch_size(&self, q: usize) -> usize;
 
+    /// The number of points of the candidate sets that
+    /// [`crate::optim::optimize_acqf`] optimizes when called with `q`: the
+    /// augmented size (the default), or `q` itself for acquisition functions
+    /// that BoTorch's `optimize_acqf` is called with the augmented size for
+    /// (`qMultiStepLookahead`).
+    fn optimized_q_batch_size(&self, q: usize) -> usize {
+        self.get_augmented_q_batch_size(q)
+    }
+
     /// The `q` candidates of an augmented candidate set (`q_aug × d`),
     /// BoTorch's `extract_candidates`.
     ///

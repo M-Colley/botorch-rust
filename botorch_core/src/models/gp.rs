@@ -46,9 +46,11 @@ use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
 use crate::{Matrix, Vector};
 
 mod conditioning;
+mod lookahead;
 mod noiseless_fantasy;
 
 pub(crate) use conditioning::{FantasyAdjoint, FantasyGp, FantasyPosterior};
+pub(crate) use lookahead::{CondAdjoint, CondFactor, CondGp, CondPosterior};
 
 /// Lower bound on the inferred noise variance of BoTorch's default likelihoods.
 pub const MIN_INFERRED_NOISE_LEVEL: f64 = 1e-4;

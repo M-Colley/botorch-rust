@@ -735,25 +735,32 @@ pub fn posterior_samples_vjp(
     ybar: Option<&Matrix>,
 ) -> Result<(Matrix, Option<Matrix>)> {
     let q = x.nrows();
-    let js = JointSamples::with_base_samples(model, x.clone(), Arc::new(base.clone()))?;
-    if js.m != 1 {
-        return Err(BotorchError::Unsupported(
-            "LearnedObjective requires a single-output preference model".into(),
-        ));
-    }
-    let samples = js.samples(0..q).into_data().transpose();
-    let Some(ybar) = ybar else {
-        return Ok((samples, None));
+    let single_output = |s: &McSamples| {
+        if s.num_outputs() == 1 {
+            Ok(())
+        } else {
+            Err(BotorchError::Unsupported(
+                "LearnedObjective requires a single-output preference model".into(),
+            ))
+        }
     };
-    if ybar.shape() != samples.shape() {
+    let Some(ybar) = ybar else {
+        let js = JointSamples::with_base_samples(model, x.clone(), Arc::new(base.clone()))?;
+        let samples = js.samples(0..q);
+        single_output(&samples)?;
+        return Ok((samples.into_data().transpose(), None));
+    };
+    if ybar.shape() != base.shape() {
         return Err(BotorchError::DimensionMismatch(format!(
-            "the adjoint has shape {:?}, the samples {:?}",
+            "the adjoint has shape {:?}, the base samples {:?}",
             ybar.shape(),
-            samples.shape()
+            base.shape()
         )));
     }
-    let g = js.backward(model, 0..q, &ybar.transpose(), 0..q)?;
-    Ok((samples, Some(g)))
+    // With one output the adjoint has the layout of the base samples.
+    let (samples, g) = super::monte_carlo::posterior_samples_with_vjp(model, x, base, ybar)?;
+    single_output(&samples)?;
+    Ok((samples.into_data().transpose(), Some(g)))
 }
 
 #[cfg(test)]

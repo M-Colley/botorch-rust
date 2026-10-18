@@ -395,6 +395,21 @@ class qMultiFidelityLowerBoundMaxValueEntropy(qMultiFidelityMaxValueEntropy):
         self.expand: Callable[[Any], Any] | None = None  # type: ignore[assignment]
 
 
+def _candidate_batches(candidate_set: Any, d: int) -> tuple[tuple[int, ...], list[Any]]:
+    """The batch shape of a ``batch_shape x n x d`` candidate set and its
+    ``n x d`` candidate sets."""
+    data, shape = to_flat(candidate_set, "candidate_set")
+    if len(shape) < 2:
+        raise UnsupportedError("`candidate_set` must be a `batch_shape x n x d` tensor.")
+    if shape[-1] != d:
+        raise ValueError(f"`candidate_set` must have {d} columns, got shape {tuple(shape)}.")
+    n = shape[-2]
+    batch = tuple(shape[:-2])
+    nb = math.prod(batch)
+    per = n * d
+    return batch, [(data[b * per : (b + 1) * per], (n, d)) for b in range(nb)]
+
+
 def _sample_max_value_Gumbel(
     model: Any,
     candidate_set: Any,
@@ -405,10 +420,26 @@ def _sample_max_value_Gumbel(
     uniforms: Any = None,
     seed: int | None = None,
 ) -> Any:
-    """Samples the max values by Gumbel approximation (``num_samples x 1``).
+    """Samples the max values by Gumbel approximation.
 
-    botorch_rs extensions (keyword-only): the uniform numbers ``uniforms``
-    (BoTorch's ``torch.rand(num_samples, 1)``) or their ``seed``."""
+    Args:
+        model: A fitted single-outcome model.
+        candidate_set: A ``batch_shape x n x d`` Tensor including ``n`` candidate
+            points per batch to discretize the design space.
+        num_samples: Number of max value samples.
+        posterior_transform: A PosteriorTransform. If using a multi-output model,
+            a PosteriorTransform that transforms the multi-output posterior into a
+            single-output posterior is required.
+        maximize: If True, consider the problem a maximization problem.
+
+    Returns:
+        A ``num_samples x batch_shape`` Tensor of posterior max value samples,
+        where ``batch_shape`` is ``(1,)`` for an unbatched posterior.
+
+    The Gumbel distribution of every candidate set is fitted to its
+    quantiles; the same uniform numbers (BoTorch's ``torch.rand(num_samples,
+    1)``) give the samples of every batch. botorch_rs extensions
+    (keyword-only): the uniform numbers ``uniforms`` or their ``seed``."""
     import random
 
     if uniforms is None:
@@ -419,14 +450,13 @@ def _sample_max_value_Gumbel(
         if len(u) != num_samples:
             raise ValueError(f"Expected {num_samples} uniform numbers, got {len(u)}.")
     rs_model = model._acquisition_model(None)
-    values = _rs.sample_max_value_gumbel(
-        rs_model,
-        _candidates(candidate_set, int(rs_model.dim)),
-        u,
-        bool(maximize),
-        transform_arg(posterior_transform, model.num_outputs),
-    )
-    return from_flat(values, (num_samples, 1), kind_of(candidate_set))
+    batch, sets = _candidate_batches(candidate_set, int(rs_model.dim))
+    transform = transform_arg(posterior_transform, model.num_outputs)
+    columns = [
+        _rs.sample_max_value_gumbel(rs_model, cs, u, bool(maximize), transform) for cs in sets
+    ]
+    values = [columns[b][i] for i in range(num_samples) for b in range(len(sets))]
+    return from_flat(values, (num_samples, *(batch or (1,))), kind_of(candidate_set))
 
 
 def _sample_max_value_Thompson(
@@ -439,32 +469,52 @@ def _sample_max_value_Thompson(
     base_samples: Any = None,
     seed: int | None = None,
 ) -> Any:
-    """Samples the max values by discrete Thompson sampling (``num_samples x
-    1``).
+    """Samples the max values by discrete Thompson sampling.
+
+    Args:
+        model: A fitted single-outcome model.
+        candidate_set: A ``batch_shape x n x d`` Tensor including ``n`` candidate
+            points per batch to discretize the design space.
+        num_samples: Number of max value samples.
+        posterior_transform: A PosteriorTransform. If using a multi-output model,
+            a PosteriorTransform that transforms the multi-output posterior into a
+            single-output posterior is required.
+        maximize: If True, consider the problem a maximization problem.
+
+    Returns:
+        A ``num_samples x batch_shape`` Tensor of posterior max value samples,
+        where ``batch_shape`` is ``(1,)`` for an unbatched posterior.
 
     botorch_rs extensions (keyword-only): the standard normal
-    ``base_samples`` (``num_samples x n``) or their ``seed``."""
+    ``base_samples`` (``num_samples x batch_shape x n``, independent between
+    the batches as BoTorch's draws) or their ``seed``."""
     import random
 
     rs_model = model._acquisition_model(None)
-    cs = _candidates(candidate_set, int(rs_model.dim))
-    n = cs[1][0]
+    batch, sets = _candidate_batches(candidate_set, int(rs_model.dim))
+    nb = len(sets)
+    n = sets[0][1][0] if sets else 0
+    total = num_samples * nb * n
     if base_samples is None:
         rng = random.Random(seed)
-        z: Any = ([rng.gauss(0.0, 1.0) for _ in range(num_samples * n)], (num_samples, n))
+        z = [rng.gauss(0.0, 1.0) for _ in range(total)]
     else:
-        z = to_flat(base_samples, "base_samples")
-        if math.prod(z[1]) != num_samples * n:
-            raise ValueError(f"Expected base samples of shape {num_samples} x {n}.")
-        z = (z[0], (num_samples, n))
-    values = _rs.sample_max_value_thompson(
-        rs_model,
-        cs,
-        z,
-        bool(maximize),
-        transform_arg(posterior_transform, model.num_outputs),
-    )
-    return from_flat(values, (num_samples, 1), kind_of(candidate_set))
+        z = list(to_flat(base_samples, "base_samples")[0])
+        if len(z) != total:
+            raise ValueError(
+                f"Expected base samples of shape {num_samples} x {tuple(batch)} x {n}."
+            )
+    transform = transform_arg(posterior_transform, model.num_outputs)
+    columns = []
+    for b, cs in enumerate(sets):
+        zb = [z[(i * nb + b) * n + j] for i in range(num_samples) for j in range(n)]
+        columns.append(
+            _rs.sample_max_value_thompson(
+                rs_model, cs, (zb, (num_samples, n)), bool(maximize), transform
+            )
+        )
+    values = [columns[b][i] for i in range(num_samples) for b in range(nb)]
+    return from_flat(values, (num_samples, *(batch or (1,))), kind_of(candidate_set))
 
 
 __all__ = [

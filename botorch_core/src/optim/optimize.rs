@@ -508,7 +508,7 @@ pub fn optimize_acqf_detailed(
     // One-shot acquisition functions optimize augmented candidate sets.
     let q_opt = acq_function
         .as_one_shot()
-        .map_or(q, |os| os.get_augmented_q_batch_size(q));
+        .map_or(q, |os| os.optimized_q_batch_size(q));
     options
         .constraints
         .validate(if sequential { 1 } else { q_opt }, d)?;
@@ -662,7 +662,7 @@ fn optimize_batch(
     let one_shot = acq_function.as_one_shot();
     // The number of points of the optimized sets (augmented for one-shot
     // acquisition functions).
-    let q_opt = one_shot.map_or(q, |os| os.get_augmented_q_batch_size(q));
+    let q_opt = one_shot.map_or(q, |os| os.optimized_q_batch_size(q));
     let provided = options.batch_initial_conditions.clone().unwrap_or_default();
     for ic in &provided {
         if ic.shape() != (q_opt, d) {
