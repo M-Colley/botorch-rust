@@ -170,6 +170,9 @@ def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any])
 
     cls = type(self)
     model: Any = args[0] if args else kwargs.get("model")
+    fully_bayesian_error = getattr(cls, "_FULLY_BAYESIAN_ERROR", None)
+    if fully_bayesian_error is not None and getattr(model, "_is_fully_bayesian", False):
+        raise NotImplementedError(fully_bayesian_error)
     if not hasattr(model, "_ensemble_members") and _supports_ensemble(
         cls, _GAUSSIAN_MOMENT_ACQUISITION_FUNCTIONS
     ):
@@ -186,7 +189,7 @@ def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any])
     if not _supports_ensemble(cls):
         raise UnsupportedError(
             f"{cls.__name__} does not support ensemble models (EnsembleMapSaasSingleTaskGP, "
-            "EnsembleModel) in botorch_rs; supported are "
+            "EnsembleModel, fully Bayesian GPs) in botorch_rs; supported are "
             f"{sorted(ENSEMBLE_ACQUISITION_FUNCTIONS)} (and, on an EnsembleModel, the analytic "
             f"acquisition functions {sorted(_GAUSSIAN_MOMENT_ACQUISITION_FUNCTIONS)})."
         )
@@ -223,6 +226,10 @@ def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any])
                 "(marginalize_dim=-3)."
             )
         arguments["marginalize_dim"] = None
+    prepare = getattr(cls, "_prepare_ensemble", None)
+    if prepare is not None and not deterministic_members:
+        # Class-specific arguments of the members (e.g. qLogNParEGO's).
+        prepare(init, model, members, arguments, model_name)
     if "prune_baseline" in names:
         prune = arguments.get("prune_baseline", names["prune_baseline"].default)
         if prune:

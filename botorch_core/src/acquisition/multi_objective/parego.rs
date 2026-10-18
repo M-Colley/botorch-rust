@@ -151,6 +151,11 @@ pub struct QLogNParEGOOptions {
     pub tau_max: f64,
     /// Incremental improvement over pending points (default `true`).
     pub incremental: bool,
+    /// The objective values normalizing the scalarization (`n x k`) instead
+    /// of those of the model's posterior mean at the baseline: for the
+    /// members of an ensemble, the ensemble's (BoTorch's mean over
+    /// `MCMC_DIM`).
+    pub y_baseline: Option<Matrix>,
 }
 
 impl Default for QLogNParEGOOptions {
@@ -168,6 +173,7 @@ impl Default for QLogNParEGOOptions {
             tau_relu: TAU_RELU,
             tau_max: TAU_MAX,
             incremental: true,
+            y_baseline: None,
         }
     }
 }
@@ -200,21 +206,26 @@ impl QLogNParEGO {
             .objective
             .unwrap_or_else(|| Arc::new(IdentityMcMultiOutputObjective::default()));
         // Y_baseline = objective(model.posterior(X_baseline).mean).
-        let post = model.posterior(x_baseline, false)?;
-        let (n, m) = (x_baseline.nrows(), model.num_outputs());
-        let post_mean = if post.is_transformed() {
-            post.moments()?.0
-        } else {
-            post.mean.clone()
+        let y_baseline = match options.y_baseline {
+            Some(y) => y,
+            None => {
+                let post = model.posterior(x_baseline, false)?;
+                let (n, m) = (x_baseline.nrows(), model.num_outputs());
+                let post_mean = if post.is_transformed() {
+                    post.moments()?.0
+                } else {
+                    post.mean.clone()
+                };
+                let mean = McSamples::new(
+                    Matrix::from_column_slice(m * n, 1, post_mean.as_slice()),
+                    n,
+                    m,
+                )?;
+                let yb = objective.evaluate(&mean, None, false)?.values;
+                Matrix::from_fn(yb.num_points(), yb.num_outputs(), |p, t| yb.value(0, p, t))
+            }
         };
-        let mean = McSamples::new(
-            Matrix::from_column_slice(m * n, 1, post_mean.as_slice()),
-            n,
-            m,
-        )?;
-        let yb = objective.evaluate(&mean, None, false)?.values;
-        let k = yb.num_outputs();
-        let y_baseline = Matrix::from_fn(yb.num_points(), k, |p, t| yb.value(0, p, t));
+        let k = y_baseline.ncols();
         let weights = match options.scalarization_weights {
             Some(w) => w,
             None => sample_simplex(k, 1, false, options.weights_seed)?

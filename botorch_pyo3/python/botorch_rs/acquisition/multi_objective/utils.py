@@ -197,6 +197,60 @@ def _prune_ensemble_multi_objective(
     return from_flat([v for r in rows for v in r], (len(keep), d), kind_of(X))
 
 
+def _prune_ensemble_scalarized(
+    model: Any,
+    X: Any,
+    scalarize: Any,
+    num_samples: int = 2048,
+    max_frac: float = 1.0,
+    sampler: Any = None,
+    members: list[Any] | None = None,
+) -> Any:
+    """``prune_inferior_points`` of an ensemble of GPs under a scalarizing
+    objective (``scalarize(values, shape)``: the flat ``num x n`` values of
+    the flat samples of shape ``(num, n, m)``): the objective values of
+    every member's samples (with the same base samples) are averaged over
+    the members (BoTorch's ``marginalize_dim``), and the points that are the
+    best in some sample are kept (the most frequent ones if more than
+    ``ceil(max_frac * n)``)."""
+    import math
+
+    data, shape = to_flat(X, "X")
+    if len(shape) != 2:
+        raise UnsupportedError(
+            "Batched inputs `X` are currently unsupported by `prune_inferior_points`"
+        )
+    n, d = shape
+    if n == 0:
+        raise ValueError("X must have at least one point.")
+    if max_frac <= 0 or max_frac > 1.0:
+        raise ValueError(f"max_frac must take values in (0, 1], is {max_frac}")
+    max_points = math.ceil(max_frac * n)
+    gps = model._ensemble_members() if members is None else members
+    m = model.num_outputs
+    if sampler is None:
+        sampler = SobolQMCNormalSampler(sample_shape=(num_samples,))
+    s_count = sampler.num_samples
+    z = sampler._rs.base_samples(n * m)
+    x3 = (list(data), (1, n, d))
+    total = [0.0] * (s_count * n)
+    for member in gps:
+        values = member._acquisition_model(None).posterior_samples(x3, z)[0]
+        for i, v in enumerate(scalarize(list(values), (s_count, n, m))):
+            total[i] += v
+    k = len(gps)
+    counts: dict[int, int] = {}
+    for j in range(s_count):
+        row = [v / k for v in total[j * n : (j + 1) * n]]
+        b = max(range(n), key=lambda i: (row[i], -i))
+        counts[b] = counts.get(b, 0) + 1
+    keep = sorted(counts)
+    if len(keep) > max_points:
+        keep = sorted(sorted(keep, key=lambda i: -counts[i])[:max_points])
+    rows = [list(data[i * d : (i + 1) * d]) for i in keep]
+    return from_flat([v for r in rows for v in r], (len(keep), d), kind_of(X))
+
+
 #: The partitionings of ``compute_sample_box_decomposition`` by class name.
 _PARTITIONINGS = {
     "DominatedPartitioning": "dominated",

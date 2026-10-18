@@ -106,7 +106,7 @@ def _case(case: dict[str, Any], seed: int) -> dict[str, Any]:
     for z in points:
         v, gr = fbh.numpyro_potential(bt, z)
         potentials.append({"z": z, "value": v, "grad": gr})
-    spread, same = fbh.twin_spread(case, X, Y, Yvar, rec, NUM_TWINS, fit_kwargs)
+    spread, step_spread, agree = fbh.twin_spread(case, X, Y, Yvar, rec, NUM_TWINS, fit_kwargs)
     num = next(iter(rec.mcmc_samples.values())).shape[0]
     out: dict[str, Any] = {
         "name": case["name"],
@@ -132,7 +132,8 @@ def _case(case: dict[str, Any], seed: int) -> dict[str, Any]:
             "states": [s[1] for s in rec.states],
             "step_sizes": [s[2] for s in rec.states],
             "twin_spread": spread,
-            "twins_same_draws": same,
+            "twin_step_spread": step_spread,
+            "twins_agree": agree,
             "postprocessed": {k: v for k, v in (rec.postprocessed or {}).items()},
         },
         "num_mcmc_samples": num,
@@ -149,8 +150,96 @@ def _case(case: dict[str, Any], seed: int) -> dict[str, Any]:
             "raw": raw,
             "mll": {"value": value, "grad": grad},
             "posterior": post,
+            "bald": _bald(bt, case, seed),
         }
     return out
+
+
+def _bald(model: Any, case: dict[str, Any], seed: int) -> list[dict[str, Any]]:
+    """BALD values and input gradients at random candidate sets (q = 1, 2,
+    3) with BoTorch's base samples (shared by the samples, ``num x q``)."""
+    from botorch.acquisition.bayesian_active_learning import (
+        qBayesianActiveLearningByDisagreement,
+    )
+    from botorch.sampling.normal import SobolQMCNormalSampler
+
+    g = torch.Generator().manual_seed(seed + 2)
+    out = []
+    for q in (1, 2, 3):
+        X = torch.rand(2, q, case["d"], generator=g, dtype=DT)
+        sampler = SobolQMCNormalSampler(sample_shape=torch.Size([32]), seed=seed + q)
+        with torch.no_grad():
+            sampler(model.posterior(X))
+        acqf = qBayesianActiveLearningByDisagreement(model, sampler=sampler)
+        Xg = X.clone().requires_grad_(True)
+        values = acqf(Xg)
+        (grad,) = torch.autograd.grad(values.sum(), Xg)
+        out.append(
+            {
+                "x": X,
+                "base_samples": sampler.base_samples.reshape(32, q),
+                "values": values.detach(),
+                "grad": grad,
+            }
+        )
+    return out
+
+
+def _mt_case(name: str, seed: int, fixed: bool) -> dict[str, Any]:
+    """A multi-task SAAS model: potentials and a NUTS run with its twins
+    (the chains of these models are chaotic from their first iterations,
+    see ``test_parity_10a_fully_bayesian.py``)."""
+    from botorch.models.fully_bayesian_multitask import SaasFullyBayesianMultiTaskGP
+
+    X, Y, Yvar = fbh.mt_data(seed, n=14, tasks=(0, 1))
+    Y = (Y - Y.mean()) / Y.std()
+    yvar = Yvar if fixed else None
+
+    def make(Xi: Any) -> Any:
+        with fbh.jax_x64(True):
+            return SaasFullyBayesianMultiTaskGP(Xi, Y, task_feature=-1, train_Yvar=yvar, rank=2)
+
+    bt = make(X)
+    pm = bt.pyro_model
+    fit_kwargs = {"warmup_steps": 20, "num_samples": 8, "thinning": 2}
+    rec = fbh.bt_fit_recorded(bt, **fit_kwargs)
+    dim = len(rec.z0 or [])
+    g = torch.Generator().manual_seed(seed + 1)
+    potentials = []
+    for _ in range(3):
+        z = (4 * torch.rand(dim, generator=g, dtype=DT) - 2).tolist()
+        v, gr = fbh.numpyro_potential(bt, z)
+        potentials.append({"z": z, "value": v, "grad": gr})
+    spread, step_spread, agree = fbh.twin_spread(
+        {}, X, Y, Yvar, rec, NUM_TWINS, fit_kwargs, make_model=make
+    )
+    return {
+        "name": name,
+        "model": "saas",
+        "d": X.shape[-1] - 1,
+        "train_x": pm.train_X,
+        "train_y": pm.train_Y.reshape(-1),
+        "train_yvar": None if pm.train_Yvar is None else pm.train_Yvar.reshape(-1),
+        "outputscale_prior": [pm._outputscale_prior_concentration, pm._outputscale_prior_rate],
+        "warp_indices": None,
+        "warp_eps": pm._eps,
+        "task": [pm.task_feature % pm.train_X.shape[-1], pm.num_tasks, pm.task_rank],
+        "potentials": potentials,
+        "nuts": {
+            "num_warmup": 20,
+            "num_samples": 8,
+            "max_tree_depth": 6,
+            "z0": rec.z0,
+            "draws": [list(dr) for dr in rec.draws],
+            "states": [s[1] for s in rec.states],
+            "step_sizes": [s[2] for s in rec.states],
+            "twin_spread": spread,
+            "twin_step_spread": step_spread,
+            "twins_agree": agree,
+            "postprocessed": {k: v for k, v in (rec.postprocessed or {}).items()},
+        },
+        "num_mcmc_samples": 4,
+    }
 
 
 def generate_10a_fully_bayesian(out: str) -> None:
@@ -161,16 +250,22 @@ def generate_10a_fully_bayesian(out: str) -> None:
     os.makedirs(out, exist_ok=True)
     warnings.simplefilter("ignore")
     torch.set_num_threads(1)
-    for i, case in enumerate(fbh.fb_cases()):
-        fixture = _case(case, seed=10_100 + 31 * i)
-        path = os.path.join(out, f"{case['name']}.json")
+    cases: list[tuple[str, Any]] = [
+        (c["name"], lambda c=c, i=i: _case(c, seed=10_100 + 31 * i))
+        for i, c in enumerate(fbh.fb_cases())
+    ]
+    cases.append(("mt_saas", lambda: _mt_case("mt_saas", 10_700, False)))
+    cases.append(("mt_saas_fixed", lambda: _mt_case("mt_saas_fixed", 10_731, True)))
+    for name, make in cases:
+        fixture = make()
+        path = os.path.join(out, f"{name}.json")
         with open(path, "w") as f:
             json.dump(f6a.enc(fixture), f)
         nuts = fixture["nuts"]
         print(
-            f"phase 10a-fully-bayesian: {case['name']:20s} draws={len(nuts['draws'])} "
+            f"phase 10a-fully-bayesian: {name:20s} draws={len(nuts['draws'])} "
             f"iterations={len(nuts['states'])} twin spread (last)="
-            f"{nuts['twin_spread'][-1]:.1e} twins with the same draws="
-            f"{sum(nuts['twins_same_draws'])}/{NUM_TWINS}",
+            f"{nuts['twin_spread'][-1]:.1e} draws the twins share="
+            f"{nuts['twins_agree']}",
             file=sys.stderr,
         )

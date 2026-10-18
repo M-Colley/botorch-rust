@@ -189,11 +189,17 @@ class qLogNoisyExpectedImprovement(MCAcquisitionFunction):
     def X_baseline(self) -> Any:
         """The incumbent points: the (pruned) baseline and, in incremental mode,
         the pending points."""
+        members = self.__dict__.get("_ensemble_acqfs")
+        if members:  # an ensemble: the members share the baseline
+            return members[0].X_baseline
         return from_pair(self._rs.full_x_baseline(), self._baseline_kind)
 
     @property
     def _X_baseline(self) -> Any:
         """The (pruned) baseline points."""
+        members = self.__dict__.get("_ensemble_acqfs")
+        if members:
+            return members[0]._X_baseline
         return from_pair(self._rs.x_baseline(), self._baseline_kind)
 
     @property

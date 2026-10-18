@@ -15,6 +15,7 @@ from botorch_rs.acquisition.multi_objective.base import (
     fat_bool,
 )
 from botorch_rs.acquisition.objective import GenericMCObjective
+from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.sampling.normal import SobolQMCNormalSampler
 from botorch_rs.utils.multi_objective.scalarization import ChebyshevScalarization
 
@@ -39,6 +40,12 @@ class qLogNParEGO(qLogNoisyExpectedImprovement, MultiObjectiveMCAcquisitionFunct
 
     This implementation assumes maximization of all objectives; use an
     ``objective`` or negative ``scalarization_weights`` to minimize outputs.
+
+    On an ensemble model (e.g. a ``ModelListGP`` of fully Bayesian GPs), the
+    scalarization of all members is normalized by the objective values of
+    the members' posterior means at the baseline averaged over the members
+    (BoTorch's mean over ``MCMC_DIM``), and the baseline is pruned under it
+    (see ``_prepare_ensemble``).
     """
 
     _log = True
@@ -59,6 +66,8 @@ class qLogNParEGO(qLogNoisyExpectedImprovement, MultiObjectiveMCAcquisitionFunct
         tau_relu: float = TAU_RELU,
         tau_max: float = TAU_MAX,
         incremental: bool = True,
+        *,
+        _y_baseline: Any = None,
     ) -> None:
         MultiObjectiveMCAcquisitionFunction.__init__(
             self, model, sampler, objective, constraints, eta
@@ -94,6 +103,7 @@ class qLogNParEGO(qLogNoisyExpectedImprovement, MultiObjectiveMCAcquisitionFunct
             tau_relu=float(tau_relu),
             tau_max=float(tau_max),
             incremental=bool(incremental),
+            y_baseline=None if _y_baseline is None else to_flat(_y_baseline, "Y_baseline"),
             **self._constraint_args,
         )
         kind = self._baseline_kind
@@ -109,6 +119,49 @@ class qLogNParEGO(qLogNoisyExpectedImprovement, MultiObjectiveMCAcquisitionFunct
         )
         org, cheb = self._org_objective, self.chebyshev_scalarization
         self.objective = GenericMCObjective(lambda samples, X=None: cheb(org(samples, X=X), X=X))
+
+    @classmethod
+    def _prepare_ensemble(
+        cls, init: Any, model: Any, members: list[Any], arguments: dict[str, Any], model_name: str
+    ) -> None:
+        """The arguments of the members of an ensemble (see
+        ``_init_on_ensemble``): BoTorch's ``Y_baseline`` of an ensemble is the
+        mean over the members (``MCMC_DIM``) of the objective values of their
+        posterior means, which normalizes one scalarization for all members;
+        the baseline is pruned with the samples of this scalarization
+        averaged over the members (``prune_inferior_points`` with
+        ``marginalize_dim``)."""
+        from botorch_rs.acquisition.multi_objective.utils import _prune_ensemble_scalarized
+
+        probe = {**arguments, "prune_baseline": False}
+        weights = arguments.get("scalarization_weights")
+        ys = []
+        for member in members:
+            tmp = object.__new__(cls)
+            init(tmp, **{**probe, model_name: member})
+            ys.append(to_flat(tmp.Y_baseline, "Y_baseline"))
+            if weights is None:
+                weights = tmp.scalarization_weights
+        shape = tuple(ys[0][1])
+        y = [sum(v[0][i] for v in ys) / len(ys) for i in range(len(ys[0][0]))]
+        kind = kind_of(arguments["X_baseline"])
+        y_baseline = from_flat(y, shape, kind)
+        arguments["scalarization_weights"] = weights
+        arguments["_y_baseline"] = y_baseline
+        if arguments.get("prune_baseline", False):
+            if arguments.get("objective") is not None or arguments.get("constraints"):
+                raise UnsupportedError(
+                    "Pruning the baseline of an ensemble model with an objective or "
+                    "constraints is not supported by botorch_rs; pass prune_baseline=False."
+                )
+            cheb = ChebyshevScalarization(weights, y_baseline)
+            arguments["X_baseline"] = _prune_ensemble_scalarized(
+                model,
+                arguments["X_baseline"],
+                lambda values, shape: cheb._rs.evaluate((values, shape))[0],
+                members=members,
+            )
+            arguments["prune_baseline"] = False
 
 
 __all__ = ["qLogNParEGO"]

@@ -1257,6 +1257,7 @@ def q_log_nparego(
     tau_relu: float = 1e-6,
     tau_max: float = 1e-2,
     incremental: bool = True,
+    y_baseline: Array | None = None,
 ) -> tuple[AcquisitionFunction, list[float], ArrayBuf]: ...
 def prune_inferior_points_multi_objective(
     model: Model,
@@ -2311,3 +2312,23 @@ def q_bayesian_active_learning_by_disagreement(
     sampler: SobolQMCNormalSampler,
     x_pending: Array | None = None,
 ) -> AcquisitionFunction: ...
+
+class EnsembleThompsonSamplingState:
+    def redraw(
+        self,
+        batch_size: int,
+        draws: Sequence[Draws] | None = None,
+        ensemble_indices: Sequence[int] | None = None,
+    ) -> None: ...
+    @property
+    def batch_size(self) -> int | None: ...
+    @property
+    def ensemble_indices(self) -> list[int] | None: ...
+
+def ensemble_pathwise_thompson_sampling(
+    members: Sequence[Model],
+    objective: Any = None,
+    transform: tuple[Sequence[float], float] | None = None,
+    num_features: int = 1024,
+    seed: int | None = None,
+) -> tuple[AcquisitionFunction, EnsembleThompsonSamplingState]: ...

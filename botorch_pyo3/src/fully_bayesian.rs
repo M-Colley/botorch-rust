@@ -8,14 +8,20 @@ use botorch_core::fully_bayesian::{
 };
 use std::sync::Arc;
 
-use botorch_core::acquisition::QBayesianActiveLearningByDisagreement;
+use botorch_core::acquisition::{
+    AcquisitionFunction, PathwiseThompsonSampling, PathwiseThompsonSamplingOptions,
+    QBayesianActiveLearningByDisagreement, ScalarizedPosteriorTransform,
+};
+use botorch_core::sampling::pathwise::DEFAULT_NUM_FEATURES;
+use botorch_core::Vector;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use crate::acquisition::{model_of, PyAcquisitionFunction};
+use crate::acquisition::{model_of, objective_of, PyAcquisitionFunction};
 use crate::arrays::Array;
 use crate::errors::{value_error, IntoPyResult};
 use crate::models::PyModel;
+use crate::pathwise::{draws_of, DrawsArg};
 use crate::sampling::PySobolQMCNormalSampler;
 use crate::threads;
 
@@ -275,8 +281,90 @@ pub fn q_bayesian_active_learning_by_disagreement(
     ))
 }
 
+/// The state of a `PathwiseThompsonSampling` of an ensemble (its paths and
+/// ensemble indices).
+#[pyclass(
+    frozen,
+    name = "EnsembleThompsonSamplingState",
+    module = "botorch_rs._botorch_rs"
+)]
+pub struct PyEnsembleThompsonState {
+    inner: Arc<PathwiseThompsonSampling>,
+}
+
+#[pymethods]
+impl PyEnsembleThompsonState {
+    /// BoTorch's `redraw(batch_size)`, from explicit `draws` (one
+    /// `(frequencies, weights, noise)` per member and output, member-major)
+    /// and `ensemble_indices` (`q x m`, row-major) or the next stream of the
+    /// seed.
+    #[pyo3(signature = (batch_size, draws=None, ensemble_indices=None))]
+    fn redraw(
+        &self,
+        py: Python<'_>,
+        batch_size: usize,
+        draws: Option<Vec<DrawsArg>>,
+        ensemble_indices: Option<Vec<usize>>,
+    ) -> PyResult<()> {
+        let draws = draws.map(draws_of).transpose()?;
+        let a = Arc::clone(&self.inner);
+        threads::run(py, || {
+            a.redraw_ensemble(batch_size, draws, ensemble_indices)
+        })
+        .into_py_result()
+    }
+
+    /// The batch size of the drawn paths (`None` before the first draw).
+    #[getter]
+    fn batch_size(&self) -> Option<usize> {
+        self.inner.batch_size()
+    }
+
+    /// The ensemble indices (`q x m`, row-major; `None` before the first
+    /// draw).
+    #[getter]
+    fn ensemble_indices(&self) -> Option<Vec<usize>> {
+        self.inner.ensemble_indices()
+    }
+}
+
+/// `PathwiseThompsonSampling(model, objective, posterior_transform)` of an
+/// ensemble model with members `members`, `num_features` Fourier features
+/// and the seed of the paths and ensemble indices.
+#[pyfunction]
+#[pyo3(signature = (members, objective=None, transform=None, num_features=DEFAULT_NUM_FEATURES, seed=None))]
+pub fn ensemble_pathwise_thompson_sampling(
+    members: Vec<PyRef<'_, PyModel>>,
+    objective: Option<Bound<'_, PyAny>>,
+    transform: Option<(Vec<f64>, f64)>,
+    num_features: usize,
+    seed: Option<u64>,
+) -> PyResult<(PyAcquisitionFunction, PyEnsembleThompsonState)> {
+    let posterior_transform = transform
+        .map(|(w, offset)| ScalarizedPosteriorTransform::new(Vector::from_vec(w), offset))
+        .transpose()
+        .into_py_result()?;
+    let options = PathwiseThompsonSamplingOptions {
+        objective: objective_of(objective.as_ref())?,
+        posterior_transform,
+        num_features,
+        seed,
+    };
+    let members: Vec<_> = members.iter().map(|m| model_of(m)).collect();
+    let a = Arc::new(PathwiseThompsonSampling::new_ensemble(members, options).into_py_result()?);
+    Ok((
+        PyAcquisitionFunction::new_plain(
+            a.clone() as Arc<dyn AcquisitionFunction>,
+            "PathwiseThompsonSampling",
+        ),
+        PyEnsembleThompsonState { inner: a },
+    ))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPyroModel>()?;
+    m.add_class::<PyEnsembleThompsonState>()?;
+    m.add_function(wrap_pyfunction!(ensemble_pathwise_thompson_sampling, m)?)?;
     m.add_function(wrap_pyfunction!(
         q_bayesian_active_learning_by_disagreement,
         m

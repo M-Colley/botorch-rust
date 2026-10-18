@@ -37,8 +37,9 @@
 use statrs::function::gamma::ln_gamma;
 
 use crate::error::{BotorchError, Result};
-use crate::fully_bayesian::nuts::{cholesky_lower, Potential};
-use crate::Matrix;
+use crate::fully_bayesian::nuts::Potential;
+use crate::{Matrix, Vector};
+use nalgebra::Cholesky;
 
 pub use crate::models::MIN_INFERRED_NOISE_LEVEL;
 
@@ -554,45 +555,29 @@ impl PyroModel {
                 mean[0]
             }
         };
-        let l = cholesky_lower(&kfull)?;
-        let r: Vec<f64> = (0..n).map(|i| spec.train_y[i] - mean_of(i)).collect();
+        if kfull.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        let chol = Cholesky::new(kfull)?;
+        let l = chol.l_dirty();
+        if (0..n).any(|i| l[(i, i)].is_nan() || l[(i, i)] <= 0.0 || !l[(i, i)].is_finite()) {
+            return None;
+        }
+        let r = Vector::from_fn(n, |i, _| spec.train_y[i] - mean_of(i));
         // w = L⁻¹ r, α = L⁻ᵀ w.
-        let mut w = r.clone();
-        for i in 0..n {
-            let mut v = w[i];
-            for k in 0..i {
-                v -= l[(i, k)] * w[k];
-            }
-            w[i] = v / l[(i, i)];
-        }
-        let mut alpha = w.clone();
-        for i in (0..n).rev() {
-            let mut v = alpha[i];
-            for k in (i + 1)..n {
-                v -= l[(k, i)] * alpha[k];
-            }
-            alpha[i] = v / l[(i, i)];
-        }
+        let w = l.solve_lower_triangular(&r)?;
+        let alpha = l.tr_solve_lower_triangular(&w)?;
         let mahalanobis: f64 = w.iter().map(|v| v * v).sum();
         let half_log_det: f64 = (0..n).map(|i| l[(i, i)].ln()).sum();
         let ll = -0.5 * mahalanobis
             - (half_log_det + 0.5 * n as f64 * (2.0 * std::f64::consts::PI).ln());
-        // dll/dK = ½ (α αᵀ - K⁻¹) =: -G.
-        let kinv = {
-            // K⁻¹ = L⁻ᵀ L⁻¹.
-            let mut linv = Matrix::zeros(n, n);
-            for c in 0..n {
-                for i in c..n {
-                    let mut v = if i == c { 1.0 } else { 0.0 };
-                    for k in c..i {
-                        v -= l[(i, k)] * linv[(k, c)];
-                    }
-                    linv[(i, c)] = v / l[(i, i)];
-                }
-            }
-            linv.transpose() * &linv
-        };
-        let g = Matrix::from_fn(n, n, |i, j| 0.5 * (alpha[i] * alpha[j] - kinv[(i, j)]));
+        // dll/dK = ½ (α αᵀ - K⁻¹) =: G (symmetric: from the lower triangle
+        // of K⁻¹ = L⁻ᵀ L⁻¹).
+        let kinv = inverse_lower(l);
+        let g = Matrix::from_fn(n, n, |i, j| {
+            let kij = if i >= j { kinv[(i, j)] } else { kinv[(j, i)] };
+            0.5 * (alpha[i] * alpha[j] - kij)
+        });
         // Mean.
         for (i, a) in alpha.iter().enumerate() {
             let t = if spec.task.is_some() {
@@ -611,29 +596,43 @@ impl PyroModel {
         // Outputscale.
         if let Some((off, v)) = &os {
             let mut acc = 0.0;
-            for i in 0..n {
-                for j in 0..n {
-                    acc += g[(i, j)] * k_data[(i, j)] * task_cov(i, j);
+            for j in 0..n {
+                acc += g[(j, j)] * k_data[(j, j)] * task_cov(j, j);
+                for i in (j + 1)..n {
+                    acc += 2.0 * g[(i, j)] * k_data[(i, j)] * task_cov(i, j);
                 }
             }
             grad[*off] += acc * v[0];
         }
-        // Kernel hyperparameters and warped inputs: dll/dx_f (n × d).
-        let mut dx = Matrix::zeros(n, d);
+        // Kernel hyperparameters and warped inputs: dll/dx_f (n × d,
+        // row-major; only needed with input warping).
+        let need_dx = warp.is_some();
+        let mut dx = vec![0.0; if need_dx { n * d } else { 0 }];
         match &matern_aux {
             Some((ls, scaled, kp)) => {
-                // W_ij = G_ij s T_ij (5/3)(1 + √5 D) e^{-√5 D}, dK_ij/dℓ_k = W Δ²/ℓ_k.
+                // W_ij = G_ij s T_ij (5/3)(1 + √5 D) e^{-√5 D}, dK_ij/dℓ_k = W Δ²/ℓ_k
+                // (every pair i > j twice; the diagonal has Δ = 0).
+                let rows = row_major(scaled);
+                let inv_ls: Vec<f64> = ls.iter().map(|l| 1.0 / l).collect();
                 let mut dls = vec![0.0; d];
-                for i in 0..n {
-                    for j in 0..n {
-                        let wij = g[(i, j)] * s * task_cov(i, j) * kp[(i, j)];
+                for j in 0..n {
+                    let xj = &rows[j * d..(j + 1) * d];
+                    for i in (j + 1)..n {
+                        let wij = 2.0 * g[(i, j)] * s * task_cov(i, j) * kp[(i, j)];
                         if wij == 0.0 {
                             continue;
                         }
+                        let xi = &rows[i * d..(i + 1) * d];
                         for k in 0..d {
-                            let delta = scaled[(i, k)] - scaled[(j, k)];
-                            dls[k] += wij * delta * delta / ls[k];
-                            dx[(i, k)] -= 2.0 * wij * delta / ls[k];
+                            let delta = xi[k] - xj[k];
+                            dls[k] += wij * delta * delta * inv_ls[k];
+                        }
+                        if need_dx {
+                            for k in 0..d {
+                                let t = wij * (xi[k] - xj[k]) * inv_ls[k];
+                                dx[i * d + k] -= t;
+                                dx[j * d + k] += t;
+                            }
                         }
                     }
                 }
@@ -656,14 +655,25 @@ impl PyroModel {
                 let (w_off, w) = self.values(z, "_weight_variance_sq").unwrap();
                 let (tau_off, tau) = self.values(z, "tau_sq").unwrap();
                 let wv: Vec<f64> = w.iter().map(|w| (tau[0] * w).sqrt()).collect();
+                let rows: Vec<f64> = row_major(&xf).iter().map(|v| v - 0.5).collect();
                 let mut dwv = vec![0.0; d];
-                for i in 0..n {
-                    for j in 0..n {
+                for j in 0..n {
+                    let xj = &rows[j * d..(j + 1) * d];
+                    for i in j..n {
+                        let xi = &rows[i * d..(i + 1) * d];
+                        // Every pair i > j twice.
                         let gij = g[(i, j)] * s * task_cov(i, j);
+                        let m = if i == j { 1.0 } else { 2.0 };
                         for k in 0..d {
-                            let (xi, xj) = (xf[(i, k)] - 0.5, xf[(j, k)] - 0.5);
-                            dwv[k] += gij * xi * xj;
-                            dx[(i, k)] += 2.0 * gij * wv[k] * xj;
+                            dwv[k] += m * gij * xi[k] * xj[k];
+                        }
+                        if need_dx {
+                            for k in 0..d {
+                                dx[i * d + k] += 2.0 * gij * wv[k] * xj[k];
+                                if i != j {
+                                    dx[j * d + k] += 2.0 * gij * wv[k] * xi[k];
+                                }
+                            }
                         }
                     }
                 }
@@ -683,8 +693,8 @@ impl PyroModel {
                 let mut acc0 = 0.0;
                 let mut acc1 = 0.0;
                 for i in 0..n {
-                    acc0 += dx[(i, f)] * d0[i];
-                    acc1 += dx[(i, f)] * d1[i];
+                    acc0 += dx[i * d + f] * d0[i];
+                    acc1 += dx[i * d + f] * d1[i];
                 }
                 grad[c0_off + k] += acc0 * c0[k];
                 grad[c1_off + k] += acc1 * c1[k];
@@ -738,26 +748,73 @@ impl Potential for PyroModel {
 /// `(5/3)(1 + √5 d) e^{-√5 d}` (zero where the distance is clamped), the
 /// factor of the derivatives with respect to the squared distance.
 fn matern52_matrix(scaled: &Matrix) -> (Matrix, Matrix) {
-    let n = scaled.nrows();
+    let (n, d) = scaled.shape();
+    let rows = row_major(scaled);
     let mut k = Matrix::zeros(n, n);
     let mut p = Matrix::zeros(n, n);
-    for i in 0..n {
-        for j in 0..n {
-            let mut sq = 0.0;
-            for c in 0..scaled.ncols() {
-                let diff = scaled[(i, c)] - scaled[(j, c)];
-                sq += diff * diff;
-            }
+    for j in 0..n {
+        let xj = &rows[j * d..(j + 1) * d];
+        for i in j..n {
+            let xi = &rows[i * d..(i + 1) * d];
+            let sq: f64 = xi.iter().zip(xj).map(|(a, b)| (a - b) * (a - b)).sum();
             let dist = sq.max(1e-30).sqrt();
             let s5d = SQRT5 * dist;
             let e = (-s5d).exp();
-            k[(i, j)] = (1.0 + s5d + 5.0 / 3.0 * (dist * dist)) * e;
+            let kv = (1.0 + s5d + 5.0 / 3.0 * (dist * dist)) * e;
+            k[(i, j)] = kv;
+            k[(j, i)] = kv;
             if sq > 1e-30 {
-                p[(i, j)] = 5.0 / 3.0 * (1.0 + s5d) * e;
+                let pv = 5.0 / 3.0 * (1.0 + s5d) * e;
+                p[(i, j)] = pv;
+                p[(j, i)] = pv;
             }
         }
     }
     (k, p)
+}
+
+/// The lower triangle of `(L Lᵀ)⁻¹ = L⁻ᵀ L⁻¹` for the lower-triangular
+/// `l` (the upper triangle of `l` is ignored and that of the result is
+/// zero): `L⁻¹` by column-oriented forward substitution and the products
+/// of its columns, `n³/3` multiplications on contiguous columns.
+fn inverse_lower(l: &Matrix) -> Matrix {
+    let n = l.nrows();
+    let ls = l.as_slice();
+    let mut linv = vec![0.0; n * n];
+    for c in 0..n {
+        let x = &mut linv[c * n..(c + 1) * n];
+        x[c] = 1.0;
+        for k in c..n {
+            let xk = x[k] / ls[k * n + k];
+            x[k] = xk;
+            if xk != 0.0 {
+                let col = &ls[k * n + k + 1..(k + 1) * n];
+                for (xi, lik) in x[k + 1..].iter_mut().zip(col) {
+                    *xi -= lik * xk;
+                }
+            }
+        }
+    }
+    let mut out = Matrix::zeros(n, n);
+    for j in 0..n {
+        for i in j..n {
+            // Σ_{k ≥ i} L⁻¹_ki L⁻¹_kj.
+            let a = &linv[i * n + i..(i + 1) * n];
+            let b = &linv[j * n + i..(j + 1) * n];
+            out[(i, j)] = a.iter().zip(b).map(|(u, v)| u * v).sum();
+        }
+    }
+    out
+}
+
+/// The entries of `m` row by row (contiguous rows for the pair loops).
+fn row_major(m: &Matrix) -> Vec<f64> {
+    let (n, d) = m.shape();
+    let mut out = Vec::with_capacity(n * d);
+    for i in 0..n {
+        out.extend((0..d).map(|c| m[(i, c)]));
+    }
+    out
 }
 
 /// `log p(x)` of a positive site and its derivative with respect to

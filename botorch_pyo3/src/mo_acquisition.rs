@@ -498,6 +498,7 @@ pub fn expected_hypervolume_improvement(
     tau_relu=1e-6,
     tau_max=1e-2,
     incremental=true,
+    y_baseline=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn q_log_nparego(
@@ -518,9 +519,11 @@ pub fn q_log_nparego(
     tau_relu: f64,
     tau_max: f64,
     incremental: bool,
+    y_baseline: Option<Array>,
 ) -> PyResult<(PyAcquisitionFunction, Vec<f64>, ArrayBuf)> {
     let m = model_of(&model);
     let x_baseline = x_baseline.matrix("X_baseline")?;
+    let y_baseline = y_baseline.map(|y| y.matrix("Y_baseline")).transpose()?;
     let options = QLogNParEGOOptions {
         scalarization_weights,
         weights_seed,
@@ -538,6 +541,7 @@ pub fn q_log_nparego(
         tau_relu,
         tau_max,
         incremental,
+        y_baseline,
     };
     let a = threads::run(py, || QLogNParEGO::new(m, &x_baseline, options)).into_py_result()?;
     let weights = a.scalarization_weights().to_vec();

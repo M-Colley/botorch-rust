@@ -417,29 +417,36 @@ def twin_spread(
     rec: Recording,
     num_twins: int,
     fit_kwargs: dict[str, Any],
-) -> tuple[list[float], list[bool]]:
+    make_model: Any = None,
+) -> tuple[list[float], list[float], list[int]]:
     """BoTorch's own change of its chain under perturbations of the training
     inputs at ``TWIN_SCALES``: per iteration, the largest change of the
-    unconstrained state over ``num_twins`` twins, and whether the twin made
-    the same random decisions as the original (draws compared up to the
-    first difference)."""
+    unconstrained state and the largest relative change of the step size
+    over ``num_twins`` twins, and for every twin the number of leading
+    random draws (kind and Bernoulli outcome) it shares with the original
+    (``make_model(X)``: the model of training inputs ``X``)."""
     spread = [0.0] * len(rec.states)
-    same: list[bool] = []
+    step_spread = [0.0] * len(rec.states)
+    agree: list[int] = []
     for t in range(num_twins):
         Xt = perturbed(X, TWIN_SCALES[t % len(TWIN_SCALES)], 1000 + t)
-        twin = bt_model(case, Xt, Y, Yvar)
+        twin = make_model(Xt) if make_model is not None else bt_model(case, Xt, Y, Yvar)
         r = bt_fit_recorded(twin, fixed_warping=True, **fit_kwargs)
-        for i, ((_, za, _), (_, zb, _)) in enumerate(zip(rec.states, r.states, strict=True)):
+        for i, ((_, za, sa), (_, zb, sb)) in enumerate(zip(rec.states, r.states, strict=True)):
             spread[i] = max(spread[i], float(np.max(np.abs(np.asarray(za) - np.asarray(zb)))))
-        same.append(
-            len(r.draws) == len(rec.draws)
-            and all(
-                (a[0] == "n" and b[0] == "n")
-                or (a[0] == b[0] == "u" and (a[1] < a[2]) == (b[1] < b[2]))
-                for a, b in zip(rec.draws, r.draws, strict=True)
-            )
-        )
-    return spread, same
+            step_spread[i] = max(step_spread[i], abs(sa - sb) / sa)
+        agree.append(first_difference(rec.draws, r.draws))
+    return spread, step_spread, agree
+
+
+def first_difference(a: list[Any], b: list[Any]) -> int:
+    """The number of leading recorded draws with the same kind and Bernoulli
+    outcome."""
+    for k, (x, y) in enumerate(zip(a, b, strict=False)):
+        same = (x[0] == y[0] == "n") or (x[0] == y[0] == "u" and (x[1] < x[2]) == (y[1] < y[2]))
+        if not same:
+            return k
+    return min(len(a), len(b))
 
 
 # ---------------------------------------------------------------------------

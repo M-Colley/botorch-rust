@@ -10,7 +10,7 @@ botorch_rs's NUTS with BoTorch's default (single-precision) NUTS.
 * random potentials against NumPyro's (double precision);
 * short NUTS replays of random models against NumPyro's recorded draws
   (NumPyro's decisions, states within 10x BoTorch's own change under input
-  perturbations at 1e-14);
+  perturbations at 1e-14 and 1e-13, six twins);
 * BoTorch's default ``fit_fully_bayesian_model_nuts`` runs NumPyro in
   single precision (JAX's default), so its chains cannot be replayed in
   double precision: the posterior means of the unconstrained
@@ -48,9 +48,11 @@ from botorch.acquisition.bayesian_active_learning import (  # noqa: E402
 from botorch.sampling.normal import SobolQMCNormalSampler as BtSampler  # noqa: E402
 from fully_bayesian_helpers import (  # noqa: E402
     DT,
+    TWIN_SCALES,
     bt_fit_recorded,
     bt_model,
     ess,
+    first_difference,
     make_fb_data,
     model_pair,
     numpyro_potential,
@@ -58,7 +60,13 @@ from fully_bayesian_helpers import (  # noqa: E402
     rs_class,
 )
 from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL  # noqa: E402
-from models7b_helpers import GRAD_TOL, VALUE_TOL, check_grad, values_and_grads  # noqa: E402
+from models7b_helpers import (  # noqa: E402
+    GRAD_TOL,
+    VALUE_TOL,
+    check_grad,
+    grad_err,
+    values_and_grads,
+)
 
 from botorch_rs.acquisition import logei as rs_logei  # noqa: E402
 from botorch_rs.acquisition.analytic import LogExpectedImprovement as RsLogEI  # noqa: E402
@@ -214,19 +222,16 @@ def _random_model_case(seed: int, c: dict[str, Any]) -> None:
     _, s_rs = _sampler_pair(Z)
     a_rs = rs_logei.qLogNoisyExpectedImprovement(rs, X_baseline=X, sampler=s_rs, **kw)
     vr_, gr_ = values_and_grads(a_rs, Xq)
-    CHECK.check_log(
-        f"{label}: qLogNEI values (tolerance from BoTorch's twins)",
-        vr_,
-        vb_,
-        max(VALUE_TOL, 10 * spread_v),
+    tol_v, tol_g = max(VALUE_TOL, 10 * spread_v), max(GRAD_TOL, 10 * spread_g)
+    err_v = CHECK.check_log(
+        f"{label}: qLogNEI values (tolerance from BoTorch's twins)", vr_, vb_, tol_v
     )
     check_grad(
-        CHECK,
-        f"{label}: qLogNEI gradients (tolerance from BoTorch's twins)",
-        gr_,
-        gb_,
-        max(GRAD_TOL, 10 * spread_g),
+        CHECK, f"{label}: qLogNEI gradients (tolerance from BoTorch's twins)", gr_, gb_, tol_g
     )
+    # The displayed tolerance is the last case's: the ratios to every case's.
+    CHECK.check_bound(f"{label}: qLogNEI values / tolerance", err_v / tol_v, 1.0)
+    CHECK.check_bound(f"{label}: qLogNEI gradients / tolerance", grad_err(gr_, gb_) / tol_g, 1.0)
     # BALD (BoTorch's base samples of the candidates' mixture posterior).
     Xb = lo + (hi - lo) * torch.rand(2, q, c["d"], generator=g, dtype=DT)
     s_bt = BtSampler(sample_shape=torch.Size([32]), seed=seed)
@@ -284,24 +289,17 @@ def test_random_nuts_replays_match_numpyro(seed: int) -> None:
             fixed_warping=True,
             **kw,
         )
-        for k, scale in enumerate((1e-14, 1e-14, 1e-13))
+        for k, scale in enumerate(TWIN_SCALES * 3)
     ]
     rs = rs_class(c["model"])(X, Y, Yvar if c["fixed"] else None, use_input_warping=c["warp"])
     out = rs.pyro_model._potential().sample_nuts(
         20, 4, z0=rec.z0, draws=rec.draws, stop_when_draws_fail=True
     )
-    # The draws on which the twins agree with NumPyro's chain:
-    agree_twin = len(rec.draws)
-    for twin in twins:
-        same = 0
-        for a, b in zip(rec.draws, twin.draws, strict=False):
-            if not (
-                (a[0] == b[0] == "n") or (a[0] == b[0] == "u" and (a[1] < a[2]) == (b[1] < b[2]))
-            ):
-                break
-            same += 1
-        agree_twin = min(agree_twin, same)
-    agree_rs = out["consumed"] if out["first_flip"] is None else out["first_flip"]
+    # The draws on which the twins agree with NumPyro's chain (a draw of the
+    # wrong kind stops botorch_rs's replay after consuming it).
+    agree_twin = min(first_difference(rec.draws, twin.draws) for twin in twins)
+    consumed = out["consumed"] - (out["stopped_at"] is not None)
+    agree_rs = consumed if out["first_flip"] is None else min(out["first_flip"], consumed)
     CHECK.check_bound(
         "random NUTS replays: draws the twin follows beyond botorch_rs", agree_twin - agree_rs, 0
     )

@@ -53,6 +53,7 @@ from botorch_rs.models.transforms.input import (
     Warp,
 )
 from botorch_rs.models.transforms.outcome import OutcomeTransform, Standardize
+from botorch_rs.models.transforms.utils import kumaraswamy_warp, subset_transform
 from botorch_rs.posteriors.fully_bayesian import MCMC_DIM, GaussianMixturePosterior
 
 #: BoTorch's ``MIN_INFERRED_NOISE_LEVEL`` (``botorch.models.utils.gpytorch_modules``).
@@ -184,6 +185,11 @@ class PyroModel:
         self.indices = indices_to_warp
         self._eps = eps
         self._rs: Any = None
+
+    @subset_transform
+    def warp(self, X: Any, c0: Any, c1: Any) -> Any:
+        r"""Warp the input through a Kumaraswamy CDF."""
+        return kumaraswamy_warp(X=X, c0=c0, c1=c1, eps=self._eps)
 
     def set_inputs(
         self,

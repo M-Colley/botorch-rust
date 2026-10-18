@@ -572,7 +572,7 @@ fn mass_matrix_sqrt_from_inverse(cov: &Matrix) -> Matrix {
 
 /// The lower Cholesky factor of a symmetric matrix (`None` if it is not
 /// positive definite or not finite).
-pub(crate) fn cholesky_lower(a: &Matrix) -> Option<Matrix> {
+fn cholesky_lower(a: &Matrix) -> Option<Matrix> {
     let n = a.nrows();
     let mut l = Matrix::zeros(n, n);
     for j in 0..n {

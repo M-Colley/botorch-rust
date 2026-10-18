@@ -8,7 +8,7 @@ public APIs of both libraries side by side:
 * ``fit_fully_bayesian_model_nuts`` replaying NumPyro's recorded random
   draws (``draws=``, ``init_params=``): NumPyro's random decisions (exact),
   the chain within 10x BoTorch's own change under perturbations of the
-  training inputs at 1e-14 (two twins), and the loaded samples;
+  training inputs at 1e-14 and 1e-13 (six twins), and the loaded samples;
 * the models built from given MCMC samples (``load_mcmc_samples``):
   posteriors (with and without observation noise, batched inputs), the
   mixture moments and quantiles, the MLL of every sample and its gradient,
@@ -17,7 +17,16 @@ public APIs of both libraries side by side:
   ``condition_on_observations``, ``fantasize``, ``median_lengthscale``,
   ``median_weight_variance``, ``num_mcmc_samples``, ``batch_shape`` and
   ``construct_inputs``; with ``Normalize`` / ``Standardize``, fixed noise
-  and input warping.
+  and input warping;
+* ``qBayesianActiveLearningByDisagreement`` (BoTorch's base samples);
+* ``SaasFullyBayesianMultiTaskGP``: potentials, NUTS replays (as long as
+  BoTorch's twins follow NumPyro), posteriors, conditioning and acquisition
+  functions; the mixture covariance of several outputs;
+* lists of fully Bayesian GPs in qEHVI / qNEHVI / qLogEHVI / qLogNEHVI,
+  ``prune_inferior_points_multi_objective`` and ``qLogNParEGO``;
+* ``PathwiseThompsonSampling`` of fully Bayesian GPs and lists of them
+  (BoTorch's path draws and ensemble indices), the errors of the cases
+  BoTorch fails on, and qJES's ``NotImplementedError``.
 
 Tolerances: values 1e-9, gradients 1e-8 (relative); the chains as above.
 BoTorch's NumPyro model warps its inputs differently from its fitted model
@@ -53,9 +62,11 @@ from botorch.utils.datasets import SupervisedDataset as BtDataset  # noqa: E402
 from fully_bayesian_helpers import (  # noqa: E402
     DT,
     MIN_NOISE,
+    TWIN_SCALES,
     bt_fit_recorded,
     bt_model,
     fb_cases,
+    first_difference,
     jax_x64,
     make_fb_data,
     model_pair,
@@ -150,6 +161,12 @@ def _loaded(model: Any, kind: str) -> dict[str, Any]:
     return out
 
 
+#: BoTorch's twins of a NUTS replay (training inputs perturbed alternately
+#: at 1e-14 and 1e-13): fewer twins underestimate BoTorch's spread (with 3
+#: twins one sweep chain measured 7.9x their spread, with 8 twins 1.3x).
+NUM_TWINS = 6
+
+
 @pytest.mark.parametrize("case", _replay_cases())
 def test_nuts_replay_matches_numpyro(case: dict[str, Any]) -> None:
     """botorch_rs's NUTS on NumPyro's recorded draws retraces BoTorch's
@@ -159,8 +176,8 @@ def test_nuts_replay_matches_numpyro(case: dict[str, Any]) -> None:
     bt = bt_model(case, X, Y, Yvar)
     rec = bt_fit_recorded(bt, fixed_warping=True, **kw)
     spread = [0.0] * len(rec.states)
-    for t in range(2):
-        twin = bt_model(case, perturbed(X, 1e-14, 300 + t), Y, Yvar)
+    for t in range(NUM_TWINS):
+        twin = bt_model(case, perturbed(X, TWIN_SCALES[t % 2], 300 + t), Y, Yvar)
         r = bt_fit_recorded(twin, fixed_warping=True, **kw)
         for i, (a, b) in enumerate(zip(rec.states, r.states, strict=True)):
             spread[i] = max(spread[i], float(np.max(np.abs(np.subtract(a[1], b[1])))))
@@ -532,6 +549,24 @@ def test_matern52_and_linear_kernel_helpers_match_botorch() -> None:
     assert rs_fb.MCMC_DIM == bt_fb.MCMC_DIM
 
 
+@pytest.mark.parametrize("indices", [None, [0, 2]])
+def test_pyro_model_warp_matches_botorch(indices: Any) -> None:
+    """``PyroModel.warp`` (BoTorch's ``kumaraswamy_warp`` of the columns
+    ``indices_to_warp``)."""
+    from botorch.models import fully_bayesian as bt_fb
+
+    from botorch_rs.models import fully_bayesian as rs_fb
+
+    g = _gen(135)
+    X = torch.rand(2, 5, 3, generator=g, dtype=DT)
+    k = 3 if indices is None else len(indices)
+    c0 = 0.5 + 2 * torch.rand(k, generator=g, dtype=DT)
+    c1 = 0.5 + 2 * torch.rand(k, generator=g, dtype=DT)
+    pb = bt_fb.SaasPyroModel(use_input_warping=True, indices_to_warp=indices, eps=1e-6)
+    pr = rs_fb.SaasPyroModel(use_input_warping=True, indices_to_warp=indices, eps=1e-6)
+    CHECK.check("PyroModel.warp", pr.warp(X, c0=c0, c1=c1), pb.warp(X, c0=c0, c1=c1), VALUE_TOL)
+
+
 # ---------------------------------------------------------------------------
 # Bayesian active learning
 # ---------------------------------------------------------------------------
@@ -665,15 +700,6 @@ def test_multitask_potential_matches_numpyro() -> None:
             check_grad(CHECK, "multi-task potential energy gradient", gr, gb)
 
 
-def _first_difference(a: list[Any], b: list[Any]) -> int:
-    """The first recorded draw whose kind or Bernoulli outcome differs."""
-    for k, (x, y) in enumerate(zip(a, b, strict=False)):
-        same = (x[0] == y[0] == "n") or (x[0] == y[0] == "u" and (x[1] < x[2]) == (y[1] < y[2]))
-        if not same:
-            return k
-    return min(len(a), len(b))
-
-
 def test_multitask_nuts_replay_follows_numpyro_as_long_as_botorch_twins() -> None:
     """The chains of the multi-task model are chaotic from their first
     iterations: BoTorch's own chain makes other random decisions when its
@@ -695,12 +721,14 @@ def test_multitask_nuts_replay_follows_numpyro_as_long_as_botorch_twins() -> Non
 
     rec = run(X)
     twins = [run(perturbed(X, 1e-14, 400 + t)) for t in range(2)]
-    agree = min(_first_difference(rec.draws, tw.draws) for tw in twins)
+    agree = min(first_difference(rec.draws, tw.draws) for tw in twins)
     rs = Rs(X, Y, task_feature=-1, rank=2)
     out = rs.pyro_model._potential().sample_nuts(
         20, 8, z0=rec.z0, draws=rec.draws, stop_when_draws_fail=True
     )
-    rs_agree = out["consumed"] if out["first_flip"] is None else out["first_flip"]
+    # (A draw of the wrong kind stops the replay after consuming it.)
+    consumed = out["consumed"] - (out["stopped_at"] is not None)
+    rs_agree = consumed if out["first_flip"] is None else min(out["first_flip"], consumed)
     CHECK.check_bound(
         "multi-task NUTS replay: draws the twins follow beyond botorch_rs", agree - rs_agree, 0
     )
@@ -855,3 +883,203 @@ def test_prune_inferior_points_multi_objective_on_fully_bayesian_list() -> None:
         pb = bt_prune_mo(bt, X, ref, num_samples=64, marginalize_dim=-3)
     pr = rs_prune_mo(rs, X, ref, marginalize_dim=-3, sampler=rs_sampler(64, 221, 2 * n))
     CHECK.check("prune_inferior_points_multi_objective (fully Bayesian list)", pr, pb, 0.0)
+
+
+@pytest.mark.parametrize("prune", [False, True])
+def test_qlognparego_on_fully_bayesian_list(prune: bool) -> None:
+    """qLogNParEGO on a ``ModelListGP`` of fully Bayesian GPs: one Chebyshev
+    scalarization normalized by the ensemble's ``Y_baseline`` (the mean over
+    the samples), the baseline pruned under it, values averaged over the
+    samples (``logmeanexp``)."""
+    from botorch.acquisition.multi_objective.parego import qLogNParEGO as BtParEGO
+    from mo_acquisition_helpers import bt_sampler, rs_sampler, synced_draws
+
+    import botorch_rs.acquisition.multi_objective.utils as rs_mo_utils
+    from botorch_rs.acquisition.multi_objective.parego import qLogNParEGO as RsParEGO
+
+    bt, rs, X = _fb_list_pair(230)
+    q, n, m, num = 2, X.shape[0], 2, 16
+    w = torch.tensor([0.3, 0.7], dtype=DT)
+    kw: dict[str, Any] = {"scalarization_weights": w, "prune_baseline": prune}
+    with synced_draws(231):
+        a_bt = BtParEGO(bt, X, sampler=bt_sampler(num), cache_root=False, **kw)
+    orig = rs_mo_utils.SobolQMCNormalSampler
+    # The pruning draws BoTorch's base samples too (2048 samples).
+    rs_mo_utils.SobolQMCNormalSampler = lambda sample_shape: rs_sampler(  # type: ignore[assignment]
+        sample_shape[0], 231, n * m
+    )
+    try:
+        a_rs = RsParEGO(rs, X, sampler=rs_sampler(num, 231, (n + q) * m), **kw)
+    finally:
+        rs_mo_utils.SobolQMCNormalSampler = orig  # type: ignore[assignment]
+    CHECK.check(
+        "qLogNParEGO (fully Bayesian list): Y_baseline", a_rs.Y_baseline, a_bt.Y_baseline, VALUE_TOL
+    )
+    CHECK.check(
+        f"qLogNParEGO (fully Bayesian list): baseline (pruned={prune})",
+        a_rs.X_baseline,
+        a_bt.X_baseline,
+        0.0,
+    )
+    lo, hi = X.min(0).values, X.max(0).values
+    Xt = lo + (hi - lo) * torch.rand(3, q, X.shape[-1], generator=_gen(232), dtype=DT)
+    with synced_draws(231):
+        vb, gb = values_and_grads(a_bt, Xt)
+    vr, gr = values_and_grads(a_rs, Xt)
+    CHECK.check_log("qLogNParEGO on a list of fully Bayesian GPs values", vr, vb, VALUE_TOL)
+    check_grad(CHECK, "qLogNParEGO on a list of fully Bayesian GPs gradients", gr, gb)
+
+
+# ---------------------------------------------------------------------------
+# Pathwise Thompson sampling on ensembles
+# ---------------------------------------------------------------------------
+
+
+def _ensemble_path_draws(paths: Any, noises: list[Any]) -> list[tuple[Any, Any, Any]]:
+    """BoTorch's random numbers of the Matheron paths of a batched (ensemble)
+    model or a list of them, per member and output (member-major):
+    frequencies (``L/2 x d``), weights (``q x L``) and update noise
+    (``q x n``) of member ``s`` (BoTorch's batch index)."""
+    from mo_entropy_helpers import matheron_models
+
+    per_output = []
+    for i, sub in enumerate(matheron_models(paths)):
+        prior = sub.paths["prior_paths"]
+        freq = prior.feature_map.weight.detach()  # S x L/2 x d
+        weight = prior.weight.detach()  # q x S x L
+        per_output.append((freq, weight, noises[i]))  # noise: q x S x n
+    num_members = per_output[0][0].shape[0]
+    return [
+        (freq[s], weight[:, s, :], noise[:, s, :])
+        for s in range(num_members)
+        for freq, weight, noise in per_output
+    ]
+
+
+@pytest.mark.parametrize("model,transforms", [("saas", True), ("matern", False), ("saas", False)])
+@pytest.mark.parametrize("q", [1, 2, 3])
+def test_pathwise_thompson_sampling_on_fully_bayesian_gp(
+    model: str, transforms: bool, q: int
+) -> None:
+    """PathwiseThompsonSampling of a fully Bayesian GP: paths of every
+    sample, path ``j`` of the sample ``ensemble_indices[j]`` (BoTorch's path
+    draws and ensemble indices)."""
+    from botorch.acquisition.thompson_sampling import PathwiseThompsonSampling as BtTS
+    from mo_entropy_helpers import recorded_randn
+
+    from botorch_rs.acquisition.thompson_sampling import PathwiseThompsonSampling as RsTS
+
+    bt, rs, X, _ = model_pair(model, seed=240 + q, num=4, transforms=transforms)
+    torch.manual_seed(241 + q)
+    a_bt = BtTS(bt)
+    noises: list[Any] = []
+    with recorded_randn(noises):
+        a_bt.redraw(q)
+    a_bt.batch_size = q
+    draws = _ensemble_path_draws(a_bt.samples._path, noises)
+    a_rs = RsTS(rs, num_features=draws[0][0].shape[0] * 2)
+    a_rs.redraw(q, draws=draws, ensemble_indices=a_bt.ensemble_indices)
+    CHECK.check(
+        "PathwiseThompsonSampling (fully Bayesian): ensemble indices",
+        a_rs.ensemble_indices.double(),
+        a_bt.ensemble_indices.double(),
+        0.0,
+    )
+    lo, hi = X.min(0).values, X.max(0).values
+    Xt = lo + (hi - lo) * torch.rand(4, q, X.shape[-1], generator=_gen(242 + q), dtype=DT)
+    vb, gb = values_and_grads(a_bt, Xt)
+    vr, gr = values_and_grads(a_rs, Xt)
+    CHECK.check(f"PathwiseThompsonSampling (fully Bayesian {model}) values", vr, vb, VALUE_TOL)
+    check_grad(CHECK, f"PathwiseThompsonSampling (fully Bayesian {model}) gradients", gr, gb)
+
+
+def test_pathwise_thompson_sampling_on_fully_bayesian_list() -> None:
+    """PathwiseThompsonSampling of a ``ModelListGP`` of fully Bayesian GPs
+    with a scalarizing posterior transform: the ensemble index of every path
+    and output."""
+    from botorch.acquisition.objective import ScalarizedPosteriorTransform as BtSPT
+    from botorch.acquisition.thompson_sampling import PathwiseThompsonSampling as BtTS
+    from mo_entropy_helpers import recorded_randn
+
+    from botorch_rs.acquisition.objective import ScalarizedPosteriorTransform as RsSPT
+    from botorch_rs.acquisition.thompson_sampling import PathwiseThompsonSampling as RsTS
+
+    bt, rs, X = _fb_list_pair(250)
+    w = torch.tensor([0.4, -0.6], dtype=DT)
+    q = 3
+    torch.manual_seed(251)
+    a_bt = BtTS(bt, posterior_transform=BtSPT(w))
+    noises: list[Any] = []
+    with recorded_randn(noises):
+        a_bt.redraw(q)
+    a_bt.batch_size = q
+    draws = _ensemble_path_draws(a_bt.samples._path, noises)
+    a_rs = RsTS(rs, posterior_transform=RsSPT(w), num_features=draws[0][0].shape[0] * 2)
+    a_rs.redraw(q, draws=draws, ensemble_indices=a_bt.ensemble_indices)
+    lo, hi = X.min(0).values, X.max(0).values
+    Xt = lo + (hi - lo) * torch.rand(4, q, X.shape[-1], generator=_gen(252), dtype=DT)
+    vb, gb = values_and_grads(a_bt, Xt)
+    vr, gr = values_and_grads(a_rs, Xt)
+    CHECK.check("PathwiseThompsonSampling (fully Bayesian list) values", vr, vb, VALUE_TOL)
+    check_grad(CHECK, "PathwiseThompsonSampling (fully Bayesian list) gradients", gr, gb)
+
+
+@pytest.mark.parametrize("model,warp", [("linear", False), ("saas", True)])
+def test_pathwise_thompson_sampling_fails_on_linear_and_warped_fully_bayesian_gps(
+    model: str, warp: bool
+) -> None:
+    """BoTorch has no random features of the linear kernel
+    (``NotImplementedError``) and fails on the batched input warping of a
+    fully Bayesian GP (``RuntimeError``, see the draft); botorch_rs's paths
+    support neither linear kernels nor input transforms other than
+    ``Normalize`` (``UnsupportedError``, raised for the input transforms of
+    these models)."""
+    from botorch.acquisition.thompson_sampling import PathwiseThompsonSampling as BtTS
+
+    from botorch_rs.acquisition.thompson_sampling import PathwiseThompsonSampling as RsTS
+    from botorch_rs.exceptions.errors import UnsupportedError
+
+    bt, rs, X, _ = model_pair(model, seed=260, num=4, transforms=True, warp=warp)
+    Xt = torch.rand(2, 2, X.shape[-1], generator=_gen(261), dtype=DT)
+    with pytest.raises(NotImplementedError if model == "linear" else RuntimeError):
+        BtTS(bt)(Xt)
+    with pytest.raises(UnsupportedError, match="Normalize input transform only"):
+        RsTS(rs)(Xt)
+
+
+def test_joint_entropy_search_raises_botorchs_error_on_fully_bayesian_gps() -> None:
+    from botorch.acquisition.joint_entropy_search import qJointEntropySearch as BtJES
+
+    from botorch_rs.acquisition.joint_entropy_search import qJointEntropySearch as RsJES
+
+    bt, rs, X, _ = model_pair("saas", seed=270, num=4, transforms=False)
+    opt_x = X[:3].clone()
+    opt_y = torch.zeros(3, 1, dtype=DT)
+    with pytest.raises(NotImplementedError) as e_bt:
+        BtJES(bt, opt_x, opt_y)
+    with pytest.raises(NotImplementedError) as e_rs:
+        RsJES(rs, opt_x, opt_y)
+    assert str(e_rs.value) == str(e_bt.value)
+
+
+def test_pathwise_thompson_sampling_on_map_saas_ensembles_is_unsupported() -> None:
+    """BoTorch's paths of an ``EnsembleMapSaasSingleTaskGP`` (whose kernel
+    has no batch shape) fail for ``1 < q != num_taus`` (see the draft);
+    botorch_rs raises ``UnsupportedError``."""
+    from botorch.acquisition.thompson_sampling import PathwiseThompsonSampling as BtTS
+    from botorch.models.map_saas import EnsembleMapSaasSingleTaskGP as BtEnsemble
+
+    from botorch_rs.acquisition.thompson_sampling import PathwiseThompsonSampling as RsTS
+    from botorch_rs.exceptions.errors import UnsupportedError
+    from botorch_rs.models.map_saas import EnsembleMapSaasSingleTaskGP as RsEnsemble
+
+    g = _gen(280)
+    X = torch.rand(10, 4, generator=g, dtype=DT)
+    Y = X.sum(-1, keepdim=True)
+    torch.manual_seed(281)
+    bt = BtEnsemble(X, Y, num_taus=3)
+    bt.eval()
+    with pytest.raises(RuntimeError):
+        BtTS(bt)(torch.rand(3, 2, 4, generator=g, dtype=DT))
+    with pytest.raises(UnsupportedError, match="ensembles of fully Bayesian GPs"):
+        RsTS(RsEnsemble(X, Y, num_taus=3))

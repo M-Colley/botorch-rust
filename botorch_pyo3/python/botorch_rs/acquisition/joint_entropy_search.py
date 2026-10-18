@@ -72,6 +72,14 @@ def _matrix(value: Any, name: str, cols: int | None = None) -> Any:
     return data, tuple(shape)
 
 
+#: BoTorch's error for fully Bayesian GPs.
+FULLY_BAYESIAN_ERROR_MSG = (
+    "JES is not yet available with Fully Bayesian GPs. Track the issue, "
+    "which regards conditioning on a number of optima on a collection "
+    "of models, in detail at https://github.com/meta-pytorch/botorch/issues/1680"
+)
+
+
 class qJointEntropySearch(AcquisitionFunction):
     r"""The acquisition function for the Joint Entropy Search, where the
     batches ``q > 1`` are supported through the lower bound formulation.
@@ -89,6 +97,9 @@ class qJointEntropySearch(AcquisitionFunction):
     botorch_rs extension (keyword-only): the ``sampler`` of the ``"MC"``
     estimate (default: ``num_samples`` Sobol samples).
     """
+
+    #: Raised for fully Bayesian GPs (BoTorch's ``NotImplementedError``).
+    _FULLY_BAYESIAN_ERROR = FULLY_BAYESIAN_ERROR_MSG
 
     def __init__(
         self,
