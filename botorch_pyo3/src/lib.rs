@@ -24,6 +24,7 @@ mod fully_bayesian;
 mod hvkg;
 mod input_perturbation;
 mod kernel_trees;
+mod lookahead;
 mod mo_acquisition;
 mod mo_entropy;
 mod mo_test_functions;
@@ -131,6 +132,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     so_acquisition::register(m)?;
     so_entropy::register(m)?;
     so_wrappers::register(m)?;
+    lookahead::register(m)?;
     // Input and outcome transforms of phase 6b.
     transform_steps::register(m)?;
     // Multi-task GPs (phase 7a).

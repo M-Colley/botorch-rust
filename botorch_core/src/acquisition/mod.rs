@@ -77,6 +77,7 @@ pub mod max_value_entropy_search;
 pub mod mc_objective;
 pub mod monte_carlo;
 pub mod multi_objective;
+pub mod multi_step_lookahead;
 pub mod multioutput_acquisition;
 pub mod objective;
 pub mod one_shot;

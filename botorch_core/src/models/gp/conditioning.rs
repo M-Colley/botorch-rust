@@ -122,7 +122,7 @@ impl SingleTaskGP {
     /// [`BotorchError::Runtime`] for a fixed-noise model without `noise`
     /// (GPyTorch's message) and [`BotorchError::InputData`] for NaN or
     /// negative noise.
-    fn new_noise(&self, noise: Option<&[f64]>, k: usize) -> Result<Vec<f64>> {
+    pub(super) fn new_noise(&self, noise: Option<&[f64]>, k: usize) -> Result<Vec<f64>> {
         if let Some(v) = noise {
             if v.iter().any(|x| x.is_nan() || *x < 0.0) {
                 return Err(BotorchError::InputData(
@@ -147,7 +147,7 @@ impl SingleTaskGP {
 
     /// Validates new inputs (`k × d`) and returns them transformed (in
     /// eval or fantasize mode).
-    fn check_new_inputs(&self, x: &Matrix, mode: TransformMode) -> Result<Matrix> {
+    pub(super) fn check_new_inputs(&self, x: &Matrix, mode: TransformMode) -> Result<Matrix> {
         super::check_finite(x, "X")?;
         self.transform_inputs_mode(x, mode)
     }

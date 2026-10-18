@@ -10,7 +10,10 @@ from typing import Any
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_pair, kind_of, to_flat
 from botorch_rs.acquisition.acquisition import check_unsupported, pending_arg, scalar_arg
-from botorch_rs.acquisition.monte_carlo import MCAcquisitionFunction, check_constrained_objective
+from botorch_rs.acquisition.monte_carlo import (
+    SampleReducingMCAcquisitionFunction,
+    check_constrained_objective,
+)
 from botorch_rs.acquisition.objective import IdentityMCObjective, fat_arg, is_constrained_objective
 from botorch_rs.exceptions.errors import BotorchError, BotorchTensorDimensionError
 from botorch_rs.exceptions.warnings import BotorchWarning
@@ -35,7 +38,97 @@ def _check_log_objective(objective: Any) -> None:
         )
 
 
-class qLogExpectedImprovement(MCAcquisitionFunction):
+def _logmeanexp(X: Any, dim: Any) -> Any:
+    """BoTorch's ``logmeanexp`` (the sample reduction of the log-improvement
+    acquisition functions)."""
+    from botorch_rs.acquisition._torch_reductions import logmeanexp
+
+    return logmeanexp(X, dim=dim)
+
+
+class _SmoothMax:
+    """BoTorch's ``partial(fatmax if fat else smooth_amax, tau=tau_max)``
+    (the q-reduction of the log-improvement acquisition functions)."""
+
+    def __init__(self, fat: bool, tau: float) -> None:
+        self.fat = fat
+        self.tau = tau
+
+    def __call__(self, X: Any, dim: Any) -> Any:
+        from botorch_rs.acquisition._torch_reductions import fatmax, smooth_amax
+
+        fn = fatmax if self.fat else smooth_amax
+        return fn(X, dim=dim, tau=self.tau)
+
+
+class LogImprovementMCAcquisitionFunction(SampleReducingMCAcquisitionFunction):
+    r"""
+    Abstract base class for Monte-Carlo-based batch LogEI acquisition functions.
+
+    Python subclasses implement ``_sample_forward`` (the log-utilities of
+    every sample and point) and are evaluated through torch like the
+    subclasses of :class:`SampleReducingMCAcquisitionFunction`, with
+    BoTorch's ``logmeanexp`` sample reduction and ``fatmax`` /
+    ``smooth_amax`` q-reduction.
+    """
+
+    _log: bool = True
+
+    def __init__(
+        self,
+        model: Any,
+        sampler: SobolQMCNormalSampler | None = None,
+        objective: Any = None,
+        posterior_transform: Any = None,
+        X_pending: Any = None,
+        constraints: Any = None,
+        eta: Any = 1e-3,
+        fat: bool = True,
+        tau_max: float = TAU_MAX,
+    ) -> None:
+        r"""Constructor of the base class for LogEI acquisition functions.
+
+        Args:
+            model: A fitted model.
+            sampler: The sampler used to draw base samples.
+            objective: The MCAcquisitionObjective under which the samples are
+                evaluated. Defaults to ``IdentityMCObjective()``.
+            posterior_transform: A PosteriorTransform (optional).
+            X_pending: A ``batch_shape, m x d``-dim Tensor of ``m`` design points
+                that have points that have been submitted for function evaluation
+                but have not yet been evaluated.
+            constraints: A list of constraint callables which map a Tensor
+                of posterior samples of dimension
+                ``sample_shape x batch-shape x q x m``-dim to a
+                ``sample_shape x batch-shape x q``-dim Tensor. The
+                associated constraints
+                are satisfied if ``constraint(samples) < 0``.
+            eta: Temperature parameter(s) governing the smoothness of
+                the sigmoid approximation to the constraint indicators.
+                See the docs of ``compute_(log_)constraint_indicator``
+                for more details on this parameter.
+            fat: Toggles the logarithmic / linear asymptotic behavior of the smooth
+                approximation to the ReLU.
+            tau_max: Temperature parameter controlling the sharpness of the
+                approximation to the ``max`` operator over the ``q`` candidate points.
+        """
+        _check_log_objective(objective)
+        super().__init__(
+            model=model,
+            sampler=sampler,
+            objective=objective,
+            posterior_transform=posterior_transform,
+            X_pending=X_pending,
+            sample_reduction=_logmeanexp,
+            q_reduction=_SmoothMax(bool(fat), tau_max),
+            constraints=constraints,
+            eta=eta,
+            fat=fat,
+        )
+        self.tau_max = tau_max
+
+
+class qLogExpectedImprovement(LogImprovementMCAcquisitionFunction):
     r"""MC-based batch Log Expected Improvement: a smooth, numerically robust
     approximation of ``log E[max(max_j y_j - best_f, 0)]`` (fat-tailed
     ``fatplus`` / ``fatmax`` by default).
@@ -84,7 +177,7 @@ class qLogExpectedImprovement(MCAcquisitionFunction):
         )
 
 
-class qLogNoisyExpectedImprovement(MCAcquisitionFunction):
+class qLogNoisyExpectedImprovement(LogImprovementMCAcquisitionFunction):
     r"""MC-based batch Log Noisy Expected Improvement: a smooth approximation of
     ``log E[max(max_j y_j - max_i y_i^baseline, 0)]`` over joint posterior
     samples of the candidates and the (pruned) baseline points.
@@ -209,7 +302,7 @@ class qLogNoisyExpectedImprovement(MCAcquisitionFunction):
         return from_pair(self._rs.lower_bound_points(), self._baseline_kind)
 
 
-class qLogProbabilityOfFeasibility(MCAcquisitionFunction):
+class qLogProbabilityOfFeasibility(LogImprovementMCAcquisitionFunction):
     r"""MC-based batch Log Probability of Feasibility: a smooth approximation
     of ``log P(constraint_i(f(X)) <= 0 for all i)``, the log of the average
     over samples of the smoothed maximum over the ``q`` points of the smoothed
@@ -253,6 +346,7 @@ class qLogProbabilityOfFeasibility(MCAcquisitionFunction):
 __all__ = [
     "TAU_MAX",
     "TAU_RELU",
+    "LogImprovementMCAcquisitionFunction",
     "qLogExpectedImprovement",
     "qLogNoisyExpectedImprovement",
     "qLogProbabilityOfFeasibility",

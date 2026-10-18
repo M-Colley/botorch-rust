@@ -75,7 +75,7 @@ pub(crate) fn expansion_of(
 }
 
 /// A value function from `(name, kwargs)`.
-fn value_function_of(
+pub(crate) fn value_function_of(
     spec: Option<(String, HashMap<String, Py<PyAny>>)>,
 ) -> PyResult<Option<KgValueFunction>> {
     let Some((name, kwargs)) = spec else {
