@@ -231,6 +231,12 @@ class qMultiStepLookahead(MCAcquisitionFunction, OneShotAcquisitionFunction):
                 "`qMultiStepLookahead` got a non-MC `objective`. This is not supported."
                 " Use `posterior_transform` and `objective=None` instead."
             )
+        from botorch_rs.models.pairwise_gp import PairwiseGP
+
+        if any(isinstance(m, PairwiseGP) for m in getattr(model, "models", [model])):
+            # BoTorch fails when it fantasizes (``PairwiseGP`` conditions on
+            # comparisons only, not on sampled outcomes).
+            raise RuntimeError("Conditioning on non-pairwise comparison observations.")
         AcquisitionFunction.__init__(self, model)
         self.batch_sizes = list(batch_sizes)
         if not ((num_fantasies is None) ^ (samplers is None)):

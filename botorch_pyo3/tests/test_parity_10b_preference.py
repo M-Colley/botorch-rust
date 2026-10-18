@@ -49,6 +49,9 @@ from botorch.acquisition import active_learning as bt_al  # noqa: E402
 from botorch.acquisition import analytic as bt_an  # noqa: E402
 from botorch.acquisition import monte_carlo as bt_mc  # noqa: E402
 from botorch.acquisition import preference as bt_pref  # noqa: E402
+from botorch.acquisition.input_constructors import (  # noqa: E402
+    get_acqf_input_constructor as bt_get_ctor,
+)
 from botorch.acquisition.objective import GenericMCObjective as BtGeneric  # noqa: E402
 from botorch.acquisition.objective import LearnedObjective as BtLearned  # noqa: E402
 from botorch.acquisition.objective import (  # noqa: E402
@@ -57,6 +60,7 @@ from botorch.acquisition.objective import (  # noqa: E402
 from botorch.models import ModelListGP as BtModelListGP  # noqa: E402
 from botorch.models import SingleTaskGP as BtSTGP  # noqa: E402
 from botorch.models.deterministic import AffineDeterministicModel as BtAffine  # noqa: E402
+from botorch.models.deterministic import FixedSingleSampleModel as BtFSSM  # noqa: E402
 from botorch.models.deterministic import PosteriorMeanModel as BtPMM  # noqa: E402
 from botorch.models.likelihoods.pairwise import PairwiseLogitLikelihood as BtLogit  # noqa: E402
 from botorch.models.likelihoods.pairwise import PairwiseProbitLikelihood as BtProbit  # noqa: E402
@@ -93,6 +97,9 @@ from botorch_rs.acquisition import active_learning as rs_al  # noqa: E402
 from botorch_rs.acquisition import analytic as rs_an  # noqa: E402
 from botorch_rs.acquisition import monte_carlo as rs_mc  # noqa: E402
 from botorch_rs.acquisition import preference as rs_pref  # noqa: E402
+from botorch_rs.acquisition.input_constructors import (  # noqa: E402
+    get_acqf_input_constructor as rs_get_ctor,
+)
 from botorch_rs.acquisition.objective import GenericMCObjective as RsGeneric  # noqa: E402
 from botorch_rs.acquisition.objective import LearnedObjective as RsLearned  # noqa: E402
 from botorch_rs.acquisition.objective import (  # noqa: E402
@@ -101,6 +108,7 @@ from botorch_rs.acquisition.objective import (  # noqa: E402
 from botorch_rs.models import ModelListGP as RsModelListGP  # noqa: E402
 from botorch_rs.models import SingleTaskGP as RsSTGP  # noqa: E402
 from botorch_rs.models.deterministic import AffineDeterministicModel as RsAffine  # noqa: E402
+from botorch_rs.models.deterministic import FixedSingleSampleModel as RsFSSM  # noqa: E402
 from botorch_rs.models.deterministic import PosteriorMeanModel as RsPMM  # noqa: E402
 from botorch_rs.models.likelihoods.pairwise import PairwiseLogitLikelihood as RsLogit  # noqa: E402
 from botorch_rs.models.likelihoods.pairwise import (  # noqa: E402
@@ -546,6 +554,166 @@ def test_qeubo(case: Case) -> None:
     for label, ob, orr, dx in _outcome_models(case, 37):
         Xo = torch.rand(3, 2, dx, generator=torch.Generator().manual_seed(38), dtype=DT)
         _check_vg(f"qEUBO (outcome model: {label})", *pair(2, Xo, outcome_model=(ob, orr)), Xo)
+
+
+def _outcome_gps(case: Case, seed: int) -> tuple[object, object, int]:
+    """BoTorch's and botorch_rs's outcome ``SingleTaskGP`` (``case.d``
+    outcomes of 3 inputs) with the same data and hyperparameters."""
+    g = torch.Generator().manual_seed(seed)
+    dx = 3
+    Xo = torch.rand(10, dx, generator=g, dtype=DT)
+    Yo = torch.stack([(Xo * (k + 1)).sin().sum(-1) for k in range(case.d)], -1) * 0.3 + 0.4
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return BtSTGP(Xo, Yo), RsSTGP(Xo, Yo), dx
+
+
+def _check_constructed(kb: dict, kr: dict, models: dict) -> None:
+    """The kwargs of BoTorch's and botorch_rs's constructors: the same keys,
+    the same objects passed through (``models`` maps BoTorch's objects to
+    botorch_rs's), and the one-sample outcome model with BoTorch's ``w``."""
+    assert sorted(kb) == sorted(kr)
+    for key, vb in kb.items():
+        vr = kr[key]
+        if isinstance(vb, BtFSSM):
+            assert isinstance(vr, RsFSSM) and vr.model is models[vb.model]
+            assert torch.equal(torch.as_tensor(vr.w), vb.w), (vr.w, vb.w)
+            assert vr.jitter == vb.jitter
+        elif vb is None or isinstance(vb, (torch.Tensor, float)):
+            assert vr is vb, key
+        else:
+            assert vr is models[vb], key
+    check.record("constructed kwargs (objects and w, exact)", 0.0, 0.0)
+
+
+@pytest.mark.parametrize("case", ACQ_CASES[:2], ids=_ids(ACQ_CASES[:2]))
+def test_input_constructors(case: Case) -> None:
+    """``construct_inputs_analytic_eubo`` and ``construct_inputs_qeubo``
+    through the registries: the constructed kwargs (PBO: the preference model
+    itself; BOPE: ``FixedSingleSampleModel(model, w)`` with ``w`` from
+    ``torch.randn`` after the same seed), and the values and input gradients
+    of the acquisition functions built from them."""
+    _, _, _, bt, rs = _pair(case)
+    gb, gr, dx = _outcome_gps(case, 50)
+    models = {bt: rs, gb: gr}
+    eubo_b = bt_get_ctor(bt_pref.AnalyticExpectedUtilityOfBestOption)
+    eubo_r = rs_get_ctor(rs_pref.AnalyticExpectedUtilityOfBestOption)
+    qeubo_b = bt_get_ctor(bt_pref.qExpectedUtilityOfBestOption)
+    qeubo_r = rs_get_ctor(rs_pref.qExpectedUtilityOfBestOption)
+
+    # PBO: the preference model is `model`; `training_data`, `objective` and
+    # `posterior_transform` are accepted and ignored (analytic EUBO).
+    winner = random_points(bt, (1,), 51)
+    extra = {"training_data": None, "objective": None, "posterior_transform": None}
+    for prev in (None, winner):
+        kb = eubo_b(model=bt, previous_winner=prev, **extra)
+        kr = eubo_r(model=rs, previous_winner=prev, **extra)
+        _check_constructed(kb, kr, models)
+        X = random_points(bt, (4, 2 if prev is None else 1), 52)
+        _check_vg(
+            "constructed EUBO (PBO)",
+            bt_pref.AnalyticExpectedUtilityOfBestOption(**kb),
+            rs_pref.AnalyticExpectedUtilityOfBestOption(**kr),
+            X,
+        )
+    sb = BtSampler(torch.Size([64]), seed=53)
+    pending = random_points(bt, (2,), 54)
+    kb = qeubo_b(model=bt, sampler=sb, X_pending=pending)
+    ab = bt_pref.qExpectedUtilityOfBestOption(**kb)
+    X = random_points(bt, (3, 2), 55)
+    ab(X)  # BoTorch's sampler draws its base samples at the first call
+    sr = RsSampler(64)
+    sr.base_samples = sb.base_samples
+    models[sb] = sr
+    kr = qeubo_r(model=rs, sampler=sr, X_pending=pending)
+    _check_constructed(kb, kr, models)
+    _check_vg("constructed qEUBO (PBO)", ab, rs_pref.qExpectedUtilityOfBestOption(**kr), X)
+
+    # BOPE: EUBO-zeta on the outcome model, w = torch.randn(pref_model.dim) *
+    # sample_multiplier from torch's global generator.
+    Xo = torch.rand(4, 2, dx, generator=torch.Generator().manual_seed(56), dtype=DT)
+    for mult in (1.0, 0.3):
+        torch.manual_seed(57)
+        kb = eubo_b(model=gb, pref_model=bt, sample_multiplier=mult, **extra)
+        torch.manual_seed(57)
+        kr = eubo_r(model=gr, pref_model=rs, sample_multiplier=mult, **extra)
+        _check_constructed(kb, kr, models)
+        _check_vg(
+            "constructed EUBO (BOPE)",
+            bt_pref.AnalyticExpectedUtilityOfBestOption(**kb),
+            rs_pref.AnalyticExpectedUtilityOfBestOption(**kr),
+            Xo,
+        )
+        sb = BtSampler(torch.Size([64]), seed=58)
+        torch.manual_seed(59)
+        kb = qeubo_b(model=gb, pref_model=bt, sample_multiplier=mult, sampler=sb)
+        ab = bt_pref.qExpectedUtilityOfBestOption(**kb)
+        ab(Xo)
+        sr = RsSampler(64)
+        sr.base_samples = sb.base_samples
+        models[sb] = sr
+        torch.manual_seed(59)
+        kr = qeubo_r(model=gr, pref_model=rs, sample_multiplier=mult, sampler=sr)
+        _check_constructed(kb, kr, models)
+        _check_vg("constructed qEUBO (BOPE)", ab, rs_pref.qExpectedUtilityOfBestOption(**kr), Xo)
+
+    # BoTorch's errors: unknown keyword arguments and `sample_multiplier=None`
+    # with a preference model.
+    for ctor_b, ctor_r, m_b, m_r in ((eubo_b, eubo_r, gb, gr), (qeubo_b, qeubo_r, gb, gr)):
+        with pytest.raises(TypeError) as eb:
+            ctor_b(model=bt, foo=1)
+        with pytest.raises(TypeError) as er:
+            ctor_r(model=rs, foo=1)
+        assert str(er.value) == str(eb.value)
+        with pytest.raises(TypeError):
+            ctor_b(model=m_b, pref_model=bt, sample_multiplier=None)
+        with pytest.raises(TypeError):
+            ctor_r(model=m_r, pref_model=rs, sample_multiplier=None)
+    check.record("constructor errors (same class and message)", 0.0, 0.0)
+
+
+def test_phase8b_classes_on_pairwise_gp() -> None:
+    """Phase 8b's classes with a ``PairwiseGP``: a Python subclass of
+    ``SampleReducingMCAcquisitionFunction`` (BoTorch's base samples), and
+    ``qMultiStepLookahead``, which fails as BoTorch's does (BoTorch when it
+    fantasizes, botorch_rs at construction)."""
+    from botorch.acquisition.monte_carlo import (
+        SampleReducingMCAcquisitionFunction as BtSampleReducing,
+    )
+    from botorch.acquisition.multi_step_lookahead import qMultiStepLookahead as BtMSL
+
+    from botorch_rs.acquisition.monte_carlo import (
+        SampleReducingMCAcquisitionFunction as RsSampleReducing,
+    )
+    from botorch_rs.acquisition.multi_step_lookahead import qMultiStepLookahead as RsMSL
+
+    case = ACQ_CASES[0]
+    _, _, _, bt, rs = _pair(case)
+
+    class BtSquared(BtSampleReducing):
+        def _sample_forward(self, obj: torch.Tensor) -> torch.Tensor:
+            return obj.square()
+
+    class RsSquared(RsSampleReducing):
+        def _sample_forward(self, obj: torch.Tensor) -> torch.Tensor:
+            return obj.square()
+
+    sb = BtSampler(torch.Size([32]), seed=60)
+    ab = BtSquared(bt, sampler=sb)
+    X = random_points(bt, (3, 2), 61)
+    ab(X)
+    sr = RsSampler(32)
+    sr.base_samples = sb.base_samples
+    _check_vg("SampleReducingMCAcquisitionFunction subclass", ab, RsSquared(rs, sampler=sr), X)
+
+    Xq = random_points(bt, (2, 3), 62)
+    for mb, mr in ((bt, rs), (BtModelListGP(bt), RsModelListGP(rs))):
+        with pytest.raises(RuntimeError) as eb:
+            BtMSL(mb, batch_sizes=[1], num_fantasies=[2])(Xq)
+        with pytest.raises(RuntimeError) as er:
+            RsMSL(mr, batch_sizes=[1], num_fantasies=[2])
+        assert str(er.value) == str(eb.value)
+    check.record("qMultiStepLookahead on PairwiseGP: error (same class and message)", 0.0, 0.0)
 
 
 @pytest.mark.parametrize("case", ACQ_CASES, ids=_ids(ACQ_CASES))

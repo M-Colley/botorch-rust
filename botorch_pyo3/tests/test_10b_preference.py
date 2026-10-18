@@ -278,6 +278,46 @@ def test_acquisition_functions_and_optimization() -> None:
         qSimpleRegret(m, objective=lo)
 
 
+@pytest.mark.parametrize("kind", KINDS)
+def test_input_constructors(kind: str) -> None:
+    """The registered EUBO constructors: preferential BO (the preference
+    model is ``model``) and BOPE (EUBO-zeta on a ``FixedSingleSampleModel``
+    of the outcome model with ``pref_model.dim`` weights)."""
+    from botorch_rs.acquisition import get_acqf_input_constructor
+    from botorch_rs.acquisition.input_constructors import (
+        construct_inputs_analytic_eubo,
+        construct_inputs_qeubo,
+    )
+    from botorch_rs.models.deterministic import FixedSingleSampleModel
+
+    pref = PairwiseGP(as_kind(X_LIST, kind), _comps(kind))
+    Xo = [[0.1 * i, 0.3, 1.0 - 0.1 * i] for i in range(6)]
+    Yo = [[0.5 * a + b, a - c] for a, b, c in Xo]
+    outcome = SingleTaskGP(as_kind(Xo, kind), as_kind(Yo, kind))
+    eubo_ctor = get_acqf_input_constructor(AnalyticExpectedUtilityOfBestOption)
+    qeubo_ctor = get_acqf_input_constructor(qExpectedUtilityOfBestOption)
+    kw = eubo_ctor(model=pref, training_data=None, objective=None)
+    assert kw == {"pref_model": pref, "outcome_model": None, "previous_winner": None}
+    v = AnalyticExpectedUtilityOfBestOption(**kw)(as_kind([[[0.1, 0.1], [0.6, 0.6]]], kind))
+    assert shape(v) == (1,)
+    kw = construct_inputs_analytic_eubo(model=outcome, pref_model=pref, sample_multiplier=0.5)
+    om = kw["outcome_model"]
+    assert kw["pref_model"] is pref and isinstance(om, FixedSingleSampleModel)
+    assert om.model is outcome and shape(om.w) == (2,)
+    v = AnalyticExpectedUtilityOfBestOption(**kw)(as_kind([[Xo[0], Xo[3]], [Xo[1], Xo[5]]], kind))
+    assert shape(v) == (2,)
+    sampler = SobolQMCNormalSampler(32, seed=0)
+    kw = qeubo_ctor(model=outcome, pref_model=pref, sampler=sampler, X_pending=None)
+    assert kw["sampler"] is sampler and kw["objective"] is None
+    assert kw["posterior_transform"] is None and kw["X_pending"] is None
+    v = qExpectedUtilityOfBestOption(**kw)(as_kind([[Xo[0], Xo[2], Xo[4]]], kind))
+    assert shape(v) == (1,)
+    kw = construct_inputs_qeubo(model=pref)
+    assert kw["pref_model"] is pref and kw["outcome_model"] is None
+    with pytest.raises(TypeError, match="Unexpected keyword argument `bounds_x`"):
+        qeubo_ctor(model=pref, bounds_x=None)
+
+
 def test_learned_objective_api() -> None:
     from botorch_rs.models import AffineDeterministicModel
 
