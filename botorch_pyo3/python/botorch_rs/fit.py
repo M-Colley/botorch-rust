@@ -183,4 +183,120 @@ def _fit_with_optimizer(
     raise ModelFittingError("All attempts to fit the model have failed.")
 
 
-__all__ = ["fit_gpytorch_mll"]
+def fit_fully_bayesian_model_nuts(
+    model: Any,
+    max_tree_depth: int = 6,
+    warmup_steps: int = 512,
+    num_samples: int = 256,
+    thinning: int = 16,
+    disable_progbar: bool = False,
+    jit_compile: bool = False,
+    seed: int = 0,
+    *,
+    draws: Any = None,
+    init_params: Any = None,
+) -> None:
+    r"""Fit a fully Bayesian model using the No-U-Turn-Sampler (NUTS)
+
+    Runs botorch_rs's port of NumPyro's NUTS (as BoTorch: a dense mass
+    matrix, step-size and mass-matrix adaptation during the warmup, initial
+    values ``init_to_uniform(radius=2)``) on the model's potential energy,
+    evaluated in Rust in double precision.
+
+    Args:
+        model: Fully Bayesian GP to be fitted.
+        max_tree_depth: Maximum tree depth for NUTS
+        warmup_steps: The number of burn-in steps for NUTS.
+        num_samples:  The number of MCMC samples. Note that with thinning,
+            num_samples / thinning samples are retained.
+        thinning: The amount of thinning. Every nth sample is retained.
+        disable_progbar: A boolean indicating whether to print the progress
+            bar and diagnostics during MCMC (ignored: botorch_rs prints none).
+        jit_compile: Whether to use jit (ignored: the sampler is compiled).
+        seed: Random seed. botorch_rs draws its random numbers from a seeded
+            xoshiro256++ generator, not from JAX's PRNG, so the samples
+            differ from BoTorch's for the same seed.
+        draws: (botorch_rs extension) the random draws of a NumPyro run to
+            replay, ``("n", values)`` (standard-normal momenta) and
+            ``("u", u, p)`` (the uniform draws of NumPyro's Bernoulli trials),
+            with ``init_params``: then the chain is NumPyro's (see
+            ``botorch_pyo3/tests/fully_bayesian_helpers.py``).
+        init_params: (botorch_rs extension) the initial unconstrained
+            parameters, in NumPyro's order (sites sorted by name).
+
+    Example:
+        >>> gp = SaasFullyBayesianSingleTaskGP(train_X, train_Y)
+        >>> fit_fully_bayesian_model_nuts(gp)
+    """
+    from botorch_rs._arrays import from_flat
+
+    model.train()
+    potential = model.pyro_model._potential()
+    if (draws is None) != (init_params is None):
+        raise ValueError("`draws` and `init_params` must be given together.")
+    z0 = None if init_params is None else [float(v) for v in init_params]
+    result = potential.sample_nuts(
+        int(warmup_steps),
+        int(num_samples),
+        max_tree_depth=(int(max_tree_depth), int(max_tree_depth)),
+        seed=int(seed) & 0xFFFFFFFFFFFFFFFF,
+        z0=z0,
+        draws=None if draws is None else list(draws),
+    )
+    samples = result["samples"]
+    mcmc_samples = {}
+    for name, shape, values in potential.postprocess(samples):
+        size = math.prod(shape)
+        rows = [values[i * size : (i + 1) * size] for i in range(len(samples))][::thinning]
+        flat = [v for row in rows for v in row]
+        mcmc_samples[name] = from_flat(flat, (len(rows), *shape), model._kind)
+    model._nuts_result = result
+    model.load_mcmc_samples(mcmc_samples)
+    model.eval()
+
+
+def get_fitted_map_saas_model(
+    train_X: Any,
+    train_Y: Any,
+    train_Yvar: Any = None,
+    input_transform: Any = None,
+    outcome_transform: Any = None,
+    tau: Any = None,
+    optimizer_kwargs: dict[str, Any] | None = None,
+) -> Any:
+    """Get a fitted MAP SAAS model with a Matern kernel.
+
+    Args:
+        train_X: Tensor of shape ``n x d`` with training inputs.
+        train_Y: Tensor of shape ``n x 1`` with training targets.
+        train_Yvar: Optional tensor of shape ``n x 1`` with observed noise,
+            inferred if None.
+        input_transform: An optional input transform.
+        outcome_transform: An optional outcome transform.
+        tau: Fixed value of the global shrinkage tau. If None, the model
+            places a HC(0.1) prior on tau. Can be a tensor for batched models
+            where each batch has a different sparsity prior.
+        optimizer_kwargs: A dict of options for the optimizer passed
+            to fit_gpytorch_mll.
+
+    Returns:
+        A fitted SingleTaskGP with a Matern kernel.
+    """
+    from botorch_rs.models.map_saas import get_map_saas_model
+
+    # make sure optimizer_kwargs is a Dict
+    optimizer_kwargs = optimizer_kwargs or {}
+    model = get_map_saas_model(
+        train_X=train_X,
+        train_Y=train_Y,
+        train_Yvar=train_Yvar,
+        input_transform=(input_transform.train() if input_transform is not None else None),
+        outcome_transform=outcome_transform,
+        tau=tau,
+    )
+    mll = ExactMarginalLogLikelihood(model=model, likelihood=model.likelihood)
+    fit_gpytorch_mll(mll, optimizer_kwargs=optimizer_kwargs)
+    return model
+
+
+__all__ = ["fit_fully_bayesian_model_nuts", "fit_gpytorch_mll", "get_fitted_map_saas_model"]

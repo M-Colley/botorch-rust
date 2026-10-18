@@ -1119,8 +1119,12 @@ class Warp(ReversibleInputTransform):
     def _model_steps(self, d: int, prefix: str, batch: int | None) -> list[_Step]:
         # One step for all batch elements: the normalization is learned from
         # the inputs of all of them (BoTorch's `Normalize` without a batch
-        # shape); a batched Warp's concentrations come from `_batch_params`.
-        return [_Step(self._current_steps()[0], self.training, prefix, self)]
+        # shape); a batched Warp's concentrations come from `_batch_params`,
+        # or, in the chain of batch element `batch` of a model whose chain
+        # differs per batch element, from that element.
+        steps = self._current_steps()
+        index = batch if batch is not None and self.batch_shape else 0
+        return [_Step(steps[index], self.training, prefix, self)]
 
     def _set_state(self, state: Any, batch: int | None, kind: ArrayKind) -> None:
         # The fitted normalization is shared by the batch elements.
@@ -1885,7 +1889,8 @@ class ChainedInputTransform(InputTransform):
     def _model_steps(self, d: int, prefix: str, batch: int | None) -> list[_Step]:
         steps: list[_Step] = []
         for name, tf in self._transforms.items():
-            sub = tf._model_steps(d, f"{prefix}{name}.", batch if tf._per_batch() else None)
+            per = tf._per_batch() is not None or tf._batch_params() is not None
+            sub = tf._model_steps(d, f"{prefix}{name}.", batch if per else None)
             steps.extend(sub)
             if tf.transform_on_train or tf.transform_on_eval:
                 d = _out_dim_of(sub, d)

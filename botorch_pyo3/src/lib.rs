@@ -20,6 +20,7 @@ mod contextual;
 mod deterministic;
 mod errors;
 mod fantasize;
+mod fully_bayesian;
 mod hvkg;
 mod input_perturbation;
 mod kernel_trees;
@@ -136,5 +137,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     multitask::register(m)?;
     // Models of phase 7b (deterministic models, ensembles).
     models_7b::register(m)?;
+    // Fully Bayesian GPs and NUTS (phase 10a).
+    fully_bayesian::register(m)?;
     Ok(())
 }

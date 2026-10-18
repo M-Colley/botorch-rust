@@ -330,6 +330,7 @@ pub mod acquisition;
 pub mod constraints;
 pub mod error;
 pub mod fit;
+pub mod fully_bayesian;
 pub mod generation;
 pub mod kernels;
 pub mod lbfgsb;
