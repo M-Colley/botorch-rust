@@ -1,0 +1,608 @@
+r"""Multi-task Gaussian Process Regression models with fully Bayesian
+inference (``botorch.models.fully_bayesian_multitask``).
+
+The hyperparameters (the SAAS data kernel, per-task means, the noise and the
+latent task features of an ICM task covariance) are sampled with NUTS
+(``fit_fully_bayesian_model_nuts``) from the potential energy of BoTorch's
+NumPyro model (evaluated in Rust). Every MCMC sample is then a
+``MultiTaskGP`` whose task covariance is ``L L^T`` for the Cholesky factor
+``L`` of the Matérn-5/2 kernel matrix of the latent task features (BoTorch's
+``IndexKernel`` with ``covar_factor = L`` and ``var = 0``); the posterior is
+the mixture of their posteriors.
+"""
+
+from __future__ import annotations
+
+import copy
+import math
+from typing import Any, NoReturn
+
+from botorch_rs._arrays import from_flat, kind_of, to_flat
+from botorch_rs.constraints import GreaterThan
+from botorch_rs.exceptions.errors import InputDataError, UnsupportedError
+from botorch_rs.kernels import IndexKernel, Kernel, MaternKernel, ScaleKernel
+from botorch_rs.likelihoods import GaussianLikelihood
+from botorch_rs.models.fully_bayesian import (
+    MCMC_DIM,
+    MIN_INFERRED_NOISE_LEVEL,
+    SaasPyroModel,
+    _median,
+    _values,
+    reshape_and_detach,
+)
+from botorch_rs.models.gp_regression import _validate_input_scaling
+from botorch_rs.models.multitask import MultiTaskGP
+from botorch_rs.models.transforms.input import InputTransform
+from botorch_rs.models.transforms.outcome import OutcomeTransform, Standardize
+from botorch_rs.posteriors.fully_bayesian import _StackedMixturePosterior
+
+
+class MultiTaskPyroMixin:
+    r"""Mixin with universal multi-task logic for PyroModel subclasses.
+
+    Stores task-related attributes (``task_feature``, ``num_tasks``,
+    ``task_rank``) and adjusts ``ard_num_dims`` to exclude the task column.
+    Overrides ``sample_mean`` to return per-task means and
+    ``_prepare_features`` to strip the task column.
+
+    Place before the ``PyroModel`` subclass in the MRO.
+    """
+
+    task_feature: int
+    num_tasks: int
+    task_rank: int
+
+    def set_inputs(  # type: ignore[override]
+        self,
+        train_X: Any,
+        train_Y: Any,
+        train_Yvar: Any = None,
+        task_feature: int | None = None,
+        task_rank: int | None = None,
+        all_tasks: list[int] | None = None,
+    ) -> None:
+        """Set training data and configure multi-task attributes.
+
+        Args:
+            train_X: Training inputs (n x (d + 1)), including a task column.
+            train_Y: Training targets (n x 1).
+            train_Yvar: Observed noise variance (n x 1). Inferred if None.
+            task_feature: The index of the task feature column.
+            task_rank: The number of learned task embeddings. Defaults to
+                the number of tasks.
+            all_tasks: A list of all task indices. If omitted, all tasks will be
+                inferred from the task feature column of the training data.
+        """
+        super().set_inputs(train_X, train_Y, train_Yvar)  # type: ignore[misc]
+        data, shape = to_flat(train_X, "train_X")
+        cols = shape[-1]
+        assert task_feature is not None
+        task_feature = task_feature % cols
+        self.task_feature = task_feature
+        if all_tasks is None:
+            all_tasks = sorted({int(data[i * cols + task_feature]) for i in range(shape[0])})
+        self.num_tasks = len(all_tasks)
+        self.task_rank = task_rank or self.num_tasks
+        self.ard_num_dims = cols - 1  # type: ignore[attr-defined]
+
+    def _task_structure(self) -> tuple[int, int, int] | None:
+        return (self.task_feature, self.num_tasks, self.task_rank)
+
+
+class LatentFeatureMultiTaskPyroMixin(MultiTaskPyroMixin):
+    r"""Mixin that adds ICM-style multi-task capabilities via latent features.
+
+    The task covariance is the Matérn-5/2 kernel of learned latent task
+    features (``latent_features ~ N(0, 1)``, ``num_tasks x task_rank``) with
+    lengthscales ``task_lengthscale ~ Gamma(6, 3)``; the means are per task.
+    """
+
+    def _member_modules(self, mcmc_samples: dict[str, Any], s: int) -> dict[str, Any]:
+        """The hyperparameters of sample ``s`` of a multi-task model."""
+        means, _ = _values(mcmc_samples, "mean")
+        t = self.num_tasks
+        latent, lshape = _values(mcmc_samples, "latent_features")
+        r = lshape[-1]
+        task_ls, _ = _values(mcmc_samples, "task_lengthscale")
+        return {
+            "mean": means[s * t : (s + 1) * t],
+            "latent_features": latent[s * t * r : (s + 1) * t * r],
+            "task_lengthscale": task_ls[s * r : (s + 1) * r],
+            "rank": r,
+        }
+
+    def get_dummy_mcmc_samples(self, num_mcmc_samples: int, **tkwargs: Any) -> dict[str, Any]:
+        """Return dummy MCMC samples for state dict loading."""
+        mcmc_samples = super().get_dummy_mcmc_samples(  # type: ignore[misc]
+            num_mcmc_samples=num_mcmc_samples, **tkwargs
+        )
+        ones = self._ones  # type: ignore[attr-defined]
+        mcmc_samples["mean"] = ones((num_mcmc_samples, self.num_tasks), tkwargs)
+        mcmc_samples["task_lengthscale"] = ones((num_mcmc_samples, self.task_rank), tkwargs)
+        mcmc_samples["latent_features"] = ones(
+            (num_mcmc_samples, self.num_tasks, self.task_rank), tkwargs
+        )
+        return mcmc_samples
+
+
+class MultitaskSaasPyroModel(LatentFeatureMultiTaskPyroMixin, SaasPyroModel):
+    r"""
+    Multi-task SAAS model. Backward-compatible subclass that composes
+    ``LatentFeatureMultiTaskPyroMixin`` with ``SaasPyroModel``.
+    """
+
+
+def _cholesky(a: list[list[float]]) -> list[list[float]]:
+    """linear_operator's ``psd_safe_cholesky`` of a small dense matrix: the
+    plain factor, else with a jitter of 1e-8, 1e-7, 1e-6 on the diagonal."""
+    n = len(a)
+    for jitter in (0.0, 1e-8, 1e-7, 1e-6):
+        lo = [[0.0] * n for _ in range(n)]
+        ok = True
+        for j in range(n):
+            d = a[j][j] + jitter - sum(lo[j][k] ** 2 for k in range(j))
+            if not d > 0:
+                ok = False
+                break
+            lo[j][j] = math.sqrt(d)
+            for i in range(j + 1, n):
+                lo[i][j] = (a[i][j] - sum(lo[i][k] * lo[j][k] for k in range(j))) / lo[j][j]
+        if ok:
+            return lo
+    raise RuntimeError("The task covariance of an MCMC sample is not positive definite.")
+
+
+class _SampleMultiTaskGP(MultiTaskGP):
+    """An MCMC sample of a fully Bayesian multi-task GP: a ``MultiTaskGP``
+    with an ``IndexKernel`` task covariance of the sample (and no
+    adjustment of the task factors of unobserved tasks in ``eval()``)."""
+
+    _eval_unobserved_tasks = False
+
+    def __init__(self, task_kernel: Kernel, **kwargs: Any) -> None:
+        self._sample_task_kernel = task_kernel
+        super().__init__(**kwargs)
+
+    def _make_task_covar_module(
+        self, num_tasks: int, rank: int, task_covar_prior: Any, task_feature: int
+    ) -> Kernel:
+        kernel = self._sample_task_kernel
+        kernel.active_dims = (task_feature,)
+        return kernel
+
+
+class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
+    r"""A fully Bayesian multi-task GP model with the SAAS prior.
+    This model assumes that the inputs have been normalized to [0, 1]^d and that the
+    output has been stratified standardized to have zero mean and unit variance for
+    each task. The SAAS model [Eriksson2021saasbo]_ with a Matern-5/2 is used as data
+    kernel by default.
+
+    You are expected to use ``fit_fully_bayesian_model_nuts`` to fit this model as it
+    isn't compatible with ``fit_gpytorch_mll``.
+
+    Example:
+        >>> X1, X2 = torch.rand(10, 2), torch.rand(20, 2)
+        >>> i1, i2 = torch.zeros(10, 1), torch.ones(20, 1)
+        >>> train_X = torch.cat([
+        >>>     torch.cat([X1, i1], -1), torch.cat([X2, i2], -1),
+        >>> ])
+        >>> train_Y = torch.cat(f1(X1), f2(X2)).unsqueeze(-1)
+        >>> train_Yvar = 0.01 * torch.ones_like(train_Y)
+        >>> mtsaas_gp = SaasFullyBayesianMultiTaskGP(
+        >>>     train_X, train_Y, train_Yvar, task_feature=-1,
+        >>> )
+        >>> fit_fully_bayesian_model_nuts(mtsaas_gp)
+        >>> posterior = mtsaas_gp.posterior(test_X)
+
+    In botorch_rs, the fitted model holds one ``MultiTaskGP`` per MCMC
+    sample (``_samples``); its posterior is the mixture of theirs, and the
+    acquisition functions average over them.
+    """
+
+    _is_fully_bayesian = True
+    _is_ensemble = True
+
+    def __init__(
+        self,
+        train_X: Any,
+        train_Y: Any,
+        task_feature: int,
+        train_Yvar: Any = None,
+        output_tasks: list[int] | None = None,
+        rank: int | None = None,
+        all_tasks: list[int] | None = None,
+        outcome_transform: OutcomeTransform | None = None,
+        input_transform: InputTransform | None = None,
+        pyro_model: MultitaskSaasPyroModel | None = None,
+        validate_task_values: bool = True,
+    ) -> None:
+        r"""Initialize the fully Bayesian multi-task GP model.
+
+        Args:
+            train_X: Training inputs (n x (d + 1))
+            train_Y: Training targets (n x 1)
+            train_Yvar: Observed noise variance (n x 1). If None, we infer the noise.
+                Note that the inferred noise is common across all tasks.
+            task_feature: The index of the task feature (``-d <= task_feature <= d``).
+            output_tasks: A list of task indices for which to compute model
+                outputs for. If omitted, return outputs for all task indices.
+            rank: The num of learned task embeddings to be used in the task kernel.
+                If omitted, use a full rank (i.e. number of tasks) kernel.
+            all_tasks: A list of all task indices. If omitted, all tasks will be
+                inferred from the task feature column of the training data. Used to
+                inform the model about the total number of tasks, including any
+                unobserved tasks.
+            outcome_transform: An outcome transform that is applied to the
+                training data during instantiation and to the posterior during
+                inference (that is, the ``Posterior`` obtained by calling
+                ``.posterior`` on the model will be on the original scale).
+                Note that ``.train()`` will be called on the outcome transform during
+                instantiation of the model.
+            input_transform: An input transform that is applied to the inputs ``X``
+                in the model's forward pass.
+            pyro_model: Optional ``PyroModel`` that has the same signature as
+                ``MultitaskSaasPyroModel``. Defaults to ``MultitaskSaasPyroModel``.
+            validate_task_values: If True, validate that the task values supplied in the
+                input are expected tasks values. If false, unexpected task values
+                will be mapped to the first output_task if supplied.
+
+        botorch_rs supports ``Standardize`` as the outcome transform and
+        ``Normalize`` as the input transform (those of ``MultiTaskGP``), and
+        no input warping.
+        """
+        x = to_flat(train_X, "train_X")
+        y = to_flat(train_Y, "train_Y")
+        if not (len(x[1]) == len(y[1]) == 2 and x[1][0] == y[1][0] and y[1][-1] == 1):
+            raise ValueError("Expected train_X to have shape n x d and train_Y to have shape n x 1")
+        if train_Yvar is not None and tuple(to_flat(train_Yvar, "train_Yvar")[1]) != tuple(y[1]):
+            raise ValueError("Expected train_Yvar to be None or have the same shape as train_Y")
+        if outcome_transform is not None and not (
+            type(outcome_transform) is Standardize and outcome_transform._outputs is None
+        ):
+            raise UnsupportedError(
+                "botorch_rs supports the Standardize outcome transform on fully Bayesian "
+                "multi-task models."
+            )
+        kind = kind_of(train_X)
+        raw_Y = train_Y
+        transformed_X = train_X
+        if input_transform is not None:
+            transformed_X = input_transform(train_X)
+        Yvar = train_Yvar
+        if outcome_transform is not None:
+            outcome_transform.train()  # Ensure we learn parameters here on init
+            train_Y, Yvar = outcome_transform(Y=train_Y, Yvar=train_Yvar, X=transformed_X)
+        if Yvar is not None:  # Clamp after transforming
+            vdata, vshape = to_flat(Yvar, "train_Yvar")
+            Yvar = from_flat(
+                [max(float(v), MIN_INFERRED_NOISE_LEVEL) for v in vdata], tuple(vshape), kind
+            )
+        if any(math.isnan(v) for v in list(x[0]) + list(to_flat(train_Y, "train_Y")[0])):
+            raise InputDataError("Input data contains NaN values.")
+        super().__init__(
+            train_X=train_X,
+            train_Y=train_Y,
+            train_Yvar=Yvar,
+            task_feature=task_feature,
+            output_tasks=output_tasks,
+            rank=rank,
+            # We already transformed the data above, this avoids applying the
+            # default ``Standardize`` transform twice.
+            outcome_transform=None,
+            all_tasks=all_tasks,
+            validate_task_values=validate_task_values,
+        )
+        self.mean_module: Any = None
+        self.covar_module: Any = None  # type: ignore[assignment]
+        self.likelihood: Any = None  # type: ignore[assignment]
+        self._samples: list[Any] | None = None
+        self._fb_args = {
+            "train_X": train_X,
+            "raw_Y": raw_Y,
+            "train_Y": train_Y,
+            "train_Yvar": Yvar,
+            "task_feature": task_feature,
+            "output_tasks": output_tasks,
+            "all_tasks": all_tasks,
+            "validate_task_values": validate_task_values,
+        }
+        self._fb_outcome_transform = outcome_transform
+        self._fb_input_transform = input_transform
+        if pyro_model is None:
+            pyro_model = MultitaskSaasPyroModel()
+        if getattr(pyro_model, "use_input_warping", False):
+            raise UnsupportedError(
+                "Input warping is not supported by fully Bayesian multi-task models in "
+                "botorch_rs (BoTorch samples warping parameters but does not use them, see "
+                "the draft)."
+            )
+        # The task values mapped to task indices (BoTorch's `_map_tasks`).
+        tx = to_flat(transformed_X, "train_X")
+        cols = tx[1][-1]
+        tf = self._task_feature
+        mapped = list(tx[0])
+        for i in range(tx[1][0]):
+            mapped[i * cols + tf] = float(self._map_task_value(mapped[i * cols + tf]))
+        pyro_model.set_inputs(
+            train_X=from_flat(mapped, tuple(tx[1]), kind),
+            train_Y=train_Y,
+            train_Yvar=Yvar,
+            task_feature=tf,
+            task_rank=self._rank,
+            all_tasks=all_tasks,
+        )
+        self.pyro_model: MultitaskSaasPyroModel = pyro_model
+        if outcome_transform is not None:
+            self.outcome_transform = outcome_transform
+        if input_transform is not None:
+            self.input_transform = input_transform
+        y_tf = to_flat(train_Y, "train_Y")
+        if y_tf[1][0] > 0:
+            _validate_input_scaling(to_flat(transformed_X, "X"), y_tf, y_tf[1][0])
+
+    def _map_task_value(self, value: float) -> int:
+        """The index of a task value (BoTorch's ``_task_mapper``)."""
+        if self._rs.tasks_are_indices:
+            return int(value)
+        return self.all_tasks.index(int(value))
+
+    # -- fitted state --------------------------------------------------------
+
+    def _check_if_fitted(self) -> None:
+        r"""Raise an exception if the model hasn't been fitted."""
+        if self.covar_module is None:
+            raise RuntimeError(
+                "Model has not been fitted. You need to call "
+                "`fit_fully_bayesian_model_nuts` to fit the model."
+            )
+
+    def train(  # type: ignore[override]
+        self, mode: bool = True, reset: bool = True
+    ) -> SaasFullyBayesianMultiTaskGP:
+        r"""Puts the model in ``train`` mode.
+
+        Args:
+            mode: A boolean indicating whether to put the model in training mode.
+            reset: A boolean indicating whether to reset the model to its initial
+                state. If ``mode`` is False, this argument is ignored.
+
+        Returns:
+            The model itself.
+        """
+        self.training = mode
+        if mode and reset:
+            self.mean_module = None
+            self.covar_module = None
+            self.likelihood = None
+            self._samples = None
+        for name in ("input_transform", "outcome_transform"):
+            tf = getattr(self, name, None)
+            if tf is not None:
+                tf.train(mode)
+        return self
+
+    def eval(self) -> SaasFullyBayesianMultiTaskGP:
+        r"""Puts the model in eval mode (without the adjustment of the task
+        factors of unobserved tasks, as BoTorch)."""
+        self._check_if_fitted()
+        return self.train(False)
+
+    @property
+    def median_lengthscale(self) -> Any:
+        r"""Median lengthscales across the MCMC samples."""
+        self._check_if_fitted()
+        assert self._samples is not None
+        covars: list[Any] = [m.covar_module for m in self._samples]
+        per = [list(to_flat(c.kernels[0].base_kernel.lengthscale, "ls")[0]) for c in covars]
+        d = len(per[0])
+        out = [_median([p[k] for p in per]) for k in range(d)]
+        return from_flat(out, (d,), self._kind)
+
+    @property
+    def num_mcmc_samples(self) -> int:
+        r"""Number of MCMC samples in the model."""
+        self._check_if_fitted()
+        assert self._samples is not None
+        return len(self._samples)
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        r"""Batch shape of the model, equal to the number of MCMC samples.
+        Note that ``SaasFullyBayesianMultiTaskGP`` does not support batching
+        over input data at this point.
+        """
+        self._check_if_fitted()
+        assert self._samples is not None
+        return (len(self._samples), *self._samples[0].batch_shape)
+
+    def fantasize(self, *args: Any, **kwargs: Any) -> NoReturn:  # type: ignore[override]
+        raise NotImplementedError("Fantasize is not implemented!")
+
+    def load_mcmc_samples(self, mcmc_samples: dict[str, Any]) -> None:
+        r"""Load the MCMC hyperparameter samples into the model.
+
+        This method will be called by ``fit_fully_bayesian_model_nuts`` when the model
+        has been fitted in order to create a batched MultiTaskGP model.
+        """
+        pm = self.pyro_model
+        means, _ = _values(mcmc_samples, "mean")
+        num = len(means) // pm.num_tasks
+        ls, _ = _values(mcmc_samples, "lengthscale")
+        outputscale, _ = _values(mcmc_samples, "outputscale")
+        noise = None if pm.train_Yvar is not None else _values(mcmc_samples, "noise")[0]
+        d = pm.ard_num_dims
+        args = dict(self._fb_args)
+        user_ot = self._fb_outcome_transform
+        if user_ot is not None and args["train_Yvar"] is not None:
+            # The (transformed, clamped) noise in the original outcome space.
+            sd = float(to_flat(user_ot.stdvs, "stdvs")[0][0])
+            vdata, vshape = to_flat(args["train_Yvar"], "train_Yvar")
+            args["train_Yvar"] = from_flat(
+                [float(v) * sd * sd for v in vdata], tuple(vshape), self._kind
+            )
+        samples = []
+        for s in range(num):
+            mod = pm._member_modules(mcmc_samples, s)
+            t, r = pm.num_tasks, mod["rank"]
+            latent_kernel = MaternKernel(nu=2.5, ard_num_dims=r)
+            latent_kernel.lengthscale = from_flat(mod["task_lengthscale"], (1, r), kind_of(None))
+            latent = from_flat(mod["latent_features"], (t, r), kind_of(None))
+            task_covar, _ = to_flat(latent_kernel(latent), "task_covar")
+            chol = _cholesky([[float(task_covar[i * t + j]) for j in range(t)] for i in range(t)])
+            task_kernel = IndexKernel(num_tasks=t, rank=t)
+            task_kernel.covar_factor = from_flat(
+                [v for row in chol for v in row], (t, t), kind_of(None)
+            )
+            # var = 0 (BoTorch: raw_var = -inf; softplus(-1000) = 0 exactly).
+            task_kernel.raw_var = from_flat([-1000.0] * t, (t,), kind_of(None))
+            base = MaternKernel(nu=2.5, ard_num_dims=d)
+            base.lengthscale = from_flat(ls[s * d : (s + 1) * d], (1, d), kind_of(None))
+            data_kernel = ScaleKernel(base)
+            data_kernel.outputscale = from_flat([outputscale[s]], (), kind_of(None))
+            likelihood = None
+            if noise is not None:
+                likelihood = GaussianLikelihood(
+                    noise_constraint=GreaterThan(MIN_INFERRED_NOISE_LEVEL)
+                )
+            member = _SampleMultiTaskGP(
+                task_kernel=task_kernel,
+                train_X=args["train_X"],
+                train_Y=args["raw_Y"],
+                task_feature=args["task_feature"],
+                train_Yvar=args["train_Yvar"],
+                covar_module=data_kernel,
+                likelihood=likelihood,
+                output_tasks=args["output_tasks"],
+                rank=t,
+                all_tasks=args["all_tasks"],
+                outcome_transform=(
+                    Standardize(m=1, min_stdv=user_ot.min_stdv) if user_ot is not None else None
+                ),
+                input_transform=copy.deepcopy(self._fb_input_transform),
+                validate_task_values=args["validate_task_values"],
+            )
+            for k in range(t):
+                member.mean_module.base_means[k].constant = mod["mean"][k]
+            if noise is not None:
+                lik: Any = member.likelihood
+                lik.noise = max(noise[s], MIN_INFERRED_NOISE_LEVEL)
+            member.eval()
+            samples.append(member)
+        self._samples = samples
+        self.mean_module = [m.mean_module for m in samples]
+        self.covar_module = [m.covar_module for m in samples]  # type: ignore[assignment]
+        self.likelihood = [m.likelihood for m in samples]  # type: ignore[assignment]
+
+    def posterior(
+        self,
+        X: Any,
+        output_indices: list[int] | None = None,
+        observation_noise: Any = False,
+        posterior_transform: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        r"""Computes the posterior over model outputs at the provided points.
+
+        Returns:
+            A ``GaussianMixturePosterior`` object (the mixture of the samples'
+            posteriors along ``MCMC_DIM``). Includes observation noise if
+            specified.
+        """
+        self._check_if_fitted()
+        assert self._samples is not None
+        posteriors = [
+            m.posterior(
+                X,
+                output_indices=output_indices,
+                observation_noise=observation_noise,
+                posterior_transform=posterior_transform,
+                **kwargs,
+            )
+            for m in self._samples
+        ]
+        return _StackedMixturePosterior(posteriors, kind_of(X))
+
+    def condition_on_observations(  # type: ignore[override]
+        self, X: Any, Y: Any, noise: Any = None, **kwargs: Any
+    ) -> SaasFullyBayesianMultiTaskGP:
+        """Conditions on additional observations for a Fully Bayesian model (either
+        identical across models or unique per-model).
+
+        Args:
+            X: A ``batch_shape x num_samples x d``-dim Tensor, where ``d`` is
+                the dimension of the feature space and ``batch_shape`` is the number of
+                sampled models.
+            Y: A ``batch_shape x num_samples x 1``-dim Tensor, where ``d`` is
+                the dimension of the feature space and ``batch_shape`` is the number of
+                sampled models.
+
+        Returns:
+            A fully bayesian model conditioned on given observations (every
+            MCMC sample on its observations).
+        """
+        self._check_if_fitted()
+        assert self._samples is not None
+        x = to_flat(X, "X")
+        y = to_flat(Y, "Y")
+        num = len(self._samples)
+
+        def part(values: Any, flat: Any, s: int) -> Any:
+            if values is None:
+                return None
+            data, shape = flat
+            if len(shape) == 2:
+                return values
+            if shape[0] != num:
+                raise UnsupportedError(
+                    "botorch_rs conditions a fully Bayesian multi-task GP on identical "
+                    "observations (n x d) or on one set per MCMC sample (num_mcmc_samples x n x "
+                    f"d), got shape {tuple(shape)}."
+                )
+            size = math.prod(shape[1:])
+            return from_flat(
+                list(data[s * size : (s + 1) * size]), tuple(shape[1:]), kind_of(values)
+            )
+
+        nz = None if noise is None else to_flat(noise, "noise")
+        new = copy.copy(self)
+        new._samples = [
+            m.condition_on_observations(
+                part(X, x, s), part(Y, y, s), noise=part(noise, nz, s), **kwargs
+            )
+            for s, m in enumerate(self._samples)
+        ]
+        new.training = False
+        return new
+
+    # -- ensembles -----------------------------------------------------------
+
+    def _ensemble_members(self) -> list[MultiTaskGP]:
+        """The MCMC samples (``MultiTaskGP``s)."""
+        self._check_if_fitted()
+        assert self._samples is not None
+        return list(self._samples)
+
+    def _ensemble_acquisition(self, sampler: Any) -> tuple[list[Any], list[float] | None, Any]:
+        """The members, their (equal) weights and the sampler shared by the
+        members' acquisition functions."""
+        from botorch_rs.acquisition.monte_carlo import DEFAULT_MC_SAMPLES
+        from botorch_rs.sampling.normal import SobolQMCNormalSampler
+
+        if sampler is None:
+            sampler = SobolQMCNormalSampler(sample_shape=(DEFAULT_MC_SAMPLES,))
+        return self._ensemble_members(), None, sampler
+
+    def __repr__(self) -> str:
+        fitted = "unfitted" if self.covar_module is None else f"{self.num_mcmc_samples} samples"
+        return f"SaasFullyBayesianMultiTaskGP(num_tasks={self.num_tasks}, {fitted})"
+
+
+__all__ = [
+    "MCMC_DIM",
+    "LatentFeatureMultiTaskPyroMixin",
+    "MultiTaskPyroMixin",
+    "MultitaskSaasPyroModel",
+    "SaasFullyBayesianMultiTaskGP",
+    "reshape_and_detach",
+]

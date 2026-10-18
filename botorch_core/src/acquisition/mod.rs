@@ -64,6 +64,7 @@ use crate::Matrix;
 
 pub mod active_learning;
 pub mod analytic;
+pub mod bayesian_active_learning;
 pub mod composite;
 pub mod cost_aware;
 pub(crate) mod dual;
@@ -95,6 +96,7 @@ pub use analytic::{
     PosteriorStandardDeviation, ProbabilityOfImprovement, QAnalyticProbabilityOfImprovement,
     ScalarizedPosteriorMean, UpperConfidenceBound,
 };
+pub use bayesian_active_learning::QBayesianActiveLearningByDisagreement;
 pub use composite::WeightedLogMeanExp;
 pub use ensemble::EnsembleAverage;
 pub use joint_entropy_search::{

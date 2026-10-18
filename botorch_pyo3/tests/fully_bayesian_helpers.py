@@ -526,3 +526,93 @@ def model_pair(
     rs.load_mcmc_samples({k: v.clone() for k, v in samples.items()})
     rs.eval()
     return bt, rs, X, samples
+
+
+# ---------------------------------------------------------------------------
+# Multi-task models
+# ---------------------------------------------------------------------------
+
+
+def mt_data(seed: int, n: int = 12, d: int = 2, tasks: tuple[int, ...] = (0, 1, 2)) -> Any:
+    """Long-format multi-task data (task column last; the task values
+    ``tasks``)."""
+    g = torch.Generator().manual_seed(seed)
+    X = torch.rand(n, d, generator=g, dtype=DT)
+    t = torch.tensor([float(tasks[i % len(tasks)]) for i in range(n)], dtype=DT).unsqueeze(-1)
+    f = torch.sin(4.0 * X[:, :1]) + 0.3 * t / max(tasks)
+    Y = f + 0.1 * torch.randn(n, 1, generator=g, dtype=DT)
+    Yvar = 0.01 + 0.02 * torch.rand(n, 1, generator=g, dtype=DT)
+    return torch.cat([X, t], -1), Y, Yvar
+
+
+def mt_synthetic_samples(
+    num: int, d: int, num_tasks: int, rank: int, seed: int, fixed: bool
+) -> dict[str, Any]:
+    """MCMC samples of a ``SaasFullyBayesianMultiTaskGP``."""
+    g = torch.Generator().manual_seed(seed)
+
+    def u(lo: float, hi: float, *shape: int) -> Any:
+        return lo + (hi - lo) * torch.rand(*shape, generator=g, dtype=DT)
+
+    out = {
+        "mean": u(-0.5, 0.5, num, num_tasks),
+        "outputscale": u(0.3, 3.0, num),
+        "lengthscale": torch.exp(u(math.log(0.2), math.log(4.0), num, d)),
+        "latent_features": u(-1.5, 1.5, num, num_tasks, rank),
+        "task_lengthscale": u(0.5, 3.0, num, rank),
+    }
+    if not fixed:
+        out["noise"] = 10.0 ** u(-4.5, -1.0, num)
+    return out
+
+
+def mt_model_pair(
+    seed: int,
+    fixed: bool = False,
+    rank: int = 2,
+    output_tasks: list[int] | None = None,
+    transforms: bool = False,
+    tasks: tuple[int, ...] = (0, 1, 2),
+    num: int = 4,
+    samples: dict[str, Any] | None = None,
+) -> tuple[Any, Any, Any, Any]:
+    """BoTorch's and botorch_rs's ``SaasFullyBayesianMultiTaskGP`` with the
+    same MCMC samples loaded."""
+    from botorch.models.fully_bayesian_multitask import SaasFullyBayesianMultiTaskGP as Bt
+    from botorch.models.transforms import Normalize as BtNormalize
+    from botorch.models.transforms import Standardize as BtStandardize
+
+    from botorch_rs.models.fully_bayesian_multitask import SaasFullyBayesianMultiTaskGP as Rs
+    from botorch_rs.models.transforms import Normalize as RsNormalize
+    from botorch_rs.models.transforms import Standardize as RsStandardize
+
+    X, Y, Yvar = mt_data(seed, tasks=tasks)
+    if not transforms:
+        Y = (Y - Y.mean()) / Y.std()
+    else:
+        X = X.clone()
+        X[:, :-1] = -1.0 + 3.0 * X[:, :-1]
+        Y = 2.0 + 3.0 * Y
+        Yvar = 9.0 * Yvar
+    yvar = Yvar if fixed else None
+    kw: dict[str, Any] = {"task_feature": -1, "rank": rank, "output_tasks": output_tasks}
+    bkw, rkw = dict(kw), dict(kw)
+    if transforms:
+        cols = X.shape[-1]
+        bkw.update(
+            outcome_transform=BtStandardize(m=1),
+            input_transform=BtNormalize(d=cols, indices=list(range(cols - 1))),
+        )
+        rkw.update(
+            outcome_transform=RsStandardize(m=1),
+            input_transform=RsNormalize(d=cols, indices=list(range(cols - 1))),
+        )
+    bt = Bt(X, Y, train_Yvar=yvar, **bkw)
+    rs = Rs(X, Y, train_Yvar=yvar, **rkw)
+    if samples is None:
+        samples = mt_synthetic_samples(num, X.shape[-1] - 1, len(tasks), rank, seed + 1, fixed)
+    bt.load_mcmc_samples({k: v.clone() for k, v in samples.items()})
+    bt.eval()
+    rs.load_mcmc_samples({k: v.clone() for k, v in samples.items()})
+    rs.eval()
+    return bt, rs, X, samples

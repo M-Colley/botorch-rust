@@ -19,6 +19,7 @@ from botorch_rs.acquisition.analytic import (
     UpperConfidenceBound,
     qAnalyticProbabilityOfImprovement,
 )
+from botorch_rs.acquisition.bayesian_active_learning import qBayesianActiveLearningByDisagreement
 from botorch_rs.acquisition.composite import CallableAcquisitionFunction, WeightedLogMeanExp
 from botorch_rs.acquisition.cost_aware import (
     CostAwareUtility,
@@ -146,6 +147,7 @@ __all__ = [
     "qMultiFidelityKnowledgeGradient",
     "qMultiFidelityLowerBoundMaxValueEntropy",
     "qMultiFidelityMaxValueEntropy",
+    "qBayesianActiveLearningByDisagreement",
     "qNegIntegratedPosteriorVariance",
     "qNoisyExpectedImprovement",
     "qPosteriorStandardDeviation",

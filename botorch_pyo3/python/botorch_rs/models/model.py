@@ -169,6 +169,20 @@ class ModelList(Model):
         self.models: list[Any] = list(models)
         self.training = True
 
+    @property
+    def _ensemble_members(self) -> Any:
+        """With ensemble sub-models (e.g. fully Bayesian GPs): the lists of
+        their members of the same index (``AttributeError`` otherwise)."""
+        from botorch_rs.models._ensemble_lists import members_method
+
+        return members_method(self)
+
+    @property
+    def _ensemble_acquisition(self) -> Any:
+        from botorch_rs.models._ensemble_lists import acquisition_method
+
+        return acquisition_method(self)
+
     def _get_group_subset_indices(self, idcs: list[int] | None) -> dict[int, list[int] | None]:
         r"""Convert global subset indices to indices for the individual models.
 

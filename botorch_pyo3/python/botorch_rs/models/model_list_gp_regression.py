@@ -63,6 +63,20 @@ class ModelListGP(Model):
         self.training = True
 
     @property
+    def _ensemble_members(self) -> Any:
+        """With ensemble sub-models (e.g. fully Bayesian GPs): the lists of
+        their members of the same index (``AttributeError`` otherwise)."""
+        from botorch_rs.models._ensemble_lists import members_method
+
+        return members_method(self)
+
+    @property
+    def _ensemble_acquisition(self) -> Any:
+        from botorch_rs.models._ensemble_lists import acquisition_method
+
+        return acquisition_method(self)
+
+    @property
     def _all_single_task(self) -> bool:
         return all(isinstance(m, SingleTaskGP) for m in self.models)
 

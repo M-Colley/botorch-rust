@@ -122,6 +122,12 @@ ENSEMBLE_ACQUISITION_FUNCTIONS = frozenset(
         "qPosteriorStandardDeviation",
         "qNoisyExpectedImprovement",
         "qLogNoisyExpectedImprovement",
+        # Multi-objective (lists of fully Bayesian GPs, phase 10a): BoTorch's
+        # `marginalize_dim` / `average_over_ensemble_models`.
+        "qExpectedHypervolumeImprovement",
+        "qNoisyExpectedHypervolumeImprovement",
+        "qLogExpectedHypervolumeImprovement",
+        "qLogNoisyExpectedHypervolumeImprovement",
     }
 )
 
@@ -208,6 +214,15 @@ def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any])
     members, weights, sampler = model._ensemble_acquisition(arguments.get("sampler"))
     if "sampler" in names:
         arguments["sampler"] = sampler
+    if "marginalize_dim" in names:
+        # The ensemble dimension (BoTorch's MCMC_DIM) is the only one
+        # botorch_rs marginalizes; the members have none.
+        if arguments.get("marginalize_dim") not in (None, -3):
+            raise UnsupportedError(
+                "botorch_rs marginalizes the ensemble dimension of an ensemble model "
+                "(marginalize_dim=-3)."
+            )
+        arguments["marginalize_dim"] = None
     if "prune_baseline" in names:
         prune = arguments.get("prune_baseline", names["prune_baseline"].default)
         if prune:
@@ -218,9 +233,18 @@ def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any])
                         "posterior transform or constraints is not supported by botorch_rs; "
                         "pass prune_baseline=False."
                     )
-            arguments["X_baseline"] = _prune_ensemble(
-                model, arguments["X_baseline"], members=members
-            )
+            if "ref_point" in names:
+                from botorch_rs.acquisition.multi_objective.utils import (
+                    _prune_ensemble_multi_objective,
+                )
+
+                arguments["X_baseline"] = _prune_ensemble_multi_objective(
+                    model, arguments["X_baseline"], arguments["ref_point"], members=members
+                )
+            else:
+                arguments["X_baseline"] = _prune_ensemble(
+                    model, arguments["X_baseline"], members=members
+                )
             arguments["prune_baseline"] = False
     objs = []
     for member in members:

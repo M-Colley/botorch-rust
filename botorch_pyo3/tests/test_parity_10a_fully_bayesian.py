@@ -56,8 +56,11 @@ from fully_bayesian_helpers import (  # noqa: E402
     bt_fit_recorded,
     bt_model,
     fb_cases,
+    jax_x64,
     make_fb_data,
     model_pair,
+    mt_data,
+    mt_model_pair,
     numpyro_potential,
     perturbed,
     rs_class,
@@ -232,7 +235,7 @@ def _compare_posteriors(label: str, bt: Any, rs: Any, Xt: Any) -> None:
             CHECK.check(
                 f"{label}: mixture variance", pr.mixture_variance, pb.mixture_variance, VALUE_TOL
             )
-            if Xt.dim() == 2:
+            if Xt.dim() == 2 and pb.mean.shape[-1] == 1:
                 mb = pb.mixture_covariance_matrix
                 CHECK.check(
                     f"{label}: mixture covariance",
@@ -527,3 +530,328 @@ def test_matern52_and_linear_kernel_helpers_match_botorch() -> None:
         "reshape_and_detach", rs_fb.reshape_and_detach(t, v), bt_fb.reshape_and_detach(t, v), 0.0
     )
     assert rs_fb.MCMC_DIM == bt_fb.MCMC_DIM
+
+
+# ---------------------------------------------------------------------------
+# Bayesian active learning
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize("q,pending", [(1, False), (2, False), (2, True)])
+def test_bald_matches_botorch(model: str, q: int, pending: bool) -> None:
+    from botorch.acquisition.bayesian_active_learning import (
+        qBayesianActiveLearningByDisagreement as BtBALD,
+    )
+
+    from botorch_rs.acquisition.bayesian_active_learning import (
+        qBayesianActiveLearningByDisagreement as RsBALD,
+    )
+
+    bt, rs, X, _ = model_pair(model, seed=140, num=4, fixed=model == "linear")
+    lo, hi = X.min(0).values, X.max(0).values
+    g = _gen(141)
+    Xt = lo + (hi - lo) * torch.rand(3, q, 3, generator=g, dtype=DT)
+    Xp = lo + (hi - lo) * torch.rand(2, 3, generator=g, dtype=DT) if pending else None
+    Xfull = Xt if Xp is None else torch.cat([Xt, Xp.expand(3, 2, 3)], dim=-2)
+    s_bt, s_rs = _samplers(64, Xfull.shape[-2], 142, X=Xfull, bt=bt)
+    a_bt = BtBALD(bt, sampler=s_bt, X_pending=Xp)
+    a_rs = RsBALD(rs, sampler=s_rs, X_pending=Xp)
+    _compare_acqf(f"qBayesianActiveLearningByDisagreement on {model}", a_rs, a_bt, Xt)
+
+
+def test_bald_requires_a_fully_bayesian_model() -> None:
+    from botorch_rs.acquisition.bayesian_active_learning import (
+        FULLY_BAYESIAN_ERROR_MSG,
+        qBayesianActiveLearningByDisagreement,
+    )
+    from botorch_rs.models import SingleTaskGP
+
+    X, Y, _ = make_fb_data({"n": 6, "d": 2}, 143)
+    with pytest.raises(RuntimeError, match="Fully Bayesian acquisition functions require"):
+        qBayesianActiveLearningByDisagreement(SingleTaskGP(X, Y))
+    assert "SaasFullyBayesianSingleTaskGP" in FULLY_BAYESIAN_ERROR_MSG
+
+
+# ---------------------------------------------------------------------------
+# Multi-task models
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "fixed,rank,output_tasks,transforms,tasks",
+    [
+        (False, 2, None, False, (0, 1, 2)),
+        (True, 1, None, False, (0, 1, 2)),
+        (False, 3, [1], True, (0, 1, 2)),
+        (False, 2, [3], False, (1, 3, 5)),
+    ],
+)
+def test_multitask_posterior_matches_botorch(
+    fixed: bool, rank: int, output_tasks: Any, transforms: bool, tasks: Any
+) -> None:
+    bt, rs, X, _ = mt_model_pair(
+        150, fixed=fixed, rank=rank, output_tasks=output_tasks, transforms=transforms, tasks=tasks
+    )
+    g = _gen(151)
+    lo, hi = X[:, :-1].min(0).values, X[:, :-1].max(0).values
+    for shape in ((4,), (3, 2)):
+        Xt = lo + (hi - lo) * torch.rand(*shape, X.shape[-1] - 1, generator=g, dtype=DT)
+        _compare_posteriors("multi-task posterior (output tasks)", bt, rs, Xt)
+    Xd = lo + (hi - lo) * torch.rand(4, X.shape[-1] - 1, generator=g, dtype=DT)
+    t = torch.tensor([[float(tasks[i % len(tasks)])] for i in range(4)], dtype=DT)
+    _compare_posteriors("multi-task posterior (task column)", bt, rs, torch.cat([Xd, t], -1))
+    assert rs.num_mcmc_samples == bt.num_mcmc_samples
+    assert tuple(rs.batch_shape) == tuple(bt.batch_shape)
+    CHECK.check(
+        "multi-task median_lengthscale",
+        rs.median_lengthscale,
+        bt.median_lengthscale.detach(),
+        VALUE_TOL,
+    )
+
+
+@pytest.mark.parametrize("name", ["qLogExpectedImprovement", "qLogNoisyExpectedImprovement"])
+def test_multitask_acquisition_matches_botorch(name: str) -> None:
+    bt, rs, X, _ = mt_model_pair(160, output_tasks=[0])
+    g = _gen(161)
+    q = 2
+    Xb = X[X[:, -1] == 0][:, :-1]
+    noisy = "Noisy" in name
+    k = Xb.shape[0] + q if noisy else q
+    s_bt, s_rs = _samplers(32, k, 162)
+    kw: dict[str, Any] = {} if noisy else {"best_f": torch.tensor(0.5, dtype=DT)}
+    if noisy:
+        kw.update(X_baseline=Xb, prune_baseline=False, cache_root=False)
+    a_bt = getattr(bt_logei, name)(bt, sampler=s_bt, **kw)
+    a_rs = getattr(rs_logei, name)(rs, sampler=s_rs, **kw)
+    Xq = torch.rand(1 if noisy else 3, q, X.shape[-1] - 1, generator=g, dtype=DT)
+    _compare_acqf(f"{name} on the multi-task model", a_rs, a_bt, Xq, log=True)
+
+
+def test_multitask_conditioning_matches_botorch() -> None:
+    bt, rs, _, _ = mt_model_pair(170)
+    g = _gen(171)
+    tasks = torch.tensor([[0.0], [2.0]], dtype=DT)
+    Xn = torch.cat([torch.rand(2, 2, generator=g, dtype=DT), tasks], -1)
+    Yn = torch.randn(2, 1, generator=g, dtype=DT)
+    with torch.no_grad():
+        bt.posterior(Xn)
+    cb = bt.condition_on_observations(bt.transform_inputs(Xn), Yn)
+    cr = rs.condition_on_observations(Xn, Yn)
+    Xt = torch.rand(3, 2, generator=g, dtype=DT)
+    _compare_posteriors("multi-task conditioned", cb, cr, Xt)
+
+
+def test_multitask_potential_matches_numpyro() -> None:
+    from botorch.models.fully_bayesian_multitask import SaasFullyBayesianMultiTaskGP as Bt
+
+    from botorch_rs.models.fully_bayesian_multitask import SaasFullyBayesianMultiTaskGP as Rs
+
+    for fixed, tasks in ((False, (0, 1, 2)), (True, (2, 4))):
+        X, Y, Yvar = mt_data(180, tasks=tasks)
+        Y = (Y - Y.mean()) / Y.std()
+        yvar = Yvar if fixed else None
+        with jax_x64(True):
+            bt = Bt(X, Y, task_feature=-1, train_Yvar=yvar, rank=2)
+        rs = Rs(X, Y, task_feature=-1, train_Yvar=yvar, rank=2)
+        pot = rs.pyro_model._potential()
+        g = _gen(181)
+        for _ in range(3):
+            z = (4 * torch.rand(pot.dim, generator=g, dtype=DT) - 2).tolist()
+            vb, gb = numpyro_potential(bt, z)
+            vr, gr = pot.potential(z)
+            CHECK.check("multi-task potential energy", [vr], [vb], VALUE_TOL)
+            check_grad(CHECK, "multi-task potential energy gradient", gr, gb)
+
+
+def _first_difference(a: list[Any], b: list[Any]) -> int:
+    """The first recorded draw whose kind or Bernoulli outcome differs."""
+    for k, (x, y) in enumerate(zip(a, b, strict=False)):
+        same = (x[0] == y[0] == "n") or (x[0] == y[0] == "u" and (x[1] < x[2]) == (y[1] < y[2]))
+        if not same:
+            return k
+    return min(len(a), len(b))
+
+
+def test_multitask_nuts_replay_follows_numpyro_as_long_as_botorch_twins() -> None:
+    """The chains of the multi-task model are chaotic from their first
+    iterations: BoTorch's own chain makes other random decisions when its
+    training inputs change by 1e-14 (twins). botorch_rs's replay must follow
+    NumPyro's decisions at least as long as the twins do, with its states
+    within 10x the twins' spread up to there."""
+    from botorch.models.fully_bayesian_multitask import SaasFullyBayesianMultiTaskGP as Bt
+
+    from botorch_rs.models.fully_bayesian_multitask import SaasFullyBayesianMultiTaskGP as Rs
+
+    X, Y, _ = mt_data(190, n=14, tasks=(0, 1))
+    Y = (Y - Y.mean()) / Y.std()
+    kw = {"warmup_steps": 20, "num_samples": 8, "thinning": 2}
+
+    def run(Xi: Any) -> Any:
+        with jax_x64(True):
+            bt = Bt(Xi, Y, task_feature=-1, rank=2)
+        return bt_fit_recorded(bt, **kw)
+
+    rec = run(X)
+    twins = [run(perturbed(X, 1e-14, 400 + t)) for t in range(2)]
+    agree = min(_first_difference(rec.draws, tw.draws) for tw in twins)
+    rs = Rs(X, Y, task_feature=-1, rank=2)
+    out = rs.pyro_model._potential().sample_nuts(
+        20, 8, z0=rec.z0, draws=rec.draws, stop_when_draws_fail=True
+    )
+    rs_agree = out["consumed"] if out["first_flip"] is None else out["first_flip"]
+    CHECK.check_bound(
+        "multi-task NUTS replay: draws the twins follow beyond botorch_rs", agree - rs_agree, 0
+    )
+    # The states of the iterations whose draws the twins share with NumPyro.
+    used = 1  # the momentum of NumPyro's init_kernel
+    worst = 0.0
+    for t, (it, (_, zb, _)) in enumerate(zip(out["trace"], rec.states, strict=False)):
+        nxt = used + 1
+        while nxt < len(rec.draws) and rec.draws[nxt][0] == "u":
+            nxt += 1
+        if nxt > agree:
+            break
+        used = nxt
+        spread = max(
+            float(np.max(np.abs(np.subtract(rec.states[t][1], tw.states[t][1])))) for tw in twins
+        )
+        err = float(np.max(np.abs(np.subtract(it[0], zb))))
+        worst = max(worst, err / max(10 * spread, 1e-12))
+    CHECK.check_bound("multi-task NUTS replay: states / (10x twin spread)", worst, 1.0)
+
+
+def test_mixture_covariance_of_several_outputs() -> None:
+    """BoTorch's ``mixture_covariance_matrix`` fails for multi-output
+    posteriors (``q x q`` mean outer products added to ``(q m) x (q m)``
+    covariances, see the draft); botorch_rs's is compared with the mixture
+    covariance computed from BoTorch's components (output-major order)."""
+    bt, rs, X, _ = mt_model_pair(200)
+    Xt = torch.rand(3, 2, generator=_gen(201), dtype=DT)
+    with torch.no_grad():
+        pb = bt.posterior(Xt)
+        with pytest.raises(RuntimeError):
+            _ = pb.mixture_covariance_matrix
+        mean = pb.mean  # S x q x m
+        cov = pb.distribution.covariance_matrix  # S x (q m) x (q m), output-major
+        diff = (mean - mean.mean(0)).transpose(-1, -2).reshape(mean.shape[0], -1)
+        ref = cov.mean(0) + (diff.unsqueeze(-1) * diff.unsqueeze(-2)).mean(0)
+    CHECK.check(
+        "mixture covariance of several outputs",
+        rs.posterior(Xt).mixture_covariance_matrix,
+        ref,
+        VALUE_TOL,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Multi-objective acquisition functions (lists of fully Bayesian GPs)
+# ---------------------------------------------------------------------------
+
+
+def _fb_list_pair(seed: int, models: tuple[str, str] = ("saas", "matern")) -> tuple[Any, Any, Any]:
+    """``ModelListGP``s of two fully Bayesian GPs (same training inputs, the
+    same number of MCMC samples) in BoTorch and botorch_rs."""
+    from botorch.models import ModelListGP as BtList
+
+    from botorch_rs.models import ModelListGP as RsList
+
+    bts, rss = [], []
+    X = None
+    for k, model in enumerate(models):
+        bt, rs, X, _ = model_pair(model, seed=seed + 10 * k, num=4, transforms=False)
+        bts.append(bt)
+        rss.append(rs)
+    # The same training inputs for both outputs (BoTorch's ModelListGP
+    # broadcasts the models' posteriors).
+    return BtList(*bts), RsList(*rss), X
+
+
+@pytest.mark.parametrize("log", [False, True])
+@pytest.mark.parametrize("noisy,prune", [(False, False), (True, False), (True, True)])
+def test_multi_objective_acquisition_on_fully_bayesian_list(
+    log: bool, noisy: bool, prune: bool
+) -> None:
+    """qEHVI / qNEHVI (and the log versions) on a ``ModelListGP`` of fully
+    Bayesian GPs: averaged over the samples (``marginalize_dim=-3``), with
+    BoTorch's base samples (``synced_draws``)."""
+    from botorch.acquisition.multi_objective import logei as bt_mo_logei
+    from botorch.acquisition.multi_objective import monte_carlo as bt_mo_mc
+    from botorch.utils.multi_objective.box_decompositions.non_dominated import (
+        NondominatedPartitioning as BtPartitioning,
+    )
+    from mo_acquisition_helpers import bt_sampler, rs_sampler, synced_draws
+
+    from botorch_rs.acquisition.multi_objective import logei as rs_mo_logei
+    from botorch_rs.acquisition.multi_objective import monte_carlo as rs_mo_mc
+    from botorch_rs.utils.multi_objective.box_decompositions.non_dominated import (
+        NondominatedPartitioning as RsPartitioning,
+    )
+
+    bt, rs, X = _fb_list_pair(210)
+    with torch.no_grad():
+        means = bt.posterior(X).mixture_mean
+    ref = means.min(0).values - 0.1 * (means.max(0).values - means.min(0).values)
+    q, n, m = 2, X.shape[0], 2
+    num = 16
+    name = ("qLog" if log else "q") + (
+        "NoisyExpectedHypervolumeImprovement" if noisy else "ExpectedHypervolumeImprovement"
+    )
+    mod_bt = bt_mo_logei if log else bt_mo_mc
+    mod_rs = rs_mo_logei if log else rs_mo_mc
+    kw: dict[str, Any] = {"ref_point": ref}
+    if noisy:
+        kw.update(X_baseline=X, prune_baseline=prune, cache_root=False, marginalize_dim=-3)
+    with synced_draws(211):
+        bkw = dict(kw)
+        if not noisy:
+            bkw["partitioning"] = BtPartitioning(ref_point=ref, Y=means)
+        a_bt = getattr(mod_bt, name)(bt, sampler=bt_sampler(num), **bkw)
+    rkw = dict(kw)
+    if not noisy:
+        rkw["partitioning"] = RsPartitioning(ref_point=ref, Y=means)
+    import botorch_rs.acquisition.multi_objective.utils as rs_mo_utils
+
+    # The pruning draws BoTorch's base samples too (2048 samples).
+    orig = rs_mo_utils.SobolQMCNormalSampler
+    rs_mo_utils.SobolQMCNormalSampler = lambda sample_shape: rs_sampler(  # type: ignore[assignment]
+        sample_shape[0], 211, n * m
+    )
+    try:
+        a_rs = getattr(mod_rs, name)(rs, sampler=rs_sampler(num, 211, (n + q) * m), **rkw)
+    finally:
+        rs_mo_utils.SobolQMCNormalSampler = orig  # type: ignore[assignment]
+    lo, hi = X.min(0).values, X.max(0).values
+    Xt = lo + (hi - lo) * torch.rand(2, q, X.shape[-1], generator=_gen(212), dtype=DT)
+    with synced_draws(211):
+        vb, gb = values_and_grads(a_bt, Xt)
+    vr, gr = values_and_grads(a_rs, Xt)
+    if log:
+        CHECK.check_log(f"{name} on a list of fully Bayesian GPs values", vr, vb, VALUE_TOL)
+    else:
+        CHECK.check(f"{name} on a list of fully Bayesian GPs values", vr, vb, VALUE_TOL)
+    check_grad(CHECK, f"{name} on a list of fully Bayesian GPs gradients", gr, gb)
+    if noisy:
+        CHECK.check(f"{name}: baseline (pruned={prune})", a_rs.X_baseline, a_bt.X_baseline, 0.0)
+
+
+def test_prune_inferior_points_multi_objective_on_fully_bayesian_list() -> None:
+    from botorch.acquisition.multi_objective.utils import (
+        prune_inferior_points_multi_objective as bt_prune_mo,
+    )
+    from mo_acquisition_helpers import rs_sampler, synced_draws
+
+    from botorch_rs.acquisition.multi_objective.utils import (
+        prune_inferior_points_multi_objective as rs_prune_mo,
+    )
+
+    bt, rs, X = _fb_list_pair(220)
+    with torch.no_grad():
+        means = bt.posterior(X).mixture_mean
+    ref = means.min(0).values - 0.1 * (means.max(0).values - means.min(0).values)
+    n = X.shape[0]
+    with synced_draws(221):
+        pb = bt_prune_mo(bt, X, ref, num_samples=64, marginalize_dim=-3)
+    pr = rs_prune_mo(rs, X, ref, marginalize_dim=-3, sampler=rs_sampler(64, 221, 2 * n))
+    CHECK.check("prune_inferior_points_multi_objective (fully Bayesian list)", pr, pb, 0.0)

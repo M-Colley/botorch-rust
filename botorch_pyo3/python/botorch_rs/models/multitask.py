@@ -91,6 +91,9 @@ class MultiTaskGP(Model):
 
     _supports_batched_models = False
     _supports_cache_root = False
+    #: Whether ``eval()`` sets the task factors of tasks without data to the
+    #: observed mean (not for the samples of a fully Bayesian model).
+    _eval_unobserved_tasks = True
 
     def __init__(
         self,
@@ -110,7 +113,6 @@ class MultiTaskGP(Model):
         validate_task_values: bool = True,
     ) -> None:
         from botorch_rs.models.gp_regression import _validate_tensor_args
-        from botorch_rs.models.kernels.positive_index import PositiveIndexKernel
         from botorch_rs.models.transforms.input import Normalize
         from botorch_rs.models.utils.gpytorch_modules import (
             get_covar_module_with_dim_scaled_prior,
@@ -250,12 +252,7 @@ class MultiTaskGP(Model):
         if _is_default(task_covar_prior):
             task_covar_prior = BetaPrior(concentration1=2.5, concentration0=1.5)
         self._rank = int(rank) if rank is not None else num_tasks
-        task_kernel = PositiveIndexKernel(
-            num_tasks=num_tasks,
-            rank=self._rank,
-            task_prior=task_covar_prior,
-            active_dims=[tf],
-        )
+        task_kernel = self._make_task_covar_module(num_tasks, self._rank, task_covar_prior, tf)
         self._rs = _rs.MultiTaskGP(
             x,
             y,
@@ -324,6 +321,20 @@ class MultiTaskGP(Model):
             ot_obj._set_fitted(fitted_ot, kind_of(train_Y))
             self.outcome_transform = ot_obj
         self.training = True
+
+    def _make_task_covar_module(
+        self, num_tasks: int, rank: int, task_covar_prior: Any, task_feature: int
+    ) -> Kernel:
+        """The task kernel: BoTorch's ``PositiveIndexKernel`` (the samples of
+        a fully Bayesian multi-task GP use an ``IndexKernel`` instead)."""
+        from botorch_rs.models.kernels.positive_index import PositiveIndexKernel
+
+        return PositiveIndexKernel(
+            num_tasks=num_tasks,
+            rank=rank,
+            task_prior=task_covar_prior,
+            active_dims=[task_feature],
+        )
 
     # -- tasks -------------------------------------------------------------
 
@@ -403,7 +414,7 @@ class MultiTaskGP(Model):
         """Evaluation mode. As in BoTorch, the rows of the task kernel's
         ``covar_factor`` of tasks without training data become the mean of
         the observed tasks' rows (``posterior`` calls ``eval()``)."""
-        if self._unobserved_task_indices:
+        if self._unobserved_task_indices and self._eval_unobserved_tasks:
             self._rs.eval_unobserved()
         return self.train(False)
 

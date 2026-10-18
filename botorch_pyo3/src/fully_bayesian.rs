@@ -6,11 +6,18 @@ use botorch_core::fully_bayesian::{
     find_valid_initial_params, sample_nuts, MassMatrix, NutsOptions, NutsRandom, PyroKernel,
     PyroModel, PyroModelSpec, RecordedDraw, RecordedDraws, SeededDraws, Support, TaskStructure,
 };
+use std::sync::Arc;
+
+use botorch_core::acquisition::QBayesianActiveLearningByDisagreement;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
+use crate::acquisition::{model_of, PyAcquisitionFunction};
 use crate::arrays::Array;
 use crate::errors::{value_error, IntoPyResult};
+use crate::models::PyModel;
+use crate::sampling::PySobolQMCNormalSampler;
+use crate::threads;
 
 /// A NumPyro model of a fully Bayesian GP (`SaasPyroModel`,
 /// `MaternPyroModel`, `LinearPyroModel`, multi-task SAAS) as a potential
@@ -146,11 +153,14 @@ impl PyPyroModel {
     /// from a generator seeded with `seed`. Returns a dict with `samples`
     /// (`num_samples` unconstrained states), `trace` (per iteration: state,
     /// potential energy, step size, acceptance probability, number of
-    /// steps, divergence), `step_size`, `inverse_mass_matrix` and, for
+    /// steps, divergence), `step_size`, `inverse_mass_matrix`, `stopped_at`
+    /// (with `stop_when_draws_fail`: the iteration whose draws could not be
+    /// taken, e.g. where a replay left the recorded chain) and, for
     /// recorded draws, `consumed`, `num_draws`, `max_probability_error`,
     /// `first_flip` and `min_margin`.
     #[pyo3(signature = (num_warmup, num_samples, max_tree_depth=(6, 6), seed=0, z0=None,
-        draws=None, target_accept_prob=0.8, dense_mass=true, step_size=1.0))]
+        draws=None, target_accept_prob=0.8, dense_mass=true, step_size=1.0,
+        stop_when_draws_fail=false))]
     #[allow(clippy::too_many_arguments)]
     fn sample_nuts<'py>(
         &self,
@@ -164,6 +174,7 @@ impl PyPyroModel {
         target_accept_prob: f64,
         dense_mass: bool,
         step_size: f64,
+        stop_when_draws_fail: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let options = NutsOptions {
             num_warmup,
@@ -172,6 +183,7 @@ impl PyPyroModel {
             target_accept_prob,
             dense_mass,
             step_size,
+            stop_when_draws_fail,
             ..Default::default()
         };
         let recorded = draws.as_ref().map(parse_draws).transpose()?;
@@ -228,6 +240,7 @@ impl PyPyroModel {
             mass_matrix_out(&run.inverse_mass_matrix),
         )?;
         out.set_item("num_divergences", run.num_divergences(num_warmup))?;
+        out.set_item("stopped_at", run.stopped_at)?;
         if let Some((consumed, total, max_err, flip, margin)) = diagnostics {
             out.set_item("consumed", consumed)?;
             out.set_item("num_draws", total)?;
@@ -239,7 +252,34 @@ impl PyPyroModel {
     }
 }
 
+/// `qBayesianActiveLearningByDisagreement(model, sampler, X_pending)` on
+/// the components (MCMC samples) `members` of a fully Bayesian model.
+#[pyfunction]
+#[pyo3(signature = (members, sampler, x_pending=None))]
+pub fn q_bayesian_active_learning_by_disagreement(
+    py: Python<'_>,
+    members: Vec<PyRef<'_, PyModel>>,
+    sampler: PyRef<'_, PySobolQMCNormalSampler>,
+    x_pending: Option<Array>,
+) -> PyResult<PyAcquisitionFunction> {
+    let members: Vec<_> = members.iter().map(|m| model_of(m)).collect();
+    let sampler = Arc::clone(&sampler.inner);
+    let p = x_pending.map(|p| p.matrix("X_pending")).transpose()?;
+    let a = threads::run(py, || {
+        QBayesianActiveLearningByDisagreement::new(members, sampler, p)
+    })
+    .into_py_result()?;
+    Ok(PyAcquisitionFunction::new_plain(
+        Arc::new(a),
+        "qBayesianActiveLearningByDisagreement",
+    ))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPyroModel>()?;
+    m.add_function(wrap_pyfunction!(
+        q_bayesian_active_learning_by_disagreement,
+        m
+    )?)?;
     Ok(())
 }

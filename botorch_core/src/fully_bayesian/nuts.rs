@@ -240,6 +240,11 @@ pub struct NutsOptions {
     pub regularize_mass_matrix: bool,
     /// The energy error above which a transition diverges.
     pub max_delta_energy: f64,
+    /// Stop (instead of failing) at the first iteration whose random draws
+    /// cannot be taken, e.g. when a replayed chain leaves the recorded one:
+    /// the run then ends after the last complete iteration
+    /// ([`NutsRun::stopped_at`]).
+    pub stop_when_draws_fail: bool,
 }
 
 impl Default for NutsOptions {
@@ -258,6 +263,7 @@ impl Default for NutsOptions {
             adapt_mass_matrix: true,
             regularize_mass_matrix: true,
             max_delta_energy: 1000.0,
+            stop_when_draws_fail: false,
         }
     }
 }
@@ -325,6 +331,9 @@ pub struct NutsRun {
     pub step_size: f64,
     /// The final (adapted) inverse mass matrix.
     pub inverse_mass_matrix: MassMatrix,
+    /// The iteration at which the run stopped because its random draws
+    /// failed ([`NutsOptions::stop_when_draws_fail`]), if it did.
+    pub stopped_at: Option<usize>,
 }
 
 impl NutsRun {
@@ -876,47 +885,30 @@ pub fn sample_nuts<P: Potential + ?Sized>(
     let total = options.num_warmup + options.num_samples;
     let mut trace = Vec::with_capacity(total);
     let mut samples = Vec::with_capacity(options.num_samples);
+    let mut stopped_at = None;
     for i in 0..total {
-        let eps = rng.normal(dim)?;
-        let r = adapt.mass_matrix_sqrt.apply(&eps);
         let warmup = i < options.num_warmup;
         let max_depth = if warmup {
             options.max_tree_depth.0
         } else {
             options.max_tree_depth.1
         };
-        let integrator = Integrator {
+        let tree = match nuts_iteration(
             potential,
-            inverse_mass_matrix: &adapt.inverse_mass_matrix,
-            step_size: adapt.step_size,
-            max_delta_energy: options.max_delta_energy,
-            energy_current: pe + kinetic_energy(&adapt.inverse_mass_matrix, &r),
+            (&z, pe, &grad),
+            &adapt,
+            options,
+            max_depth,
+            num_ckpts,
+            rng,
+        ) {
+            Ok(tree) => tree,
+            Err(_) if options.stop_when_draws_fail => {
+                stopped_at = Some(i);
+                break;
+            }
+            Err(e) => return Err(e),
         };
-        // `build_tree`.
-        let mut tree = Tree {
-            z_left: z.clone(),
-            r_left: r.clone(),
-            grad_left: grad.clone(),
-            z_right: z.clone(),
-            r_right: r.clone(),
-            grad_right: grad.clone(),
-            z_proposal: z.clone(),
-            pe_proposal: pe,
-            grad_proposal: grad.clone(),
-            energy_proposal: integrator.energy_current,
-            depth: 0,
-            weight: 0.0,
-            r_sum: r.clone(),
-            turning: false,
-            diverging: false,
-            sum_accept_probs: 0.0,
-            num_proposals: 0,
-        };
-        while tree.depth < max_depth && !tree.turning && !tree.diverging {
-            let going_right = rng.uniform(UniformKind::Direction, 0.5)? < 0.5;
-            let subtree = integrator.build_subtree(&tree, going_right, num_ckpts, rng)?;
-            tree = integrator.combine(&tree, &subtree, going_right, true, rng)?;
-        }
         let accept_prob = tree.sum_accept_probs / tree.num_proposals as f64;
         z = tree.z_proposal;
         pe = tree.pe_proposal;
@@ -949,7 +941,55 @@ pub fn sample_nuts<P: Potential + ?Sized>(
         trace,
         step_size: adapt.step_size,
         inverse_mass_matrix: adapt.inverse_mass_matrix,
+        stopped_at,
     })
+}
+
+/// One NUTS transition from the state `(z, U(z), ∇U(z))`: a momentum
+/// draw and NumPyro's `build_tree`.
+fn nuts_iteration<P: Potential + ?Sized>(
+    potential: &P,
+    (z, pe, grad): (&[f64], f64, &[f64]),
+    adapt: &AdaptState,
+    options: &NutsOptions,
+    max_depth: usize,
+    num_ckpts: usize,
+    rng: &mut (impl NutsRandom + ?Sized),
+) -> Result<Tree> {
+    let eps = rng.normal(z.len())?;
+    let r = adapt.mass_matrix_sqrt.apply(&eps);
+    let integrator = Integrator {
+        potential,
+        inverse_mass_matrix: &adapt.inverse_mass_matrix,
+        step_size: adapt.step_size,
+        max_delta_energy: options.max_delta_energy,
+        energy_current: pe + kinetic_energy(&adapt.inverse_mass_matrix, &r),
+    };
+    let mut tree = Tree {
+        z_left: z.to_vec(),
+        r_left: r.clone(),
+        grad_left: grad.to_vec(),
+        z_right: z.to_vec(),
+        r_right: r.clone(),
+        grad_right: grad.to_vec(),
+        z_proposal: z.to_vec(),
+        pe_proposal: pe,
+        grad_proposal: grad.to_vec(),
+        energy_proposal: integrator.energy_current,
+        depth: 0,
+        weight: 0.0,
+        r_sum: r,
+        turning: false,
+        diverging: false,
+        sum_accept_probs: 0.0,
+        num_proposals: 0,
+    };
+    while tree.depth < max_depth && !tree.turning && !tree.diverging {
+        let going_right = rng.uniform(UniformKind::Direction, 0.5)? < 0.5;
+        let subtree = integrator.build_subtree(&tree, going_right, num_ckpts, rng)?;
+        tree = integrator.combine(&tree, &subtree, going_right, true, rng)?;
+    }
+    Ok(tree)
 }
 
 /// NumPyro's `warmup_adapter` update at warmup iteration `t`.

@@ -2271,3 +2271,43 @@ def ensemble_moments_model(
 def ensemble_average(
     members: Sequence[AcquisitionFunction], weights: Sequence[float] | None = None
 ) -> AcquisitionFunction: ...
+
+# Fully Bayesian GPs (phase 10a).
+class PyroModel:
+    def __init__(
+        self,
+        kernel: str,
+        train_x: Array,
+        train_y: Sequence[float],
+        train_yvar: Sequence[float] | None = None,
+        outputscale_prior: tuple[float, float] | None = None,
+        warp_indices: Sequence[int] | None = None,
+        warp_eps: float = 1e-7,
+        task: tuple[int, int, int] | None = None,
+    ) -> None: ...
+    @property
+    def dim(self) -> int: ...
+    def sites(self) -> list[tuple[str, list[int], bool]]: ...
+    def potential(self, z: Sequence[float]) -> tuple[float, list[float]]: ...
+    def postprocess(
+        self, samples: Sequence[Sequence[float]]
+    ) -> list[tuple[str, list[int], list[float]]]: ...
+    def sample_nuts(
+        self,
+        num_warmup: int,
+        num_samples: int,
+        max_tree_depth: tuple[int, int] = (6, 6),
+        seed: int = 0,
+        z0: Sequence[float] | None = None,
+        draws: Sequence[Any] | None = None,
+        target_accept_prob: float = 0.8,
+        dense_mass: bool = True,
+        step_size: float = 1.0,
+        stop_when_draws_fail: bool = False,
+    ) -> dict[str, Any]: ...
+
+def q_bayesian_active_learning_by_disagreement(
+    members: Sequence[Model],
+    sampler: SobolQMCNormalSampler,
+    x_pending: Array | None = None,
+) -> AcquisitionFunction: ...
