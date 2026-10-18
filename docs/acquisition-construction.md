@@ -325,3 +325,16 @@ model = SingleTaskGP(X, Y).eval()
 BoTorch 0.18.1 also fails for `_sample_max_value_Gumbel` with several
 candidate batches (fixed on main, #3353); the tests accept that failure on
 0.18.1.
+
+### Upstream status
+
+| Bug | Fix |
+|---|---|
+| 1 | meta-pytorch/botorch#3451 |
+| 2, 3 | meta-pytorch/botorch#3452 |
+| 4 | `make_best_f`: meta-pytorch/botorch#3391; batched `best_f` in analytic functions: #3453 |
+| 5, 9 | cornellius-gp/gpytorch#2804 |
+| 6 | meta-pytorch/botorch#3454 |
+| 7 | meta-pytorch/botorch#3455 |
+| 8 | meta-pytorch/botorch#3456 (rejects batched candidate sets) |
+| 10 | not filed: a design decision (see meta-pytorch/botorch#2724, #2725) |
