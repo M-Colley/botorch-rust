@@ -119,8 +119,7 @@ def get_acquisition_function(
         "qLogNEHVI",
     ]:
         raise NotImplementedError(
-            "PosteriorTransforms are not yet implemented for multi-objective "
-            "acquisition functions."
+            "PosteriorTransforms are not yet implemented for multi-objective acquisition functions."
         )
     # instantiate and return the requested acquisition function
     if acquisition_function_name in ("qEI", "qLogEI", "qPI"):
@@ -138,7 +137,7 @@ def get_acquisition_function(
             X_baseline=X_observed,
         )
     if acquisition_function_name in ["qEI", "qLogEI"]:
-        acqf_class = (
+        acqf_class: Any = (
             monte_carlo.qExpectedImprovement
             if acquisition_function_name == "qEI"
             else logei.qLogExpectedImprovement
@@ -176,12 +175,12 @@ def get_acquisition_function(
             eta=eta,
         )
     elif acquisition_function_name in ["qNEI", "qLogNEI"]:
-        acqf_class = (
+        nei_class: Any = (
             monte_carlo.qNoisyExpectedImprovement
             if acquisition_function_name == "qNEI"
             else logei.qLogNoisyExpectedImprovement
         )
-        return acqf_class(
+        return nei_class(
             model=model,
             X_baseline=X_observed,
             sampler=sampler,
@@ -239,12 +238,12 @@ def get_acquisition_function(
                 ref_point=_as_ref_point(ref_point, Y),
                 Y=obj,
             )
-        acqf_class = (
+        mo_class: Any = (
             moo_monte_carlo.qExpectedHypervolumeImprovement
             if acquisition_function_name == "qEHVI"
             else moo_logei.qLogExpectedHypervolumeImprovement
         )
-        return acqf_class(
+        return mo_class(
             model=model,
             ref_point=ref_point,
             partitioning=partitioning,
@@ -257,12 +256,12 @@ def get_acquisition_function(
     elif acquisition_function_name in ["qNEHVI", "qLogNEHVI"]:
         if ref_point is None:
             raise ValueError(f"`ref_point` must not be None for {acquisition_function_name}")
-        acqf_class = (
+        noisy_class: Any = (
             moo_monte_carlo.qNoisyExpectedHypervolumeImprovement
             if acquisition_function_name == "qNEHVI"
             else moo_logei.qLogNoisyExpectedHypervolumeImprovement
         )
-        return acqf_class(
+        return noisy_class(
             model=model,
             ref_point=ref_point,
             X_baseline=X_observed,

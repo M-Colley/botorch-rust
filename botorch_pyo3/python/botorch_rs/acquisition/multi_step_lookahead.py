@@ -574,7 +574,7 @@ def _warmstart_tree_torch(
     from torch.distributions import Beta
 
     Xopts = torch.split(full_optimizer, sizes, dim=-2)
-    tkwargs = {"device": Xopts[0].device, "dtype": Xopts[0].dtype}
+    tkwargs: dict[str, Any] = {"device": Xopts[0].device, "dtype": Xopts[0].dtype}
     bounds = torch.as_tensor(bounds, **tkwargs)
 
     B = Beta(torch.ones(1, **tkwargs), 3 * torch.ones(1, **tkwargs))
@@ -663,4 +663,3 @@ def make_best_f(model: Any, X: Any) -> dict[str, Any]:
 
 
 __all__ = ["make_best_f", "qMultiStepLookahead", "warmstart_multistep"]
-

@@ -332,8 +332,7 @@ impl QMultiStepLookahead {
         }
         let num_fantasies: Vec<usize> = samplers.iter().map(|s| s.num_samples()).collect();
         let mut weights = Vec::with_capacity(k);
-        for j in 0..k {
-            let f = num_fantasies[j];
+        for (j, &f) in num_fantasies.iter().enumerate() {
             let w = match o.sample_weights.get(j).cloned().flatten() {
                 None => vec![1.0 / f as f64; f],
                 Some(w) => {
@@ -867,11 +866,7 @@ impl QMultiStepLookahead {
                     .map(eval)
                     .collect::<Result<()>>()?;
             } else {
-                level
-                    .iter_mut()
-                    .enumerate()
-                    .map(eval)
-                    .collect::<Result<()>>()?;
+                level.iter_mut().enumerate().try_for_each(eval)?;
             }
             debug_assert!(levels[j].iter().all(|n| n.x.nrows() == q_j));
             if j == k {
@@ -909,7 +904,6 @@ impl QMultiStepLookahead {
             return Ok((value, None));
         }
         let mut grad = Matrix::zeros(x.nrows(), d);
-        let m = gps.len();
         // Reverse pass, deepest level first. `incoming[nu][t]`: adjoints of
         // the targets appended by node `nu` and its ancestors from its
         // children; `own[nu][i][t]`: the adjoint of the targets of fantasy
@@ -967,8 +961,8 @@ impl QMultiStepLookahead {
                 }
                 let parent = nu % parents;
                 let i = nu / parents;
-                for t in 0..m {
-                    new_incoming[parent][t] += &r.older[t];
+                for (acc, older) in new_incoming[parent].iter_mut().zip(&r.older) {
+                    *acc += older;
                 }
                 new_own[parent][i] = r.own;
             }

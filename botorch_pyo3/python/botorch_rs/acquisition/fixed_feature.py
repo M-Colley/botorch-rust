@@ -19,7 +19,13 @@ def _values_flat(values: Any) -> tuple[list[float], tuple[int, ...]]:
     """The fixed values (a tensor, or a sequence of numbers and tensors
     broadcast to a common shape as in BoTorch) as flat data and shape
     (``d_f``, ``q x d_f`` or ``batch_shape x q x d_f``)."""
-    if not is_torch_tensor(values) and isinstance(values, Sequence):
+    if (
+        not is_torch_tensor(values)
+        and isinstance(values, Sequence)
+        and not (values and all(isinstance(v, list) for v in values))
+    ):
+        # A sequence of numbers and arrays (BoTorch's broadcast and
+        # concatenation); a nested list is an array.
         parts = list(values)
         if any(is_torch_tensor(v) and v.ndim > 1 for v in parts):
             import torch

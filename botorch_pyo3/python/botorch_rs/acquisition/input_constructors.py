@@ -318,7 +318,9 @@ def allow_only_specific_variable_kwargs(f: Callable[..., T]) -> Callable[..., T]
     This decorator is applied in ``acqf_input_constructor`` so that all constructors
     obtained with ``acqf_input_constructor`` allow keyword
     arguments such as ``training_data`` and ``objective``, even if they do not appear
-    in the signature of ``f``. Any other keyword arguments will raise an error.
+    in the signature of ``f``. Any other keyword arguments will raise an error,
+    unless ``f`` takes ``**kwargs`` (e.g. the ``optimize_objective_kwargs`` of
+    ``construct_inputs_qKG``), which receives them (BoTorch raises for them).
     """
     allowed = {
         # ``training_data`` and/or ``X_baseline`` are needed to compute baselines
@@ -343,11 +345,17 @@ def allow_only_specific_variable_kwargs(f: Callable[..., T]) -> Callable[..., T]
         "constraints",
     }
 
+    params = inspect.signature(f).parameters
+    # Constructors with ``**kwargs`` (the ``optimize_objective_kwargs`` of the
+    # knowledge gradients) accept every keyword argument (BoTorch rejects the
+    # ones that are not named in the signature).
+    var_keyword = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
     def g(*args: Any, **kwargs: Any) -> T:
         new_kwargs = {}
-        accepted_kwargs = inspect.signature(f).parameters.keys()
+        accepted_kwargs = params.keys()
         for k, v in kwargs.items():
-            if k in accepted_kwargs:
+            if k in accepted_kwargs or var_keyword:
                 new_kwargs[k] = v
             elif k not in allowed:
                 raise TypeError(
@@ -1126,9 +1134,7 @@ def _is_risk_measure(objective: Any) -> bool:
 
 
 def _is_mo_risk_measure_class(objective: Any) -> bool:
-    return any(
-        c.__name__ == "MultiOutputRiskMeasureMCObjective" for c in type(objective).__mro__
-    )
+    return any(c.__name__ == "MultiOutputRiskMeasureMCObjective" for c in type(objective).__mro__)
 
 
 def _apply_objective(objective: Any, Y: Any) -> Any:
@@ -1186,7 +1192,9 @@ def construct_inputs_EHVI(
         assert_shared=True,
     )
 
-    alpha = get_default_partitioning_alpha(num_objectives=num_objectives) if alpha is None else alpha
+    alpha = (
+        get_default_partitioning_alpha(num_objectives=num_objectives) if alpha is None else alpha
+    )
 
     # Compute posterior mean (for ref point computation ref pareto frontier)
     # if one is not provided among arguments.
@@ -1244,7 +1252,9 @@ def construct_inputs_qEHVI(
     )
     num_objectives = _num_objectives(ref_point)
 
-    alpha = get_default_partitioning_alpha(num_objectives=num_objectives) if alpha is None else alpha
+    alpha = (
+        get_default_partitioning_alpha(num_objectives=num_objectives) if alpha is None else alpha
+    )
 
     Y = Y_pmean if objective is None else _apply_objective(objective, Y_pmean)
     partitioning = _partitioning(ref_point, Y, alpha)
@@ -1520,9 +1530,7 @@ def construct_inputs_qMES(
 
 def _project_target_fidelity(target_fidelities: dict[int, Any]) -> Callable[[Any], Any]:
     def project(X: Any) -> Any:
-        return project_to_target_fidelity(
-            X=X, target_fidelities=target_fidelities, d=_shape(X)[-1]
-        )
+        return project_to_target_fidelity(X=X, target_fidelities=target_fidelities, d=_shape(X)[-1])
 
     return project
 
@@ -1574,8 +1582,12 @@ def construct_inputs_mf_base(
     }
 
 
-def _native_mf_inputs(inputs_mf: dict[str, Any], target_fidelities: dict[int, Any],
-                      num_trace_observations: int, d: int) -> dict[str, Any]:
+def _native_mf_inputs(
+    inputs_mf: dict[str, Any],
+    target_fidelities: dict[int, Any],
+    num_trace_observations: int,
+    d: int,
+) -> dict[str, Any]:
     """``construct_inputs_mf_base``'s outputs with ``project`` / ``expand`` as
     the ``functools.partial`` objects that botorch_rs evaluates natively
     (inputs of ``d`` columns)."""
@@ -2031,8 +2043,7 @@ def optimize_objective(
         else:
             if not qmc:
                 raise UnsupportedError(
-                    "qmc=False (an IIDNormalSampler) is not supported by botorch_rs; use "
-                    "qmc=True."
+                    "qmc=False (an IIDNormalSampler) is not supported by botorch_rs; use qmc=True."
                 )
             acq_function = qSimpleRegret(
                 model=model,
@@ -2079,9 +2090,7 @@ def optimize_objective(
             bdata, _ = to_flat(b, "b")
             for i in range(k):
                 idx = [j for j in range(da) if adata[i * da + j] != 0]
-                inequality_constraints.append(
-                    (idx, [-adata[i * da + j] for j in idx], -bdata[i])
-                )
+                inequality_constraints.append((idx, [-adata[i * da + j] for j in idx], -bdata[i]))
 
     options = {
         "batch_limit": optimizer_options.get("batch_limit", 8),
@@ -2245,7 +2254,9 @@ def _construct_constraint_dict_from_tuple(
     for r in range(k):
         nz = [j for j in range(m) if wdata[r * m + j] != 0]
         if len(nz) != 1:
-            raise BotorchError(f"{acqf_class.__name__} only support constraints on single outcomes.")
+            raise BotorchError(
+                f"{acqf_class.__name__} only support constraints on single outcomes."
+            )
         i = nz[0]
         w_i = wdata[r * m + i]
         out[i] = (None, bdata[r] / w_i) if w_i > 0 else (bdata[r] / w_i, None)

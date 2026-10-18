@@ -152,22 +152,21 @@ def compute_smoothed_feasibility_indicator(
 ) -> Tensor:
     r"""The smoothed feasibility indicator of a list of constraints
     (``sample_shape x batch_shape x q``), BoTorch's
-    ``compute_smoothed_feasibility_indicator``: per constraint
+    ``compute_smoothed_feasibility_indicator`` (with a float ``eta`` in the
+    samples' dtype): per constraint
     ``log_fatmoid(-c / eta)`` (``fat=True``), ``logexpit(-c / eta)``
     (``fat=False``) or ``log(c)`` (``fat=None``: the constraint returns
     probabilities), summed, and exponentiated unless ``log``."""
     if type(eta) is not Tensor:
-        eta = torch.full((len(constraints),), eta)
+        # float64 temperatures (BoTorch's ``torch.full`` rounds a Python float
+        # to float32), like botorch_rs's native acquisition functions.
+        eta = torch.full((len(constraints),), eta, dtype=samples.dtype)
     if type(fat) is not list:
         fat = [fat] * len(constraints)
     if len(eta) != len(constraints):
-        raise ValueError(
-            "Number of provided constraints and number of provided etas do not match."
-        )
+        raise ValueError("Number of provided constraints and number of provided etas do not match.")
     if len(fat) != len(constraints):
-        raise ValueError(
-            "Number of provided constraints and number of provided fats do not match."
-        )
+        raise ValueError("Number of provided constraints and number of provided fats do not match.")
     if not (eta > 0).all():
         raise ValueError("eta must be positive.")
     is_feasible = torch.zeros_like(samples[..., 0])

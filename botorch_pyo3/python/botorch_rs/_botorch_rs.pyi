@@ -2271,3 +2271,25 @@ def ensemble_moments_model(
 def ensemble_average(
     members: Sequence[AcquisitionFunction], weights: Sequence[float] | None = None
 ) -> AcquisitionFunction: ...
+
+# Phase 8b: the multi-step look-ahead and the posterior-sample VJPs of
+# Python subclasses of SampleReducingMCAcquisitionFunction.
+class MultiStepLookaheadState:
+    def num_auxiliary(self) -> int: ...
+    def num_fantasies(self) -> list[int]: ...
+    def inner_sampler_seeds(self) -> list[int | None]: ...
+
+def q_multi_step_lookahead(
+    model: Model,
+    batch_sizes: Sequence[int],
+    num_fantasies: Sequence[int] | None = None,
+    samplers: Sequence[SobolQMCNormalSampler] | None = None,
+    sample_weights: Sequence[Sequence[float] | None] | None = None,
+    value_functions: Sequence[tuple[str, dict[str, Any], bool, SobolQMCNormalSampler | None] | None]
+    | None = None,
+    objective: Any = None,
+    transform: tuple[Sequence[float], float] | None = None,
+    x_pending: Array | None = None,
+    collapse_fantasy_base_samples: bool = True,
+) -> tuple[AcquisitionFunction, MultiStepLookaheadState]: ...
+def posterior_samples_vjp(model: Model, x: Array, base: Array, samples_bar: Array) -> ArrayBuf: ...
