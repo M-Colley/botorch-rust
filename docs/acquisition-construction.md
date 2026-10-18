@@ -1,4 +1,9 @@
-# Phase 8b: the rest of single-objective acquisition
+# Input constructors, multi-step look-ahead and custom MC acquisition functions
+
+The rest of BoTorch's single-objective acquisition (roadmap phase 8b): the
+supported API, the deviations from BoTorch, the equivalence results and the
+BoTorch bugs found. Reference: BoTorch main at da00e0401 and BoTorch 0.18.1,
+under torch 2.13 and 2.14.1.
 
 This phase ports the parts of Phase 8 that remained (`docs/roadmap.md`):
 the input constructors with `get_acquisition_function`,
@@ -6,7 +11,7 @@ the input constructors with `get_acquisition_function`,
 base class for Python subclasses, t-batched candidate sets of the max-value
 samplers and t-batched fixed values of `FixedFeatureAcquisitionFunction`.
 
-## Rows for README's "Supported API" table
+## Supported API
 
 | BoTorch | botorch_rs | Notes |
 |---|---|---|
@@ -26,7 +31,7 @@ samplers and t-batched fixed values of `FixedFeatureAcquisitionFunction`.
 | `_sample_max_value_Gumbel`, `_sample_max_value_Thompson` | same path | `batch_shape x n x d` candidate sets: `num_samples x batch_shape` max values (`num_samples x 1` unbatched) |
 | `FixedFeatureAcquisitionFunction` | same path | also t-batched values (`batch_shape x q x d_f`, broadcast against `X`); shared and per-point values stay native |
 
-## Not ported in this area
+## What remains unported (in this area)
 
 - The input constructors of acquisition functions botorch_rs does not have:
   `qBayesianActiveLearningByDisagreement` (needs fully Bayesian models,
