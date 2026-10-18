@@ -34,6 +34,7 @@ from botorch_rs.acquisition.knowledge_gradient import (
     qMultiFidelityKnowledgeGradient,
 )
 from botorch_rs.acquisition.logei import (
+    LogImprovementMCAcquisitionFunction,
     qLogExpectedImprovement,
     qLogNoisyExpectedImprovement,
     qLogProbabilityOfFeasibility,
@@ -47,6 +48,7 @@ from botorch_rs.acquisition.max_value_entropy_search import (
 )
 from botorch_rs.acquisition.monte_carlo import (
     MCAcquisitionFunction,
+    SampleReducingMCAcquisitionFunction,
     qExpectedImprovement,
     qLowerConfidenceBound,
     qNoisyExpectedImprovement,
@@ -55,6 +57,7 @@ from botorch_rs.acquisition.monte_carlo import (
     qSimpleRegret,
     qUpperConfidenceBound,
 )
+from botorch_rs.acquisition.multi_step_lookahead import qMultiStepLookahead
 from botorch_rs.acquisition.multioutput_acquisition import MultiOutputAcquisitionFunction
 from botorch_rs.acquisition.objective import (
     ConstrainedMCObjective,
@@ -83,6 +86,10 @@ from botorch_rs.acquisition.proximal import ProximalAcquisitionFunction
 from botorch_rs.acquisition.thompson_sampling import PathwiseThompsonSampling
 from botorch_rs.acquisition.utils import get_optimal_samples, prune_inferior_points
 
+# The factory and the input constructors import the acquisition functions above.
+from botorch_rs.acquisition.factory import get_acquisition_function  # noqa: E402
+from botorch_rs.acquisition.input_constructors import get_acqf_input_constructor  # noqa: E402
+
 __all__ = [
     "AcquisitionFunction",
     "AnalyticAcquisitionFunction",
@@ -106,6 +113,7 @@ __all__ = [
     "L1PenaltyObjective",
     "L2Penalty",
     "LinearMCObjective",
+    "LogImprovementMCAcquisitionFunction",
     "LogConstrainedExpectedImprovement",
     "LogExpectedImprovement",
     "LogNoisyExpectedImprovement",
@@ -127,10 +135,13 @@ __all__ = [
     "ProbabilityOfImprovement",
     "ProjectedAcquisitionFunction",
     "ProximalAcquisitionFunction",
+    "SampleReducingMCAcquisitionFunction",
     "ScalarizedPosteriorMean",
     "ScalarizedPosteriorTransform",
     "UpperConfidenceBound",
     "WeightedLogMeanExp",
+    "get_acqf_input_constructor",
+    "get_acquisition_function",
     "get_optimal_samples",
     "prune_inferior_points",
     "qAnalyticProbabilityOfImprovement",
@@ -143,6 +154,7 @@ __all__ = [
     "qLowerBoundMaxValueEntropy",
     "qLowerConfidenceBound",
     "qMaxValueEntropy",
+    "qMultiStepLookahead",
     "qMultiFidelityKnowledgeGradient",
     "qMultiFidelityLowerBoundMaxValueEntropy",
     "qMultiFidelityMaxValueEntropy",

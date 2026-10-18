@@ -78,8 +78,14 @@ class ScalarizedPosteriorTransform(PosteriorTransform):
     def evaluate(self, Y: Any, X: Any = None) -> Any:
         """The transform applied to outcomes ``Y`` (``batch_shape x q x m``):
         ``offset + Y @ weights`` (shape ``batch_shape x q``)."""
-        data, shape = to_flat(Y, "Y")
         m = len(self._weights)
+        if is_torch_tensor(Y) and Y.ndim > 0 and Y.shape[-1] == m:
+            import torch
+
+            # BoTorch's ``offset + Y @ weights`` (the same rounding).
+            w = torch.as_tensor(self._weights, dtype=Y.dtype, device=Y.device)
+            return self._offset + Y @ w
+        data, shape = to_flat(Y, "Y")
         if not shape or shape[-1] != m:
             raise BotorchTensorDimensionError(
                 f"Expected outcomes with {m} outputs (the number of weights), got shape {shape}."

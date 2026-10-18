@@ -152,7 +152,7 @@ pub enum KgValueFunction {
 
 impl KgValueFunction {
     /// Whether the value function reads the posterior covariance.
-    fn uses_covariance(&self) -> bool {
+    pub(crate) fn uses_covariance(&self) -> bool {
         !matches!(
             self,
             Self::PosteriorMean { .. } | Self::ScalarizedPosteriorMean { .. }
@@ -190,12 +190,14 @@ impl KgValueFunction {
 }
 
 /// The value of a value function on a posterior and the adjoints of the
-/// posterior's mean, covariance and of the points.
-struct PosteriorValue {
-    value: f64,
-    mean_bar: Vector,
-    cov_bar: Option<Matrix>,
-    x_bar: Option<Matrix>,
+/// posterior's mean, covariance and of the points (and of `best_f`, for the
+/// value functions that have one; zero for the others).
+pub(crate) struct PosteriorValue {
+    pub value: f64,
+    pub mean_bar: Vector,
+    pub cov_bar: Option<Matrix>,
+    pub x_bar: Option<Matrix>,
+    pub best_f_bar: f64,
 }
 
 /// `(u, du/dμ, du/dσ)` of the scaled improvement `u = ±(μ - best_f) / σ`.
@@ -222,7 +224,12 @@ pub(crate) struct ValueFunctionCore {
 impl ValueFunctionCore {
     /// The value at the posterior `post` (single-output for the analytic
     /// value functions) of the points `x` (`n × d`).
-    fn evaluate(&self, post: &Posterior, x: &Matrix, with_grad: bool) -> Result<PosteriorValue> {
+    pub(crate) fn evaluate(
+        &self,
+        post: &Posterior,
+        x: &Matrix,
+        with_grad: bool,
+    ) -> Result<PosteriorValue> {
         let n = post.num_points();
         let m = post.num_outputs();
         if self.kind.is_analytic() {
@@ -243,6 +250,7 @@ impl ValueFunctionCore {
                     mean_bar: weights.clone(),
                     cov_bar: None,
                     x_bar: None,
+                    best_f_bar: 0.0,
                 });
             }
             if n != 1 {
@@ -271,15 +279,23 @@ impl ValueFunctionCore {
                 mean_bar: Vector::zeros(0),
                 cov_bar: None,
                 x_bar: None,
+                best_f_bar: 0.0,
             });
         }
         let obj_bar = r.obj_bar.expect("gradient requested");
+        // The utilities depend on `obj - best_f`.
+        let best_f_bar = match utility {
+            SampleUtility::ExpectedImprovement { .. }
+            | SampleUtility::ProbabilityOfImprovement { .. } => -obj_bar.sum(),
+            _ => 0.0,
+        };
         let (mean_bar, cov_bar, x_bar) = so.posterior_adjoints(&obj_bar, None)?;
         Ok(PosteriorValue {
             value: r.value,
             mean_bar,
             cov_bar: Some(cov_bar),
             x_bar,
+            best_f_bar,
         })
     }
 
@@ -336,11 +352,20 @@ impl ValueFunctionCore {
                 unreachable!("not a single-point analytic value function")
             }
         };
+        // The improvement-based values depend on `mean - best_f`.
+        let best_f_bar = match self.kind {
+            KgValueFunction::ExpectedImprovement { .. }
+            | KgValueFunction::LogExpectedImprovement { .. }
+            | KgValueFunction::ProbabilityOfImprovement { .. }
+            | KgValueFunction::LogProbabilityOfImprovement { .. } => -dm,
+            _ => 0.0,
+        };
         PosteriorValue {
             value,
             mean_bar: Vector::from_element(1, dm),
             cov_bar: Some(Matrix::from_element(1, 1, ds * ds_dv)),
             x_bar: None,
+            best_f_bar,
         }
     }
 }
