@@ -1,4 +1,8 @@
-# Phase 10b: preference learning
+# Preference learning
+
+The port of BoTorch's preference learning (roadmap phase 10b): the supported
+API, how it works, the deviations from BoTorch, the equivalence results and
+the BoTorch bugs found.
 
 `PairwiseGP` with its Laplace approximation, likelihoods and marginal log
 likelihood, the preference acquisition functions (analytic EUBO, qEUBO,
@@ -29,7 +33,7 @@ constructors). Tests: `botorch_core/tests/preference_10b_parity.rs`
 `test_equivalence_10b_preference.py` (`-m equivalence`),
 `test_10b_preference.py`, helpers in `preference_helpers.py`.
 
-## Supported API (rows for README's table)
+## Supported API
 
 | BoTorch name | botorch_rs name | notes |
 | --- | --- | --- |
@@ -97,7 +101,7 @@ ComposedModel, compose, posterior_samples_vjp}` (qEUBO is `QSimpleRegret` on
   closure does, and the model keeps the state of the last evaluation at the
   optimum.
 
-## Not ported (and why)
+## What remains unported (in this area)
 
 - Input transforms with learned parameters (e.g. `Warp`) and one-to-many
   transforms (`InputPerturbation`) in `PairwiseGP`: `UnsupportedError`
