@@ -2418,3 +2418,107 @@ class PairwiseBALD:
     def forward_with_grad(self, x: Array, draws: Array) -> tuple[ArrayBuf, ArrayBuf]: ...
     @property
     def num_samples(self) -> int: ...
+
+# -- Approximate GP models (phase 10c) ----------------------------------------
+
+class SingleTaskVariationalGP:
+    def __init__(
+        self,
+        train_x: Array,
+        train_y: Array | None,
+        inducing: Array,
+        num_outputs: int,
+        dim: int,
+        covar_tree: KernelNode,
+        covar_batched: bool,
+        noise: GaussianLikelihoodSpec,
+        likelihood: str = "gaussian",
+        mean: str = "constant",
+        mean_prior: Prior | None = None,
+        mean_constraint: Constraint | None = None,
+        mean_batched: bool = False,
+        learn_inducing_points: bool = True,
+        jitter: float = 1e-6,
+        input_chain: Sequence[Any] | None = None,
+        input_chain_prefixes: Sequence[str] | None = None,
+        outcome_means: Sequence[float] | None = None,
+        outcome_stdvs: Sequence[float] | None = None,
+        outcome_min_stdv: float = 1e-8,
+        raw: Sequence[float] | None = None,
+    ) -> None: ...
+    def model_handle(self) -> Model: ...
+    def raw_parameters(self) -> list[float]: ...
+    def set_raw_parameters(self, values: Sequence[float]) -> None: ...
+    def parameter_names(self) -> list[tuple[str, int]]: ...
+    def raw_parameter_bounds(self) -> list[tuple[float, float]]: ...
+    def inducing_points(self) -> ArrayOut: ...
+    def set_inducing_points(self, z: Array) -> None: ...
+    def likelihood_values(self) -> list[float]: ...
+    def kernel_matrix(self, x: Array, output: int) -> ArrayOut: ...
+    def latent(self, x: Array) -> tuple[ArrayOut, ArrayOut]: ...
+    @property
+    def noise(self) -> list[float]: ...
+    def set_noise(self, value: Array) -> None: ...
+    def noises(self) -> tuple[list[float], float]: ...
+    @property
+    def constant(self) -> list[float]: ...
+    def set_constant(self, value: Array) -> None: ...
+    @property
+    def aug_batch_shape(self) -> list[int]: ...
+    def elbo(
+        self,
+        x: Array,
+        y: Array,
+        num_data: float,
+        beta: float = 1.0,
+        raw: Sequence[float] | None = None,
+    ) -> tuple[float, float, float]: ...
+    def elbo_value_and_grad(
+        self, num_data: float, beta: float = 1.0, raw: Sequence[float] | None = None
+    ) -> tuple[float, list[float]]: ...
+    def fit(
+        self,
+        num_data: float,
+        beta: float = 1.0,
+        maxcor: int | None = None,
+        pgtol: float | None = None,
+        ftol: float | None = None,
+        maxiter: int | None = None,
+        maxfun: int | None = None,
+        maxls: int | None = None,
+        max_attempts: int | None = None,
+        seed: int | None = None,
+    ) -> tuple[float, int, int, str, str, int]: ...
+    def fit_torch(
+        self,
+        num_data: float,
+        beta: float = 1.0,
+        mask: Sequence[bool] | None = None,
+        bounds: Sequence[tuple[float, float]] | None = None,
+        step_limit: int | None = None,
+        stopping: tuple[int, bool, int, float, float] | None = None,
+        timeout_sec: float | None = None,
+        lr: float = 0.001,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+        amsgrad: bool = False,
+        maximize: bool = False,
+    ) -> tuple[int, float, int, float | None, str | None]: ...
+    def sample_all_priors(self, seed: int | None = None) -> None: ...
+    @property
+    def num_outputs(self) -> int: ...
+    @property
+    def dim(self) -> int: ...
+    @property
+    def num_inducing(self) -> int: ...
+    def train_inputs(self) -> ArrayOut: ...
+    def train_targets(self) -> ArrayOut | None: ...
+    def copy(self) -> SingleTaskVariationalGP: ...
+
+def pivoted_cholesky_init_py(
+    kernel_matrix: Array, max_length: int, quality_scores: Sequence[float], epsilon: float = 1e-6
+) -> list[int]: ...
+def expected_improvement_quality_py(
+    mean: Sequence[float], variance: Sequence[float], maximize: bool
+) -> list[float]: ...

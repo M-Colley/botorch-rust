@@ -19,6 +19,7 @@
 //! The first three can be conditioned on new observations and fantasized
 //! (`condition_on_observations`, `fantasize`; see [`fantasize`]).
 
+pub mod approximate_gp;
 pub mod batched;
 pub mod contextual_multioutput;
 pub mod cost;
@@ -26,6 +27,7 @@ pub mod deterministic;
 pub mod ensemble;
 pub mod fantasize;
 pub mod gp;
+pub mod inducing_point_allocators;
 pub mod likelihoods;
 pub mod model;
 pub mod model_list;
@@ -33,6 +35,9 @@ pub mod model_list_dyn;
 pub mod multitask;
 pub mod pairwise_gp;
 
+pub use approximate_gp::{
+    SingleTaskVariationalGP, SingleTaskVariationalGPOptions, VariationalLikelihood, VariationalMean,
+};
 pub use batched::{BatchedInputTransform, BatchedMultiOutputGP, BatchedMultiOutputGPOptions};
 pub use contextual_multioutput::{LCEMGPOptions, LcemParameters, LcemTaskInputs, LCEMGP};
 pub use deterministic::{AffineDeterministicModel, FixedSingleSampleModel, PosteriorMeanModel};

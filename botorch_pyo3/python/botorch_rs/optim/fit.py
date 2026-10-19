@@ -20,6 +20,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
+from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import OptimizationWarning
 from botorch_rs.optim.core import (
     OptimizationResult,
@@ -42,6 +43,64 @@ def _native_model(mll: Any) -> Any:
     if isinstance(mll, ExactMarginalLogLikelihood) and isinstance(mll.model, SingleTaskGP):
         return mll.model
     return None
+
+
+def _is_approximate(mll: Any) -> bool:
+    """Whether ``mll`` is a botorch_rs variational ELBO."""
+    from botorch_rs.mlls import _ApproximateMarginalLogLikelihood
+
+    return isinstance(mll, _ApproximateMarginalLogLikelihood)
+
+
+def _fit_scipy_approximate(
+    mll: Any,
+    parameters: Any,
+    bounds: Any,
+    closure: Any,
+    closure_kwargs: Any,
+    method: str,
+    options: dict[str, Any] | None,
+    callback: Any,
+    timeout_sec: float | None,
+) -> OptimizationResult:
+    """One L-BFGS-B run on a variational ELBO (all parameters, default bounds)."""
+    if (
+        parameters is not None
+        or bounds is not None
+        or closure is not None
+        or closure_kwargs is not None
+        or method != "L-BFGS-B"
+        or callback is not None
+        or timeout_sec is not None
+    ):
+        raise UnsupportedError(
+            "botorch_rs fits a variational ELBO with L-BFGS-B over all parameters (no "
+            "`parameters`, `bounds`, closures, callbacks or timeouts)."
+        )
+    opts = dict(options or {})
+    kwargs: dict[str, Any] = {}
+    for key in ("maxiter", "maxfun", "maxcor", "maxls"):
+        if key in opts:
+            kwargs[key] = int(opts.pop(key))
+    if "ftol" in opts:
+        kwargs["ftol"] = float(opts.pop("ftol"))
+    if "gtol" in opts:
+        kwargs["pgtol"] = float(opts.pop("gtol"))
+    for key in ("disp", "iprint"):
+        opts.pop(key, None)
+    if opts:
+        warnings.warn(f"Unknown solver options: {', '.join(sorted(opts))}", UserWarning, stacklevel=3)
+    mll.model._outer._ensure_initialized()
+    loss, nit, _, status, message, _ = mll._rs.fit(
+        float(mll.num_data), float(mll.beta), max_attempts=1, **kwargs
+    )
+    result = OptimizationResult(
+        step=int(nit),
+        fval=float(loss),
+        status=OptimizationStatus[status],
+        message=message,
+    )
+    return result
 
 
 def _mask_and_bounds(
@@ -116,6 +175,10 @@ def fit_gpytorch_mll_scipy(
     Returns:
         The final OptimizationResult.
     """
+    if _is_approximate(mll):
+        return _fit_scipy_approximate(
+            mll, parameters, bounds, closure, closure_kwargs, method, options, callback, timeout_sec
+        )
     model = _native_model(mll)
     native = (
         model is not None
@@ -310,6 +373,37 @@ def fit_gpytorch_mll_torch(
         stopping_criterion = ExpMAStoppingCriterion()
     model = _native_model(mll)
     adam = _adam_kwargs(optimizer)
+    if _is_approximate(mll):
+        native = (
+            closure is None
+            and closure_kwargs is None
+            and adam is not None
+            and scheduler is None
+            and callback is None
+            and (stopping_criterion is None or type(stopping_criterion) is ExpMAStoppingCriterion)
+        )
+        if not native:
+            raise UnsupportedError(
+                "botorch_rs fits a variational ELBO with Adam (torch.optim.Adam or a "
+                "functools.partial of it), the default closure and ExpMAStoppingCriterion."
+            )
+        if step_limit is None and stopping_criterion is None and timeout_sec is None:
+            raise RuntimeError("No termination conditions were given.")
+        mll.model._outer._ensure_initialized()
+        mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
+        stopping = None if stopping_criterion is None else stopping_criterion._native_args()
+        return _result(
+            mll._rs.fit_torch(
+                float(mll.num_data),
+                float(mll.beta),
+                mask=mask,
+                bounds=flat_bounds,
+                step_limit=step_limit,
+                stopping=stopping,
+                timeout_sec=timeout_sec,
+                **adam,
+            )
+        )
     stopping_native = (
         stopping_criterion is None or type(stopping_criterion) is ExpMAStoppingCriterion
     )

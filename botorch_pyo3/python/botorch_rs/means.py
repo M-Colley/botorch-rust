@@ -1,4 +1,4 @@
-"""Mean modules (``gpytorch.means``): ``ConstantMean``."""
+"""Mean modules (``gpytorch.means``): ``ConstantMean``, ``ZeroMean``."""
 
 from __future__ import annotations
 
@@ -74,6 +74,18 @@ class ConstantMean(Mean):
         return "ConstantMean()"
 
 
+class ZeroMean(Mean):
+    """A zero mean (``gpytorch.means.ZeroMean``; no parameters). Supported by
+    ``SingleTaskVariationalGP``."""
+
+    def __init__(self, batch_shape: Any = (), **kwargs: Any) -> None:
+        self.batch_shape = _check_batch_shape(batch_shape)
+        _check_kwargs(kwargs, "ZeroMean")
+
+    def __repr__(self) -> str:
+        return "ZeroMean()"
+
+
 class _TaskConstantMean(Mean):
     """The ``ConstantMean`` of one task of a ``MultitaskMean``."""
 
@@ -131,4 +143,4 @@ class MultitaskMean(Mean):
         return f"MultitaskMean(num_tasks={self.num_tasks})"
 
 
-__all__ = ["ConstantMean", "Mean", "MultitaskMean"]
+__all__ = ["ConstantMean", "Mean", "MultitaskMean", "ZeroMean"]

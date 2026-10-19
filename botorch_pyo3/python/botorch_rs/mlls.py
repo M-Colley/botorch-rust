@@ -159,4 +159,156 @@ class SumMarginalLogLikelihood(MarginalLogLikelihood):
     forward = __call__
 
 
-__all__ = ["ExactMarginalLogLikelihood", "MarginalLogLikelihood", "SumMarginalLogLikelihood"]
+class _ApproximateMarginalLogLikelihood(MarginalLogLikelihood):
+    r"""An approximate marginal log likelihood (typically a bound) for
+    approximate GP models (GPyTorch's ``_ApproximateMarginalLogLikelihood``).
+
+    Args:
+        likelihood: The likelihood of the model (``model.likelihood`` of a
+            botorch_rs ``SingleTaskVariationalGP``).
+        model: The approximate GP model (``model.model``).
+        num_data: The total number of training data points (necessary for
+            SGD).
+        beta: A multiplicative factor for the KL divergence term. Setting it
+            to 1 (default) recovers true variational inference (as derived in
+            `Scalable Variational Gaussian Process Classification`_). Setting
+            it to anything less than 1 reduces the regularization effect of
+            the model (similarly to what was proposed in `the beta-VAE
+            paper`_).
+        combine_terms: Whether or not to sum the expected NLL with the KL
+            and prior terms (default True).
+    """
+
+    def __init__(
+        self,
+        likelihood: Likelihood,
+        model: Any,
+        num_data: int,
+        beta: float = 1.0,
+        combine_terms: bool = True,
+    ) -> None:
+        from botorch_rs.models.approximate_gp import _SingleTaskVariationalGP
+
+        if not isinstance(model, _SingleTaskVariationalGP) or model._outer is None:
+            raise UnsupportedError(
+                "The variational ELBO requires the `model.model` of a botorch_rs "
+                "SingleTaskVariationalGP (or ApproximateGPyTorchModel)."
+            )
+        if likelihood is not model._outer.likelihood:
+            raise UnsupportedError(
+                "The likelihood must be the model's likelihood (`model.likelihood`)."
+            )
+        super().__init__(likelihood, model)
+        self.num_data = num_data
+        self.beta = beta
+        self.combine_terms = combine_terms
+
+    @property
+    def _rs(self) -> Any:
+        return self.model._outer._rs
+
+    @property
+    def _kind(self) -> Any:
+        return self.model._outer._kind
+
+    def _terms(self, approximate_dist_f: Any, target: Any) -> tuple[float, float, float]:
+        from botorch_rs.models.approximate_gp import _ApproximateOutput
+
+        outer = self.model._outer
+        if approximate_dist_f is None:
+            outer._ensure_initialized()
+            x = to_flat(self.model.train_inputs[0], "X")
+            target = self.model.train_targets if target is None else target
+        else:
+            if not isinstance(approximate_dist_f, _ApproximateOutput):
+                raise UnsupportedError(
+                    "botorch_rs evaluates the ELBO on the output of `model.model(X)`."
+                )
+            if approximate_dist_f._owner is not outer:
+                raise UnsupportedError("The output is not one of this model's.")
+            x = approximate_dist_f._x
+            if target is None:
+                raise TypeError("missing the target values")
+        m = outer.num_outputs
+        ydata, yshape = to_flat(target, "target")
+        n = x[1][0]
+        allowed = {(n, m)} if m > 1 else {(n,), (n, 1)}
+        if tuple(yshape) not in allowed:
+            raise RuntimeError(
+                f"The target of shape {tuple(yshape)} does not match the output of event "
+                f"shape {(n, m) if m > 1 else (n,)}."
+            )
+        ll, kl, lp = self._rs.elbo(x, (list(ydata), [n, m]), float(self.num_data), float(self.beta))
+        return ll, kl, lp
+
+    def __call__(self, approximate_dist_f: Any = None, target: Any = None, **kwargs: Any) -> Any:
+        r"""The ELBO of the targets ``target`` under ``approximate_dist_f =
+        model.model(X)`` (on the model's training data if both are omitted):
+        a 0-dim array, or the tuple ``(log_likelihood, kl_divergence,
+        log_prior)`` with ``combine_terms=False``."""
+        if kwargs:
+            raise UnsupportedError(f"Unsupported arguments: {sorted(kwargs)}.")
+        ll, kl, lp = self._terms(approximate_dist_f, target)
+        kind = self._kind
+        if self.combine_terms:
+            return from_flat([ll - kl + lp], (), kind)
+        return from_flat([ll], (), kind), from_flat([kl], (), kind), from_flat([lp], (), kind)
+
+    forward = __call__
+
+    def value_and_grad(self, raw_parameters: Any = None) -> tuple[float, list[float]]:
+        """The ELBO on the training data and its gradient with respect to the
+        raw parameters (in the order of ``mll.named_parameters()``), at the
+        current or the given flat raw parameters (a botorch_rs extension)."""
+        self.model._outer._ensure_initialized()
+        params = None if raw_parameters is None else list(to_flat(raw_parameters)[0])
+        value, grad = self._rs.elbo_value_and_grad(
+            float(self.num_data), float(self.beta), params
+        )
+        return value, list(grad)
+
+    def named_parameters(self) -> Any:
+        """``(name, raw value)`` of every parameter (the likelihood's first)."""
+        return self.model._outer._named_raw()
+
+    def _param_entries(self) -> list[tuple[str, Any, int, int]]:
+        offsets = self.model._outer._offsets()
+        return [(n, v, *offsets[n]) for n, v in self.named_parameters()]
+
+    def parameters(self) -> Any:
+        for _, value in self.named_parameters():
+            yield value
+
+    def train(self, mode: bool = True) -> _ApproximateMarginalLogLikelihood:
+        self.training = mode
+        self.model.train(mode)
+        return self
+
+
+class VariationalELBO(_ApproximateMarginalLogLikelihood):
+    r"""
+    The variational evidence lower bound (ELBO) (GPyTorch's
+    ``VariationalELBO``), used to train approximate GP models:
+
+    .. math::
+
+       \mathcal{L}_\text{ELBO} = \sum_{i=1}^N \mathbb{E}_{q(f_i)} \left[
+       \log p(y_i \mid f_i) \right] - \beta \, \text{KL} \left[ q(\mathbf u)
+       \Vert p(\mathbf u) \right] (+ \log p(\theta))
+
+    divided by the number of data points (the likelihood term by the number
+    of points of the batch, the KL divergence and the log priors by
+    ``num_data``).
+
+    Example:
+        >>> mll = VariationalELBO(model.likelihood, model.model, num_data=100)
+        >>> loss = -mll(model.model(train_x), train_y)
+    """
+
+
+__all__ = [
+    "ExactMarginalLogLikelihood",
+    "MarginalLogLikelihood",
+    "SumMarginalLogLikelihood",
+    "VariationalELBO",
+]

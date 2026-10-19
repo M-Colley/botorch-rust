@@ -13,6 +13,7 @@
 use pyo3::prelude::*;
 
 mod acquisition;
+mod approximate;
 mod arrays;
 mod callbacks;
 mod composite;
@@ -116,6 +117,8 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     risk_measures::register(m)?;
     momf::register(m)?;
     nsga2::register(m)?;
+    // Approximate GP models and inducing point allocators (phase 10c).
+    approximate::register(m)?;
     // Fantasy models, cost models and the hypervolume knowledge gradient.
     fantasize::register(m)?;
     hvkg::register(m)?;

@@ -6,12 +6,14 @@ import math
 import warnings
 from typing import Any
 
+from botorch_rs._arrays import to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import OptimizationWarning
 from botorch_rs.mlls import (
     ExactMarginalLogLikelihood,
     MarginalLogLikelihood,
     SumMarginalLogLikelihood,
+    _ApproximateMarginalLogLikelihood,
 )
 
 # scipy L-BFGS-B options understood by the fit (``optimizer_kwargs["options"]``).
@@ -75,6 +77,10 @@ def fit_gpytorch_mll(
             results.append(sub_mll._fit_result)
         mll._fit_result = results
         return mll.eval()
+    if isinstance(mll, _ApproximateMarginalLogLikelihood):
+        return _fit_fallback_approximate(
+            mll, closure, optimizer, closure_kwargs, optimizer_kwargs, kwargs
+        )
     if not isinstance(mll, ExactMarginalLogLikelihood) and not getattr(mll, "_rs_fit", False):
         raise UnsupportedError(
             "fit_gpytorch_mll requires a botorch_rs ExactMarginalLogLikelihood or "
@@ -185,6 +191,113 @@ def _fit_with_optimizer(
             mll._fit_result = result
             return mll.eval()
         mll.model._rs.set_raw_parameters(raw)
+    raise ModelFittingError("All attempts to fit the model have failed.")
+
+
+def _scipy_options(optimizer_kwargs: dict[str, Any] | None) -> dict[str, Any]:
+    """The L-BFGS-B options of ``optimizer_kwargs`` (BoTorch's
+    ``fit_gpytorch_mll_scipy`` keyword arguments)."""
+    opt_kwargs = dict(optimizer_kwargs or {})
+    method = opt_kwargs.pop("method", "L-BFGS-B")
+    if method != "L-BFGS-B":
+        raise UnsupportedError(f"Only method='L-BFGS-B' is supported, got {method!r}.")
+    options = dict(opt_kwargs.pop("options", None) or {})
+    for key in ("bounds", "parameters", "callback", "timeout_sec", "closure_kwargs"):
+        if opt_kwargs.pop(key, None) is not None:
+            raise UnsupportedError(f"optimizer_kwargs[{key!r}] is not supported by botorch_rs.")
+    if opt_kwargs:
+        raise UnsupportedError(f"Unsupported optimizer_kwargs: {sorted(opt_kwargs)}.")
+    unknown = set(options) - _LBFGSB_OPTIONS - _IGNORED_OPTIONS
+    if unknown:
+        raise UnsupportedError(f"Unsupported L-BFGS-B options: {sorted(unknown)}.")
+    return options
+
+
+def _fit_fallback_approximate(
+    mll: _ApproximateMarginalLogLikelihood,
+    closure: Any,
+    optimizer: Any,
+    closure_kwargs: dict[str, Any] | None,
+    optimizer_kwargs: dict[str, Any] | None,
+    kwargs: dict[str, Any],
+) -> MarginalLogLikelihood:
+    """BoTorch's ``_fit_fallback_approximate``: L-BFGS-B
+    (``fit_gpytorch_mll_scipy``) if the model has at most ``full_batch_limit``
+    (default 1024) training targets, else Adam (``fit_gpytorch_mll_torch``),
+    on the full training data, with ``_fit_fallback``'s retries from prior
+    samples of the kernel and mean parameters."""
+    from botorch_rs.exceptions.errors import ModelFittingError, NotPSDError
+
+    data_loader = kwargs.pop("data_loader", None)
+    full_batch_limit = int(kwargs.pop("full_batch_limit", 1024))
+    if data_loader is not None:
+        if closure is not None:
+            raise UnsupportedError("Only one of `data_loader` or `closure` may be passed.")
+        raise UnsupportedError(
+            "Minibatch training with a `data_loader` is not supported by botorch_rs."
+        )
+    if closure is not None or closure_kwargs is not None:
+        raise UnsupportedError("Custom closures are not supported by botorch_rs.")
+    if kwargs.pop("pick_best_of_all_attempts", False):
+        raise UnsupportedError("pick_best_of_all_attempts=True is not supported by botorch_rs.")
+    # BoTorch's `len(mll.model.train_targets)` (AttributeError without targets).
+    n = int(to_flat(mll.model.train_targets, "train_targets")[1][0])
+    name = getattr(optimizer, "__name__", None)
+    if optimizer is None:
+        name = "fit_gpytorch_mll_scipy" if n <= full_batch_limit else "fit_gpytorch_mll_torch"
+    max_attempts = int(kwargs.pop("max_attempts", 5))
+    seed = kwargs.pop("seed", None)
+    outer = mll.model._outer
+    mll.train()
+    outer._ensure_initialized()
+    if name == "fit_gpytorch_mll_scipy":
+        options = _scipy_options(optimizer_kwargs)
+        loss, iterations, evaluations, status, message, attempts = mll._rs.fit(
+            float(mll.num_data),
+            float(mll.beta),
+            maxcor=options.get("maxcor"),
+            pgtol=options.get("gtol"),
+            ftol=options.get("ftol"),
+            maxiter=options.get("maxiter"),
+            maxfun=options.get("maxfun"),
+            maxls=options.get("maxls"),
+            max_attempts=max_attempts,
+            seed=None if seed is None else int(seed),
+        )
+        mll._fit_result = {
+            "fval": loss,
+            "nit": iterations,
+            "nfev": evaluations,
+            "status": status,
+            "message": message,
+            "attempts": attempts,
+        }
+        return mll.eval()
+    if name != "fit_gpytorch_mll_torch":
+        raise UnsupportedError(
+            "botorch_rs fits with fit_gpytorch_mll_scipy (L-BFGS-B) or fit_gpytorch_mll_torch."
+        )
+    from botorch_rs.optim.fit import fit_gpytorch_mll_torch
+
+    raw = list(mll._rs.raw_parameters())
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            mll._rs.sample_all_priors(None if seed is None else int(seed) + attempt)
+        mll.train()
+        try:
+            with warnings.catch_warnings(record=True) as ws:
+                warnings.simplefilter("always", category=OptimizationWarning)
+                result = fit_gpytorch_mll_torch(mll, **(optimizer_kwargs or {}))
+        except NotPSDError:
+            mll._rs.set_raw_parameters(raw)
+            continue
+        failed = [w for w in ws if issubclass(w.category, OptimizationWarning)]
+        for w in ws:
+            warnings.warn_explicit(str(w.message), w.category, w.filename, w.lineno)
+        if not failed:
+            mll._fit_result = result
+            return mll.eval()
+        mll._rs.set_raw_parameters(raw)
     raise ModelFittingError("All attempts to fit the model have failed.")
 
 

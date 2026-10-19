@@ -33,6 +33,9 @@ def _model_sources(module: Any) -> list[tuple[str, Any]]:
 
     if isinstance(module, SumMarginalLogLikelihood):
         return [(f"model.models.{i}.", m.model) for i, m in enumerate(module.mlls)]
+    if hasattr(module, "_param_entries"):
+        # An approximate MLL: the parameters with the MLL's names.
+        return [("", module)]
     if isinstance(module, MarginalLogLikelihood):
         return [("model.", module.model)]
     return [("", module)]
@@ -62,6 +65,17 @@ def _entries(module: Any) -> list[_Entry]:
                 f"{type(model).__name__} has no botorch_rs hyperparameters to optimize."
             )
         bounds = list(rs.raw_parameter_bounds())
+        param_entries = getattr(model, "_param_entries", None)
+        if param_entries is not None:
+            # Models whose `named_parameters()` order differs from the flat
+            # order (an approximate GP: the model's parameters, then the
+            # likelihood's).
+            for name, value, offset, size in param_entries():
+                b = bounds[offset : offset + size]
+                lo = min(x[0] for x in b) if b else -math.inf
+                hi = max(x[1] for x in b) if b else math.inf
+                entries.append(_Entry(prefix + name, value, (lo, hi), model, offset, size))
+            continue
         sizes = [size for _, size in rs.parameter_names()]
         offset = 0
         for (name, value), size in zip(model.named_parameters(), sizes, strict=True):
@@ -196,6 +210,9 @@ def sample_all_priors(model: Any, max_retries: int = 100, seed: int | None = Non
     models = model.models if hasattr(model, "models") else [model]
     for i, m in enumerate(models):
         rs = getattr(m, "_rs", None)
+        if isinstance(rs, _rs.SingleTaskVariationalGP):
+            rs.sample_all_priors(None if seed is None else int(seed) + i)
+            continue
         if rs is None or not isinstance(rs, _rs.SingleTaskGP):
             raise UnsupportedError("sample_all_priors requires botorch_rs SingleTaskGP models.")
         _rs.sample_all_priors(rs, None if seed is None else int(seed) + i)
