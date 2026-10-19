@@ -159,10 +159,38 @@ fn tpow(x: f64, e: f64) -> f64 {
 
 const AUG_HARTMANN_ALPHA: [f64; 4] = [f32r(1.0), f32r(1.2), f32r(3.0), f32r(3.2)];
 const AUG_HARTMANN_A: [[f64; 6]; 4] = [
-    [f32r(10.0), f32r(3.0), f32r(17.0), f32r(3.5), f32r(1.7), f32r(8.0)],
-    [f32r(0.05), f32r(10.0), f32r(17.0), f32r(0.1), f32r(8.0), f32r(14.0)],
-    [f32r(3.0), f32r(3.5), f32r(1.7), f32r(10.0), f32r(17.0), f32r(8.0)],
-    [f32r(17.0), f32r(8.0), f32r(0.05), f32r(10.0), f32r(0.1), f32r(14.0)],
+    [
+        f32r(10.0),
+        f32r(3.0),
+        f32r(17.0),
+        f32r(3.5),
+        f32r(1.7),
+        f32r(8.0),
+    ],
+    [
+        f32r(0.05),
+        f32r(10.0),
+        f32r(17.0),
+        f32r(0.1),
+        f32r(8.0),
+        f32r(14.0),
+    ],
+    [
+        f32r(3.0),
+        f32r(3.5),
+        f32r(1.7),
+        f32r(10.0),
+        f32r(17.0),
+        f32r(8.0),
+    ],
+    [
+        f32r(17.0),
+        f32r(8.0),
+        f32r(0.05),
+        f32r(10.0),
+        f32r(0.1),
+        f32r(14.0),
+    ],
 ];
 const AUG_HARTMANN_P: [[f64; 6]; 4] = [
     [1312.0, 1696.0, 5569.0, 124.0, 8283.0, 5886.0],
@@ -383,9 +411,7 @@ impl SingleObjectiveProblem {
     pub fn cost(&self, x: &Matrix) -> Result<Vec<f64>> {
         let (col, costs): (usize, &[f64]) = match self.kind {
             SingleObjectiveKind::WingWeightMultiFidelity => (10, &[1000.0, 100.0, 10.0, 1.0]),
-            SingleObjectiveKind::BoreholeMultiFidelity => {
-                (8, &[1000.0, 100.0, 10.0, 100.0, 10.0])
-            }
+            SingleObjectiveKind::BoreholeMultiFidelity => (8, &[1000.0, 100.0, 10.0, 100.0, 10.0]),
             _ => {
                 return Err(BotorchError::Unsupported(format!(
                     "{} has no cost model",
@@ -416,7 +442,8 @@ impl SingleObjectiveProblem {
         use SingleObjectiveKind as K;
         match self.kind {
             K::AugmentedBranin => {
-                let t1 = x[1] - (5.1 / (4.0 * tpow(PI, 2.0)) - 0.1 * (1.0 - x[2])) * tpow(x[0], 2.0)
+                let t1 = x[1]
+                    - (5.1 / (4.0 * tpow(PI, 2.0)) - 0.1 * (1.0 - x[2])) * tpow(x[0], 2.0)
                     + 5.0 / PI * x[0]
                     - 6.0;
                 let t2 = 10.0 * (1.0 - 1.0 / (8.0 * PI)) * x[0].cos();
@@ -444,8 +471,7 @@ impl SingleObjectiveProblem {
                 let d = x.len();
                 let mut s = 0.0;
                 for i in 0..d - 3 {
-                    let t1 =
-                        100.0 * tpow(x[i + 1] - tpow(x[i], 2.0) + 0.1 * (1.0 - x[d - 2]), 2.0);
+                    let t1 = 100.0 * tpow(x[i + 1] - tpow(x[i], 2.0) + 0.1 * (1.0 - x[d - 2]), 2.0);
                     let t2 = tpow(x[i] - 1.0 + 0.1 * tpow(1.0 - x[d - 1], 2.0), 2.0);
                     s += t1 + t2;
                 }
@@ -493,11 +519,9 @@ impl SingleObjectiveProblem {
                 trajectory_cost(x, self.trajectory.as_ref().expect("configuration"))
             }
             K::ConstrainedGramacy => x[0] + x[1],
-            K::ConstrainedHartmann | K::ConstrainedHartmannSmooth => self
-                .inner
-                .as_ref()
-                .expect("Hartmann")
-                .value_unchecked(x),
+            K::ConstrainedHartmann | K::ConstrainedHartmannSmooth => {
+                self.inner.as_ref().expect("Hartmann").value_unchecked(x)
+            }
             K::PressureVessel => {
                 let x1 = round_nearest(x[0], 0.0625, Some((0.0, 10.0)));
                 let x2 = round_nearest(x[1], 0.0625, Some((0.0, 10.0)));
@@ -868,7 +892,10 @@ fn trajectory_cost(params: &[f64], cfg: &TrajectoryConfig) -> f64 {
         .collect();
     let mut total = 0.0;
     for k in 0..points.len() - 1 {
-        let seg = norm2([points[k + 1][0] - points[k][0], points[k + 1][1] - points[k][1]]);
+        let seg = norm2([
+            points[k + 1][0] - points[k][0],
+            points[k + 1][1] - points[k][1],
+        ]);
         let w = 0.5 * (f64::from(u8::from(collides[k])) + f64::from(u8::from(collides[k + 1])));
         total += seg * w;
     }
@@ -950,8 +977,9 @@ fn spline_points(points: &[[f64; 2]], n_samples: usize) -> Option<Vec<[f64; 2]>>
     let mut v = vec![0.0; m];
     for i in 1..m {
         v[i] = v[i - 1]
-            + ((points[i][0] - points[i - 1][0]).powi(2) + (points[i][1] - points[i - 1][1]).powi(2))
-                .sqrt();
+            + ((points[i][0] - points[i - 1][0]).powi(2)
+                + (points[i][1] - points[i - 1][1]).powi(2))
+            .sqrt();
     }
     let total = v[m - 1];
     let u: Vec<f64> = v.iter().map(|x| x / total).collect();

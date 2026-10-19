@@ -548,7 +548,8 @@ def percentile_of_score(data: Any, score: Any, dim: int = -1) -> Any:
     order = (*[k for k in range(len(shape)) if k != d], d)
     flats = []
     for a in arrays:
-        f, s = to_flat(a)
+        # Nested lists are broadcast to flat (row-major) lists.
+        f, s = to_flat(a) if kind.lib != "list" else (list(a), shape)
         flats.append(_ops._permute_flat(f, s, order) if order != tuple(range(len(s))) else list(f))
     out_shape = tuple(shape[k] for k in order[:-1])
     rows = math.prod(out_shape)

@@ -565,7 +565,8 @@ pub fn mvnxpb_log_prob_with_grad(cov: &Matrix, bounds: &Matrix) -> Result<(f64, 
     let mut g_bounds = Matrix::zeros(n, 2);
     for chunk in targets.chunks(CHUNK) {
         let k = chunk.len();
-        let tangent = |is_cov: bool, r: usize, c: usize| chunk.iter().position(|t| *t == (is_cov, r, c));
+        let tangent =
+            |is_cov: bool, r: usize, c: usize| chunk.iter().position(|t| *t == (is_cov, r, c));
         let cv: Vec<Vec<Dual<CHUNK>>> = (0..n)
             .map(|r| {
                 (0..n)

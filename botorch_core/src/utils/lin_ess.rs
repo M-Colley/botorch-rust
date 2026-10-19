@@ -90,8 +90,8 @@ impl LinearEllipticalSliceSampler {
         if let Some(fixed_indices) = fixed_indices {
             // A dense root must be diagonal.
             if let Some(CovarianceRoot::Lower(l)) = &root {
-                let is_diag = (0..l.nrows())
-                    .all(|r| (0..l.ncols()).all(|c| r == c || l[(r, c)] == 0.0));
+                let is_diag =
+                    (0..l.nrows()).all(|r| (0..l.ncols()).all(|c| r == c || l[(r, c)] == 0.0));
                 if !is_diag {
                     return Err(BotorchError::InvalidArgument(
                         "Provide either covariance_root or fixed_indices, not both.".into(),
@@ -306,7 +306,8 @@ impl LinearEllipticalSliceSampler {
         let mut left = Matrix::zeros(nc, m + 1);
         let mut right = Matrix::zeros(nc, m + 1);
         for c in 0..nc {
-            let mut pairs: Vec<(f64, f64)> = (0..m).map(|r| (alpha[(r, c)], beta[(r, c)])).collect();
+            let mut pairs: Vec<(f64, f64)> =
+                (0..m).map(|r| (alpha[(r, c)], beta[(r, c)])).collect();
             pairs.sort_by(|x, y| x.0.total_cmp(&y.0));
             let mut cummax = f64::NEG_INFINITY;
             for (j, (a, b)) in pairs.iter().enumerate() {
@@ -455,7 +456,11 @@ mod tests {
         let p = crate::utils::probability::phi;
         let n = crate::utils::probability::ndtr;
         let expected = (p(0.0) - p(2.0)) / (n(2.0) - n(0.0));
-        assert!((sum / count - expected).abs() < 0.02, "{} vs {expected}", sum / count);
+        assert!(
+            (sum / count - expected).abs() < 0.02,
+            "{} vs {expected}",
+            sum / count
+        );
         assert_eq!(s.lifetime_samples(), 20_000);
     }
 

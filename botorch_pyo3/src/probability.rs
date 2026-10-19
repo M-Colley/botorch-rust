@@ -5,6 +5,10 @@
 //! sampler, the transforms of `botorch.sampling.qmc`, PyTorch's seeded CPU
 //! generator and the null space of equality constraints.
 
+use botorch_core::test_functions::single_objective::{
+    default_max_step_size, round_nearest, TrajectoryConfig,
+};
+use botorch_core::test_functions::{SingleObjectiveKind, SingleObjectiveProblem};
 use botorch_core::utils::elementwise::{
     elementwise, log_prob_feas_from_bounds, percentile_of_score, reduce, OutcomeBounds,
 };
@@ -15,10 +19,6 @@ use botorch_core::utils::mvnxpb_state::{
 };
 use botorch_core::utils::polytope::null_space;
 use botorch_core::utils::qmc::{mvn_qmc_root, normal_qmc_transform};
-use botorch_core::test_functions::single_objective::{
-    default_max_step_size, round_nearest, TrajectoryConfig,
-};
-use botorch_core::test_functions::{SingleObjectiveKind, SingleObjectiveProblem};
 use botorch_core::utils::torch_rng::TorchGenerator;
 use botorch_core::{Matrix, Vector};
 use pyo3::prelude::*;
@@ -113,8 +113,8 @@ fn log_prob_feas_py<'py>(
     Option<(Bound<'py, PyAny>, Bound<'py, PyAny>)>,
 )> {
     let bounds = OutcomeBounds { lower, upper, both };
-    let (v, g) = log_prob_feas_from_bounds(&bounds, &means.0, &sigmas.0, m, with_grad)
-        .into_py_result()?;
+    let (v, g) =
+        log_prob_feas_from_bounds(&bounds, &means.0, &sigmas.0, m, with_grad).into_py_result()?;
     let g = match g {
         Some((gm, gs)) => Some((float_values(py, &gm)?, float_values(py, &gs)?)),
         None => None,
@@ -345,13 +345,7 @@ fn mvnxpb_grad_py<'py>(
 /// step of every member (`PivotedCholesky.update_`).
 #[pyfunction]
 #[pyo3(name = "pivoted_cholesky_update")]
-fn pc_update_py(
-    tril: Floats,
-    batch: usize,
-    n: usize,
-    step: usize,
-    eps: f64,
-) -> PyResult<ArrayBuf> {
+fn pc_update_py(tril: Floats, batch: usize, n: usize, step: usize, eps: f64) -> PyResult<ArrayBuf> {
     let mut t = tril.0;
     if t.len() != batch * n * n || step >= n {
         return Err(dimension_error("inconsistent factor shape or step"));
@@ -386,7 +380,9 @@ fn pc_pivot_py<'py>(
         || pivots.len() != batch
         || pivots.iter().any(|&v| v < step || v >= n)
     {
-        return Err(value_error("Argument `pivot` does to match with batch shape`."));
+        return Err(value_error(
+            "Argument `pivot` does to match with batch shape`.",
+        ));
     }
     for (b, &piv) in pivots.iter().enumerate() {
         pivoted_cholesky_pivot(
@@ -422,7 +418,9 @@ fn augment_cholesky_py(
         && kba.as_ref().is_none_or(|k| k.0.len() == batch * nb * na)
         && lba.as_ref().is_none_or(|k| k.0.len() == batch * nb * na);
     if !ok {
-        return Err(dimension_error("inconsistent shapes of Laa, Kbb and Kba / Lba"));
+        return Err(dimension_error(
+            "inconsistent shapes of Laa, Kbb and Kba / Lba",
+        ));
     }
     let n = na + nb;
     let out = threads::run(py, || {
@@ -446,7 +444,10 @@ fn augment_cholesky_py(
 }
 
 /// The linear elliptical slice sampler (`LinearEllipticalSliceSampler`).
-#[pyclass(name = "LinearEllipticalSliceSampler", module = "botorch_rs._botorch_rs")]
+#[pyclass(
+    name = "LinearEllipticalSliceSampler",
+    module = "botorch_rs._botorch_rs"
+)]
 pub struct PyLinearEllipticalSliceSampler {
     inner: LinearEllipticalSliceSampler,
 }
@@ -648,10 +649,13 @@ fn null_space_py(c: Array) -> PyResult<ArrayBuf> {
     Ok(matrix_out(&null_space(&c.matrix("C")?)).into())
 }
 
-
 /// A single-objective test problem of phase 11a (multi-fidelity,
 /// sensitivity-analysis, mixed and constrained synthetic functions).
-#[pyclass(frozen, name = "SingleObjectiveProblem", module = "botorch_rs._botorch_rs")]
+#[pyclass(
+    frozen,
+    name = "SingleObjectiveProblem",
+    module = "botorch_rs._botorch_rs"
+)]
 pub struct PySingleObjectiveProblem {
     inner: SingleObjectiveProblem,
 }
@@ -732,7 +736,9 @@ impl PySingleObjectiveProblem {
 #[pyfunction]
 #[pyo3(name = "round_nearest", signature = (x, increment, bounds=None))]
 fn round_nearest_py(x: Floats, increment: f64, bounds: Option<(f64, f64)>) -> Vec<f64> {
-    x.0.iter().map(|&v| round_nearest(v, increment, bounds)).collect()
+    x.0.iter()
+        .map(|&v| round_nearest(v, increment, bounds))
+        .collect()
 }
 
 /// `data_log_likelihoods(model)`: the log marginal likelihood of the
@@ -776,7 +782,9 @@ fn sample_cached_cholesky_py(
         || mean_new.0.len() != batch * q
         || base.0.len() != batch * nq * s
     {
-        return Err(dimension_error("inconsistent shapes in sample_cached_cholesky"));
+        return Err(dimension_error(
+            "inconsistent shapes in sample_cached_cholesky",
+        ));
     }
     let out = threads::run(py, || {
         let mut out = Vec::with_capacity(batch * q * s);
@@ -794,7 +802,8 @@ fn sample_cached_cholesky_py(
                 Matrix::zeros(q, 0)
             };
             let br_to_chol = &br - &bl_chol * bl_chol.transpose();
-            let br_chol = botorch_core::linalg::psd_safe_cholesky_with(&br_to_chol, 1e-8, max_tries)?;
+            let br_chol =
+                botorch_core::linalg::psd_safe_cholesky_with(&br_to_chol, 1e-8, max_tries)?;
             let mut new_lq = Matrix::zeros(q, nq);
             new_lq.columns_mut(0, n).copy_from(&bl_chol);
             new_lq.columns_mut(n, q).copy_from(br_chol.l());

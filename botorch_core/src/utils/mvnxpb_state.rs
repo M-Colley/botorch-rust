@@ -255,7 +255,8 @@ impl MvnxpbState {
             }
             self.perm.swap(b * n + i, b * n + p);
             self.bounds.swap(b * n * 2 + i * 2, b * n * 2 + p * 2);
-            self.bounds.swap(b * n * 2 + i * 2 + 1, b * n * 2 + p * 2 + 1);
+            self.bounds
+                .swap(b * n * 2 + i * 2 + 1, b * n * 2 + p * 2 + 1);
         }
         Ok(())
     }
@@ -264,7 +265,12 @@ impl MvnxpbState {
     pub fn update_cholesky(&mut self, eps: f64) {
         let n = self.n;
         for b in 0..self.batch {
-            pivoted_cholesky_update(&mut self.tril[b * n * n..(b + 1) * n * n], n, self.pc_step, eps);
+            pivoted_cholesky_update(
+                &mut self.tril[b * n * n..(b + 1) * n * n],
+                n,
+                self.pc_step,
+                eps,
+            );
         }
         self.pc_step += 1;
     }
@@ -522,16 +528,20 @@ impl MvnxpbState {
             diag.extend_from_slice(&std);
             out.perm.extend_from_slice(&self.perm[b * n..(b + 1) * n]);
             out.perm.extend(n as i64..nm as i64);
-            out.pc_perm.extend_from_slice(&self.pc_perm[b * n..(b + 1) * n]);
+            out.pc_perm
+                .extend_from_slice(&self.pc_perm[b * n..(b + 1) * n]);
             out.pc_perm.extend(n as i64..nm as i64);
-            out.bounds.extend_from_slice(&self.bounds[b * n * 2..(b + 1) * n * 2]);
+            out.bounds
+                .extend_from_slice(&self.bounds[b * n * 2..(b + 1) * n * 2]);
             for r in 0..m {
                 for j in 0..2 {
                     let v = bounds[b * m * 2 + r * 2 + j];
-                    out.bounds.push(istd[r] * v.max(std[r] * lo).min(std[r] * hi));
+                    out.bounds
+                        .push(istd[r] * v.max(std[r] * lo).min(std[r] * hi));
                 }
             }
-            out.plug_ins.extend_from_slice(&self.plug_ins[b * n..(b + 1) * n]);
+            out.plug_ins
+                .extend_from_slice(&self.plug_ins[b * n..(b + 1) * n]);
             out.plug_ins.extend(std::iter::repeat_n(f64::NAN, m));
         }
         Ok((out, recovered))

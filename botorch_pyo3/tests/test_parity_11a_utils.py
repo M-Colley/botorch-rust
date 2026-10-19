@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import math
 import sys
-import warnings
 from typing import Any
 
 import pytest
@@ -47,10 +46,10 @@ torch = pytest.importorskip("torch")
 
 import botorch.utils.probability.utils as bt_pu  # noqa: E402
 import botorch.utils.safe_math as bt_sm  # noqa: E402
-from parity_helpers import Checker, ModelSpec, model_pair  # noqa: E402
 
 import botorch_rs.utils.probability.utils as rs_pu  # noqa: E402
 import botorch_rs.utils.safe_math as rs_sm  # noqa: E402
+from parity_helpers import Checker, ModelSpec, model_pair  # noqa: E402
 
 DT = torch.float64
 C = Checker("11a utils")
@@ -119,13 +118,23 @@ def test_safe_math_special_values() -> None:
     a = torch.tensor([inf, inf, -inf, 0.0, 0.0, 3.0, -2.0, 1e308], dtype=DT)
     b = torch.tensor([-inf, inf, -inf, 0.0, inf, 0.0, -inf, 1e308], dtype=DT)
     for name in ("add", "sub", "mul", "div"):
-        C.check(f"safe_math.{name} infinities", getattr(rs_sm, name)(a, b), getattr(bt_sm, name)(a, b), 0.0)
+        C.check(
+            f"safe_math.{name} infinities",
+            getattr(rs_sm, name)(a, b),
+            getattr(bt_sm, name)(a, b),
+            0.0,
+        )
     big = torch.tensor([800.0, 709.0, -800.0, 0.0, 1e-320], dtype=DT)
     C.check("safe_math.exp clip", rs_sm.exp(big), bt_sm.exp(big), TOL)
     C.check("safe_math.log clip", rs_sm.log(big.abs()), bt_sm.log(big.abs()), TOL)
     x = torch.tensor([[1.0, inf, 2.0], [-inf, -inf, -inf], [3.0, -inf, 1.0]], dtype=DT)
     for name in ("logsumexp", "fatmax", "smooth_amax"):
-        C.check(f"safe_math.{name} infinities", getattr(rs_sm, name)(x, dim=-1), getattr(bt_sm, name)(x, dim=-1), TOL)
+        C.check(
+            f"safe_math.{name} infinities",
+            getattr(rs_sm, name)(x, dim=-1),
+            getattr(bt_sm, name)(x, dim=-1),
+            TOL,
+        )
         (ga,) = grad_of(lambda t, n=name: getattr(rs_sm, n)(t, dim=-1), x)
         (ge,) = grad_of(lambda t, n=name: getattr(bt_sm, n)(t, dim=-1), x)
         # BoTorch's fatmax gradient is NaN for a row with a -inf element below
@@ -192,22 +201,67 @@ def test_safe_math_sigmoid_and_tensor_tau() -> None:
     y = torch.randn(4, 3, generator=gen(9), dtype=DT)
     # (BoTorch's log_softplus rejects a tensor tau with several elements.)
     for name in ("fatplus", "fatmoid", "log_fatplus", "log_fatmoid"):
-        C.check(f"safe_math.{name} tensor tau", getattr(rs_sm, name)(y, tau=tau), getattr(bt_sm, name)(y, tau=tau), TOL)
+        C.check(
+            f"safe_math.{name} tensor tau",
+            getattr(rs_sm, name)(y, tau=tau),
+            getattr(bt_sm, name)(y, tau=tau),
+            TOL,
+        )
+        ga = grad_of(lambda a, t, n=name: getattr(rs_sm, n)(a, tau=t), y, tau)
+        ge = grad_of(lambda a, t, n=name: getattr(bt_sm, n)(a, tau=t), y, tau)
+        for u, v in zip(ga, ge, strict=True):
+            C.check(f"safe_math.{name} tensor tau grad", u, v, GTOL)
+    import botorch.utils.rounding as br
+
+    import botorch_rs.utils.rounding as rr
+
+    ga = grad_of(lambda a, t: rr.approximate_round(a, tau=t), y, tau)
+    ge = grad_of(lambda a, t: br.approximate_round(a, tau=t), y, tau)
+    for u, v in zip(ga, ge, strict=True):
+        C.check("approximate_round tensor tau grad", u, v, GTOL)
     t0 = torch.tensor(0.3, dtype=DT)
-    for name in ("smooth_amax", "smooth_amin", "fatmax"):
+    for name in ("smooth_amax", "smooth_amin", "fatmax", "fatmin"):
         C.check(
             f"safe_math.{name} 0-dim tau",
             getattr(rs_sm, name)(y, dim=-1, tau=t0),
             getattr(bt_sm, name)(y, dim=-1, tau=t0),
             TOL,
         )
+        ga = grad_of(lambda a, t, n=name: getattr(rs_sm, n)(a, dim=-1, tau=t), y, t0)
+        ge = grad_of(lambda a, t, n=name: getattr(bt_sm, n)(a, dim=-1, tau=t), y, t0)
+        for u, v in zip(ga, ge, strict=True):
+            C.check(f"safe_math.{name} 0-dim tau grad", u, v, GTOL)
+    for name in ("fatmaximum", "fatminimum"):
+        z = torch.randn(4, 3, generator=gen(10), dtype=DT)
+        ga = grad_of(lambda a, b, t, n=name: getattr(rs_sm, n)(a, b, tau=t), y, z, t0)
+        ge = grad_of(lambda a, b, t, n=name: getattr(bt_sm, n)(a, b, tau=t), y, z, t0)
+        for u, v in zip(ga, ge, strict=True):
+            C.check(f"safe_math.{name} 0-dim tau grad", u, v, GTOL)
+    # log_softplus: BoTorch passes beta = 1 / tau to softplus, which needs a
+    # number, so a tau that requires gradients raises a TypeError in BoTorch;
+    # botorch_rs's derivative is compared with central differences of
+    # BoTorch's values (step 1e-6: truncation error ~1e-12, rounding ~1e-10).
+    ga = grad_of(lambda a, t: rs_sm.log_softplus(a, tau=t), y, t0)
+    (ge,) = grad_of(lambda a: bt_sm.log_softplus(a, tau=0.3), y)
+    C.check("safe_math.log_softplus 0-dim tau grad x", ga[0], ge, GTOL)
+    h = 1e-6
+    fd = (bt_sm.log_softplus(y, tau=t0 + h).sum() - bt_sm.log_softplus(y, tau=t0 - h).sum()) / (2 * h)
+    C.check("safe_math.log_softplus tau grad vs central differences", ga[1], fd, 1e-8)
 
 
 # ---------------------------------------------------------------------------
 # probability.utils
 # ---------------------------------------------------------------------------
 
-PROB_UNARY = ["ndtr", "phi", "log_phi", "log_ndtr", "log_erfc", "log_erfcx", "standard_normal_log_hazard"]
+PROB_UNARY = [
+    "ndtr",
+    "phi",
+    "log_phi",
+    "log_ndtr",
+    "log_erfc",
+    "log_erfcx",
+    "standard_normal_log_hazard",
+]
 
 
 @pytest.mark.parametrize("name", PROB_UNARY)
@@ -230,7 +284,12 @@ def test_probability_unary(name: str) -> None:
 def test_log_prob_normal_in_and_feasibility() -> None:
     a = torch.randn(30, generator=gen(11), dtype=DT) * 5
     b = a + torch.rand(30, generator=gen(12), dtype=DT) * 3 + 1e-3
-    C.check("probability.log_prob_normal_in", rs_pu.log_prob_normal_in(a, b), bt_pu.log_prob_normal_in(a, b), TOL)
+    C.check(
+        "probability.log_prob_normal_in",
+        rs_pu.log_prob_normal_in(a, b),
+        bt_pu.log_prob_normal_in(a, b),
+        TOL,
+    )
     ga = grad_of(rs_pu.log_prob_normal_in, a, b)
     ge = grad_of(bt_pu.log_prob_normal_in, a, b)
     for k in range(2):
@@ -316,7 +375,9 @@ def test_bvn(seed: int) -> None:
     r, xl, yl, xu, yu = _bvn_inputs(seed)
     C.check("bvn.bvn", rs_bvn.bvn(r, xl, yl, xu, yu), bt_bvn.bvn(r, xl, yl, xu, yu), TOL)
     C.check("bvn.bvnu", rs_bvn.bvnu(r, xl, yu), bt_bvn.bvnu(r, xl, yu), TOL)
-    for a, e in zip(rs_bvn.bvnmom(r, xl, yl, xu, yu), bt_bvn.bvnmom(r, xl, yl, xu, yu), strict=True):
+    for a, e in zip(
+        rs_bvn.bvnmom(r, xl, yl, xu, yu), bt_bvn.bvnmom(r, xl, yl, xu, yu), strict=True
+    ):
         C.check("bvn.bvnmom", a, e, TOL)
     # Gradients where BoTorch's are finite (see the draft for its NaN cases).
     ga = grad_of(rs_bvn.bvn, r, xl, yl, xu, yu)
@@ -418,8 +479,12 @@ def test_mvnxpb_augment(disable_pivoting: bool) -> None:
     _check_state("MVNXPB augment init", init_r, init_b)
     # The cross-covariance in the order of the solved variables.
     cross = cov[..., n:, :n].gather(-1, init_b.perm.unsqueeze(-2).expand(-1, 6 - n, -1))
-    ab = init_b.augment(cov[..., n:, n:], bounds[..., n:, :], cross, disable_pivoting=disable_pivoting)
-    ar = init_r.augment(cov[..., n:, n:], bounds[..., n:, :], cross, disable_pivoting=disable_pivoting)
+    ab = init_b.augment(
+        cov[..., n:, n:], bounds[..., n:, :], cross, disable_pivoting=disable_pivoting
+    )
+    ar = init_r.augment(
+        cov[..., n:, n:], bounds[..., n:, :], cross, disable_pivoting=disable_pivoting
+    )
     _check_state("MVNXPB augmented", ar, ab)
     C.check("MVNXPB augmented log_prob", ar.solve(), ab.solve(), 1e-8)
 
@@ -445,7 +510,7 @@ def test_pivoted_cholesky_and_linalg() -> None:
         C.check("PivotedCholesky tril", pa.tril, pe.tril, TOL)
         assert torch.equal(pa.perm, pe.perm)
         C.check("PivotedCholesky diag", pa.diag, pe.diag, 0.0)
-    na, nb = 3, 2
+    na = 3
     Laa = torch.linalg.cholesky(K[..., :na, :na])
     args = {"Laa": Laa, "Kbb": K[..., na:, na:], "Kba": K[..., na:, :na]}
     C.check("augment_cholesky", rl.augment_cholesky(**args), bl.augment_cholesky(**args), TOL)
@@ -463,7 +528,9 @@ def test_pivoted_cholesky_and_linalg() -> None:
         TOL,
     )
     blocks = ([K[0, :2, :2], K[:, :2, 2:]], [K[:, 2:, :2], K[1, 2:, 2:]])
-    C.check("block_matrix_concat", rl.block_matrix_concat(blocks), bl.block_matrix_concat(blocks), 0.0)
+    C.check(
+        "block_matrix_concat", rl.block_matrix_concat(blocks), bl.block_matrix_concat(blocks), 0.0
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -836,9 +903,13 @@ def test_test_functions(mod: str, name: str, kw: dict[str, Any]) -> None:
     C.check(f"{name} forward", a(X), e(X), TOL)
     if getattr(e, "_optimizers", None):
         opt = torch.tensor(e._optimizers, dtype=DT)
-        C.check(f"{name} at optimizers", a.evaluate_true(opt), e.evaluate_true(opt), TOL, atol=1e-14)
+        C.check(
+            f"{name} at optimizers", a.evaluate_true(opt), e.evaluate_true(opt), TOL, atol=1e-14
+        )
     if hasattr(e, "evaluate_slack_true"):
-        C.check(f"{name} evaluate_slack_true", a.evaluate_slack_true(X), e.evaluate_slack_true(X), TOL)
+        C.check(
+            f"{name} evaluate_slack_true", a.evaluate_slack_true(X), e.evaluate_slack_true(X), TOL
+        )
         assert torch.equal(a.is_feasible(X), e.is_feasible(X))
         C.check(f"{name} evaluate_slack", a.evaluate_slack(X), e.evaluate_slack(X), TOL)
     if hasattr(e, "cost"):
@@ -848,12 +919,22 @@ def test_test_functions(mod: str, name: str, kw: dict[str, Any]) -> None:
             C.check(f"{name} compute_dgsm", torch.tensor(x), torch.tensor(y), TOL)
     if hasattr(e, "optimal_sobol_indicies"):
         assert a.optimal_sobol_indicies() is e.optimal_sobol_indicies() is None
-    for attr in ("dgsm_gradient", "dgsm_gradient_abs", "dgsm_gradient_square", "vi", "V", "si", "si_t"):
+    for attr in (
+        "dgsm_gradient",
+        "dgsm_gradient_abs",
+        "dgsm_gradient_square",
+        "vi",
+        "V",
+        "si",
+        "si_t",
+    ):
         if hasattr(e, attr):
             va, ve = getattr(a, attr), getattr(e, attr)
             if torch.is_tensor(ve):
                 assert va.dtype == ve.dtype, (attr, va.dtype, ve.dtype)
-            C.check(f"{name}.{attr}", torch.as_tensor(va, dtype=DT), torch.as_tensor(ve, dtype=DT), TOL)
+            C.check(
+                f"{name}.{attr}", torch.as_tensor(va, dtype=DT), torch.as_tensor(ve, dtype=DT), TOL
+            )
 
 
 def test_test_function_noise_and_dtypes() -> None:
@@ -890,7 +971,9 @@ def test_test_function_noise_and_dtypes() -> None:
     a = rsy.AckleyMixed(dim=6, randomize_optimum=True)
     torch.manual_seed(3)
     e = bsy.AckleyMixed(dim=6, randomize_optimum=True)
-    C.check("AckleyMixed random optimum", torch.tensor(a._optimizers), torch.tensor(e._optimizers), 0.0)
+    C.check(
+        "AckleyMixed random optimum", torch.tensor(a._optimizers), torch.tensor(e._optimizers), 0.0
+    )
     X = _problem_points(e, 5, 43)
     C.check("AckleyMixed random optimum values", a(X), e(X), TOL)
 
@@ -909,7 +992,10 @@ def test_test_function_base_and_round_nearest() -> None:
         C.check("round_nearest", rs_round(X, inc, bounds), bt_round(X, inc, bounds), 0.0)
     from functools import partial
 
-    gens = (partial(rb.constant_outlier_generator, constant=7.0), partial(bb.constant_outlier_generator, constant=7.0))
+    gens = (
+        partial(rb.constant_outlier_generator, constant=7.0),
+        partial(bb.constant_outlier_generator, constant=7.0),
+    )
     a = rb.CorruptedTestProblem(rsy.Hartmann(dim=3), gens[0], outlier_fraction=0.4, seeds=[1, 2, 3])
     e = bb.CorruptedTestProblem(bsy.Hartmann(dim=3), gens[1], outlier_fraction=0.4, seeds=[1, 2, 3])
     X = torch.rand(8, 3, generator=gen(45), dtype=DT)
@@ -971,7 +1057,9 @@ def test_transforms() -> None:
     for upd in (True, False):
         C.check("normalize", rs.normalize(X, b, upd), bt.normalize(X, b, upd), TOL)
         C.check("unnormalize", rs.unnormalize(X, b, upd), bt.unnormalize(X, b, upd), TOL)
-    C.check("_update_constant_bounds", rs._update_constant_bounds(b), bt._update_constant_bounds(b), 0.0)
+    C.check(
+        "_update_constant_bounds", rs._update_constant_bounds(b), bt._update_constant_bounds(b), 0.0
+    )
     (ga,) = grad_of(lambda t: rs.normalize(t, b), X)
     (ge,) = grad_of(lambda t: bt.normalize(t, b), X)
     C.check("normalize grad", ga, ge, GTOL)
@@ -999,7 +1087,11 @@ def test_objective_and_rounding() -> None:
     obj = samples[..., 0]
     # eta values representable in float32: BoTorch builds the eta tensor with
     # torch.full (torch's default dtype), botorch_rs keeps float64.
-    for eta, log, fat in ((0.125, True, [True, False]), (0.25, False, False), (2.0**-10, True, True)):
+    for eta, log, fat in (
+        (0.125, True, [True, False]),
+        (0.25, False, False),
+        (2.0**-10, True, True),
+    ):
         for eta_arg in (eta, torch.tensor([eta, 2 * eta], dtype=DT)):
             C.check(
                 "compute_smoothed_feasibility_indicator",
@@ -1070,7 +1162,11 @@ def test_constraints_containers_and_constants() -> None:
         strict=True,
     ):
         C.check("get_outcome_constraint_transforms", fa(samples), fe(samples), TOL)
-    assert rc.get_outcome_constraint_transforms(None) is bc.get_outcome_constraint_transforms(None) is None
+    assert (
+        rc.get_outcome_constraint_transforms(None)
+        is bc.get_outcome_constraint_transforms(None)
+        is None
+    )
     for d, desc in ((4, True), (3, False), (1, False)):
         for p, q in zip(
             rc.get_monotonicity_constraints(d, descending=desc),
@@ -1080,11 +1176,16 @@ def test_constraints_containers_and_constants() -> None:
             assert torch.equal(p, q)
     v = torch.rand(16, 2, generator=gen(55), dtype=DT)
     idx = torch.stack([torch.randperm(16, generator=gen(56 + i))[:3] for i in range(8)])
-    sa, se = RSC(values=v, indices=idx, event_shape=torch.Size([6])), BSC(values=v, indices=idx, event_shape=torch.Size([6]))
+    sa, se = (
+        RSC(values=v, indices=idx, event_shape=torch.Size([6])),
+        BSC(values=v, indices=idx, event_shape=torch.Size([6])),
+    )
     assert torch.equal(sa(), se()) and sa.shape == se.shape
     da, de = RDC(values=v, event_shape=torch.Size([2])), BDC(values=v, event_shape=torch.Size([2]))
     assert torch.equal(da(), de()) and da.shape == de.shape and da.event_shape == de.event_shape
-    assert (da == RDC(values=v.clone(), event_shape=torch.Size([2]))) and not (da == RDC(values=v + 1, event_shape=torch.Size([2])))
+    assert (da == RDC(values=v.clone(), event_shape=torch.Size([2]))) and not (
+        da == RDC(values=v + 1, event_shape=torch.Size([2]))
+    )
     # BoTorch caches the constants (lru_cache): hashable values only.
     for vals in (0.5, (1.0, 2.0), (3.0,)):
         ref = torch.zeros(2, dtype=torch.float32)
@@ -1098,12 +1199,12 @@ def test_constraints_containers_and_constants() -> None:
 
 
 def test_datasets() -> None:
+    from botorch.utils.containers import DenseContainer as BDC
+    from botorch.utils.containers import SliceContainer as BSC
     from botorch.utils.datasets import ContextualDataset as BCD
     from botorch.utils.datasets import MultiTaskDataset as BMT
     from botorch.utils.datasets import RankingDataset as BRD
     from botorch.utils.datasets import SupervisedDataset as BSD
-    from botorch.utils.containers import DenseContainer as BDC
-    from botorch.utils.containers import SliceContainer as BSC
 
     from botorch_rs.utils.containers import DenseContainer as RDC
     from botorch_rs.utils.containers import SliceContainer as RSC
@@ -1112,7 +1213,9 @@ def test_datasets() -> None:
     from botorch_rs.utils.datasets import RankingDataset as RRD
     from botorch_rs.utils.datasets import SupervisedDataset as RSD
 
-    def pair(n: int, seed: int, outcome: str, task: float | None = None, yvar: bool = False) -> tuple[Any, Any]:
+    def pair(
+        n: int, seed: int, outcome: str, task: float | None = None, yvar: bool = False
+    ) -> tuple[Any, Any]:
         X = torch.rand(n, 3, generator=gen(seed), dtype=DT)
         if task is not None:
             X[:, 1] = task
@@ -1130,12 +1233,20 @@ def test_datasets() -> None:
             C.check(f"{label} Yvar", a.Yvar, e.Yvar, 0.0)
 
     for yvar in (False, True):
-        ds = [pair(5, 60, "y0", 0.0, yvar), pair(4, 63, "y1", 1.0, yvar), pair(3, 66, "y2", 2.0, yvar)]
+        ds = [
+            pair(5, 60, "y0", 0.0, yvar),
+            pair(4, 63, "y1", 1.0, yvar),
+            pair(3, 66, "y2", 2.0, yvar),
+        ]
         ma = RMT([d[0] for d in ds], target_outcome_name="y1", task_feature_index=1)
         me = BMT([d[1] for d in ds], target_outcome_name="y1", task_feature_index=1)
         same(ma, me, "MultiTaskDataset")
         assert ma.task_feature_index == me.task_feature_index
-        same(ma.get_dataset_without_task_feature("y2"), me.get_dataset_without_task_feature("y2"), "MultiTaskDataset subset")
+        same(
+            ma.get_dataset_without_task_feature("y2"),
+            me.get_dataset_without_task_feature("y2"),
+            "MultiTaskDataset subset",
+        )
         joint_a = RSD(me.X, me.Y, Yvar=me.Yvar, feature_names=me.feature_names, outcome_names=["y"])
         joint_e = BSD(me.X, me.Y, Yvar=me.Yvar, feature_names=me.feature_names, outcome_names=["y"])
         ja = RMT.from_joint_dataset(joint_a, task_feature_index=1, target_task_value=2)
@@ -1164,14 +1275,34 @@ def test_datasets() -> None:
     v = torch.rand(10, 2, generator=gen(86), dtype=DT)
     idx = torch.tensor([[0, 3], [2, 5], [7, 1], [4, 9]])
     Yr = torch.tensor([[0, 1], [1, 0], [0, 1], [1, 0]])
-    ra = RRD(RSC(values=v, indices=idx, event_shape=torch.Size([4])), RDC(values=Yr, event_shape=torch.Size([2])), ["a", "b"], ["r"])
-    re = BRD(BSC(values=v, indices=idx, event_shape=torch.Size([4])), BDC(values=Yr, event_shape=torch.Size([2])), ["a", "b"], ["r"])
+    ra = RRD(
+        RSC(values=v, indices=idx, event_shape=torch.Size([4])),
+        RDC(values=Yr, event_shape=torch.Size([2])),
+        ["a", "b"],
+        ["r"],
+    )
+    re = BRD(
+        BSC(values=v, indices=idx, event_shape=torch.Size([4])),
+        BDC(values=Yr, event_shape=torch.Size([2])),
+        ["a", "b"],
+        ["r"],
+    )
     assert torch.equal(ra.X, re.X) and torch.equal(ra.Y, re.Y)
-    for bad in ([[0, 0], [1, 0], [0, 1], [1, 0]], [[0, 2], [1, 0], [0, 1], [1, 0]], [[-1, 0], [1, 0], [0, 1], [1, 0]], [[1, 1], [1, 0], [0, 1], [1, 0]]):
+    for bad in (
+        [[0, 0], [1, 0], [0, 1], [1, 0]],
+        [[0, 2], [1, 0], [0, 1], [1, 0]],
+        [[-1, 0], [1, 0], [0, 1], [1, 0]],
+        [[1, 1], [1, 0], [0, 1], [1, 0]],
+    ):
         outcomes = []
         for cls, sc, dc in ((RRD, RSC, RDC), (BRD, BSC, BDC)):
             try:
-                cls(sc(values=v, indices=idx, event_shape=torch.Size([4])), dc(values=torch.tensor(bad), event_shape=torch.Size([2])), ["a", "b"], ["r"])
+                cls(
+                    sc(values=v, indices=idx, event_shape=torch.Size([4])),
+                    dc(values=torch.tensor(bad), event_shape=torch.Size([2])),
+                    ["a", "b"],
+                    ["r"],
+                )
                 outcomes.append(None)
             except Exception as err:  # noqa: BLE001
                 outcomes.append((type(err), str(err)))
@@ -1214,6 +1345,7 @@ def test_low_rank_and_multitask() -> None:
 
 
 def test_context_managers_dispatcher_settings_logging() -> None:
+    import botorch.logging as blog
     from botorch.utils.dispatcher import Dispatcher as BD
 
     import botorch_rs.settings as rset
@@ -1225,8 +1357,6 @@ def test_context_managers_dispatcher_settings_logging() -> None:
         zero_grad_ctx,
     )
     from botorch_rs.utils.dispatcher import Dispatcher as RD
-
-    import botorch.logging as blog
 
     _, rs, _ = model_pair(ModelSpec(n=8, d=2), 2)
     before = {k: v.detach().clone() for k, v in rs.named_parameters()}
@@ -1291,12 +1421,24 @@ def test_evaluation_and_feasible_volume() -> None:
     from botorch_rs.utils.evaluation import compute_in_sample_model_fit_metric as rfit
     from botorch_rs.utils.feasible_volume import get_feasible_samples as rgf
 
-    for spec in (ModelSpec(n=8, d=2), ModelSpec(n=8, d=2, m=2), ModelSpec(n=8, d=3, normalize=True)):
+    for spec in (
+        ModelSpec(n=8, d=2),
+        ModelSpec(n=8, d=2, m=2),
+        ModelSpec(n=8, d=3, normalize=True),
+    ):
         bt, rs, _ = model_pair(spec, 2)
         for crit in ("MLL", "AIC", "BIC"):
-            C.check(f"compute_in_sample_model_fit_metric {crit}", torch.tensor(rfit(rs, crit)), torch.tensor(bfit(bt, crit)), TOL)
+            C.check(
+                f"compute_in_sample_model_fit_metric {crit}",
+                torch.tensor(rfit(rs, crit)),
+                torch.tensor(bfit(bt, crit)),
+                TOL,
+            )
     S = torch.rand(50, 3, generator=gen(92), dtype=DT)
-    cons = [(torch.tensor([0, 2]), torch.tensor([1.0, 1.0], dtype=DT), 0.8), (torch.tensor([1]), torch.tensor([-1.0], dtype=DT), -0.3)]
+    cons = [
+        (torch.tensor([0, 2]), torch.tensor([1.0, 1.0], dtype=DT), 0.8),
+        (torch.tensor([1]), torch.tensor([-1.0], dtype=DT), -0.3),
+    ]
     fa, pa = rgf(S, cons)
     fe, pe = bgf(S, cons)
     assert torch.equal(fa, fe) and pa == pe
@@ -1317,7 +1459,9 @@ def test_polytope_samplers_and_normalization() -> None:
     deq = torch.tensor([[1.0]], dtype=DT)
     sparse = [(torch.tensor([0, 2]), torch.tensor([1.0, -2.0], dtype=DT), 0.25)]
     for f in ("normalize_sparse_linear_constraints",):
-        for x, y in zip(getattr(rsamp, f)(bounds, sparse), getattr(bs, f)(bounds, sparse), strict=True):
+        for x, y in zip(
+            getattr(rsamp, f)(bounds, sparse), getattr(bs, f)(bounds, sparse), strict=True
+        ):
             assert torch.equal(x[0], y[0])
             C.check(f, x[1], y[1], TOL)
             C.check(f, torch.tensor(x[2]), torch.tensor(y[2]), TOL)
@@ -1327,7 +1471,10 @@ def test_polytope_samplers_and_normalization() -> None:
         torch.cat(bs.normalize_dense_linear_constraints(bounds, (A, b)), -1),
         TOL,
     )
-    for kw in ({"inequality_constraints": (A, b)}, {"inequality_constraints": (A, b), "equality_constraints": (Ceq, deq)}):
+    for kw in (
+        {"inequality_constraints": (A, b)},
+        {"inequality_constraints": (A, b), "equality_constraints": (Ceq, deq)},
+    ):
         # botorch_rs's hit-and-run chains use its own generator (compared
         # statistically in test_parity_constraints.py); here the normalized
         # system and the interior point.
@@ -1336,10 +1483,14 @@ def test_polytope_samplers_and_normalization() -> None:
         pa, pe = sa._polytope(), se
         for attr in ("A", "b", "nullC", "new_A"):
             if getattr(pe, attr, None) is not None:
-                C.check(f"HitAndRunPolytopeSampler {attr}", getattr(pa, attr), getattr(pe, attr), TOL)
+                C.check(
+                    f"HitAndRunPolytopeSampler {attr}", getattr(pa, attr), getattr(pe, attr), TOL
+                )
         xa = sa.draw(6)
         assert xa.shape == se.draw(6).shape
-        assert all(bool(sa.feasible(((x - bounds[0]) / (bounds[1] - bounds[0])).unsqueeze(-1))) for x in xa)
+        assert all(
+            bool(sa.feasible(((x - bounds[0]) / (bounds[1] - bounds[0])).unsqueeze(-1))) for x in xa
+        )
         # The interior points maximize the smallest slack (a linear program
         # whose maximizers need not be unique): compare the slack.
         slack = []
@@ -1410,7 +1561,9 @@ def test_buffer_dict_and_multi_objective_leftovers() -> None:
     da = RBD({"a": torch.ones(2), "b": torch.zeros(3)})
     de = BBD({"a": torch.ones(2), "b": torch.zeros(3)})
     assert list(da.keys()) == list(de.keys())
-    assert {k: v.tolist() for k, v in da.state_dict().items()} == {k: v.tolist() for k, v in de.state_dict().items()}
+    assert {k: v.tolist() for k, v in da.state_dict().items()} == {
+        k: v.tolist() for k, v in de.state_dict().items()
+    }
     da["c"] = torch.full((1,), 2.0)
     de["c"] = torch.full((1,), 2.0)
     del da["a"]
@@ -1432,6 +1585,7 @@ def test_buffer_dict_and_multi_objective_leftovers() -> None:
     le.extend(ne, 0)
     la.extend(na[:2], 1)
     le.extend(ne[:2], 1)
+
     def walk(ml: Any) -> list[list[list[float]]]:
         out = []
         for i in range(ml.m):
@@ -1478,7 +1632,9 @@ def test_pymoo_problem_and_repair() -> None:
     pe = bt_opt.BotorchPymooProblem(acqf=BtM(bt), **kw)
     oa, oe = pa.evaluate(x, return_as_dictionary=True), pe.evaluate(x, return_as_dictionary=True)
     for key in ("F", "G"):
-        C.check(f"BotorchPymooProblem {key}", torch.as_tensor(oa[key]), torch.as_tensor(oe[key]), TOL)
+        C.check(
+            f"BotorchPymooProblem {key}", torch.as_tensor(oa[key]), torch.as_tensor(oe[key]), TOL
+        )
     choices = {0: [0.0, 0.25, 1.0], 1: [0.5]}
     ra = rs_opt.DiscreteParameterRepair(choices)._do(pa, x.copy())
     re = bt_opt.DiscreteParameterRepair(choices)._do(pe, x.copy())
@@ -1486,7 +1642,13 @@ def test_pymoo_problem_and_repair() -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["qExpectedHypervolumeImprovement", "qNoisyExpectedHypervolumeImprovement", "qLogNoisyExpectedHypervolumeImprovement", "qKnowledgeGradient"]
+    "name",
+    [
+        "qExpectedHypervolumeImprovement",
+        "qNoisyExpectedHypervolumeImprovement",
+        "qLogNoisyExpectedHypervolumeImprovement",
+        "qKnowledgeGradient",
+    ],
 )
 def test_iid_sampler_in_mo_and_kg(name: str) -> None:
     import botorch.acquisition as bta
@@ -1507,13 +1669,27 @@ def test_iid_sampler_in_mo_and_kg(name: str) -> None:
     bt, rs, X = model_pair(ModelSpec(n=8, d=2, m=m), 7)
     ref = torch.tensor([1.0, 2.0], dtype=DT)
     if name == "qKnowledgeGradient":
-        a = rsa.qKnowledgeGradient(rs, num_fantasies=4, sampler=RsIID(torch.Size([4]), seed=2), inner_sampler=RsIID(torch.Size([8]), seed=3))
-        e = bta.qKnowledgeGradient(bt, num_fantasies=4, sampler=BtIID(torch.Size([4]), seed=2), inner_sampler=BtIID(torch.Size([8]), seed=3))
+        a = rsa.qKnowledgeGradient(
+            rs,
+            num_fantasies=4,
+            sampler=RsIID(torch.Size([4]), seed=2),
+            inner_sampler=RsIID(torch.Size([8]), seed=3),
+        )
+        e = bta.qKnowledgeGradient(
+            bt,
+            num_fantasies=4,
+            sampler=BtIID(torch.Size([4]), seed=2),
+            inner_sampler=BtIID(torch.Size([8]), seed=3),
+        )
         Xc = torch.rand(3, 2 + 4, 2, generator=gen(96), dtype=DT)
     elif name == "qExpectedHypervolumeImprovement":
         Y = bt.posterior(X).mean.detach()
-        a = rsm.qExpectedHypervolumeImprovement(rs, ref, RsP(ref, Y), sampler=RsIID(torch.Size([32]), seed=4))
-        e = btm.qExpectedHypervolumeImprovement(bt, ref, BtP(ref, Y), sampler=BtIID(torch.Size([32]), seed=4))
+        a = rsm.qExpectedHypervolumeImprovement(
+            rs, ref, RsP(ref, Y), sampler=RsIID(torch.Size([32]), seed=4)
+        )
+        e = btm.qExpectedHypervolumeImprovement(
+            bt, ref, BtP(ref, Y), sampler=BtIID(torch.Size([32]), seed=4)
+        )
         Xc = torch.rand(3, 2, 2, generator=gen(96), dtype=DT)
     else:
         kw = {"X_baseline": X, "prune_baseline": False, "cache_root": False}

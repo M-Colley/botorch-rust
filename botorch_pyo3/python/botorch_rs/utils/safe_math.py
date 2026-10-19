@@ -8,8 +8,9 @@ NumPy arrays or nested lists; results have the type of the first array
 argument. For torch tensors that require gradients, the exact first
 derivatives are computed with the values and enter the autograd graph (the
 derivatives of PyTorch's autograd of BoTorch's expressions, including the
-subgradients of PyTorch >= 2.14 at clamp bounds). Gradients with respect to
-a tensor ``tau`` are not supported.
+subgradients of PyTorch >= 2.14 at clamp bounds), also with respect to a
+tensor ``tau`` (for ``log_softplus`` including the path through softplus's
+``beta = 1 / tau``, which BoTorch's autograd drops).
 
 .. [Maechler2012accurate]
     M. Mächler. Accurately Computing log (1 - exp (-| a|))
@@ -18,6 +19,7 @@ a tensor ``tau`` are not supported.
 
 from __future__ import annotations
 
+import importlib
 import math
 from typing import Any
 
@@ -45,22 +47,48 @@ def _out(result: Any, kwargs: dict[str, Any]) -> Any:
     return out
 
 
-def _check_tau(tau: Any) -> Any:
-    if is_torch_tensor(tau) and tau.requires_grad:
-        raise UnsupportedError(
-            "botorch_rs does not compute gradients with respect to `tau`; pass a "
-            "tensor that does not require gradients (or a float)."
-        )
-    return tau
+def _tau_requires_grad(tau: Any) -> bool:
+    return is_torch_tensor(tau) and bool(tau.requires_grad)
 
 
 def _scalar(value: Any, name: str) -> float:
     if isinstance(value, (int, float)):
         return float(value)
-    data, _ = to_flat(_check_tau(value), name)
+    data, _ = to_flat(value, name)
     if len(data) != 1:
         raise UnsupportedError(f"botorch_rs supports a scalar `{name}` here.")
     return float(data[0])
+
+
+def _reduce_tau(
+    name: str, x: Any, dim: Any, keepdim: bool, tau: Any, rest: tuple[float, ...], empty: float
+) -> Any:
+    """The reduction ``name`` with a scalar temperature tensor ``tau`` that
+    requires gradients. The reductions are positively homogeneous,
+    ``F(c x, c tau) = c F(x, tau)``, so by Euler's relation
+    ``dF/dtau = (F - sum_i x_i dF/dx_i) / tau`` (entries with a zero
+    derivative, e.g. ``-inf``, contribute nothing; ``0`` for infinite
+    ``F``); the value carries this derivative to ``tau`` to first order."""
+    torch = importlib.import_module("torch")
+    t = _scalar(tau, "tau")
+    params = (t, *rest)
+    xd = x.detach().requires_grad_(True)
+    with torch.enable_grad():
+        vd = _ops.reduce(name, xd, dim, True, params=params, empty=empty)
+        (g,) = torch.autograd.grad(vd.sum(), xd, allow_unused=True)
+    if g is None:
+        g = torch.zeros_like(xd)
+    dims = _ops.normalize_dims(dim, x.ndim) if x.ndim else ()
+    gx = torch.where(g == 0, torch.zeros_like(g), g * xd.detach())
+    s = gx.sum(dim=dims, keepdim=True) if dims else gx
+    vdd = vd.detach()
+    dtau = torch.where(torch.isfinite(vdd), (vdd - s) / t, torch.zeros_like(vdd))
+    v = _ops.reduce(name, x, dim, True, params=params, empty=empty)
+    tau0 = tau.reshape(())
+    out = v + (tau0 - tau0.detach()) * dtau
+    if not keepdim and dims:
+        out = out.sum(dim=dims)
+    return out
 
 
 def exp(x: Any, **kwargs: Any) -> Any:
@@ -184,7 +212,7 @@ def log_softplus(x: Any, tau: Any = TAU) -> Any:
         Tensor corresponding to ``log(softplus(x))``.
     """
     check_dtype_float32_or_float64(x)
-    return _ops.apply("log_softplus", x, _check_tau(tau), kind=first_kind(x, tau))
+    return _ops.apply("log_softplus", x, tau, kind=first_kind(x, tau))
 
 
 def smooth_amax(
@@ -216,6 +244,8 @@ def smooth_amax(
         if first_kind(X, tau).lib == "list":
             raise UnsupportedError("A non-scalar `tau` requires torch tensors or NumPy arrays.")
         return logsumexp(X / tau, dim=dim, keepdim=keepdim) * tau
+    if _tau_requires_grad(tau):
+        return _reduce_tau("smooth_amax", X, dim, keepdim, tau, (), -math.inf)
     return _ops.reduce("smooth_amax", X, dim, keepdim, params=(_scalar(tau, "tau"),))
 
 
@@ -228,6 +258,8 @@ def smooth_amin(
     """A smooth approximation to ``min(X, dim=dim)``, similar to ``smooth_amax``."""
     if not isinstance(tau, (int, float)) and len(to_flat(tau, "tau")[0]) != 1:
         return -smooth_amax(X=-X, dim=dim, keepdim=keepdim, tau=tau)
+    if _tau_requires_grad(tau):
+        return _reduce_tau("smooth_amin", X, dim, keepdim, tau, (), math.inf)
     return _ops.reduce(
         "smooth_amin", X, dim, keepdim, params=(_scalar(tau, "tau"),), empty=math.inf
     )
@@ -245,7 +277,7 @@ def log_fatplus(x: Any, tau: Any = TAU) -> Any:
     NOTE: Separated out in case the complexity of the ``log`` implementation increases
     in the future.
     """
-    return _ops.apply("log_fatplus", x, _check_tau(tau), kind=first_kind(x, tau))
+    return _ops.apply("log_fatplus", x, tau, kind=first_kind(x, tau))
 
 
 def fatplus(x: Any, tau: Any = TAU) -> Any:
@@ -261,7 +293,7 @@ def fatplus(x: Any, tau: Any = TAU) -> Any:
     Returns:
         A Tensor of values of the fat-tailed softplus.
     """
-    return _ops.apply("fatplus", x, _check_tau(tau), kind=first_kind(x, tau))
+    return _ops.apply("fatplus", x, tau, kind=first_kind(x, tau))
 
 
 def fatmax(
@@ -288,6 +320,8 @@ def fatmax(
         A Tensor of smooth approximations to ``amax(X, dim=dim)`` with a fat tail.
     """
     try:
+        if _tau_requires_grad(tau):
+            return _reduce_tau("fatmax", x, dim, keepdim, tau, (float(alpha),), -math.inf)
         return _ops.reduce(
             "fatmax", x, dim, keepdim, params=(_scalar(tau, "tau"), float(alpha))
         )
@@ -319,6 +353,8 @@ def fatmin(
         A Tensor of smooth approximations to ``amin(X, dim=dim)`` with a fat tail.
     """
     try:
+        if _tau_requires_grad(tau):
+            return _reduce_tau("fatmin", x, dim, keepdim, tau, (float(alpha),), math.inf)
         return _ops.reduce(
             "fatmin",
             x,
@@ -348,6 +384,9 @@ def fatmaximum(a: Any, b: Any, tau: Any = TAU, alpha: float = ALPHA) -> Any:
     Returns:
         A smooth approximation of torch.maximum(a, b).
     """
+    if _tau_requires_grad(tau):
+        torch = importlib.import_module("torch")
+        return fatmax(torch.stack(torch.broadcast_tensors(a, b), dim=-1), dim=-1, tau=tau, alpha=alpha)
     return _ops.apply("fatmaximum", a, b, params=(_scalar(tau, "tau"), float(alpha)))
 
 
@@ -368,6 +407,8 @@ def fatminimum(a: Any, b: Any, tau: Any = TAU, alpha: float = ALPHA) -> Any:
     Returns:
         A smooth approximation of torch.minimum(a, b).
     """
+    if _tau_requires_grad(tau):
+        return -fatmaximum(-a, -b, tau=tau, alpha=alpha)
     return _ops.apply("fatminimum", a, b, params=(_scalar(tau, "tau"), float(alpha)))
 
 
@@ -375,7 +416,7 @@ def log_fatmoid(X: Any, tau: Any = 1.0) -> Any:
     """Computes the logarithm of the fatmoid. Separated out in case the implementation
     of the logarithm becomes more complex in the future to ensure numerical stability.
     """
-    return _ops.apply("log_fatmoid", X, _check_tau(tau), kind=first_kind(X, tau))
+    return _ops.apply("log_fatmoid", X, tau, kind=first_kind(X, tau))
 
 
 def fatmoid(X: Any, tau: Any = 1.0) -> Any:
@@ -389,7 +430,7 @@ def fatmoid(X: Any, tau: Any = 1.0) -> Any:
     Returns:
         A tensor of fat-tailed approximations to the Heaviside step function.
     """
-    return _ops.apply("fatmoid", X, _check_tau(tau), kind=first_kind(X, tau))
+    return _ops.apply("fatmoid", X, tau, kind=first_kind(X, tau))
 
 
 def cauchy(x: Any) -> Any:

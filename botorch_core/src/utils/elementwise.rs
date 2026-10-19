@@ -55,9 +55,23 @@ pub struct Elementwise {
 /// for an unknown name.
 pub fn arity(name: &str) -> Option<(usize, usize)> {
     Some(match name {
-        "ndtr" | "phi" | "log_phi" | "log_ndtr" | "log_erfc" | "log_erfcx"
-        | "standard_normal_log_hazard" | "exp" | "log" | "log1mexp" | "log1pexp" | "logexpit"
-        | "sigmoid" | "log_sigmoid" | "fat_sigmoid" | "log_fat_sigmoid" | "cauchy" => (1, 1),
+        "ndtr"
+        | "phi"
+        | "log_phi"
+        | "log_ndtr"
+        | "log_erfc"
+        | "log_erfcx"
+        | "standard_normal_log_hazard"
+        | "exp"
+        | "log"
+        | "log1mexp"
+        | "log1pexp"
+        | "logexpit"
+        | "sigmoid"
+        | "log_sigmoid"
+        | "fat_sigmoid"
+        | "log_fat_sigmoid"
+        | "cauchy" => (1, 1),
         "add" | "sub" | "mul" | "div" | "logplusexp" | "logdiffexp" | "log_prob_normal_in"
         | "fatmaximum" | "fatminimum" | "fatplus" | "log_fatplus" | "log_softplus" | "fatmoid"
         | "log_fatmoid" | "approximate_round" => (2, 1),
@@ -103,47 +117,51 @@ fn log_erfcx_with_grad(x: f64) -> (f64, f64) {
 /// BoTorch's `log_softplus(x, tau)` with the cutoffs of the dtype, and its
 /// derivative with respect to `x`.
 #[inline]
-fn log_softplus_with_grad(x: f64, tau: f64, single: bool) -> (f64, f64) {
+fn log_softplus_with_grad(x: f64, tau: f64, single: bool) -> (f64, f64, f64) {
     let (upper, lower) = if single { (16.0, -15.0) } else { (32.0, -35.0) };
     if x / tau > lower {
         // torch's softplus(x, beta=1/tau, threshold=upper).
         let beta = 1.0 / tau;
         let xb = x * beta;
         if xb > upper {
-            (x.ln(), 1.0 / x)
+            (x.ln(), 1.0 / x, 0.0)
         } else {
             let z = xb.exp();
             let sp = z.ln_1p() / beta;
-            (sp.ln(), (z / (z + 1.0)) / sp)
+            let s = z / (z + 1.0);
+            // d/dtau log(tau log1p(exp(x / tau))) = 1/tau - (x/tau) s / sp.
+            (sp.ln(), s / sp, 1.0 / tau - xb * s / sp)
         }
     } else {
-        (x / tau + tau.ln(), 1.0 / tau)
+        (x / tau + tau.ln(), 1.0 / tau, -x / (tau * tau) + 1.0 / tau)
     }
 }
 
-/// `fatplus(x, tau)` and its derivative with respect to `x`.
+/// `fatplus(x, tau)` and its derivatives with respect to `x` and `tau`.
 #[inline]
-fn fatplus_with_grad(x: f64, tau: f64) -> (f64, f64) {
+fn fatplus_with_grad(x: f64, tau: f64) -> (f64, f64, f64) {
     let y = x / tau;
     let (sp, spg) = softplus_with_grad(y);
     let (c, cg) = cauchy_with_grad(y);
-    (
-        tau * (sp + FATPLUS_ALPHA * c),
-        tau * (spg + FATPLUS_ALPHA * cg) / tau,
-    )
+    let f = sp + FATPLUS_ALPHA * c;
+    let fg = spg + FATPLUS_ALPHA * cg;
+    // d/dtau [tau f(x / tau)] = f(y) - y f'(y).
+    (tau * f, tau * fg / tau, f - y * fg)
 }
 
-/// `fatmoid(x, tau)` and its derivative with respect to `x`.
+/// `fatmoid(x, tau)` and its derivatives with respect to `x` and `tau`.
 #[inline]
-fn fatmoid_with_grad(x: f64, tau: f64) -> (f64, f64) {
+fn fatmoid_with_grad(x: f64, tau: f64) -> (f64, f64, f64) {
     let y = x / tau;
-    if y < 0.0 {
+    let (v, g) = if y < 0.0 {
         let (c, cg) = cauchy_with_grad(y - INV_SQRT_3);
         (2.0 / 3.0 * c, 2.0 / 3.0 * cg / tau)
     } else {
         let (c, cg) = cauchy_with_grad(y + INV_SQRT_3);
         (1.0 - 2.0 / 3.0 * c, -(2.0 / 3.0 * cg) / tau)
-    }
+    };
+    // The value depends on x / tau: d/dtau = -(x / tau) d/dx.
+    (v, g, -y * g)
 }
 
 /// One-input functions: `(value, derivative)`.
@@ -247,11 +265,7 @@ fn binary(name: &str, a: f64, b: f64, params: &[f64], single: bool) -> Result<(f
             let is_inf = b == f64::NEG_INFINITY;
             let z = a - if is_inf { 0.0 } else { b };
             let g = sm::log1mexp_grad(z);
-            (
-                b + sm::log1mexp(z),
-                g,
-                if is_inf { 1.0 } else { 1.0 - g },
-            )
+            (b + sm::log1mexp(z), g, if is_inf { 1.0 } else { 1.0 - g })
         }
         "log_prob_normal_in" => prob::log_prob_normal_in_with_grad(a, b)?,
         "fatmaximum" => fatmax2(a, b, params[0], params[1]),
@@ -259,30 +273,23 @@ fn binary(name: &str, a: f64, b: f64, params: &[f64], single: bool) -> Result<(f
             let (v, ga, gb) = fatmax2(-a, -b, params[0], params[1]);
             (-v, ga, gb)
         }
-        "fatplus" => {
-            let (v, g) = fatplus_with_grad(a, b);
-            (v, g, 0.0)
-        }
+        "fatplus" => fatplus_with_grad(a, b),
         "log_fatplus" => {
-            let (v, g) = fatplus_with_grad(a, b);
-            (v.ln(), g / v, 0.0)
+            let (v, g, gt) = fatplus_with_grad(a, b);
+            (v.ln(), g / v, gt / v)
         }
-        "log_softplus" => {
-            let (v, g) = log_softplus_with_grad(a, b, single);
-            (v, g, 0.0)
-        }
-        "fatmoid" => {
-            let (v, g) = fatmoid_with_grad(a, b);
-            (v, g, 0.0)
-        }
+        "log_softplus" => log_softplus_with_grad(a, b, single),
+        "fatmoid" => fatmoid_with_grad(a, b),
         "log_fatmoid" => {
-            let (v, g) = fatmoid_with_grad(a, b);
-            (v.ln(), g / v, 0.0)
+            let (v, g, gt) = fatmoid_with_grad(a, b);
+            (v.ln(), g / v, gt / v)
         }
         "approximate_round" => {
             let offset = a.floor();
-            let t = ((a - offset - 0.5) / b).tanh();
-            (offset + (t + 1.0) / 2.0, (1.0 - t * t) / b / 2.0, 0.0)
+            let r = a - offset - 0.5;
+            let t = (r / b).tanh();
+            let dt = (1.0 - t * t) / 2.0;
+            (offset + (t + 1.0) / 2.0, dt / b, -dt * r / (b * b))
         }
         _ => unreachable!("unknown binary function {name}"),
     })
@@ -324,12 +331,7 @@ pub fn elementwise(
             "{name} takes the parameters (tau, alpha)"
         )));
     }
-    if name == "log_prob_normal_in"
-        && !inputs[0]
-            .iter()
-            .zip(inputs[1])
-            .all(|(a, b)| a < b)
-    {
+    if name == "log_prob_normal_in" && !inputs[0].iter().zip(inputs[1]).all(|(a, b)| a < b) {
         return Err(BotorchError::InvalidArgument(
             "Received input tensors a, b for which not all a < b.".into(),
         ));
@@ -609,7 +611,12 @@ pub fn log_prob_feas_from_bounds(
 /// 50 / n`, NaN if the score or a value of the row is NaN. With
 /// `single_precision`, the product is computed in float32 like PyTorch's
 /// integer-by-float multiplication with the default dtype.
-pub fn percentile_of_score(data: &[f64], scores: &[f64], n: usize, single_precision: bool) -> Vec<f64> {
+pub fn percentile_of_score(
+    data: &[f64],
+    scores: &[f64],
+    n: usize,
+    single_precision: bool,
+) -> Vec<f64> {
     if n == 0 {
         return vec![f64::NAN; scores.len()];
     }
@@ -709,7 +716,14 @@ mod tests {
 
     #[test]
     fn reductions() {
-        let x = [1.0, 2.0, 3.0, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        let x = [
+            1.0,
+            2.0,
+            3.0,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
         let (v, g) = reduce("logsumexp", &x, 3, &[], true).unwrap();
         assert!((v[0] - (1f64.exp() + 2f64.exp() + 3f64.exp()).ln()).abs() < 1e-15);
         assert_eq!(v[1], f64::NEG_INFINITY);
