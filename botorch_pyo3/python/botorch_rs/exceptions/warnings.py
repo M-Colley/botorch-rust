@@ -17,6 +17,14 @@ class InputDataWarning(BotorchWarning):
     """The training data are not normalized / standardized."""
 
 
+class CostAwareWarning(BotorchWarning):
+    """A warning about a cost-aware acquisition strategy."""
+
+
+class BotorchTensorDimensionWarning(BotorchWarning):
+    """A tensor shape may violate a BoTorch convention."""
+
+
 class NumericsWarning(BotorchWarning):
     """A method with known numerical issues is used."""
 
@@ -36,7 +44,9 @@ class SamplingWarning(BotorchWarning):
 _LEGACY_TO_LOGEI = {
     "ExpectedImprovement": "LogExpectedImprovement",
     "ConstrainedExpectedImprovement": "LogConstrainedExpectedImprovement",
+    "NoisyExpectedImprovement": "LogNoisyExpectedImprovement",
     "qExpectedImprovement": "qLogExpectedImprovement",
+    "qNoisyExpectedImprovement": "qLogNoisyExpectedImprovement",
     "qExpectedHypervolumeImprovement": "qLogExpectedHypervolumeImprovement",
     "qNoisyExpectedHypervolumeImprovement": "qLogNoisyExpectedHypervolumeImprovement",
 }
@@ -59,6 +69,8 @@ def legacy_ei_numerics_warning(legacy_name: str) -> None:
 __all__ = [
     "BadInitialCandidatesWarning",
     "BotorchWarning",
+    "BotorchTensorDimensionWarning",
+    "CostAwareWarning",
     "InputDataWarning",
     "NumericsWarning",
     "OptimizationWarning",

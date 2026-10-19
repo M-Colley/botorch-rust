@@ -48,6 +48,31 @@ def test_batched_standardize_posterior(kind: str) -> None:
     assert_close(samples[0], [[[1.0]], [[13.0]]])
 
 
+def test_stratified_loo_untransform(kind: str) -> None:
+    import math
+
+    from botorch_rs.models.transforms.outcome import StratifiedStandardize
+    from helpers import flatten
+
+    x = as_kind([[0.1, 0.0], [0.3, 0.0], [0.7, 1.0], [0.9, 1.0]], kind)
+    y = as_kind([[1.0], [3.0], [10.0], [16.0]], kind)
+    transform = StratifiedStandardize(1, as_kind([0.0, 1.0], kind))
+    model = SingleTaskGP(x, y, outcome_transform=transform)
+    raw = loo_cv(model, untransform=False)
+    actual = loo_cv(model)
+    offsets = [2.0, 2.0, 13.0, 13.0]
+    scales = [math.sqrt(2.0), math.sqrt(2.0), math.sqrt(18.0), math.sqrt(18.0)]
+    assert_close(
+        flatten(actual.posterior.mean),
+        [o + s * m for o, s, m in zip(offsets, scales, flatten(raw.posterior.mean), strict=True)],
+    )
+    assert_close(
+        flatten(actual.posterior.variance),
+        [s * s * v for s, v in zip(scales, flatten(raw.posterior.variance), strict=True)],
+    )
+    assert_close(flatten(actual.observed_Y), flatten(y))
+
+
 def model_kind(value):
     from botorch_rs._arrays import kind_of
 

@@ -9,7 +9,8 @@ use common::{build_model, load_fixtures};
 #[test]
 fn loo_matches_conditionals_of_botorch_fixtures() {
     for fixture in load_fixtures() {
-        let model = build_model(&fixture);
+        let mut model = build_model(&fixture);
+        model.set_raw_parameters(&fixture.raw_params).unwrap();
         let n = model.num_train();
         let noise = model.likelihood_noise();
         let mut covariance = Matrix::from_fn(n, n, |i, j| fixture.kernel.k_train[i][j]);

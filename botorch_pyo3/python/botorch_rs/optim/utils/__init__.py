@@ -8,6 +8,7 @@ from botorch_rs.optim.utils.acquisition_utils import (
 from botorch_rs.optim.utils.common import check_scipy_version_at_least
 from botorch_rs.optim.utils.model_utils import (
     TorchAttr,
+    get_data_loader,
     get_name_filter,
     get_parameters,
     get_parameters_and_bounds,
@@ -28,6 +29,7 @@ __all__ = [
     "fix_features",
     "get_X_baseline",
     "get_bounds_as_ndarray",
+    "get_data_loader",
     "get_name_filter",
     "get_parameters",
     "get_parameters_and_bounds",

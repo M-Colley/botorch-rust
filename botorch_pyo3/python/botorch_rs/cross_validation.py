@@ -220,19 +220,23 @@ def efficient_loo_cv(
     posterior: Any = _DiagonalPosterior(_reshape(mu, folds), _reshape(var, folds), kind)
     transform = getattr(model, "outcome_transform", None) if untransform else None
     if transform is not None:
-        observed, observed_noise = transform.untransform(observed, observed_noise)
+        xdata, xshape = model._rs.transformed_train_inputs()
+        training_x = from_flat(xdata, tuple(xshape), kind)
+        observed, observed_noise = transform.untransform(observed, observed_noise, X=training_x)
         if transform._is_linear:
-            mu, var = transform.untransform(mu, var)
+            mu, var = transform.untransform(mu, var, X=training_x)
             posterior = _DiagonalPosterior(_reshape(mu, folds), _reshape(var, folds), kind)
         else:
             # Lay folds out as q while untransforming, so transform batch
             # statistics broadcast against the model batch dimensions.
-            transformed = transform.untransform_posterior(_DiagonalPosterior(mu, var, kind))
+            transformed = transform.untransform_posterior(
+                _DiagonalPosterior(mu, var, kind), X=training_x
+            )
 
             def sample_transform(samples: Any) -> Any:
                 data, sshape = to_flat(samples, "samples")
                 squeezed = from_flat(data, (*sshape[:-2], sshape[-1]), kind)
-                output, _ = transform.untransform(squeezed)
+                output, _ = transform.untransform(squeezed, X=training_x)
                 return _reshape(output, tuple(sshape))
 
             posterior = TransformedPosterior(

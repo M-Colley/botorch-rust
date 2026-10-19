@@ -50,25 +50,42 @@ def test_loo_parity(batch, m, fixed, transform, observation_noise, untransform) 
             y,
             train_Yvar=noise if fixed else None,
             outcome_transform=outcome,
-            input_transform=Normalize(d=2, batch_shape=batch),
+            input_transform=Normalize(d=2, batch_shape=batch if m == 1 else ()),
         )
-        model.covar_module.lengthscale = 0.6
-        model.mean_module.constant = 0.15
+        model.covar_module.lengthscale = torch.tensor(0.6, dtype=torch.float64)
+        model.mean_module.constant = torch.tensor(0.15, dtype=torch.float64)
         if not fixed:
-            model.likelihood.noise = 0.04
+            model.likelihood.noise = torch.tensor(0.04, dtype=torch.float64)
         models.append(model)
-    expected = bt_cv.loo_cv(models[0], observation_noise, untransform)
+    # BoTorch 0.18.1 and official b0dd01be6 broadcast Standardize's model
+    # batch statistics against the fold dimension and fail here. Compare
+    # their raw LOO Gaussian with the analytically correct untransform.
+    batched_untransform = untransform and bool(batch) and transform == "standardize"
+    expected = bt_cv.loo_cv(models[0], observation_noise, untransform and not batched_untransform)
     actual = loo_cv(models[1], observation_noise, untransform)
+    expected_mean = expected.posterior.mean
+    expected_variance = expected.posterior.variance
+    expected_y, expected_noise = expected.observed_Y, expected.observed_Yvar
+    if batched_untransform:
+        tf = models[0].outcome_transform
+        expected_mean, expected_variance = tf.untransform(
+            expected_mean.squeeze(-2), expected_variance.squeeze(-2)
+        )
+        expected_mean = expected_mean.unsqueeze(-2)
+        expected_variance = expected_variance.unsqueeze(-2)
+        expected_y, expected_noise = tf.untransform(
+            expected_y.squeeze(-2), expected_noise.squeeze(-2) if fixed else None
+        )
+        expected_y = expected_y.unsqueeze(-2)
+        expected_noise = expected_noise.unsqueeze(-2) if fixed else None
     for a, e in (
-        (actual.posterior.mean, expected.posterior.mean),
-        (actual.posterior.variance, expected.posterior.variance),
-        (actual.observed_Y, expected.observed_Y),
+        (actual.posterior.mean, expected_mean),
+        (actual.posterior.variance, expected_variance),
+        (actual.observed_Y, expected_y),
     ):
         torch.testing.assert_close(a, e, rtol=1e-9, atol=1e-10)
     if fixed:
-        torch.testing.assert_close(
-            actual.observed_Yvar, expected.observed_Yvar, rtol=1e-9, atol=1e-10
-        )
+        torch.testing.assert_close(actual.observed_Yvar, expected_noise, rtol=1e-9, atol=1e-10)
     sample_shape = (3,)
     base = torch.randn(
         *sample_shape,
@@ -76,9 +93,14 @@ def test_loo_parity(batch, m, fixed, transform, observation_noise, untransform) 
         generator=generator,
         dtype=torch.float64,
     )
+    expected_samples = expected.posterior.rsample_from_base_samples(torch.Size(sample_shape), base)
+    if batched_untransform:
+        expected_samples = (
+            models[0].outcome_transform.untransform(expected_samples.squeeze(-2))[0].unsqueeze(-2)
+        )
     torch.testing.assert_close(
         actual.posterior.rsample_from_base_samples(sample_shape, base),
-        expected.posterior.rsample_from_base_samples(torch.Size(sample_shape), base),
+        expected_samples,
         rtol=1e-9,
         atol=1e-10,
     )
@@ -110,6 +132,11 @@ def test_fully_bayesian_loo(fixed, untransform) -> None:
         model.load_mcmc_samples({k: v.clone() for k, v in samples.items()})
         model.eval()
         models.append(model)
+    # Official BoTorch passes the unbatched targets of a fully Bayesian
+    # model to its ensemble consistency checker (IndexError at dim=-2).
+    # Expand these identical observations over the hyperparameter samples
+    # for the reference; this does not change the GP or its likelihood.
+    models[0].train_targets = models[0].train_targets.expand(3, 4)
     expected = bt_cv.loo_cv(models[0], untransform=untransform)
     actual = loo_cv(models[1], untransform=untransform)
     for name in (
@@ -119,13 +146,19 @@ def test_fully_bayesian_loo(fixed, untransform) -> None:
         "mixture_variance",
         "mixture_covariance_matrix",
     ):
+        reference = getattr(expected.posterior, name)
+        if hasattr(reference, "to_dense"):
+            reference = reference.to_dense()
         torch.testing.assert_close(
             getattr(actual.posterior, name),
-            getattr(expected.posterior, name),
+            reference,
             rtol=1e-9,
             atol=1e-10,
         )
-    torch.testing.assert_close(actual.observed_Y, expected.observed_Y, rtol=1e-9, atol=1e-10)
+    observed = expected.observed_Y
+    if observed.ndim < actual.observed_Y.ndim:
+        observed = observed.unsqueeze(-3).expand_as(actual.observed_Y)
+    torch.testing.assert_close(actual.observed_Y, observed, rtol=1e-9, atol=1e-10)
 
 
 @pytest.mark.parametrize("transform", ["none", "standardize", "log"])

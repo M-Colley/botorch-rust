@@ -1202,13 +1202,13 @@ impl SingleTaskGP {
     /// See [`SingleTaskGP::train_cholesky`].
     pub fn loo_predictions(&self, observation_noise: bool) -> Result<(Vector, Vector)> {
         let cache = self.cache()?;
-        let linv = cache.chol.inverse_factor();
+        let inverse_diagonal = cache.chol.inverse_diagonal();
         let noise = self.likelihood_noise();
         let n = self.num_train();
         let mut mean = Vector::zeros(n);
         let mut variance = Vector::zeros(n);
         for i in 0..n {
-            let precision = linv.column(i).norm_squared();
+            let precision = inverse_diagonal[i];
             mean[i] = self.train_y_tf[i] - cache.alpha[i] / precision;
             let predictive = precision.recip();
             variance[i] = if observation_noise {

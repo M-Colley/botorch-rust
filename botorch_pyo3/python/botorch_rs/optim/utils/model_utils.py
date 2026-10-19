@@ -26,6 +26,21 @@ class TorchAttr(NamedTuple):
     device: Any
 
 
+def get_data_loader(model: Any, batch_size: int = 1024, **kwargs: Any) -> Any:
+    """Create a torch DataLoader over the model's stored training tensors.
+
+    This explicit PyTorch interoperability helper imports torch when called.
+    It retains BoTorch's batch-size and TensorDataset semantics; it does not
+    enable unsupported minibatch fitting paths in the native model fitters.
+    """
+    from torch.utils.data import DataLoader, TensorDataset
+
+    inputs = model.train_inputs
+    targets = model.train_targets
+    dataset = TensorDataset(*inputs, targets)
+    return DataLoader(dataset, batch_size=min(batch_size, len(targets)), **kwargs)
+
+
 def _model_sources(module: Any) -> list[tuple[str, Any]]:
     """``(name prefix, model)`` pairs of a model or an MLL with BoTorch's
     parameter names (an MLL registers the likelihood before the model)."""
@@ -220,6 +235,7 @@ def sample_all_priors(model: Any, max_retries: int = 100, seed: int | None = Non
 
 __all__ = [
     "TorchAttr",
+    "get_data_loader",
     "get_name_filter",
     "get_parameters",
     "get_parameters_and_bounds",

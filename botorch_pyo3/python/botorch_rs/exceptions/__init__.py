@@ -18,7 +18,9 @@ from botorch_rs.exceptions.errors import (
 )
 from botorch_rs.exceptions.warnings import (
     BadInitialCandidatesWarning,
+    BotorchTensorDimensionWarning,
     BotorchWarning,
+    CostAwareWarning,
     InputDataWarning,
     NumericsWarning,
     OptimizationWarning,
@@ -33,6 +35,8 @@ __all__ = [
     "BotorchRuntimeError",
     "BotorchTensorDimensionError",
     "BotorchWarning",
+    "BotorchTensorDimensionWarning",
+    "CostAwareWarning",
     "CandidateGenerationError",
     "DeprecationError",
     "InfeasibilityError",
