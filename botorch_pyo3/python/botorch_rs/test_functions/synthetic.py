@@ -844,9 +844,98 @@ class TrajectoryPlanning(_NativeProblem):
 
 
 class ConstrainedSyntheticTestFunction(_NativeProblem, ConstrainedBaseTestProblem):
-    r"""Base class for constrained synthetic test functions."""
+    r"""Base class for constrained synthetic test functions.
+
+    Subclasses defined in Python set ``dim``, ``_bounds`` and
+    ``num_constraints`` and implement ``_evaluate_true`` and
+    ``_evaluate_slack_true`` (as in BoTorch); the problems of botorch_rs are
+    evaluated in Rust.
+    """
 
     num_constraints: int = 0  # type: ignore[assignment]
+
+    def __init__(
+        self,
+        noise_std: None | float | list[float] = None,
+        constraint_noise_std: None | float | list[float] = None,
+        negate: bool = False,
+        bounds: list[tuple[float, float]] | None = None,
+        dtype: Any = None,
+    ) -> None:
+        r"""
+        Args:
+            noise_std: Standard deviation of the observation noise. If a list is
+                provided, specifies separate noise standard deviations for each
+                objective in a multiobjective problem.
+            constraint_noise_std: Standard deviation of the constraint noise.
+                If a list is provided, specifies separate noise standard
+                deviations for each constraint.
+            negate: If True, negate the function.
+            bounds: Custom bounds for the function specified as (lower, upper) pairs.
+            dtype: The dtype that is used for the bounds of the function.
+        """
+        if not hasattr(type(self), "_evaluate_true") or not hasattr(
+            type(self), "_evaluate_slack_true"
+        ):
+            raise TypeError(
+                f"Can't instantiate abstract class {type(self).__name__} without an "
+                "implementation for abstract methods '_evaluate_slack_true', '_evaluate_true'"
+            )
+        from botorch_rs.exceptions.errors import InputDataError
+
+        bounds_list = list(bounds) if bounds is not None else list(type(self)._bounds_default())
+        self._py_dim = int(type(self).__dict__.get("dim", len(bounds_list)))  # type: ignore[arg-type]
+        if len(bounds_list) != self._py_dim:
+            raise InputDataError(
+                "Expected the bounds to match the dimensionality of the domain. "
+                f"Got self.dim={self._py_dim} and len(self._bounds)={len(bounds_list)}."
+            )
+        self._bounds_list = [(float(lo), float(hi)) for lo, hi in bounds_list]
+        self.noise_std = noise_std
+        self.negate = bool(negate)
+        self._kind = kind_from_dtype(dtype)
+        self._rs = None
+        self.constraint_noise_std = self._validate_constraint_noise(constraint_noise_std)
+
+    @classmethod
+    def _bounds_default(cls) -> list[tuple[float, float]]:
+        for c in cls.__mro__:
+            b = c.__dict__.get("_bounds")
+            if isinstance(b, list):
+                return b
+        raise TypeError(f"{cls.__name__} does not define `_bounds`.")
+
+    @property
+    def dim(self) -> int:  # type: ignore[override]
+        if self._rs is None:
+            return self._py_dim
+        return self._rs.dim
+
+    @property
+    def bounds(self) -> Any:  # type: ignore[override]
+        if self._rs is None:
+            lo = [b[0] for b in self._bounds_list]
+            hi = [b[1] for b in self._bounds_list]
+            return from_flat(lo + hi, (2, self._py_dim), self._kind)
+        return from_pair(self._rs.bounds, self._kind)
+
+    def evaluate_true(self, X: Any) -> Any:
+        """Noiseless, un-negated values at ``X`` (``batch_shape x d``)."""
+        if self._rs is not None:
+            return from_pair(self._rs.evaluate_true(to_flat(X, "X")), kind_of(X))
+        from botorch_rs.test_functions.base import validate_inputs
+
+        validate_inputs(X, self.dim, self.bounds, self.discrete_inds, self.categorical_inds)
+        return self._evaluate_true(X)  # type: ignore[attr-defined]
+
+    def evaluate_slack_true(self, X: Any) -> Any:
+        """Noiseless constraint slacks at ``X`` (``batch_shape x n_c``)."""
+        if self._rs is not None:
+            return from_pair(self._rs.evaluate_slack_true(to_flat(X, "X")), kind_of(X))
+        from botorch_rs.test_functions.base import validate_inputs
+
+        validate_inputs(X, self.dim, self.bounds, self.discrete_inds, self.categorical_inds)
+        return self._evaluate_slack_true(X)  # type: ignore[attr-defined]
 
     def _validate_constraint_noise(self, constraint_noise_std: Any) -> Any:
         """

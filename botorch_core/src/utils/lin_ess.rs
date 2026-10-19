@@ -254,49 +254,85 @@ impl LinearEllipticalSliceSampler {
         }
     }
 
-    /// The angles of the active arcs of every chain: `(left, right)` with
-    /// `num_chains × (m + 1)` entries each (BoTorch's
-    /// `_find_active_intersection_angles`).
-    fn active_intervals(&self, nu: &Matrix) -> (Matrix, Matrix) {
+    /// The intersection angles of the ellipses `z cos θ + ν sin θ` with the
+    /// constraint boundaries: `(alpha, beta)`, each `m × num_chains`, the
+    /// smaller and larger angle in `[0, 2π)` (`alpha = beta = atan2(q, p)`
+    /// for a constraint whose boundary misses the ellipse; BoTorch's
+    /// `_find_intersection_angles`, which wraps negative angles with 2π
+    /// rounded to float32; the exact 2π here).
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] for a direction of the wrong shape.
+    pub fn intersection_angles(&self, nu: &Matrix) -> Result<(Matrix, Matrix)> {
+        if nu.shape() != self.z.shape() {
+            return Err(BotorchError::InvalidArgument(format!(
+                "expected a direction of shape {:?}, got {:?}",
+                self.z.shape(),
+                nu.shape()
+            )));
+        }
         let p = &self.az * &self.z;
         let q = &self.az * nu;
         let (m, nc) = (p.nrows(), p.ncols());
+        let mut alpha = Matrix::zeros(m, nc);
+        let mut beta = Matrix::zeros(m, nc);
+        for c in 0..nc {
+            for r in 0..m {
+                let radius = (p[(r, c)].powi(2) + q[(r, c)].powi(2)).sqrt();
+                let ratio = self.bz[r] / radius;
+                let arccos = if ratio < 1.0 { ratio.acos() } else { 0.0 };
+                let arctan = q[(r, c)].atan2(p[(r, c)]);
+                let mut t1 = arctan + arccos;
+                let mut t2 = arctan - arccos;
+                if t1 < 0.0 {
+                    t1 += 2.0 * PI;
+                }
+                if t2 < 0.0 {
+                    t2 += 2.0 * PI;
+                }
+                alpha[(r, c)] = t1.min(t2);
+                beta[(r, c)] = t1.max(t2);
+            }
+        }
+        Ok((alpha, beta))
+    }
+
+    /// The angles of the active arcs of every chain: `(left, right)` with
+    /// `num_chains × (m + 1)` entries each (BoTorch's
+    /// `_find_active_intersection_angles`).
+    fn active_intervals(&self, nu: &Matrix) -> Result<(Matrix, Matrix)> {
+        let (alpha, beta) = self.intersection_angles(nu)?;
+        let (m, nc) = (alpha.nrows(), alpha.ncols());
         let mut left = Matrix::zeros(nc, m + 1);
         let mut right = Matrix::zeros(nc, m + 1);
         for c in 0..nc {
-            let mut pairs: Vec<(f64, f64)> = (0..m)
-                .map(|r| {
-                    let radius = (p[(r, c)].powi(2) + q[(r, c)].powi(2)).sqrt();
-                    let ratio = self.bz[r] / radius;
-                    let arccos = if ratio < 1.0 { ratio.acos() } else { 0.0 };
-                    let arctan = q[(r, c)].atan2(p[(r, c)]);
-                    let mut t1 = arctan + arccos;
-                    let mut t2 = arctan - arccos;
-                    if t1 < 0.0 {
-                        t1 += 2.0 * PI;
-                    }
-                    if t2 < 0.0 {
-                        t2 += 2.0 * PI;
-                    }
-                    (t1.min(t2), t1.max(t2))
-                })
-                .collect();
+            let mut pairs: Vec<(f64, f64)> = (0..m).map(|r| (alpha[(r, c)], beta[(r, c)])).collect();
             pairs.sort_by(|x, y| x.0.total_cmp(&y.0));
             let mut cummax = f64::NEG_INFINITY;
-            for (j, (alpha, beta)) in pairs.iter().enumerate() {
-                cummax = cummax.max(*beta);
+            for (j, (a, b)) in pairs.iter().enumerate() {
+                cummax = cummax.max(*b);
                 left[(c, j + 1)] = cummax;
-                right[(c, j)] = *alpha;
+                right[(c, j)] = *a;
             }
             right[(c, m)] = 2.0 * PI;
         }
-        (left, right)
+        Ok((left, right))
     }
 
     /// The angle of every chain for the direction `nu` (`k × num_chains`)
     /// and the uniform numbers `u` (one per chain; BoTorch's `_draw_angle`).
-    pub fn draw_angles(&self, nu: &Matrix, u: &[f64]) -> Vec<f64> {
-        let (mut left, mut right) = self.active_intervals(nu);
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] for draws of the wrong shapes.
+    pub fn draw_angles(&self, nu: &Matrix, u: &[f64]) -> Result<Vec<f64>> {
+        if u.len() != self.z.ncols() {
+            return Err(BotorchError::InvalidArgument(format!(
+                "expected {} uniform numbers, got {}",
+                self.z.ncols(),
+                u.len()
+            )));
+        }
+        let (mut left, mut right) = self.active_intervals(nu)?;
         let cap = if self.single_precision { 1e-6 } else { 1e-12 };
         let nc = left.nrows();
         let w = left.ncols();
@@ -318,7 +354,7 @@ impl LinearEllipticalSliceSampler {
             let prev = if idx == 0 { 0.0 } else { csum[idx - 1] };
             out.push(uu - prev + left[(c, idx)]);
         }
-        out
+        Ok(out)
     }
 
     /// One step of every chain with the direction `nu` (`k × num_chains`)
@@ -339,7 +375,7 @@ impl LinearEllipticalSliceSampler {
                 u.len()
             )));
         }
-        let theta = self.draw_angles(nu, u);
+        let theta = self.draw_angles(nu, u)?;
         let mut z = self.z.clone();
         for c in 0..z.ncols() {
             let (s, co) = theta[c].sin_cos();

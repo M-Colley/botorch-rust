@@ -79,6 +79,10 @@ class Ishigami(_NativeProblem):
         )
 
     @property
+    def _optimal_value(self) -> float:
+        raise NotImplementedError
+
+    @property
     def optimal_value(self) -> float:
         raise NotImplementedError
 
@@ -170,6 +174,10 @@ class Gsobol(_NativeProblem):
         )
 
     @property
+    def _optimal_value(self) -> float:
+        raise NotImplementedError
+
+    @property
     def optimal_value(self) -> float:
         raise NotImplementedError
 
@@ -249,6 +257,10 @@ class Morris(_NativeProblem):
             0,
         ]
         self._setup(20, [(0.0, 1.0) for _ in range(20)], noise_std, negate, dtype)
+
+    @property
+    def _optimal_value(self) -> float:
+        raise NotImplementedError
 
     @property
     def optimal_value(self) -> float:

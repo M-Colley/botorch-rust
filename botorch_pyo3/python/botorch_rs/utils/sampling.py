@@ -937,6 +937,40 @@ class DelaunayPolytopeSampler(PolytopeSampler):
         return _ops.arith("add", _ops.transpose(self.x0), shifted)
 
 
+def _joint_lbfgsb(X0: Any, func: Callable[[Any], Any], bounds: Any) -> tuple[Any, Any]:
+    """Maximizes ``func(X).sum()`` over ``X`` (``batch x d``, within
+    ``bounds``) with SciPy's L-BFGS-B and torch gradients; returns ``X`` and
+    ``func(X)``."""
+    import numpy as np
+    from scipy.optimize import minimize
+
+    torch = sys.modules["torch"]
+    shape = X0.shape
+    lower = bounds[0].expand(shape).reshape(-1).detach().cpu().double().numpy()
+    upper = bounds[1].expand(shape).reshape(-1).detach().cpu().double().numpy()
+    x0 = X0.detach().cpu().double().reshape(-1).numpy().clip(lower, upper)
+
+    def f_np(x: Any) -> tuple[float, Any]:
+        X = torch.from_numpy(x).to(X0).view(shape).contiguous().requires_grad_(True)
+        loss = -func(X).sum()
+        (grad,) = torch.autograd.grad(loss, X)
+        return float(loss.item()), grad.reshape(-1).detach().cpu().double().numpy()
+
+    res = minimize(
+        f_np,
+        x0,
+        method="L-BFGS-B",
+        jac=True,
+        bounds=list(zip(lower, upper, strict=True)),
+        options={"maxiter": 2000},
+    )
+    X = torch.from_numpy(np.asarray(res.x)).to(X0).view(shape)
+    X = torch.minimum(torch.maximum(X, bounds[0]), bounds[1])
+    with torch.no_grad():
+        values = func(X)
+    return X, values
+
+
 def optimize_posterior_samples(
     paths: Any,
     bounds: Any,
@@ -969,12 +1003,11 @@ def optimize_posterior_samples(
     The candidates are scrambled Sobol points of torch's ``SobolEngine``
     (seeded from torch's global generator, as in BoTorch) for torch bounds,
     else of botorch_rs's Sobol sequence; the restarts are optimized with
-    botorch_rs's ``gen_candidates_scipy`` (L-BFGS-B, one joint problem).
+    SciPy's L-BFGS-B as one joint problem (BoTorch's ``gen_candidates_scipy``
+    with ``use_parallel_mode=False``: ``maxiter=2000``, the summed values).
     ``paths`` may be any callable (botorch_rs or BoTorch sample paths, a
     deterministic model).
     """
-    from botorch_rs.generation.gen import gen_candidates_scipy
-
     def path_func(x: Any) -> Any:
         res = paths(x)
         if sample_transform:
@@ -995,13 +1028,11 @@ def optimize_posterior_samples(
     candidate_queries = path_func(candidate_set)
     argtop_k = torch.topk(candidate_queries, num_restarts, dim=-1).indices
     X_top_k = candidate_set[argtop_k, :]
-    X_top_k, f_top_k = gen_candidates_scipy(
-        X_top_k,
-        path_func,
-        lower_bounds=bounds[0],
-        upper_bounds=bounds[1],
-        use_parallel_mode=False,
-    )
+    # One joint L-BFGS-B problem over all restarts (the leading dimensions
+    # of the restarts pair them with the sample paths, so the paths are
+    # evaluated on all restarts at once, as BoTorch's ``gen_candidates_scipy``
+    # does without the parallel mode).
+    X_top_k, f_top_k = _joint_lbfgsb(X_top_k, path_func, bounds)
     f_opt, arg_opt = f_top_k.max(dim=-1, keepdim=True)
     final_shape = candidate_queries.shape[:-1]
     X_opt = X_top_k.reshape(final_shape.numel(), num_restarts, -1)[

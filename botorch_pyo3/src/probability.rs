@@ -565,6 +565,25 @@ impl PyLinearEllipticalSliceSampler {
         Ok(ArrayBuf(out.0, vec![out.1, d, c]))
     }
 
+    /// The intersection angles for the direction `nu` (flat `k x
+    /// num_chains`): `m x 2 num_chains` (alpha, then beta; BoTorch's
+    /// `_find_intersection_angles` concatenated along the last dimension).
+    fn arc_ends(&self, nu: Floats) -> PyResult<ArrayBuf> {
+        let (k, c) = (self.inner.free_dim(), self.inner.num_chains());
+        if nu.0.len() != k * c {
+            return Err(dimension_error("a direction of the wrong shape"));
+        }
+        let dir = Matrix::from_row_slice(k, c, &nu.0);
+        let (alpha, beta) = self.inner.intersection_angles(&dir).into_py_result()?;
+        let m = alpha.nrows();
+        let mut out = Vec::with_capacity(2 * m * c);
+        for r in 0..m {
+            out.extend((0..c).map(|j| alpha[(r, j)]));
+            out.extend((0..c).map(|j| beta[(r, j)]));
+        }
+        Ok(ArrayBuf(out, vec![m, 2 * c]))
+    }
+
     /// Whether the columns of `points` (`d x M`) are feasible.
     #[pyo3(signature = (points, transformed=false))]
     fn is_feasible(&self, points: Array, transformed: bool) -> PyResult<Vec<bool>> {

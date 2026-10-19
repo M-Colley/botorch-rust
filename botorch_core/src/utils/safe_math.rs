@@ -142,6 +142,11 @@ pub fn pareto(x: f64, alpha: f64) -> f64 {
 /// Derivative of [`pareto`] with respect to `x`.
 #[inline]
 fn pareto_grad(x: f64, alpha: f64) -> f64 {
+    if x == f64::INFINITY {
+        // The limit (an element at -inf below a finite maximum); autograd
+        // gives NaN here (inf / inf).
+        return 0.0;
+    }
     let a = alpha / 2.0;
     let beta_1 = 2.0 * a;
     let beta_0 = a * beta_1;
