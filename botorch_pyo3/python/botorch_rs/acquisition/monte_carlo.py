@@ -22,6 +22,7 @@ from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import kind_of
 from botorch_rs.acquisition.acquisition import (
     AcquisitionFunction,
+    MCSamplerMixin,
     pending_arg,
     scalar_arg,
 )
@@ -50,7 +51,7 @@ def check_constrained_objective(objective: Any, constraints: Any) -> None:
         )
 
 
-class MCAcquisitionFunction(AcquisitionFunction):
+class MCAcquisitionFunction(AcquisitionFunction, MCSamplerMixin):
     """Base class of the Monte-Carlo acquisition functions."""
 
     def __init__(
@@ -77,13 +78,19 @@ class MCAcquisitionFunction(AcquisitionFunction):
         self.objective = IdentityMCObjective() if objective is None else objective
         self.posterior_transform = posterior_transform
         self._rs_model = self._model_handle(posterior_transform)
-        self.sampler = mc_sampler_arg(sampler, self._rs_model, (DEFAULT_MC_SAMPLES,))
+        self.sampler = mc_sampler_arg(sampler, self._rs_model, self._default_sample_shape)
         self._pending = pending_arg(X_pending, self._rs_model.dim)
         if X_pending is not None:
             self._pending_kind = kind_of(X_pending)
         self._constraints: list[Any] | None = None
         self._eta: Any = None
         self._fat: Any = False
+
+    def _get_samples_and_objectives(self, X: Any) -> tuple[Any, Any]:
+        """Return posterior samples and their MC objective values at ``X``."""
+        posterior = self.model.posterior(X=X, posterior_transform=self.posterior_transform)
+        samples = self.get_posterior_samples(posterior)
+        return samples, self.objective(samples=samples, X=X)
 
     def _set_constraints(self, constraints: Any, eta: Any, fat: Any = False) -> dict[str, Any]:
         """Stores BoTorch's ``_constraints``, ``_eta`` and ``_fat`` and returns
@@ -235,11 +242,6 @@ class SampleReducingMCAcquisitionFunction(MCAcquisitionFunction):
         """Whether the class is evaluated through torch (it defines
         ``_sample_forward`` outside of botorch_rs)."""
         return _defines_sample_forward(cls)
-
-    @property
-    def sample_shape(self) -> tuple[int, ...]:
-        """The sample shape of the sampler."""
-        return tuple(self.sampler.sample_shape)
 
     def _sample_reduction(self, X: Any) -> Any:
         import torch

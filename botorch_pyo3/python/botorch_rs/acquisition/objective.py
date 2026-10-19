@@ -152,11 +152,15 @@ def transform_arg(
 
 def _q_batch_check(output: Any, X: Any, is_mo: bool) -> None:
     q_batch_idx = -2 if is_mo else -1
-    if X is not None and tuple(output.shape)[q_batch_idx] != tuple(X.shape)[-2]:
+    if X is None:
+        return
+    output_shape = tuple(output.shape) if hasattr(output, "shape") else to_flat(output, "output")[1]
+    x_shape = tuple(X.shape) if hasattr(X, "shape") else to_flat(X, "X")[1]
+    if output_shape[q_batch_idx] != x_shape[-2]:
         raise RuntimeError(
             "The q-batch shape of the objective values does not agree with "
-            f"the q-batch shape of X. Got {tuple(output.shape)[q_batch_idx]} and "
-            f"{tuple(X.shape)[-2]}. This may happen if you used a one-to-many input "
+            f"the q-batch shape of X. Got {output_shape[q_batch_idx]} and "
+            f"{x_shape[-2]}. This may happen if you used a one-to-many input "
             "transform but forgot to use a corresponding objective."
         )
 
@@ -205,7 +209,11 @@ class IdentityMCObjective(MCAcquisitionObjective):
     """
 
     def forward(self, samples: Any, X: Any = None) -> Any:
-        return samples.squeeze(-1)
+        if is_torch_tensor(samples):
+            return samples.squeeze(-1)
+        data, shape = to_flat(samples, "samples")
+        target = shape[:-1] if shape and shape[-1] == 1 else shape
+        return from_flat(data, target, kind_of(samples))
 
     def _spec(self) -> tuple[Any, ...]:
         return ("identity",)

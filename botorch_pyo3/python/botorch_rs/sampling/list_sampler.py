@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs.exceptions.errors import UnsupportedError
-from botorch_rs.sampling.normal import MCSampler, NormalMCSampler
+from botorch_rs.sampling.normal import MCSampler
 
 
 class ListSampler(MCSampler):
@@ -15,11 +15,11 @@ class ListSampler(MCSampler):
     hypervolume knowledge gradient). All samplers must have the same sample
     shape."""
 
-    def __init__(self, *samplers: NormalMCSampler) -> None:
+    def __init__(self, *samplers: MCSampler) -> None:
         for s in samplers:
-            if not isinstance(s, NormalMCSampler):
+            if not isinstance(s, MCSampler):
                 raise UnsupportedError(
-                    "The samplers of a ListSampler must be botorch_rs SobolQMCNormalSamplers or IIDNormalSamplers."
+                    "The samplers of a ListSampler must be botorch_rs MCSamplers."
                 )
         self.samplers = list(samplers)
         self._validate_samplers()
@@ -38,9 +38,18 @@ class ListSampler(MCSampler):
         return self.samplers[0].sample_shape
 
     def forward(self, posterior: Any) -> Any:
-        raise UnsupportedError(
-            "A botorch_rs ListSampler is used by ModelListGP.fantasize and the hypervolume "
-            "knowledge gradient; sample posteriors with SobolQMCNormalSampler."
+        """Sample each component posterior and concatenate along its output axis."""
+        from botorch_rs.posteriors.posterior_list import PosteriorList, _cat_last
+
+        if not isinstance(posterior, PosteriorList):
+            raise UnsupportedError("ListSampler requires a botorch_rs PosteriorList.")
+        if len(self.samplers) != len(posterior.posteriors):
+            raise ValueError("ListSampler requires one sampler per component posterior.")
+        return _cat_last(
+            [
+                sampler(posterior=component)
+                for sampler, component in zip(self.samplers, posterior.posteriors, strict=True)
+            ]
         )
 
     __call__ = forward

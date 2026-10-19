@@ -292,6 +292,32 @@ def _is_ensemble_model(model: Any) -> bool:
     return hasattr(model, "_ensemble_acquisition")
 
 
+class MCSamplerMixin:
+    """Sampler functionality shared by Monte Carlo acquisition functions.
+
+    A missing sampler is selected lazily from the posterior type by
+    ``get_sampler``, and reused on subsequent calls.
+    """
+
+    _default_sample_shape = (512,)
+
+    def __init__(self, sampler: Any = None) -> None:
+        self.sampler = sampler
+
+    def get_posterior_samples(self, posterior: Any) -> Any:
+        """Draw posterior samples with the configured or lazily chosen sampler."""
+        if self.sampler is None:
+            from botorch_rs.sampling.get_sampler import get_sampler
+
+            self.sampler = get_sampler(posterior=posterior, sample_shape=self._default_sample_shape)
+        return self.sampler(posterior=posterior)
+
+    @property
+    def sample_shape(self) -> Any:
+        """The sampler's sample shape, or the default before lazy selection."""
+        return self._default_sample_shape if self.sampler is None else self.sampler.sample_shape
+
+
 class AcquisitionFunction:
     """Base class of the acquisition functions.
 
@@ -413,4 +439,9 @@ class OneShotAcquisitionFunction(AcquisitionFunction):
         raise NotImplementedError
 
 
-__all__ = ["ENSEMBLE_ACQUISITION_FUNCTIONS", "AcquisitionFunction", "OneShotAcquisitionFunction"]
+__all__ = [
+    "ENSEMBLE_ACQUISITION_FUNCTIONS",
+    "AcquisitionFunction",
+    "MCSamplerMixin",
+    "OneShotAcquisitionFunction",
+]

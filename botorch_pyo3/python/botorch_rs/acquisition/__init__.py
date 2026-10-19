@@ -1,6 +1,10 @@
 """Acquisition functions (``botorch.acquisition``)."""
 
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, OneShotAcquisitionFunction
+from botorch_rs.acquisition.acquisition import (
+    AcquisitionFunction,
+    MCSamplerMixin,
+    OneShotAcquisitionFunction,
+)
 from botorch_rs.acquisition.active_learning import (
     PairwiseMCPosteriorVariance,
     qNegIntegratedPosteriorVariance,
@@ -133,6 +137,7 @@ __all__ = [
     "LogProbabilityOfImprovement",
     "MCAcquisitionFunction",
     "MCAcquisitionObjective",
+    "MCSamplerMixin",
     "MaxValueBase",
     "MultiOutputAcquisitionFunction",
     "OneShotAcquisitionFunction",

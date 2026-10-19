@@ -313,7 +313,7 @@ class ModelList(Model):
             return subset_models[0]
         return self.__class__(*subset_models)
 
-    def transform_inputs(self, X: Any) -> list[Any]:
+    def transform_inputs(self, X: Any) -> list[Any]:  # type: ignore[override]
         r"""Individually transform the inputs for each model.
 
         Args:

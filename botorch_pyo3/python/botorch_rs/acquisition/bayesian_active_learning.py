@@ -21,7 +21,7 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import kind_of, to_flat
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
+from botorch_rs.acquisition.acquisition import AcquisitionFunction, MCSamplerMixin, pending_arg
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.utils.transforms import is_fully_bayesian
 
@@ -62,7 +62,7 @@ class FullyBayesianAcquisitionFunction(AcquisitionFunction):
     __init__._ensemble_aware = True  # type: ignore[attr-defined]
 
 
-class qBayesianActiveLearningByDisagreement(FullyBayesianAcquisitionFunction):
+class qBayesianActiveLearningByDisagreement(FullyBayesianAcquisitionFunction, MCSamplerMixin):
     def __init__(
         self,
         model: Any,

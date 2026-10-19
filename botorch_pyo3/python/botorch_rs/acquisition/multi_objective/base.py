@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs._arrays import Flat, to_flat
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
+from botorch_rs.acquisition.acquisition import AcquisitionFunction, MCSamplerMixin, pending_arg
 from botorch_rs.acquisition.multi_objective.objective import (
     IdentityMCMultiOutputObjective,
     is_mo_objective,
@@ -88,7 +88,7 @@ class MultiObjectiveAnalyticAcquisitionFunction(AcquisitionFunction):
         raise UnsupportedError("Analytic acquisition functions do not account for X_pending yet.")
 
 
-class MultiObjectiveMCAcquisitionFunction(AcquisitionFunction):
+class MultiObjectiveMCAcquisitionFunction(AcquisitionFunction, MCSamplerMixin):
     r"""Abstract base class of the multi-objective MC acquisition functions.
 
     Posterior samples of all model outputs are mapped by a multi-output

@@ -31,7 +31,7 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_flat, kind_of, to_flat
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
+from botorch_rs.acquisition.acquisition import AcquisitionFunction, MCSamplerMixin, pending_arg
 from botorch_rs.acquisition.cost_aware import CostAwareUtility
 from botorch_rs.acquisition.knowledge_gradient import _expand_arg
 from botorch_rs.acquisition.multi_objective.hypervolume_knowledge_gradient import (
@@ -124,7 +124,7 @@ class MaxValueBase(AcquisitionFunction):
         return f"{type(self).__name__}(num_mv_samples={self.num_mv_samples})"
 
 
-class qMaxValueEntropy(MaxValueBase):
+class qMaxValueEntropy(MaxValueBase, MCSamplerMixin):
     r"""The acquisition function for Max-value Entropy Search.
 
     This acquisition function computes the mutual information of max values

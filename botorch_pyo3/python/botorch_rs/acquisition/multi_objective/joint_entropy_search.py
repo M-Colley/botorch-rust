@@ -24,7 +24,7 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_pair, kind_of, to_flat
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
+from botorch_rs.acquisition.acquisition import AcquisitionFunction, MCSamplerMixin, pending_arg
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.model_list_gp_regression import ModelListGP
 from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
@@ -37,7 +37,7 @@ def _check_ndim(x: Any, ndim: int) -> bool:
     return x is None or len(to_flat(x)[1]) == ndim
 
 
-class LowerBoundMultiObjectiveEntropySearch(AcquisitionFunction):
+class LowerBoundMultiObjectiveEntropySearch(AcquisitionFunction, MCSamplerMixin):
     r"""Base class of the lower bound multi-objective entropy search
     acquisition functions (MES and JES).
 

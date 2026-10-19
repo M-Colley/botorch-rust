@@ -33,7 +33,7 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import to_flat
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
+from botorch_rs.acquisition.acquisition import AcquisitionFunction, MCSamplerMixin, pending_arg
 from botorch_rs.acquisition.objective import transform_arg
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.model_list_gp_regression import ModelListGP
@@ -80,7 +80,7 @@ FULLY_BAYESIAN_ERROR_MSG = (
 )
 
 
-class qJointEntropySearch(AcquisitionFunction):
+class qJointEntropySearch(AcquisitionFunction, MCSamplerMixin):
     r"""The acquisition function for the Joint Entropy Search, where the
     batches ``q > 1`` are supported through the lower bound formulation.
 
