@@ -22,6 +22,8 @@ mod deterministic;
 mod errors;
 mod fantasize;
 mod fully_bayesian;
+
+mod higher_order;
 mod hvkg;
 mod input_perturbation;
 mod kernel_trees;
@@ -121,6 +123,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     nsga2::register(m)?;
     // Approximate GP models and inducing point allocators (phase 10c).
     approximate::register(m)?;
+    higher_order::register(m)?;
     // Fantasy models, cost models and the hypervolume knowledge gradient.
     fantasize::register(m)?;
     hvkg::register(m)?;

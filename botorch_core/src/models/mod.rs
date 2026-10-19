@@ -27,6 +27,7 @@ pub mod deterministic;
 pub mod ensemble;
 pub mod fantasize;
 pub mod gp;
+pub mod higher_order_gp;
 pub mod inducing_point_allocators;
 pub mod likelihoods;
 pub mod model;
@@ -48,6 +49,7 @@ pub use gp::{
     ConstantMeanSpec, GaussianLikelihoodSpec, Hyperparameters, Likelihood, ParameterLayout,
     SingleTaskGP, SingleTaskGPOptions, MIN_FIXED_NOISE, MIN_INFERRED_NOISE_LEVEL,
 };
+pub use higher_order_gp::{HigherOrderGP, HigherOrderGPOptions};
 pub use model::Model;
 pub use model_list::ModelListGP;
 pub use model_list_dyn::ModelList;

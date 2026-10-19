@@ -9,6 +9,7 @@ from botorch_rs._arrays import broadcast_shapes, broadcast_to, from_flat, to_fla
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.likelihoods import Likelihood
 from botorch_rs.models.gp_regression import SingleTaskGP
+from botorch_rs.models.higher_order_gp import HigherOrderGP
 from botorch_rs.models.model_list_gp_regression import ModelListGP
 from botorch_rs.models.multitask import KroneckerMultiTaskGP, MultiTaskGP
 
@@ -59,10 +60,10 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
         if type(likelihood).__name__ in ("PairwiseProbitLikelihood", "PairwiseLogitLikelihood"):
             # GPyTorch's check of the likelihood (e.g. a PairwiseGP).
             raise RuntimeError("Likelihood must be Gaussian for exact inference")
-        if not isinstance(model, (SingleTaskGP, MultiTaskGP, KroneckerMultiTaskGP)):
+        if not isinstance(model, (SingleTaskGP, MultiTaskGP, KroneckerMultiTaskGP, HigherOrderGP)):
             raise UnsupportedError(
                 "ExactMarginalLogLikelihood requires a botorch_rs SingleTaskGP, MultiTaskGP, "
-                "KroneckerMultiTaskGP or LCEMGP."
+                "KroneckerMultiTaskGP, LCEMGP or HigherOrderGP."
             )
         if likelihood is not model.likelihood:
             raise UnsupportedError(

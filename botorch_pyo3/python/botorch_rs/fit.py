@@ -134,7 +134,11 @@ def fit_gpytorch_mll(
         max_attempts=max_attempts,
         seed=None if seed is None else int(seed),
     )
-    loss, iterations, evaluations, status, message, attempts, elements = result
+    if len(result) == 6:
+        loss, iterations, evaluations, status, message, attempts = result
+        elements = []
+    else:
+        loss, iterations, evaluations, status, message, attempts, elements = result
     mll._fit_result = {
         "fval": loss,
         "nit": iterations,

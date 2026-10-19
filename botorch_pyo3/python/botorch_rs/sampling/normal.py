@@ -8,7 +8,13 @@ from typing import Any
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import Pair, from_flat, to_flat
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
-from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
+from botorch_rs.posteriors.gpytorch import GPyTorchPosterior, Posterior
+
+
+def _posterior_kind(posterior: Any) -> Any:
+    while not hasattr(posterior, "_kind") and hasattr(posterior, "_posterior"):
+        posterior = posterior._posterior
+    return getattr(posterior, "_kind", None)
 
 
 def _sample_shape(sample_shape: Any) -> tuple[int, ...]:
@@ -119,7 +125,16 @@ class SobolQMCNormalSampler(NormalMCSampler):
         """Posterior samples, shape ``sample_shape x batch_shape x q x m``; the
         same base samples are used for every batch."""
         if not isinstance(posterior, GPyTorchPosterior):
-            raise UnsupportedError("The sampler requires a botorch_rs GPyTorchPosterior.")
+            kind = _posterior_kind(posterior)
+            if not isinstance(posterior, Posterior) or kind is None:
+                raise UnsupportedError("The sampler requires a botorch_rs posterior.")
+            shape = tuple(posterior.base_sample_shape)
+            start, end = posterior.batch_range
+            start, end, _ = slice(start, end).indices(len(shape))
+            collapsed = (*shape[:start], *(1 for _ in shape[start:end]), *shape[end:])
+            data, _ = self._rs.base_samples(math.prod(collapsed))
+            base = from_flat(data, (*self.sample_shape, *collapsed), kind)
+            return posterior.rsample_from_base_samples(self.sample_shape, base)
         q, m = posterior._q, posterior._m
         z: Pair = self._rs.base_samples(q * m)
         out = posterior._samples(z)
@@ -216,7 +231,15 @@ class IIDNormalSampler(NormalMCSampler):
     def forward(self, posterior: GPyTorchPosterior) -> Any:
         """Posterior samples, shape ``sample_shape x batch_shape x q x m``."""
         if not isinstance(posterior, GPyTorchPosterior):
-            raise UnsupportedError("The sampler requires a botorch_rs GPyTorchPosterior.")
+            kind = _posterior_kind(posterior)
+            if not isinstance(posterior, Posterior) or kind is None:
+                raise UnsupportedError("The sampler requires a botorch_rs posterior.")
+            collapsed = self._collapsed_shape(posterior)
+            target = (*self.sample_shape, *collapsed)
+            if self.base_samples is None or self._base_shape != target:
+                self.base_samples = from_flat(self._draw(target, kind), target, kind)
+                self._base_shape = target
+            return posterior.rsample_from_base_samples(self.sample_shape, self.base_samples)
         collapsed = self._collapsed_shape(posterior)
         target = (*self.sample_shape, *collapsed)
         if self.base_samples is None or self._base_shape != target:

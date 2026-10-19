@@ -23,6 +23,7 @@ from botorch_rs.means import ConstantMean, ZeroMean
 from botorch_rs.mlls import ExactMarginalLogLikelihood, VariationalELBO
 from botorch_rs.models import ApproximateGPyTorchModel, SingleTaskGP, SingleTaskVariationalGP
 from botorch_rs.models.transforms import Normalize, Standardize
+from botorch_rs.models.transforms.input import Warp
 from botorch_rs.models.transforms.outcome import Log
 from botorch_rs.models.utils.inducing_point_allocators import (
     ExpectedImprovementQualityFunction,
@@ -46,7 +47,7 @@ pytestmark = pytest.mark.filterwarnings("ignore::botorch_rs.exceptions.warnings.
 
 def _data(kind: str, m: int = 1, n: int = 12) -> tuple[object, object]:
     X, Y = make_data(n=n, d=2, seed=3)
-    Y2 = [[y[0], math.cos(3 * x[0])] for x, y in zip(X, Y)][:n]
+    Y2 = [[y[0], math.cos(3 * x[0])] for x, y in zip(X, Y, strict=True)][:n]
     return as_kind(X, kind), as_kind([row[:m] for row in Y2], kind)
 
 
@@ -208,6 +209,8 @@ def test_allocators_api() -> None:
 def test_errors() -> None:
     X, Y = _data("list")
     model = SingleTaskVariationalGP(X, Y, inducing_points=3)
+    with pytest.raises(UnsupportedError, match="learned input transforms"):
+        SingleTaskVariationalGP(X, Y, inducing_points=3, input_transform=Warp(d=2, indices=[0, 1]))
     with pytest.raises(NotImplementedError, match="does not support output indices"):
         model.posterior([[0.1, 0.1]], output_indices=[0])
     with pytest.raises(AttributeError, match="get_fantasy_model"):

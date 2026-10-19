@@ -49,6 +49,12 @@ class _VariationalDistribution:
         self._owner: Any = None
         self._prefix = ""
 
+    def _bind(self, owner: Any, prefix: str) -> None:
+        raise NotImplementedError
+
+    def _initialize(self) -> None:
+        raise NotImplementedError
+
 
 class CholeskyVariationalDistribution(_VariationalDistribution):
     """A ``MultivariateNormal`` variational distribution ``q(u) = N(m, L Lᵀ)``

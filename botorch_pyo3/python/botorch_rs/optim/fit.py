@@ -52,6 +52,13 @@ def _is_approximate(mll: Any) -> bool:
     return isinstance(mll, _ApproximateMarginalLogLikelihood)
 
 
+def _is_higher_order(mll: Any) -> bool:
+    from botorch_rs.mlls import ExactMarginalLogLikelihood
+    from botorch_rs.models.higher_order_gp import HigherOrderGP
+
+    return isinstance(mll, ExactMarginalLogLikelihood) and isinstance(mll.model, HigherOrderGP)
+
+
 def _fit_scipy_approximate(
     mll: Any,
     parameters: Any,
@@ -179,6 +186,29 @@ def fit_gpytorch_mll_scipy(
         return _fit_scipy_approximate(
             mll, parameters, bounds, closure, closure_kwargs, method, options, callback, timeout_sec
         )
+    if (
+        _is_higher_order(mll)
+        and parameters is None
+        and bounds is None
+        and closure is None
+        and closure_kwargs is None
+        and method == "L-BFGS-B"
+        and callback is None
+        and timeout_sec is None
+    ):
+        opts = dict(options or {})
+        hogp_kwargs: dict[str, Any] = {}
+        for key in ("maxiter", "maxfun", "maxcor", "maxls", "ftol"):
+            if key in opts:
+                hogp_kwargs[key] = opts.pop(key)
+        if "gtol" in opts:
+            hogp_kwargs["pgtol"] = opts.pop("gtol")
+        for key in ("disp", "iprint"):
+            opts.pop(key, None)
+        if opts:
+            raise UnsupportedError(f"Unsupported L-BFGS-B options: {sorted(opts)}.")
+        loss, nit, _, status, message, _ = mll.model._rs.fit(max_attempts=1, **hogp_kwargs)
+        return OptimizationResult(step=int(nit), fval=float(loss), status=OptimizationStatus[status], message=message)
     model = _native_model(mll)
     native = (
         model is not None
@@ -373,6 +403,31 @@ def fit_gpytorch_mll_torch(
         stopping_criterion = ExpMAStoppingCriterion()
     model = _native_model(mll)
     adam = _adam_kwargs(optimizer)
+    if _is_higher_order(mll):
+        native = (
+            closure is None
+            and closure_kwargs is None
+            and adam is not None
+            and scheduler is None
+            and callback is None
+            and (stopping_criterion is None or type(stopping_criterion) is ExpMAStoppingCriterion)
+        )
+        if native:
+            assert adam is not None
+            if step_limit is None and stopping_criterion is None and timeout_sec is None:
+                raise RuntimeError("No termination conditions were given.")
+            mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
+            if not mll.model._learn_latent_pars:
+                if mask is None:
+                    mask = [True] * len(mll.model._rs.raw_parameters())
+                for name, (off, size) in mll.model._offsets().items():
+                    if "latent_parameters" in name:
+                        mask[off : off + size] = [False] * size
+            stopping = None if stopping_criterion is None else stopping_criterion._native_args()
+            return _result(mll.model._rs.fit_torch(
+                mask=mask, bounds=flat_bounds, step_limit=step_limit,
+                stopping=stopping, timeout_sec=timeout_sec, **adam,
+            ))
     if _is_approximate(mll):
         native = (
             closure is None
@@ -387,6 +442,7 @@ def fit_gpytorch_mll_torch(
                 "botorch_rs fits a variational ELBO with Adam (torch.optim.Adam or a "
                 "functools.partial of it), the default closure and ExpMAStoppingCriterion."
             )
+        assert adam is not None
         if step_limit is None and stopping_criterion is None and timeout_sec is None:
             raise RuntimeError("No termination conditions were given.")
         mll.model._outer._ensure_initialized()

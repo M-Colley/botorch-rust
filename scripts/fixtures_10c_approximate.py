@@ -272,10 +272,13 @@ def fit_fixture(case: Any) -> dict[str, Any]:
         record: dict[str, Any] = {"attempts": 0}
         orig = of.fit_gpytorch_mll_scipy
 
-        def recorder(m: Any, *args: Any, **kwargs: Any) -> Any:
-            record["attempts"] += 1
-            record["r"] = orig(m, *args, **kwargs)
-            return record["r"]
+        def recorder(
+            m: Any, *args: Any, _record: dict[str, Any] = record,
+            _optimizer: Any = orig, **kwargs: Any,
+        ) -> Any:
+            _record["attempts"] += 1
+            _record["r"] = _optimizer(m, *args, **kwargs)
+            return _record["r"]
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")

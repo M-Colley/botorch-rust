@@ -421,7 +421,8 @@ class ApproximateGPyTorchModel(Model):
                 ``_SingleTaskVariationalGP`` constructor if no model is provided.
         """
         if model is None:
-            model = _SingleTaskVariationalGP(*args, num_outputs=num_outputs, **kwargs)
+            options = dict(kwargs, num_outputs=num_outputs)
+            model = _SingleTaskVariationalGP(*args, **options)
         elif not isinstance(model, _SingleTaskVariationalGP):
             raise UnsupportedError(
                 "botorch_rs's ApproximateGPyTorchModel wraps a botorch_rs "
@@ -986,6 +987,11 @@ class SingleTaskVariationalGP(ApproximateGPyTorchModel):
         input_steps = prefixes = training = None
         if input_transform is not None:
             spec = chain_spec(input_transform, d, ())
+            if any(list(getattr(st.rs, "params", []) or []) for st in spec.chains[0]):
+                raise UnsupportedError(
+                    "SingleTaskVariationalGP does not yet optimize learned input transforms "
+                    "(such as Warp); pre-transform the inputs instead."
+                )
             input_steps = [st.rs for st in spec.chains[0]]
             prefixes = [st.prefix for st in spec.chains[0]]
             training = [st.training for st in spec.chains[0]]
