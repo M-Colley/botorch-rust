@@ -1,5 +1,43 @@
 # Kernels, priors and constraints
 
+`IntegratedWhiteNoiseKernel(order=p)` is available from
+`botorch_rs.models.kernels` and its `integrated_white_noise` module. This
+parameterless native kernel supports positive integration orders, scalar
+time inputs, `active_dims`, kernel and input batches, composition, exact GP
+likelihood gradients, and analytic posterior input gradients. The first order
+is Brownian motion; higher orders integrate it repeatedly. Use `ScaleKernel`
+to learn its covariance scale. Inputs represent nonnegative times.
+
+The implementation was checked against the official BoTorch source at
+revision `b0dd01be6`. Its `diag=True` branch ignores the second input set;
+the port instead returns the diagonal of the actual cross-covariance.
+`test_integrated_white_noise.py` checks this correction against the full
+official kernel matrix. When the installed BoTorch predates this kernel,
+set `BOTORCH_RS_REFERENCE_ROOT` to an official checkout to run live parity
+tests. Rust tests additionally verify closed forms, positive semidefiniteness,
+input gradients by finite differences and high orders without overflowing
+factorials.
+
+The official diagonal bug can be reproduced with double-precision scalar
+inputs `x1=[[0.2]]`, `x2=[[0.5]]` and `order=2`: `k(x1,x2,diag=True)` returns
+`0.002666666666666667`, while `k(x1,x2).to_dense().diagonal()` returns the
+correct value `0.008666666666666666`. The proposed upstream fix replaces the
+early diagonal return with elementwise minimum and maximum, then evaluates
+the existing shared polynomial sum:
+
+```python
+if diag:
+    min_val = torch.minimum(x1_squeezed, x2_squeezed)
+    max_val = torch.maximum(x1_squeezed, x2_squeezed)
+else:
+    min_val = torch.minimum(x1_squeezed.unsqueeze(-1), x2_squeezed.unsqueeze(-2))
+    max_val = torch.maximum(x1_squeezed.unsqueeze(-1), x2_squeezed.unsqueeze(-2))
+# Keep the existing diff and polynomial sum below this branch.
+```
+
+The official reference checkout and the separate local BoTorch audit fork
+are preserved; this proposed upstream patch has not been applied there.
+
 `SingleTaskGP` (one or several outputs, batched, in a `ModelListGP`) takes any
 tree of GPyTorch's and BoTorch's kernels as `covar_module`: `ScaleKernel`
 around any kernel, `AdditiveKernel` and `ProductKernel` (also `k1 + k2` and

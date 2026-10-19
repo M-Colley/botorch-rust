@@ -496,7 +496,8 @@ class Kernel(GPModule):
         flat = self._raw_flat()
         n = max(len(flat) // max(k, 1), 1) if k else 1
         if k == 0:
-            return [[]] * max(n, 1)
+            batch = self._aug if self._model is not None else self.batch_shape
+            return [[]] * max(math.prod(batch), 1)
         # Parameters are stored parameter by parameter over the batch.
         sizes = [math.prod(s) for _, s in self._node().param_shapes("")]
         per: list[list[float]] = [[] for _ in range(n)]

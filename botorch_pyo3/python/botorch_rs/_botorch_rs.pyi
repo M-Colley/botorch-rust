@@ -209,6 +209,8 @@ class KernelSpec:
 
 class KernelNode:
     @staticmethod
+    def integrated_white_noise(order: int = 1) -> KernelNode: ...
+    @staticmethod
     def stationary(kind: str, ard_num_dims: int | None = None) -> KernelNode: ...
     @staticmethod
     def rational_quadratic(ard_num_dims: int | None = None) -> KernelNode: ...
@@ -2834,14 +2836,22 @@ def psd_safe_cholesky(
 
 class HigherOrderGP:
     def __init__(
-        self, train_x: Array, train_y: Array, target_shape: Sequence[int],
-        latent_dims: Sequence[int], dim: int, covar_trees: Sequence[KernelNode],
-        noise: GaussianLikelihoodSpec, raw: Sequence[float],
+        self,
+        train_x: Array,
+        train_y: Array,
+        target_shape: Sequence[int],
+        latent_dims: Sequence[int],
+        dim: int,
+        covar_trees: Sequence[KernelNode],
+        noise: GaussianLikelihoodSpec,
+        raw: Sequence[float],
         latent_priors: Sequence[Array | None] | None = None,
-        learn_latent_pars: bool = True, input_chain: Sequence[Any] | None = None,
+        learn_latent_pars: bool = True,
+        input_chain: Sequence[Any] | None = None,
         input_chain_training: Sequence[bool] | None = None,
         input_chain_prefixes: Sequence[str] | None = None,
-        raw_train_x: Array | None = None, outcome: tuple[float, float] | None = None,
+        raw_train_x: Array | None = None,
+        outcome: tuple[float, float] | None = None,
     ) -> None: ...
     def model_handle(self) -> Model: ...
     def raw_parameters(self) -> list[float]: ...
@@ -2854,23 +2864,38 @@ class HigherOrderGP:
     def noise(self) -> list[float]: ...
     def set_noise(self, value: Array) -> None: ...
     def mll(self, raw: Sequence[float] | None = None) -> ArrayOut: ...
-    def mll_value_and_grad(self, raw: Sequence[float] | None = None) -> tuple[ArrayOut, list[float]]: ...
+    def mll_value_and_grad(
+        self, raw: Sequence[float] | None = None
+    ) -> tuple[ArrayOut, list[float]]: ...
     def fit(
-        self, maxcor: int | None = None, pgtol: float | None = None,
-        ftol: float | None = None, maxiter: int | None = None,
-        maxfun: int | None = None, maxls: int | None = None,
-        max_attempts: int | None = None, seed: int | None = None,
+        self,
+        maxcor: int | None = None,
+        pgtol: float | None = None,
+        ftol: float | None = None,
+        maxiter: int | None = None,
+        maxfun: int | None = None,
+        maxls: int | None = None,
+        max_attempts: int | None = None,
+        seed: int | None = None,
     ) -> tuple[float, int, int, str, str, int]: ...
     def fit_torch(
-        self, mask: Sequence[bool] | None = None,
+        self,
+        mask: Sequence[bool] | None = None,
         bounds: Sequence[tuple[float, float]] | None = None,
-        step_limit: int | None = None, stopping: tuple[int, bool, int, float, float] | None = None,
-        timeout_sec: float | None = None, lr: float = 0.001,
-        betas: tuple[float, float] = (0.9, 0.999), eps: float = 1e-8,
-        weight_decay: float = 0.0, amsgrad: bool = False, maximize: bool = False,
+        step_limit: int | None = None,
+        stopping: tuple[int, bool, int, float, float] | None = None,
+        timeout_sec: float | None = None,
+        lr: float = 0.001,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+        amsgrad: bool = False,
+        maximize: bool = False,
     ) -> tuple[int, float, int, float | None, str | None]: ...
     def sample_all_priors(self, seed: int | None = None) -> None: ...
-    def mean_variance(self, x: Array, observation_noise: bool = False, original: bool = True) -> tuple[ArrayBuf, ArrayBuf]: ...
+    def mean_variance(
+        self, x: Array, observation_noise: bool = False, original: bool = True
+    ) -> tuple[ArrayBuf, ArrayBuf]: ...
     def samples(self, x: Array, base_samples: Array, original: bool = True) -> ArrayBuf: ...
     def condition_on_observations(self, x_tf: Array, y_tf: Array) -> HigherOrderGP: ...
     def train_inputs(self) -> ArrayOut: ...

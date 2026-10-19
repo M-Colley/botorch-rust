@@ -200,6 +200,11 @@ pub enum KernelType {
     /// BoTorch's `ExponentialDecayKernel`: `w + (1 + ‖(x + y)/ℓ‖)^(-α)`
     /// (`raw_lengthscale`, `raw_power`, `raw_offset`).
     ExponentialDecay,
+    /// Integrated white noise of positive integration order (no parameters).
+    IntegratedWhiteNoise {
+        /// Number of integrations; one is Brownian motion.
+        order: usize,
+    },
     /// BoTorch's `InfiniteWidthBNNKernel` (`raw_weight_var`, `raw_bias_var`).
     InfiniteWidthBnn {
         /// The depth of the network.
@@ -468,6 +473,22 @@ impl KernelNode {
                 ParamSpec::new("raw_power", vec![1], positive()),
                 ParamSpec::new("raw_offset", vec![1], positive()),
             ],
+        ))
+    }
+
+    /// White noise integrated `order` times on scalar time inputs.
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] for order zero.
+    pub fn integrated_white_noise(order: usize) -> Result<Self> {
+        if order == 0 {
+            return Err(BotorchError::InvalidArgument(
+                "IntegratedWhiteNoiseKernel requires an integer order >= 1".into(),
+            ));
+        }
+        Ok(Self::leaf(
+            KernelType::IntegratedWhiteNoise { order },
+            vec![],
         ))
     }
 
@@ -1138,6 +1159,11 @@ impl KernelNode {
             Ok(())
         };
         match &self.kind {
+            KernelType::IntegratedWhiteNoise { .. } if k != 1 => {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "IntegratedWhiteNoiseKernel requires 1D inputs, got {k} dimensions"
+                )));
+            }
             KernelType::Stationary(_)
             | KernelType::RationalQuadratic
             | KernelType::Categorical

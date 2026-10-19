@@ -124,6 +124,15 @@ impl PyKernelNode {
         Self::wrap(KernelNode::downsampling())
     }
 
+    /// Integrated white noise on scalar time inputs (no parameters).
+    #[staticmethod]
+    #[pyo3(signature = (order=1))]
+    fn integrated_white_noise(order: usize) -> PyResult<Self> {
+        KernelNode::integrated_white_noise(order)
+            .map(Self::wrap)
+            .into_py_result()
+    }
+
     /// BoTorch's `ExponentialDecayKernel`.
     #[staticmethod]
     #[pyo3(signature = (ard_num_dims=None))]

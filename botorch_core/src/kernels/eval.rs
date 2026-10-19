@@ -135,6 +135,125 @@ struct Node {
     kind: NodeKind,
 }
 
+/// Positive polynomial expansion of the integrated white noise covariance.
+#[derive(Clone, Debug)]
+struct IntegratedWhiteNoise {
+    terms: Vec<WhiteNoiseTerm>,
+}
+
+#[derive(Clone, Debug)]
+struct WhiteNoiseTerm {
+    coefficient: f64,
+    log_coefficient: f64,
+    diff_exp: usize,
+    min_exp: usize,
+}
+
+impl WhiteNoiseTerm {
+    fn monomial(&self, min: f64, diff: f64, diff_exp: usize, min_exp: usize, factor: f64) -> f64 {
+        let value =
+            self.coefficient * factor * diff.powf(diff_exp as f64) * min.powf(min_exp as f64);
+        if self.coefficient != 0.0 && value.is_finite() {
+            return value;
+        }
+        // Avoid an overflowing factorial or 0 * infinity for high orders.
+        let mut log_value = self.log_coefficient + factor.ln();
+        if diff_exp > 0 {
+            log_value += diff_exp as f64 * diff.ln();
+        }
+        if min_exp > 0 {
+            log_value += min_exp as f64 * min.abs().ln();
+        }
+        let sign = if min < 0.0 && min_exp % 2 == 1 {
+            -1.0
+        } else {
+            1.0
+        };
+        sign * log_value.exp()
+    }
+}
+
+impl IntegratedWhiteNoise {
+    fn new(order: usize) -> Self {
+        let factorial = (1..order).fold(1.0, |v, i| v * i as f64);
+        let log_denominator = 2.0 * (1..order).map(|i| (i as f64).ln()).sum::<f64>();
+        let (mut choose, mut log_choose) = (1.0, 0.0);
+        let mut terms = Vec::with_capacity(order);
+        for j in 0..order {
+            let min_exp = order + j;
+            let log_coefficient = log_choose - log_denominator - (min_exp as f64).ln();
+            let coefficient = if order <= 32 {
+                choose / min_exp as f64 / (factorial * factorial)
+            } else {
+                log_coefficient.exp()
+            };
+            terms.push(WhiteNoiseTerm {
+                coefficient,
+                log_coefficient,
+                diff_exp: order - 1 - j,
+                min_exp,
+            });
+            if j + 1 < order {
+                choose *= (order - 1 - j) as f64 / (j + 1) as f64;
+                log_choose += ((order - 1 - j) as f64).ln() - ((j + 1) as f64).ln();
+            }
+        }
+        Self { terms }
+    }
+
+    /// Covariance and its derivative with respect to the first argument.
+    /// At a Brownian-motion kink, use torch.minimum's equal split.
+    fn pair(&self, s: f64, t: f64) -> (f64, f64) {
+        if s.is_nan() || t.is_nan() {
+            return (f64::NAN, f64::NAN);
+        }
+        let min = s.min(t);
+        let diff = s.max(t) - min;
+        let (mut value, mut dmin, mut dmax) = (0.0, 0.0, 0.0);
+        for term in &self.terms {
+            value += term.monomial(min, diff, term.diff_exp, term.min_exp, 1.0);
+            dmin += term.monomial(
+                min,
+                diff,
+                term.diff_exp,
+                term.min_exp - 1,
+                term.min_exp as f64,
+            );
+            if term.diff_exp > 0 {
+                let d = term.monomial(
+                    min,
+                    diff,
+                    term.diff_exp - 1,
+                    term.min_exp,
+                    term.diff_exp as f64,
+                );
+                dmin -= d;
+                dmax += d;
+            }
+        }
+        let gradient = if s < t {
+            dmin
+        } else if s > t {
+            dmax
+        } else {
+            0.5 * (dmin + dmax)
+        };
+        (value, gradient)
+    }
+
+    fn value(&self, s: f64, t: f64) -> f64 {
+        if s.is_nan() || t.is_nan() {
+            return f64::NAN;
+        }
+        let min = s.min(t);
+        let diff = s.max(t) - min;
+        self.terms
+            .iter()
+            .map(|term| term.monomial(min, diff, term.diff_exp, term.min_exp, 1.0))
+            .sum()
+    }
+}
+
 #[derive(Clone, Debug)]
 enum NodeKind {
     Stationary {
@@ -179,6 +298,7 @@ enum NodeKind {
         power: f64,
         offset: f64,
     },
+    IntegratedWhiteNoise(IntegratedWhiteNoise),
     Bnn {
         w: f64,
         b: f64,
@@ -698,6 +818,9 @@ fn build_node(spec: &KernelNode, cur: &mut Cursor<'_>, parent_dim: usize) -> Res
                 offset: offset[0],
             }
         }
+        KernelType::IntegratedWhiteNoise { order } => {
+            NodeKind::IntegratedWhiteNoise(IntegratedWhiteNoise::new(*order))
+        }
         KernelType::InfiniteWidthBnn { depth, acos_eps } => {
             let (_, w) = cur.take(&params[0]);
             let (_, b) = cur.take(&params[1]);
@@ -1124,7 +1247,9 @@ impl Node {
                     .collect();
                 leaf(local, xx)
             }
-            NodeKind::Polynomial { .. } | NodeKind::Categorical { .. } => leaf(local, Vec::new()),
+            NodeKind::Polynomial { .. }
+            | NodeKind::Categorical { .. }
+            | NodeKind::IntegratedWhiteNoise(_) => leaf(local, Vec::new()),
             NodeKind::Ltf {
                 nonfid,
                 unbiased,
@@ -1222,6 +1347,7 @@ impl Node {
                 (-(s / self.k as f64)).exp()
             }
             NodeKind::Downsampling { offset, .. } => offset + dot(a.row(i), b.row(j)),
+            NodeKind::IntegratedWhiteNoise(kernel) => kernel.value(a.row(i)[0], b.row(j)[0]),
             NodeKind::ExpDecay { power, offset, .. } => {
                 let s: f64 = a
                     .row(i)
@@ -1615,6 +1741,13 @@ impl Node {
                     }
                 }
             }
+            NodeKind::IntegratedWhiteNoise(kernel) => {
+                for j in 0..nb {
+                    let (v, g) = kernel.pair(a.row(i)[0], b.row(j)[0]);
+                    val[j] = v;
+                    grad[(j, 0)] = g;
+                }
+            }
             NodeKind::ExpDecay {
                 ls, power, offset, ..
             } => {
@@ -1733,6 +1866,7 @@ impl Node {
         let off = self.off;
         let n = a.n;
         match &self.kind {
+            NodeKind::IntegratedWhiteNoise(_) => {}
             NodeKind::Stationary { kind, ls, shared } => {
                 let mut gl = vec![0.0; k];
                 for_pairs(w, false, |i, j, wij| {
