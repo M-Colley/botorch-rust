@@ -29,7 +29,8 @@ from botorch_rs.exceptions.errors import (
 )
 from botorch_rs.kernels import Kernel
 from botorch_rs.likelihoods import GaussianLikelihood, Likelihood
-from botorch_rs.models.model import FantasizeMixin, Model
+from botorch_rs.models.gpytorch import GPyTorchModel
+from botorch_rs.models.model import FantasizeMixin
 from botorch_rs.models.transforms.input import InputTransform, chain_spec
 from botorch_rs.models.transforms.outcome import OutcomeTransform, Standardize
 from botorch_rs.models.utils.gpytorch_modules import (
@@ -177,7 +178,7 @@ def _gp_latent_sample(K: list[float], s: int, r: int) -> tuple[list[float], list
     return list(sample), cov
 
 
-class HigherOrderGP(Model, FantasizeMixin):
+class HigherOrderGP(GPyTorchModel, FantasizeMixin):
     r"""
     A model for high-dimensional output regression.
 

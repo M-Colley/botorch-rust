@@ -27,7 +27,7 @@ from botorch_rs.likelihoods import (
     Likelihood,
 )
 from botorch_rs.means import ConstantMean, MultitaskMean
-from botorch_rs.models.model import Model
+from botorch_rs.models.gpytorch import GPyTorchModel
 from botorch_rs.models.transforms.outcome import Standardize, is_plain_standardize
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 from botorch_rs.utils.types import DEFAULT
@@ -46,7 +46,7 @@ def _int_list(values: Any, name: str) -> list[int] | None:
     return [int(v) for v in data]
 
 
-class MultiTaskGP(Model):
+class MultiTaskGP(GPyTorchModel):
     r"""Multi-task exact GP with an ICM (intrinsic coregionalization model)
     kernel (BoTorch's ``MultiTaskGP``), see Bonilla et al. (2007) and Swersky
     et al. (2013).
@@ -797,7 +797,7 @@ class MultiTaskGP(Model):
         )
 
 
-class KroneckerMultiTaskGP(Model):
+class KroneckerMultiTaskGP(GPyTorchModel):
     r"""Multi-task GP with Kronecker structure, using an ICM kernel (BoTorch's
     ``KroneckerMultiTaskGP``), for the "block design": all ``m`` tasks
     (the columns of ``train_Y``) are observed at all ``n`` training points.

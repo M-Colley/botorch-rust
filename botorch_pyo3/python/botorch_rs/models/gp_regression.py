@@ -15,7 +15,7 @@ from botorch_rs.exceptions.warnings import InputDataWarning
 from botorch_rs.kernels import Kernel
 from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood, Likelihood
 from botorch_rs.means import ConstantMean
-from botorch_rs.models.model import Model
+from botorch_rs.models.gpytorch import GPyTorchModel
 from botorch_rs.models.transforms.input import (
     InputTransform,
     Normalize,
@@ -223,7 +223,7 @@ def _modules_of(model: Any) -> list[Any]:
     return out
 
 
-class SingleTaskGP(Model):
+class SingleTaskGP(GPyTorchModel):
     r"""A single-task exact GP with BoTorch's defaults.
 
     Without ``train_Yvar`` the noise level is inferred (``GaussianLikelihood``
@@ -583,6 +583,11 @@ class SingleTaskGP(Model):
         training noise for fixed-noise models)."""
         if not isinstance(observation_noise, bool):
             raise UnsupportedError("`observation_noise` must be a bool in botorch_rs.")
+        from botorch_rs.acquisition.objective import ExpectationPosteriorTransform
+
+        if isinstance(posterior_transform, ExpectationPosteriorTransform):
+            posterior = self.posterior(X, output_indices, observation_noise, **kwargs)
+            return posterior_transform(posterior, X=X)
         oi, transform = self._posterior_args(output_indices, posterior_transform)
         kind = kind_of(X)
         flat = to_flat(X, "X")

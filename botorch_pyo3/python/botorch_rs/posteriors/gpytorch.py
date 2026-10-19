@@ -75,7 +75,9 @@ class Posterior:
         samples = self.rsample(sample_shape=sample_shape)
         # A caller's posterior can itself import torch lazily while sampling.
         torch = sys.modules.get("torch")
-        return samples.detach() if torch is not None and isinstance(samples, torch.Tensor) else samples
+        return (
+            samples.detach() if torch is not None and isinstance(samples, torch.Tensor) else samples
+        )
 
     def quantile(self, value: Any) -> Any:
         raise NotImplementedError(f"{type(self).__name__} does not implement a `quantile` method.")
@@ -423,36 +425,47 @@ def _validate_scalarize_inputs(weights: Any, m: int) -> list[float]:
 
 
 class _MomentPosterior(GPyTorchPosterior):
-    """A scalar Gaussian posterior backed by explicit native-computed moments."""
+    """A Gaussian posterior backed by explicit native-computed moments."""
 
-    def __init__(self, mean: Pair, covariance: Pair, kind: ArrayKind) -> None:
-        batch, q = tuple(mean[1][:-1]), mean[1][-1]
-        super().__init__(None, ([], (*batch, q, 0)), kind, False)
-        self._joint = ((list(mean[0]), (*batch, q, 1)), (list(covariance[0]), tuple(covariance[1])))
+    def __init__(self, mean: Pair, covariance: Pair, kind: ArrayKind, num_outputs: int = 1) -> None:
+        m = num_outputs
+        batch, q = (
+            (tuple(mean[1][:-1]), mean[1][-1]) if m == 1 else (tuple(mean[1][:-2]), mean[1][-2])
+        )
+        super().__init__(None, ([], (*batch, q, 0)), kind, False, num_outputs=m)
+        qm = q * m
+        self._joint = ((list(mean[0]), (*batch, q, m)), (list(covariance[0]), tuple(covariance[1])))
         diagonal = [
-            max(float(covariance[0][(b * q + i) * q + i]), 1e-10)
+            max(float(covariance[0][b * qm * qm + (t * q + i) * qm + t * q + i]), 1e-10)
             for b in range(math.prod(batch))
             for i in range(q)
+            for t in range(m)
         ]
         self._marginals = (list(mean[0]), diagonal)
 
     def _samples(self, z: Pair) -> list[float]:
         data, zshape = z
-        samples, q, batches = zshape[0], self._q, math.prod(self._batch)
+        samples, q, m, batches = zshape[0], self._q, self._m, math.prod(self._batch)
+        qm = q * m
         collapsed = len(zshape) == 2
         base = [
-            data[s * q + i] if collapsed else data[(s * batches + b) * q + i]
+            data[s * qm + i * m + t] if collapsed else data[(s * batches + b) * qm + i * m + t]
             for b in range(batches)
+            for t in range(m)
             for i in range(q)
             for s in range(samples)
         ]
         (mean, _), (covariance, _) = self._get_joint()
-        out, _ = _rs.sample_cached_cholesky(covariance, [], mean, base, batches, 0, q, samples, 3)
+        loc = [
+            mean[(b * q + i) * m + t] for b in range(batches) for t in range(m) for i in range(q)
+        ]
+        out, _ = _rs.sample_cached_cholesky(covariance, [], loc, base, batches, 0, qm, samples, 3)
         return [
-            out[(b * q + i) * samples + s]
+            out[(b * qm + t * q + i) * samples + s]
             for s in range(samples)
             for b in range(batches)
             for i in range(q)
+            for t in range(m)
         ]
 
 
@@ -494,7 +507,9 @@ def scalarize_posterior(posterior: Any, weights: Any, offset: float = 0.0) -> GP
                 points_per_input=posterior._points_per_input,
             )
         mean_moments, covariance_moments = posterior._get_joint()
-        mu, cov = _rs.scalarize_posterior_moments(mean_moments, covariance_moments, w, float(offset))
+        mu, cov = _rs.scalarize_posterior_moments(
+            mean_moments, covariance_moments, w, float(offset)
+        )
         return _MomentPosterior(mu, cov, posterior._kind)
     if not isinstance(posterior, PosteriorList):
         raise NotImplementedError(

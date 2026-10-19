@@ -73,6 +73,7 @@ from botorch_rs.acquisition.multi_step_lookahead import qMultiStepLookahead
 from botorch_rs.acquisition.multioutput_acquisition import MultiOutputAcquisitionFunction
 from botorch_rs.acquisition.objective import (
     ConstrainedMCObjective,
+    ExpectationPosteriorTransform,
     GenericMCObjective,
     IdentityMCObjective,
     LearnedObjective,
@@ -113,6 +114,7 @@ __all__ = [
     "ConstrainedMCObjective",
     "CostAwareUtility",
     "DecoupledAcquisitionFunction",
+    "ExpectationPosteriorTransform",
     "ExpectedImprovement",
     "FixedFeatureAcquisitionFunction",
     "GaussianPenalty",

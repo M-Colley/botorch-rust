@@ -48,7 +48,7 @@ from botorch_rs.exceptions.warnings import UserInputWarning
 from botorch_rs.kernels import Kernel
 from botorch_rs.likelihoods import GaussianLikelihood, Likelihood, MultitaskGaussianLikelihood
 from botorch_rs.means import ConstantMean, Mean, ZeroMean
-from botorch_rs.models.model import Model
+from botorch_rs.models.gpytorch import GPyTorchModel
 from botorch_rs.models.transforms.input import InputTransform, chain_spec
 from botorch_rs.models.transforms.outcome import OutcomeTransform, Standardize
 from botorch_rs.models.utils.gpytorch_modules import (
@@ -388,7 +388,7 @@ class _SingleTaskVariationalGP:
         return f"_SingleTaskVariationalGP(num_outputs={self._num_outputs})"
 
 
-class ApproximateGPyTorchModel(Model):
+class ApproximateGPyTorchModel(GPyTorchModel):
     r"""
     Botorch wrapper class for various (variational) approximate GP models in
     GPyTorch.

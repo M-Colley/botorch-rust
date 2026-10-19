@@ -125,6 +125,101 @@ class ScalarizedPosteriorTransform(PosteriorTransform):
         return f"ScalarizedPosteriorTransform(weights={self._weights}, offset={self._offset})"
 
 
+def _reshape_array(value: Any, shape: tuple[int, ...]) -> Any:
+    """Reshape without numerical work or detaching tensor gradients."""
+    if hasattr(value, "reshape"):
+        return value.reshape(shape)
+    return from_flat(to_flat(value)[0], shape, kind_of(value))
+
+
+class ExpectationPosteriorTransform(PosteriorTransform):
+    r"""Weighted expectations over consecutive blocks of ``n_w`` points.
+
+    Maps ``batch x (q * n_w) x m`` Gaussian posteriors to
+    ``batch x q x m`` posteriors, retaining all cross-output covariances.
+    Normalization and moment contractions run in Rust. As in BoTorch,
+    interleaved multitask posteriors are unsupported. Every weight column
+    must have a positive finite sum (invalid zero-sum columns raise instead
+    of producing the NaNs returned by official BoTorch b0dd01be6).
+
+    ``evaluate`` propagates tensor gradients through outcomes and weights.
+    Gaussian posterior moments follow the native model API's value semantics.
+    Compiled acquisition functions currently accept scalarization transforms
+    only; this transform can be applied directly or in ``model.posterior``.
+    """
+
+    def __init__(self, n_w: int, weights: Any = None) -> None:
+        import math
+
+        from botorch_rs import _ops
+
+        if not isinstance(n_w, int) or isinstance(n_w, bool) or n_w <= 0:
+            raise ValueError("`n_w` must be a positive integer.")
+        if weights is None:
+            weights = [[1.0] for _ in range(n_w)]
+        values, shape = to_flat(weights, "weights")
+        if len(shape) != 2 or shape[0] != n_w or shape[1] == 0:
+            raise ValueError("`weights` must be a tensor of size `n_w x m`.")
+        if any(v < 0 or not math.isfinite(v) for v in values):
+            raise ValueError("`weights` must be non-negative and finite.")
+        totals = _ops.reduce("sum", weights, dim=0, keepdim=True)
+        if any(v <= 0 or not math.isfinite(v) for v in to_flat(totals)[0]):
+            raise ValueError("Every weight column must have a positive finite sum.")
+        self.weights = _ops.apply("div_raw", weights, totals)
+        self.n_w = n_w
+
+    def evaluate(self, Y: Any, X: Any = None) -> Any:
+        from botorch_rs import _ops
+
+        _, shape = to_flat(Y, "Y")
+        if len(shape) < 2 or shape[-2] % self.n_w:
+            raise BotorchTensorDimensionError("The number of outcomes must be divisible by n_w.")
+        m = shape[-1]
+        if to_flat(self.weights)[1][-1] not in (1, m):
+            raise BotorchTensorDimensionError("The weights must have one column or m columns.")
+        blocks = _reshape_array(Y, (*shape[:-2], shape[-2] // self.n_w, self.n_w, m))
+        weighted = _ops.apply("mul_raw", blocks, self.weights, kind=kind_of(Y))
+        return _ops.reduce("sum", weighted, dim=-2)
+
+    def forward(self, posterior: Any, X: Any = None) -> Any:
+        from botorch_rs import _ops
+        from botorch_rs.posteriors.gpytorch import GPyTorchPosterior, _MomentPosterior
+
+        if not isinstance(posterior, GPyTorchPosterior):
+            raise UnsupportedError(
+                "ExpectationPosteriorTransform requires a native Gaussian posterior."
+            )
+        if posterior._is_mt and posterior._interleaved_mt:
+            raise UnsupportedError(
+                "`ExpectationPosteriorTransform` does not support interleaved posteriors."
+            )
+        nw, m, nq = self.n_w, posterior._m, posterior._q
+        if nq % nw:
+            raise BotorchTensorDimensionError(
+                "The number of posterior points must be divisible by n_w."
+            )
+        q, batch, kind = nq // nw, posterior._batch, posterior._kind
+        mean = self.evaluate(posterior.mean)
+        _, cov = posterior._get_joint()
+        covariance = from_flat(cov[0], tuple(cov[1]), kind)
+        covariance = _reshape_array(covariance, (*batch, m, q, nw, m, q, nw))
+        data, wshape = to_flat(self.weights)
+        wm = wshape[-1]
+        # Structural transpose only; weighted arithmetic stays in Rust.
+        transposed = from_flat(
+            [data[i * wm + t] for t in range(wm) for i in range(nw)], (wm, nw), kind
+        )
+        left = _reshape_array(transposed, (*(1 for _ in batch), wm, 1, nw, 1, 1, 1))
+        right = _reshape_array(transposed, (*(1 for _ in batch), 1, 1, 1, wm, 1, nw))
+        weighted = _ops.apply("mul_raw", _ops.apply("mul_raw", covariance, left), right)
+        reduced = _ops.reduce("sum", weighted, dim=(-4, -1))
+        covariance = _reshape_array(reduced, (*batch, q * m, q * m))
+        mu = to_flat(mean)
+        if m == 1:
+            mu = (mu[0], (*batch, q))
+        return _MomentPosterior(mu, to_flat(covariance), kind, num_outputs=m)
+
+
 def transform_arg(
     posterior_transform: Any, num_outputs: int | None = None
 ) -> tuple[list[float], float] | None:
@@ -631,6 +726,7 @@ class LearnedObjective(MCAcquisitionObjective):
 
 __all__ = [
     "ConstrainedMCObjective",
+    "ExpectationPosteriorTransform",
     "GenericMCObjective",
     "IdentityMCObjective",
     "LearnedObjective",
