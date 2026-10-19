@@ -23,13 +23,14 @@ import argparse
 import datetime
 import importlib
 import inspect
+import json
 import os
 import pkgutil
 import subprocess
 import sys
 import warnings
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -269,10 +270,25 @@ def report(entries: list[Entry], community: list[Entry], errors: dict[str, str])
     return "\n".join(lines) + "\n"
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--out", type=Path, default=Path("docs/api_coverage.md"))
+    parser.add_argument("--json-out", type=Path, help="Write a machine-readable API gap inventory.")
+    parser.add_argument(
+        "--minimum-coverage",
+        type=float,
+        default=0.0,
+        help="Fail if public symbol availability is below this percentage (0 to 100).",
+    )
+    parser.add_argument(
+        "--require-full",
+        action="store_true",
+        help="Fail for missing symbols, parameters, members or unimportable BoTorch modules. "
+        "Passing this check still requires separate numerical parity and performance validation.",
+    )
     args = parser.parse_args()
+    if not 0.0 <= args.minimum_coverage <= 100.0:
+        parser.error("--minimum-coverage must lie between 0 and 100")
     warnings.simplefilter("ignore")
     entries, errors = analyze("botorch")
     try:
@@ -284,8 +300,45 @@ def main() -> None:
     args.out.write_text(report(entries, community, errors), encoding="utf-8")
     n, k = len(entries), sum(e.ported for e in entries)
     print(f"{k} of {n} public BoTorch classes and functions are in botorch_rs; wrote {args.out}")
+    missing = [e for e in entries if not e.ported or e.missing_params or e.missing_members]
+    core_errors = {name: error for name, error in errors.items() if name.startswith("botorch.")}
+    if args.json_out is not None:
+        import botorch
+
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(
+            json.dumps(
+                {
+                    "date": datetime.date.today().isoformat(),
+                    "reference_version": botorch.__version__,
+                    "reference_commit": git_revision(botorch.__file__),
+                    "rust_version": botorch_rs.__version__,
+                    "public_symbols": n,
+                    "available_symbols": k,
+                    "availability_percent": 100 * k / n if n else 0,
+                    "api_gaps": [asdict(e) for e in missing],
+                    "import_errors": errors,
+                    "note": "Symbol availability is not proof of numerical parity, supported "
+                    "configurations, autograd compatibility or performance.",
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     sys.stdout.flush()
+    if not n or 100 * k < args.minimum_coverage * n:
+        print("Public symbol availability is below --minimum-coverage.", file=sys.stderr)
+        return 1
+    if args.require_full and (missing or core_errors):
+        print(
+            f"Full API coverage is not achieved: {len(missing)} symbols have API gaps; "
+            f"{len(core_errors)} BoTorch modules could not be imported.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

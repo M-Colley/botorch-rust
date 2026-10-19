@@ -11,6 +11,7 @@
 
 use std::sync::{Arc, RwLock};
 
+use botorch_core::acquisition::{ScalarizedModel, ScalarizedPosteriorTransform};
 use botorch_core::fit::{FitOptions, FitStatus, Fittable};
 use botorch_core::models::approximate_gp::{
     ElboFit, SingleTaskVariationalGP, SingleTaskVariationalGPOptions, VariationalLikelihood,
@@ -25,7 +26,6 @@ use botorch_core::optim::minimize::TorchMinimizeOptions;
 use botorch_core::optim::{AdamOptions, ExpMaStoppingCriterion};
 use botorch_core::transforms::input::ChainedInputTransform;
 use botorch_core::transforms::Standardize;
-use botorch_core::acquisition::{ScalarizedModel, ScalarizedPosteriorTransform};
 use botorch_core::{Matrix, Model, Vector};
 use pyo3::prelude::*;
 
@@ -201,7 +201,9 @@ impl PySingleTaskVariationalGP {
             None => None,
         };
         let outcome_transform = match (outcome_means, outcome_stdvs) {
-            (Some(m), Some(s)) => Some(Standardize::fitted(m, s, outcome_min_stdv).into_py_result()?),
+            (Some(m), Some(s)) => {
+                Some(Standardize::fitted(m, s, outcome_min_stdv).into_py_result()?)
+            }
             (None, None) => None,
             _ => return Err(value_error("outcome_means and outcome_stdvs go together")),
         };
@@ -339,9 +341,10 @@ impl PySingleTaskVariationalGP {
                 value.1
             )));
         }
-        self.set_param("likelihood.noise_covar.raw_noise", &[spec
-            .noise_constraint
-            .inverse_transform(value.0[0])])
+        self.set_param(
+            "likelihood.noise_covar.raw_noise",
+            &[spec.noise_constraint.inverse_transform(value.0[0])],
+        )
     }
 
     /// `(task_noises, noise)` of a multitask likelihood.
@@ -354,7 +357,8 @@ impl PySingleTaskVariationalGP {
     /// The raw constants of the mean (one per output, or one shared).
     #[getter]
     fn constant(&self) -> Vec<f64> {
-        self.param("model.mean_module.raw_constant").unwrap_or_default()
+        self.param("model.mean_module.raw_constant")
+            .unwrap_or_default()
     }
 
     /// Sets the constants from a value broadcastable to their shape.
@@ -515,7 +519,13 @@ impl PySingleTaskVariationalGP {
             beta,
         };
         let res = threads::run(py, || {
-            fit_gpytorch_mll_torch(&mut model, mask.as_deref(), bounds.as_deref(), &options, None)
+            fit_gpytorch_mll_torch(
+                &mut model,
+                mask.as_deref(),
+                bounds.as_deref(),
+                &options,
+                None,
+            )
         })
         .into_py_result()?;
         self.set(model.model);

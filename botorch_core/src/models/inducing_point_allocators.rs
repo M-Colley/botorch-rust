@@ -223,7 +223,10 @@ mod tests {
         let sel = pivoted_cholesky_init(&k, 4, &unit_quality(4), 1e-6).unwrap();
         assert_eq!(sel, vec![0, 2]);
         assert!(pivoted_cholesky_init(&k, 4, &[1.0; 3], 1e-6).is_err());
-        assert_eq!(pivoted_cholesky_init(&k, 0, &[1.0; 4], 1e-6).unwrap(), vec![]);
+        assert_eq!(
+            pivoted_cholesky_init(&k, 0, &[1.0; 4], 1e-6).unwrap(),
+            vec![]
+        );
     }
 
     #[test]

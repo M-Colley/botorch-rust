@@ -51,7 +51,10 @@ fn load<T: for<'de> Deserialize<'de>>(name: &str) -> T {
 /// Normwise relative error of gradients (relative to the largest component).
 fn grad_err(actual: &[f64], expected: &[f64]) -> f64 {
     assert_eq!(actual.len(), expected.len());
-    let scale = expected.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-300);
+    let scale = expected
+        .iter()
+        .fold(0.0f64, |m, v| m.max(v.abs()))
+        .max(1e-300);
     actual
         .iter()
         .zip(expected)
@@ -214,16 +217,16 @@ fn options_of(c: &ModelCase) -> SingleTaskVariationalGPOptions {
         other => panic!("unknown mean {other}"),
     };
     let input_transform = c.input_tf.then(|| {
-        let mut chain = ChainedInputTransform::new(vec![InputTransformStep::Normalize(
-            Normalize::new(d),
-        )])
-        .unwrap();
+        let mut chain =
+            ChainedInputTransform::new(vec![InputTransformStep::Normalize(Normalize::new(d))])
+                .unwrap();
         chain.fit(&matrix(&c.train_x)).unwrap();
         chain
     });
-    let outcome_transform = c.outcome_means.as_ref().map(|m| {
-        Standardize::fitted(m.clone(), c.outcome_stdvs.clone().unwrap(), 1e-8).unwrap()
-    });
+    let outcome_transform = c
+        .outcome_means
+        .as_ref()
+        .map(|m| Standardize::fitted(m.clone(), c.outcome_stdvs.clone().unwrap(), 1e-8).unwrap());
     SingleTaskVariationalGPOptions {
         covar_module: common::kernel_spec::node(&c.kernel),
         covar_batched: c.m > 1,
@@ -237,7 +240,12 @@ fn options_of(c: &ModelCase) -> SingleTaskVariationalGPOptions {
     }
 }
 
-fn build(c: &ModelCase, x_tf: &Matrix, inducing: &Matrix, raw: Option<Vec<f64>>) -> SingleTaskVariationalGP {
+fn build(
+    c: &ModelCase,
+    x_tf: &Matrix,
+    inducing: &Matrix,
+    raw: Option<Vec<f64>>,
+) -> SingleTaskVariationalGP {
     let d = c.train_x[0].len();
     SingleTaskVariationalGP::new(
         x_tf.clone(),
@@ -282,11 +290,19 @@ fn models_match_botorch() {
         // The greedy allocation (GreedyVarianceReduction with the initial
         // kernel of the first output).
         if c.name != "inducing_train" {
-            let k = model.kernel(0).unwrap().covariance_symmetric(&x_tf).unwrap();
+            let k = model
+                .kernel(0)
+                .unwrap()
+                .covariance_symmetric(&x_tf)
+                .unwrap();
             let n = x_tf.nrows();
             let sel = pivoted_cholesky_init(&k, z.nrows(), &unit_quality(n), 1e-6).unwrap();
             let zr = Matrix::from_fn(sel.len(), x_tf.ncols(), |i, j| x_tf[(sel[i], j)]);
-            let err = if zr.shape() == z.shape() { (&zr - &z).amax() } else { 1.0 };
+            let err = if zr.shape() == z.shape() {
+                (&zr - &z).amax()
+            } else {
+                1.0
+            };
             report.check(name, "allocated inducing points", err, 0.0);
         }
         // Names, sizes, bounds, defaults.
@@ -296,11 +312,19 @@ fn models_match_botorch() {
                 .iter()
                 .zip(c.names.iter().zip(&c.sizes))
                 .all(|((n, s), (en, es))| n == en && s == es);
-        report.check(name, "parameter names and sizes", if ok { 0.0 } else { 1.0 }, 0.0);
+        report.check(
+            name,
+            "parameter names and sizes",
+            if ok { 0.0 } else { 1.0 },
+            0.0,
+        );
         let bounds = model.raw_parameter_bounds();
         let lo: Vec<f64> = c.lower.iter().map(common::kernel_spec::num).collect();
         let hi: Vec<f64> = c.upper.iter().map(common::kernel_spec::num).collect();
-        let bok = bounds.iter().zip(lo.iter().zip(&hi)).all(|(b, (l, h))| b.0 == *l && b.1 == *h);
+        let bok = bounds
+            .iter()
+            .zip(lo.iter().zip(&hi))
+            .all(|(b, (l, h))| b.0 == *l && b.1 == *h);
         report.check(name, "bounds", if bok { 0.0 } else { 1.0 }, 0.0);
         report.check_slices(
             name,
@@ -313,7 +337,9 @@ fn models_match_botorch() {
         for ev in &c.evaluations {
             model.set_raw_parameters(&ev.raw).unwrap();
             for e in &ev.elbo {
-                let (t, g) = model.elbo_value_and_grad(&ev.raw, e.num_data, e.beta).unwrap();
+                let (t, g) = model
+                    .elbo_value_and_grad(&ev.raw, e.num_data, e.beta)
+                    .unwrap();
                 report.check_slices(
                     name,
                     "ELBO terms",
@@ -332,7 +358,9 @@ fn models_match_botorch() {
             let mut vars = Vec::new();
             let mut grads = Vec::new();
             for i in 0..q {
-                let g = model.point_posterior_with_grad(&xt.row(i).iter().copied().collect::<Vec<_>>()).unwrap();
+                let g = model
+                    .point_posterior_with_grad(&xt.row(i).iter().copied().collect::<Vec<_>>())
+                    .unwrap();
                 for t in 0..m {
                     means.push(pp.mean[(i, t)]);
                     vars.push(pp.covariance[(i, t * m + t)]);
@@ -343,38 +371,72 @@ fn models_match_botorch() {
                 }
             }
             report.check_slices(name, "q=1 posterior mean", &means, &ev.q1_mean, VALUE_TOL);
-            report.check_slices(name, "q=1 posterior variance", &vars, &ev.q1_variance, VALUE_TOL);
-            report.check(name, "q=1 d(mean + variance)/dx", grad_err(&grads, &ev.q1_grad), GRAD_TOL);
+            report.check_slices(
+                name,
+                "q=1 posterior variance",
+                &vars,
+                &ev.q1_variance,
+                VALUE_TOL,
+            );
+            report.check(
+                name,
+                "q=1 d(mean + variance)/dx",
+                grad_err(&grads, &ev.q1_grad),
+                GRAD_TOL,
+            );
             // Joint posterior (BoTorch: point-major mean, interleaved
             // covariance).
             let qm = q * m;
             let perm: Vec<usize> = (0..qm).map(|k| point_major_index(q, m, k)).collect();
-            for (noise, expected) in [(false, &ev.joint_covariance), (true, &ev.joint_covariance_noise)] {
+            for (noise, expected) in [
+                (false, &ev.joint_covariance),
+                (true, &ev.joint_covariance_noise),
+            ] {
                 let p = model.posterior(&xt, noise).unwrap();
                 let mean: Vec<f64> = (0..qm).map(|k| p.mean[k]).collect();
                 let em: Vec<f64> = perm.iter().map(|&j| ev.joint_mean[j]).collect();
                 if !noise {
                     report.check_slices(name, "joint posterior mean", &mean, &em, VALUE_TOL);
                 }
-                let cov: Vec<f64> = (0..qm).flat_map(|a| (0..qm).map(move |b| (a, b))).map(|(a, b)| p.covariance[(a, b)]).collect();
+                let cov: Vec<f64> = (0..qm)
+                    .flat_map(|a| (0..qm).map(move |b| (a, b)))
+                    .map(|(a, b)| p.covariance[(a, b)])
+                    .collect();
                 let ec: Vec<f64> = (0..qm)
                     .flat_map(|a| (0..qm).map(move |b| (a, b)))
                     .map(|(a, b)| expected[perm[a]][perm[b]])
                     .collect();
-                let label = if noise { "joint covariance with noise" } else { "joint covariance" };
+                let label = if noise {
+                    "joint covariance with noise"
+                } else {
+                    "joint covariance"
+                };
                 report.check_slices(name, label, &cov, &ec, VALUE_TOL);
             }
             let ma = Vector::from_fn(qm, |k, _| ev.weights_mean[perm[k]]);
             let ca = Matrix::from_fn(qm, qm, |a, b| ev.weights_cov[perm[a]][perm[b]]);
             let vjp = model.joint_posterior_vjp(&xt, 0..q, &ma, &ca).unwrap();
-            let g: Vec<f64> = (0..q).flat_map(|i| (0..xt.ncols()).map(move |k| (i, k))).map(|(i, k)| vjp[(i, k)]).collect();
-            report.check(name, "joint d(weighted sum)/dx", grad_err(&g, &ev.joint_grad), GRAD_TOL);
+            let g: Vec<f64> = (0..q)
+                .flat_map(|i| (0..xt.ncols()).map(move |k| (i, k)))
+                .map(|(i, k)| vjp[(i, k)])
+                .collect();
+            report.check(
+                name,
+                "joint d(weighted sum)/dx",
+                grad_err(&g, &ev.joint_grad),
+                GRAD_TOL,
+            );
             // Forward mode agrees with the reverse mode.
             let fwd = model.joint_posterior_with_grad(&xt).unwrap();
             let gf: Vec<f64> = (0..q * xt.ncols())
                 .map(|j| ma.dot(&fwd.dmean[j]) + ca.component_mul(&fwd.dcov[j]).sum())
                 .collect();
-            report.check(name, "joint d/dx (forward mode)", grad_err(&gf, &ev.joint_grad), GRAD_TOL);
+            report.check(
+                name,
+                "joint d/dx (forward mode)",
+                grad_err(&gf, &ev.joint_grad),
+                GRAD_TOL,
+            );
         }
     }
     report.finish("10c models");
@@ -405,7 +467,15 @@ fn fits_match_botorch() {
         };
         let bt: Vec<(f64, usize)> = c.twins.iter().map(|t| (t.loss, t.attempts)).collect();
         let own = fit(0);
-        common::compare_fits_and_first_attempts(&mut report, &c.name, "fit", &bt, &[], own, &mut |t| fit(t));
+        common::compare_fits_and_first_attempts(
+            &mut report,
+            &c.name,
+            "fit",
+            &bt,
+            &[],
+            own,
+            &mut |t| fit(t),
+        );
     }
     report.finish("10c fits");
 }

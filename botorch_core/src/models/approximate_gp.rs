@@ -54,14 +54,14 @@ use rand::rngs::StdRng;
 
 use crate::error::{BotorchError, Result};
 use crate::fit::{minimize_with_retries, FitOptions, FitResult, Fittable};
-use crate::optim::fit::MllModel;
-use crate::kernels::tree::{sample_tree_priors, KernelNode};
 use crate::kernels::eval::TreePrep;
+use crate::kernels::tree::{sample_tree_priors, KernelNode};
 use crate::kernels::TreeKernel;
 use crate::linalg::{cholesky_backward, psd_safe_cholesky_with, CholeskyFactor, CHOLESKY_JITTER};
 use crate::models::gp::{ConstantMeanSpec, GaussianLikelihoodSpec};
 use crate::models::model::check_vjp_shapes_expanded;
 use crate::models::Model;
+use crate::optim::fit::MllModel;
 use crate::posterior::{JointPosteriorGrad, PointPosteriors, Posterior, MIN_VARIANCE};
 use crate::transforms::input::{ChainedInputTransform, TransformMode};
 use crate::transforms::Standardize;
@@ -315,9 +315,7 @@ impl SingleTaskVariationalGP {
             r
         };
         let likelihood = take(nl);
-        let inducing_range = options
-            .learn_inducing_points
-            .then(|| take(m_ind * dt));
+        let inducing_range = options.learn_inducing_points.then(|| take(m_ind * dt));
         let var_mean = take(m * m_ind);
         let var_chol = take(m * m_ind * m_ind);
         let n_const = match options.mean_module {
@@ -603,9 +601,9 @@ impl SingleTaskVariationalGP {
     fn constant_index(&self, t: usize) -> Option<usize> {
         match self.options.mean_module {
             VariationalMean::Zero => None,
-            VariationalMean::Constant(_) => Some(
-                self.layout.constant.start + if self.options.mean_batched { t } else { 0 },
-            ),
+            VariationalMean::Constant(_) => {
+                Some(self.layout.constant.start + if self.options.mean_batched { t } else { 0 })
+            }
         }
     }
 
@@ -655,13 +653,17 @@ impl SingleTaskVariationalGP {
         let ms = self.layout.var_mean.start + t * mi;
         let mean = Vector::from_column_slice(&raw[ms..ms + mi]);
         let cs = self.layout.var_chol.start + t * mi * mi;
-        let lv = Matrix::from_fn(mi, mi, |i, j| {
-            if j <= i {
-                raw[cs + i * mi + j]
-            } else {
-                0.0
-            }
-        });
+        let lv = Matrix::from_fn(
+            mi,
+            mi,
+            |i, j| {
+                if j <= i {
+                    raw[cs + i * mi + j]
+                } else {
+                    0.0
+                }
+            },
+        );
         (mean, lv)
     }
 
@@ -670,7 +672,11 @@ impl SingleTaskVariationalGP {
     }
 
     /// `psd_safe_cholesky(K(Z, Z) + j I, max_tries=4)`.
-    fn inducing_cholesky(&self, kernel: &TreeKernel, z: &TreePrep) -> Result<(Matrix, CholeskyFactor)> {
+    fn inducing_cholesky(
+        &self,
+        kernel: &TreeKernel,
+        z: &TreePrep,
+    ) -> Result<(Matrix, CholeskyFactor)> {
         let mut kzz = kernel.symmetric(z);
         for i in 0..self.num_inducing {
             kzz[(i, i)] += self.options.jitter;
@@ -1460,7 +1466,10 @@ impl Fittable for ElboFit {
                 &x0,
                 &bounds,
                 options,
-                |x| m.elbo_value_and_grad(x, nd, beta).map(|(t, g)| (t.value(), g)),
+                |x| {
+                    m.elbo_value_and_grad(x, nd, beta)
+                        .map(|(t, g)| (t.value(), g))
+                },
                 |rng| m.sample_all_priors(&x0, rng),
             )?
         };
@@ -1483,7 +1492,9 @@ impl MllModel for ElboFit {
     }
 
     fn mll_values_and_gradient(&self, x: &[f64]) -> Result<(Vec<f64>, Vec<f64>)> {
-        let (t, g) = self.model.elbo_value_and_grad(x, self.num_data, self.beta)?;
+        let (t, g) = self
+            .model
+            .elbo_value_and_grad(x, self.num_data, self.beta)?;
         Ok((vec![t.value()], g))
     }
 }
@@ -1493,7 +1504,11 @@ impl SingleTaskVariationalGP {
     /// variances, i.e. the lazy `diag=True` kernel values), over all
     /// outputs: means (`b × m`) and diagonal output covariances (`b × m²`,
     /// independent outputs).
-    fn point_posteriors_impl(&self, x: &Matrix, observation_noise: bool) -> Result<PointPosteriors> {
+    fn point_posteriors_impl(
+        &self,
+        x: &Matrix,
+        observation_noise: bool,
+    ) -> Result<PointPosteriors> {
         let xt = self.transform_inputs(x)?;
         let caches = self.cache()?;
         let (b, m) = (xt.nrows(), self.num_outputs);
@@ -1624,7 +1639,13 @@ impl Model for SingleTaskVariationalGP {
         mean_adjoint: &Vector,
         covariance_adjoint: &Matrix,
     ) -> Result<Matrix> {
-        SingleTaskVariationalGP::joint_posterior_vjp(self, x, rows, mean_adjoint, covariance_adjoint)
+        SingleTaskVariationalGP::joint_posterior_vjp(
+            self,
+            x,
+            rows,
+            mean_adjoint,
+            covariance_adjoint,
+        )
     }
 }
 
@@ -1658,7 +1679,9 @@ mod tests {
     fn data(n: usize, d: usize, m: usize, seed: u64) -> (Matrix, Matrix) {
         let mut s = seed;
         let mut next = || {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((s >> 11) as f64) / ((1u64 << 53) as f64)
         };
         let x = Matrix::from_fn(n, d, |_, _| next());
@@ -1688,7 +1711,10 @@ mod tests {
             covar_module: tree,
             covar_batched: batched,
             mean_module: VariationalMean::Constant(ConstantMeanSpec {
-                prior: Some(Prior::Normal { loc: 0.1, scale: 2.0 }),
+                prior: Some(Prior::Normal {
+                    loc: 0.1,
+                    scale: 2.0,
+                }),
                 constraint: None,
             }),
             mean_batched: batched,
@@ -1698,8 +1724,7 @@ mod tests {
             input_transform: None,
             outcome_transform: None,
         };
-        let mut mdl =
-            SingleTaskVariationalGP::new(x, Some(y), z, m, 2, None, options).unwrap();
+        let mut mdl = SingleTaskVariationalGP::new(x, Some(y), z, m, 2, None, options).unwrap();
         // Random variational parameters and hyperparameters.
         let mut raw = mdl.raw_parameters().to_vec();
         for (k, v) in raw.iter_mut().enumerate() {
@@ -1745,7 +1770,10 @@ mod tests {
     #[test]
     fn point_posterior_gradients_match_finite_differences() {
         let bnn = KernelNode::scale(KernelNode::infinite_width_bnn(2, 1e-7).unwrap());
-        for mdl in [model(1, true, bnn, false), model(2, true, scale_tree(2), true)] {
+        for mdl in [
+            model(1, true, bnn, false),
+            model(2, true, scale_tree(2), true),
+        ] {
             let x = [0.3, 0.6];
             let g = Model::point_posterior_with_grad(&mdl, &x).unwrap();
             let pp = Model::point_posteriors(&mdl, &Matrix::from_row_slice(1, 2, &x)).unwrap();
@@ -1764,9 +1792,14 @@ mod tests {
                 let pm = Model::point_posteriors(&mdl, &Matrix::from_row_slice(1, 2, &xm)).unwrap();
                 for t in 0..m {
                     let dm = (pp.mean[(0, t)] - pm.mean[(0, t)]) / (2.0 * h);
-                    let dv = (pp.covariance[(0, t * m + t)] - pm.covariance[(0, t * m + t)]) / (2.0 * h);
+                    let dv =
+                        (pp.covariance[(0, t * m + t)] - pm.covariance[(0, t * m + t)]) / (2.0 * h);
                     assert!((dm - g.dmean[k][t]).abs() < 1e-6, "{dm} {}", g.dmean[k][t]);
-                    assert!((dv - g.dcov[k][(t, t)]).abs() < 1e-6, "{dv} {}", g.dcov[k][(t, t)]);
+                    assert!(
+                        (dv - g.dcov[k][(t, t)]).abs() < 1e-6,
+                        "{dv} {}",
+                        g.dcov[k][(t, t)]
+                    );
                 }
             }
         }
@@ -1774,7 +1807,10 @@ mod tests {
 
     #[test]
     fn posterior_gradients_match_finite_differences() {
-        for mdl in [model(1, true, rbf_tree(2), false), model(2, true, scale_tree(2), true)] {
+        for mdl in [
+            model(1, true, rbf_tree(2), false),
+            model(2, true, scale_tree(2), true),
+        ] {
             let x = Matrix::from_row_slice(3, 2, &[0.1, 0.7, 0.4, 0.2, 0.9, 0.5]);
             let g = mdl.joint_posterior_with_grad(&x).unwrap();
             let len = g.mean.len();
