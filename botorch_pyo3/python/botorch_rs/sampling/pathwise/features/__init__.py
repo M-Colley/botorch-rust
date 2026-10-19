@@ -1,9 +1,10 @@
-"""Feature maps of sample paths (``botorch.sampling.pathwise.features``).
+"""Feature maps and native random Fourier feature generation."""
 
-``gen_kernel_features`` and ``KernelEvaluationMap`` are part of the paths
-computed in Rust and are not exposed in Python.
-"""
+from botorch_rs.sampling.pathwise.features.generators import gen_kernel_features
+from botorch_rs.sampling.pathwise.features.maps import (
+    FeatureMap,
+    KernelEvaluationMap,
+    KernelFeatureMap,
+)
 
-from botorch_rs.sampling.pathwise.features.maps import FeatureMap, KernelFeatureMap
-
-__all__ = ["FeatureMap", "KernelFeatureMap"]
+__all__ = ["FeatureMap", "KernelEvaluationMap", "KernelFeatureMap", "gen_kernel_features"]

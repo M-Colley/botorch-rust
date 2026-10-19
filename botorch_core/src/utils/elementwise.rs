@@ -76,9 +76,11 @@ pub fn arity(name: &str) -> Option<(usize, usize)> {
         | "fat_sigmoid"
         | "log_fat_sigmoid"
         | "cauchy" => (1, 1),
-        "add" | "sub" | "mul" | "div" | "mul_raw" | "div_raw" | "logplusexp" | "logdiffexp"
-        | "log_prob_normal_in" | "fatmaximum" | "fatminimum" | "fatplus" | "log_fatplus"
-        | "log_softplus" | "fatmoid" | "log_fatmoid" | "approximate_round" => (2, 1),
+        "add" | "sub" | "mul" | "div" | "add_raw" | "mul_raw" | "div_raw" | "logplusexp"
+        | "logdiffexp" | "log_prob_normal_in" | "fatmaximum" | "fatminimum" | "fatplus"
+        | "log_fatplus" | "log_softplus" | "fatmoid" | "log_fatmoid" | "approximate_round" => {
+            (2, 1)
+        }
         "bvnu" => (3, 1),
         "bvn" => (5, 1),
         "bvnmom" => (6, 2),
@@ -242,6 +244,7 @@ fn fatmax2(a: f64, b: f64, tau: f64, alpha: f64) -> (f64, f64, f64) {
 /// computed).
 fn binary(name: &str, a: f64, b: f64, params: &[f64], single: bool) -> Result<(f64, f64, f64)> {
     Ok(match name {
+        "add_raw" => (a + b, 1.0, 1.0),
         "mul_raw" => (a * b, b, a),
         "div_raw" => (a / b, b.recip(), -(a / b) / b),
         "add" => {

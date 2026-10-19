@@ -431,6 +431,53 @@ impl PyKernelNode {
         out.into_py_result()
     }
 
+    /// Input adjoints of `K(x1, x2)` without allocating its dense Jacobian.
+    fn evaluate_vjp(
+        &self,
+        py: Python<'_>,
+        raw: Vec<f64>,
+        x1: Array,
+        x2: Array,
+        adjoint: Array,
+    ) -> PyResult<(ArrayBuf, ArrayBuf)> {
+        let a = x1.matrix("x1")?;
+        let b = x2.matrix("x2")?;
+        let g = adjoint.matrix("adjoint")?;
+        if a.ncols() != b.ncols() || g.shape() != (a.nrows(), b.nrows()) {
+            return Err(dimension_error(
+                "Kernel adjoint and input dimensions do not match",
+            ));
+        }
+        crate::threads::run(py, || -> botorch_core::Result<_> {
+            let kern = TreeKernel::build(&self.inner, &raw, a.ncols())?;
+            let pa = kern.prepare(&a)?;
+            let pb = kern.prepare(&b)?;
+            let mut ga = Matrix::zeros(a.nrows(), a.ncols());
+            let mut gb = Matrix::zeros(b.nrows(), b.ncols());
+            for i in 0..a.nrows() {
+                let (_, dg) = kern.cross_with_grad(&pa, i, &pb);
+                for j in 0..b.nrows() {
+                    for d in 0..a.ncols() {
+                        ga[(i, d)] += g[(i, j)] * dg[(j, d)];
+                    }
+                }
+            }
+            for j in 0..b.nrows() {
+                let (_, dg) = kern.cross_with_grad(&pb, j, &pa);
+                for i in 0..a.nrows() {
+                    for d in 0..b.ncols() {
+                        gb[(j, d)] += g[(i, j)] * dg[(i, d)];
+                    }
+                }
+            }
+            Ok((
+                crate::arrays::matrix_out(&ga).into(),
+                crate::arrays::matrix_out(&gb).into(),
+            ))
+        })
+        .into_py_result()
+    }
+
     /// The log density of the priors and its gradient with respect to the raw
     /// values `raw` (for inputs with `input_dim` columns).
     fn log_prior(&self, raw: Vec<f64>, input_dim: usize) -> PyResult<(f64, Vec<f64>)> {
