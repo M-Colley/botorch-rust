@@ -351,7 +351,8 @@ inputs and MVNXPB gradients of batches whose members pivot differently
 ## Verification
 
 The initial committed branch passed all three phase 11a Python suites on
-2026-10-20 against the local BoTorch main checkout at `c98dd9452`, with
+2026-10-20 against the local BoTorch fork checkout at `c98dd9452`
+(`fix/audit-correctness-fixes`, not official upstream main), with
 Python 3.13.12 and torch 2.13.0: **311 passed, 1 skipped**. The seven Rust
 fixture tests in `utils_11a_parity` passed, as did
 `cargo clippy --workspace --all-targets -- -D warnings`.

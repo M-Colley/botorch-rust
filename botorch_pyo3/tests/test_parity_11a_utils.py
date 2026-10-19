@@ -816,7 +816,7 @@ def test_multivariate_qmc_output_dtype(inv_transform: bool, out_dtype: Any) -> N
     assert actual.draw(32, out=out_a) is None
     assert expected.draw(32, out=out_e) is None
     C.check(
-        "MultivariateNormalQMCEngine output dtype",
+        f"MultivariateNormalQMCEngine output {out_dtype}",
         out_a.double(),
         out_e.double(),
         F32TOL if out_dtype == torch.float32 else TOL,

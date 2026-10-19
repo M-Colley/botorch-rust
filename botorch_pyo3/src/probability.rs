@@ -5,6 +5,7 @@
 //! sampler, the transforms of `botorch.sampling.qmc`, PyTorch's seeded CPU
 //! generator and the null space of equality constraints.
 
+use botorch_core::models::pairwise_gp::detect_duplicates;
 use botorch_core::test_functions::single_objective::{
     default_max_step_size, round_nearest, TrajectoryConfig,
 };
@@ -910,8 +911,22 @@ fn psd_safe_cholesky_py(
     Ok(ArrayBuf(out, vec![batch, n, n]))
 }
 
+/// Native duplicate search shared with the preference models.
+#[pyfunction]
+#[pyo3(name = "detect_duplicates")]
+fn detect_duplicates_py(
+    py: Python<'_>,
+    x: Array,
+    rtol: f64,
+    atol: f64,
+) -> PyResult<Vec<(usize, usize)>> {
+    let x = x.matrix("X")?;
+    Ok(threads::run(py, || detect_duplicates(&x, rtol, atol)))
+}
+
 /// Registers the functions and classes of this module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(detect_duplicates_py, m)?)?;
     m.add_function(wrap_pyfunction!(elementwise_py, m)?)?;
     m.add_function(wrap_pyfunction!(reduce_py, m)?)?;
     m.add_function(wrap_pyfunction!(log_prob_feas_py, m)?)?;
