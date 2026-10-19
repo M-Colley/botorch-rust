@@ -133,6 +133,12 @@ class qLogNParEGO(qLogNoisyExpectedImprovement, MultiObjectiveMCAcquisitionFunct
         ``marginalize_dim``)."""
         from botorch_rs.acquisition.multi_objective.utils import _prune_ensemble_scalarized
 
+        prune = bool(arguments.get("prune_baseline", False))
+        if prune and (arguments.get("objective") is not None or arguments.get("constraints")):
+            raise UnsupportedError(
+                "Pruning the baseline of an ensemble model with an objective or "
+                "constraints is not supported by botorch_rs; pass prune_baseline=False."
+            )
         probe = {**arguments, "prune_baseline": False}
         weights = arguments.get("scalarization_weights")
         ys = []
@@ -148,12 +154,7 @@ class qLogNParEGO(qLogNoisyExpectedImprovement, MultiObjectiveMCAcquisitionFunct
         y_baseline = from_flat(y, shape, kind)
         arguments["scalarization_weights"] = weights
         arguments["_y_baseline"] = y_baseline
-        if arguments.get("prune_baseline", False):
-            if arguments.get("objective") is not None or arguments.get("constraints"):
-                raise UnsupportedError(
-                    "Pruning the baseline of an ensemble model with an objective or "
-                    "constraints is not supported by botorch_rs; pass prune_baseline=False."
-                )
+        if prune:
             cheb = ChebyshevScalarization(weights, y_baseline)
             arguments["X_baseline"] = _prune_ensemble_scalarized(
                 model,

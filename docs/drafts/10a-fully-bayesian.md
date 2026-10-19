@@ -184,7 +184,7 @@ of each library (warmup 150, 300 samples) on three models are compared by
 the standardized difference of the posterior means of every unconstrained
 hyperparameter, with Monte-Carlo standard errors from effective sample
 sizes (`|z| <= 4.5`, a false-positive rate of about 7e-6 per parameter for
-normal estimates, 5e-5 per test). Worst `|z|` = 1.5 (0.34 of the
+normal estimates, 5e-5 per test). Worst `|z|` = 1.04 (0.23 of the
 threshold).
 
 ### Models and acquisition functions
@@ -233,7 +233,7 @@ and gradients at rounding noise (at most 2.2e-16 and 1.2e-15).
 | MLL / gradient | 1e-9 / 1e-8 | 5.5e-13 / 2.8e-12 |
 | LogEI, qLogEI values / gradients | 1e-9 / 1e-8 | 3.4e-12 / 3.1e-11 |
 | qBALD values (absolute 1e-12) / gradients (floor 1e-12) | 1e-9 / 1e-8 | 1.5e-12 / 2.5e-11 |
-| qLogNEI values / gradients over the training baseline, / (10x BoTorch's twin spread at 1e-14 .. 1e-11, at least nominal) | 1 | see the run (`qLogNEI ... / tolerance`) |
+| qLogNEI values / gradients over the training baseline, / (10x BoTorch's twin spread at 1e-14 .. 1e-11, at least nominal) | 1 | 0.069 / 0.15 |
 
 The qLogNEI baseline posteriors are nearly singular: BoTorch's own values
 move by up to 4.8e-10 and its gradients by 1.1e-8 under input perturbations

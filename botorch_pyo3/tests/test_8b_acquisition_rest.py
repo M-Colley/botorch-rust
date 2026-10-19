@@ -118,7 +118,8 @@ def _unflat(data: list, shp: tuple) -> Any:
 
 
 def test_registry_and_errors() -> None:
-    assert len(ic.ACQF_INPUT_CONSTRUCTOR_REGISTRY) == 33
+    # Phase 8b's 33 constructors and those of later phases (e.g. BALD).
+    assert len(ic.ACQF_INPUT_CONSTRUCTOR_REGISTRY) >= 33
     for cls in ic.ACQF_INPUT_CONSTRUCTOR_REGISTRY:
         assert callable(get_acqf_input_constructor(cls))
 
