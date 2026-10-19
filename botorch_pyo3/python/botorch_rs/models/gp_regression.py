@@ -452,12 +452,15 @@ class SingleTaskGP(Model):
                 assert fitted_outcome is not None
                 ot_obj._set_fitted(fitted_outcome, kind_of(train_Y))
             self.outcome_transform = ot_obj
+        from botorch_rs.settings import validate_input_scaling
+
         if covar_module is None:
-            _validate_input_scaling(
-                self._rs.construction_train_inputs(),
-                self._rs.transformed_train_targets(),
-                self._rs.num_train,
-            )
+            if validate_input_scaling.on():
+                _validate_input_scaling(
+                    self._rs.construction_train_inputs(),
+                    self._rs.transformed_train_targets(),
+                    self._rs.num_train,
+                )
             # Used for subsetting along the output dimension (BoTorch's
             # `Model.subset_output`; botorch_rs subsets any covariance module).
             self._subset_batch_dict = {
@@ -677,7 +680,7 @@ class SingleTaskGP(Model):
         space) defaults to the inferred noise level, or the mean training
         noise of a fixed-noise model."""
         from botorch_rs.exceptions.errors import DeprecationError
-        from botorch_rs.sampling.normal import SobolQMCNormalSampler
+        from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
@@ -685,8 +688,8 @@ class SingleTaskGP(Model):
             raise DeprecationError(
                 "`fantasize` no longer accepts a boolean for `observation_noise`."
             )
-        if not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        if not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
         self.eval()
         x = to_flat(X, "X")
         nz = None if observation_noise is None else to_flat(observation_noise, "observation_noise")

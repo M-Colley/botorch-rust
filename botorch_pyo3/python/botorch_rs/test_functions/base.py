@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import importlib
 import sys
-from typing import Any
+from typing import Any, Protocol
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import (
@@ -353,4 +353,346 @@ class MultiObjectiveTestProblem(BaseTestProblem):
         )
 
 
-__all__ = ["BaseTestProblem", "ConstrainedBaseTestProblem", "MultiObjectiveTestProblem"]
+# -- validation, seeding and corrupted problems (phase 11a) ------------------
+
+
+def _shape_repr(x: Any) -> str:
+    shape = tuple(x.shape) if hasattr(x, "shape") else to_flat(x, "X")[1]
+    return f"torch.Size({list(shape)})"
+
+
+def validate_parameter_indices(
+    dim: int,
+    bounds: Any,
+    continuous_inds: list[int],
+    discrete_inds: list[int],
+    categorical_inds: list[int],
+) -> None:
+    r"""Check that the parameter indices are valid.
+
+    Args:
+        dim: Number of search space dimensions.
+        bounds: A ``2 x d``-dim tensor of lower and upper bounds.
+        continuous_inds: List of unique integers corresponding to continuous parameters.
+        discrete_inds: List of unique integers corresponding to discrete parameters.
+        categorical_inds: List of unique integers corresponding to categorical
+            parameters.
+
+    Raises:
+        ValueError: If the parameter indices are invalid.
+    """
+    for inds in [continuous_inds, discrete_inds, categorical_inds]:
+        if len(inds) == 0:
+            continue  # Nothing to check
+        if not (
+            isinstance(inds, list)
+            and all(isinstance(x, int) for x in inds)
+            and len(set(inds)) == len(inds)
+            and min(inds) >= 0
+            and max(inds) <= dim - 1
+        ):
+            raise ValueError(
+                "All parameter indices must be a list with unique integers between "
+                f"0 and dim - 1. Got {inds=}."
+            )
+    # Let's make sure all parameters are covered.
+    all_inds = continuous_inds + discrete_inds + categorical_inds
+    if (len(all_inds) != dim) or (set(all_inds) != set(range(dim))):
+        raise ValueError(
+            f"All parameter indices must be present, got {dim=}, {continuous_inds=}, "
+            f"{discrete_inds=}, {categorical_inds=}"
+        )
+    # Check the shape of the bounds
+    data, shape = to_flat(bounds, "bounds")
+    if tuple(shape) != (2, dim):
+        raise ValueError(
+            f"Expected `bounds` to have shape `2 x d`. Got bounds.shape={_shape_repr(bounds)}, "
+            f"{dim=}."
+        )
+    # Check that the bounds are integer valued for discrete and categorical parameters.
+    for inds in [discrete_inds, categorical_inds]:
+        vals = [float(data[r * dim + i]) for r in range(2) for i in inds]
+        if len(inds) > 0 and not all(v == _round_half_even(v) for v in vals):
+            raise ValueError(
+                "Expected the lower and upper bounds of the discrete and categorical "
+                "parameters to be integer-valued."
+            )
+
+
+def _round_half_even(v: float) -> float:
+    import math
+
+    if not math.isfinite(v):
+        return v
+    return float(round(v))
+
+
+def validate_inputs(
+    X: Any,
+    dim: int,
+    bounds: Any,
+    discrete_inds: list[int],
+    categorical_inds: list[int],
+) -> None:
+    r"""Check that the inputs are valid.
+
+    This method checks that the input tensor ``X`` has the correct shape, is within
+    the bounds, and that the discrete and categorical parameters are integer-valued.
+
+    Args:
+        X: A ``(batch_shape) x n x d``-dim tensor of point(s) at which to evaluate
+        dim: Number of search space dimensions.
+        bounds: A ``2 x d``-dim tensor of lower and upper bounds.
+        discrete_inds: List of unique integers corresponding to discrete parameters.
+        categorical_inds: List of unique integers corresponding to categorical
+            parameters.
+
+    Raises:
+        ValueError: If the parameter indices are invalid.
+    """
+    data, shape = to_flat(X, "X")
+    if not shape or shape[-1] != dim:
+        raise ValueError(
+            "Expected `X` to have shape `(batch_shape) x n x d`. "
+            f"Got X.shape={_shape_repr(X)} and {dim=}"
+        )
+    bdata, _ = to_flat(bounds, "bounds")
+    lower, upper = list(bdata[:dim]), list(bdata[dim:])
+    n = len(data) // dim if dim else 0
+    for r in range(n):
+        for k in range(dim):
+            v = float(data[r * dim + k])
+            if not (v >= lower[k] and v <= upper[k]):
+                raise ValueError("Expected `X` to be within the bounds of the test problem.")
+    for inds in [discrete_inds, categorical_inds]:
+        for r in range(n):
+            for k in inds:
+                v = float(data[r * dim + k])
+                if v != _round_half_even(v):
+                    raise ValueError(
+                        "Expected `X` to have integer values for the discrete and "
+                        "categorical parameters."
+                    )
+
+
+class SeedingMixin:
+    """A mixin of problems that iterate through a sequence of seeds
+    (BoTorch's ``SeedingMixin``)."""
+
+    _seeds: Any = None
+    _current_seed: int | None = None
+
+    @property
+    def has_seeds(self) -> bool:
+        return self._seeds is not None
+
+    def increment_seed(self) -> int:
+        if self._seeds is None:
+            raise ValueError("Unexpected `None` found.")
+        self._current_seed = next(self._seeds)
+        return self._current_seed  # type: ignore[return-value]
+
+    @property
+    def seed(self) -> int | None:
+        return self._current_seed
+
+
+class OutlierGenerator(Protocol):
+    def __call__(self, problem: Any, X: Any, bounds: Any) -> Any:
+        """Call signature for outlier generators for single-objective problems.
+
+        Args:
+            problem: The test problem.
+            X: The input tensor.
+            bounds: The bounds of the test problem.
+
+        Returns:
+            A tensor of outliers with shape X.shape[:-1] (1d if unbatched).
+        """
+        pass  # pragma: no cover
+
+
+def constant_outlier_generator(problem: Any, X: Any, bounds: Any, constant: float) -> Any:
+    """
+    Generates outliers that are all the same constant. To be used in conjunction
+    with ``partial`` to fix the constant value and conform to the
+    ``OutlierGenerator`` protocol.
+
+    Example:
+        >>> generator = partial(constant_outlier_generator, constant=1.0)
+
+    Args:
+        problem: Not used.
+        X: The ``batch_shape x n x d``-dim inputs. Also determines the number, dtype,
+            and device of the returned tensor.
+        bounds: Not used.
+        constant: The constant value of the outliers.
+
+    Returns:
+        Tensor of shape ``batch_shape x n`` (1d if unbatched).
+    """
+    kind = kind_of(X)
+    shape = to_flat(X, "X")[1][:-1]
+    import math
+
+    return from_flat([float(constant)] * math.prod(shape), shape, kind)
+
+
+class CorruptedTestProblem(BaseTestProblem, SeedingMixin):
+    def __init__(
+        self,
+        base_test_problem: Any,
+        outlier_generator: Any,
+        outlier_fraction: float,
+        bounds: list[tuple[float, float]] | None = None,
+        seeds: Any = None,
+    ) -> None:
+        """A problem with outliers.
+
+        NOTE: Both noise_std and negate will be taken from the base test problem.
+
+        Args:
+            base_test_problem: The base function to be corrupted.
+            outlier_generator: A function that generates outliers. It will be called
+                with arguments ``f``, ``X`` and ``bounds``, where ``f`` is the
+                ``base_test_problem``, ``X`` is the
+                argument passed to the ``forward`` method, and ``bounds``
+                are as here, and it returns the values of outliers.
+            outlier_fraction: The fraction of outliers.
+            bounds: The bounds of the function.
+            seeds: The seeds to use for the outlier generator. If seeds are provided,
+                the problem will iterate through the list of seeds, changing the seed
+                with a call to ``next(seeds)`` with every ``forward`` call. If a list is
+                provided, it will first be converted to an iterator.
+
+        The outlier mask is drawn with torch's generator (``torch.rand`` in
+        torch's default dtype after ``torch.manual_seed(seed)`` if seeds are
+        given, as in BoTorch) for torch inputs, else with Python's
+        ``random`` (seeded with the current seed).
+        """
+        self._dim = base_test_problem.dim
+        self.continuous_inds_ = list(base_test_problem.continuous_inds)
+        self.discrete_inds_ = list(base_test_problem.discrete_inds)
+        self.categorical_inds_ = list(base_test_problem.categorical_inds)
+        self._bounds_list: list[tuple[float, float]] = (
+            list(bounds) if bounds is not None else list(base_test_problem._bounds)
+        )
+        if len(self._bounds_list) != self._dim:
+            from botorch_rs.exceptions.errors import InputDataError
+
+            raise InputDataError(
+                "Expected the bounds to match the dimensionality of the domain. "
+                f"Got self.dim={self._dim} and len(self._bounds)={len(self._bounds_list)}."
+            )
+        self.noise_std = base_test_problem.noise_std
+        self.negate = base_test_problem.negate
+        self._kind = kind_from_dtype(None)
+        self.base_test_problem = base_test_problem
+        self.outlier_generator = outlier_generator
+        self.outlier_fraction = outlier_fraction
+        self._current_seed: int | None = None
+        self._seeds = None if seeds is None else iter(seeds)
+        validate_parameter_indices(
+            dim=self._dim,
+            bounds=self.bounds,
+            continuous_inds=self.continuous_inds,
+            discrete_inds=self.discrete_inds,
+            categorical_inds=self.categorical_inds,
+        )
+
+    @property
+    def dim(self) -> int:  # type: ignore[override]
+        return self._dim
+
+    @property
+    def continuous_inds(self) -> list[int]:  # type: ignore[override]
+        return self.continuous_inds_
+
+    @property
+    def discrete_inds(self) -> list[int]:  # type: ignore[override]
+        return self.discrete_inds_
+
+    @property
+    def categorical_inds(self) -> list[int]:  # type: ignore[override]
+        return self.categorical_inds_
+
+    @property
+    def _bounds(self) -> list[tuple[float, float]]:  # type: ignore[override]
+        return self._bounds_list
+
+    @property
+    def bounds(self) -> Any:  # type: ignore[override]
+        lo = [float(b[0]) for b in self._bounds_list]
+        hi = [float(b[1]) for b in self._bounds_list]
+        return from_flat(lo + hi, (2, self._dim), self._kind)
+
+    def _evaluate_true(self, X: Any) -> Any:
+        return self.base_test_problem.evaluate_true(X)
+
+    def evaluate_true(self, X: Any) -> Any:
+        validate_inputs(X, self.dim, self.bounds, self.discrete_inds, self.categorical_inds)
+        return self._evaluate_true(X)
+
+    def forward(self, X: Any, noise: bool = True) -> Any:
+        """
+        Generate data at X and corrupt it, if noise is True.
+
+        Args:
+            X: The ``batch_shape x n x d``-dim inputs.
+            noise: Whether to corrupt the data.
+
+        Returns:
+            A ``batch_shape x n``-dim tensor.
+        """
+        kind = kind_of(X)
+        f = self.evaluate_true(X)
+        if noise and self.noise_std is not None:
+            if kind.lib == "list":
+                import random
+
+                fl, sh = to_flat(f, "f")
+                f = from_flat([v + float(self.noise_std) * random.gauss(0.0, 1.0) for v in fl], sh, kind)
+            else:
+                f = _add_noise(f, self.noise_std, kind)
+        if self.negate:
+            fl, sh = to_flat(f, "f")
+            f = -f if kind.lib != "list" else from_flat([-v for v in fl], sh, kind)
+        if not noise:
+            return f
+        if self.has_seeds:
+            self.increment_seed()
+        shape = to_flat(X, "X")[1][:-1]
+        if kind.lib == "torch":
+            import torch
+
+            if self.has_seeds:
+                torch.manual_seed(self.seed)
+            corrupt = torch.rand(shape) < self.outlier_fraction
+            outliers = self.outlier_generator(problem=self.base_test_problem, X=X, bounds=self.bounds)
+            return torch.where(corrupt.to(X.device), outliers, f)
+        import math
+        import random
+
+        rng = random.Random(self.seed) if self.has_seeds else random
+        corrupt_l = [rng.random() < self.outlier_fraction for _ in range(math.prod(shape))]
+        outliers = self.outlier_generator(problem=self.base_test_problem, X=X, bounds=self.bounds)
+        fo, _ = to_flat(outliers, "outliers")
+        fv, sh = to_flat(f, "f")
+        vals = [float(o) if c else float(v) for c, o, v in zip(corrupt_l, fo, fv, strict=True)]
+        return from_flat(vals, sh, kind)
+
+    def __repr__(self) -> str:
+        return f"CorruptedTestProblem(base_test_problem={self.base_test_problem!r})"
+
+
+__all__ = [
+    "BaseTestProblem",
+    "ConstrainedBaseTestProblem",
+    "CorruptedTestProblem",
+    "MultiObjectiveTestProblem",
+    "OutlierGenerator",
+    "SeedingMixin",
+    "constant_outlier_generator",
+    "validate_inputs",
+    "validate_parameter_indices",
+]

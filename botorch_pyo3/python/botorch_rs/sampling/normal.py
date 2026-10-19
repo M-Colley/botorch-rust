@@ -33,7 +33,26 @@ class MCSampler:
     sample_shape: tuple[int, ...]
 
 
-class SobolQMCNormalSampler(MCSampler):
+class NormalMCSampler(MCSampler):
+    r"""Base class for samplers producing (possibly QMC) N(0,1) samples
+    (``botorch.sampling.normal.NormalMCSampler``): ``SobolQMCNormalSampler``
+    and ``IIDNormalSampler``.
+
+    Every botorch_rs normal sampler has a Rust sampler (``_rs``) that the
+    Monte-Carlo acquisition functions, fantasy models and look-ahead
+    acquisition functions draw their base samples from (``num_samples x
+    dim`` for ``dim`` jointly sampled values, cached per ``dim``).
+    """
+
+    _rs: Any
+
+    @property
+    def num_samples(self) -> int:
+        """The number of MC samples (``prod(sample_shape)``)."""
+        return math.prod(self.sample_shape)
+
+
+class SobolQMCNormalSampler(NormalMCSampler):
     r"""Draws standard-normal base samples from a scrambled Sobol sequence.
 
     For ``q`` jointly sampled points the base samples are a fixed
@@ -114,21 +133,25 @@ def _batch_range(posterior: Any, override: tuple[int, int] | None) -> tuple[int,
     return posterior.batch_range
 
 
-class IIDNormalSampler(MCSampler):
+class IIDNormalSampler(NormalMCSampler):
     r"""Sampler for MC base samples using iid ``N(0,1)`` samples
     (``botorch.sampling.normal.IIDNormalSampler``).
 
     The base samples (``sample_shape x`` the posterior's ``base_sample_shape``
-    with the dimensions of ``batch_range`` collapsed to 1) are drawn with
-    torch's generator seeded with ``seed`` in double precision (BoTorch's
-    draws for double-precision posteriors; numpy's ``RandomState(seed)``,
-    else Python's ``random.Random(seed)``, without torch) and cached while
-    their shape is unchanged. ``batch_range_override`` replaces the
-    posterior's ``batch_range``.
+    with the dimensions of ``batch_range`` collapsed to 1) are BoTorch's
+    draws for double-precision posteriors: ``torch.randn(shape)`` after
+    ``torch.manual_seed(seed)``, from a native reproduction of torch's CPU
+    generator (so torch is not needed for them), cached while their shape is
+    unchanged. ``batch_range_override`` replaces the posterior's
+    ``batch_range``.
 
-    botorch_rs's Monte-Carlo acquisition functions use
-    ``SobolQMCNormalSampler``; this sampler samples posteriors directly (e.g.
-    in ``LearnedObjective`` and ``PairwiseIIDNormalSampler``).
+    The sampler can be passed to the Monte-Carlo acquisition functions, the
+    look-ahead acquisition functions and ``fantasize`` in place of a
+    ``SobolQMCNormalSampler``: their base samples for ``q`` points and ``m``
+    outputs are then BoTorch's (``torch.randn(n, 1, q, m)`` under
+    ``manual_seed(seed)``), including the baseline rows that the cached
+    Cholesky acquisition functions (``qNEI``, ``qLogNEI``, ``qNEHVI``)
+    reuse.
 
     Example:
         >>> sampler = IIDNormalSampler(torch.Size([1000]), seed=1234)
@@ -156,23 +179,18 @@ class IIDNormalSampler(MCSampler):
         self.batch_range_override: tuple[int, int] | None = None
 
     def _draw(self, shape: tuple[int, ...], kind: Any) -> list[float]:
-        import importlib
+        # torch.randn(shape, dtype=torch.float64) after torch.manual_seed(seed).
+        data, _ = _rs.torch_randn(self.seed, math.prod(shape))
+        return list(data)
 
-        n = math.prod(shape)
-        try:
-            torch = importlib.import_module("torch")
-        except ImportError:
-            try:
-                np = importlib.import_module("numpy")
-            except ImportError:
-                import random
-
-                rng = random.Random(self.seed)
-                return [rng.gauss(0.0, 1.0) for _ in range(n)]
-            return [float(v) for v in np.random.RandomState(self.seed).standard_normal(n)]
-        with torch.random.fork_rng():
-            torch.manual_seed(self.seed)
-            return torch.randn(shape, dtype=torch.float64).reshape(-1).tolist()
+    @property
+    def _rs(self) -> Any:  # type: ignore[override]
+        """The Rust sampler of the acquisition functions (i.i.d. draws)."""
+        rs = self.__dict__.get("_rs_sampler")
+        if rs is None or rs.num_samples != self.num_samples or rs.seed != self.seed:
+            rs = _rs.SobolQMCNormalSampler.iid(self.num_samples, self.seed)
+            self.__dict__["_rs_sampler"] = rs
+        return rs
 
     def _collapsed_shape(self, posterior: GPyTorchPosterior) -> tuple[int, ...]:
         shape = tuple(posterior.base_sample_shape)
@@ -230,4 +248,4 @@ class IIDNormalSampler(MCSampler):
         return f"IIDNormalSampler(sample_shape={self.sample_shape}, seed={self.seed})"
 
 
-__all__ = ["IIDNormalSampler", "MCSampler", "SobolQMCNormalSampler"]
+__all__ = ["IIDNormalSampler", "MCSampler", "NormalMCSampler", "SobolQMCNormalSampler"]

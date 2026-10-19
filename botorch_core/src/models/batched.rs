@@ -765,6 +765,19 @@ impl BatchedMultiOutputGP {
             .collect()
     }
 
+    /// The log marginal likelihood of the training targets of every element
+    /// (not divided by `n`, without the log priors); see
+    /// [`ExactMarginalLogLikelihood::data_log_likelihood`].
+    ///
+    /// # Errors
+    /// See [`ExactMarginalLogLikelihood::value`].
+    pub fn data_log_likelihoods(&self) -> Result<Vec<f64>> {
+        self.models
+            .iter()
+            .map(|m| ExactMarginalLogLikelihood::new(m).data_log_likelihood())
+            .collect()
+    }
+
     /// The marginal log likelihoods of all elements at the flat raw
     /// hyperparameters `raw` and the gradient of their *sum* with respect to
     /// `raw` (what autograd computes for `mll(...).sum()` in BoTorch).

@@ -31,7 +31,7 @@ from botorch_rs.acquisition.objective import (
     transform_arg,
 )
 from botorch_rs.exceptions.errors import UnsupportedError
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
 #: BoTorch's default number of samples of the inner sampler with an objective.
 DEFAULT_INNER_SAMPLES = 128
@@ -188,8 +188,8 @@ class qKnowledgeGradient(MCAcquisitionFunction, OneShotAcquisitionFunction):
                 raise ValueError("Must specify `num_fantasies` if no `sampler` is provided.")
             # base samples should be fixed for joint optimization over X, X_fantasies
             sampler = SobolQMCNormalSampler(sample_shape=(num_fantasies,))
-        elif not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        elif not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
         elif num_fantasies is not None:
             if tuple(sampler.sample_shape) != (num_fantasies,):
                 raise ValueError(f"The sampler shape must match num_fantasies={num_fantasies}.")
@@ -214,8 +214,8 @@ class qKnowledgeGradient(MCAcquisitionFunction, OneShotAcquisitionFunction):
                     "If using a multi-output model without an objective, "
                     "posterior_transform must scalarize the output."
                 )
-        if inner_sampler is not None and not isinstance(inner_sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`inner_sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        if inner_sampler is not None and not isinstance(inner_sampler, NormalMCSampler):
+            raise UnsupportedError("`inner_sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
         self.sampler = sampler
         self.objective = objective
         self.posterior_transform = posterior_transform

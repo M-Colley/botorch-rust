@@ -416,7 +416,7 @@ def expand(x: Any, shape: Sequence[int]) -> Any:
     shape = tuple(int(s) for s in shape)
     kind = kind_of(x)
     if kind.lib == "torch":
-        return x.expand(*shape)
+        return x.expand(shape)
     xs = shape_of(x)
     target = tuple(
         xs[i - (len(shape) - len(xs))] if s == -1 else s for i, s in enumerate(shape)

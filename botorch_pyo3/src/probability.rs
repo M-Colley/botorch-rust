@@ -15,12 +15,16 @@ use botorch_core::utils::mvnxpb_state::{
 };
 use botorch_core::utils::polytope::null_space;
 use botorch_core::utils::qmc::{mvn_qmc_root, normal_qmc_transform};
+use botorch_core::test_functions::single_objective::{
+    default_max_step_size, round_nearest, TrajectoryConfig,
+};
+use botorch_core::test_functions::{SingleObjectiveKind, SingleObjectiveProblem};
 use botorch_core::utils::torch_rng::TorchGenerator;
 use botorch_core::{Matrix, Vector};
 use pyo3::prelude::*;
 
 use crate::arrays::{float_data, float_values, matrix_out, Array, ArrayBuf};
-use crate::errors::{dimension_error, value_error, IntoPyResult};
+use crate::errors::{dimension_error, unsupported, value_error, IntoPyResult};
 use crate::threads;
 
 /// The values of an array (a float buffer or a sequence of numbers).
@@ -604,12 +608,18 @@ fn torch_randn_py(seed: u64, n: usize) -> ArrayBuf {
     ArrayBuf(TorchGenerator::new(seed).randn(n), vec![n])
 }
 
-/// `torch_rand(seed, n)`: `torch.rand(n, dtype=torch.float64)` after
-/// `torch.manual_seed(seed)`, without torch.
+/// `torch_rand(seed, n, single_precision)`: `torch.rand(n)` in double (or
+/// single) precision after `torch.manual_seed(seed)`, without torch.
 #[pyfunction]
-#[pyo3(name = "torch_rand")]
-fn torch_rand_py(seed: u64, n: usize) -> ArrayBuf {
-    ArrayBuf(TorchGenerator::new(seed).rand(n), vec![n])
+#[pyo3(name = "torch_rand", signature = (seed, n, single_precision=false))]
+fn torch_rand_py(seed: u64, n: usize, single_precision: bool) -> ArrayBuf {
+    let mut g = TorchGenerator::new(seed);
+    let v = if single_precision {
+        g.rand_f32(n).into_iter().map(f64::from).collect()
+    } else {
+        g.rand(n)
+    };
+    ArrayBuf(v, vec![n])
 }
 
 /// `null_space(C)`: an orthonormal basis (columns) of the null space of `C`.
@@ -617,6 +627,202 @@ fn torch_rand_py(seed: u64, n: usize) -> ArrayBuf {
 #[pyo3(name = "null_space")]
 fn null_space_py(c: Array) -> PyResult<ArrayBuf> {
     Ok(matrix_out(&null_space(&c.matrix("C")?)).into())
+}
+
+
+/// A single-objective test problem of phase 11a (multi-fidelity,
+/// sensitivity-analysis, mixed and constrained synthetic functions).
+#[pyclass(frozen, name = "SingleObjectiveProblem", module = "botorch_rs._botorch_rs")]
+pub struct PySingleObjectiveProblem {
+    inner: SingleObjectiveProblem,
+}
+
+#[pymethods]
+impl PySingleObjectiveProblem {
+    /// The problem `name` (a BoTorch class name) with dimension `dim`,
+    /// bounds (`2 x d`), discrete inputs, parameters and the trajectory
+    /// configuration (`use_smooth_interp`, `max_step_size`).
+    #[new]
+    #[pyo3(signature = (name, dim, bounds, discrete=vec![], params=vec![], use_smooth_interp=None, max_step_size=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        name: &str,
+        dim: usize,
+        bounds: Array,
+        discrete: Vec<usize>,
+        params: Vec<f64>,
+        use_smooth_interp: Option<bool>,
+        max_step_size: Option<f64>,
+    ) -> PyResult<Self> {
+        let kind = SingleObjectiveKind::from_name(name)
+            .ok_or_else(|| unsupported(format!("Unknown test problem {name:?}.")))?;
+        let trajectory = use_smooth_interp.map(|smooth| TrajectoryConfig {
+            use_smooth_interp: smooth,
+            max_step_size: max_step_size.unwrap_or_else(|| default_max_step_size(dim)),
+        });
+        let inner = SingleObjectiveProblem::new(
+            kind,
+            dim,
+            bounds.matrix("bounds")?,
+            discrete,
+            params,
+            trajectory,
+        )
+        .into_py_result()?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn dim(&self) -> usize {
+        self.inner.dim()
+    }
+
+    #[getter]
+    fn bounds(&self) -> ArrayBuf {
+        matrix_out(self.inner.bounds()).into()
+    }
+
+    #[getter]
+    fn num_constraints(&self) -> usize {
+        self.inner.num_constraints()
+    }
+
+    /// Noiseless values at the points `X` (`... x d`).
+    fn evaluate_true(&self, py: Python<'_>, x: Array) -> PyResult<ArrayBuf> {
+        let (batch, points) = x.points("X")?;
+        let v = threads::run(py, || self.inner.evaluate_true(&points)).into_py_result()?;
+        Ok(ArrayBuf(v, batch))
+    }
+
+    /// Noiseless constraint slacks at the points `X` (`... x n_c`).
+    fn evaluate_slack_true(&self, py: Python<'_>, x: Array) -> PyResult<ArrayBuf> {
+        let (mut batch, points) = x.points("X")?;
+        let s = threads::run(py, || self.inner.evaluate_slack_true(&points)).into_py_result()?;
+        batch.push(s.ncols());
+        Ok(ArrayBuf(matrix_out(&s).0, batch))
+    }
+
+    /// The evaluation costs of the fidelities at the points `X`.
+    fn cost(&self, x: Array) -> PyResult<ArrayBuf> {
+        let (batch, points) = x.points("X")?;
+        Ok(ArrayBuf(self.inner.cost(&points).into_py_result()?, batch))
+    }
+}
+
+/// `round_nearest(X, increment, bounds)` element-wise.
+#[pyfunction]
+#[pyo3(name = "round_nearest", signature = (x, increment, bounds=None))]
+fn round_nearest_py(x: Floats, increment: f64, bounds: Option<(f64, f64)>) -> Vec<f64> {
+    x.0.iter().map(|&v| round_nearest(v, increment, bounds)).collect()
+}
+
+/// `data_log_likelihoods(model)`: the log marginal likelihood of the
+/// training targets of every element of a `SingleTaskGP` (not divided by
+/// `n`, without the log priors), shape `_aug_batch_shape`.
+#[pyfunction]
+#[pyo3(name = "data_log_likelihoods")]
+fn data_log_likelihoods_py(
+    py: Python<'_>,
+    model: PyRef<'_, crate::models::PySingleTaskGP>,
+) -> PyResult<ArrayBuf> {
+    let m = model.snapshot();
+    let v = threads::run(py, || m.data_log_likelihoods()).into_py_result()?;
+    Ok(ArrayBuf(v, m.aug_batch_shape()))
+}
+
+/// `sample_cached_cholesky(rows, baseline_l, mean_new, base, batch, n, q,
+/// s, max_tries)`: for every batch element (a batch of the joint posterior
+/// and an output), the samples `L_q z + μ_q` of the `q` new points from the
+/// `q` bottom rows of the joint covariance (`q x (n + q)`), the cached
+/// Cholesky factor of the baseline block (`n x n`), the new means (`q`) and
+/// the base samples (`(n + q) x s`); returns `batch x q x s` values.
+#[pyfunction]
+#[pyo3(name = "sample_cached_cholesky")]
+#[allow(clippy::too_many_arguments)]
+fn sample_cached_cholesky_py(
+    py: Python<'_>,
+    rows: Floats,
+    baseline_l: Floats,
+    mean_new: Floats,
+    base: Floats,
+    batch: usize,
+    n: usize,
+    q: usize,
+    s: usize,
+    max_tries: usize,
+) -> PyResult<ArrayBuf> {
+    let nq = n + q;
+    if rows.0.len() != batch * q * nq
+        || baseline_l.0.len() != batch * n * n
+        || mean_new.0.len() != batch * q
+        || base.0.len() != batch * nq * s
+    {
+        return Err(dimension_error("inconsistent shapes in sample_cached_cholesky"));
+    }
+    let out = threads::run(py, || {
+        let mut out = Vec::with_capacity(batch * q * s);
+        for b in 0..batch {
+            let r = Matrix::from_row_slice(q, nq, &rows.0[b * q * nq..(b + 1) * q * nq]);
+            let l = Matrix::from_row_slice(n, n, &baseline_l.0[b * n * n..(b + 1) * n * n]);
+            let bl = r.columns(0, n).into_owned();
+            let br = r.columns(n, q).into_owned();
+            // bl_chol = (L^{-1} bl^T)^T.
+            let bl_chol = if n > 0 {
+                l.solve_lower_triangular(&bl.transpose())
+                    .ok_or(botorch_core::BotorchError::NotPsd { jitter: 0.0 })?
+                    .transpose()
+            } else {
+                Matrix::zeros(q, 0)
+            };
+            let br_to_chol = &br - &bl_chol * bl_chol.transpose();
+            let br_chol = botorch_core::linalg::psd_safe_cholesky_with(&br_to_chol, 1e-8, max_tries)?;
+            let mut new_lq = Matrix::zeros(q, nq);
+            new_lq.columns_mut(0, n).copy_from(&bl_chol);
+            new_lq.columns_mut(n, q).copy_from(br_chol.l());
+            let z = Matrix::from_row_slice(nq, s, &base.0[b * nq * s..(b + 1) * nq * s]);
+            let res = &new_lq * z;
+            for j in 0..q {
+                for k in 0..s {
+                    out.push(res[(j, k)] + mean_new.0[b * q + j]);
+                }
+            }
+        }
+        Ok::<_, botorch_core::BotorchError>(out)
+    })
+    .into_py_result()?;
+    Ok(ArrayBuf(out, vec![batch, q, s]))
+}
+
+/// `psd_safe_cholesky(a, batch, n, jitter, max_tries)`: the lower Cholesky
+/// factors of a batch of matrices with linear_operator's jitter retries.
+#[pyfunction]
+#[pyo3(name = "psd_safe_cholesky", signature = (a, batch, n, jitter=None, max_tries=None))]
+fn psd_safe_cholesky_py(
+    py: Python<'_>,
+    a: Floats,
+    batch: usize,
+    n: usize,
+    jitter: Option<f64>,
+    max_tries: Option<usize>,
+) -> PyResult<ArrayBuf> {
+    if a.0.len() != batch * n * n {
+        return Err(dimension_error("inconsistent shape of the matrices"));
+    }
+    let out = threads::run(py, || {
+        let mut out = Vec::with_capacity(batch * n * n);
+        for b in 0..batch {
+            let m = Matrix::from_row_slice(n, n, &a.0[b * n * n..(b + 1) * n * n]);
+            let f = botorch_core::linalg::psd_safe_cholesky_with(
+                &m,
+                jitter.unwrap_or(1e-8),
+                max_tries.unwrap_or(3),
+            )?;
+            out.extend(matrix_out(f.l()).0);
+        }
+        Ok::<_, botorch_core::BotorchError>(out)
+    })
+    .into_py_result()?;
+    Ok(ArrayBuf(out, vec![batch, n, n]))
 }
 
 /// Registers the functions and classes of this module.
@@ -636,5 +842,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(torch_randn_py, m)?)?;
     m.add_function(wrap_pyfunction!(torch_rand_py, m)?)?;
     m.add_function(wrap_pyfunction!(null_space_py, m)?)?;
+    m.add_class::<PySingleObjectiveProblem>()?;
+    m.add_function(wrap_pyfunction!(round_nearest_py, m)?)?;
+    m.add_function(wrap_pyfunction!(data_log_likelihoods_py, m)?)?;
+    m.add_function(wrap_pyfunction!(sample_cached_cholesky_py, m)?)?;
+    m.add_function(wrap_pyfunction!(psd_safe_cholesky_py, m)?)?;
     Ok(())
 }

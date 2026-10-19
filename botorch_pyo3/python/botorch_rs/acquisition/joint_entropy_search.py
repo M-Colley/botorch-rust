@@ -37,7 +37,7 @@ from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
 from botorch_rs.acquisition.objective import transform_arg
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.model_list_gp_regression import ModelListGP
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
 #: BoTorch's noise variance of the noiseless conditioning on the optima.
 MIN_INFERRED_NOISE_LEVEL = 1e-4
@@ -108,8 +108,8 @@ class qJointEntropySearch(AcquisitionFunction):
         super().__init__(model)
         if sampler is None:
             sampler = SobolQMCNormalSampler(sample_shape=(num_samples,))
-        elif not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        elif not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
         self.sampler = sampler
         self.optimal_inputs = optimal_inputs
         self.optimal_outputs = optimal_outputs

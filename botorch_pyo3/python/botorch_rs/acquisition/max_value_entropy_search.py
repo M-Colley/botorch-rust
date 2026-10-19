@@ -40,7 +40,7 @@ from botorch_rs.acquisition.multi_objective.hypervolume_knowledge_gradient impor
 )
 from botorch_rs.acquisition.objective import transform_arg
 from botorch_rs.exceptions.errors import UnsupportedError
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 from botorch_rs.sampling.pathwise.prior_samplers import seed_arg
 
 #: BoTorch's lower bound of the variances (``CLAMP_LB``).
@@ -201,8 +201,8 @@ class qMaxValueEntropy(MaxValueBase):
         if fantasies_sampler is None:
             fantasies_sampler = SobolQMCNormalSampler(sample_shape=(num_fantasies,))
         for s, name in ((sampler, "sampler"), (fantasies_sampler, "fantasies_sampler")):
-            if not isinstance(s, SobolQMCNormalSampler):
-                raise UnsupportedError(f"`{name}` must be a botorch_rs SobolQMCNormalSampler.")
+            if not isinstance(s, NormalMCSampler):
+                raise UnsupportedError(f"`{name}` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
         self.sampler = sampler
         self.fantasies_sampler = fantasies_sampler
         self.num_fantasies = int(fantasies_sampler.num_samples)

@@ -112,6 +112,18 @@ impl TorchGenerator {
         (0..n).map(|_| self.uniform()).collect()
     }
 
+    /// A uniform float in `[0, 1)` (`uniform_real_distribution<float>`: the
+    /// low 24 bits of one 32-bit output).
+    pub fn uniform_f32(&mut self) -> f32 {
+        let v = self.random() & ((1u32 << 24) - 1);
+        v as f32 * (1.0 / (1u32 << 24) as f32)
+    }
+
+    /// `torch.rand(n, dtype=torch.float32)`.
+    pub fn rand_f32(&mut self, n: usize) -> Vec<f32> {
+        (0..n).map(|_| self.uniform_f32()).collect()
+    }
+
     /// `torch.randn(n, dtype=torch.float64)` (a contiguous tensor).
     pub fn randn(&mut self, n: usize) -> Vec<f64> {
         if n < 16 {

@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs.exceptions.errors import UnsupportedError
-from botorch_rs.sampling.normal import MCSampler, SobolQMCNormalSampler
+from botorch_rs.sampling.normal import MCSampler, NormalMCSampler, SobolQMCNormalSampler
 
 
 class ListSampler(MCSampler):
@@ -17,9 +17,9 @@ class ListSampler(MCSampler):
 
     def __init__(self, *samplers: SobolQMCNormalSampler) -> None:
         for s in samplers:
-            if not isinstance(s, SobolQMCNormalSampler):
+            if not isinstance(s, NormalMCSampler):
                 raise UnsupportedError(
-                    "The samplers of a ListSampler must be botorch_rs SobolQMCNormalSamplers."
+                    "The samplers of a ListSampler must be botorch_rs SobolQMCNormalSamplers or IIDNormalSamplers."
                 )
         self.samplers = list(samplers)
         self._validate_samplers()

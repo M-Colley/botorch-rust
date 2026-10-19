@@ -18,7 +18,7 @@ from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import BotorchWarning
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.model_list_gp_regression import ModelListGP
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
 
 def get_acquisition_function(*args: Any, **kwargs: Any) -> None:
@@ -356,8 +356,8 @@ def prune_inferior_points(
     handle = model._acquisition_model(posterior_transform)
     base_samples = None
     if sampler is not None:
-        if not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        if not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
         num_samples = sampler.num_samples
         base_samples = sampler._rs.base_samples(n * handle.num_outputs) if n > 0 else None
     pruned = _rs.prune_inferior_points(

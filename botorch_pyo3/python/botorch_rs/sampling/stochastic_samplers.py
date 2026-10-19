@@ -1,5 +1,6 @@
 """Samplers that are not base-sample driven
-(``botorch.sampling.stochastic_samplers``): ``StochasticSampler``.
+(``botorch.sampling.stochastic_samplers``): ``ForkedRNGSampler`` and
+``StochasticSampler``.
 
 BoTorch's ``StochasticSampler`` calls ``posterior.rsample`` at every
 evaluation, for stochastic optimization of acquisition functions. Its main use
@@ -18,7 +19,77 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs.exceptions.errors import UnsupportedError
-from botorch_rs.sampling.normal import MCSampler, SobolQMCNormalSampler, _sample_shape
+from botorch_rs.sampling.normal import (
+    IIDNormalSampler,
+    MCSampler,
+    NormalMCSampler,
+    SobolQMCNormalSampler,
+    _sample_shape,
+)
+
+
+class ForkedRNGSampler(MCSampler):
+    r"""A sampler using ``torch.fork_rng`` to enable replicable sampling
+    from a posterior that does not support base samples
+    (``botorch.sampling.stochastic_samplers.ForkedRNGSampler``).
+
+    NOTE: This approach is not a one-to-one replacement for base sample
+    driven sampling. The main missing piece in this approach is that its
+    outputs are not replicable across the batch dimensions. As a result,
+    when an acquisition function is batch evaluated with repeated candidates,
+    each candidate will produce a different acquisition value, which is not
+    compatible with Sample Average Approximation.
+
+    ``forward`` calls ``posterior.rsample(sample_shape)`` with torch's
+    generator seeded with ``seed`` (restored afterwards), as in BoTorch, so
+    the samples are replicable. Like ``StochasticSampler``, it is accepted by
+    botorch_rs's Monte-Carlo acquisition functions for deterministic models
+    only.
+    """
+
+    def __init__(self, sample_shape: Any, seed: int | None = None) -> None:
+        self.sample_shape = _sample_shape(sample_shape)
+        if seed is None:
+            import importlib
+            import random
+
+            try:
+                torch = importlib.import_module("torch")
+            except ImportError:
+                seed = random.randint(0, 999999)
+            else:
+                seed = int(torch.randint(0, 1000000, (1,)).item())
+        self.seed = int(seed)
+        self.base_samples: Any = None
+        self._rs = _rs.SobolQMCNormalSampler(math.prod(self.sample_shape), self.seed)
+
+    @property
+    def num_samples(self) -> int:
+        return math.prod(self.sample_shape)
+
+    def forward(self, posterior: Any) -> Any:
+        r"""Draws MC samples from the posterior in a ``fork_rng`` context.
+
+        Args:
+            posterior: The posterior to sample from.
+
+        Returns:
+            The samples drawn from the posterior.
+        """
+        import importlib
+
+        try:
+            torch = importlib.import_module("torch")
+        except ImportError:
+            return posterior.rsample(sample_shape=self.sample_shape)
+        with torch.random.fork_rng():
+            torch.manual_seed(self.seed)
+            return posterior.rsample(sample_shape=self.sample_shape)
+
+    __call__ = forward
+
+    def __repr__(self) -> str:
+        return f"ForkedRNGSampler(sample_shape={self.sample_shape}, seed={self.seed})"
 
 
 class StochasticSampler(MCSampler):
@@ -68,27 +139,46 @@ def _is_botorch_stochastic_sampler(sampler: Any) -> bool:
     return cls.__name__ == "StochasticSampler" and cls.__module__.startswith("botorch.")
 
 
-def as_stochastic_sampler(sampler: Any) -> StochasticSampler | None:
-    """``sampler`` as a botorch_rs ``StochasticSampler`` if it is one of
-    botorch_rs or BoTorch (``None`` otherwise)."""
-    if isinstance(sampler, StochasticSampler):
+def as_stochastic_sampler(sampler: Any) -> StochasticSampler | ForkedRNGSampler | None:
+    """``sampler`` as a botorch_rs ``StochasticSampler`` (or
+    ``ForkedRNGSampler``) if it is one of botorch_rs or BoTorch (``None``
+    otherwise)."""
+    if isinstance(sampler, (StochasticSampler, ForkedRNGSampler)):
         return sampler
     if _is_botorch_stochastic_sampler(sampler):
         return StochasticSampler(sampler.sample_shape, seed=getattr(sampler, "seed", None))
+    cls = type(sampler)
+    if cls.__name__ == "ForkedRNGSampler" and cls.__module__.startswith("botorch."):
+        return ForkedRNGSampler(sampler.sample_shape, seed=sampler.seed)
+    return None
+
+
+def as_iid_sampler(sampler: Any) -> IIDNormalSampler | None:
+    """A botorch_rs ``IIDNormalSampler`` with the sample shape and seed of
+    BoTorch's ``IIDNormalSampler`` ``sampler`` (whose base samples it
+    reproduces), or ``None``."""
+    cls = type(sampler)
+    if cls.__name__ == "IIDNormalSampler" and cls.__module__.startswith("botorch."):
+        return IIDNormalSampler(tuple(sampler.sample_shape), seed=int(sampler.seed))
     return None
 
 
 def mc_sampler_arg(
     sampler: Any, rs_model: Any, default_shape: tuple[int, ...]
-) -> SobolQMCNormalSampler | StochasticSampler:
+) -> NormalMCSampler | StochasticSampler | ForkedRNGSampler:
     """The sampler of a Monte-Carlo acquisition function on the model handle
     ``rs_model``: a botorch_rs ``SobolQMCNormalSampler`` (default: one with
-    ``default_shape`` samples), or a ``StochasticSampler`` (of botorch_rs or
-    BoTorch) for a deterministic model."""
+    ``default_shape`` samples) or ``IIDNormalSampler`` (BoTorch's
+    ``IIDNormalSampler`` is converted: same draws), or a
+    ``StochasticSampler`` / ``ForkedRNGSampler`` (of botorch_rs or BoTorch)
+    for a deterministic model."""
     if sampler is None:
         return SobolQMCNormalSampler(sample_shape=default_shape)
-    if isinstance(sampler, SobolQMCNormalSampler):
+    if isinstance(sampler, NormalMCSampler):
         return sampler
+    iid = as_iid_sampler(sampler)
+    if iid is not None:
+        return iid
     stochastic = as_stochastic_sampler(sampler)
     if stochastic is not None:
         if not rs_model.is_deterministic:
@@ -99,9 +189,9 @@ def mc_sampler_arg(
             )
         return stochastic
     raise UnsupportedError(
-        "`sampler` must be a botorch_rs SobolQMCNormalSampler (or a StochasticSampler with a "
-        "deterministic model)."
+        "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler (or a "
+        "StochasticSampler with a deterministic model)."
     )
 
 
-__all__ = ["StochasticSampler"]
+__all__ = ["ForkedRNGSampler", "StochasticSampler"]

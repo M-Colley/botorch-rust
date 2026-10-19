@@ -27,7 +27,7 @@ from botorch_rs._arrays import from_pair, kind_of, to_flat
 from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.model_list_gp_regression import ModelListGP
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
 #: The entropy estimates.
 ESTIMATION_TYPES = ("0", "LB", "LB2", "MC")
@@ -91,8 +91,8 @@ class LowerBoundMultiObjectiveEntropySearch(AcquisitionFunction):
         self.estimation_type = estimation_type
         if sampler is None:
             sampler = SobolQMCNormalSampler(sample_shape=[num_samples])
-        elif not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        elif not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
         self.sampler = sampler
         self._cells = cells
         self._pending = pending_arg(X_pending, self._model_dim())
