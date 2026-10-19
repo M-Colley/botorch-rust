@@ -86,6 +86,9 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(optim::evaluate_feasibility_py, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::project_linear_equalities_py, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::equality_projection_vjp_py, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::project_feasible_space_py, m)?)?;
     // Polytope sampling.
     m.add_class::<polytope::PyHitAndRunPolytopeSampler>()?;
     m.add_function(wrap_pyfunction!(polytope::get_polytope_samples_py, m)?)?;

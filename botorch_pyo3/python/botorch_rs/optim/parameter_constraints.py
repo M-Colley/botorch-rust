@@ -18,11 +18,20 @@ import importlib
 import math
 import sys
 from collections.abc import Callable, Sequence
+from operator import index as integer_index
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs import _ops
-from botorch_rs._arrays import as_float, bool_array, from_flat, kind_of, to_flat
+from botorch_rs._arrays import (
+    as_float,
+    bool_array,
+    from_flat,
+    from_pair,
+    is_torch_tensor,
+    kind_of,
+    to_flat,
+)
 from botorch_rs.exceptions.errors import UnsupportedError
 
 #: Constraint tolerance for float64 candidates (BoTorch's
@@ -234,6 +243,157 @@ def make_scipy_nonlinear_inequality_constraints(
     return output
 
 
+def _projection_args(indices: Any, arguments: Any) -> list[LinearArg]:
+    constraints = []
+    for i, index in enumerate(indices):
+        coefficients, rhs = arguments[2 * i : 2 * i + 2]
+        values = list(to_flat(coefficients, "coefficients")[0])
+        if len(values) == 1:
+            values *= len(index)
+        constraints.append((index, values, as_float(rhs, "rhs")))
+    return constraints
+
+
+_EQUALITY_AUTOGRAD: Any = None
+
+
+def _equality_autograd() -> Any:
+    global _EQUALITY_AUTOGRAD
+    if _EQUALITY_AUTOGRAD is not None:
+        return _EQUALITY_AUTOGRAD
+    torch = sys.modules["torch"]
+    autograd_function: Any = torch.autograd.Function
+
+    class EqualityProjection(autograd_function):
+        @staticmethod
+        def forward(ctx: Any, indices: Any, X: Any, *arguments: Any) -> Any:
+            inputs = (X, *arguments)
+            tensors = [value for value in inputs if is_torch_tensor(value)]
+            ctx.save_for_backward(*tensors)
+            ctx.layout = []
+            position = 0
+            for value in inputs:
+                if is_torch_tensor(value):
+                    ctx.layout.append((True, position))
+                    position += 1
+                else:
+                    ctx.layout.append((False, value))
+            ctx.indices = indices
+            return from_pair(
+                _rs.project_linear_equalities(to_flat(X), _projection_args(indices, arguments)),
+                kind_of(X),
+            )
+
+        @staticmethod
+        def backward(ctx: Any, output_adjoint: Any) -> Any:
+            inputs = [ctx.saved_tensors[value] if tensor else value for tensor, value in ctx.layout]
+            X, *arguments = inputs
+            gx, coefficients, rhs = _rs.equality_projection_vjp(
+                to_flat(X), _projection_args(ctx.indices, arguments), to_flat(output_adjoint)
+            )
+            gradients = [from_pair(gx, kind_of(X))]
+            for i, value in enumerate(arguments):
+                if not is_torch_tensor(value) or not value.requires_grad:
+                    gradients.append(None)
+                    continue
+                if i % 2 == 0:
+                    values = coefficients[i // 2]
+                    if value.numel() == 1:
+                        values = [sum(values)]
+                else:
+                    values = [rhs[i // 2]]
+                gradients.append(from_flat(values, tuple(value.shape), kind_of(value)))
+            return None, *gradients
+
+    _EQUALITY_AUTOGRAD = EqualityProjection
+    return EqualityProjection
+
+
+def project_to_equality_constraints(X: Any, equality_constraints: Any) -> Any:
+    """Native least-squares projection onto intra-point linear equalities.
+
+    Inter-point equalities are ignored, as in BoTorch. Torch inputs support
+    exact first derivatives with respect to points, coefficients and right-hand
+    sides. The dense solve and its reverse derivative both run in Rust.
+    """
+    if not equality_constraints:
+        return X
+    indices, arguments = [], []
+    for index, coefficient, rhs in equality_constraints:
+        values, shape = to_flat(index, "indices")
+        if len(shape) > 1:
+            continue
+        if any(int(value) != value or value < 0 for value in values):
+            raise ValueError("Constraint indices must be nonnegative integers.")
+        indices.append([int(value) for value in values])
+        arguments.extend([coefficient, rhs])
+    if not indices:
+        return X
+    _ops.check_float_dtype(X, "X")
+    torch = sys.modules.get("torch")
+    differentiable = (
+        torch is not None
+        and torch.is_grad_enabled()
+        and any(is_torch_tensor(value) and value.requires_grad for value in (X, *arguments))
+    )
+    if differentiable:
+        if not is_torch_tensor(X):
+            raise UnsupportedError(
+                "Autograd through the equality projection requires torch inputs."
+            )
+        return _equality_autograd().apply(indices, X, *arguments)
+    return from_pair(
+        _rs.project_linear_equalities(to_flat(X), _projection_args(indices, arguments)), kind_of(X)
+    )
+
+
+def project_to_feasible_space_via_slsqp(
+    X: Any,
+    bounds: Any,
+    inequality_constraints: Any = None,
+    equality_constraints: Any = None,
+    nonlinear_inequality_constraints: Any = None,
+    fixed_features: dict[int, Any] | None = None,
+) -> Any:
+    """Find the closest feasible point using native SLSQP and exact gradients.
+
+    Supports linear and nonlinear constraints, scalar fixed features and fixed
+    values per batch/point. All numerical optimization runs in Rust; SciPy is
+    not required. Like BoTorch, no projection occurs when all three constraint
+    arguments are ``None``.
+    """
+    if (
+        inequality_constraints is None
+        and equality_constraints is None
+        and nonlinear_inequality_constraints is None
+    ):
+        return X
+    shape = _ops.shape_of(X)
+    _constraint_shape(shape)
+    d = shape[-1]
+    fixed: dict[int, Sequence[float]] = {}
+    if fixed_features:
+        from botorch_rs.optim.utils.acquisition_utils import fix_features
+
+        fixed_features = {integer_index(index): value for index, value in fixed_features.items()}
+        if any(not 0 <= index < d for index in fixed_features):
+            raise ValueError("Fixed feature indices must be in [0, d).")
+        values, _ = to_flat(fix_features(X, fixed_features, replace_current_value=True))
+        fixed = {index: [float(value) for value in values[index::d]] for index in fixed_features}
+    return from_pair(
+        _rs.project_feasible_space(
+            to_flat(X),
+            to_flat(bounds),
+            linear_constraints_arg(inequality_constraints, "inequality_constraints"),
+            linear_constraints_arg(equality_constraints, "equality_constraints"),
+            nonlinear_constraints_arg(nonlinear_inequality_constraints),
+            fixed,
+            _input_tolerance(X),
+        ),
+        kind_of(X),
+    )
+
+
 def linear_constraints_arg(constraints: Any, name: str) -> list[LinearArg] | None:
     """BoTorch's linear constraints as ``(indices, coefficients, rhs)`` with
     integer (nested) lists of indices and float coefficients."""
@@ -330,4 +490,6 @@ __all__ = [
     "make_scipy_linear_constraints",
     "make_scipy_nonlinear_inequality_constraints",
     "nonlinear_constraint_is_feasible",
+    "project_to_equality_constraints",
+    "project_to_feasible_space_via_slsqp",
 ]

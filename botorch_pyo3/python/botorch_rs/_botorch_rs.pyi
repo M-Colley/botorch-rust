@@ -996,6 +996,19 @@ def evaluate_feasibility(
     nonlinear_inequality_constraints: Sequence[NonlinearConstraint] | None = None,
     tolerance: float | None = None,
 ) -> BoolBuf: ...
+def project_linear_equalities(x: Array, equality: Sequence[LinearConstraint]) -> ArrayBuf: ...
+def equality_projection_vjp(
+    x: Array, equality: Sequence[LinearConstraint], output_adjoint: Array
+) -> tuple[ArrayBuf, list[list[float]], list[float]]: ...
+def project_feasible_space(
+    x: Array,
+    bounds: Array,
+    inequality_constraints: Sequence[LinearConstraint] | None = None,
+    equality_constraints: Sequence[LinearConstraint] | None = None,
+    nonlinear_inequality_constraints: Sequence[NonlinearConstraint] | None = None,
+    fixed_features: dict[int, Sequence[float]] | None = None,
+    tolerance: float = 1e-8,
+) -> ArrayBuf: ...
 def get_polytope_samples(
     n: int,
     bounds: Array,

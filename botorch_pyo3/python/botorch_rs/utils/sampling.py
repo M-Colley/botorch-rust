@@ -613,24 +613,40 @@ def boltzmann_sample(
     replacement: bool = False,
     temp_decrease: float = 0.5,
 ) -> Any:
-    r"""Boltzmann sampling from a set of function values (BoTorch's
+    r"""Boltzmann sampling from sets of function values (BoTorch's
     ``boltzmann_sample``): indices drawn with weights ``exp(eta *
     standardize(values))``, ``eta`` multiplied by ``temp_decrease`` while a
-    weight is infinite (one-dimensional ``function_values``).
+    weight is infinite. Values have shape ``batch_shape x num_categories``
+    and are standardized over categories, independently for each batch.
+    This corrects BoTorch's batched standardization-axis bug.
 
     Returns:
-        A ``num_samples`` integer array of sampled positions.
+        A ``batch_shape x num_samples`` integer array of sampled positions.
     """
     data, shape = to_flat(function_values, "function_values")
-    if len(shape) != 1:
-        raise NotImplementedError(
-            "botorch_rs's boltzmann_sample supports one-dimensional function values."
-        )
-    weights, _ = _rs.boltzmann_weights_py(
-        [float(v) for v in data], float(eta), float(temp_decrease)
-    )
+    if not shape or shape[-1] == 0:
+        raise ValueError("function_values must have a nonempty category dimension.")
+    eta, temp_decrease = float(eta), float(temp_decrease)
+    if not math.isfinite(eta):
+        raise ValueError("eta must be finite.")
+    if not 0 < temp_decrease < 1:
+        raise ValueError("temp_decrease must be strictly between zero and one.")
+    categories = shape[-1]
+    rows = [list(data[i : i + categories]) for i in range(0, len(data), categories)]
+    temperatures = [_rs.boltzmann_weights_py(row, eta, temp_decrease)[1] for row in rows]
+    # BoTorch reduces one temperature shared by all batches on overflow.
+    effective_eta = min(temperatures, key=abs, default=eta)
+    weights = [
+        weight
+        for row in rows
+        for weight in _rs.boltzmann_weights_py(row, effective_eta, temp_decrease)[0]
+    ]
     kind = first_kind(function_values)
-    w = from_flat(list(weights), (len(weights),), kind)
+    w = from_flat(weights, tuple(shape), kind)
+    if is_torch_tensor(function_values):
+        # Keep dense strides so equal seeds assign multinomial draws to the
+        # same entries as the corrected reference, including transposed views.
+        w = sys.modules["torch"].empty_like(function_values).copy_(w)
     return batched_multinomial(w, int(num_samples), replacement=replacement)
 
 

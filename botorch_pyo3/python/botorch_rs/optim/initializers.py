@@ -6,10 +6,12 @@ from __future__ import annotations
 import builtins
 import math
 import random
+import sys
 import warnings
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
+from botorch_rs import _ops
 from botorch_rs._arrays import (
     Flat,
     as_float,
@@ -416,8 +418,10 @@ def _select(X: Any, acq_vals: Any, idcs: list[int]) -> tuple[Any, Any]:
         xs.extend(xdata[i * per : (i + 1) * per])
     vs = [vdata[i] for i in idcs]
     return (
-        from_flat(xs, (len(idcs), *xshape[1:]), kind_of(X)),
-        from_flat(vs, (len(idcs), *vshape[1:]), kind_of(acq_vals)),
+        X[idcs] if is_torch_tensor(X) else from_flat(xs, (len(idcs), *xshape[1:]), kind_of(X)),
+        acq_vals[idcs]
+        if is_torch_tensor(acq_vals)
+        else from_flat(vs, (len(idcs), *vshape[1:]), kind_of(acq_vals)),
     )
 
 
@@ -474,6 +478,8 @@ def initialize_q_batch(X: Any, acq_vals: Any, n: int, eta: float = 1.0) -> tuple
     Returns:
         The ``n x q x d`` initial conditions and their ``n`` values.
     """
+    if len(_ops.shape_of(X)) > 3 or len(_ops.shape_of(acq_vals)) > 1:
+        return _initialize_q_batch_batched(X, acq_vals, n=n, eta=eta)
     n_samples, values = _check_batch(X, acq_vals)
     if n > n_samples:
         raise RuntimeError(
@@ -497,6 +503,182 @@ def initialize_q_batch(X: Any, acq_vals: Any, n: int, eta: float = 1.0) -> tuple
     if max_idx not in idcs:
         idcs[-1] = max_idx
     return _select(X, acq_vals, idcs)
+
+
+def _initialize_q_batch_batched(X: Any, acq_vals: Any, n: int, eta: float) -> tuple[Any, Any]:
+    from botorch_rs.utils.sampling import boltzmann_sample
+
+    data, shape = to_flat(X, "X")
+    values, vshape = to_flat(acq_vals, "acq_vals")
+    count, batch, q, d = shape[0], tuple(shape[1:-2]), shape[-2], shape[-1]
+    nb = math.prod(batch)
+    if tuple(vshape) != (count, *batch):
+        raise ValueError("Acquisition values must have shape samples x batch_shape.")
+    if n > count:
+        raise RuntimeError(
+            f"n ({n}) cannot be larger than the number of provided samples ({count})"
+        )
+    if n == count:
+        return X, acq_vals
+    columns = [[float(values[sample * nb + b]) for sample in range(count)] for b in range(nb)]
+    stds = []
+    for column in columns:
+        try:
+            stds.append(_std(column))
+        except OverflowError:
+            stds.append(math.inf)
+    if any(std == 0 or not math.isfinite(std) for std in stds):
+        warnings.warn(
+            "All acquisition values for raw samples points are the same or not finite for at least one batch. Choosing initial conditions at random.",
+            BadInitialCandidatesWarning,
+            stacklevel=3,
+        )
+        selected = [_Draws(kind_of(X)).randperm(count)[:n]] * nb
+    else:
+        value_array = from_flat(
+            [value for column in columns for value in column], (*batch, count), kind_of(acq_vals)
+        )
+        if is_torch_tensor(acq_vals):
+            # torch.multinomial's exponential draws follow the dense strides
+            # of its weights. Preserve the layout of BoTorch's permuted
+            # scores, otherwise the same seed assigns draws to other rows.
+            template = acq_vals.permute(*range(1, len(batch) + 1), 0)
+            value_array = sys.modules["torch"].empty_like(template).copy_(value_array)
+        index_values, _ = to_flat(boltzmann_sample(value_array, n, eta))
+        selected = [[int(index) for index in index_values[b * n : (b + 1) * n]] for b in range(nb)]
+        for b, column in enumerate(columns):
+            maximum = _argmax(column)
+            if maximum not in selected[b]:
+                selected[b][-1] = maximum
+    points, selected_values = [], []
+    for sample in range(n):
+        for b in range(nb):
+            index = selected[b][sample]
+            start = (index * nb + b) * q * d
+            points.extend(data[start : start + q * d])
+            selected_values.append(values[index * nb + b])
+    selected_points = from_flat(points, (n, *batch, q, d), kind_of(X))
+    selected_acq_vals = from_flat(selected_values, (n, *batch), kind_of(acq_vals))
+    index_values = [selected[b][sample] for sample in range(n) for b in range(nb)]
+    if is_torch_tensor(X):
+        indices = _ops.int_array(index_values, (n, *batch), kind_of(X))
+        selected_points = X.gather(0, indices.reshape(n, *batch, 1, 1).expand(n, *shape[1:]))
+    if is_torch_tensor(acq_vals):
+        indices = _ops.int_array(index_values, (n, *batch), kind_of(acq_vals))
+        selected_acq_vals = acq_vals.gather(0, indices)
+    return selected_points, selected_acq_vals
+
+
+def gen_value_function_initial_conditions(
+    acq_function: Any,
+    bounds: Any,
+    num_restarts: int,
+    raw_samples: int,
+    current_model: Any,
+    fixed_features: dict[int, float] | None = None,
+    options: dict[str, Any] | None = None,
+) -> Any:
+    """Initialize a KG value function from current-model optima and Sobol draws.
+
+    The inner acquisition optimization and Boltzmann weights run in Rust.
+    Fantasy/model batch dimensions are retained. Torch uses its Sobol and
+    multinomial generators; other array types use the port's native Sobol
+    stream and their usual sampling generators.
+    """
+    from botorch_rs.acquisition.knowledge_gradient import _get_value_function
+    from botorch_rs.optim.optimize import optimize_acqf
+    from botorch_rs.optim.utils.acquisition_utils import fix_features
+    from botorch_rs.utils.sampling import boltzmann_sample, draw_sobol_samples
+
+    opts = dict(options or {})
+    if raw_samples <= 0 or num_restarts <= 0:
+        raise ValueError("raw_samples and num_restarts must be positive.")
+    if num_restarts > raw_samples:
+        raise RuntimeError(
+            f"n ({num_restarts}) cannot be larger than the number of provided samples ({raw_samples})"
+        )
+    frac_random = float(opts.pop("frac_random", 0.6))
+    if not 0 < frac_random < 1:
+        raise ValueError(f"frac_random must take on values in (0,1). Value: {frac_random}")
+    inner_restarts = opts.pop("num_inner_restarts", 20)
+    inner_samples = opts.pop("raw_inner_samples", 1024)
+    eta = float(opts.pop("eta", 2.0))
+    if not math.isfinite(eta):
+        raise ValueError("eta must be finite.")
+    value_function = _get_value_function(
+        model=current_model,
+        objective=getattr(acq_function, "objective", None),
+        posterior_transform=acq_function.posterior_transform,
+        sampler=getattr(acq_function, "sampler", None),
+        project=getattr(acq_function, "project", None),
+    )
+    candidates, values = optimize_acqf(
+        acq_function=value_function,
+        bounds=bounds,
+        q=1,
+        num_restarts=inner_restarts,
+        raw_samples=inner_samples,
+        fixed_features=fixed_features,
+        return_best_only=False,
+        options=opts,
+    )
+    candidate_values, value_shape = to_flat(values)
+    candidate_data, candidate_shape = to_flat(candidates)
+    if len(value_shape) != 1 or len(candidate_shape) != 3 or candidate_shape[1] != 1:
+        raise UnsupportedError(
+            "Current-model optimization must return scalar values of single-point candidates."
+        )
+    batch = tuple(acq_function.model.batch_shape)
+    nb, d = math.prod(batch), candidate_shape[-1]
+    kind = kind_of(candidates)
+    n_value = int((1.0 - frac_random) * raw_samples)
+    n_random = raw_samples - n_value
+    resampled = None
+    if n_value:
+        indices, _ = to_flat(
+            boltzmann_sample(
+                from_flat(
+                    list(candidate_values) * nb, (*batch, len(candidate_values)), kind_of(values)
+                ),
+                n_value,
+                eta,
+                replacement=True,
+            )
+        )
+        samples = []
+        for sample in range(n_value):
+            for b in range(nb):
+                index = int(indices[b * n_value + sample])
+                samples.extend(candidate_data[index * d : (index + 1) * d])
+        resampled = from_flat(samples, (n_value, *batch, 1, d), kind)
+    randomized = None
+    if n_random:
+        if is_torch_tensor(bounds):
+            torch = sys.modules["torch"]
+            engine = torch.quasirandom.SobolEngine(d, scramble=True, seed=opts.get("seed"))
+            uniform = engine.draw(n_random * nb, dtype=bounds.dtype).to(device=bounds.device)
+            uniform = uniform.reshape(*batch, n_random, 1, d).permute(
+                len(batch), *range(len(batch)), len(batch) + 1, len(batch) + 2
+            )
+            randomized = bounds[0] + (bounds[1] - bounds[0]) * uniform
+        else:
+            randomized = draw_sobol_samples(
+                bounds, n=n_random, q=1, batch_shape=batch, seed=opts.get("seed")
+            )
+    raw = (
+        randomized
+        if resampled is None
+        else resampled
+        if randomized is None
+        else _ops.concat([resampled, randomized], dim=0)
+    )
+    raw = fix_features(raw, fixed_features, replace_current_value=True)
+    if is_torch_tensor(raw):
+        with sys.modules["torch"].no_grad():
+            acquisition_values = acq_function(raw)
+    else:
+        acquisition_values = acq_function(raw)
+    return initialize_q_batch(raw, acquisition_values, n=num_restarts, eta=eta)[0]
 
 
 def initialize_q_batch_nonneg(
@@ -819,6 +1001,7 @@ __all__ = [
     "gen_batch_initial_conditions",
     "gen_one_shot_hvkg_initial_conditions",
     "gen_one_shot_kg_initial_conditions",
+    "gen_value_function_initial_conditions",
     "initialize_q_batch",
     "initialize_q_batch_nonneg",
     "initialize_q_batch_topn",

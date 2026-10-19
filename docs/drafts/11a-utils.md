@@ -368,6 +368,35 @@ inputs and MVNXPB gradients of batches whose members pivot differently
 
 ## Verification
 
+The optimization follow-up adds native equality projection (including first
+derivatives of points, coefficients and right-hand sides), native SLSQP
+projection with nonlinear constraints and per-row fixed features, and KG
+value-function initialization using the existing Rust acquisition optimizer.
+The value-function initializer preserves fantasy batch shapes. Its inner
+optimizer inherits the port's Sobol stream; complete initializer outputs need
+not be bit-for-bit identical to Torch's optimizer. Component parity is checked
+with the same optimized solutions, alongside real native optimization tests.
+
+**Deliberate upstream correction:** official BoTorch `b0dd01be6` and released
+0.18.1 call `standardize(function_values)` inside `boltzmann_sample`, although
+scores have shape `batch_shape x num_categories`. For more than one dimension,
+`standardize` normalizes along `-2`, across a batch dimension. Repeated fantasy
+score rows therefore become all-zero standardized scores and receive uniform
+sampling probabilities. Higher-valued optimized solutions have no advantage.
+The precise upstream fix is
+`standardize(function_values.unsqueeze(-1)).squeeze(-1)`, which normalizes over
+categories and leaves the one-dimensional case unchanged. The Rust port
+applies that corrected category-axis behavior, including batched restart
+selection and value-function initialization. Its parity tests patch only this
+axis expression in the reference; frequency regressions require a high-value
+solution to receive more than 80% of draws in every fantasy batch (the bug
+would give approximately one third). Scalar/unbatched sampling and shared
+temperature reduction on overflow are checked against the reference too.
+
+Projection also rejects a native SLSQP "success" whose returned point violates
+constraints or bounds. A conflicting bound/inequality regression covers this
+case, so a failed projection cannot quietly return infeasible candidates.
+
 The initial committed branch passed all three phase 11a Python suites on
 2026-10-20 against the local BoTorch fork checkout at `c98dd9452`
 (`fix/audit-correctness-fixes`, not official upstream main), with
