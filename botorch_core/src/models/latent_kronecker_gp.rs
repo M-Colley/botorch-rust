@@ -431,9 +431,14 @@ impl LatentKroneckerGP {
         Ok((value, gradient))
     }
     fn transformed(&self, x: &Matrix) -> Result<Matrix> {
-        if x.ncols() != self.dim {
+        if x.nrows() == 0 || x.ncols() != self.dim {
             return Err(BotorchError::DimensionMismatch(
-                "wrong feature input dimension".into(),
+                "expected nonempty feature inputs of the model dimension".into(),
+            ));
+        }
+        if x.iter().any(|v| !v.is_finite()) {
+            return Err(BotorchError::InputData(
+                "query feature inputs must be finite".into(),
             ));
         }
         self.options.input_transform.as_ref().map_or_else(
@@ -441,16 +446,20 @@ impl LatentKroneckerGP {
             |c| c.transform_mode(x, TransformMode::Eval),
         )
     }
+    fn validate_t(t: &Matrix) -> Result<()> {
+        if t.nrows() == 0 || t.ncols() != 1 || t.iter().any(|v| !v.is_finite()) {
+            return Err(BotorchError::DimensionMismatch(
+                "time queries must be a nonempty finite t x 1 matrix".into(),
+            ));
+        }
+        Ok(())
+    }
     fn affine(&self) -> (f64, f64) {
         self.options.outcome.unwrap_or((0.0, 1.0))
     }
     /// Exact posterior on X x T, flattened in feature-major order.
     pub fn posterior_grid(&self, x: &Matrix, t: &Matrix) -> Result<Posterior> {
-        if t.ncols() != 1 {
-            return Err(BotorchError::DimensionMismatch(
-                "time inputs must be t x 1".into(),
-            ));
-        }
+        Self::validate_t(t)?;
         let xt = self.transformed(x)?;
         let mut posterior = match self.backend()? {
             Backend::Full(model) if t == &self.t => {
@@ -479,6 +488,7 @@ impl LatentKroneckerGP {
     }
     /// Analytic derivatives with respect to raw feature inputs on an X x T grid.
     pub fn posterior_grid_with_grad(&self, x: &Matrix, t: &Matrix) -> Result<JointPosteriorGrad> {
+        Self::validate_t(t)?;
         let xt = self.transformed(x)?;
         let cartesian = cartesian_inputs(&xt, t);
         let dense;
@@ -533,6 +543,7 @@ impl LatentKroneckerGP {
     }
     /// Correct Matheron samples from [full training prior, observed noise, test residual] draws.
     pub fn samples(&self, x: &Matrix, t: &Matrix, base: &Matrix) -> Result<Matrix> {
+        Self::validate_t(t)?;
         let xt = self.transformed(x)?;
         let full = self.y.len();
         let observed = self.observed.len();

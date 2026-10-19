@@ -44,6 +44,7 @@ class LatentKroneckerGPPosterior(Posterior):
         self.model, self.X, self.T = model, X, T
         self._rs = model._rs.copy()
         self._kind = kind_of(X)
+        self._is_mt = True
         self._x, self._t = to_flat(X, "X"), to_flat(T, "T")
         if (
             len(self._x[1]) < 2
@@ -95,6 +96,14 @@ class LatentKroneckerGPPosterior(Posterior):
     @property
     def variance(self) -> Any:
         return from_flat(self._diagonal(), (*self._batch, self._q, self._tasks), self._kind)
+
+    @property
+    def dtype(self) -> Any:
+        return getattr(self.X, "dtype", None)
+
+    @property
+    def device(self) -> Any:
+        return getattr(self.X, "device", None)
 
     @property
     def distribution(self) -> _GridDistribution:

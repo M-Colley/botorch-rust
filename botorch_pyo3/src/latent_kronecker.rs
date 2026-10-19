@@ -14,6 +14,7 @@ use botorch_core::optim::{AdamOptions, ExpMaStoppingCriterion};
 use botorch_core::transforms::input::ChainedInputTransform;
 use botorch_core::Model;
 use pyo3::prelude::*;
+use rand::rngs::StdRng;
 
 use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
 use crate::errors::{value_error, IntoPyResult};
@@ -21,6 +22,8 @@ use crate::kernel_trees::PyKernelNode;
 use crate::models::PyModel;
 use crate::specs::{PyConstraint, PyLikelihoodSpec, PyPrior};
 use crate::threads;
+
+type TorchFitSummary = (usize, f64, u8, Option<f64>, Option<String>);
 
 /// Native latent Kronecker model, shared by immutable prediction handles.
 #[pyclass(frozen, name = "LatentKroneckerGP", module = "botorch_rs._botorch_rs")]
@@ -293,7 +296,7 @@ impl PyLatentKroneckerGP {
         weight_decay: f64,
         amsgrad: bool,
         maximize: bool,
-    ) -> PyResult<(usize, f64, u8, Option<f64>, Option<String>)> {
+    ) -> PyResult<TorchFitSummary> {
         let options = TorchMinimizeOptions {
             adam: AdamOptions {
                 lr,
@@ -319,15 +322,15 @@ impl PyLatentKroneckerGP {
         Ok((r.step, r.fval, r.status.value(), r.runtime, r.message))
     }
     #[pyo3(signature=(seed=None))]
-    fn sample_all_priors(&self, seed: Option<u64>) {
+    fn sample_all_priors(&self, seed: Option<u64>) -> PyResult<()> {
         use rand::SeedableRng;
         let mut m = (*self.get()).clone();
         let mut rng =
             StdRng::seed_from_u64(seed.unwrap_or_else(botorch_core::utils::sampling::random_seed));
         let raw = m.sample_all_priors(m.raw_parameters(), &mut rng);
-        if m.set_raw_parameters(&raw).is_ok() {
-            self.set(m);
-        }
+        m.set_raw_parameters(&raw).into_py_result()?;
+        self.set(m);
+        Ok(())
     }
     fn copy(&self) -> Self {
         Self {
@@ -336,7 +339,6 @@ impl PyLatentKroneckerGP {
     }
 }
 
-use rand::rngs::StdRng;
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyLatentKroneckerGP>()
 }

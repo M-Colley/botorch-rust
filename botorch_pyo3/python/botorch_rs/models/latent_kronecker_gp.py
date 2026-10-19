@@ -14,8 +14,8 @@ from botorch_rs.exceptions.warnings import InputDataWarning
 from botorch_rs.kernels import Kernel, MaternKernel, ScaleKernel
 from botorch_rs.likelihoods import GaussianLikelihood
 from botorch_rs.means import ConstantMean, ZeroMean
+from botorch_rs.models.gpytorch import GPyTorchModel
 from botorch_rs.models.higher_order_gp import _initial_raw_noise
-from botorch_rs.models.model import Model
 from botorch_rs.models.transforms.input import InputTransform, chain_spec
 from botorch_rs.models.transforms.outcome import Standardize
 from botorch_rs.posteriors.latent_kronecker import LatentKroneckerGPPosterior
@@ -48,7 +48,7 @@ class _MeanBinding:
         self.owner._set_raw_param(self.name, from_flat(value[0], tuple(value[1]), LIST))
 
 
-class LatentKroneckerGP(Model):
+class LatentKroneckerGP(GPyTorchModel):
     """GP on X x T, with arbitrary missing finite observations in train_Y.
 
     Complete grids use native Kronecker eigensolves. Missing-data inference
@@ -87,6 +87,7 @@ class LatentKroneckerGP(Model):
         if input_transform is not None and not isinstance(input_transform, InputTransform):
             raise UnsupportedError("input_transform must be a botorch_rs InputTransform.")
         transformed_X = train_X if input_transform is None else input_transform(train_X)
+        self._validate_tensor_args(transformed_X, train_Y)
         transformed = to_flat(transformed_X, "train_X")
         dt = transformed[1][-1]
         spec = chain_spec(input_transform, d, ()) if input_transform is not None else None

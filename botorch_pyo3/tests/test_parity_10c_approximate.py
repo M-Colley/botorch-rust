@@ -37,7 +37,6 @@ from approximate_helpers import (  # noqa: E402
     Case,
     bt_elbo_and_grad,
     build_pair,
-    copy_parameters,
     elbo_pair,
     make_data,
     set_random_parameters,
@@ -56,14 +55,6 @@ from botorch.models.approximate_gp import (  # noqa: E402
 )
 from botorch.models.utils import inducing_point_allocators as bt_ipa  # noqa: E402
 from botorch.optim.utils import get_parameters_and_bounds as bt_params_bounds  # noqa: E402
-from parity_helpers import (  # noqa: E402
-    Checker,
-    compare_twin_fits,
-    rel_err,
-    sampler_pair,
-    twin_inputs,
-    values_and_grads,
-)
 
 import botorch_rs.acquisition.analytic as rs_an  # noqa: E402
 import botorch_rs.acquisition.logei as rs_logei  # noqa: E402
@@ -78,6 +69,14 @@ from botorch_rs.models.approximate_gp import (  # noqa: E402
 )
 from botorch_rs.models.utils import inducing_point_allocators as rs_ipa  # noqa: E402
 from botorch_rs.optim.utils import get_parameters_and_bounds as rs_params_bounds  # noqa: E402
+from parity_helpers import (  # noqa: E402
+    Checker,
+    compare_twin_fits,
+    rel_err,
+    sampler_pair,
+    twin_inputs,
+    values_and_grads,
+)
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
@@ -135,8 +134,18 @@ def test_greedy_improvement_reduction(maximize: bool) -> None:
         "UnitQualityFunction", rs_ipa.UnitQualityFunction()(Xn), bt_ipa.UnitQualityFunction()(Xn), 0
     )
     Yn = torch.cos(3 * Xn[:, :1])
-    zb = BtSVGP(Xn, Yn, inducing_points=6, inducing_point_allocator=bt_ipa.GreedyImprovementReduction(prev_b, maximize))
-    zr = RsSVGP(Xn, Yn, inducing_points=6, inducing_point_allocator=rs_ipa.GreedyImprovementReduction(prev_r, maximize))
+    zb = BtSVGP(
+        Xn,
+        Yn,
+        inducing_points=6,
+        inducing_point_allocator=bt_ipa.GreedyImprovementReduction(prev_b, maximize),
+    )
+    zr = RsSVGP(
+        Xn,
+        Yn,
+        inducing_points=6,
+        inducing_point_allocator=rs_ipa.GreedyImprovementReduction(prev_r, maximize),
+    )
     check.check(
         "GreedyImprovementReduction: inducing points",
         strategy(zr).inducing_points,
@@ -188,7 +197,12 @@ def test_allocator_cases() -> None:
 @pytest.mark.parametrize("case", CASES, ids=IDS)
 def test_construction(case: Case) -> None:
     bt, rs, X, Y = build_pair(case)
-    check.check("inducing points (allocation)", strategy(rs).inducing_points, strategy(bt).inducing_points.detach(), 0.0)
+    check.check(
+        "inducing points (allocation)",
+        strategy(rs).inducing_points,
+        strategy(bt).inducing_points.detach(),
+        0.0,
+    )
     mb, mr = elbo_pair(bt, rs, case.n)
     assert _mll_names(mr) == _mll_names(mb)
     assert [n for n, _ in rs.named_parameters()] == [n for n, _ in bt.named_parameters()]
@@ -200,6 +214,7 @@ def test_construction(case: Case) -> None:
     _, bounds_b = bt_params_bounds(mb)
     _, bounds_r = rs_params_bounds(mr)
     for name in _mll_names(mb):
+
         def norm(b: tuple[object, object]) -> tuple[float, float]:
             lo, hi = b
             return (
@@ -207,11 +222,15 @@ def test_construction(case: Case) -> None:
                 float("inf") if hi is None else float(hi),  # type: ignore[arg-type]
             )
 
-        assert norm(bounds_r.get(name, (None, None))) == norm(bounds_b.get(name, (None, None))), name
+        assert norm(bounds_r.get(name, (None, None))) == norm(bounds_b.get(name, (None, None))), (
+            name
+        )
     assert rs.num_outputs == bt.num_outputs
     assert rs.batch_shape == tuple(bt.batch_shape)
     check.check("train_targets", rs.model.train_targets, bt.model.train_targets, 0.0)
-    check.check("train_inputs (transformed)", rs.model.train_inputs[0], bt.model.train_inputs[0], 0.0)
+    check.check(
+        "train_inputs (transformed)", rs.model.train_inputs[0], bt.model.train_inputs[0], 0.0
+    )
 
 
 @pytest.mark.parametrize("seed", [0, 7])
@@ -225,8 +244,18 @@ def test_variational_initialization_draws(seed: int) -> None:
     torch.manual_seed(seed)
     out_r = rs.model(X)
     vb, vr = strategy(bt)._variational_distribution, strategy(rs)._variational_distribution
-    check.check("variational mean after initialization", vr.variational_mean, vb.variational_mean.detach(), 0.0)
-    check.check("chol_variational_covar after initialization", vr.chol_variational_covar, vb.chol_variational_covar.detach(), 0.0)
+    check.check(
+        "variational mean after initialization",
+        vr.variational_mean,
+        vb.variational_mean.detach(),
+        0.0,
+    )
+    check.check(
+        "chol_variational_covar after initialization",
+        vr.chol_variational_covar,
+        vb.chol_variational_covar.detach(),
+        0.0,
+    )
     check.check("q(f) mean at initialization", out_r.mean, out_b.mean.detach(), VALUE_TOL)
     assert int(strategy(rs).variational_params_initialized.item()) == 1
 
@@ -247,7 +276,9 @@ def test_elbo(case: Case, beta: float) -> None:
         bt.train()
         tb = mb(bt.model(*bt.model.train_inputs), bt.model.train_targets)
         tr = mr()
-        for label, a, e in zip(("expected log likelihood", "KL divergence", "log prior"), tr, tb):
+        for label, a, e in zip(
+            ("expected log likelihood", "KL divergence", "log prior"), tr, tb, strict=True
+        ):
             check.check(f"ELBO term: {label}", a, e.detach(), VALUE_TOL)
         mb, mr = elbo_pair(bt, rs, num_data, beta=beta)
         vb, gb = bt_elbo_and_grad(mb)
@@ -277,7 +308,9 @@ def test_latent_and_kl(case: Case) -> None:
         ob, orr = bt.model(Xt), rs.model(Xt)
         check.check("q(f) mean", orr.mean, ob.mean.detach(), VALUE_TOL)
         check.check("q(f) variance", orr.variance, ob.variance.detach(), VALUE_TOL)
-        check.check("q(f) covariance", orr.covariance_matrix, ob.covariance_matrix.detach(), VALUE_TOL)
+        check.check(
+            "q(f) covariance", orr.covariance_matrix, ob.covariance_matrix.detach(), VALUE_TOL
+        )
     kb = bt.model.variational_strategy.kl_divergence()
     kr = rs.model.variational_strategy.kl_divergence()
     check.check("kl_divergence()", kr, kb.detach(), VALUE_TOL)
@@ -312,7 +345,9 @@ def test_posterior(case: Case) -> None:
                 VALUE_TOL,
             )
         pb, pr = bt.posterior(Xt), rs.posterior(Xt)
-        Z = torch.randn(3, *pb.base_sample_shape, generator=torch.Generator().manual_seed(1), dtype=DT)
+        Z = torch.randn(
+            3, *pb.base_sample_shape, generator=torch.Generator().manual_seed(1), dtype=DT
+        )
         check.check(
             "samples from base samples",
             pr.rsample_from_base_samples(torch.Size([3]), Z),
@@ -324,8 +359,15 @@ def test_posterior(case: Case) -> None:
         Xt = _test_points(case, (5,), 8)
         pb = bt.posterior(Xt, posterior_transform=BtScalarized(w))
         pr = rs.posterior(Xt, posterior_transform=RsScalarized(w))
-        check.check("posterior (ScalarizedPosteriorTransform) mean", pr.mean, pb.mean.detach(), VALUE_TOL)
-        check.check("posterior (ScalarizedPosteriorTransform) variance", pr.variance, pb.variance.detach(), VALUE_TOL)
+        check.check(
+            "posterior (ScalarizedPosteriorTransform) mean", pr.mean, pb.mean.detach(), VALUE_TOL
+        )
+        check.check(
+            "posterior (ScalarizedPosteriorTransform) variance",
+            pr.variance,
+            pb.variance.detach(),
+            VALUE_TOL,
+        )
 
 
 @pytest.mark.parametrize("case", CASES, ids=IDS)
@@ -337,11 +379,31 @@ def test_acquisition(case: Case) -> None:
     w = torch.linspace(0.5, 1.5, case.m, dtype=DT)
     tb = BtScalarized(w) if case.m > 1 else None
     tr = RsScalarized(w) if case.m > 1 else None
-    best = torch.tensor(float(Y.mean()), dtype=DT) if case.m == 1 else torch.tensor(float((Y * w).sum(-1).mean()), dtype=DT)
+    best = (
+        torch.tensor(float(Y.mean()), dtype=DT)
+        if case.m == 1
+        else torch.tensor(float((Y * w).sum(-1).mean()), dtype=DT)
+    )
     pairs = [
-        ("LogExpectedImprovement", bt_an.LogExpectedImprovement(bt, best_f=best, posterior_transform=tb), rs_an.LogExpectedImprovement(rs, best_f=best, posterior_transform=tr)),
-        ("PosteriorMean", bt_an.PosteriorMean(bt, posterior_transform=tb), rs_an.PosteriorMean(rs, posterior_transform=tr)),
-        ("UpperConfidenceBound", bt_an.UpperConfidenceBound(bt, beta=torch.tensor(0.7, dtype=DT), posterior_transform=tb), rs_an.UpperConfidenceBound(rs, beta=torch.tensor(0.7, dtype=DT), posterior_transform=tr)),
+        (
+            "LogExpectedImprovement",
+            bt_an.LogExpectedImprovement(bt, best_f=best, posterior_transform=tb),
+            rs_an.LogExpectedImprovement(rs, best_f=best, posterior_transform=tr),
+        ),
+        (
+            "PosteriorMean",
+            bt_an.PosteriorMean(bt, posterior_transform=tb),
+            rs_an.PosteriorMean(rs, posterior_transform=tr),
+        ),
+        (
+            "UpperConfidenceBound",
+            bt_an.UpperConfidenceBound(
+                bt, beta=torch.tensor(0.7, dtype=DT), posterior_transform=tb
+            ),
+            rs_an.UpperConfidenceBound(
+                rs, beta=torch.tensor(0.7, dtype=DT), posterior_transform=tr
+            ),
+        ),
     ]
     for name, ab, ar in pairs:
         vb, gb = values_and_grads(ab, Xq)
@@ -353,9 +415,35 @@ def test_acquisition(case: Case) -> None:
     sb, sr, _ = sampler_pair(32, 3, m_eff, 12)
     sb2, sr2, _ = sampler_pair(32, 3 + case.n, m_eff, 13)
     pairs = [
-        ("qExpectedImprovement", bt_mc.qExpectedImprovement(bt, best_f=best, sampler=sb, posterior_transform=tb), rs_mc.qExpectedImprovement(rs, best_f=best, sampler=sr, posterior_transform=tr)),
-        ("qUpperConfidenceBound", bt_mc.qUpperConfidenceBound(bt, beta=0.4, sampler=sb, posterior_transform=tb), rs_mc.qUpperConfidenceBound(rs, beta=0.4, sampler=sr, posterior_transform=tr)),
-        ("qLogNoisyExpectedImprovement", bt_logei.qLogNoisyExpectedImprovement(bt, X_baseline=X, sampler=sb2, posterior_transform=tb, prune_baseline=False, cache_root=False), rs_logei.qLogNoisyExpectedImprovement(rs, X_baseline=X, sampler=sr2, posterior_transform=tr, prune_baseline=False, cache_root=False)),
+        (
+            "qExpectedImprovement",
+            bt_mc.qExpectedImprovement(bt, best_f=best, sampler=sb, posterior_transform=tb),
+            rs_mc.qExpectedImprovement(rs, best_f=best, sampler=sr, posterior_transform=tr),
+        ),
+        (
+            "qUpperConfidenceBound",
+            bt_mc.qUpperConfidenceBound(bt, beta=0.4, sampler=sb, posterior_transform=tb),
+            rs_mc.qUpperConfidenceBound(rs, beta=0.4, sampler=sr, posterior_transform=tr),
+        ),
+        (
+            "qLogNoisyExpectedImprovement",
+            bt_logei.qLogNoisyExpectedImprovement(
+                bt,
+                X_baseline=X,
+                sampler=sb2,
+                posterior_transform=tb,
+                prune_baseline=False,
+                cache_root=False,
+            ),
+            rs_logei.qLogNoisyExpectedImprovement(
+                rs,
+                X_baseline=X,
+                sampler=sr2,
+                posterior_transform=tr,
+                prune_baseline=False,
+                cache_root=False,
+            ),
+        ),
     ]
     for name, ab, ar in pairs:
         vb, gb = values_and_grads(ab, Xq)
@@ -455,7 +543,9 @@ def test_init_inducing_points_and_reinitialization() -> None:
     bt, rs, X, Y = build_pair(case)
     set_random_parameters(bt, rs, 2)
     X2 = torch.rand(15, 2, generator=torch.Generator().manual_seed(3), dtype=DT)
-    check.check("init_inducing_points", rs.init_inducing_points(X2), bt.init_inducing_points(X2), 0.0)
+    check.check(
+        "init_inducing_points", rs.init_inducing_points(X2), bt.init_inducing_points(X2), 0.0
+    )
     assert int(strategy(rs).variational_params_initialized.item()) == 0
     torch.manual_seed(4)
     pb = bt.posterior(X2[:3])
@@ -473,13 +563,20 @@ def test_approximate_gpytorch_model(num_outputs: int) -> None:
     assert [n for n, _ in rs.named_parameters()] == [n for n, _ in bt.named_parameters()]
     for name, p in bt.named_parameters():
         if "variational" not in name:
-            check.check("ApproximateGPyTorchModel: initial parameters", dict(rs.named_parameters())[name], p.detach(), 0.0)
+            check.check(
+                "ApproximateGPyTorchModel: initial parameters",
+                dict(rs.named_parameters())[name],
+                p.detach(),
+                0.0,
+            )
     torch.manual_seed(2)
     pb = bt.posterior(X[:3])
     torch.manual_seed(2)
     pr = rs.posterior(X[:3])
     check.check("ApproximateGPyTorchModel: posterior mean", pr.mean, pb.mean.detach(), VALUE_TOL)
-    check.check("ApproximateGPyTorchModel: posterior variance", pr.variance, pb.variance.detach(), VALUE_TOL)
+    check.check(
+        "ApproximateGPyTorchModel: posterior variance", pr.variance, pb.variance.detach(), VALUE_TOL
+    )
 
 
 def test_errors_match_botorch() -> None:
@@ -496,7 +593,11 @@ def test_errors_match_botorch() -> None:
             model.fantasize(X[:2], SobolQMCNormalSampler(torch.Size([2])))
     for cls in (BtSVGP, RsSVGP):
         with pytest.warns(UserWarning, match="set `learn_inducing_points` to False"):
-            alloc = bt_ipa.GreedyVarianceReduction() if cls is BtSVGP else rs_ipa.GreedyVarianceReduction()
+            alloc = (
+                bt_ipa.GreedyVarianceReduction()
+                if cls is BtSVGP
+                else rs_ipa.GreedyVarianceReduction()
+            )
             cls(X, Y, inducing_point_allocator=alloc)
     with pytest.raises(ValueError, match="requires a quality score"):
         bt_ipa._pivoted_cholesky_init(X, torch.eye(12, dtype=DT), 3, torch.ones(5, dtype=DT))
