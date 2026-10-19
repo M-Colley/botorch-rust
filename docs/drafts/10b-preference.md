@@ -227,7 +227,7 @@ comparison (`docs/fitting.md`).
 
 ### Live parity (`botorch_pyo3/tests/test_parity_10b_preference.py`)
 
-70 tests on 11 `PairwiseGP` cases (probit / logit / an explicit
+73 tests on 11 `PairwiseGP` cases (probit / logit / an explicit
 `PairwiseProbitLikelihood`; BoTorch's default kernel and `ScaleKernel`
 trees; duplicates; 25 datapoints; `Normalize`; `jitter`, `xtol`, `maxfev`,
 `consolidate_atol`, `consolidate_rtol`): construction (the same numpy draws),
@@ -240,7 +240,13 @@ functions (EUBO with pairs, a previous winner and affine / posterior-mean
 outcome models; qEUBO for q = 1, 2, 4, with pending points and outcome
 models; BALD with BoTorch's draws; `PairwiseMCPosteriorVariance` for
 q = 2, 4; `PosteriorMean`, `PosteriorStandardDeviation`, `qSimpleRegret`;
-`LearnedObjective`; `IIDNormalSampler`; the pairwise samplers).
+`LearnedObjective`; `IIDNormalSampler`; the pairwise samplers), the input
+constructors (preferential BO and BOPE through both registries: the
+constructed keyword arguments, the same objects passed through and
+BoTorch's `w` after the same `torch.manual_seed`, the values and gradients
+of the acquisition functions built from them, BoTorch's errors), and phase
+8b's classes on a `PairwiseGP` (a Python subclass of
+`SampleReducingMCAcquisitionFunction`; `qMultiStepLookahead`'s error).
 
 | quantity | tolerance | worst error |
 | --- | --- | --- |
@@ -262,6 +268,9 @@ q = 2, 4; `PosteriorMean`, `PosteriorStandardDeviation`, `qSimpleRegret`;
 | `PosteriorMean`, `PosteriorStandardDeviation`, `qSimpleRegret` values / input gradients | 1e-9 / 1e-8 | 3.1e-15 / 2.8e-15 |
 | `LearnedObjective` samples / torch gradient | 1e-9 / 1e-8 | 1.3e-15 / 8.8e-16 |
 | `IIDNormalSampler` samples | 1e-9 | 2.1e-15 |
+| constructed keyword arguments (objects, `w`), constructor and look-ahead errors | exact | exact |
+| acquisition functions from the constructors: values / input gradients | 1e-9 / 1e-8 | 3.2e-15 / 4.2e-14 |
+| `SampleReducingMCAcquisitionFunction` subclass on a `PairwiseGP`: value / input gradient | 1e-9 / 1e-8 | 3.6e-16 / 1.5e-15 |
 | fits (7 cases): best loss above BoTorch's best (scaled) | 1 | 5.3e-9 |
 | fits: loss above BoTorch's worst (scaled) | 1 | 0 |
 | fits: first attempts failing, botorch_rs minus BoTorch | - | 0 |
@@ -319,9 +328,11 @@ fit comparison passes (the same distribution of best losses).
 
 ### Verification
 
+On the branch merged with main at b539d34:
+
 - `cargo fmt --all --check`, `cargo clippy --offline --workspace
   --all-targets -- -D warnings`: clean. `cargo test --offline --workspace
-  --locked`: all pass (`preference_10b_parity`: 3 tests).
+  --locked`: 414 passed (`preference_10b_parity`: 3 tests).
 - ruff check and ruff format (CI's file list, now with
   `scripts/fixtures_10b_preference.py`), mypy on `botorch_rs`: clean.
 - `pytest botorch_pyo3/tests` with `BOTORCH_RS_REQUIRE_BOTORCH=1`, all
@@ -329,20 +340,30 @@ fit comparison passes (the same distribution of best losses).
 
   | torch | BoTorch | result |
   | --- | --- | --- |
-  | 2.13 | main (da00e0401) | 3656 passed, 36 skipped |
-  | 2.13 | 0.18.1 | 3636 passed, 56 skipped (version-gated tests of other phases) |
-  | 2.14.1 | main (da00e0401) | 3656 passed, 36 skipped |
-  | 2.14.1 | 0.18.1 | 3636 passed, 56 skipped |
+  | 2.13 | main (da00e0401) | 3949 passed, 42 skipped |
+  | 2.13 | 0.18.1 | 3929 passed, 62 skipped (version-gated tests of other phases) |
+  | 2.14.1 | main (da00e0401) | 3949 passed, 42 skipped |
+  | 2.14.1 | 0.18.1 | 3929 passed, 62 skipped |
 
-  The 10b tests: 127 (70 live parity, 40 sweep, 17 API and error tests).
+  The 10b tests: 133 (73 live parity, 40 sweep, 20 API and error tests).
   The worst errors above are the maxima over the four runs (the same in
-  each). One earlier full run (torch 2.13, main) failed once in phase 7a's
-  `test_kronecker_api[list]`, which this phase does not touch; the failure
-  did not recur in two further full runs or six runs of the test alone.
-- `botorch_rs` imports and fits a `PairwiseGP` on Python 3.11 without torch
-  and numpy.
+  each).
+- CI's NumPy job (NumPy without torch, `sys.modules['torch'] = None`,
+  `-m "not equivalence"`): 731 passed, 79 skipped; the 10b API tests run
+  with lists and NumPy arrays (the EUBO constructors draw `w` with Python's
+  `random`), the torch cases skip.
+- `botorch_rs` imports, fits a `PairwiseGP` and builds EUBO / qEUBO through
+  the constructors on Python 3.11 without torch and NumPy.
 - `python scripts/generate_fixtures.py --phase 10b-preference` against
   BoTorch main reproduces the three fixture files byte for byte.
+- Phase 7a's `test_kronecker_api[list]` failed once in a full run before
+  the merge (torch 2.13, main). pytest's summary line is cut after `bo`,
+  i.e. an exception of `botorch_rs` (or BoTorch), not a failed assertion;
+  the run kept no traceback. The failure did not recur in 10 further full
+  runs (all four torch / BoTorch combinations) or in 38 runs of the test
+  alone (20 of them with `PYTHONHASHSEED` 0 .. 19, 12 under heavy load from
+  other processes). The test looks deterministic (seeded fits, no parallel
+  reductions in the models, no time limits); the cause is not identified.
 
 ## BoTorch bugs found
 
