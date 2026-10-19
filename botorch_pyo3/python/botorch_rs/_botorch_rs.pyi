@@ -209,6 +209,10 @@ class KernelSpec:
 
 class KernelNode:
     @staticmethod
+    def contextual_sac(
+        decomposition: list[tuple[str, list[int]]], base: KernelNode
+    ) -> KernelNode: ...
+    @staticmethod
     def integrated_white_noise(order: int = 1) -> KernelNode: ...
     @staticmethod
     def stationary(kind: str, ard_num_dims: int | None = None) -> KernelNode: ...

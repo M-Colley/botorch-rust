@@ -1,6 +1,7 @@
 """Models (``botorch.models``)."""
 
 from botorch_rs.models.approximate_gp import ApproximateGPyTorchModel, SingleTaskVariationalGP
+from botorch_rs.models.contextual import SACGP
 from botorch_rs.models.contextual_multioutput import LCEMGP, ProvidedEmbeddingLCEMGP
 from botorch_rs.models.cost import AffineFidelityCostModel
 from botorch_rs.models.deterministic import (
@@ -41,6 +42,7 @@ __all__ = [
     "PairwiseLaplaceMarginalLogLikelihood",
     "PosteriorMeanModel",
     "ProvidedEmbeddingLCEMGP",
+    "SACGP",
     "SingleTaskGP",
     "SingleTaskMultiFidelityGP",
     "SingleTaskVariationalGP",

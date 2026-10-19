@@ -198,6 +198,17 @@ impl PyKernelNode {
         Self::wrap(KernelNode::scale(base.inner.clone()))
     }
 
+    /// Structural additive contextual kernel with a shared RBF base.
+    #[staticmethod]
+    fn contextual_sac(
+        decomposition: Vec<(String, Vec<usize>)>,
+        base: PyRef<'_, PyKernelNode>,
+    ) -> PyResult<Self> {
+        KernelNode::contextual_sac(decomposition, base.inner.clone())
+            .into_py_result()
+            .map(Self::wrap)
+    }
+
     /// `AdditiveKernel(*kernels)`.
     #[staticmethod]
     fn additive(kernels: Vec<PyRef<'_, PyKernelNode>>) -> PyResult<Self> {

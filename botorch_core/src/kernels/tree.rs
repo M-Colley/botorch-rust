@@ -200,6 +200,12 @@ pub enum KernelType {
     /// BoTorch's `ExponentialDecayKernel`: `w + (1 + ‖(x + y)/ℓ‖)^(-α)`
     /// (`raw_lengthscale`, `raw_power`, `raw_offset`).
     ExponentialDecay,
+    /// Structural additive contextual RBF kernel with one shared ARD
+    /// lengthscale vector and one outputscale per named context.
+    ContextualSac {
+        /// Input columns in parameter order for every context.
+        contexts: Vec<Vec<usize>>,
+    },
     /// Integrated white noise of positive integration order (no parameters).
     IntegratedWhiteNoise {
         /// Number of integrations; one is Brownian motion.
@@ -641,6 +647,54 @@ impl KernelNode {
             saas: None,
             children: vec![base],
         }
+    }
+
+    /// BoTorch's `SACKernel`. Parameters retain their public module paths,
+    /// but the shared base kernel's parameters occur exactly once.
+    pub fn contextual_sac(
+        decomposition: Vec<(String, Vec<usize>)>,
+        base: KernelNode,
+    ) -> Result<Self> {
+        let d = decomposition
+            .first()
+            .map(|(_, dims)| dims.len())
+            .unwrap_or(0);
+        if d == 0 || decomposition.iter().any(|(_, dims)| dims.len() != d) {
+            return Err(BotorchError::InvalidArgument(
+                "SACKernel needs nonempty contexts with the same number of parameters".into(),
+            ));
+        }
+        if !matches!(base.kind, KernelType::Stationary(KernelKind::Rbf))
+            || base.active_dims.is_some()
+            || base.params.len() != 1
+            || base.params[0].shape != [1, d]
+        {
+            return Err(BotorchError::Unsupported(
+                "SACKernel requires an RBF base kernel with one lengthscale per context parameter"
+                    .into(),
+            ));
+        }
+        let mut params = base.params;
+        params[0].name = "base_kernel.raw_lengthscale".into();
+        let mut names = std::collections::HashSet::new();
+        for (name, _) in &decomposition {
+            if name.is_empty() || name.contains('.') || !names.insert(name.clone()) {
+                return Err(BotorchError::InvalidArgument(
+                    "SACKernel context names must be unique, nonempty, and contain no dots".into(),
+                ));
+            }
+            params.push(ParamSpec::new(
+                &format!("kernel_dict.{name}.raw_outputscale"),
+                vec![],
+                positive(),
+            ));
+        }
+        Ok(Self::leaf(
+            KernelType::ContextualSac {
+                contexts: decomposition.into_iter().map(|(_, dims)| dims).collect(),
+            },
+            params,
+        ))
     }
 
     /// `AdditiveKernel(*kernels)`.
@@ -1159,6 +1213,13 @@ impl KernelNode {
             Ok(())
         };
         match &self.kind {
+            KernelType::ContextualSac { contexts } => {
+                if let Some(&bad) = contexts.iter().flatten().find(|&&j| j >= k) {
+                    return Err(BotorchError::Runtime(format!(
+                        "SACKernel context index {bad} is out of range for {k} inputs"
+                    )));
+                }
+            }
             KernelType::IntegratedWhiteNoise { .. } if k != 1 => {
                 return Err(BotorchError::InvalidArgument(format!(
                     "IntegratedWhiteNoiseKernel requires 1D inputs, got {k} dimensions"

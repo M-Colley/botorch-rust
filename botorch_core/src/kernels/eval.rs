@@ -818,6 +818,36 @@ fn build_node(spec: &KernelNode, cur: &mut Cursor<'_>, parent_dim: usize) -> Res
                 offset: offset[0],
             }
         }
+        KernelType::ContextualSac { contexts } => {
+            let (ls_off, ls) = cur.take(&params[0]);
+            let d = ls.len();
+            // All contexts address the same parameter offsets. Contractions
+            // accumulate into one lengthscale vector rather than fitting
+            // independent copies of the base kernel.
+            let mut kids = Vec::with_capacity(contexts.len());
+            for (dims, p) in contexts.iter().zip(&params[1..]) {
+                let (scale_off, scale) = cur.take(p);
+                kids.push(Node {
+                    dims: Some(dims.clone()),
+                    k: d,
+                    off: scale_off,
+                    kind: NodeKind::Scale {
+                        s: scale[0],
+                        base: Box::new(Node {
+                            dims: None,
+                            k: d,
+                            off: ls_off,
+                            kind: NodeKind::Stationary {
+                                kind: KernelKind::Rbf,
+                                ls: ls.clone(),
+                                shared: d == 1,
+                            },
+                        }),
+                    },
+                });
+            }
+            NodeKind::Additive(kids)
+        }
         KernelType::IntegratedWhiteNoise { order } => {
             NodeKind::IntegratedWhiteNoise(IntegratedWhiteNoise::new(*order))
         }
@@ -2769,6 +2799,11 @@ mod tests {
         let st = |k: KernelKind, ard: Option<usize>| KernelNode::stationary(k, ard).unwrap();
         let ad = |n: KernelNode, dims: Vec<usize>| n.with_active_dims(dims).unwrap();
         let mut v = vec![
+            KernelNode::contextual_sac(
+                vec![("a".into(), vec![0, 1]), ("b".into(), vec![2, 1])],
+                st(KernelKind::Rbf, Some(2)),
+            )
+            .unwrap(),
             st(KernelKind::Rbf, Some(d)),
             st(KernelKind::Matern12, None),
             st(KernelKind::Matern32, Some(d)),

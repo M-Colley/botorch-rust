@@ -1,6 +1,7 @@
 """BoTorch's kernels (``botorch.models.kernels``)."""
 
 from botorch_rs.models.kernels.categorical import CategoricalKernel
+from botorch_rs.models.kernels.contextual_sac import SACKernel
 from botorch_rs.models.kernels.downsampling import DownsamplingKernel
 from botorch_rs.models.kernels.exponential_decay import ExponentialDecayKernel
 from botorch_rs.models.kernels.infinite_width_bnn import InfiniteWidthBNNKernel
@@ -18,4 +19,5 @@ __all__ = [
     "LinearTruncatedFidelityKernel",
     "OrthogonalAdditiveKernel",
     "PositiveIndexKernel",
+    "SACKernel",
 ]
