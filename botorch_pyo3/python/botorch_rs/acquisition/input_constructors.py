@@ -106,6 +106,7 @@ from botorch_rs.acquisition.multi_objective.utils import get_default_partitionin
 from botorch_rs.acquisition.objective import (
     ConstrainedMCObjective,
     IdentityMCObjective,
+    LinearMCObjective,
     _botorch_class_names,
 )
 from botorch_rs.acquisition.preference import (
@@ -2025,6 +2026,19 @@ def _is_identity_objective(objective: Any) -> bool:
     return objective is None or isinstance(objective, IdentityMCObjective)
 
 
+def _linear_objective_values(Y: Any, weights: list[float]) -> Any:
+    """``Y @ weights`` of a ``(batch_shape) x q x m`` array of any kind
+    (botorch_rs's ``LinearMCObjective`` of one sample, without torch)."""
+    data, shape = to_flat(Y, "Y")
+    m = shape[-1]
+    if m != len(weights):
+        raise RuntimeError("Output shape of samples not equal to that of weights")
+    values = [
+        sum(data[i * m + j] * w for j, w in enumerate(weights)) for i in range(len(data) // m)
+    ]
+    return from_flat(values, tuple(shape[:-1]), kind_of(Y))
+
+
 def get_best_f_mc(
     training_data: MaybeDict,
     objective: Any = None,
@@ -2066,10 +2080,12 @@ def get_best_f_mc(
         join_rule=_cat_last,
     )  # batch_shape x q x m
     kind = kind_of(Y)
+    # Without torch tensors, the identity and botorch_rs's linear objective
+    # are computed natively (other objectives are torch callables).
     native = (
         not is_torch_tensor(Y)
         and constraints is None
-        and _is_identity_objective(objective)
+        and (_is_identity_objective(objective) or type(objective) is LinearMCObjective)
         and (posterior_transform is None or not _is_botorch_object(posterior_transform))
     )
     if not native:
@@ -2096,7 +2112,10 @@ def get_best_f_mc(
                 "acquisition functions)."
             )
         objective = IdentityMCObjective()
-    if native:
+    if native and isinstance(objective, LinearMCObjective):
+        # ``LinearMCObjective`` of a single sample: ``obj = Y @ weights``.
+        obj = _linear_objective_values(Y, objective._weights)
+    elif native:
         # The identity objective of a single sample: ``obj = Y.squeeze(-1)``.
         obj = _squeeze_last(Y)
     else:
