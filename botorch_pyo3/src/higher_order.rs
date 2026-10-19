@@ -26,6 +26,8 @@ use crate::models::PyModel;
 use crate::specs::PyLikelihoodSpec;
 use crate::threads;
 
+type PriorInfo = (usize, f64, u8, Option<f64>, Option<String>);
+
 fn status_name(s: FitStatus) -> &'static str {
     match s {
         FitStatus::Success => "SUCCESS",
@@ -286,7 +288,7 @@ impl PyHigherOrderGP {
         weight_decay: f64,
         amsgrad: bool,
         maximize: bool,
-    ) -> PyResult<(usize, f64, u8, Option<f64>, Option<String>)> {
+    ) -> PyResult<PriorInfo> {
         let options = TorchMinimizeOptions {
             adam: AdamOptions {
                 lr,

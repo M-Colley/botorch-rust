@@ -992,7 +992,7 @@ impl PySingleTaskGP {
             ArrayBuf(mean, shape.clone()),
             ArrayBuf(variance, shape.clone()),
             ArrayBuf(targets, shape.clone()),
-            fixed.then(|| ArrayBuf(noise, shape)),
+            fixed.then_some(ArrayBuf(noise, shape)),
         ))
     }
 

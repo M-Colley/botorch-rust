@@ -58,6 +58,8 @@ pub fn arity(name: &str) -> Option<(usize, usize)> {
         "ndtr"
         | "ndtri"
         | "sqrt"
+        | "sin"
+        | "cos"
         | "phi"
         | "log_phi"
         | "log_ndtr"
@@ -74,9 +76,9 @@ pub fn arity(name: &str) -> Option<(usize, usize)> {
         | "fat_sigmoid"
         | "log_fat_sigmoid"
         | "cauchy" => (1, 1),
-        "add" | "sub" | "mul" | "div" | "logplusexp" | "logdiffexp" | "log_prob_normal_in"
-        | "fatmaximum" | "fatminimum" | "fatplus" | "log_fatplus" | "log_softplus" | "fatmoid"
-        | "log_fatmoid" | "approximate_round" => (2, 1),
+        "add" | "sub" | "mul" | "div" | "mul_raw" | "div_raw" | "logplusexp" | "logdiffexp"
+        | "log_prob_normal_in" | "fatmaximum" | "fatminimum" | "fatplus" | "log_fatplus"
+        | "log_softplus" | "fatmoid" | "log_fatmoid" | "approximate_round" => (2, 1),
         "bvnu" => (3, 1),
         "bvn" => (5, 1),
         "bvnmom" => (6, 2),
@@ -178,6 +180,8 @@ fn unary(name: &str, x: f64, single: bool) -> (f64, f64) {
             let value = x.sqrt();
             (value, 0.5 / value)
         }
+        "sin" => (x.sin(), x.cos()),
+        "cos" => (x.cos(), -x.sin()),
         "phi" => {
             let p = prob::phi(x);
             (p, -x * p)
@@ -238,6 +242,8 @@ fn fatmax2(a: f64, b: f64, tau: f64, alpha: f64) -> (f64, f64, f64) {
 /// computed).
 fn binary(name: &str, a: f64, b: f64, params: &[f64], single: bool) -> Result<(f64, f64, f64)> {
     Ok(match name {
+        "mul_raw" => (a * b, b, a),
+        "div_raw" => (a / b, b.recip(), -(a / b) / b),
         "add" => {
             if a.is_infinite() && b.is_infinite() && a != b {
                 (0.0, 0.0, 0.0)
@@ -676,6 +682,8 @@ mod tests {
             "fat_sigmoid",
             "log_fat_sigmoid",
             "cauchy",
+            "sin",
+            "cos",
         ] {
             for &x in &[-7.0, -1.3, -0.2, 0.4, 2.5, 9.0] {
                 if name == "log" && x <= 0.0 {
