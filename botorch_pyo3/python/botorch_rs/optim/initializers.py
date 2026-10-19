@@ -760,22 +760,46 @@ def transform_constraints(
     if constraints is None:
         return None
     out: list[tuple[Any, Any, float]] = []
-    for indices, coefficients, rhs in constraints:
-        idata, ishape = to_flat(indices, "indices")
-        ints = [int(v) for v in idata]
-        kind = kind_of(indices)
-        if len(ishape) == 1:
-            if max(ints) >= d:
-                raise ValueError(f"Constraint indices cannot exceed the problem dimension {d=}.")
-            for p in range(q):
-                out.append((_int_array([p * d + j for j in ints], kind), coefficients, rhs))
+    for constraint in constraints:
+        if len(to_flat(constraint[0], "indices")[1]) == 1:
+            out.extend(transform_intra_point_constraint(constraint, d=d, q=q))
         else:
-            c = ishape[1]
-            rows = [ints[r * c : (r + 1) * c] for r in range(ishape[0])]
-            if max(r[1] for r in rows) >= d:
-                raise ValueError(f"Constraint indices cannot exceed the problem dimension {d=}.")
-            out.append((_int_array([r[0] * d + r[1] for r in rows], kind), coefficients, rhs))
+            out.append(transform_inter_point_constraint(constraint, d=d))
     return out
+
+
+def transform_intra_point_constraint(
+    constraint: tuple[Any, Any, float], d: int, q: int
+) -> list[tuple[Any, Any, float]]:
+    """Repeat a pointwise constraint for each point of a flattened q-batch."""
+    indices, coefficients, rhs = constraint
+    values, shape = to_flat(indices, "indices")
+    if len(shape) != 1 or any(int(value) != value for value in values):
+        raise ValueError("Intra-point constraint indices must be a one-dimensional integer array.")
+    if any(not 0 <= value < d for value in values):
+        raise ValueError(f"Constraint indices cannot exceed the problem dimension {d=}.")
+    return [
+        (
+            _int_array([point * d + int(index) for index in values], kind_of(indices)),
+            coefficients,
+            rhs,
+        )
+        for point in range(q)
+    ]
+
+
+def transform_inter_point_constraint(
+    constraint: tuple[Any, Any, float], d: int
+) -> tuple[Any, Any, float]:
+    """Map (point, feature) pairs to indices of the flattened q-batch."""
+    indices, coefficients, rhs = constraint
+    values, shape = to_flat(indices, "indices")
+    if len(shape) != 2 or shape[1] != 2 or any(int(value) != value for value in values):
+        raise ValueError("Inter-point constraint indices must be an integer array of shape (n, 2).")
+    if any(value < 0 for value in values) or any(value >= d for value in values[1::2]):
+        raise ValueError(f"Constraint indices cannot exceed the problem dimension {d=}.")
+    transformed = [int(values[i]) * d + int(values[i + 1]) for i in range(0, len(values), 2)]
+    return _int_array(transformed, kind_of(indices)), coefficients, rhs
 
 
 def _int_array(values: list[int], kind: Any) -> Any:
@@ -802,4 +826,6 @@ __all__ = [
     "sample_points_around_best",
     "sample_q_batches_from_polytope",
     "transform_constraints",
+    "transform_inter_point_constraint",
+    "transform_intra_point_constraint",
 ]
