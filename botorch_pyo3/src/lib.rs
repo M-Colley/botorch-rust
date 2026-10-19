@@ -37,6 +37,7 @@ mod optim;
 mod optim_ext;
 mod pathwise;
 mod polytope;
+mod probability;
 mod risk_measures;
 mod sampling;
 mod so_acquisition;
@@ -138,5 +139,8 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     multitask::register(m)?;
     // Models of phase 7b (deterministic models, ensembles).
     models_7b::register(m)?;
+    // Probability and safe-math utilities, samplers and test functions of
+    // phase 11a.
+    probability::register(m)?;
     Ok(())
 }

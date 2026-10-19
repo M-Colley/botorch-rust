@@ -31,7 +31,7 @@
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
-use crate::acquisition::dual::Scalar;
+use crate::acquisition::dual::{Dual, Scalar};
 use crate::error::{BotorchError, Result};
 use crate::Matrix;
 
@@ -323,6 +323,12 @@ pub fn bvnmom(r: f64, xl: f64, yl: f64, xu: f64, yu: f64) -> (f64, f64) {
     bvnmom_generic(r, xl, yl, xu, yu, p)
 }
 
+/// [`bvnmom`] given the probability `p` of the rectangle (BoTorch's
+/// `bvnmom(..., p=p)`).
+pub fn bvnmom_with_p(r: f64, xl: f64, yl: f64, xu: f64, yu: f64, p: f64) -> (f64, f64) {
+    bvnmom_generic(r, xl, yl, xu, yu, p)
+}
+
 /// The state of BoTorch's `PivotedCholesky` (lower-triangular storage of
 /// the factor's first `step` columns and of the remaining Schur complement).
 struct PivotedCholesky<S> {
@@ -530,6 +536,66 @@ pub fn mvnxpb_log_prob(cov: &Matrix, bounds: &Matrix) -> Result<f64> {
         .collect();
     let b: Vec<[f64; 2]> = (0..n).map(|i| [bounds[(i, 0)], bounds[(i, 1)]]).collect();
     Ok(mvnxpb_generic(&c, &b))
+}
+
+/// [`mvnxpb_log_prob`] and its derivatives with respect to the covariance
+/// (`n × n`; BoTorch reads the lower triangle, so the upper triangle gets no
+/// gradient, as in PyTorch's autograd) and the bounds (`n × 2`), by
+/// forward-mode dual numbers in chunks of 16 tangents.
+///
+/// # Errors
+/// [`BotorchError::DimensionMismatch`] for inputs of the wrong shapes.
+pub fn mvnxpb_log_prob_with_grad(cov: &Matrix, bounds: &Matrix) -> Result<(f64, Matrix, Matrix)> {
+    const CHUNK: usize = 16;
+    let value = mvnxpb_log_prob(cov, bounds)?;
+    let n = cov.nrows();
+    // Tangent k: the lower-triangle entries of the covariance, then the bounds.
+    let mut targets: Vec<(bool, usize, usize)> = Vec::new();
+    for r in 0..n {
+        for c in 0..=r {
+            targets.push((true, r, c));
+        }
+    }
+    for r in 0..n {
+        for c in 0..2 {
+            targets.push((false, r, c));
+        }
+    }
+    let mut g_cov = Matrix::zeros(n, n);
+    let mut g_bounds = Matrix::zeros(n, 2);
+    for chunk in targets.chunks(CHUNK) {
+        let k = chunk.len();
+        let tangent = |is_cov: bool, r: usize, c: usize| chunk.iter().position(|t| *t == (is_cov, r, c));
+        let cv: Vec<Vec<Dual<CHUNK>>> = (0..n)
+            .map(|r| {
+                (0..n)
+                    .map(|c| match tangent(true, r, c).filter(|_| c <= r) {
+                        Some(i) => Dual::variable(cov[(r, c)], i, k),
+                        // The upper triangle is not read.
+                        None => Dual::constant(cov[(r, c)], k),
+                    })
+                    .collect()
+            })
+            .collect();
+        let bd: Vec<[Dual<CHUNK>; 2]> = (0..n)
+            .map(|r| {
+                let mk = |c: usize| match tangent(false, r, c) {
+                    Some(i) => Dual::variable(bounds[(r, c)], i, k),
+                    None => Dual::constant(bounds[(r, c)], k),
+                };
+                [mk(0), mk(1)]
+            })
+            .collect();
+        let d = mvnxpb_generic(&cv, &bd);
+        for (i, &(is_cov, r, c)) in chunk.iter().enumerate() {
+            if is_cov {
+                g_cov[(r, c)] = d.g[i];
+            } else {
+                g_bounds[(r, c)] = d.g[i];
+            }
+        }
+    }
+    Ok((value, g_cov, g_bounds))
 }
 
 #[cfg(test)]
