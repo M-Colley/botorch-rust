@@ -550,7 +550,8 @@ def _initialize_q_batch_batched(X: Any, acq_vals: Any, n: int, eta: float) -> tu
             maximum = _argmax(column)
             if maximum not in selected[b]:
                 selected[b][-1] = maximum
-    points, selected_values = [], []
+    points: list[float] = []
+    selected_values: list[float] = []
     for sample in range(n):
         for b in range(nb):
             index = selected[b][sample]
@@ -559,12 +560,12 @@ def _initialize_q_batch_batched(X: Any, acq_vals: Any, n: int, eta: float) -> tu
             selected_values.append(values[index * nb + b])
     selected_points = from_flat(points, (n, *batch, q, d), kind_of(X))
     selected_acq_vals = from_flat(selected_values, (n, *batch), kind_of(acq_vals))
-    index_values = [selected[b][sample] for sample in range(n) for b in range(nb)]
+    selected_indices = [selected[b][sample] for sample in range(n) for b in range(nb)]
     if is_torch_tensor(X):
-        indices = _ops.int_array(index_values, (n, *batch), kind_of(X))
+        indices = _ops.int_array(selected_indices, (n, *batch), kind_of(X))
         selected_points = X.gather(0, indices.reshape(n, *batch, 1, 1).expand(n, *shape[1:]))
     if is_torch_tensor(acq_vals):
-        indices = _ops.int_array(index_values, (n, *batch), kind_of(acq_vals))
+        indices = _ops.int_array(selected_indices, (n, *batch), kind_of(acq_vals))
         selected_acq_vals = acq_vals.gather(0, indices)
     return selected_points, selected_acq_vals
 
@@ -645,7 +646,7 @@ def gen_value_function_initial_conditions(
                 replacement=True,
             )
         )
-        samples = []
+        samples: list[float] = []
         for sample in range(n_value):
             for b in range(nb):
                 index = int(indices[b * n_value + sample])
