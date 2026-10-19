@@ -38,6 +38,12 @@ class MCSampler:
 
     sample_shape: tuple[int, ...]
 
+    def forward(self, posterior: Any) -> Any:
+        raise NotImplementedError
+
+    def __call__(self, posterior: Any) -> Any:
+        return self.forward(posterior=posterior)
+
 
 class NormalMCSampler(MCSampler):
     r"""Base class for samplers producing (possibly QMC) N(0,1) samples

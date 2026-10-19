@@ -286,7 +286,14 @@ class ModelListGP(Model):
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
         self._require_single_task("fantasize")
         if isinstance(sampler, ListSampler):
-            samplers, shared = [s._rs for s in sampler.samplers], False
+            samplers = []
+            for member_sampler in sampler.samplers:
+                if not isinstance(member_sampler, NormalMCSampler):
+                    raise UnsupportedError(
+                        "ModelListGP.fantasize requires normal samplers for its Gaussian members."
+                    )
+                samplers.append(member_sampler._rs)
+            shared = False
         elif isinstance(sampler, NormalMCSampler):
             samplers, shared = [sampler._rs], True
         else:
