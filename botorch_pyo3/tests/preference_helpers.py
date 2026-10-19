@@ -142,15 +142,176 @@ def inverse_err(a: Any, e: Any, K: Any) -> float:
     return err / max(cond_eps(K), VALUE_TOL)
 
 
+def bt_newton_utility(bt: Any, x0: Any) -> Any:
+    """BoTorch's utility from the fsolve solution ``x0``: the two Newton
+    steps of ``PairwiseGP._update`` with the model's current state (its
+    ``likelihood_hess`` is restored). From BoTorch's own ``_x0`` this is
+    BoTorch's utility; from botorch_rs's fsolve solution it gives both
+    libraries the same input to everything downstream of the MAP solve."""
+    hess = bt.likelihood_hess
+    try:
+        with torch.no_grad():
+            dp = bt.transform_inputs(bt.datapoints)
+            x = torch.as_tensor(x0, dtype=DT).reshape(bt.utility.shape)
+            return bt._util_newton_updates(dp=dp, x0=x, max_iter=2).detach()
+    finally:
+        bt.likelihood_hess = hess
+
+
+#: Unit roundoff of float64.
+UNIT_ROUNDOFF = 2.0**-53
+
+
+def cholesky_ambiguous(A: Any) -> bool:
+    """Whether the outcome of a float64 Cholesky factorization of the
+    symmetric matrix ``A`` (``n x n``) is decided by rounding: its smallest
+    eigenvalue is within ``20 n^{3/2} u ||A||_2`` of zero, the bound of
+    Demmel's theorem (Higham, *Accuracy and Stability of Numerical
+    Algorithms*, 2nd ed., Thm. 10.7) below which the factorization may fail
+    or succeed depending on the order of the operations (and above which it
+    succeeds in every implementation). Two libraries can then decide
+    differently whether to add jitter; both decisions follow BoTorch's
+    algorithm."""
+    A = torch.as_tensor(A, dtype=DT).detach()
+    n = A.shape[-1]
+    ev = torch.linalg.eigvalsh(A)
+    bound = 20 * n**1.5 * UNIT_ROUNDOFF * float(ev.abs().max())
+    return bool(float(ev[0].abs()) <= bound)
+
+
+#: The relative accuracy of the Cholesky factor of a positive semidefinite
+#: ``2 x 2`` matrix that is singular within rounding: a perturbation of size
+#: ``20 n^{3/2} u ||A||`` (the ambiguity bound of :func:`cholesky_ambiguous`)
+#: changes the factor by up to its square root (the factor of a singular
+#: matrix is Hoelder continuous with exponent 1/2), i.e. by 7.9e-8 relative.
+ROOT_TOL = math.sqrt(20 * 2**1.5 * UNIT_ROUNDOFF)
+
+
+class BtJitterDecisions:
+    """BoTorch's two jitter decisions of ``PairwiseGP`` posteriors, recorded
+    and optionally flipped where they are ambiguous (:func:`cholesky_ambiguous`):
+    ``_ensure_psd_with_jitter`` of the prior covariance of the new points and
+    ``psd_safe_cholesky`` of the posterior covariance (in
+    ``_scaled_psd_safe_cholesky``). Use on one t-batch at a time.
+
+    Each Cholesky attempt with an ambiguous outcome gets an index (in call
+    order; ``ambiguous`` counts them); the attempts in ``flip`` take the other
+    outcome. A flipped failure is a success on the matrix itself (factorized
+    as ``A + 2 |lambda_min| I``, which differs from ``A`` by rounding only), a
+    flipped success adds the next jitter as BoTorch does after a failure."""
+
+    def __init__(self, flip: frozenset[int] = frozenset()) -> None:
+        self.flip = flip
+        self.ambiguous = 0
+        #: Whether a posterior covariance that was factorized is singular
+        #: within rounding (its root is then determined only to
+        #: :data:`ROOT_TOL`).
+        self.singular_root = False
+
+    def _decide(self, A: Any) -> bool | None:
+        """The flipped outcome of an ambiguous attempt in ``flip`` (else None)."""
+        if A.reshape(-1, *A.shape[-2:]).shape[0] != 1 or not cholesky_ambiguous(
+            A.reshape(A.shape[-2:])
+        ):
+            return None
+        k = self.ambiguous
+        self.ambiguous += 1
+        if k not in self.flip:
+            return None
+        _, info = torch.linalg.cholesky_ex(A)
+        return bool((info != 0).any())  # the opposite of the actual success
+
+    @staticmethod
+    def _factor(A: Any) -> Any:
+        L, info = torch.linalg.cholesky_ex(A)
+        if bool((info == 0).all()):
+            return L
+        lam = torch.linalg.eigvalsh(A)[..., :1].abs().unsqueeze(-1)
+        eye = torch.eye(A.shape[-1], dtype=A.dtype, device=A.device)
+        return torch.linalg.cholesky(A + 2 * lam * eye)
+
+    def ensure_psd_with_jitter(
+        self, matrix: Any, scale: Any = 1.0, jitter: float = 1e-8, max_tries: int = 3
+    ) -> Any:
+        """``botorch.models.pairwise_gp._ensure_psd_with_jitter``."""
+        from linear_operator.utils.errors import NotPSDError
+
+        scaled = matrix / scale
+        new_jitter: float = 0.0
+        psd = False
+        for i in range(max_tries):
+            scaled = scaled + new_jitter * torch.diag_embed(
+                torch.ones(scaled.shape[:-1], device=scaled.device, dtype=scaled.dtype)
+            )
+            _, info = torch.linalg.cholesky_ex(scaled)
+            psd = bool((info == 0).all())
+            forced = self._decide(scaled.detach())
+            if forced is not None:
+                psd = forced
+            if psd:
+                break
+            new_jitter = jitter * (10**i) - new_jitter
+        if not psd:
+            raise NotPSDError(
+                "Matrix not positive definite after repeatedly adding jitter "
+                f"up to {jitter * (10**i):.1e}."
+            )
+        return scaled * scale
+
+    def scaled_psd_safe_cholesky(self, matrix: Any, scale: Any, jitter: float | None = None) -> Any:
+        """``botorch.models.pairwise_gp._scaled_psd_safe_cholesky`` (with
+        linear_operator's ``psd_safe_cholesky`` for one matrix)."""
+        from linear_operator import settings as lo_settings
+        from linear_operator.utils.errors import NotPSDError
+
+        A = matrix / scale
+        if jitter is None:
+            jitter = lo_settings.cholesky_jitter.value(A.dtype)
+        max_tries = lo_settings.cholesky_max_tries.value()
+        Aprime = A
+        jitter_prev = 0.0
+        for i in range(max_tries + 1):
+            if i > 0:
+                jitter_new = jitter * (10 ** (i - 1))
+                eye = torch.eye(A.shape[-1], dtype=A.dtype, device=A.device)
+                Aprime = Aprime + (jitter_new - jitter_prev) * eye
+                jitter_prev = jitter_new
+            _, info = torch.linalg.cholesky_ex(Aprime)
+            ok = bool((info == 0).all())
+            forced = self._decide(Aprime.detach())
+            if forced is not None:
+                ok = forced
+            if ok:
+                if cholesky_ambiguous(Aprime.reshape(Aprime.shape[-2:])):
+                    self.singular_root = True
+                return self._factor(Aprime) * scale.sqrt()
+        raise NotPSDError("Matrix not positive definite after repeatedly adding jitter.")
+
+    @contextlib.contextmanager
+    def patched(self) -> Iterator[BtJitterDecisions]:
+        import botorch.models.pairwise_gp as bt_pgp
+
+        orig = (bt_pgp._ensure_psd_with_jitter, bt_pgp._scaled_psd_safe_cholesky)
+        bt_pgp._ensure_psd_with_jitter = self.ensure_psd_with_jitter  # type: ignore[assignment]
+        bt_pgp._scaled_psd_safe_cholesky = self.scaled_psd_safe_cholesky  # type: ignore[assignment]
+        try:
+            yield self
+        finally:
+            bt_pgp._ensure_psd_with_jitter, bt_pgp._scaled_psd_safe_cholesky = orig
+
+
 def xtol_of(case: Case) -> float:
     return float(case.options.get("xtol") or 1e-6)
 
 
 def compare_state(check: Checker, bt: Any, rs: Any, xtol: float, what: str = "") -> None:
-    """The consolidated data (exact) and the Laplace state: the fsolve
-    solution to the solver's tolerance (``xtol``), the utility, Hessian,
-    covariance and its Cholesky factor to 1e-9, the inverse covariance to
-    ``cond(K) · eps``."""
+    """The consolidated data (exact) and the Laplace state: the utility,
+    Hessian, covariance and its Cholesky factor to 1e-9, the inverse
+    covariance to ``cond(K) · eps``. The fsolve solutions are not compared
+    (rounding moves fsolve's last iterate within its tolerance ``xtol``; the
+    difference relative to ``xtol`` is recorded): BoTorch's Newton steps from
+    botorch_rs's fsolve solution must give botorch_rs's utility to 1e-9
+    (:func:`bt_newton_utility`), the same input to everything downstream."""
     pre = f"{what}: " if what else ""
     assert torch.equal(torch.as_tensor(rs.datapoints, dtype=DT), bt.datapoints)
     assert torch.equal(torch.as_tensor(rs.comparisons), bt.comparisons.long())
@@ -158,7 +319,15 @@ def compare_state(check: Checker, bt: Any, rs: Any, xtol: float, what: str = "")
         assert rs.consolidated_indices is None
     else:
         assert torch.equal(torch.as_tensor(rs.consolidated_indices), bt.consolidated_indices)
-    check.check(f"{pre}fsolve solution (tol xtol)", rs._x0, bt._x0, xtol)
+    check.record(
+        f"{pre}fsolve solution / xtol (not compared)", rel_err(rs._x0, bt._x0) / xtol, None
+    )  # type: ignore[arg-type]
+    check.check(
+        f"{pre}utility vs BoTorch's Newton steps from botorch_rs's fsolve solution",
+        rs.utility,
+        bt_newton_utility(bt, rs._x0),
+        VALUE_TOL,
+    )
     check.check(f"{pre}utility", rs.utility, bt.utility.detach(), VALUE_TOL)
     check.check(f"{pre}likelihood_hess", rs.likelihood_hess, bt.likelihood_hess.detach(), VALUE_TOL)
     check.check(f"{pre}covar", rs.covar, bt.covar.detach(), VALUE_TOL)

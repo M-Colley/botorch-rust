@@ -528,7 +528,6 @@ enum Start<'a> {
     Fresh(&'a [f64]),
     /// No solve: these values are taken as the fsolve solution (the
     /// function BoTorch differentiates, with the solution held fixed).
-    #[cfg(test)]
     Solved(&'a [f64]),
 }
 
@@ -613,13 +612,9 @@ fn laplace(
     let x0: Vec<f64> = match start {
         Start::Warm(x) => x.to_vec(),
         Start::Fresh(draws) => initial_utility(p.comps, draws, s.sqrt()),
-        #[cfg(test)]
         Start::Solved(x) => x.to_vec(),
     };
-    #[cfg(test)]
     let solved = matches!(start, Start::Solved(_));
-    #[cfg(not(test))]
-    let solved = false;
     let res = if solved {
         crate::minpack::HybrjResult {
             x: x0.clone(),
@@ -1276,6 +1271,28 @@ impl PairwiseGP {
         self.x0 = Some(lap.state.x0.clone());
         self.state = Some(Arc::new(lap.state));
         Ok(())
+    }
+
+    /// The Laplace state at the current hyperparameters from the given
+    /// fsolve solution `x0` (the model keeps its state): BoTorch's two Newton
+    /// steps of `_update` without the MAP solve. With another
+    /// implementation's fsolve solution this gives both the same input to
+    /// everything downstream of the solve.
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] without data or with `x0` of the
+    /// wrong length; errors of the covariance and its factorization.
+    pub fn laplace_from_solution(&mut self, x0: &[f64]) -> Result<LaplaceState> {
+        if self.data.is_none() || x0.len() != self.num_datapoints() {
+            return Err(BotorchError::InvalidArgument(format!(
+                "expected an fsolve solution of {} values, got {}",
+                self.num_datapoints(),
+                x0.len()
+            )));
+        }
+        let x_tf = self.transformed_datapoints()?;
+        let p = self.problem(&x_tf);
+        Ok(laplace(&p, &self.covar_module, &self.raw, Start::Solved(x0))?.state)
     }
 
     /// The Laplace marginal log likelihood (BoTorch's

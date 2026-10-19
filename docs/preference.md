@@ -160,7 +160,9 @@ ComposedModel, compose, posterior_samples_vjp}` (qEUBO is `QSimpleRegret` on
    `ValueError`, `IndexError`, `AttributeError`, with the same messages).
 10. `mll(...)` returns the value without an autograd graph; the MLL's
     gradient is `mll.value_and_grad()`.
-11. `qMultiStepLookahead` on a `PairwiseGP` (or a `ModelListGP` with one)
+11. **The t-batches of one call are independent** (BoTorch bug 6): the
+    jitter of the prior covariance of the new points is decided per t-batch.
+12. `qMultiStepLookahead` on a `PairwiseGP` (or a `ModelListGP` with one)
     raises BoTorch's `RuntimeError: Conditioning on non-pairwise comparison
     observations.` at construction; BoTorch raises it at the first
     evaluation, when it fantasizes.
@@ -168,28 +170,51 @@ ComposedModel, compose, posterior_samples_vjp}` (qEUBO is `QSimpleRegret` on
 ## Equivalence tests
 
 Tolerances: values 1e-9 (relative), gradients 1e-8 (relative to the largest
-component). Two quantities depend on rounding in BoTorch itself and have
-measured tolerances:
+component). Where rounding decides a discrete step of BoTorch's algorithm,
+the comparison gives both libraries the same input instead of a wider
+tolerance. Rounding differs between libraries and between platforms (in
+botorch_rs through the platform's libm, in torch through its BLAS / LAPACK):
+on seed 16 of the sweep, botorch_rs's values differ by up to 1.4e-15 between
+Windows and Linux, BoTorch's by up to 1.3e-15, and BoTorch's fsolve takes 3
+Jacobian evaluations on Windows and 2 on Linux.
 
-- the fsolve solution `_x0` is compared to the solver's tolerance `xtol`:
-  fsolve's iterates are rounding-sensitive when `cond(K)` reaches 1e10 ..
-  1e15 (BoTorch's own solutions on twins whose datapoints differ at 1e-14
-  move by up to 3.5e-9 in `probit_saturated_d1`, `cond(K) = 1.7e10`; 3.1e-8
-  and 6.0e-6 in sweep seeds 14 and 29). The utility after the two Newton
-  steps matches to 1e-9 in every case;
-- `covar_inv` is compared normwise to `cond(K) · eps`, the accuracy of any
-  inverse of `K` (BoTorch's `cholesky_inverse` and `linalg.inv(L Lᵀ)`
-  differ by 2.7e-7 in `probit_saturated_d1`, its own `covar_inv` on 1e-14
-  twins by up to 3.5e-7).
+- **The fsolve solution** `_x0` is not compared. fsolve stops after a step
+  of relative size `xtol`, and where `cond(K)` reaches 1e10 .. 1e15
+  rounding moves its iterates within that (the solutions differ by up to
+  3.1 `xtol` in the sweep). Instead BoTorch's two Newton steps from
+  botorch_rs's fsolve solution must give botorch_rs's utility to 1e-9 (in
+  the Rust fixtures, botorch_rs's Newton steps from BoTorch's solution,
+  `PairwiseGP::laplace_from_solution`, BoTorch's utility); the utilities
+  themselves are compared to 1e-9 as well.
+- **`covar_chol` and `covar_inv`** are compared normwise to
+  `max(cond(K) · eps, 1e-9)`, the accuracy of a Cholesky factor and of an
+  inverse of `K` (Higham, *Accuracy and Stability of Numerical Algorithms*,
+  Thm. 10.8 and Sec. 14.1).
+- **Jitter decisions.** BoTorch adds jitter to the prior covariance of the
+  new points (`_ensure_psd_with_jitter`) and to posterior covariances
+  (`psd_safe_cholesky`) where a Cholesky factorization fails. For a matrix
+  whose smallest eigenvalue is within `20 n^{3/2} u ||A||` of zero
+  (Demmel's bound, Higham Thm. 10.7) the outcome depends on rounding: with
+  a linear kernel on one input (sweep seed 16) every pair's prior
+  covariance is rank one, and torch's factorization fails for t-batches 0
+  and 2 on Windows but for 1 and 2 on Linux. Every t-batch is evaluated on
+  its own (BoTorch couples the t-batches of one call, bug 6). A t-batch
+  that differs must contain such an ambiguous decision and must match, at
+  1e-9 / 1e-8, BoTorch's result for the other outcome
+  (`preference_helpers.BtJitterDecisions` replays BoTorch's decisions with
+  the ambiguous ones flipped).
+- **Sample-based quantities** (qEUBO, BALD) of a t-batch whose factorized
+  posterior covariance is singular within rounding: the Cholesky factor of
+  a singular matrix is Hoelder continuous with exponent 1/2, so a
+  perturbation within the ambiguity bound changes it by up to
+  `sqrt(20 n^{3/2} u) = 7.9e-8` (relative); that is their tolerance.
 
-In the randomized sweep, a quantity that misses the nominal tolerance is
-compared with BoTorch's outcomes on 16 twins (datapoints perturbed at 1e-14
-.. 1e-11) and must lie within `10 x` BoTorch's spread there: fsolve's
-iterates as above, and the jitter that `psd_safe_cholesky` adds to nearly
-singular posterior covariances (a linear kernel on one input: the joint
-posterior of a pair is rank one, and whether `1e-6 · s` suffices depends on
-rounding; BoTorch's own twins spread by 2.3e-6 .. 4.8e-6). Fits are
-compared on twins with the two-stage procedure of `docs/fitting.md`.
+Twins are used for fits only (the two-stage procedure of
+`docs/fitting.md`). Earlier versions of the sweep compared
+rounding-dependent quantities with BoTorch's spread on 16 twins; on Linux
+all twins of seed 16 made the same jitter decisions, so the spread
+(1.5e-11) missed the difference of the coupled, flipped decision (EUBO
+1.0e-6), which failed CI.
 
 ### Rust fixtures (`botorch_core/tests/preference_10b_parity.rs`)
 
@@ -204,7 +229,7 @@ scipy's `fsolve` on 6 test systems.
 | --- | --- | --- |
 | MINPACK `hybrj`: evaluation points, solution, `info`, `nfev`, `njev` | bitwise | bitwise |
 | consolidation, default raw parameters, bounds | exact | exact |
-| fsolve solution (construction / MLL evaluations) | `xtol` | 2.1e-15 / 3.3e-9 |
+| utility from BoTorch's fsolve solution (botorch_rs's Newton steps) | 1e-9 | 5.6e-13 |
 | utility | 1e-9 | 2.1e-15 (5.6e-13 at random parameters) |
 | `likelihood_hess`, `covar` | 1e-9 | 4.5e-16 (6.5e-14), 2.1e-16 (7.3e-12) |
 | `covar_chol` | 1e-9 | 5.6e-11 |
@@ -256,7 +281,8 @@ of the acquisition functions built from them, BoTorch's errors), and phase
 | --- | --- | --- |
 | parameter names, shapes and defaults, optimizer bounds, consolidation, pairwise sampler comparisons | exact | exact |
 | likelihood `p`, `log_p`, gradient and Hessian sums | 1e-9 | 8.1e-17 |
-| fsolve solution `_x0` | `xtol` | 6.8e-9 (`xtol = 1e-6`), 7.2e-7 (`xtol = 1e-4`, `maxfev = 8`) |
+| utility from botorch_rs's fsolve solution (BoTorch's Newton steps) | 1e-9 | 2.8e-15 |
+| (fsolve solutions, not compared: difference / `xtol`) | - | 7.2e-3 (`xtol = 1e-4`, `maxfev = 8`), else 1.9e-9 |
 | utility | 1e-9 | 2.9e-15 |
 | `likelihood_hess` | 1e-9 | 3.2e-15 |
 | `covar` / `covar_chol` | 1e-9 | 4.7e-16 / 3.5e-14 |
@@ -282,7 +308,7 @@ of the acquisition functions built from them, BoTorch's errors), and phase
 The fsolve solutions differ by more than the utilities because fsolve
 stops after a step of relative size `xtol`: rounding differences move its
 last iterate within that step, and BoTorch's two Newton steps remove the
-difference (utility 2.9e-15).
+difference.
 
 ### Randomized sweep (`test_equivalence_10b_preference.py`, `-m equivalence`)
 
@@ -295,29 +321,28 @@ tree, `Normalize` in a quarter of the cases, random `jitter` and `xtol`.
 Each case compares the state after construction, the MLL and its gradient
 at the default and at random parameters, posteriors (`q = 1` and joint,
 with input gradients), EUBO, qEUBO (identical base samples) and BALD (the
-same torch seed); every fourth case also the fit (10 fits, on twins). Seven seeds need the rounding-dependent
-comparison (rows marked "rounding"): the fsolve solution in seeds 10, 14,
-29, 31 and 36, `covar_chol` in seed 14, EUBO, qEUBO and BALD (the
-jittered posterior covariance of their pairs) in seed 16, and the joint
-posterior covariance in seed 39.
+same torch seed), each t-batch on its own; every fourth case also the fit
+(10 fits, on twins). Seed 16 (a linear kernel on one input) has ambiguous
+jitter decisions in its EUBO / qEUBO / BALD t-batches, seed 39 in its joint
+posterior.
 
 | quantity | tolerance | worst error |
 | --- | --- | --- |
 | construction errors (same exception class) | exact | exact |
-| fsolve solution `_x0`, utility | 1e-9 | 7.9e-14 |
-| `_x0`, rounding: error / max(1e-9, 10 x BoTorch's twin spread) | 1 | 0.10 |
-| `covar_chol` | 1e-9 | 5.1e-10 |
-| `covar_chol`, rounding (as above) | 1 | 0.049 |
-| `covar_inv` / (`cond(K)` eps) | 1 | 0.26 |
+| utility | 1e-9 | 7.9e-14 |
+| utility from botorch_rs's fsolve solution (BoTorch's Newton steps) | 1e-9 | 6.2e-14 |
+| (fsolve solutions, not compared: difference / `xtol`) | - | 3.1 |
+| `covar_chol` / max(`cond(K)` eps, 1e-9) | 1 | 2.0e-3 |
+| `covar_inv` / max(`cond(K)` eps, 1e-9) | 1 | 0.26 |
 | MLL value | 1e-9 | 6.4e-16 |
 | MLL gradient | 1e-8 | 3.9e-10 |
-| posterior mean (`q = 1`, joint) | 1e-9 | 9.7e-14 |
+| posterior mean (`q = 1`, joint) | 1e-9 | 4.4e-13 |
 | posterior covariance | 1e-9 | 1.9e-15 |
-| posterior covariance, rounding (as above) | 1 | 0.10 |
-| EUBO / qEUBO / BALD values | 1e-9 | 5.0e-13 |
-| EUBO / qEUBO / BALD values, rounding (as above) | 1 | 0.10 |
+| posterior mean / covariance, other outcome of an ambiguous decision | 1e-9 | 2.6e-16 / 2.1e-15 (seed 39) |
+| EUBO / qEUBO / BALD values | 1e-9 | 9.8e-12 |
 | EUBO / qEUBO input gradients | 1e-8 | 6.7e-12 |
-| EUBO / qEUBO input gradients, rounding (as above) | 1 | 0.10 |
+| EUBO / qEUBO / BALD, other outcome of an ambiguous decision: values / gradients | 1e-9 / 1e-8 | 3.7e-14 / 3.5e-15 (seed 16 on Linux) |
+| qEUBO / BALD with a singular posterior covariance: values / gradients | 7.9e-8 | 5.0e-10 / 3.2e-9 (seed 16; Linux 1.2e-10 / 6.5e-9) |
 | fits (10): best loss above BoTorch's best (scaled) | 1 | 3.5e-9 |
 | fits: loss above BoTorch's worst (scaled) | 1 | 0 |
 | fits: first attempts failing, botorch_rs minus BoTorch | - | 0, except seed 32: 3 |
@@ -332,7 +357,20 @@ fit comparison passes (the same distribution of best losses).
 
 ### Verification
 
-On the branch merged with main at b539d34:
+After the fix of the sweep (fix/10b-sweep-linux):
+
+- The 10b tests (133: 73 live parity, 40 sweep, 20 API and error tests) with
+  `BOTORCH_RS_REQUIRE_BOTORCH=1`, including `-m equivalence`, pass under
+  torch 2.13 and 2.14.1 against BoTorch main (da00e0401) and 0.18.1 (Windows),
+  and the sweep under torch 2.14.1 / BoTorch 0.18.1 on Linux (GitHub Actions,
+  where seed 16 has failed before); the worst errors above are the maxima
+  over these runs.
+- CI's NumPy job (NumPy without torch, `-m "not equivalence"`): 731 passed,
+  79 skipped.
+- `cargo fmt`, `cargo clippy -D warnings`, `cargo test` of `botorch_core`,
+  ruff: clean.
+
+Earlier, on the branch merged with main at b539d34:
 
 - `cargo fmt --all --check`, `cargo clippy --offline --workspace
   --all-targets -- -D warnings`: clean. `cargo test --offline --workspace
@@ -429,6 +467,26 @@ On the branch merged with main at b539d34:
    (`AnalyticExpectedUtilityOfBestOption` would still fail on such a model:
    it reads `pref_model.datapoints.dtype`.)
 
+6. **The t-batches of one call are coupled through the jitter of the prior
+   covariance.** `_ensure_psd_with_jitter` adds jitter to all t-batches
+   when the factorization of any of them fails (`(info == 0).all()`), so a
+   t-batch's posterior, and with it EUBO, qEUBO and BALD, depends on the
+   other t-batches; a pair of identical points (a singular prior
+   covariance) changes the value of another pair:
+
+   ```python
+   torch.manual_seed(0)
+   model = PairwiseGP(torch.rand(6, 2, dtype=torch.float64), torch.tensor([[0, 1], [2, 3], [4, 5]])).eval()
+   x = torch.rand(1, 2, 2, dtype=torch.float64)
+   dup = torch.rand(1, 1, 2, dtype=torch.float64).expand(1, 2, 2)
+   eubo = AnalyticExpectedUtilityOfBestOption(model)
+   eubo(x).item(), eubo(torch.cat([x, dup]))[0].item()
+   # 0.08521134858657567 vs 0.08521232834873171
+   ```
+
+   Fix: add the jitter per batch element (`info > 0`), as linear_operator's
+   `psd_safe_cholesky` does.
+
 ### Upstream status
 
 | Bug | Fix |
@@ -438,3 +496,4 @@ On the branch merged with main at b539d34:
 | 3 | meta-pytorch/botorch#3461 |
 | 4 | meta-pytorch/botorch#3459 |
 | 5 | meta-pytorch/botorch#3460 |
+| 6 | not filed yet |

@@ -346,28 +346,30 @@ fn condition_number(rows: &[Vec<f64>]) -> f64 {
     hi / lo
 }
 
-/// The fsolve solution is compared to the solver's tolerance (`xtol`, the
-/// relative size of fsolve's last step): BoTorch's own solutions on twins
-/// whose datapoints differ at 1e-14 move by up to 3.5e-9 in
-/// `probit_saturated_d1` (cond(K) = 1.7e10), where fsolve's iterates depend
-/// on rounding. `covar_inv` is compared normwise to `cond(K) · eps` (the
+/// The fsolve solutions are not compared: fsolve stops after a step of
+/// relative size `xtol`, and where `cond(K)` is large rounding (which differs
+/// between platforms, e.g. through libm) moves its iterates within that.
+/// Instead botorch_rs's Newton steps from BoTorch's fsolve solution
+/// (`from_bt`, [`PairwiseGP::laplace_from_solution`]) must give BoTorch's
+/// utility to 1e-9: both get the same input to everything downstream of the
+/// MAP solve. `covar_inv` is compared normwise to `cond(K) · eps` (the
 /// accuracy of any inverse of `K`; BoTorch's `cholesky_inverse` and
-/// `linalg.inv(L Lᵀ)` differ by 2.7e-7 there, and its own `covar_inv` on
-/// 1e-14 twins by up to 3.5e-7).
+/// `linalg.inv(L Lᵀ)` differ by 2.7e-7 in `probit_saturated_d1`, and its own
+/// `covar_inv` on 1e-14 twins by up to 3.5e-7).
 fn check_state(
     report: &mut Report,
     name: &str,
     what: &str,
     st: &LaplaceState,
     e: &State,
-    xtol: f64,
+    from_bt: &LaplaceState,
 ) {
     report.check_slices(
         name,
-        &format!("{what}: fsolve solution (tol xtol)"),
-        &st.x0,
-        &e.x0,
-        xtol,
+        &format!("{what}: utility from BoTorch's fsolve solution"),
+        from_bt.utility.as_slice(),
+        &e.utility,
+        VAL_TOL,
     );
     report.check_slices(
         name,
@@ -437,14 +439,14 @@ fn pairwise_gp_matches_botorch() {
             .zip(&c.bounds)
             .all(|(&(lo, hi), (blo, bhi))| lo == bound(blo) && hi == bound(bhi));
         report.check(name, "bounds", if bounds_ok { 0.0 } else { 1.0 }, 0.0);
-        let xtol = c.options.get("xtol").map_or(1e-6, common::kernel_spec::num);
+        let from_bt = m.laplace_from_solution(&c.state.x0).unwrap();
         check_state(
             &mut report,
             name,
             "construction",
             m.state().unwrap(),
             &c.state,
-            xtol,
+            &from_bt,
         );
         // MLL evaluations (each warm-started like BoTorch's).
         for (k, e) in c.mll_evals.iter().enumerate() {
@@ -467,7 +469,10 @@ fn pairwise_gp_matches_botorch() {
                 grad_err(&g.unwrap(), &e.grad),
                 GRAD_TOL,
             );
-            check_state(&mut report, name, what, &st, &e.state, xtol);
+            let mut at_raw = m.clone();
+            at_raw.set_raw_parameters(&e.raw).unwrap();
+            let from_bt = at_raw.laplace_from_solution(&e.state.x0).unwrap();
+            check_state(&mut report, name, what, &st, &e.state, &from_bt);
         }
         // Posterior after the last evaluation, in eval mode.
         let last = c.mll_evals.last().unwrap();
