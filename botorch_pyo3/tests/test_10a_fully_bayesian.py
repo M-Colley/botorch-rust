@@ -245,6 +245,83 @@ def test_kernel_helpers(kind: str) -> None:
         fb.reshape_and_detach([[0.0, 0.0]], [1.0, 2.0, 3.0])
 
 
+@pytest.mark.parametrize("kernel", ["compute_dists", "matern52_kernel", "linear_kernel"])
+def test_kernel_helpers_broadcast_batches(kind: str, kernel: str) -> None:
+    X = [[[[0.0, 0.1], [0.3, 0.7], [1.0, 0.4]]], [[[0.2, 0.5], [0.5, 0.8], [0.9, 0.0]]]]
+    scales = [[[0.5, 1.0]], [[2.0, 0.3]], [[0.7, 1.8]], [[1.1, 1.2]]]
+    result = getattr(fb, kernel)(as_kind(X, kind), as_kind(scales, kind))
+    check_kind(result, kind)
+    assert shape(result) == (2, 4, 3, 3)
+    expected = []
+    for batch in X:
+        for (scale,) in scales:
+            if kernel == "linear_kernel":
+                expected.extend(
+                    sum(a[k] * b[k] * scale[k] for k in range(2))
+                    for a in batch[0]
+                    for b in batch[0]
+                )
+            else:
+                for a in batch[0]:
+                    for b in batch[0]:
+                        r = math.sqrt(
+                            max(sum(((a[k] - b[k]) / scale[k]) ** 2 for k in range(2)), 1e-30)
+                        )
+                        expected.append(
+                            r
+                            if kernel == "compute_dists"
+                            else (1 + math.sqrt(5) * r + 5 / 3 * r * r)
+                            * math.exp(-math.sqrt(5) * r)
+                        )
+    assert flatten(result) == pytest.approx(expected)
+    # A scalar scale broadcasts to every feature; incompatible feature
+    # counts must raise instead of silently cycling the scale values.
+    assert shape(getattr(fb, kernel)(as_kind(X, kind), 0.5)) == (2, 1, 3, 3)
+    with pytest.raises(ValueError, match="cannot be broadcast"):
+        getattr(fb, kernel)(as_kind([[0.1, 0.2, 0.3]], kind), as_kind([0.5, 1.0], kind))
+
+
+@pytest.mark.parametrize("name", list(MODELS))
+def test_subset_warp_samples_and_custom_eps(kind: str, name: str) -> None:
+    X, Y, _ = _data(d=3)
+    model = MODELS[name](
+        as_kind(X, kind), as_kind(Y, kind), use_input_warping=True, indices_to_warp=[1]
+    )
+    pm = model.pyro_model
+    pm._eps = 0.02
+    samples = pm.get_dummy_mcmc_samples(2)
+    assert shape(samples["c0"]) == (2, 1)
+    assert shape(samples["c1"]) == (2, 1)
+    samples["c0"] = [[2.0], [0.4]]
+    samples["c1"] = [[0.8], [2.0]]
+    model.load_mcmc_samples(samples)
+    model.eval()
+    actual = model.transform_inputs(as_kind(X, kind))
+    expected = []
+    for c0, c1 in zip(samples["c0"], samples["c1"], strict=True):
+        expected.extend(flatten(pm.warp(as_kind(X, kind), c0=c0, c1=c1)))
+    if name == "linear":
+        expected = [v - 0.5 for v in expected]
+    assert flatten(actual) == pytest.approx(expected)
+    assert shape(model.posterior(as_kind(X[:2], kind)).mean) == (2, 2, 1)
+
+
+def test_model_transform_inputs(kind: str) -> None:
+    X, Y, _ = _data()
+    Xt = as_kind(X[:2], kind)
+    model = fb.SaasFullyBayesianSingleTaskGP(as_kind(X, kind), as_kind(Y, kind))
+    assert model.transform_inputs(Xt) is Xt
+    tf = Normalize(d=2, bounds=[[0.0, 0.0], [2.0, 4.0]])
+    transformed = model.transform_inputs(Xt, input_transform=tf)
+    check_kind(transformed, kind)
+    assert flatten(transformed) == pytest.approx(
+        [v / (2.0 if i % 2 == 0 else 4.0) for i, v in enumerate(flatten(Xt))]
+    )
+    model.input_transform = Normalize(d=2, bounds=[[0.0, 0.0], [3.0, 5.0]])
+    assert flatten(model.transform_inputs(Xt)) != flatten(transformed)
+    assert flatten(model.transform_inputs(Xt, input_transform=tf)) == flatten(transformed)
+
+
 def test_construct_inputs() -> None:
     from botorch_rs.utils.datasets import SupervisedDataset
 

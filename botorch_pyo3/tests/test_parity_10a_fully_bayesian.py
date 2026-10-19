@@ -568,6 +568,43 @@ def test_pyro_model_warp_matches_botorch(indices: Any) -> None:
     CHECK.check("PyroModel.warp", pr.warp(X, c0=c0, c1=c1), pb.warp(X, c0=c0, c1=c1), VALUE_TOL)
 
 
+@pytest.mark.parametrize("kernel", ["compute_dists", "matern52_kernel", "linear_kernel"])
+@pytest.mark.parametrize("scale_shape", [(3,), (1, 3), (4, 1, 3), (2, 4, 5, 3), ()])
+def test_batched_kernel_helpers_match_botorch(kernel: str, scale_shape: tuple[int, ...]) -> None:
+    """Arbitrary batch and row broadcasting use the same native kernel as
+    unbatched helpers; invalid feature dimensions must not wrap around."""
+    import jax.numpy as jnp
+    from botorch.models import fully_bayesian as bt_fb
+
+    from botorch_rs.models import fully_bayesian as rs_fb
+
+    g = _gen(136)
+    X = torch.rand(2, 1, 5, 3, generator=g, dtype=DT)
+    scale = 0.2 + torch.rand(scale_shape, generator=g, dtype=DT)
+    with jax_x64():
+        expected = getattr(bt_fb, kernel)(jnp.asarray(X.numpy()), jnp.asarray(scale.numpy()))
+    actual = getattr(rs_fb, kernel)(X, scale)
+    CHECK.check(f"batched {kernel}", actual, np.asarray(expected), VALUE_TOL)
+
+
+@pytest.mark.parametrize("batch_shape", [(), (1,), (2, 1), (4, 1, 1)])
+def test_warp_forward_broadcasts_like_botorch(batch_shape: tuple[int, ...]) -> None:
+    from botorch.models.transforms.input import Warp as BtWarp
+
+    from botorch_rs.models.transforms.input import Warp as RsWarp
+
+    bounds = torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=DT)
+    kwargs = {"d": 3, "indices": [1], "batch_shape": (2, 1), "bounds": bounds}
+    bt, rs = BtWarp(**kwargs), RsWarp(**kwargs)
+    c0 = torch.tensor([0.4, 2.0], dtype=DT).reshape(2, 1, 1, 1)
+    c1 = torch.tensor([0.8, 1.5], dtype=DT).reshape(2, 1, 1, 1)
+    bt.concentration0.data = c0.clone()
+    bt.concentration1.data = c1.clone()
+    rs.concentration0, rs.concentration1 = c0, c1
+    X = torch.rand(*batch_shape, 5, 3, generator=_gen(137), dtype=DT)
+    CHECK.check("Warp forward batch broadcasting", rs(X), bt(X), VALUE_TOL)
+
+
 # ---------------------------------------------------------------------------
 # Bayesian active learning
 # ---------------------------------------------------------------------------
@@ -752,20 +789,26 @@ def test_multitask_nuts_replay_follows_numpyro_as_long_as_botorch_twins() -> Non
 
 
 def test_mixture_covariance_of_several_outputs() -> None:
-    """BoTorch's ``mixture_covariance_matrix`` fails for multi-output
-    posteriors (``q x q`` mean outer products added to ``(q m) x (q m)``
-    covariances, see the draft); botorch_rs's is compared with the mixture
-    covariance computed from BoTorch's components (output-major order)."""
+    """Compare the mixture covariance in output-major order. Older BoTorch
+    releases fail on multi-output mixtures; compare their components too."""
     bt, rs, X, _ = mt_model_pair(200)
     Xt = torch.rand(3, 2, generator=_gen(201), dtype=DT)
     with torch.no_grad():
         pb = bt.posterior(Xt)
-        with pytest.raises(RuntimeError):
-            _ = pb.mixture_covariance_matrix
         mean = pb.mean  # S x q x m
         cov = pb.distribution.covariance_matrix  # S x (q m) x (q m), output-major
         diff = (mean - mean.mean(0)).transpose(-1, -2).reshape(mean.shape[0], -1)
         ref = cov.mean(0) + (diff.unsqueeze(-1) * diff.unsqueeze(-2)).mean(0)
+        try:
+            upstream_cov = pb.mixture_covariance_matrix
+        except RuntimeError:
+            # BoTorch 0.18.1 adds q x q mean outer products to q*m x q*m
+            # covariance matrices; the audited local fork fixes flattening.
+            upstream_cov = None
+        if upstream_cov is not None:
+            if hasattr(upstream_cov, "to_dense"):
+                upstream_cov = upstream_cov.to_dense()
+            CHECK.check("BoTorch mixture covariance of several outputs", upstream_cov, ref, VALUE_TOL)
     CHECK.check(
         "mixture covariance of several outputs",
         rs.posterior(Xt).mixture_covariance_matrix,

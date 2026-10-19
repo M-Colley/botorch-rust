@@ -1051,16 +1051,27 @@ class Warp(ReversibleInputTransform):
         return [s.with_params(c) for s, c in zip(self._steps, self._concentrations(), strict=True)]
 
     def _apply(self, X: Any, inverse: bool) -> Any:
+        from botorch_rs._arrays import broadcast_shapes, broadcast_to
+
         kind = kind_of(X)
         data, shape = _check_flat_matrix(X)
         steps = self._current_steps()
         if self.batch_shape:
             k = len(self.batch_shape)
-            if tuple(shape[len(shape) - 2 - k : -2]) != self.batch_shape:
+            if inverse and tuple(shape[len(shape) - 2 - k : -2]) != self.batch_shape:
                 raise BotorchTensorDimensionError(
                     "The right most batch dims of X must match self.batch_shape: "
                     f"({self.batch_shape})."
                 )
+            if not inverse:
+                batch = broadcast_shapes(shape[:-2], self.batch_shape)
+                if batch is None:
+                    raise BotorchTensorDimensionError(
+                        f"X batch shape {shape[:-2]} cannot broadcast with {self.batch_shape}."
+                    )
+                target = (*batch, *shape[-2:])
+                data = broadcast_to(data, shape, target)
+                shape = target
         if not inverse and self.training:
             # The bounds of the normalization are learned in train mode.
             if self._bounds is None:
@@ -1075,23 +1086,24 @@ class Warp(ReversibleInputTransform):
         nb = len(steps)
         n, d = shape[-2], shape[-1]
         block = n * d
-        lead = len(data) // (nb * block)
         values = list(data)
         out_v: list[float] = [0.0] * len(values)
+        member_indices = broadcast_to(list(range(nb)), self.batch_shape, shape[:-2])
         for b in range(nb):
+            batches = [i for i, member in enumerate(member_indices) if int(member) == b]
             pts: list[float] = []
-            for o in range(lead):
-                s0 = (o * nb + b) * block
+            for o in batches:
+                s0 = o * block
                 pts.extend(values[s0 : s0 + block])
             res = (
-                steps[b].untransform((pts, (lead, n, d)))
+                steps[b].untransform((pts, (len(batches), n, d)))
                 if inverse
-                else steps[b].transform((pts, (lead, n, d)))
+                else steps[b].transform((pts, (len(batches), n, d)))
             )
             rd = list(res[0])
-            for o in range(lead):
-                s0 = (o * nb + b) * block
-                out_v[s0 : s0 + block] = rd[o * block : (o + 1) * block]
+            for local, o in enumerate(batches):
+                s0 = o * block
+                out_v[s0 : s0 + block] = rd[local * block : (local + 1) * block]
         return from_flat(out_v, shape, kind)
 
     def _transform(self, X: Any) -> Any:

@@ -20,6 +20,19 @@ class Model:
     def eval(self) -> Model:
         return self.train(False)
 
+    def transform_inputs(self, X: Any, input_transform: Any = None) -> Any:
+        """Apply an explicit input transform, or the model's transform.
+
+        Transforms preserve the caller's array type and run their numerical
+        operations in Rust. Without a transform, return ``X`` unchanged.
+        """
+        tf = (
+            input_transform
+            if input_transform is not None
+            else getattr(self, "input_transform", None)
+        )
+        return X if tf is None else tf(X)
+
     def posterior(self, X: Any, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover
         raise NotImplementedError
 

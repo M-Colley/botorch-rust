@@ -18,12 +18,98 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::acquisition::{model_of, objective_of, PyAcquisitionFunction};
-use crate::arrays::Array;
+use crate::arrays::{broadcast_indices, broadcast_shapes, Array, ArrayBuf};
 use crate::errors::{value_error, IntoPyResult};
 use crate::models::PyModel;
 use crate::pathwise::{draws_of, DrawsArg};
 use crate::sampling::PySobolQMCNormalSampler;
 use crate::threads;
+
+/// The fully Bayesian kernel helpers, including NumPy's elementwise
+/// broadcasting of `X / lengthscale` or `X * sqrt(weight_variance)`.
+/// All scaling and pairwise arithmetic stays in Rust.
+#[pyfunction]
+pub fn fully_bayesian_kernel(
+    py: Python<'_>,
+    kernel: &str,
+    x: Array,
+    scale: Array,
+) -> PyResult<ArrayBuf> {
+    threads::run(py, || kernel_helper(kernel, x, scale))
+}
+
+fn kernel_helper(kernel: &str, x: Array, scale: Array) -> PyResult<ArrayBuf> {
+    if !matches!(kernel, "distances" | "matern52" | "linear") {
+        return Err(value_error(format!("unknown kernel helper {kernel:?}")));
+    }
+    if x.1.len() < 2 {
+        return Err(value_error(
+            "X must have at least two dimensions (... x n x d)",
+        ));
+    }
+    if x.0.len() != x.1.iter().product::<usize>()
+        || scale.0.len() != scale.1.iter().product::<usize>()
+    {
+        return Err(value_error(
+            "kernel helper values do not match their shapes",
+        ));
+    }
+    let scaled_shape = broadcast_shapes(&x.1, &scale.1).ok_or_else(|| {
+        value_error(format!(
+            "X shape {:?} and scale shape {:?} cannot be broadcast",
+            x.1, scale.1
+        ))
+    })?;
+    let xi = broadcast_indices(&x.1, &scaled_shape);
+    let si = broadcast_indices(&scale.1, &scaled_shape);
+    let linear = kernel == "linear";
+    let scaled: Vec<f64> = xi
+        .into_iter()
+        .zip(si)
+        .map(|(i, j)| {
+            if linear {
+                x.0[i] * scale.0[j].sqrt()
+            } else {
+                x.0[i] / scale.0[j]
+            }
+        })
+        .collect();
+    let rank = scaled_shape.len();
+    let n = scaled_shape[rank - 2];
+    let d = scaled_shape[rank - 1];
+    let batches = scaled_shape[..rank - 2].iter().product::<usize>();
+    let mut out = Vec::with_capacity(batches * n * n);
+    for b in 0..batches {
+        let start = b * n * d;
+        for i in 0..n {
+            for j in 0..n {
+                let a = &scaled[start + i * d..start + (i + 1) * d];
+                let z = &scaled[start + j * d..start + (j + 1) * d];
+                let value = if linear {
+                    a.iter().zip(z).map(|(u, v)| u * v).sum()
+                } else {
+                    let sq: f64 = a.iter().zip(z).map(|(u, v)| (u - v).powi(2)).sum();
+                    // NumPy/JAX's maximum propagates NaNs, unlike f64::max.
+                    let distance = if sq.is_nan() {
+                        sq
+                    } else {
+                        sq.max(1e-30).sqrt()
+                    };
+                    if kernel == "distances" {
+                        distance
+                    } else {
+                        let s5d = 5f64.sqrt() * distance;
+                        (1.0 + s5d + 5.0 / 3.0 * distance.powi(2)) * (-s5d).exp()
+                    }
+                };
+                out.push(value);
+            }
+        }
+    }
+    let mut shape = scaled_shape[..rank - 2].to_vec();
+    shape.extend([n, n]);
+    Ok(ArrayBuf(out, shape))
+}
 
 /// A NumPyro model of a fully Bayesian GP (`SaasPyroModel`,
 /// `MaternPyroModel`, `LinearPyroModel`, multi-task SAAS) as a potential
@@ -362,6 +448,7 @@ pub fn ensemble_pathwise_thompson_sampling(
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(fully_bayesian_kernel, m)?)?;
     m.add_class::<PyPyroModel>()?;
     m.add_class::<PyEnsembleThompsonState>()?;
     m.add_function(wrap_pyfunction!(ensemble_pathwise_thompson_sampling, m)?)?;

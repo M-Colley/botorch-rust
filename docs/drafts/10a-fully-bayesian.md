@@ -12,7 +12,8 @@ Pyro.
 | `botorch.models.fully_bayesian.SaasFullyBayesianSingleTaskGP` | same path | SAAS prior; the samples form a batched `SingleTaskGP` (batch `num_mcmc_samples`); `GaussianMixturePosterior`; `median_lengthscale`, `num_mcmc_samples`, `batch_shape`, `load_mcmc_samples`, `condition_on_observations`, `construct_inputs`, `train_Yvar`, input warping, `Normalize`/`Standardize` transforms |
 | `FullyBayesianSingleTaskGP`, `FullyBayesianLinearSingleTaskGP`, `AbstractFullyBayesianSingleTaskGP` | same path | Matérn-5/2 with a log-normal lengthscale prior; linear kernel with SAAS-style weight variances (`median_weight_variance`) |
 | `PyroModel`, `MaternPyroModel`, `SaasPyroModel`, `LinearPyroModel` | same path | the NumPyro model is a native Rust potential energy (NumPyro's unconstrained parameterization) with analytic gradients; `set_inputs`, `postprocess_mcmc_samples`, `load_mcmc_samples`, `get_dummy_mcmc_samples`, `warp`; `sample` raises `UnsupportedError` |
-| `compute_dists`, `matern52_kernel`, `linear_kernel`, `reshape_and_detach`, `MCMC_DIM` | same path | on torch tensors, NumPy arrays or lists instead of JAX arrays |
+| `compute_dists`, `matern52_kernel`, `linear_kernel`, `reshape_and_detach`, `MCMC_DIM` | same path | on torch tensors, NumPy arrays or lists instead of JAX arrays; kernel helpers run in Rust and support arbitrary batch and elementwise scale broadcasting |
+| `Model.transform_inputs` | same path | applies an explicit transform or the model's input transform; the identity without a transform |
 | `botorch.models.fully_bayesian_multitask.SaasFullyBayesianMultiTaskGP` | same path | `MultitaskSaasPyroModel`, `MultiTaskPyroMixin`, `LatentFeatureMultiTaskPyroMixin`; latent task features with a Matérn task kernel; `posterior` (task column or `output_indices`), `condition_on_observations`, `median_lengthscale`; `fantasize` raises like BoTorch |
 | `botorch.fit.fit_fully_bayesian_model_nuts` | `botorch_rs.fit.fit_fully_bayesian_model_nuts` | port of NumPyro's NUTS (dense mass matrix, dual averaging, Stan windows, `init_to_uniform(radius=2)`) in Rust, double precision; `max_tree_depth`, `warmup_steps`, `num_samples`, `thinning`, `seed`; extensions `draws`, `init_params` replay a NumPyro chain |
 | `botorch.acquisition.bayesian_active_learning.qBayesianActiveLearningByDisagreement` | same path | BatchBALD on the samples with exact gradients in Rust; `FullyBayesianAcquisitionFunction`, `check_negative_info_gain`, `FULLY_BAYESIAN_ERROR_MSG`, `NEGATIVE_INFOGAIN_WARNING` |
@@ -92,6 +93,16 @@ Pyro.
    sample; qLogNEI's `X_baseline` of an ensemble raised; qLogNParEGO of an
    ensemble normalized every member by its own `Y_baseline`.
 10. `jit_compile` and `disable_progbar` are accepted and ignored.
+11. Dummy warping samples use `len(indices_to_warp)` concentrations when
+    only a subset of the input features is warped; BoTorch uses the full
+    input dimension and cannot load its own samples in this case.
+12. A custom `PyroModel(eps=...)` passes that margin to the loaded `Warp`,
+    keeping the sampler's potential and the fitted model consistent.
+    BoTorch resets the loaded transform's margin to its default of 1e-7.
+13. Direct calls to a batched `Warp` broadcast the input batch dimensions
+    as BoTorch does. The previous port incorrectly required an exact batch
+    shape on forward transformations (that restriction belongs to inverse
+    transformations).
 
 ## Performance
 
@@ -248,6 +259,9 @@ packages; nothing was downloaded).
 ## BoTorch bugs found (minimal reproductions)
 
 All reproduce on BoTorch main (da00e0401) and 0.18.1.
+Bug 4 is fixed on the local M-Colley fork's `fix/audit-correctness-fixes`
+branch (c98dd9452); the parity test checks that implementation directly
+when available. This does not claim that the fix has landed upstream.
 
 1. **The NUTS potential and the fitted model warp the inputs
    differently.** `PyroModel._warp_jax` computes `1 - (1 - x^c0)^c1` on
@@ -376,7 +390,51 @@ All reproduce on BoTorch main (da00e0401) and 0.18.1.
    PathwiseThompsonSampling(m)(torch.rand(5, 2, 4))  # RuntimeError for q = 2
    ```
 
+9. **Dummy samples fail to load with subset input warping.**
+   `_common_dummy_samples` returns `c0` and `c1` with shape
+   `num_samples x ard_num_dims`; `load_mcmc_samples` reshapes them to
+   `num_samples x 1 x len(indices_to_warp)`. These shapes differ when a
+   subset is warped. Both SAAS/Matérn and linear models are affected.
+   Use the number of warped features when constructing dummy concentrations.
+
+10. **Loading warping samples loses a custom `eps`.**
+    `SaasPyroModel(use_input_warping=True, eps=0.02)` and
+    `LinearPyroModel` create their loaded `Warp` without `eps=self._eps`,
+    so predictions use 1e-7. Pass the configured margin to the transform.
+    Bugs 9 and 10 also reproduce on the local M-Colley fork's
+    `fix/audit-correctness-fixes` branch (c98dd9452).
+
+    ```python
+    import torch
+    from botorch.models.fully_bayesian import SaasPyroModel
+    pm = SaasPyroModel(use_input_warping=True, indices_to_warp=[1], eps=0.02)
+    pm.set_inputs(torch.rand(6, 3, dtype=torch.float64), torch.randn(6, 1, dtype=torch.float64))
+    samples = pm.get_dummy_mcmc_samples(2, dtype=torch.float64)
+    print(samples["c0"].shape)  # [2, 3]; loading raises: expected [2, 1, 1]
+    samples["c0"] = samples["c1"] = torch.ones(2, 1, dtype=torch.float64)
+    print(pm.load_mcmc_samples(samples)[-1]._eps)  # 1e-7; should be 0.02
+    ```
+
 Known from earlier phases and seen again: re-chaining the input
 transforms when re-loading fully Bayesian samples (fixed on the
 M-Colley fork, commit 6329e9fb1), `PosteriorStandardDeviation` on ensembles
 (7b bug 2).
+
+## Continuation audit (2026-10-20)
+
+The local reference for this audit is the M-Colley BoTorch fork's
+`fix/audit-correctness-fixes` branch at c98dd9452, torch 2.13.0, Python
+3.13.12. This reference includes fixes not asserted to be upstream.
+
+- The original phase-10a API and parity run passed 200 tests; one stale
+  assertion required bug 4 to remain present. The revised test validates
+  the fixed covariance directly when available and always checks the
+  covariance assembled independently from the mixture components.
+- 45 focused kernel, warping, input dispatch and mixture covariance tests
+  pass after the fixes. New batched kernel errors are at most 1.23e-16;
+  direct `Warp` broadcast outputs match the reference exactly.
+- 13 existing warp and batched-transform API/parity tests pass.
+- Rust formatting, Ruff, and `cargo check -p botorch_pyo3 --release --offline`
+  pass. A release extension build succeeds.
+  A fresh debug fixture build initially exhausted the disk; the generated
+  debug crate cache was cleaned and subsequent builds use release mode.

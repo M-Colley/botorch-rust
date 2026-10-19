@@ -59,54 +59,36 @@ from botorch_rs.posteriors.fully_bayesian import MCMC_DIM, GaussianMixturePoster
 #: BoTorch's ``MIN_INFERRED_NOISE_LEVEL`` (``botorch.models.utils.gpytorch_modules``).
 MIN_INFERRED_NOISE_LEVEL = 1e-4
 
-_sqrt5 = math.sqrt(5)
-
-
 # ---------------------------------------------------------------------------
 # Kernel helpers (BoTorch evaluates them with JAX)
 # ---------------------------------------------------------------------------
 
 
-def _rows(X: Any, name: str) -> tuple[list[list[float]], ArrayKind]:
-    data, shape = to_flat(X, name)
-    if len(shape) != 2:
-        raise UnsupportedError(f"botorch_rs supports `{name}` of shape n x d, got {tuple(shape)}.")
-    n, d = shape
-    return [list(data[i * d : (i + 1) * d]) for i in range(n)], kind_of(X)
+def _kernel_helper(X: Any, scale: Any, kernel: str) -> Any:
+    data, shape = _rs.fully_bayesian_kernel(kernel, to_flat(X, "X"), to_flat(scale, "scale"))
+    return from_flat(data, tuple(shape), kind_of(X))
 
 
 def compute_dists(X: Any, lengthscale: Any) -> Any:
     """Compute kernel distances.
 
-    ``sqrt(max(||(x_i - x_j) / lengthscale||^2, 1e-30))`` of the rows of an
-    ``n x d`` array ``X`` (BoTorch: JAX arrays with batch dimensions)."""
-    rows, kind = _rows(X, "X")
-    ls = list(to_flat(lengthscale, "lengthscale")[0])
-    scaled = [[x / ls[k % len(ls)] for k, x in enumerate(r)] for r in rows]
-    out = []
-    for a in scaled:
-        for b in scaled:
-            sq = sum((u - v) ** 2 for u, v in zip(a, b, strict=True))
-            out.append(math.sqrt(max(sq, 1e-30)))
-    return from_flat(out, (len(rows), len(rows)), kind)
+    ``sqrt(max(||(x_i - x_j) / lengthscale||^2, 1e-30))`` of the rows of
+    ``X`` (``... x n x d``). ``X / lengthscale`` broadcasts as in NumPy;
+    the pairwise distances of each batch are computed in Rust."""
+    return _kernel_helper(X, lengthscale, "distances")
 
 
 def matern52_kernel(X: Any, lengthscale: Any) -> Any:
-    """Matern-5/2 kernel."""
-    dist, shape = to_flat(compute_dists(X, lengthscale), "dist")
-    out = [(1 + _sqrt5 * d + 5.0 / 3.0 * d**2) * math.exp(-_sqrt5 * d) for d in dist]
-    return from_flat(out, tuple(shape), kind_of(X))
+    """Matern-5/2 kernel, with batched inputs and broadcast lengthscales."""
+    return _kernel_helper(X, lengthscale, "matern52")
 
 
 def linear_kernel(X: Any, weight_variance: Any) -> Any:
     """Linear kernel.
 
-    ``(X sqrt(w)) (X sqrt(w))^T`` of an ``n x d`` array ``X``."""
-    rows, kind = _rows(X, "X")
-    w = list(to_flat(weight_variance, "weight_variance")[0])
-    scaled = [[x * math.sqrt(w[k % len(w)]) for k, x in enumerate(r)] for r in rows]
-    out = [sum(u * v for u, v in zip(a, b, strict=True)) for a in scaled for b in scaled]
-    return from_flat(out, (len(rows), len(rows)), kind)
+    ``(X sqrt(w)) (X sqrt(w))^T`` of ``X`` (``... x n x d``), with
+    broadcast weight variances and one kernel matrix per batch."""
+    return _kernel_helper(X, weight_variance, "linear")
 
 
 def reshape_and_detach(target: Any, new_value: Any) -> Any:
@@ -302,7 +284,7 @@ class PyroModel:
         self, mcmc_samples: dict[str, Any], num_mcmc_samples: int, **tkwargs: Any
     ) -> dict[str, Any]:
         """Add noise and warping entries to ``mcmc_samples`` in-place."""
-        dim = self.ard_num_dims
+        dim = self.ard_num_dims if self.indices is None else len(self.indices)
         if self.train_Yvar is None:
             mcmc_samples["noise"] = self._ones((num_mcmc_samples,), tkwargs)
         if self.use_input_warping:
@@ -345,6 +327,7 @@ class PyroModel:
             batch_shape=batch_shape,
             indices=indices,
             bounds=[[0.0] * d, [1.0] * d],
+            eps=self._eps,
         )
         num = batch_shape[0]
         k = len(indices)

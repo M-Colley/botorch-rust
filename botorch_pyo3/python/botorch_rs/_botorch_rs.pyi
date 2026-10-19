@@ -2309,6 +2309,8 @@ def q_multi_step_lookahead(
 def posterior_samples_vjp(model: Model, x: Array, base: Array, samples_bar: Array) -> ArrayBuf: ...
 
 # Fully Bayesian GPs (phase 10a).
+def fully_bayesian_kernel(kernel: str, x: Array, scale: Array) -> ArrayBuf: ...
+
 class PyroModel:
     def __init__(
         self,
