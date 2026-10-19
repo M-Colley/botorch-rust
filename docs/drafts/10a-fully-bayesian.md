@@ -241,9 +241,9 @@ of 1e-14 .. 1e-11 (measured per case), which sets the tolerance of that
 case.
 
 All live tests pass against BoTorch main and 0.18.1, under torch 2.13 and
-torch 2.14.1 (the scratch venv has no JAX: the tests use junctions to the
-main environment's `jax`, `jaxlib`, `numpyro`, `ml_dtypes`, `opt_einsum`
-and `tqdm`; nothing was downloaded).
+torch 2.14.1 (the scratch venv has no JAX: its runs append the main
+environment's site-packages, with JAX and NumPyro, after the venv's own
+packages; nothing was downloaded).
 
 ## BoTorch bugs found (minimal reproductions)
 
