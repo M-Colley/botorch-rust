@@ -84,6 +84,14 @@ CASES = [
     Case("inducing_train", n=8, inducing="train", seed=9),
 ]
 
+#: Fits compared on twins (live) and recorded on 64 twins (fixtures: the
+#: first two).
+FIT_CASES = [
+    Case("fit_fixed_inducing", n=16, inducing=4, learn=False, seed=21),
+    Case("fit_default", n=12, inducing=3, seed=22),
+    Case("fit_two_outputs", n=12, m=2, inducing=3, learn=False, seed=23),
+]
+
 
 def make_data(case: Case, seed: int | None = None) -> tuple[Any, Any]:
     g = torch.Generator().manual_seed(case.seed if seed is None else seed)
@@ -119,7 +127,10 @@ def _modules(case: Case, lib: str, X: Any) -> dict[str, Any]:
     aug = [case.m] if case.m > 1 else []
     if case.kernel is not None:
         spec = with_batch(case.kernel, aug) if aug else case.kernel
-        kw["covar_module"] = build_kernel(spec, lib)
+        # BoTorch evaluates the kernel (to allocate the inducing points)
+        # before casting the model to the data's dtype.
+        k = build_kernel(spec, lib)
+        kw["covar_module"] = k.to(DT) if lib == "bt" else k
     if case.mean == "prior":
         kw["mean_module"] = means.ConstantMean(
             constant_prior=priors.NormalPrior(0.1, 2.0),
@@ -151,19 +162,24 @@ def _modules(case: Case, lib: str, X: Any) -> dict[str, Any]:
     return kw
 
 
-def build_pair(case: Case, X: Any = None, Y: Any = None) -> tuple[Any, Any, Any, Any]:
+def build_pair(
+    case: Case, X: Any = None, Y: Any = None, with_rs: bool = True
+) -> tuple[Any, Any, Any, Any]:
     """BoTorch's and botorch_rs's models of ``case`` (data from
-    :func:`make_data` unless given) and the data."""
+    :func:`make_data` unless given) and the data (botorch_rs's model is
+    ``None`` without ``with_rs``, e.g. in the fixture generator)."""
     from botorch.models import SingleTaskVariationalGP as BtSVGP
-
-    from botorch_rs.models import SingleTaskVariationalGP as RsSVGP
 
     if X is None:
         X, Y = make_data(case)
+    rs = None
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         bt = BtSVGP(X, Y, **_modules(case, "bt", X))
-        rs = RsSVGP(X, Y, **_modules(case, "rs", X))
+        if with_rs:
+            from botorch_rs.models import SingleTaskVariationalGP as RsSVGP
+
+            rs = RsSVGP(X, Y, **_modules(case, "rs", X))
     return bt, rs, X, Y
 
 
@@ -191,7 +207,8 @@ def set_random_parameters(bt: Any, rs: Any, seed: int, scale: float = 0.3) -> No
     from gpytorch.mlls import VariationalELBO as BtELBO
 
     strategy(bt).variational_params_initialized.fill_(1)
-    strategy(rs).variational_params_initialized.fill_(1)
+    if rs is not None:
+        strategy(rs).variational_params_initialized.fill_(1)
     g = torch.Generator().manual_seed(seed)
     mll = BtELBO(bt.likelihood, bt.model, num_data=1)
     with torch.no_grad():
@@ -204,7 +221,8 @@ def set_random_parameters(bt: Any, rs: Any, seed: int, scale: float = 0.3) -> No
                 p.mul_(torch.exp(noise))
             else:
                 p.add_(noise)
-    copy_parameters(bt, rs)
+    if rs is not None:
+        copy_parameters(bt, rs)
 
 
 def copy_parameters(bt: Any, rs: Any) -> None:

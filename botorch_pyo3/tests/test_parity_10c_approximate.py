@@ -31,6 +31,7 @@ torch = pytest.importorskip("torch")
 from approximate_helpers import (  # noqa: E402
     CASES,
     DT,
+    FIT_CASES,
     GRAD_TOL,
     VALUE_TOL,
     Case,
@@ -394,13 +395,6 @@ def _rs_fit(rs: object, n: int) -> tuple[float, int]:
     mll = VariationalELBO(rs.likelihood, rs.model, num_data=n)  # type: ignore[attr-defined]
     fit_gpytorch_mll(mll)
     return float(mll._fit_result["fval"]), int(mll._fit_result["attempts"])
-
-
-FIT_CASES = [
-    Case("fit_fixed_inducing", n=16, inducing=4, learn=False, seed=21),
-    Case("fit_default", n=12, inducing=3, seed=22),
-    Case("fit_two_outputs", n=12, m=2, inducing=3, learn=False, seed=23),
-]
 
 
 @pytest.mark.parametrize("case", FIT_CASES, ids=[c.name for c in FIT_CASES])
