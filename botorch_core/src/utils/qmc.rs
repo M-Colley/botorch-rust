@@ -11,7 +11,7 @@ use std::f64::consts::{PI, SQRT_2};
 use statrs::function::erf::erf_inv;
 
 use crate::error::{BotorchError, Result};
-use crate::Matrix;
+use crate::{Matrix, Vector};
 
 /// `NormalQMCEngine.draw`'s transform of `n` uniform points with
 /// `sobol_dim` coordinates (row-major) into `n × d` standard normal
@@ -115,6 +115,47 @@ pub fn mvn_qmc_root(cov: &Matrix, single_precision: bool) -> Result<Matrix> {
     Ok(root)
 }
 
+/// Project standard normal samples to `N(mean, rootᵀ root)`.
+///
+/// The matrix product runs natively, including float32 multiplication and
+/// accumulation when the output dtype is float32 (the covariance and mean
+/// are cast to that dtype before the product, like BoTorch).
+///
+/// # Errors
+/// [`BotorchError::DimensionMismatch`] unless `root` is square and its
+/// dimension agrees with `samples` and `mean`.
+pub fn mvn_qmc_project(
+    samples: &Matrix,
+    root: &Matrix,
+    mean: &Vector,
+    single_precision: bool,
+) -> Result<Matrix> {
+    let d = mean.len();
+    if samples.ncols() != d || root.shape() != (d, d) {
+        return Err(BotorchError::DimensionMismatch(
+            "normal samples, covariance root, and mean must have the same dimension".into(),
+        ));
+    }
+    if single_precision {
+        let mut out = samples.map(|v| v as f32) * root.map(|v| v as f32);
+        for j in 0..d {
+            let shift = mean[j] as f32;
+            for i in 0..out.nrows() {
+                out[(i, j)] += shift;
+            }
+        }
+        Ok(out.map(f64::from))
+    } else {
+        let mut out = samples * root;
+        for j in 0..d {
+            for i in 0..out.nrows() {
+                out[(i, j)] += mean[j];
+            }
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +185,18 @@ mod tests {
         assert!(mvn_qmc_root(&bad, false).is_err());
         let asym = Matrix::from_row_slice(2, 2, &[1.0, 0.5, 0.1, 1.0]);
         assert!(mvn_qmc_root(&asym, false).is_err());
+    }
+
+    #[test]
+    fn projection_casts_operands_before_float32_product() {
+        let x = Matrix::from_element(1, 1, 1.00000006);
+        let root = x.clone();
+        let mean = Vector::from_element(1, -1.0);
+        let out = mvn_qmc_project(&x, &root, &mean, true).unwrap();
+        let value = 1.00000006f64 as f32;
+        assert_eq!(out[(0, 0)], f64::from(value * value - 1.0));
+        let double = mvn_qmc_project(&x, &root, &mean, false).unwrap();
+        assert!((double[(0, 0)] - (x[(0, 0)].powi(2) - 1.0)).abs() < 1e-15);
+        assert!(mvn_qmc_project(&Matrix::zeros(3, 2), &root, &mean, false).is_err());
     }
 }

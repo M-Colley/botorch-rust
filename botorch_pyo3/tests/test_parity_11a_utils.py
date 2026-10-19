@@ -799,6 +799,30 @@ def test_qmc_engines(inv_transform: bool, d: int) -> None:
     C.check("MultivariateNormalQMCEngine", ma.draw(8), me.draw(8), TOL)
 
 
+@pytest.mark.parametrize("inv_transform", [False, True])
+@pytest.mark.parametrize("out_dtype", [torch.float32, torch.float64])
+def test_multivariate_qmc_output_dtype(inv_transform: bool, out_dtype: Any) -> None:
+    from botorch.sampling.qmc import MultivariateNormalQMCEngine as BtM
+
+    from botorch_rs.sampling.qmc import MultivariateNormalQMCEngine as RsM
+
+    mean = torch.linspace(-1, 1, 5, dtype=DT)
+    L = torch.randn(5, 5, generator=gen(95), dtype=DT)
+    cov = L @ L.T + torch.eye(5, dtype=DT)
+    actual = RsM(mean, cov, seed=3, inv_transform=inv_transform)
+    expected = BtM(mean, cov, seed=3, inv_transform=inv_transform)
+    out_a = torch.empty(32, 5, dtype=out_dtype)
+    out_e = torch.empty_like(out_a)
+    assert actual.draw(32, out=out_a) is None
+    assert expected.draw(32, out=out_e) is None
+    C.check(
+        "MultivariateNormalQMCEngine output dtype",
+        out_a.double(),
+        out_e.double(),
+        F32TOL if out_dtype == torch.float32 else TOL,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test functions
 # ---------------------------------------------------------------------------

@@ -110,6 +110,12 @@ Coverage against BoTorch main (`scripts/api_coverage.py`): utils 93/97
   Rust (`evaluate_true`, `evaluate_slack_true`, `cost`); TrajectoryPlanning
   reproduces SciPy's FITPACK interpolating spline (`splprep(k=3, s=0)`,
   `splev`) and the obstacle penalties.
+- **QMC engines**: multivariate projection (`base_samples @ root + mean`)
+  runs in Rust with the GIL released, using float32 matrix arithmetic for
+  float32 outputs. The torch-free Sobol engine keeps one native seed and a
+  cursor, so successive draws continue the same sequence even when no seed
+  is supplied. It rejects requests beyond its supported 65,536 points
+  without advancing the cursor.
 - **optimize_posterior_samples** draws BoTorch's scrambled Sobol candidates
   from torch's global generator and maximizes the restarts with SciPy's
   L-BFGS-B as one joint problem, like BoTorch's `gen_candidates_scipy`
@@ -344,4 +350,17 @@ inputs and MVNXPB gradients of batches whose members pivot differently
 
 ## Verification
 
-FILL
+The initial committed branch passed all three phase 11a Python suites on
+2026-10-20 against the local BoTorch main checkout at `c98dd9452`, with
+Python 3.13.12 and torch 2.13.0: **311 passed, 1 skipped**. The seven Rust
+fixture tests in `utils_11a_parity` passed, as did
+`cargo clippy --workspace --all-targets -- -D warnings`.
+
+The follow-up QMC changes add regression coverage for unseeded continuation,
+empty draws, the native sequence limit and overflowing lengths, malformed
+mean and covariance ranks, float32 projection rounding, and float32/float64
+output buffers against BoTorch. They replace the former Python matrix-product
+loop and avoid rebuilding the entire native Sobol sequence on each draw.
+
+These checks establish parity for the tested configurations. They do not
+remove the unported behavior and numerical limitations listed above.

@@ -1,8 +1,8 @@
 r"""
 Quasi Monte-Carlo sampling from Normal distributions (``botorch.sampling.qmc``).
 
-The uniform points come from torch's scrambled ``SobolEngine`` if torch is
-available (so that the samples equal BoTorch's for the same seed), else from
+The uniform points come from torch's scrambled ``SobolEngine`` if torch has
+been imported (so that samples equal BoTorch's for the same seed), else from
 botorch_rs's scrambled Sobol sequence (Owen scrambling; same distribution,
 different points). The Box-Muller and inverse transforms and the root of the
 covariance (Cholesky, or the eigendecomposition for a singular covariance)
@@ -17,7 +17,6 @@ References:
 
 from __future__ import annotations
 
-import importlib
 import math
 import sys
 from typing import Any
@@ -45,21 +44,16 @@ class _RustSobol:
 
     def __init__(self, dimension: int, seed: int | None) -> None:
         self.dimension = dimension
-        self.seed = seed
-        self.num_generated = 0
+        self._engine = _rs.SobolEngine(dimension, seed)
+        self.seed = self._engine.seed
+
+    @property
+    def num_generated(self) -> int:
+        return self._engine.num_generated
 
     def draw(self, n: int) -> list[float]:
-        # Points num_generated .. num_generated + n of the sequence.
-        total = self.num_generated + n
-        data, _ = _rs.draw_sobol_samples(
-            ([0.0] * self.dimension + [1.0] * self.dimension, (2, self.dimension)),
-            total,
-            1,
-            self.seed,
-        )
-        out = list(data)[self.num_generated * self.dimension :]
-        self.num_generated = total
-        return out
+        data, _ = self._engine.draw(n)
+        return list(data)
 
 
 class NormalQMCEngine:
@@ -93,11 +87,6 @@ class NormalQMCEngine:
             sobol_dim = 2 * math.ceil(d / 2)
         self._sobol_dim = sobol_dim
         torch = sys.modules.get("torch")
-        if torch is None:
-            try:
-                torch = importlib.import_module("torch")
-            except ImportError:
-                torch = None
         if torch is not None:
             self._sobol_engine: Any = torch.quasirandom.SobolEngine(
                 dimension=sobol_dim, scramble=True, seed=seed
@@ -183,9 +172,9 @@ class MultivariateNormalQMCEngine:
         cshape = _ops.shape_of(cov)
         mshape = _ops.shape_of(mean)
         # validate inputs
-        if not cshape[0] == cshape[1]:
+        if len(cshape) != 2 or not cshape[0] == cshape[1]:
             raise ValueError("Covariance matrix is not square.")
-        if not mshape[0] == cshape[0]:
+        if len(mshape) != 1 or not mshape[0] == cshape[0]:
             raise ValueError("Dimension mismatch between mean and covariance.")
         self._mean = mean
         self._kind = kind_of(mean)
@@ -209,17 +198,13 @@ class MultivariateNormalQMCEngine:
         """
         kind = kind_of(out) if out is not None else self._kind
         base_samples = self._normal_engine._draw_kind(n, kind)
-        corr = to_flat(self._corr_matrix)
-        mean = to_flat(self._mean)[0]
-        b, _ = to_flat(base_samples)
-        d = corr[1][0]
-        out_data = [
-            math.fsum(float(b[i * d + k]) * float(corr[0][k * d + j]) for k in range(d))
-            + float(mean[j])
-            for i in range(n)
-            for j in range(d)
-        ]
-        qmc_samples = from_flat(out_data, (n, d), kind)
+        projected = _rs.mvn_qmc_project(
+            to_flat(base_samples),
+            to_flat(self._corr_matrix),
+            to_flat(self._mean)[0],
+            _ops.is_single_precision(kind),
+        )
+        qmc_samples = from_pair(projected, kind)
         if out is None:
             return qmc_samples
         if kind.lib == "torch":

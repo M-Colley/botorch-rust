@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import math
 import random
+import subprocess
+import sys
 from typing import Any
 
 import pytest
@@ -340,6 +342,56 @@ def test_iid_sampler_api() -> None:
     assert s.seed == 3 and tuple(s.sample_shape) == (4,)
     assert ForkedRNGSampler(sample_shape=[2], seed=1).seed == 1
     assert callable(get_sampler)
+
+
+@pytest.mark.parametrize("seed", [None, 1])
+def test_native_qmc_continues_one_sequence(seed: int | None) -> None:
+    from botorch_rs.sampling.qmc import _RustSobol
+
+    engine = _RustSobol(3, seed)
+    reference = _RustSobol(3, engine.seed)
+    points = engine.draw(3) + engine.draw(5) + engine.draw(0) + engine.draw(7)
+    assert points == reference.draw(15)
+    assert engine.num_generated == 15
+    # Reject unsupported lengths without advancing or overflowing the cursor.
+    with pytest.raises(ValueError, match="65536"):
+        engine.draw(65536)
+    with pytest.raises(ValueError, match="65536"):
+        engine.draw(2**63)
+    assert engine.num_generated == 15
+    assert engine.draw(2) == reference.draw(2)
+
+
+def test_qmc_list_inputs_do_not_import_optional_libraries() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from botorch_rs.sampling.qmc import NormalQMCEngine, "
+            "MultivariateNormalQMCEngine; "
+            "engine = NormalQMCEngine(3); assert isinstance(engine.draw(4), list); "
+            "multi = MultivariateNormalQMCEngine([0.0], [[1.0]]); "
+            "assert isinstance(multi.draw(4), list); "
+            "assert 'torch' not in sys.modules; assert 'numpy' not in sys.modules",
+        ],
+        check=True,
+    )
+
+
+@pytest.mark.parametrize("cov", [1.0, [1.0], [[[1.0]]], [[1.0, 0.0]]])
+def test_qmc_rejects_nonmatrix_covariance(cov: Any) -> None:
+    from botorch_rs.sampling.qmc import MultivariateNormalQMCEngine
+
+    with pytest.raises(ValueError, match="not square"):
+        MultivariateNormalQMCEngine([0.0], cov)
+
+
+@pytest.mark.parametrize("mean", [0.0, [[0.0]], [0.0, 1.0]])
+def test_qmc_rejects_nonvector_mean(mean: Any) -> None:
+    from botorch_rs.sampling.qmc import MultivariateNormalQMCEngine
+
+    with pytest.raises(ValueError, match="Dimension mismatch"):
+        MultivariateNormalQMCEngine(mean, [[1.0]])
 
 
 @pytest.mark.skipif(not HAS_TORCH, reason="torch")

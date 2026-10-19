@@ -18,7 +18,8 @@ use botorch_core::utils::mvnxpb_state::{
     augment_cholesky, pivoted_cholesky_pivot, pivoted_cholesky_update, MvnxpbState,
 };
 use botorch_core::utils::polytope::null_space;
-use botorch_core::utils::qmc::{mvn_qmc_root, normal_qmc_transform};
+use botorch_core::utils::qmc::{mvn_qmc_project, mvn_qmc_root, normal_qmc_transform};
+use botorch_core::utils::sampling::SobolEngine;
 use botorch_core::utils::torch_rng::TorchGenerator;
 use botorch_core::{Matrix, Vector};
 use pyo3::prelude::*;
@@ -599,6 +600,7 @@ impl PyLinearEllipticalSliceSampler {
 #[pyfunction]
 #[pyo3(name = "normal_qmc_transform")]
 fn normal_qmc_py(
+    py: Python<'_>,
     uniform: Floats,
     n: usize,
     sobol_dim: usize,
@@ -606,8 +608,10 @@ fn normal_qmc_py(
     inv_transform: bool,
     single_precision: bool,
 ) -> PyResult<ArrayBuf> {
-    let out = normal_qmc_transform(&uniform.0, n, sobol_dim, d, inv_transform, single_precision)
-        .into_py_result()?;
+    let out = threads::run(py, || {
+        normal_qmc_transform(&uniform.0, n, sobol_dim, d, inv_transform, single_precision)
+    })
+    .into_py_result()?;
     Ok(ArrayBuf(out, vec![n, d]))
 }
 
@@ -615,9 +619,62 @@ fn normal_qmc_py(
 /// `_corr_matrix`.
 #[pyfunction]
 #[pyo3(name = "mvn_qmc_root")]
-fn mvn_qmc_root_py(cov: Array, single_precision: bool) -> PyResult<ArrayBuf> {
-    let root = mvn_qmc_root(&cov.matrix("cov")?, single_precision).into_py_result()?;
+fn mvn_qmc_root_py(py: Python<'_>, cov: Array, single_precision: bool) -> PyResult<ArrayBuf> {
+    let cov = cov.matrix("cov")?;
+    let root = threads::run(py, || mvn_qmc_root(&cov, single_precision)).into_py_result()?;
     Ok(matrix_out(&root).into())
+}
+
+/// Native matrix product and mean shift for multivariate QMC samples.
+#[pyfunction]
+#[pyo3(name = "mvn_qmc_project")]
+fn mvn_qmc_project_py(
+    py: Python<'_>,
+    samples: Array,
+    root: Array,
+    mean: Floats,
+    single_precision: bool,
+) -> PyResult<ArrayBuf> {
+    let samples = samples.matrix("samples")?;
+    let root = root.matrix("root")?;
+    let mean = Vector::from_vec(mean.0);
+    let out = threads::run(py, || {
+        mvn_qmc_project(&samples, &root, &mean, single_precision)
+    })
+    .into_py_result()?;
+    Ok(matrix_out(&out).into())
+}
+
+/// Persistent Sobol state for the QMC engines when torch is unavailable.
+#[pyclass(name = "SobolEngine", module = "botorch_rs._botorch_rs")]
+struct PySobolEngine {
+    inner: SobolEngine,
+    #[pyo3(get)]
+    num_generated: usize,
+}
+
+#[pymethods]
+impl PySobolEngine {
+    #[new]
+    #[pyo3(signature = (dimension, seed=None))]
+    fn new(dimension: usize, seed: Option<u64>) -> PyResult<Self> {
+        Ok(Self {
+            inner: SobolEngine::new(dimension, seed).into_py_result()?,
+            num_generated: 0,
+        })
+    }
+
+    #[getter]
+    fn seed(&self) -> u64 {
+        self.inner.seed()
+    }
+
+    fn draw(&mut self, py: Python<'_>, n: usize) -> PyResult<ArrayBuf> {
+        let points =
+            threads::run(py, || self.inner.draw(n, self.num_generated)).into_py_result()?;
+        self.num_generated += n;
+        Ok(matrix_out(&points).into())
+    }
 }
 
 /// `torch_randn(seed, n)`: `torch.randn(n, dtype=torch.float64)` after
@@ -867,6 +924,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLinearEllipticalSliceSampler>()?;
     m.add_function(wrap_pyfunction!(normal_qmc_py, m)?)?;
     m.add_function(wrap_pyfunction!(mvn_qmc_root_py, m)?)?;
+    m.add_function(wrap_pyfunction!(mvn_qmc_project_py, m)?)?;
+    m.add_class::<PySobolEngine>()?;
     m.add_function(wrap_pyfunction!(torch_randn_py, m)?)?;
     m.add_function(wrap_pyfunction!(torch_rand_py, m)?)?;
     m.add_function(wrap_pyfunction!(null_space_py, m)?)?;
