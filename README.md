@@ -251,6 +251,20 @@ counterpart.
 | `Model.subset_output`, `Model.construct_inputs` | same names | `subset_output` for `SingleTaskGP` (any covariance module), `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`, the MAP SAAS models, `ModelListGP`, `ModelList`, the deterministic models; `construct_inputs` for every model above with BoTorch's or botorch_rs's `SupervisedDataset` |
 | `botorch.utils.datasets.SupervisedDataset` | same path | `X`, `Y`, `Yvar`, names, validation, `clone`, equality |
 | `botorch.models.additive_gp.OrthogonalAdditiveGP` | same path (not exported from `botorch_rs.models`, as in BoTorch) | `SingleTaskGP` with an `OrthogonalAdditiveKernel` (first and second order); `posterior(..., infer_all_components=True)` raises `UnsupportedError` |
+| `botorch.models.PairwiseGP` | `botorch_rs.models.PairwiseGP` | `likelihood`, `covar_module` (any `ScaleKernel` tree), `input_transform` (without learned parameters), `jitter`, `xtol`, `consolidate_rtol` / `consolidate_atol`, `maxfev`; batched data; prior-only models; `posterior`, `condition_on_observations`, `fantasize` (pairwise samplers), `set_train_data`, `load_state_dict`, `construct_inputs` (BoTorch's `RankingDataset`), BoTorch's buffers (`utility`, `covar`, `covar_chol`, `covar_inv`, `likelihood_hess`, `hlcov_eye`, `D`, `DT`, `_x0`, ...) |
+| `botorch.models.pairwise_gp.PairwiseLaplaceMarginalLogLikelihood` | `botorch_rs.models.PairwiseLaplaceMarginalLogLikelihood` | `mll(model(datapoints), comparisons)` or `mll()`; `value_and_grad(raw)` (botorch_rs extension: BoTorch's autograd gradient, computed natively) |
+| `botorch.fit.fit_gpytorch_mll` (Laplace MLL) | `botorch_rs.fit.fit_gpytorch_mll` | L-BFGS-B with retries from prior samples, every evaluation warm-started like BoTorch's training forward pass |
+| `botorch.models.likelihoods.pairwise.PairwiseLikelihood`, `PairwiseProbitLikelihood`, `PairwiseLogitLikelihood` | `botorch_rs.models.likelihoods.pairwise.*` | `p`, `log_p`, `negative_log_gradient_sum`, `negative_log_hessian_sum` (evaluated in Rust, not differentiable with torch), `forward` (a torch `Bernoulli`) |
+| `botorch.acquisition.preference.AnalyticExpectedUtilityOfBestOption` | `botorch_rs.acquisition.preference.AnalyticExpectedUtilityOfBestOption` | `outcome_model` (a deterministic botorch_rs model), `previous_winner`; exact input gradients |
+| `botorch.acquisition.preference.qExpectedUtilityOfBestOption` | `botorch_rs.acquisition.preference.qExpectedUtilityOfBestOption` | `outcome_model`, `sampler`, `objective`, `posterior_transform`, `X_pending` |
+| `botorch.acquisition.preference.PairwiseBayesianActiveLearningByDisagreement` | `botorch_rs.acquisition.preference.PairwiseBayesianActiveLearningByDisagreement` | `outcome_model`, `num_samples`, `std_noise`; draws from the caller's array library (torch: BoTorch's draws for the same seed) |
+| `botorch.acquisition.active_learning.PairwiseMCPosteriorVariance` | `botorch_rs.acquisition.active_learning.PairwiseMCPosteriorVariance` | any MC objective as link function |
+| `botorch.acquisition.objective.LearnedObjective` | `botorch_rs.acquisition.objective.LearnedObjective` | `PairwiseGP` or deterministic `pref_model`, `sample_shape`, `seed` (torch's draws); values and exact torch autograd; not accepted by the MC acquisition functions (see below) |
+| `botorch.sampling.pairwise_samplers.PairwiseMCSampler`, `PairwiseIIDNormalSampler`, `PairwiseSobolQMCNormalSampler` | `botorch_rs.sampling.pairwise_samplers.*` | `max_num_comparisons`, `seed` (numpy's choice of pairs); the preferred item first (BoTorch bug 1) |
+| `botorch.sampling.normal.IIDNormalSampler` | `botorch_rs.sampling.IIDNormalSampler` | partial: sampling posteriors (torch's draws for `seed`), `batch_range_override`; not in MC acquisition functions |
+| `PairwiseGP` in `ModelListGP` / `ModelList` | same | posteriors and acquisition functions; fits and fantasies raise BoTorch's errors |
+| `botorch.acquisition.input_constructors.construct_inputs_analytic_eubo`, `construct_inputs_qeubo` | same path, registered for botorch_rs's EUBO / qEUBO | preferential BO (`model` is the preference model) and BOPE (`pref_model`; the outcome model becomes `FixedSingleSampleModel(model, w)`, `w = torch.randn(pref_model.dim) * sample_multiplier` from torch's global generator, Python's `random` without torch); `previous_winner`, `sampler`, `objective`, `posterior_transform`, `X_pending` |
+| `PairwiseGP` with phase 8b's `SampleReducingMCAcquisitionFunction` subclasses | same | Python subclasses work on a `PairwiseGP`; `qMultiStepLookahead` raises BoTorch's `RuntimeError` |
 | `botorch.models.transforms.input.Normalize` | same path | all arguments: `d`, `indices`, `bounds` (also batched), `batch_shape`, `transform_on_train/eval/fantasize`, `reverse`, `min_range`, `learn_bounds`, `almost_zero`, `center`; `bounds`, `offset`, `coefficient`, `learn_coefficients`, `get_init_args` (with `center` and unshifted bounds, meta-pytorch/botorch#3389), `equals`, `preprocess_transform`, `untransform` |
 | `InputStandardize`, `AffineInputTransform`, `ReversibleInputTransform`, `InputTransform` | same paths | `indices`, `batch_shape`, flags, `reverse`, `min_std`; coefficients learned in train mode (BoTorch's `learn_coefficients`), fixed for `AffineInputTransform` |
 | `Warp` | same path | Kumaraswamy CDF warping with learned `concentration0` / `concentration1` (`GreaterThan(1e-4)` without transform, optimizer bounds as BoTorch's), `concentration0_prior` / `concentration1_prior`, `indices`, `bounds`, `eps`, `batch_shape` (single-output batched models), flags; fitted jointly with the GP hyperparameters by `fit_gpytorch_mll` (exact gradients) |
@@ -420,8 +434,8 @@ Everything else in BoTorch is not ported yet: see
 ## What is not ported yet
 
 botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **444 of the 776
-public classes and functions** defined in BoTorch's modules (57%; BoTorch main
+processes, which is a small part of BoTorch: it provides **460 of the 776
+public classes and functions** defined in BoTorch's modules (59%; BoTorch main
 at da00e04). `scripts/api_coverage.py` compares the two libraries module by
 module and writes every missing class, function, parameter and method to
 [docs/api_coverage.md](docs/api_coverage.md); [docs/roadmap.md](docs/roadmap.md)
@@ -434,7 +448,6 @@ orders the remaining work toward a full port. The main gaps:
     SAAS models are ported);
   - variational GPs (`SingleTaskVariationalGP`), `HigherOrderGP` and
     `LatentKroneckerGP`;
-  - preference learning (`PairwiseGP`);
   - the additive contextual GPs (`SACGP`, `LCEAGP`), and the per-component
     posteriors of `OrthogonalAdditiveGP`;
   - cost models other than `AffineFidelityCostModel` and `FixedCostModel`;
@@ -478,11 +491,11 @@ orders the remaining work toward a full port. The main gaps:
 - **Single-objective acquisition functions:**
   - `qMultiStepLookahead` with value functions other than the knowledge
     gradient's, on models other than `SingleTaskGP` / `ModelListGP`, and
-    input constructors for BALD and EUBO (see
+    the input constructor for BALD (see
     [docs/acquisition-construction.md](docs/acquisition-construction.md));
-  - active and preference learning that needs pairwise or fully Bayesian
-    models (BALD, EUBO, `PairwiseMCPosteriorVariance`) and
-    `LearnedObjective`;
+  - BALD (needs fully Bayesian models), and `LearnedObjective` inside the
+    Monte-Carlo acquisition functions (BoTorch's BOPE workflow with qNEI;
+    see [docs/preference.md](docs/preference.md));
   - batched candidate sets in the max-value entropy search classes (BoTorch's
     are broken; the sampling functions take them), and an IID normal sampler
     (`qmc=False`).
@@ -508,8 +521,10 @@ orders the remaining work toward a full port. The main gaps:
     is ported); see [docs/optimization.md](docs/optimization.md).
 - **Sampling and utilities:**
   - samplers other than `SobolQMCNormalSampler`, `ListSampler`,
-    `IndexSampler` and `StochasticSampler` (for deterministic models)
-    (`IIDNormalSampler`, `ForkedRNGSampler`, ...);
+    `IndexSampler`, the pairwise samplers and `StochasticSampler` (for
+    deterministic models): `IIDNormalSampler` samples posteriors but is not
+    used in the Monte-Carlo acquisition functions yet, and `ForkedRNGSampler`
+    is missing;
   - pathwise sampling of approximate GPs, ensembles and batched models,
     and with kernels other than RBF and Matérn (as in BoTorch);
   - most of `botorch.utils`: probability (bivariate and truncated
@@ -526,25 +541,25 @@ orders the remaining work toward a full port. The main gaps:
 
 | Area | Public classes and functions | In botorch_rs | Share |
 |---|---|---|---|
-| `acquisition` | 145 | 125 | 86% |
+| `acquisition` | 145 | 132 | 91% |
 | `acquisition.multi_objective` | 33 | 33 | 100% |
 | `cross_validation` | 7 | 4 | 57% |
 | `exceptions` | 20 | 18 | 90% |
 | `fit` | 3 | 1 | 33% |
 | `generation` | 8 | 7 | 88% |
 | `logging` | 1 | 0 | 0% |
-| `models` | 66 | 29 | 44% |
+| `models` | 66 | 31 | 47% |
 | `models.empirical_gps` | 36 | 0 | 0% |
 | `models.hierarchical` | 6 | 0 | 0% |
 | `models.kernels` | 19 | 8 | 42% |
-| `models.likelihoods` | 5 | 0 | 0% |
+| `models.likelihoods` | 5 | 3 | 60% |
 | `models.transforms` | 35 | 35 | 100% |
 | `models.utils` | 26 | 6 | 23% |
 | `optim` | 58 | 45 | 78% |
 | `optim.closures` | 5 | 4 | 80% |
 | `optim.utils` | 14 | 8 | 57% |
 | `posteriors` | 13 | 8 | 62% |
-| `sampling` | 14 | 5 | 36% |
+| `sampling` | 14 | 9 | 64% |
 | `sampling.pathwise` | 25 | 11 | 44% |
 | `settings` | 3 | 0 | 0% |
 | `test_functions` | 84 | 57 | 68% |
@@ -552,7 +567,7 @@ orders the remaining work toward a full port. The main gaps:
 | `utils` | 97 | 20 | 21% |
 | `utils.multi_objective` | 25 | 20 | 80% |
 | `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **776** | **444** | **57%** |
+| **all of `botorch`** | **776** | **460** | **59%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -1268,6 +1283,28 @@ dependence through the fantasy models. Python subclasses of
 [docs/acquisition-construction.md](docs/acquisition-construction.md) has the
 full tables, the deviations and ten BoTorch bugs found.
 
+### Preference learning
+
+**Where the tests are:**
+- Rust fixtures in `botorch_core/tests/preference_10b_parity.rs`
+  (`--phase 10b-preference`).
+- Live Python tests in `test_parity_10b_preference.py` and API and error
+  tests in `test_10b_preference.py`.
+- A randomized sweep over random comparisons and kernels in
+  `test_equivalence_10b_preference.py` (`-m equivalence`).
+
+`PairwiseGP`'s Laplace approximation uses a line-by-line port of MINPACK's
+`hybrj`, which reproduces scipy's `fsolve` bit for bit (every evaluation, the
+solution and the counters). Values (Laplace MLL, MAP utilities, posteriors,
+EUBO, qEUBO, pairwise BALD, `PairwiseMCPosteriorVariance`,
+`LearnedObjective`) agree to 1.8e-14 and gradients to 2.7e-13. Fits take
+BoTorch's numbers of L-BFGS-B iterations. Where fsolve's iterates depend on
+rounding in BoTorch itself (nearly singular kernels), the solution is compared
+with BoTorch's outcomes on twins.
+[docs/preference.md](docs/preference.md) has the full tables, the deviations
+and five BoTorch bugs found (one of them reverses the preferences that the
+pairwise samplers' fantasies condition on).
+
 ### Versions checked
 
 The numbers above come from BoTorch's main branch at da00e04 with GPyTorch
@@ -1475,6 +1512,18 @@ The model fits alone are 140–550× faster.
 
 ## Migration notes and known differences
 
+- **Preference learning.** Where BoTorch is wrong, botorch-rust has the
+  correct behaviour:
+  - the pairwise samplers list the preferred item first, so fantasies
+    condition on the sampled preferences;
+  - a comparison of near-duplicate datapoints is uninformative;
+  - the logit likelihood's gradient stays finite for large utilities;
+  - `LearnedObjective` with a multi-dimensional `sample_shape` returns the
+    documented shape;
+  - a prior-only `PairwiseGP` has one output.
+
+  `mll(...)` returns a value without an autograd graph (the gradient is
+  `mll.value_and_grad()`). See [docs/preference.md](docs/preference.md#deviations-from-botorch-migration-notes).
 - **Input constructors and `qMultiStepLookahead`.**
   - `qMultiStepLookahead` gradients are exact (BoTorch's miss the dependence
     through the fantasy models), `make_best_f` returns the best observed
@@ -1951,6 +2000,8 @@ Other scripts:
   - `--phase 7b-models`: multi-fidelity, mixed and MAP SAAS models;
   - `--phase 8-so-acquisition`: the single-objective acquisition functions;
   - `--phase 8b-acquisition-rest`: `qMultiStepLookahead`;
+  - `--phase 10b-preference`: `PairwiseGP` and the preference acquisition
+    functions;
   - `--phase 9-optim`: optimization, candidate generation, torch-style fitting
     and cross-validation;
   - `--phase unity-lcemgp`: `LCEMGP`, the Unity project's

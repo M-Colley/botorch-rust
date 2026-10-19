@@ -38,6 +38,7 @@ mod optim;
 mod optim_ext;
 mod pathwise;
 mod polytope;
+mod preference;
 mod risk_measures;
 mod sampling;
 mod so_acquisition;
@@ -141,5 +142,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     models_7b::register(m)?;
     // Fully Bayesian GPs and NUTS (phase 10a).
     fully_bayesian::register(m)?;
+    // Preference learning (phase 10b).
+    preference::register(m)?;
     Ok(())
 }

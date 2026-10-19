@@ -84,6 +84,7 @@ pub mod one_shot;
 pub mod optimal_samples;
 pub mod penalized;
 pub mod predictive_entropy_search;
+pub mod preference;
 pub mod risk_measures;
 pub mod thompson_sampling;
 pub mod utils;
@@ -133,6 +134,10 @@ pub use penalized::{
     Penalty, PointPenalty,
 };
 pub use predictive_entropy_search::QPredictiveEntropySearch;
+pub use preference::{
+    AnalyticExpectedUtilityOfBestOption, ComposedModel,
+    PairwiseBayesianActiveLearningByDisagreement, PairwiseMcPosteriorVariance,
+};
 pub use thompson_sampling::{PathwiseThompsonSampling, PathwiseThompsonSamplingOptions};
 pub use utils::{
     compute_best_feasible_objective, estimate_objective_lower_bound, get_infeasible_cost,

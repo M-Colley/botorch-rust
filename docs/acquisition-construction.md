@@ -21,7 +21,8 @@ samplers and t-batched fixed values of `FixedFeatureAcquisitionFunction`.
 | `construct_inputs_EHVI`, `_qEHVI`, `_qNEHVI`, `_qLogNEHVI`, `_qLogNParEGO` | same path | reference points from `objective_thresholds` (with `get_ref_point` / outcome constraints), partitionings (`alpha`), `X_baseline` / `prune_baseline`, constraints from `constraints_tuple` |
 | `construct_inputs_qKG`, `_qMFKG`, `_qHVKG`, `_qMFHVKG`, `_mf_base` | same path | `current_value` from `optimize_objective` (botorch_rs's `optimize_acqf`; `optimizer_options`, `batch_initial_conditions` for deterministic results), `target_fidelities` / `fidelity_weights` / `cost_intercept` (the native `project_to_target_fidelity` / `expand_trace_observations` partials) |
 | `construct_inputs_qMES`, `_qMFMES`, `_qJES`, `_NIPV` | same path | candidate sets drawn with the training data's RNG (torch's for tensors, so `torch.manual_seed` reproduces BoTorch's), optimal samples with botorch_rs's `get_optimal_samples`, NIPV's points with botorch_rs's `draw_sobol_samples` |
-| `get_best_f_analytic`, `get_best_f_mc`, `optimize_objective` | same path | `posterior_transform`, `objective`, `constraints`, `fixed_features`, `linear_constraints`, `qmc` (botorch_rs has no IID sampler: `qmc=False` raises `UnsupportedError`) |
+| `construct_inputs_analytic_eubo`, `construct_inputs_qeubo` | same path | added with Phase 10b (`docs/drafts/10b-preference.md`): preferential BO (`model` is the preference model) and BOPE (`pref_model`; the outcome model becomes `FixedSingleSampleModel(model, w)` with `w = torch.randn(pref_model.dim) * sample_multiplier` from torch's global generator, Python's `random` without torch) |
+| `get_best_f_analytic`, `get_best_f_mc`, `optimize_objective` | same path | `posterior_transform`, `objective`, `constraints`, `fixed_features`, `linear_constraints`, `qmc` (`qmc=False` raises `UnsupportedError`: botorch_rs's `IIDNormalSampler` samples posteriors but the MC acquisition functions do not take it) |
 | `botorch.acquisition.factory.get_acquisition_function` | same path (also `botorch_rs.acquisition`) | every name BoTorch handles (`qEI`, `qLogEI`, `qPI`, `qLogPF`, `qNEI`, `qLogNEI`, `qSR`, `qUCB`, `qEHVI`, `qLogEHVI`, `qNEHVI`, `qLogNEHVI`, `pTS`) with BoTorch's errors; Sobol sampler, or `IndexSampler` for ensemble models |
 | `botorch.acquisition.utils.compute_best_feasible_objective`, `get_infeasible_cost`, `repeat_to_match_aug_dim`, `project_to_sample_points`, `get_acquisition_function` (deprecated) | same path | BoTorch's operations (torch for tensors); `get_infeasible_cost` from the posterior mean minus six standard deviations at `X` |
 | `botorch.acquisition.multi_step_lookahead.qMultiStepLookahead` | same path (also `botorch_rs.acquisition`) | native fantasy tree (Rust): `batch_sizes`, `num_fantasies` or `samplers` (with `base_weights`), `valfunc_cls` (the knowledge gradient's native value functions: `PosteriorMean`, `PosteriorStandardDeviation`, `UpperConfidenceBound`, `(Log)ExpectedImprovement`, `(Log)ProbabilityOfImprovement`, `ScalarizedPosteriorMean`, `qSimpleRegret`, `qExpectedImprovement`, `qProbabilityOfImprovement`, `qUpper/LowerConfidenceBound`, `qPosteriorStandardDeviation`), `valfunc_argfacs` (`make_best_f` per node; others once, see deviations), `objective` (MC), `posterior_transform`, `inner_mc_samples`, `X_pending`, `collapse_fantasy_base_samples`; `get_augmented_q_batch_size`, `get_split_shapes`, `extract_candidates`, `get_induced_fantasy_model`; exact gradients (BoTorch's are wrong, bug 1); `SingleTaskGP` (one or more outputs, inferred or fixed noise, transforms) and `ModelListGP`. Rust: `botorch_core::acquisition::multi_step_lookahead` |
@@ -33,11 +34,6 @@ samplers and t-batched fixed values of `FixedFeatureAcquisitionFunction`.
 
 ## What remains unported (in this area)
 
-- The input constructors of acquisition functions botorch_rs does not have:
-  `AnalyticExpectedUtilityOfBestOption` / `qExpectedUtilityOfBestOption`
-  (preference models, Phase 10b). They can be registered with
-  `acqf_input_constructor` when those classes land
-  (`construct_inputs_BALD` was registered with Phase 10a).
 - `qMultiStepLookahead` with value functions outside the native list above
   (e.g. `qNoisyExpectedImprovement`, entropy searches, user classes), with
   argument factories other than `make_best_f` whose arguments depend on the
@@ -51,8 +47,9 @@ samplers and t-batched fixed values of `FixedFeatureAcquisitionFunction`.
   `b x n x d`): BoTorch documents `n x d` and its batched behaviour is broken
   (bug 8), so botorch_rs keeps raising `UnsupportedError`. The sampling
   functions take batched candidate sets.
-- `get_best_f_mc` / `optimize_objective` with `qmc=False` (botorch_rs has no
-  IID normal sampler): `UnsupportedError`.
+- `get_best_f_mc` / `optimize_objective` with `qmc=False` (the MC
+  acquisition functions do not take botorch_rs's `IIDNormalSampler`):
+  `UnsupportedError`.
 
 ## Deviations from BoTorch (migration notes)
 

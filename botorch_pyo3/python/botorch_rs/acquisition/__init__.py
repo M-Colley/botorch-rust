@@ -1,7 +1,10 @@
 """Acquisition functions (``botorch.acquisition``)."""
 
 from botorch_rs.acquisition.acquisition import AcquisitionFunction, OneShotAcquisitionFunction
-from botorch_rs.acquisition.active_learning import qNegIntegratedPosteriorVariance
+from botorch_rs.acquisition.active_learning import (
+    PairwiseMCPosteriorVariance,
+    qNegIntegratedPosteriorVariance,
+)
 from botorch_rs.acquisition.analytic import (
     AnalyticAcquisitionFunction,
     ConstrainedExpectedImprovement,
@@ -68,6 +71,7 @@ from botorch_rs.acquisition.objective import (
     ConstrainedMCObjective,
     GenericMCObjective,
     IdentityMCObjective,
+    LearnedObjective,
     LinearMCObjective,
     MCAcquisitionObjective,
     PosteriorTransform,
@@ -86,6 +90,11 @@ from botorch_rs.acquisition.penalized import (
     PenalizedMCObjective,
 )
 from botorch_rs.acquisition.predictive_entropy_search import qPredictiveEntropySearch
+from botorch_rs.acquisition.preference import (
+    AnalyticExpectedUtilityOfBestOption,
+    PairwiseBayesianActiveLearningByDisagreement,
+    qExpectedUtilityOfBestOption,
+)
 from botorch_rs.acquisition.prior_guided import PriorGuidedAcquisitionFunction
 from botorch_rs.acquisition.proximal import ProximalAcquisitionFunction
 from botorch_rs.acquisition.thompson_sampling import PathwiseThompsonSampling
@@ -94,6 +103,7 @@ from botorch_rs.acquisition.utils import get_optimal_samples, prune_inferior_poi
 __all__ = [
     "AcquisitionFunction",
     "AnalyticAcquisitionFunction",
+    "AnalyticExpectedUtilityOfBestOption",
     "CallableAcquisitionFunction",
     "ConstrainedExpectedImprovement",
     "ConstrainedMCObjective",
@@ -113,6 +123,7 @@ __all__ = [
     "L1Penalty",
     "L1PenaltyObjective",
     "L2Penalty",
+    "LearnedObjective",
     "LinearMCObjective",
     "LogImprovementMCAcquisitionFunction",
     "LogConstrainedExpectedImprovement",
@@ -126,6 +137,8 @@ __all__ = [
     "MultiOutputAcquisitionFunction",
     "OneShotAcquisitionFunction",
     "NoisyExpectedImprovement",
+    "PairwiseBayesianActiveLearningByDisagreement",
+    "PairwiseMCPosteriorVariance",
     "PathwiseThompsonSampling",
     "PenalizedAcquisitionFunction",
     "PenalizedMCObjective",
@@ -147,6 +160,7 @@ __all__ = [
     "prune_inferior_points",
     "qAnalyticProbabilityOfImprovement",
     "qExpectedImprovement",
+    "qExpectedUtilityOfBestOption",
     "qJointEntropySearch",
     "qKnowledgeGradient",
     "qLogExpectedImprovement",

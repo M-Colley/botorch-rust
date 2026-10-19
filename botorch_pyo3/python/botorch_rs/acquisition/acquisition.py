@@ -72,6 +72,7 @@ def is_acquisition_model(model: Any) -> bool:
     )
     from botorch_rs.models.ensemble import _EnsembleMoments
     from botorch_rs.models.model import ModelList
+    from botorch_rs.models.pairwise_gp import PairwiseGP
 
     return isinstance(
         model,
@@ -86,6 +87,7 @@ def is_acquisition_model(model: Any) -> bool:
             FixedSingleSampleModel,
             ModelList,
             _EnsembleMoments,
+            PairwiseGP,
         ),
     )
 

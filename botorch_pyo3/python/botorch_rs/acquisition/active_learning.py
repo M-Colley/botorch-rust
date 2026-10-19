@@ -74,4 +74,41 @@ class qNegIntegratedPosteriorVariance(AcquisitionFunction):
         )
 
 
-__all__ = ["qNegIntegratedPosteriorVariance"]
+class PairwiseMCPosteriorVariance(AcquisitionFunction):
+    r"""Variance of difference for Active Learning
+
+    Given a model and an objective, calculate the posterior sample variance
+    of the objective on the difference of pairs of points. See more implementation
+    details in ``forward``. This acquisition function is typically used with a
+    pairwise model (e.g., PairwiseGP) and a likelihood/link function
+    on the pair difference (e.g., logistic or probit) for pure exploration
+    """
+
+    def __init__(self, model: Any, objective: Any, sampler: Any = None) -> None:
+        r"""Pairwise Monte Carlo Posterior Variance
+
+        Args:
+            model: A fitted model.
+            objective: An MCAcquisitionObjective representing the link function
+                (e.g., logistic or probit.) applied on the difference of (usually 1-d)
+                two samples. Can be implemented via GenericMCObjective.
+            sampler: The sampler used for drawing MC samples (a
+                ``SobolQMCNormalSampler``; 512 samples by default).
+        """
+        from botorch_rs.acquisition.monte_carlo import DEFAULT_MC_SAMPLES
+        from botorch_rs.acquisition.objective import objective_arg
+        from botorch_rs.sampling.stochastic_samplers import mc_sampler_arg
+
+        super().__init__(model)
+        if model.num_outputs != 1:
+            raise UnsupportedError("PairwiseMCPosteriorVariance requires a single-output model.")
+        self.objective = objective
+        self.posterior_transform = None
+        self._rs_model = self._model_handle(None)
+        self.sampler = mc_sampler_arg(sampler, self._rs_model, (DEFAULT_MC_SAMPLES,))
+        self._rs = _rs.pairwise_mc_posterior_variance(
+            self._rs_model, objective_arg(objective), self.sampler._rs
+        )
+
+
+__all__ = ["PairwiseMCPosteriorVariance", "qNegIntegratedPosteriorVariance"]

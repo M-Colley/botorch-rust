@@ -298,10 +298,9 @@ def test_infeasible_cost_and_best_feasible_objective_match_botorch() -> None:
 def test_registry_matches_botorch() -> None:
     names_bt = {c.__name__ for c in bic.ACQF_INPUT_CONSTRUCTOR_REGISTRY}
     names_rs = {c.__name__ for c in ric.ACQF_INPUT_CONSTRUCTOR_REGISTRY}
-    # Only the constructors of the acquisition functions botorch_rs does not
-    # have (yet) are missing.
-    for name in names_bt - names_rs:
-        assert not hasattr(ra, name), name
+    # Every constructor of BoTorch's registry is registered (BALD with
+    # phase 10a, the preference constructors with phase 10b).
+    assert names_bt - names_rs == set()
     assert names_rs <= names_bt
     for cls in ric.ACQF_INPUT_CONSTRUCTOR_REGISTRY:
         fb = bic.ACQF_INPUT_CONSTRUCTOR_REGISTRY[_bt_cls(cls.__name__)]

@@ -20,11 +20,10 @@ Sobol points of ``qNegIntegratedPosteriorVariance`` with botorch_rs's
 botorch_rs's ``get_optimal_samples`` and the current values of the knowledge
 gradients with botorch_rs's ``optimize_acqf`` (pass
 ``batch_initial_conditions`` through ``optimize_objective_kwargs`` for
-deterministic results).
-
-Not ported: the constructors of the acquisition functions that botorch_rs
-does not have yet (``AnalyticExpectedUtilityOfBestOption``,
-``qExpectedUtilityOfBestOption``).
+deterministic results). The fixed sample ``w`` of the outcome model of
+the EUBO constructors is ``torch.randn(pref_model.dim) * sample_multiplier``
+with torch's global generator (BoTorch's draw), or Python's ``random``
+without torch.
 """
 
 from __future__ import annotations
@@ -110,6 +109,10 @@ from botorch_rs.acquisition.objective import (
     LinearMCObjective,
     _botorch_class_names,
 )
+from botorch_rs.acquisition.preference import (
+    AnalyticExpectedUtilityOfBestOption,
+    qExpectedUtilityOfBestOption,
+)
 from botorch_rs.acquisition.utils import (
     compute_best_feasible_objective,
     expand_trace_observations,
@@ -119,6 +122,7 @@ from botorch_rs.acquisition.utils import (
 )
 from botorch_rs.exceptions.errors import BotorchError, UnsupportedError
 from botorch_rs.models.cost import AffineFidelityCostModel
+from botorch_rs.models.deterministic import FixedSingleSampleModel
 from botorch_rs.sampling.normal import SobolQMCNormalSampler
 from botorch_rs.utils.datasets import SupervisedDataset
 
@@ -1862,6 +1866,129 @@ def construct_inputs_qMFMES(
     )
 
     return {**inputs_mf, **inputs_qmes, "num_fantasies": num_fantasies}
+
+
+def _one_sample_outcome_model(model: Any, pref_model: Any, sample_multiplier: Any) -> Any:
+    """BoTorch's EUBO-zeta outcome model: ``FixedSingleSampleModel(model, w)``
+    with ``w = torch.randn(pref_model.dim) * sample_multiplier`` (torch's
+    global generator and float32 arithmetic, as BoTorch; Python's ``random``
+    without torch). ``pref_model.dim`` rather than ``model.num_outputs``, as
+    the number of outputs of a multi-task model can be its number of tasks."""
+    dim = pref_model.dim
+    try:
+        torch = importlib.import_module("torch")
+    except ImportError:
+        import random
+
+        w: Any = [random.gauss(0.0, 1.0) * sample_multiplier for _ in range(int(dim))]
+    else:
+        w = torch.randn(dim) * sample_multiplier
+    return FixedSingleSampleModel(model=model, w=w)
+
+
+@acqf_input_constructor(AnalyticExpectedUtilityOfBestOption)
+def construct_inputs_analytic_eubo(
+    model: Any,
+    pref_model: Any = None,
+    previous_winner: Any = None,
+    sample_multiplier: float | None = 1.0,
+    objective: Any = None,
+    posterior_transform: Any = None,
+) -> dict[str, Any]:
+    r"""Construct kwargs for the ``AnalyticExpectedUtilityOfBestOption`` constructor.
+
+    ``model`` is the primary model defined over the parameter space. It can be the
+    outcome model in BOPE or the preference model in PBO. ``pref_model`` is the model
+    defined over the outcome/metric space, which is typically the preference model
+    in BOPE.
+
+    If both model and pref_model exist, we are performing Bayesian Optimization with
+    Preference Exploration (BOPE). When only pref_model is None, we are performing
+    preferential BO (PBO).
+
+    Args:
+        model: The outcome model to be used in the acquisition function in BOPE
+            when pref_model exists; otherwise, model is the preference model and
+            we are doing Preferential BO
+        pref_model: The preference model to be used in preference exploration as in
+            BOPE; if None, we are doing PBO and model is the preference model.
+        previous_winner: The previous winner of the best option.
+        sample_multiplier: The scale factor for the single-sample model.
+        objective: Ignored. This argument is allowed to be passed then ignored
+            because of the way that EUBO is typically used in a BOPE loop.
+        posterior_transform: Ignored. This argument is allowed to be passed then
+            ignored because of the way that EUBO is typically used in a BOPE
+            loop.
+
+    Returns:
+        A dict mapping kwarg names of the constructor to values.
+    """
+    if pref_model is None:
+        return {
+            "pref_model": model,
+            "outcome_model": None,
+            "previous_winner": previous_winner,
+        }
+    # A deterministic fixed single sample model from ``model``, i.e. EUBO-zeta
+    # as described in https://arxiv.org/abs/2203.11382.
+    return {
+        "pref_model": pref_model,
+        "outcome_model": _one_sample_outcome_model(model, pref_model, sample_multiplier),
+        "previous_winner": previous_winner,
+    }
+
+
+@acqf_input_constructor(qExpectedUtilityOfBestOption)
+def construct_inputs_qeubo(
+    model: Any,
+    pref_model: Any = None,
+    sample_multiplier: float | None = 1.0,
+    sampler: SobolQMCNormalSampler | None = None,
+    objective: Any = None,
+    posterior_transform: Any = None,
+    X_pending: Any = None,
+) -> dict[str, Any]:
+    r"""Construct kwargs for the ``qExpectedUtilityOfBestOption`` (qEUBO) constructor.
+
+    ``model`` is the primary model defined over the parameter space. It can be the
+    outcome model in BOPE or the preference model in PBO. ``pref_model`` is the model
+    defined over the outcome/metric space, which is typically the preference model
+    in BOPE.
+
+    If both model and pref_model exist, we are performing Bayesian Optimization with
+    Preference Exploration (BOPE). When only pref_model is None, we are performing
+    preferential BO (PBO).
+
+    Args:
+        model: The outcome model to be used in the acquisition function in BOPE
+            when pref_model exists; otherwise, model is the preference model and
+            we are doing Preferential BO
+        pref_model: The preference model to be used in preference exploration as in
+            BOPE; if None, we are doing PBO and model is the preference model.
+        sample_multiplier: The scale factor for the single-sample model.
+
+    Returns:
+        A dict mapping kwarg names of the constructor to values.
+    """
+    if pref_model is None:
+        return {
+            "pref_model": model,
+            "outcome_model": None,
+            "sampler": sampler,
+            "objective": objective,
+            "posterior_transform": posterior_transform,
+            "X_pending": X_pending,
+        }
+    # A deterministic fixed single sample model from ``model``, i.e. EUBO-zeta
+    # as described in https://arxiv.org/abs/2203.11382.
+    return {
+        "pref_model": pref_model,
+        "outcome_model": _one_sample_outcome_model(model, pref_model, sample_multiplier),
+        "sampler": sampler,
+        "objective": objective,
+        "posterior_transform": posterior_transform,
+        "X_pending": X_pending,
+    }
 
 
 def get_best_f_analytic(
