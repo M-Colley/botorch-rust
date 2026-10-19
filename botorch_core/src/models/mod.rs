@@ -29,6 +29,7 @@ pub mod fantasize;
 pub mod gp;
 pub mod higher_order_gp;
 pub mod inducing_point_allocators;
+pub mod latent_kronecker_gp;
 pub mod likelihoods;
 pub mod model;
 pub mod model_list;

@@ -14,6 +14,7 @@ from botorch_rs.models.gp_regression_fidelity import SingleTaskMultiFidelityGP
 from botorch_rs.models.gp_regression_mixed import MixedSingleTaskGP
 from botorch_rs.models.gpytorch import GPyTorchModel
 from botorch_rs.models.higher_order_gp import HigherOrderGP
+from botorch_rs.models.latent_kronecker_gp import LatentKroneckerGP
 from botorch_rs.models.map_saas import (
     AdditiveMapSaasSingleTaskGP,
     EnsembleMapSaasSingleTaskGP,
@@ -34,6 +35,7 @@ __all__ = [
     "GenericDeterministicModel",
     "GPyTorchModel",
     "HigherOrderGP",
+    "LatentKroneckerGP",
     "KroneckerMultiTaskGP",
     "MixedSingleTaskGP",
     "Model",

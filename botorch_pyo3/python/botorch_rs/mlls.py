@@ -10,6 +10,7 @@ from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.likelihoods import Likelihood
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.higher_order_gp import HigherOrderGP
+from botorch_rs.models.latent_kronecker_gp import LatentKroneckerGP
 from botorch_rs.models.model_list_gp_regression import ModelListGP
 from botorch_rs.models.multitask import KroneckerMultiTaskGP, MultiTaskGP
 
@@ -55,15 +56,24 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
     """
 
     def __init__(
-        self, likelihood: Likelihood, model: SingleTaskGP | MultiTaskGP | KroneckerMultiTaskGP
+        self,
+        likelihood: Likelihood,
+        model: SingleTaskGP
+        | MultiTaskGP
+        | KroneckerMultiTaskGP
+        | HigherOrderGP
+        | LatentKroneckerGP,
     ) -> None:
         if type(likelihood).__name__ in ("PairwiseProbitLikelihood", "PairwiseLogitLikelihood"):
             # GPyTorch's check of the likelihood (e.g. a PairwiseGP).
             raise RuntimeError("Likelihood must be Gaussian for exact inference")
-        if not isinstance(model, (SingleTaskGP, MultiTaskGP, KroneckerMultiTaskGP, HigherOrderGP)):
+        if not isinstance(
+            model,
+            (SingleTaskGP, MultiTaskGP, KroneckerMultiTaskGP, HigherOrderGP, LatentKroneckerGP),
+        ):
             raise UnsupportedError(
                 "ExactMarginalLogLikelihood requires a botorch_rs SingleTaskGP, MultiTaskGP, "
-                "KroneckerMultiTaskGP, LCEMGP or HigherOrderGP."
+                "KroneckerMultiTaskGP, LCEMGP, HigherOrderGP or LatentKroneckerGP."
             )
         if likelihood is not model.likelihood:
             raise UnsupportedError(
@@ -263,9 +273,7 @@ class _ApproximateMarginalLogLikelihood(MarginalLogLikelihood):
         current or the given flat raw parameters (a botorch_rs extension)."""
         self.model._outer._ensure_initialized()
         params = None if raw_parameters is None else list(to_flat(raw_parameters)[0])
-        value, grad = self._rs.elbo_value_and_grad(
-            float(self.num_data), float(self.beta), params
-        )
+        value, grad = self._rs.elbo_value_and_grad(float(self.num_data), float(self.beta), params)
         return value, list(grad)
 
     def named_parameters(self) -> Any:

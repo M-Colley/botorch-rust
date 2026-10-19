@@ -55,8 +55,11 @@ def _is_approximate(mll: Any) -> bool:
 def _is_higher_order(mll: Any) -> bool:
     from botorch_rs.mlls import ExactMarginalLogLikelihood
     from botorch_rs.models.higher_order_gp import HigherOrderGP
+    from botorch_rs.models.latent_kronecker_gp import LatentKroneckerGP
 
-    return isinstance(mll, ExactMarginalLogLikelihood) and isinstance(mll.model, HigherOrderGP)
+    return isinstance(mll, ExactMarginalLogLikelihood) and isinstance(
+        mll.model, (HigherOrderGP, LatentKroneckerGP)
+    )
 
 
 def _fit_scipy_approximate(
@@ -96,7 +99,9 @@ def _fit_scipy_approximate(
     for key in ("disp", "iprint"):
         opts.pop(key, None)
     if opts:
-        warnings.warn(f"Unknown solver options: {', '.join(sorted(opts))}", UserWarning, stacklevel=3)
+        warnings.warn(
+            f"Unknown solver options: {', '.join(sorted(opts))}", UserWarning, stacklevel=3
+        )
     mll.model._outer._ensure_initialized()
     loss, nit, _, status, message, _ = mll._rs.fit(
         float(mll.num_data), float(mll.beta), max_attempts=1, **kwargs
@@ -208,7 +213,9 @@ def fit_gpytorch_mll_scipy(
         if opts:
             raise UnsupportedError(f"Unsupported L-BFGS-B options: {sorted(opts)}.")
         loss, nit, _, status, message, _ = mll.model._rs.fit(max_attempts=1, **hogp_kwargs)
-        return OptimizationResult(step=int(nit), fval=float(loss), status=OptimizationStatus[status], message=message)
+        return OptimizationResult(
+            step=int(nit), fval=float(loss), status=OptimizationStatus[status], message=message
+        )
     model = _native_model(mll)
     native = (
         model is not None
@@ -417,17 +424,23 @@ def fit_gpytorch_mll_torch(
             if step_limit is None and stopping_criterion is None and timeout_sec is None:
                 raise RuntimeError("No termination conditions were given.")
             mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
-            if not mll.model._learn_latent_pars:
+            if not getattr(mll.model, "_learn_latent_pars", True):
                 if mask is None:
                     mask = [True] * len(mll.model._rs.raw_parameters())
                 for name, (off, size) in mll.model._offsets().items():
                     if "latent_parameters" in name:
                         mask[off : off + size] = [False] * size
             stopping = None if stopping_criterion is None else stopping_criterion._native_args()
-            return _result(mll.model._rs.fit_torch(
-                mask=mask, bounds=flat_bounds, step_limit=step_limit,
-                stopping=stopping, timeout_sec=timeout_sec, **adam,
-            ))
+            return _result(
+                mll.model._rs.fit_torch(
+                    mask=mask,
+                    bounds=flat_bounds,
+                    step_limit=step_limit,
+                    stopping=stopping,
+                    timeout_sec=timeout_sec,
+                    **adam,
+                )
+            )
     if _is_approximate(mll):
         native = (
             closure is None

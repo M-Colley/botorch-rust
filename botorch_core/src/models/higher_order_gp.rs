@@ -564,6 +564,28 @@ impl HigherOrderGP {
         t
     }
 
+    /// Solve the noisy training covariance against a tensor-shaped right-hand side.
+    /// This reuses the Kronecker eigendecompositions without forming the full matrix.
+    pub(crate) fn solve_training(&self, rhs: &Matrix) -> Result<Matrix> {
+        if rhs.shape() != self.train_y.shape() {
+            return Err(BotorchError::DimensionMismatch(
+                "training solve right-hand side has the wrong shape".into(),
+            ));
+        }
+        let cache = self.cache()?;
+        let mut dims = vec![rhs.nrows()];
+        dims.extend(&self.target_shape);
+        let values = (0..rhs.nrows())
+            .flat_map(|i| rhs.row(i).iter().copied().collect::<Vec<_>>())
+            .collect();
+        let solved = Self::solve(&cache.factors, &cache.d, &Tensor::new(dims, values));
+        Ok(Matrix::from_row_slice(
+            rhs.nrows(),
+            rhs.ncols(),
+            &solved.data,
+        ))
+    }
+
     fn compute_cache(&self) -> Result<Cache> {
         let factors = self.factors_at(&self.raw)?;
         let noise = self.noise();
