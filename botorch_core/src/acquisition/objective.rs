@@ -452,7 +452,7 @@ impl Model for ScalarizedModel {
             }
             return Ok(PointPosteriors::single_output(&mean, &var));
         }
-        let pp = self.model.point_posteriors(x)?;
+        let pp = self.model.point_posteriors_joint(x)?;
         self.transform.transform_point_posteriors(&pp)
     }
 
@@ -460,7 +460,7 @@ impl Model for ScalarizedModel {
         if self.moments {
             return self.moment_posterior(x);
         }
-        let g = self.model.point_posterior_with_grad(x)?;
+        let g = self.model.point_posterior_joint_with_grad(x)?;
         self.transform.transform_grad(&g)
     }
 }

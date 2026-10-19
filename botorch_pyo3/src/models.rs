@@ -144,26 +144,10 @@ impl ModelRef {
             ModelRef::Dyn(m) if !noise => {
                 m.batch_element(b).unwrap_or(m.as_ref()).point_posteriors(x)
             }
-            ModelRef::Dyn(m) => {
-                let m = m.batch_element(b).unwrap_or(m.as_ref());
-                // Every point on its own, with observation noise.
-                let k = m.num_outputs();
-                let mut mean = Matrix::zeros(x.nrows(), k);
-                let mut cov = Matrix::zeros(x.nrows(), k * k);
-                for i in 0..x.nrows() {
-                    let p = m.posterior(&x.rows(i, 1).into_owned(), true)?;
-                    for a in 0..k {
-                        mean[(i, a)] = p.mean[a];
-                        for c in 0..k {
-                            cov[(i, a * k + c)] = p.covariance[(a, c)];
-                        }
-                    }
-                }
-                Ok(PointPosteriors {
-                    mean,
-                    covariance: cov,
-                })
-            }
+            ModelRef::Dyn(m) => m
+                .batch_element(b)
+                .unwrap_or(m.as_ref())
+                .point_posteriors_with_noise(x),
         }
     }
 }

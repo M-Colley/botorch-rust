@@ -83,8 +83,10 @@ class GPyTorchPosterior(Posterior):
         transform: tuple[list[float], float] | None = None,
         points_per_input: int = 1,
         base: bool = False,
+        interleaved: bool = False,
     ) -> None:
         self._rs = source
+        self._interleaved_mt = interleaved
         self._base = base
         self._points_per_input = points_per_input
         self._x = X
@@ -167,7 +169,10 @@ class GPyTorchPosterior(Posterior):
         """The joint normal distribution of each ``q``-batch (a
         ``MultitaskMultivariateNormal`` for several outputs)."""
         if self._is_mt:
-            return MultitaskMultivariateNormal(self)
+            mvn = MultitaskMultivariateNormal(self)
+            if getattr(self, "_interleaved_mt", False):
+                mvn._interleaved = True
+            return mvn
         return MultivariateNormal(self)
 
     @property
@@ -329,6 +334,29 @@ class MultitaskMultivariateNormal(MultivariateNormal):
 
     def _event(self) -> tuple[int, ...]:
         return (self._p._q, self._p._m)
+
+    @property
+    def covariance_matrix(self) -> Any:
+        """Joint covariances, ``batch_shape x (q m) x (q m)``: over the
+        output-major flattening, or interleaved (index ``p * m + t``) for an
+        interleaved distribution (e.g. that of a ``SingleTaskVariationalGP``)."""
+        p = self._p
+        _, (data, shape) = p._get_joint()
+        if not self._interleaved:
+            return p._out(data, tuple(shape))
+        q, m = p._q, p._m
+        n = q * m
+        out = [0.0] * len(data)
+        for b in range(len(data) // max(n * n, 1)):
+            off = b * n * n
+            for t in range(m):
+                for i in range(q):
+                    for u in range(m):
+                        for j in range(q):
+                            out[off + (i * m + t) * n + j * m + u] = data[
+                                off + (t * q + i) * n + u * q + j
+                            ]
+        return p._out(out, tuple(shape))
 
     @property
     def num_tasks(self) -> int:

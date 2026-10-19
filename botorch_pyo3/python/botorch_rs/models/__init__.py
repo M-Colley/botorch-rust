@@ -1,5 +1,6 @@
 """Models (``botorch.models``)."""
 
+from botorch_rs.models.approximate_gp import ApproximateGPyTorchModel, SingleTaskVariationalGP
 from botorch_rs.models.contextual_multioutput import LCEMGP, ProvidedEmbeddingLCEMGP
 from botorch_rs.models.cost import AffineFidelityCostModel
 from botorch_rs.models.deterministic import (
@@ -25,6 +26,7 @@ __all__ = [
     "AdditiveMapSaasSingleTaskGP",
     "AffineDeterministicModel",
     "AffineFidelityCostModel",
+    "ApproximateGPyTorchModel",
     "EnsembleMapSaasSingleTaskGP",
     "GenericDeterministicModel",
     "KroneckerMultiTaskGP",
@@ -39,5 +41,6 @@ __all__ = [
     "ProvidedEmbeddingLCEMGP",
     "SingleTaskGP",
     "SingleTaskMultiFidelityGP",
+    "SingleTaskVariationalGP",
     "add_saas_prior",
 ]

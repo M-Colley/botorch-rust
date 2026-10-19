@@ -412,6 +412,22 @@ impl TreeKernel {
         self.root.diag_mode(&a.root, i)
     }
 
+    /// [`TreeKernel::diag_mode`] and its derivative with respect to the
+    /// coordinates of `a_i` (GPyTorch's lazy `diag=True` values, e.g. the
+    /// marginal variances of a variational GP).
+    pub fn diag_mode_with_grad(&self, a: &TreePrep, i: usize) -> (f64, Vector) {
+        let (v, g) = self.root.diag_mode_grad(&a.root, i);
+        (v, scatter_vec(&self.root, g, self.input_dim))
+    }
+
+    /// `Σᵢ wᵢ ∂k_diag(a_i)/∂θ` for every parameter `θ` (actual values, flat
+    /// order) of the `diag=True` values ([`TreeKernel::diag_mode`]).
+    pub fn contract_diag_mode(&self, a: &TreePrep, w: &[f64]) -> Vec<f64> {
+        let mut out = vec![0.0; self.values.len()];
+        self.root.contract_diag_mode(&a.root, w, &mut out);
+        out
+    }
+
     /// `k(a_i, b_j)` for all `j` and the derivatives with respect to the
     /// coordinates of `a_i` (`n_b × input_dim`).
     pub fn cross_with_grad(&self, a: &TreePrep, i: usize, b: &TreePrep) -> (Vector, Matrix) {
@@ -890,6 +906,20 @@ fn scatter_rows(node: &Node, g: Matrix, parent_k: usize) -> Matrix {
     }
 }
 
+/// [`scatter_rows`] for a single gradient vector.
+fn scatter_vec(node: &Node, g: Vector, parent_k: usize) -> Vector {
+    match &node.dims {
+        None => g,
+        Some(dims) => {
+            let mut out = Vector::zeros(parent_k);
+            for (c, &j) in dims.iter().enumerate() {
+                out[j] += g[c];
+            }
+            out
+        }
+    }
+}
+
 /// The prepared point `i` of `a` alone (a one-point set).
 fn select_rows(a: &NodePrep, i: usize) -> NodePrep {
     let k = a.k;
@@ -1355,6 +1385,136 @@ impl Node {
                 v
             }
             _ => self.value(a, i, a, i, true),
+        }
+    }
+
+    /// [`Node::diag_mode`] and its derivative with respect to the (local)
+    /// inputs of point `i`. Kernels whose `diag=True` values are the
+    /// diagonal of their full matrix (as functions of the inputs) use the
+    /// full matrix's derivative; the arc-cosine kernel its closed form.
+    fn diag_mode_grad(&self, a: &NodePrep, i: usize) -> (f64, Vector) {
+        let k = self.k;
+        match &self.kind {
+            NodeKind::Bnn { w, b, depth, .. } => {
+                // v₀ = w ‖x‖²/k + b, v_{l+1} = w v_l / 2 + b.
+                let mut v = w * a.aux[i] / k as f64 + b;
+                let mut factor = 2.0 * w / k as f64;
+                for _ in 0..*depth {
+                    v = w * v / 2.0 + b;
+                    factor *= w / 2.0;
+                }
+                let x = a.row(i);
+                (v, Vector::from_fn(k, |m, _| factor * x[m]))
+            }
+            NodeKind::Scale { s, base } => {
+                let (v, g) = base.diag_mode_grad(&a.kids[0], i);
+                let g = scatter_vec(base, g, k);
+                (v * s, g * *s)
+            }
+            NodeKind::Additive(kids) => {
+                let mut v = 0.0;
+                let mut g = Vector::zeros(k);
+                for (c, kid) in kids.iter().enumerate() {
+                    let (vc, gc) = kid.diag_mode_grad(&a.kids[c], i);
+                    v += vc;
+                    g += scatter_vec(kid, gc, k);
+                }
+                (v, g)
+            }
+            NodeKind::Product(kids) => {
+                let parts: Vec<(f64, Vector)> = kids
+                    .iter()
+                    .enumerate()
+                    .map(|(c, kid)| {
+                        let (v, g) = kid.diag_mode_grad(&a.kids[c], i);
+                        (v, scatter_vec(kid, g, k))
+                    })
+                    .collect();
+                let v: f64 = parts.iter().map(|p| p.0).product();
+                let mut g = Vector::zeros(k);
+                for (c, p) in parts.iter().enumerate() {
+                    let others: f64 = parts
+                        .iter()
+                        .enumerate()
+                        .filter(|(d, _)| *d != c)
+                        .map(|(_, q)| q.0)
+                        .product();
+                    g += &p.1 * others;
+                }
+                (v, g)
+            }
+            _ => {
+                let row = select_rows(a, i);
+                let (_, g) = self.cross_grad(&row, 0, &row);
+                (self.diag_mode(a, i), g.row(0).transpose() * 2.0)
+            }
+        }
+    }
+
+    /// Adds `Σᵢ wᵢ ∂k_diag(a_i)/∂θ` to `out` for the `diag=True` values
+    /// ([`Node::diag_mode`]).
+    fn contract_diag_mode(&self, a: &NodePrep, w: &[f64], out: &mut [f64]) {
+        let off = self.off;
+        match &self.kind {
+            NodeKind::Bnn {
+                w: wv, b, depth, ..
+            } => {
+                let k = self.k as f64;
+                let (mut gw, mut gb) = (0.0, 0.0);
+                for (i, &wi) in w.iter().enumerate() {
+                    let mut v = wv * a.aux[i] / k + b;
+                    let mut dw = a.aux[i] / k;
+                    let mut db = 1.0;
+                    for _ in 0..*depth {
+                        dw = v / 2.0 + wv * dw / 2.0;
+                        db = wv * db / 2.0 + 1.0;
+                        v = wv * v / 2.0 + b;
+                    }
+                    gw += wi * dw;
+                    gb += wi * db;
+                }
+                out[off] += gw;
+                out[off + 1] += gb;
+            }
+            NodeKind::Scale { s, base } => {
+                let mut gs = 0.0;
+                for (i, &wi) in w.iter().enumerate() {
+                    gs += wi * base.diag_mode(&a.kids[0], i);
+                }
+                out[off] += gs;
+                let ws: Vec<f64> = w.iter().map(|v| v * s).collect();
+                base.contract_diag_mode(&a.kids[0], &ws, out);
+            }
+            NodeKind::Additive(kids) => {
+                for (c, kid) in kids.iter().enumerate() {
+                    kid.contract_diag_mode(&a.kids[c], w, out);
+                }
+            }
+            NodeKind::Product(kids) => {
+                let vals: Vec<Vec<f64>> = kids
+                    .iter()
+                    .enumerate()
+                    .map(|(c, kid)| (0..w.len()).map(|i| kid.diag_mode(&a.kids[c], i)).collect())
+                    .collect();
+                for (c, kid) in kids.iter().enumerate() {
+                    let wc: Vec<f64> = (0..w.len())
+                        .map(|i| {
+                            let mut v = w[i];
+                            for (d, vd) in vals.iter().enumerate() {
+                                if d != c {
+                                    v *= vd[i];
+                                }
+                            }
+                            v
+                        })
+                        .collect();
+                    kid.contract_diag_mode(&a.kids[c], &wc, out);
+                }
+            }
+            _ => {
+                let wm = Matrix::from_diagonal(&Vector::from_column_slice(w));
+                self.contract(a, &wm, out);
+            }
         }
     }
 
