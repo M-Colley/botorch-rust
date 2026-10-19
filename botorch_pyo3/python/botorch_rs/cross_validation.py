@@ -257,34 +257,87 @@ def ensemble_loo_cv(
     """
     if not getattr(model, "_is_ensemble", False):
         raise UnsupportedError("ensemble_loo_cv requires an ensemble model.")
-    members = getattr(model, "_ensemble_members", None)
-    if members is None:
+    if not isinstance(getattr(model, "_rs", None), _rs.SingleTaskGP):
         raise UnsupportedError("ensemble_loo_cv requires an ensemble of exact SingleTaskGPs.")
     model.eval()
-    results = [efficient_loo_cv(member, observation_noise, untransform) for member in members()]
-    if not results:
-        raise ValueError("ensemble_loo_cv requires at least one ensemble member")
     kind = model._kind
-    n, _, m = to_flat(results[0].posterior.mean, "mean")[1]
-    count = len(results)
-    shape = (n, count, 1, m)
+    mean, variance, targets, noise = model._rs.loo_predictions(bool(observation_noise))
+    native_shape = tuple(mean[1])
+    if len(native_shape) < 3 or native_shape[-3] == 0:
+        raise UnsupportedError("Expected an ensemble batch dimension for LOO predictions.")
 
-    def stack(values: list[Any]) -> Any:
-        flat = [to_flat(value, "value")[0] for value in values]
+    def check_shared(value: Any, name: str) -> None:
+        data, shape = value
+        count, n, m = shape[-3:]
+        size = n * m
+        for b in range(math.prod(shape[:-3])):
+            start = b * count * size
+            first = list(data[start : start + size])
+            if any(
+                list(data[start + k * size : start + (k + 1) * size]) != first
+                for k in range(1, count)
+            ):
+                raise UnsupportedError(f"Ensemble members have different {name}.")
+
+    check_shared(targets, "train_Y")
+    if noise is not None:
+        check_shared(noise, "observation noise")
+
+    def as_folds(value: Any) -> Any:
+        data, shape = to_flat(value, "value")
+        count, n, m = shape[-3:]
         return from_flat(
-            [flat[k][i * m + t] for i in range(n) for k in range(count) for t in range(m)],
-            shape,
+            [
+                data[((b * count + k) * n + i) * m + t]
+                for b in range(math.prod(shape[:-3]))
+                for i in range(n)
+                for k in range(count)
+                for t in range(m)
+            ],
+            (*shape[:-3], n, count, 1, m),
             kind,
         )
 
-    mean = stack([r.posterior.mean for r in results])
-    variance = stack([r.posterior.variance for r in results])
-    posterior = _DiagonalMixturePosterior(mean, variance, kind)
+    def as_native(value: Any) -> Any:
+        data, shape = to_flat(value, "value")
+        n, count, _, m = shape[-4:]
+        return from_flat(
+            [
+                data[((b * n + i) * count + k) * m + t]
+                for b in range(math.prod(shape[:-4]))
+                for k in range(count)
+                for i in range(n)
+                for t in range(m)
+            ],
+            (*shape[:-4], count, n, m),
+            kind,
+        )
+
+    mu = from_flat(mean[0], native_shape, kind)
+    var = from_flat(variance[0], native_shape, kind)
+    observed = from_flat(targets[0], native_shape, kind)
+    observed_noise = from_flat(noise[0], native_shape, kind) if noise is not None else None
+    transform = getattr(model, "outcome_transform", None) if untransform else None
+    if transform is not None:
+        observed, observed_noise = transform.untransform(observed, observed_noise)
+    if transform is not None and transform._is_linear:
+        mu, var = transform.untransform(mu, var)
+    posterior: Any = _DiagonalMixturePosterior(as_folds(mu), as_folds(var), kind)
+    if transform is not None and not transform._is_linear:
+        from botorch_rs.posteriors.transformed import TransformedPosterior
+
+        transformed = transform.untransform_posterior(_DiagonalPosterior(mu, var, kind))
+        posterior = TransformedPosterior(
+            posterior,
+            sample_transform=lambda s: as_folds(transform.untransform(as_native(s))[0]),
+            mean_transform=lambda m, v: as_folds(transformed.mean),
+            variance_transform=lambda m, v: as_folds(transformed.variance),
+        )
     return CVResults(
         model,
         posterior,
-        stack([r.observed_Y for r in results]),
-        stack([r.observed_Yvar for r in results]) if results[0].observed_Yvar is not None else None,
+        as_folds(observed),
+        as_folds(observed_noise) if observed_noise is not None else None,
     )
 
 

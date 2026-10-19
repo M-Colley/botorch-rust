@@ -15,6 +15,32 @@ from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
 from botorch_rs.exceptions.errors import UnsupportedError
 
 
+def get_dtype_of_sequence(values: Sequence[Any]) -> Any:
+    """Return torch.float32 if every value is a float32 tensor, else float64.
+
+    This explicit torch metadata helper imports torch when called; ordinary
+    fixed-feature acquisition functions continue to accept lists without it.
+    """
+    import torch
+
+    return (
+        torch.float32
+        if all(isinstance(value, torch.Tensor) and value.dtype == torch.float32 for value in values)
+        else torch.float64
+    )
+
+
+def get_device_of_sequence(values: Sequence[Any]) -> Any:
+    """Return a CUDA device if any tensor is on CUDA, else the CPU device."""
+    import torch
+
+    return (
+        torch.device("cuda")
+        if any(isinstance(value, torch.Tensor) and value.device.type == "cuda" for value in values)
+        else torch.device("cpu")
+    )
+
+
 def _values_flat(values: Any) -> tuple[list[float], tuple[int, ...]]:
     """The fixed values (a tensor, or a sequence of numbers and tensors
     broadcast to a common shape as in BoTorch) as flat data and shape
@@ -227,4 +253,4 @@ class FixedFeatureAcquisitionFunction(AcquisitionFunction):
         self.acq_func._after_evaluation()
 
 
-__all__ = ["FixedFeatureAcquisitionFunction"]
+__all__ = ["FixedFeatureAcquisitionFunction", "get_device_of_sequence", "get_dtype_of_sequence"]

@@ -3,3 +3,5 @@ __pycache__/
 *.pyd
 *.so
 .venv/
+.reference/
+.mypy_cache/

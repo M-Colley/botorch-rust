@@ -29,6 +29,16 @@ _PRUNE_SAMPLES = 2048
 _PRUNE_SEED_SALT = 0x5DEECE66D
 
 
+def check_tau(tau: Any, name: str) -> Any:
+    """Validate a positive scalar temperature and return the original value."""
+    data, _ = to_flat(tau, name)
+    if len(data) != 1:
+        raise ValueError(f"{name} is not a scalar: tau.numel()={len(data)}.")
+    if not data[0] > 0:
+        raise ValueError(f"{name} is non-positive: tau={tau!r}.")
+    return tau
+
+
 def _check_log_objective(objective: Any) -> None:
     if is_constrained_objective(objective):
         raise BotorchError(
@@ -344,6 +354,7 @@ class qLogProbabilityOfFeasibility(LogImprovementMCAcquisitionFunction):
 
 
 __all__ = [
+    "check_tau",
     "TAU_MAX",
     "TAU_RELU",
     "LogImprovementMCAcquisitionFunction",

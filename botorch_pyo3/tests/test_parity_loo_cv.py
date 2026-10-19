@@ -126,3 +126,48 @@ def test_fully_bayesian_loo(fixed, untransform) -> None:
             atol=1e-10,
         )
     torch.testing.assert_close(actual.observed_Y, expected.observed_Y, rtol=1e-9, atol=1e-10)
+
+
+@pytest.mark.parametrize("transform", ["none", "standardize", "log"])
+def test_ensemble_batch_layout_and_sample_transform(transform) -> None:
+    from botorch_rs.cross_validation import efficient_loo_cv
+
+    x = torch.linspace(0.1, 0.9, 4, dtype=torch.float64).reshape(4, 1).expand(2, 3, 4, 1)
+    y = (1.0 + x.sin()).expand(2, 3, 4, 2).contiguous()
+    outcome = RsStandardize(m=2, batch_shape=(2, 3)) if transform == "standardize" else None
+    if transform == "log":
+        outcome = RsLog()
+    model = RsGP(x, y, outcome_transform=outcome)
+    model._is_ensemble = True
+    actual = loo_cv(model)
+    raw = efficient_loo_cv(model, untransform=False)
+    mu = raw.posterior.mean.movedim(-4, -3)
+    var = raw.posterior.variance.movedim(-4, -3)
+    assert actual.posterior.mean.shape == (2, 4, 3, 1, 2)
+    if transform == "log":
+        expected_mean = (mu + var / 2).exp()
+        expected_variance = (2 * mu + var).exp() * var.expm1()
+    elif transform == "standardize":
+        expected = efficient_loo_cv(model)
+        expected_mean = expected.posterior.mean.movedim(-4, -3)
+        expected_variance = expected.posterior.variance.movedim(-4, -3)
+    else:
+        expected_mean, expected_variance = mu, var
+    torch.testing.assert_close(actual.posterior.mean, expected_mean)
+    torch.testing.assert_close(actual.posterior.variance, expected_variance)
+    if transform == "log":
+        # Zero Gaussian base samples map to exp(mu), not to the lognormal
+        # mean. This catches replacing transformed components with Gaussians.
+        samples = actual.posterior.rsample_from_base_samples(
+            (1,), torch.zeros(1, *actual.posterior.base_sample_shape, dtype=torch.float64)
+        )
+        torch.testing.assert_close(samples[0], mu.exp())
+
+
+def test_ensemble_rejects_different_training_targets() -> None:
+    x = torch.tensor([[[0.1], [0.8]], [[0.1], [0.8]]], dtype=torch.float64)
+    y = torch.tensor([[[1.0], [2.0]], [[1.0], [3.0]]], dtype=torch.float64)
+    model = RsGP(x, y, outcome_transform=None)
+    model._is_ensemble = True
+    with pytest.raises(NotImplementedError, match="different train_Y"):
+        loo_cv(model)
