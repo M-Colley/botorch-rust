@@ -26,10 +26,12 @@ pub mod deterministic;
 pub mod ensemble;
 pub mod fantasize;
 pub mod gp;
+pub mod likelihoods;
 pub mod model;
 pub mod model_list;
 pub mod model_list_dyn;
 pub mod multitask;
+pub mod pairwise_gp;
 
 pub use batched::{BatchedInputTransform, BatchedMultiOutputGP, BatchedMultiOutputGPOptions};
 pub use contextual_multioutput::{LCEMGPOptions, LcemParameters, LcemTaskInputs, LCEMGP};
@@ -45,3 +47,4 @@ pub use model::Model;
 pub use model_list::ModelListGP;
 pub use model_list_dyn::ModelList;
 pub use multitask::{MultiTaskGP, MultiTaskGPOptions, TaskLayout};
+pub use pairwise_gp::{BatchedPairwiseGP, PairwiseGP, PairwiseGPOptions};

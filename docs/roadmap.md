@@ -98,7 +98,9 @@ Remaining:
   implementation such as `nuts-rs`), the linear and multi-task fully Bayesian
   models, and BALD.
 - `PairwiseGP` with its Laplace MLL and likelihoods, EUBO and the preference
-  BALD.
+  BALD (done; [details](preference.md)). Remaining: `LearnedObjective` in the
+  Monte-Carlo acquisition functions, learned input transforms in
+  `PairwiseGP`.
 - `SingleTaskVariationalGP` with the inducing-point allocators.
 - `HigherOrderGP`, `LatentKroneckerGP`, the contextual `SACGP` / `LCEAGP`,
   `HeterogeneousMTGP`, relevance pursuit, and the empirical and hierarchical

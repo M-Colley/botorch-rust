@@ -18,6 +18,7 @@ from botorch_rs.models.map_saas import (
 from botorch_rs.models.model import Model, ModelList
 from botorch_rs.models.model_list_gp_regression import ModelListGP
 from botorch_rs.models.multitask import KroneckerMultiTaskGP, MultiTaskGP
+from botorch_rs.models.pairwise_gp import PairwiseGP, PairwiseLaplaceMarginalLogLikelihood
 
 __all__ = [
     "LCEMGP",
@@ -32,6 +33,8 @@ __all__ = [
     "ModelList",
     "ModelListGP",
     "MultiTaskGP",
+    "PairwiseGP",
+    "PairwiseLaplaceMarginalLogLikelihood",
     "PosteriorMeanModel",
     "ProvidedEmbeddingLCEMGP",
     "SingleTaskGP",
