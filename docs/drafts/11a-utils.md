@@ -348,6 +348,24 @@ Known from earlier phases and still present: `bvn` gradients NaN at some
 inputs and MVNXPB gradients of batches whose members pivot differently
 (phase 8, reported upstream).
 
+8. **`as_ndarray` raises `KeyError` with an explicit NumPy dtype and
+   `inplace=False`.** The branch deciding whether to clone indexes
+   `torch_to_numpy_dtype_dict` with a NumPy dtype, although the dictionary
+   has torch dtypes as its keys. This is reproducible in released BoTorch
+   0.18.1:
+
+   ```python
+   import numpy as np
+   import torch
+   from botorch.optim.utils.numpy_utils import as_ndarray
+   as_ndarray(torch.ones(2), dtype=np.float32, inplace=False)  # KeyError
+   ```
+
+   Fix: compare `np.dtype(torch_to_numpy_dtype_dict[out.dtype])` with
+   `np.dtype(dtype)`, or use NumPy's `astype(dtype, copy=...)` directly.
+   The port uses the latter and verifies that `inplace=False` never aliases
+   the original storage, for matching and differing dtypes.
+
 ## Verification
 
 The initial committed branch passed all three phase 11a Python suites on
@@ -365,3 +383,13 @@ loop and avoid rebuilding the entire native Sobol sequence on each draw.
 
 These checks establish parity for the tested configurations. They do not
 remove the unported behavior and numerical limitations listed above.
+
+After the QMC fixes and the follow-up model/optimization utility additions,
+all five test files (`test_11a_utils.py`, `test_parity_11a_utils.py`,
+`test_equivalence_11a_utils.py`, `test_model_utils_assorted.py`,
+`test_optim_numpy_utils.py`) passed against installed, released BoTorch
+**0.18.1** with a freshly rebuilt Rust extension: **356 passed, 1 skipped**
+in 29.97 seconds. This is a separate baseline from the local fork above.
+The 31 new model/NumPy utility tests also pass against that fork. Ruff and
+format checks pass on the changed Python files, and `cargo fmt --all --check`
+passes.
