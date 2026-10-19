@@ -21,6 +21,7 @@ from typing import Any
 from botorch_rs.posteriors.ensemble import EnsemblePosterior
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior, MultivariateNormal, Posterior
 from botorch_rs.posteriors.posterior_list import PosteriorList
+from botorch_rs.posteriors.torch import TorchPosterior
 from botorch_rs.posteriors.transformed import TransformedPosterior
 from botorch_rs.sampling.index_sampler import IndexSampler
 from botorch_rs.sampling.list_sampler import ListSampler
@@ -43,7 +44,7 @@ def _posterior_to_distribution_encoder(posterior: Any) -> type:
     r"""An encoder returning the type of the distribution for normal
     posteriors and the type of the posterior for the rest.
     """
-    if isinstance(posterior, GPyTorchPosterior):
+    if isinstance(posterior, (GPyTorchPosterior, TorchPosterior)):
         return type(posterior.distribution)
     return type(posterior)
 
