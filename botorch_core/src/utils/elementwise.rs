@@ -415,7 +415,7 @@ fn bvn_family<S: Scalar>(name: &str, x: &[S]) -> Vec<S> {
 /// The names of the reductions of [`reduce`] and their number of parameters.
 pub fn reduction_params(name: &str) -> Option<usize> {
     Some(match name {
-        "logsumexp" | "logmeanexp" => 0,
+        "sum" | "mean" | "logsumexp" | "logmeanexp" => 0,
         "smooth_amax" | "smooth_amin" => 1,
         "fatmax" | "fatmin" => 2,
         _ => return None,
@@ -479,6 +479,13 @@ pub fn reduce(
     let mut grads = with_grad.then(|| vec![0.0; x.len()]);
     for (r, row) in x.chunks(n).enumerate() {
         let (v, g): (f64, Option<Vec<f64>>) = match name {
+            "sum" | "mean" => {
+                let scale = if name == "mean" { 1.0 / n as f64 } else { 1.0 };
+                (
+                    row.iter().sum::<f64>() * scale,
+                    with_grad.then(|| vec![scale; n]),
+                )
+            }
             "logsumexp" => {
                 if with_grad {
                     let (v, g) = sm::logsumexp_with_grad(row);
@@ -748,6 +755,11 @@ mod tests {
 
     #[test]
     fn reductions() {
+        for (name, expected, derivative) in [("sum", 6.0, 1.0), ("mean", 2.0, 1.0 / 3.0)] {
+            let (values, gradients) = reduce(name, &[1.0, 2.0, 3.0], 3, &[], true).unwrap();
+            assert_eq!(values, vec![expected]);
+            assert_eq!(gradients.unwrap(), vec![derivative; 3]);
+        }
         let x = [
             1.0,
             2.0,
