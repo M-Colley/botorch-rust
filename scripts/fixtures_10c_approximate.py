@@ -175,10 +175,19 @@ def model_fixture(case: Any) -> dict[str, Any]:
         h.set_random_parameters(bt, rs, seed)
         from gpytorch.mlls import VariationalELBO
 
-        raw = _flat(torch.cat([p.detach().reshape(-1) for p in VariationalELBO(bt.likelihood, bt.model, num_data=1).parameters()]))
+        raw = _flat(
+            torch.cat(
+                [
+                    p.detach().reshape(-1)
+                    for p in VariationalELBO(bt.likelihood, bt.model, num_data=1).parameters()
+                ]
+            )
+        )
         terms_list = []
         for num_data, beta in ((case.n, 1.0), (case.n + 9, 0.4)):
-            mll = VariationalELBO(bt.likelihood, bt.model, num_data=num_data, beta=beta, combine_terms=False)
+            mll = VariationalELBO(
+                bt.likelihood, bt.model, num_data=num_data, beta=beta, combine_terms=False
+            )
             bt.train()
             ll, kl, lp = mll(bt.model(*bt.model.train_inputs), bt.model.train_targets)
             value, grad = h.bt_elbo_and_grad(
@@ -195,7 +204,9 @@ def model_fixture(case: Any) -> dict[str, Any]:
             )
         bt.eval()
         g = torch.Generator().manual_seed(50 + seed)
-        Xt = case.scale * torch.rand(5, case.d, generator=g, dtype=DT) + (1.0 if case.input_tf else 0.0)
+        Xt = case.scale * torch.rand(5, case.d, generator=g, dtype=DT) + (
+            1.0 if case.input_tf else 0.0
+        )
         # q = 1 batches.
         Xq = Xt.unsqueeze(1).clone().requires_grad_(True)
         post = bt.posterior(Xq)
@@ -273,8 +284,11 @@ def fit_fixture(case: Any) -> dict[str, Any]:
         orig = of.fit_gpytorch_mll_scipy
 
         def recorder(
-            m: Any, *args: Any, _record: dict[str, Any] = record,
-            _optimizer: Any = orig, **kwargs: Any,
+            m: Any,
+            *args: Any,
+            _record: dict[str, Any] = record,
+            _optimizer: Any = orig,
+            **kwargs: Any,
         ) -> Any:
             _record["attempts"] += 1
             _record["r"] = _optimizer(m, *args, **kwargs)

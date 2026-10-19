@@ -148,7 +148,9 @@ def test_live_botorch_parity(seed: int, latent_init: str) -> None:
         vb.backward()
         gb = torch.cat([p.grad.reshape(-1) for p in mb.parameters()])
         vr, gr = mr.value_and_grad()
-        torch.testing.assert_close(torch.tensor(vr, dtype=torch.float64), vb.detach(), rtol=1e-8, atol=1e-9)
+        torch.testing.assert_close(
+            torch.tensor(vr, dtype=torch.float64), vb.detach(), rtol=1e-8, atol=1e-9
+        )
         torch.testing.assert_close(torch.tensor(gr, dtype=torch.float64), gb, rtol=1e-7, atol=1e-8)
         pb, pr = bt.posterior(Xq), rs.posterior(Xq)
         torch.testing.assert_close(pr.mean, pb.mean.detach(), rtol=1e-8, atol=1e-9)
@@ -158,7 +160,10 @@ def test_live_botorch_parity(seed: int, latent_init: str) -> None:
         # directly instead of reproducing that upstream bug.
         noisy = rs.posterior(Xq, observation_noise=True)
         scale = rs.outcome_transform._scalar_stats()[1] if hasattr(rs, "outcome_transform") else 1.0
-        torch.testing.assert_close(noisy.variance - pr.variance, torch.ones_like(pr.variance) * rs.likelihood.noise[0] * scale**2)
+        torch.testing.assert_close(
+            noisy.variance - pr.variance,
+            torch.ones_like(pr.variance) * rs.likelihood.noise[0] * scale**2,
+        )
         # Small factors use deterministic Cholesky roots in both libraries.
         pb, pr = bt.posterior(Xq), rs.posterior(Xq)
         assert tuple(pb.base_sample_shape) == tuple(pr.base_sample_shape)
@@ -184,11 +189,18 @@ def test_multiple_latent_coordinates_and_input_transform() -> None:
     # dimension-correct kernels explicitly as the upstream workaround.
     kernels = [get_covar_module_with_dim_scaled_prior(d).to(X) for d in (2, 2, 1)]
     torch.manual_seed(9)
-    bt = BtHigherOrderGP(X, Y, covar_modules=kernels, num_latent_dims=[2, 1], input_transform=BtNormalize(2))
+    bt = BtHigherOrderGP(
+        X, Y, covar_modules=kernels, num_latent_dims=[2, 1], input_transform=BtNormalize(2)
+    )
     torch.manual_seed(9)
     rs = HigherOrderGP(X, Y, num_latent_dims=[2, 1], input_transform=Normalize(2))
     mb, mr = BtMLL(bt.likelihood, bt), ExactMarginalLogLikelihood(rs.likelihood, rs)
-    torch.testing.assert_close(torch.tensor(float(mr()), dtype=torch.float64), mb(bt(X), bt.train_targets).detach(), rtol=1e-8, atol=1e-9)
+    torch.testing.assert_close(
+        torch.tensor(float(mr()), dtype=torch.float64),
+        mb(bt(X), bt.train_targets).detach(),
+        rtol=1e-8,
+        atol=1e-9,
+    )
     pb, pr = bt.posterior(X[:2]), rs.posterior(X[:2])
     torch.testing.assert_close(pr.mean, pb.mean.detach(), rtol=1e-8, atol=1e-9)
     torch.testing.assert_close(pr.variance, pb.variance.detach(), rtol=1e-7, atol=1e-8)

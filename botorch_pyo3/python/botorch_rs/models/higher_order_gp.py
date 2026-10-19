@@ -323,7 +323,8 @@ class HigherOrderGP(Model, FantasizeMixin):
             # latent coordinates (the same kernels for one coordinate).
             covar_modules = [
                 get_covar_module_with_dim_scaled_prior(
-                    ard_num_dims=num_latent_dims[i - 1] if i > 0 else transformed_dim, batch_shape=()
+                    ard_num_dims=num_latent_dims[i - 1] if i > 0 else transformed_dim,
+                    batch_shape=(),
                 )
                 for i in range(self._num_dimensions)
             ]
@@ -337,8 +338,7 @@ class HigherOrderGP(Model, FantasizeMixin):
                 raise UnsupportedError("`covar_modules` must be botorch_rs kernels.")
             if k._model is not None:
                 raise UnsupportedError(
-                    "This kernel is already part of another model; create a new one for each "
-                    "model."
+                    "This kernel is already part of another model; create a new one for each model."
                 )
             if tuple(k._batch_shape):
                 raise UnsupportedError("Kernels with a batch shape are not supported.")
@@ -536,8 +536,10 @@ class HigherOrderGP(Model, FantasizeMixin):
         return self
 
     def transform_inputs(self, X: Any, input_transform: Any = None) -> Any:
-        tf = input_transform if input_transform is not None else getattr(
-            self, "input_transform", None
+        tf = (
+            input_transform
+            if input_transform is not None
+            else getattr(self, "input_transform", None)
         )
         return X if tf is None else tf(X)
 
@@ -577,8 +579,7 @@ class HigherOrderGP(Model, FantasizeMixin):
             raise UnsupportedError(f"Unsupported arguments: {sorted(kwargs)}.")
         if posterior_transform is not None:
             raise NotImplementedError(
-                "Posterior transforms currently not supported for "
-                f"{self.__class__.__name__}"
+                f"Posterior transforms currently not supported for {self.__class__.__name__}"
             )
         if not isinstance(observation_noise, bool):
             raise UnsupportedError("`observation_noise` must be a bool in botorch_rs.")
@@ -594,18 +595,22 @@ class HigherOrderGP(Model, FantasizeMixin):
             )
         if self._fantasy_batch is not None:
             if len(flat[1]) != 2:
-                raise UnsupportedError("Batched test inputs on a batch of HigherOrderGP fantasy models.")
+                raise UnsupportedError(
+                    "Batched test inputs on a batch of HigherOrderGP fantasy models."
+                )
             return _BatchPosterior(
                 [self._posterior_of(m, flat, kind, observation_noise) for m in self._fantasy_batch],
-                kind, self._fantasy_shape,
+                kind,
+                self._fantasy_shape,
             )
-        return self._posterior_of(self._rs, (list(flat[0]), tuple(flat[1])), kind, observation_noise)
+        return self._posterior_of(
+            self._rs, (list(flat[0]), tuple(flat[1])), kind, observation_noise
+        )
 
     def _acquisition_model(self, posterior_transform: Any = None) -> Any:
         if posterior_transform is not None:
             raise NotImplementedError(
-                "Posterior transforms currently not supported for "
-                f"{self.__class__.__name__}"
+                f"Posterior transforms currently not supported for {self.__class__.__name__}"
             )
         if self._fantasy_batch is not None:
             raise UnsupportedError("Acquisition functions on a batch of fantasy models.")
@@ -650,7 +655,9 @@ class HigherOrderGP(Model, FantasizeMixin):
                 "HigherOrderGP (BoTorch: 'we don't support fixed noise here yet')."
             )
         if self._fantasy_batch is not None:
-            raise UnsupportedError("Conditioning an existing batch of HigherOrderGP fantasy models.")
+            raise UnsupportedError(
+                "Conditioning an existing batch of HigherOrderGP fantasy models."
+            )
         S = math.prod(self.target_shape)
         x = to_flat(X, "X")
         ydata, yshape = self._standardized(Y)
@@ -659,9 +666,7 @@ class HigherOrderGP(Model, FantasizeMixin):
         nprime = yshape[-k - 1]
         xshape = tuple(x[1])
         if xshape[-2] != nprime:
-            raise BotorchTensorDimensionError(
-                f"X has {xshape[-2]} points but Y has {nprime}."
-            )
+            raise BotorchTensorDimensionError(f"X has {xshape[-2]} points but Y has {nprime}.")
         nb = math.prod(ybatch)
         xb = math.prod(xshape[:-2])
         if xb not in (1, nb):
@@ -751,11 +756,17 @@ class _BatchPosterior(Posterior):
         inner = math.prod(self._posteriors[0].base_sample_shape)
         results = []
         for b, post in enumerate(self._posteriors):
-            base = [v for s in range(ns) for v in full[(s * nb + b) * inner : (s * nb + b + 1) * inner]]
-            values = post.rsample_from_base_samples(sample_shape, from_flat(base, (*sample_shape, *post.base_sample_shape), self._kind))
+            base = [
+                v for s in range(ns) for v in full[(s * nb + b) * inner : (s * nb + b + 1) * inner]
+            ]
+            values = post.rsample_from_base_samples(
+                sample_shape, from_flat(base, (*sample_shape, *post.base_sample_shape), self._kind)
+            )
             results.append(to_flat(values, "samples")[0])
         block = len(results[0]) // max(ns, 1)
-        output = [v for s in range(ns) for result in results for v in result[s * block : (s + 1) * block]]
+        output = [
+            v for s in range(ns) for result in results for v in result[s * block : (s + 1) * block]
+        ]
         return from_flat(output, self._extended_shape(sample_shape), self._kind)
 
     def rsample(self, sample_shape: Any = None) -> Any:
@@ -763,7 +774,9 @@ class _BatchPosterior(Posterior):
 
         sample_shape = (1,) if sample_shape is None else tuple(sample_shape)
         shape = (*sample_shape, *self.base_sample_shape)
-        return self.rsample_from_base_samples(sample_shape, from_flat(_randn(math.prod(shape), self._kind), shape, self._kind))
+        return self.rsample_from_base_samples(
+            sample_shape, from_flat(_randn(math.prod(shape), self._kind), shape, self._kind)
+        )
 
 
 def _initial_raw_noise(likelihood: Any) -> float:
