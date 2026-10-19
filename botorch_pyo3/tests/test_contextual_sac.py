@@ -141,7 +141,7 @@ def test_official_kernel_corrected_mll_and_posterior_parity(
     torch.testing.assert_close(kr(x), kb(x).to_dense().detach(), rtol=1e-11, atol=1e-12)
     torch.testing.assert_close(kr(x, diag=True), kb(x, diag=True).detach(), rtol=1e-11, atol=1e-12)
     mb, mr = BtMLL(bt.likelihood, bt), ExactMarginalLogLikelihood(rs.likelihood, rs)
-    official = mb(bt(x), bt.train_targets)
+    official = mb(bt(*bt.train_inputs), bt.train_targets)
     aliases = [name for name, _, _, _, _ in kb.named_priors() if name.endswith("lengthscale_prior")]
     assert len(aliases) == len(DECOMPOSITION) + 1
     shared_prior = kb.base_kernel.lengthscale_prior.log_prob(kb.base_kernel.lengthscale).sum(
@@ -153,12 +153,12 @@ def test_official_kernel_corrected_mll_and_posterior_parity(
     gb = torch.cat([p.grad.reshape(-1) for p in mb.parameters()])
     vr, gr = mr.value_and_grad()
     torch.testing.assert_close(
-        torch.as_tensor(vr, dtype=torch.float64), vb.detach(), rtol=1e-8, atol=2e-8
+        torch.as_tensor(vr, dtype=torch.float64), corrected.detach(), rtol=1e-8, atol=2e-8
     )
     torch.testing.assert_close(torch.tensor(gr, dtype=torch.float64), gb, rtol=2e-7, atol=2e-8)
     # The exact default MLL discrepancy equals the duplicated prior terms.
     torch.testing.assert_close(
-        official.sum().detach() - torch.as_tensor(vr, dtype=torch.float64),
+        official.sum().detach() - torch.as_tensor(vr, dtype=torch.float64).sum(),
         (len(DECOMPOSITION) * shared_prior / x.shape[-2]).sum().detach(),
         rtol=2e-7,
         atol=2e-8,
