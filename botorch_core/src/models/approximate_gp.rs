@@ -62,7 +62,7 @@ use crate::linalg::{cholesky_backward, psd_safe_cholesky_with, CholeskyFactor, C
 use crate::models::gp::{ConstantMeanSpec, GaussianLikelihoodSpec};
 use crate::models::model::check_vjp_shapes_expanded;
 use crate::models::Model;
-use crate::posterior::{JointPosteriorGrad, Posterior, MIN_VARIANCE};
+use crate::posterior::{JointPosteriorGrad, PointPosteriors, Posterior, MIN_VARIANCE};
 use crate::transforms::input::{ChainedInputTransform, TransformMode};
 use crate::transforms::Standardize;
 use crate::{Matrix, Vector};
@@ -779,6 +779,63 @@ impl SingleTaskVariationalGP {
         Ok((mean, cov))
     }
 
+    /// The marginal variances of `q(f)` at transformed points `xt` as
+    /// GPyTorch's `variance` computes them (the lazy `diag=True` kernel
+    /// values), in the transformed outcome space, with their derivatives
+    /// with respect to the points if `with_grad`.
+    fn latent_marginals(
+        &self,
+        c: &OutputCache,
+        xt: &Matrix,
+        with_grad: bool,
+    ) -> Result<(Vector, Vector, Vec<Matrix>)> {
+        let q = xt.nrows();
+        let dt = xt.ncols();
+        let xp = c.kernel.prepare(xt)?;
+        let mut a = c.kernel.cross(&c.z, &xp);
+        c.chol.solve_lower_mut(&mut a);
+        let mean = (a.tr_mul(&c.mean)).add_scalar(c.constant);
+        let sa = &c.lv * c.lv.tr_mul(&a) - &a;
+        let mut var = Vector::zeros(q);
+        let mut grads = Vec::new();
+        let kzx = if with_grad {
+            c.kernel.cross(&c.z, &xp)
+        } else {
+            Matrix::zeros(0, 0)
+        };
+        for i in 0..q {
+            let update: f64 = a.column(i).dot(&sa.column(i));
+            if with_grad {
+                let (kd, dkd) = c.kernel.diag_mode_with_grad(&xp, i);
+                var[i] = kd + self.options.jitter + update;
+                let (_, dc) = c.kernel.cross_with_grad(&xp, i, &c.z); // M x dt
+                let wc = &c.w * kzx.column(i);
+                let dmean = dc.tr_mul(&c.alpha);
+                let dvar = dkd + dc.tr_mul(&wc) * 2.0;
+                let mut g = Matrix::zeros(2, dt);
+                g.row_mut(0).copy_from(&dmean.transpose());
+                g.row_mut(1).copy_from(&dvar.transpose());
+                grads.push(g);
+            } else {
+                var[i] = c.kernel.diag_mode(&xp, i) + self.options.jitter + update;
+            }
+        }
+        Ok((mean, var, grads))
+    }
+
+    /// The marginal variances of `q(f)` (GPyTorch's `variance`) of every
+    /// output at transformed points `xt` (`m` vectors, transformed outcome
+    /// space).
+    ///
+    /// # Errors
+    /// See [`SingleTaskVariationalGP::latent_posterior`].
+    pub fn latent_variances(&self, xt: &Matrix) -> Result<Vec<Vector>> {
+        self.cache()?
+            .iter()
+            .map(|c| self.latent_marginals(c, xt, false).map(|r| r.1))
+            .collect()
+    }
+
     /// The latent variational posterior `q(f)` at transformed points `xt`
     /// (`q × d'`) in the transformed outcome space (GPyTorch's output of
     /// `model.model(X)`): the mean and covariance of every output.
@@ -1232,10 +1289,13 @@ impl SingleTaskVariationalGP {
                     wbig[(mi + j, i)] = 0.5 * gc[(i, j)];
                 }
             }
-            for i in 0..n {
-                wbig[(mi + i, mi + i)] = gvar[i];
+            // The marginal variances use GPyTorch's lazy `diag=True` values.
+            let mut gvals = p.kernel.contract(&p.zx, &wbig);
+            let xp = p.kernel.prepare(x)?;
+            let gdiag = p.kernel.contract_diag_mode(&xp, gvar.as_slice());
+            for (g, d) in gvals.iter_mut().zip(&gdiag) {
+                *g += d;
             }
-            let gvals = p.kernel.contract(&p.zx, &wbig);
             let kraw: Vec<f64> = p.kidx.iter().map(|&i| raw[i]).collect();
             let deriv = self.options.covar_module.transform_derivatives(&kraw);
             for (k, &gi) in p.kidx.iter().enumerate() {
@@ -1428,9 +1488,121 @@ impl MllModel for ElboFit {
     }
 }
 
+impl SingleTaskVariationalGP {
+    /// The posterior of every row of `x` on its own (GPyTorch's marginal
+    /// variances, i.e. the lazy `diag=True` kernel values), over all
+    /// outputs: means (`b × m`) and diagonal output covariances (`b × m²`,
+    /// independent outputs).
+    fn point_posteriors_impl(&self, x: &Matrix, observation_noise: bool) -> Result<PointPosteriors> {
+        let xt = self.transform_inputs(x)?;
+        let caches = self.cache()?;
+        let (b, m) = (xt.nrows(), self.num_outputs);
+        let mut mean = Matrix::zeros(b, m);
+        let mut covariance = Matrix::zeros(b, m * m);
+        for (t, c) in caches.iter().enumerate() {
+            let (mu, var, _) = self.latent_marginals(c, &xt, false)?;
+            let (om, os) = self.affine(t);
+            let noise = if observation_noise { c.noise } else { 0.0 };
+            for i in 0..b {
+                mean[(i, t)] = om + os * mu[i];
+                covariance[(i, t * m + t)] = os * (var[i] + noise) * os;
+            }
+        }
+        Ok(PointPosteriors { mean, covariance })
+    }
+
+    /// The posterior at one point with GPyTorch's marginal variance and the
+    /// derivatives with respect to the point.
+    fn point_posterior_with_grad_impl(&self, x: &[f64]) -> Result<JointPosteriorGrad> {
+        let xr = Matrix::from_row_slice(1, x.len(), x);
+        self.check_columns(&xr)?;
+        let (xt, jac) = match &self.options.input_transform {
+            Some(chain) => {
+                let (xt, tape) = chain.transform_with_tape(&xr)?;
+                let jacs = tape.jacobians_through(chain)?;
+                (xt, Some(jacs.into_iter().next().expect("one point")))
+            }
+            None => (xr.clone(), None),
+        };
+        let caches = self.cache()?;
+        let m = self.num_outputs;
+        let d = x.len();
+        let dt = xt.ncols();
+        let mut mean = Vector::zeros(m);
+        let mut cov = Matrix::zeros(m, m);
+        let mut dmean = vec![Vector::zeros(m); d];
+        let mut dcov = vec![Matrix::zeros(m, m); d];
+        for (t, c) in caches.iter().enumerate() {
+            let (mu, var, grads) = self.latent_marginals(c, &xt, true)?;
+            let (om, os) = self.affine(t);
+            mean[t] = om + os * mu[0];
+            cov[(t, t)] = os * var[0] * os;
+            let g = &grads[0];
+            for j in 0..d {
+                let (mut gm, mut gv) = (0.0, 0.0);
+                for l in 0..dt {
+                    let f = match &jac {
+                        Some(jm) => jm[(l, j)],
+                        None => {
+                            if l == j {
+                                1.0
+                            } else {
+                                0.0
+                            }
+                        }
+                    };
+                    gm += f * g[(0, l)];
+                    gv += f * g[(1, l)];
+                }
+                dmean[j][t] = os * gm;
+                dcov[j][(t, t)] = os * os * gv;
+            }
+        }
+        Ok(JointPosteriorGrad {
+            mean,
+            covariance: cov,
+            dmean,
+            dcov,
+            num_outputs: m,
+        })
+    }
+}
+
 impl Model for SingleTaskVariationalGP {
     fn dim(&self) -> usize {
         self.dim
+    }
+
+    fn point_posteriors(&self, x: &Matrix) -> Result<PointPosteriors> {
+        self.point_posteriors_impl(x, false)
+    }
+
+    fn point_posteriors_with_noise(&self, x: &Matrix) -> Result<PointPosteriors> {
+        self.point_posteriors_impl(x, true)
+    }
+
+    fn point_posteriors_joint(&self, x: &Matrix) -> Result<PointPosteriors> {
+        let (b, m) = (x.nrows(), self.num_outputs);
+        let mut mean = Matrix::zeros(b, m);
+        let mut covariance = Matrix::zeros(b, m * m);
+        for i in 0..b {
+            let p = self.posterior(&x.rows(i, 1).into_owned(), false)?;
+            for a in 0..m {
+                mean[(i, a)] = p.mean[a];
+                for c in 0..m {
+                    covariance[(i, a * m + c)] = p.covariance[(a, c)];
+                }
+            }
+        }
+        Ok(PointPosteriors { mean, covariance })
+    }
+
+    fn point_posterior_joint_with_grad(&self, x: &[f64]) -> Result<JointPosteriorGrad> {
+        self.joint_posterior_with_grad(&Matrix::from_row_slice(1, x.len(), x))
+    }
+
+    fn point_posterior_with_grad(&self, x: &[f64]) -> Result<JointPosteriorGrad> {
+        self.point_posterior_with_grad_impl(x)
     }
 
     fn num_outputs(&self) -> usize {
@@ -1564,6 +1736,40 @@ mod tests {
         check_gradient(&model(1, false, scale_tree(2), false));
         check_gradient(&model(2, true, scale_tree(2), true));
         check_gradient(&model(3, true, rbf_tree(2), false));
+        // The arc-cosine kernel, whose `diag=True` values differ from the
+        // diagonal of its full matrix.
+        let bnn = KernelNode::scale(KernelNode::infinite_width_bnn(2, 1e-7).unwrap());
+        check_gradient(&model(1, true, bnn, false));
+    }
+
+    #[test]
+    fn point_posterior_gradients_match_finite_differences() {
+        let bnn = KernelNode::scale(KernelNode::infinite_width_bnn(2, 1e-7).unwrap());
+        for mdl in [model(1, true, bnn, false), model(2, true, scale_tree(2), true)] {
+            let x = [0.3, 0.6];
+            let g = Model::point_posterior_with_grad(&mdl, &x).unwrap();
+            let pp = Model::point_posteriors(&mdl, &Matrix::from_row_slice(1, 2, &x)).unwrap();
+            let m = mdl.num_outputs;
+            for t in 0..m {
+                assert!((pp.mean[(0, t)] - g.mean[t]).abs() < 1e-14);
+                assert!((pp.covariance[(0, t * m + t)] - g.covariance[(t, t)]).abs() < 1e-14);
+            }
+            for k in 0..2 {
+                let h = 1e-6;
+                let mut xp = x;
+                xp[k] += h;
+                let mut xm = x;
+                xm[k] -= h;
+                let pp = Model::point_posteriors(&mdl, &Matrix::from_row_slice(1, 2, &xp)).unwrap();
+                let pm = Model::point_posteriors(&mdl, &Matrix::from_row_slice(1, 2, &xm)).unwrap();
+                for t in 0..m {
+                    let dm = (pp.mean[(0, t)] - pm.mean[(0, t)]) / (2.0 * h);
+                    let dv = (pp.covariance[(0, t * m + t)] - pm.covariance[(0, t * m + t)]) / (2.0 * h);
+                    assert!((dm - g.dmean[k][t]).abs() < 1e-6, "{dm} {}", g.dmean[k][t]);
+                    assert!((dv - g.dcov[k][(t, t)]).abs() < 1e-6, "{dv} {}", g.dcov[k][(t, t)]);
+                }
+            }
+        }
     }
 
     #[test]

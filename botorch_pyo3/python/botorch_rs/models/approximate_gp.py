@@ -101,9 +101,18 @@ class _ApproximateOutput:
                 "botorch_rs evaluates the variational GP at unbatched `n x d` inputs."
             )
         self._x = (list(flat[0]), tuple(flat[1]))
-        self._cache: tuple[Any, Any] | None = None
+        self._cache: tuple[Any, Any, Any] | None = None
+        # GPyTorch's training mode with more points than inducing points
+        # updates only the diagonal of the prior covariance (the marginal
+        # variances, which is all the ELBO needs); its multitask strategy
+        # computes the full covariance.
+        self._diag_only = (
+            owner.model.training
+            and owner.num_outputs == 1
+            and self._x[1][0] > int(owner._rs.num_inducing)
+        )
 
-    def _parts(self) -> tuple[Any, Any]:
+    def _parts(self) -> tuple[Any, Any, Any]:
         if self._cache is None:
             self._cache = self._owner._rs.latent(self._x)
         return self._cache
@@ -116,7 +125,7 @@ class _ApproximateOutput:
 
     @property
     def mean(self) -> Any:
-        (data, shape), _ = self._parts()
+        (data, shape), _, _ = self._parts()
         if self._owner.num_outputs == 1:
             return from_flat(data, (shape[0],), self._kind)
         return from_flat(data, tuple(shape), self._kind)
@@ -125,20 +134,27 @@ class _ApproximateOutput:
 
     @property
     def variance(self) -> Any:
-        _, (cov, shape) = self._parts()
-        m, q = shape[0], shape[1]
-        out = [0.0] * (q * m)
-        for t in range(m):
-            for i in range(q):
-                out[i * m + t] = max(cov[t * q * q + i * q + i], 1e-10)
-        return from_flat(out, (q,) if m == 1 else (q, m), self._kind)
+        """The marginal variances (clamped at 1e-10, GPyTorch's lazy
+        ``diag=True`` kernel values)."""
+        _, _, (var, shape) = self._parts()
+        out = [max(v, 1e-10) for v in var]
+        return from_flat(out, (shape[0],) if shape[1] == 1 else tuple(shape), self._kind)
 
     @property
     def covariance_matrix(self) -> Any:
         """The covariance (``n x n``, or ``nm x nm`` interleaved for several
         outputs)."""
-        _, (cov, shape) = self._parts()
+        _, (cov, shape), _ = self._parts()
         m, q = shape[0], shape[1]
+        if self._diag_only:
+            # Off the diagonal: the prior covariance K(X, X).
+            cov = list(cov)
+            for t in range(m):
+                k, _ = self._owner._rs.kernel_matrix(self._x, t)
+                for i in range(q):
+                    for j in range(q):
+                        if i != j:
+                            cov[t * q * q + i * q + j] = k[i * q + j]
         if m == 1:
             return from_flat(cov, (q, q), self._kind)
         out = [0.0] * (q * m * q * m)
@@ -434,6 +450,8 @@ class ApproximateGPyTorchModel(Model):
         input_steps: list[Any] | None = None,
         input_prefixes: list[str] | None = None,
         outcome: Standardize | None = None,
+        input_training: list[bool] | None = None,
+        raw_train_X: Any = None,
     ) -> None:
         inner = self.model
         m = inner._num_outputs
@@ -494,7 +512,9 @@ class ApproximateGPyTorchModel(Model):
             mean_batched=bool(aug) and mean_kind == "constant",
             learn_inducing_points=inner._learn_inducing_points,
             input_chain=input_steps,
+            input_chain_training=input_training,
             input_chain_prefixes=input_prefixes,
+            raw_train_x=None if raw_train_X is None else to_flat(raw_train_X, "train_X"),
             outcome_means=None if outcome is None else list(outcome._rs.means[0]),
             outcome_stdvs=None if outcome is None else list(outcome._rs.stdvs[0]),
             outcome_min_stdv=1e-8 if outcome is None else outcome.min_stdv,
@@ -731,6 +751,7 @@ class ApproximateGPyTorchModel(Model):
             num_outputs=m,
             model_batch_shape=(),
             transform=transform_arg(posterior_transform, m),
+            interleaved=True,
         )
 
     def _acquisition_model(self, posterior_transform: Any = None) -> Any:
@@ -738,11 +759,7 @@ class ApproximateGPyTorchModel(Model):
         from botorch_rs.acquisition.objective import transform_arg
 
         self._ensure_initialized()
-        handle = self._rs.model_handle()
-        t = transform_arg(posterior_transform, self.num_outputs)
-        if t is None:
-            return handle
-        return _rs.Model.from_models([handle], t)
+        return self._rs.model_handle(transform_arg(posterior_transform, self.num_outputs))
 
     def forward(self, X: Any) -> _ApproximateOutput:
         """``q(f)`` at ``X`` (transformed by the input transform in train mode,
@@ -966,11 +983,12 @@ class SingleTaskVariationalGP(ApproximateGPyTorchModel):
         )
         super().__init__(model=model, likelihood=likelihood, num_outputs=num_outputs)
         self._kind = kind
-        input_steps = prefixes = None
+        input_steps = prefixes = training = None
         if input_transform is not None:
             spec = chain_spec(input_transform, d, ())
             input_steps = [st.rs for st in spec.chains[0]]
             prefixes = [st.prefix for st in spec.chains[0]]
+            training = [st.training for st in spec.chains[0]]
         self._build(
             transformed_X,
             train_Y,
@@ -978,6 +996,8 @@ class SingleTaskVariationalGP(ApproximateGPyTorchModel):
             input_steps,
             prefixes,
             outcome_transform if isinstance(outcome_transform, Standardize) else None,
+            training,
+            train_X,
         )
         if outcome_transform is not None:
             self.outcome_transform = outcome_transform

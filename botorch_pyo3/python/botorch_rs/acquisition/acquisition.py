@@ -64,6 +64,7 @@ def is_acquisition_model(model: Any) -> bool:
     ``AffineDeterministicModel``, ``FixedSingleSampleModel``) or a
     ``ModelList`` of them (and, internally, the moments of an
     ``EnsembleModel``)."""
+    from botorch_rs.models.approximate_gp import ApproximateGPyTorchModel
     from botorch_rs.models.deterministic import (
         AffineDeterministicModel,
         FixedSingleSampleModel,
@@ -77,6 +78,7 @@ def is_acquisition_model(model: Any) -> bool:
     return isinstance(
         model,
         (
+            ApproximateGPyTorchModel,
             SingleTaskGP,
             ModelListGP,
             MultiTaskGP,

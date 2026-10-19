@@ -25,7 +25,8 @@ use botorch_core::optim::minimize::TorchMinimizeOptions;
 use botorch_core::optim::{AdamOptions, ExpMaStoppingCriterion};
 use botorch_core::transforms::input::ChainedInputTransform;
 use botorch_core::transforms::Standardize;
-use botorch_core::Matrix;
+use botorch_core::acquisition::{ScalarizedModel, ScalarizedPosteriorTransform};
+use botorch_core::{Matrix, Model, Vector};
 use pyo3::prelude::*;
 
 use crate::arrays::{matrix_out, Array, ArrayOut};
@@ -131,7 +132,9 @@ impl PySingleTaskVariationalGP {
         learn_inducing_points=true,
         jitter=1e-6,
         input_chain=None,
+        input_chain_training=None,
         input_chain_prefixes=None,
+        raw_train_x=None,
         outcome_means=None,
         outcome_stdvs=None,
         outcome_min_stdv=1e-8,
@@ -155,7 +158,9 @@ impl PySingleTaskVariationalGP {
         learn_inducing_points: bool,
         jitter: f64,
         input_chain: Option<Vec<Bound<'_, PyAny>>>,
+        input_chain_training: Option<Vec<bool>>,
         input_chain_prefixes: Option<Vec<String>>,
+        raw_train_x: Option<Array>,
         outcome_means: Option<Vec<f64>>,
         outcome_stdvs: Option<Vec<f64>>,
         outcome_min_stdv: f64,
@@ -177,14 +182,21 @@ impl PySingleTaskVariationalGP {
             "zero" => VariationalMean::Zero,
             other => return Err(value_error(format!("unknown mean module {other:?}"))),
         };
+        // The chain is fitted to the raw training inputs (learning e.g. the
+        // bounds of a `Normalize`, as BoTorch's `transform_inputs` in train
+        // mode does at construction) and then used in eval mode.
         let input_transform: Option<ChainedInputTransform> = match input_chain {
             Some(steps) => {
-                let n = steps.len();
-                Some(crate::input_perturbation::chain_of(
+                let mut chain = crate::input_perturbation::chain_of(
                     &steps,
-                    Some(vec![false; n]),
+                    input_chain_training,
                     input_chain_prefixes,
-                )?)
+                )?;
+                let raw_x = raw_train_x
+                    .ok_or_else(|| value_error("an input chain needs `raw_train_x`"))?
+                    .matrix("train_X")?;
+                chain.fit(&raw_x).into_py_result()?;
+                Some(chain)
             }
             None => None,
         };
@@ -211,9 +223,20 @@ impl PySingleTaskVariationalGP {
         })
     }
 
-    /// The model handle for posteriors and acquisition functions.
-    fn model_handle(&self) -> PyModel {
-        PyModel { inner: self.get() }
+    /// The model handle for posteriors and acquisition functions, seen
+    /// through the posterior transform `(weights, offset)` if given.
+    #[pyo3(signature = (transform=None))]
+    fn model_handle(&self, transform: Option<(Vec<f64>, f64)>) -> PyResult<PyModel> {
+        let model: Arc<dyn Model> = self.get();
+        let inner = match transform {
+            Some((w, offset)) => {
+                let t = ScalarizedPosteriorTransform::new(Vector::from_vec(w), offset)
+                    .into_py_result()?;
+                ScalarizedModel::wrap(model, Some(t)).into_py_result()?
+            }
+            None => model,
+        };
+        Ok(PyModel { inner })
     }
 
     /// The flat raw parameters.
@@ -271,23 +294,29 @@ impl PySingleTaskVariationalGP {
     }
 
     /// The latent posterior `q(f)` at transformed points `x` (`q x d'`):
-    /// the means (`q x m`) and the covariance of every output (`m x q x q`),
-    /// in the transformed outcome space.
-    fn latent(&self, py: Python<'_>, x: Array) -> PyResult<(ArrayOut, ArrayOut)> {
+    /// the means (`q x m`), the covariance of every output (`m x q x q`) and
+    /// the marginal variances (`q x m`, GPyTorch's `variance` with the lazy
+    /// `diag=True` kernel values), in the transformed outcome space.
+    fn latent(&self, py: Python<'_>, x: Array) -> PyResult<(ArrayOut, ArrayOut, ArrayOut)> {
         let x = x.matrix("X")?;
         let model = self.get();
-        let parts = threads::run(py, || model.latent_posterior(&x)).into_py_result()?;
+        let (parts, vars) = threads::run(py, || -> botorch_core::Result<_> {
+            Ok((model.latent_posterior(&x)?, model.latent_variances(&x)?))
+        })
+        .into_py_result()?;
         let q = x.nrows();
         let m = parts.len();
         let mut mean = vec![0.0; q * m];
+        let mut var = vec![0.0; q * m];
         let mut cov = Vec::with_capacity(m * q * q);
         for (t, (mu, sigma)) in parts.iter().enumerate() {
             for i in 0..q {
                 mean[i * m + t] = mu[i];
+                var[i * m + t] = vars[t][i];
             }
             cov.extend(matrix_out(sigma).0);
         }
-        Ok(((mean, vec![q, m]), (cov, vec![m, q, q])))
+        Ok(((mean, vec![q, m]), (cov, vec![m, q, q]), (var, vec![q, m])))
     }
 
     /// The noise of a Gaussian likelihood (`[noise]`), or the global noise
