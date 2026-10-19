@@ -367,8 +367,8 @@ pub fn elementwise(
                     let outs = bvn_family(name, &d);
                     for (o, out) in outs.iter().enumerate() {
                         values[o][i] = out.v;
-                        for k in 0..nin {
-                            gr[o][k][i] = out.g[k];
+                        for (k, g) in gr[o].iter_mut().enumerate().take(nin) {
+                            g[i] = out.g[k];
                         }
                     }
                 } else {

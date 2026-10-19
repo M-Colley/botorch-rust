@@ -75,8 +75,7 @@ def _build() -> type:
             )
             if sampler is not None and self.batch_shape:
                 raise ValueError(
-                    "A custom `sampler` cannot be used with a batched "
-                    "TruncatedMultivariateNormal."
+                    "A custom `sampler` cannot be used with a batched TruncatedMultivariateNormal."
                 )
             self.bounds = bounds
             self._solver = solver
@@ -212,4 +211,4 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["TruncatedMultivariateNormal"]
+__all__ = ["TruncatedMultivariateNormal"]  # noqa: F822 (created lazily by __getattr__)

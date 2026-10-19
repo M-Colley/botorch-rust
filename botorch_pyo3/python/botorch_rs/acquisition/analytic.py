@@ -349,7 +349,9 @@ class _NoisyExpectedImprovementBase(AnalyticAcquisitionFunction):
         if sampler is None:
             sampler = SobolQMCNormalSampler(sample_shape=(int(num_fantasies),))
         elif not isinstance(sampler, NormalMCSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         self.posterior_transform = posterior_transform
         self.maximize = maximize
         self.num_fantasies = int(num_fantasies)

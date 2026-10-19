@@ -82,8 +82,8 @@ def _build() -> type:
                 try:
                     # calling _orthogonalized_gauss first makes the following call
                     # _orthogonalized_gauss.scale_tril which is used by self.rsample
-                    self._orthogonalized_gauss
-                    self.scale_tril
+                    _ = self._orthogonalized_gauss
+                    _ = self.scale_tril
                 except Exception as e:
                     if (
                         isinstance(e, NotPSDError)
@@ -91,11 +91,11 @@ def _build() -> type:
                         or "positive-definite" in str(e)
                         or "PositiveDefinite" in str(e)
                     ):
-                        e = ValueError(
+                        raise ValueError(
                             "UnifiedSkewNormal is only well-defined for positive definite"
                             " joint covariance matrices."
-                        )
-                    raise e
+                        ) from e
+                    raise
 
         def log_prob(self, value: Any) -> Any:
             r"""Computes the log probability ``ln p(Y = value | a < X < b)``."""
@@ -151,12 +151,14 @@ def _build() -> type:
         def expand(self, batch_shape: Sequence[int], _instance: Any = None) -> Any:
             new = self._get_checked_instance(UnifiedSkewNormal, _instance)
             super(UnifiedSkewNormal, new).__init__(
-                batch_shape=batch_shape, event_shape=self.event_shape, validate_args=False
+                batch_shape=torch.Size(batch_shape),
+                event_shape=self.event_shape,
+                validate_args=False,
             )
 
             new._validate_args = self._validate_args
-            new.gauss = self.gauss.expand(batch_shape=batch_shape)
-            new.trunc = self.trunc.expand(batch_shape=batch_shape)
+            new.gauss = self.gauss.expand(batch_shape=torch.Size(batch_shape))
+            new.trunc = self.trunc.expand(batch_shape=torch.Size(batch_shape))
             new.cross_covariance_matrix = self.cross_covariance_matrix.expand(
                 batch_shape + self.cross_covariance_matrix.shape[-2:]
             )
@@ -171,7 +173,7 @@ def _build() -> type:
                     base = obj if (obj._base is None) else obj._base
                     new_obj = obj.expand(batch_shape + base.shape)
                 elif isinstance(obj, Distribution):
-                    new_obj = obj.expand(batch_shape=batch_shape)
+                    new_obj = obj.expand(batch_shape=torch.Size(batch_shape))
                 else:
                     raise TypeError(
                         f"Type {type(obj)} of UnifiedSkewNormal's lazy property "
@@ -280,4 +282,4 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["UnifiedSkewNormal"]
+__all__ = ["UnifiedSkewNormal"]  # noqa: F822 (created lazily by __getattr__)

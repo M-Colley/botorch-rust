@@ -79,7 +79,7 @@ class Ishigami(_NativeProblem):
         )
 
     @property
-    def _optimal_value(self) -> float:
+    def _optimal_value(self) -> float:  # type: ignore[override]
         raise NotImplementedError
 
     @property
@@ -159,7 +159,7 @@ class Gsobol(_NativeProblem):
         elif dim == 8:
             self.a = [0, 1, 4.5, 9, 99, 99, 99, 99]
         elif dim == 15:
-            self.a = [1, 2, 5, 10, 20, 50, 100, 500, 1000] + [1000] * 6
+            self.a = [1, 2, 5, 10, 20, 50, 100, 500, 1000] + [1000] * 6  # type: ignore[assignment]
         else:
             self.a = a  # type: ignore[assignment]
         self._dim_ = dim
@@ -174,7 +174,7 @@ class Gsobol(_NativeProblem):
         )
 
     @property
-    def _optimal_value(self) -> float:
+    def _optimal_value(self) -> float:  # type: ignore[override]
         raise NotImplementedError
 
     @property
@@ -259,7 +259,7 @@ class Morris(_NativeProblem):
         self._setup(20, [(0.0, 1.0) for _ in range(20)], noise_std, negate, dtype)
 
     @property
-    def _optimal_value(self) -> float:
+    def _optimal_value(self) -> float:  # type: ignore[override]
         raise NotImplementedError
 
     @property

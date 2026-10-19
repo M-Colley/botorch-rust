@@ -230,7 +230,6 @@ def _build_pymoo_classes() -> dict[str, type]:
     _Repair: Any = _pymoo_base("pymoo.core.repair", "Repair")
     _Problem: Any = _pymoo_base("pymoo.core.problem", "Problem")
 
-
     class DiscreteParameterRepair(_Repair):  # type: ignore[misc]
         """Pymoo Repair operator that rounds discrete parameters to valid values.
 
@@ -287,7 +286,6 @@ def _build_pymoo_classes() -> dict[str, type]:
             def do(self, problem: Any, X: Any, **kwargs: Any) -> Any:
                 """Applies the repair (pymoo's ``Repair.do`` without pymoo)."""
                 return self._do(problem, X, **kwargs)
-
 
     class BotorchPymooProblem(_Problem):  # type: ignore[misc]
         def __init__(
@@ -369,7 +367,9 @@ def _build_pymoo_classes() -> dict[str, type]:
 
             self.botorch_acqf = acqf
             self.botorch_ref_point = ref_point
-            self.botorch_objective = IdentityMCMultiOutputObjective() if objective is None else objective
+            self.botorch_objective = (
+                IdentityMCMultiOutputObjective() if objective is None else objective
+            )
             self.botorch_constraints = constraints
             self.botorch_inequality_constraints = inequality_constraints
             self.torch_dtype = dtype
@@ -378,7 +378,9 @@ def _build_pymoo_classes() -> dict[str, type]:
         def _evaluate(self, x: Any, out: dict[str, Any], *args: Any, **kwargs: Any) -> None:
             """Evaluate x with respect to the objective/constraints."""
             torch = importlib.import_module("torch")
-            X = torch.as_tensor(x).to(dtype=self.torch_dtype or torch.float64, device=self.torch_device)
+            X = torch.as_tensor(x).to(
+                dtype=self.torch_dtype or torch.float64, device=self.torch_device
+            )
             with torch.no_grad():
                 # eval in batch mode, since all we need is the mean and this helps
                 # avoid ill-conditioning
@@ -399,9 +401,9 @@ def _build_pymoo_classes() -> dict[str, type]:
             if self.botorch_inequality_constraints is not None:
                 ineq_constraint_vals = []
                 for indices, coefficients, rhs in self.botorch_inequality_constraints:
-                    lhs = (X[:, torch.as_tensor(indices)] * torch.as_tensor(coefficients).to(X)).sum(
-                        dim=-1
-                    )
+                    lhs = (
+                        X[:, torch.as_tensor(indices)] * torch.as_tensor(coefficients).to(X)
+                    ).sum(dim=-1)
                     # Transform to G(x) <= 0 form: rhs - lhs <= 0
                     ineq_constraint_vals.append(rhs - lhs)
                 ineq_constraints = torch.stack(ineq_constraint_vals, dim=-1)
@@ -429,4 +431,4 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["BotorchPymooProblem", "DiscreteParameterRepair", "optimize_with_nsgaii"]
+__all__ = ["BotorchPymooProblem", "DiscreteParameterRepair", "optimize_with_nsgaii"]  # noqa: F822 (created lazily by __getattr__)

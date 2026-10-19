@@ -763,6 +763,12 @@ class Model:
 
 class SobolQMCNormalSampler:
     def __init__(self, num_samples: int, seed: int | None = None) -> None: ...
+    @staticmethod
+    def iid(num_samples: int, seed: int | None = None) -> SobolQMCNormalSampler:
+        """A sampler with i.i.d. standard-normal base samples (torch's
+        ``randn`` after ``manual_seed(seed)``, reproduced natively)."""
+    @property
+    def is_iid(self) -> bool: ...
     @property
     def num_samples(self) -> int: ...
     @property
@@ -2418,3 +2424,219 @@ class PairwiseBALD:
     def forward_with_grad(self, x: Array, draws: Array) -> tuple[ArrayBuf, ArrayBuf]: ...
     @property
     def num_samples(self) -> int: ...
+
+# ---------------------------------------------------------------------------
+# Phase 11a: safe_math / probability kernels, MVNXPB, LinESS, QMC, torch's
+# generator, test functions and helpers
+# ---------------------------------------------------------------------------
+
+Values = list[float] | array[float]
+
+def elementwise(
+    name: str,
+    inputs: Sequence[Sequence[float]],
+    params: Sequence[float] = ...,
+    single_precision: bool = False,
+    with_grad: bool = False,
+) -> tuple[list[Values], list[list[Values]] | None]:
+    """The element-wise function ``name`` of equally long inputs: the values
+    of every output and (with ``with_grad``) the derivatives of every output
+    with respect to every input (``grads[o][k]``)."""
+
+def reduce(
+    name: str, data: Sequence[float], n: int, params: Sequence[float] = ..., with_grad: bool = False
+) -> tuple[Values, Values | None]:
+    """The reduction ``name`` over consecutive rows of ``n`` values."""
+
+def log_prob_feas_from_bounds(
+    lower: Sequence[tuple[int, float]],
+    upper: Sequence[tuple[int, float]],
+    both: Sequence[tuple[int, float, float]],
+    means: Sequence[float],
+    sigmas: Sequence[float],
+    m: int,
+    with_grad: bool = False,
+) -> tuple[Values, tuple[Values, Values] | None]: ...
+def percentile_of_score(
+    data: Sequence[float], scores: Sequence[float], n: int, single_precision: bool
+) -> Values: ...
+
+class MvnxpbState:
+    def __init__(
+        self,
+        n: int,
+        batch: int,
+        step: int,
+        pc_step: int,
+        perm: Sequence[int],
+        bounds: Sequence[float],
+        tril: Sequence[float],
+        pc_perm: Sequence[int],
+        diag: Sequence[float] | None,
+        plug_ins: Sequence[float],
+        log_prob: Sequence[float],
+        log_prob_extra: Sequence[float] | None,
+    ) -> None: ...
+    @staticmethod
+    def standardized(
+        cov: Sequence[float], bounds: Sequence[float], batch: int, n: int
+    ) -> MvnxpbState: ...
+    @property
+    def n(self) -> int: ...
+    @property
+    def batch(self) -> int: ...
+    @property
+    def step(self) -> int: ...
+    @property
+    def pc_step(self) -> int: ...
+    @property
+    def perm(self) -> list[int]: ...
+    @property
+    def pc_perm(self) -> list[int]: ...
+    @property
+    def bounds(self) -> Values: ...
+    @property
+    def tril(self) -> Values: ...
+    @property
+    def diag(self) -> Values | None: ...
+    @property
+    def plug_ins(self) -> Values: ...
+    @property
+    def log_prob(self) -> Values: ...
+    @property
+    def log_prob_extra(self) -> Values | None: ...
+    def solve(self, num_steps: int | None = None, eps: float = 1e-10) -> Values: ...
+    def select_pivot(self) -> list[int]: ...
+    def pivot(self, pivot: Sequence[int]) -> None: ...
+    def augment(
+        self,
+        cov: Sequence[float],
+        bounds: Sequence[float],
+        cross: Sequence[float],
+        m: int,
+        disable_pivoting: bool = False,
+        jitter: float | None = None,
+        max_tries: int | None = None,
+    ) -> tuple[MvnxpbState, bool]: ...
+
+def mvnxpb_log_prob_with_grad(
+    cov: Sequence[float], bounds: Sequence[float], batch: int, n: int
+) -> tuple[Values, Values, Values]: ...
+def pivoted_cholesky_update(
+    tril: Sequence[float], batch: int, n: int, step: int, eps: float
+) -> ArrayBuf: ...
+def pivoted_cholesky_pivot(
+    tril: Sequence[float],
+    perm: Sequence[int],
+    diag: Sequence[float] | None,
+    batch: int,
+    n: int,
+    step: int,
+    pivots: Sequence[int],
+) -> tuple[Values, list[int], Values | None]: ...
+def augment_cholesky(
+    laa: Sequence[float],
+    kbb: Sequence[float],
+    kba: Sequence[float] | None,
+    lba: Sequence[float] | None,
+    jitter: float | None,
+    batch: int,
+    na: int,
+    nb: int,
+) -> ArrayBuf: ...
+
+class LinearEllipticalSliceSampler:
+    def __init__(
+        self,
+        a: Array,
+        b: Sequence[float],
+        x0: Sequence[float],
+        fixed_indices: Sequence[int] | None = None,
+        mean: Sequence[float] | None = None,
+        covariance_matrix: Array | None = None,
+        root: Array | None = None,
+        root_diag: Sequence[float] | None = None,
+        num_chains: int = 1,
+        single_precision: bool = False,
+    ) -> None: ...
+    @property
+    def draw_shape(self) -> tuple[int, int]: ...
+    @property
+    def lifetime_samples(self) -> int: ...
+    @property
+    def x(self) -> ArrayBuf: ...
+    @property
+    def z(self) -> ArrayBuf: ...
+    @property
+    def standardized(self) -> tuple[ArrayBuf, ArrayBuf]: ...
+    def run(
+        self,
+        nu: Sequence[float],
+        u: Sequence[float],
+        steps: int,
+        keep: int,
+        check_feasibility: bool = False,
+    ) -> ArrayBuf: ...
+    def arc_ends(self, nu: Sequence[float]) -> ArrayBuf: ...
+    def is_feasible(self, points: Array, transformed: bool = False) -> list[bool]: ...
+
+def normal_qmc_transform(
+    uniform: Sequence[float],
+    n: int,
+    sobol_dim: int,
+    d: int,
+    inv_transform: bool,
+    single_precision: bool,
+) -> ArrayBuf: ...
+def mvn_qmc_root(cov: Array, single_precision: bool) -> ArrayBuf: ...
+def torch_randn(seed: int, n: int) -> ArrayBuf:
+    """``torch.randn(n, dtype=float64)`` after ``torch.manual_seed(seed)``."""
+
+def torch_rand(seed: int, n: int, single_precision: bool = False) -> ArrayBuf:
+    """``torch.rand(n)`` (float64 or float32) after ``torch.manual_seed(seed)``."""
+
+def null_space(c: Array) -> ArrayBuf: ...
+
+class SingleObjectiveProblem:
+    def __init__(
+        self,
+        name: str,
+        dim: int,
+        bounds: Array,
+        discrete: Sequence[int] = ...,
+        params: Sequence[float] = ...,
+        use_smooth_interp: bool | None = None,
+        max_step_size: float | None = None,
+    ) -> None: ...
+    @property
+    def dim(self) -> int: ...
+    @property
+    def bounds(self) -> ArrayBuf: ...
+    @property
+    def num_constraints(self) -> int: ...
+    def evaluate_true(self, x: Array) -> ArrayBuf: ...
+    def evaluate_slack_true(self, x: Array) -> ArrayBuf: ...
+    def cost(self, x: Array) -> ArrayBuf: ...
+
+def round_nearest(
+    x: Sequence[float], increment: float, bounds: tuple[float, float] | None = None
+) -> list[float]: ...
+def data_log_likelihoods(model: SingleTaskGP) -> ArrayBuf: ...
+def sample_cached_cholesky(
+    rows: Sequence[float],
+    baseline_l: Sequence[float],
+    mean_new: Sequence[float],
+    base: Sequence[float],
+    batch: int,
+    n: int,
+    q: int,
+    s: int,
+    max_tries: int,
+) -> ArrayBuf: ...
+def psd_safe_cholesky(
+    a: Sequence[float],
+    batch: int,
+    n: int,
+    jitter: float | None = None,
+    max_tries: int | None = None,
+) -> ArrayBuf: ...

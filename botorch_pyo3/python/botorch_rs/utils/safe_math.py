@@ -322,9 +322,7 @@ def fatmax(
     try:
         if _tau_requires_grad(tau):
             return _reduce_tau("fatmax", x, dim, keepdim, tau, (float(alpha),), -math.inf)
-        return _ops.reduce(
-            "fatmax", x, dim, keepdim, params=(_scalar(tau, "tau"), float(alpha))
-        )
+        return _ops.reduce("fatmax", x, dim, keepdim, params=(_scalar(tau, "tau"), float(alpha)))
     except ValueError as e:
         raise ValueError(str(e)) from None
 
@@ -386,7 +384,9 @@ def fatmaximum(a: Any, b: Any, tau: Any = TAU, alpha: float = ALPHA) -> Any:
     """
     if _tau_requires_grad(tau):
         torch = importlib.import_module("torch")
-        return fatmax(torch.stack(torch.broadcast_tensors(a, b), dim=-1), dim=-1, tau=tau, alpha=alpha)
+        return fatmax(
+            torch.stack(torch.broadcast_tensors(a, b), dim=-1), dim=-1, tau=tau, alpha=alpha
+        )
     return _ops.apply("fatmaximum", a, b, params=(_scalar(tau, "tau"), float(alpha)))
 
 

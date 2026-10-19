@@ -189,7 +189,9 @@ class qKnowledgeGradient(MCAcquisitionFunction, OneShotAcquisitionFunction):
             # base samples should be fixed for joint optimization over X, X_fantasies
             sampler = SobolQMCNormalSampler(sample_shape=(num_fantasies,))
         elif not isinstance(sampler, NormalMCSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         elif num_fantasies is not None:
             if tuple(sampler.sample_shape) != (num_fantasies,):
                 raise ValueError(f"The sampler shape must match num_fantasies={num_fantasies}.")
@@ -215,7 +217,9 @@ class qKnowledgeGradient(MCAcquisitionFunction, OneShotAcquisitionFunction):
                     "posterior_transform must scalarize the output."
                 )
         if inner_sampler is not None and not isinstance(inner_sampler, NormalMCSampler):
-            raise UnsupportedError("`inner_sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
+            raise UnsupportedError(
+                "`inner_sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         self.sampler = sampler
         self.objective = objective
         self.posterior_transform = posterior_transform

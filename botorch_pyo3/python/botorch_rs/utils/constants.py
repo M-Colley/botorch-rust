@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from functools import lru_cache
+from functools import cache
 from numbers import Number
 from typing import Any
 
 from botorch_rs._arrays import ArrayKind, from_flat, kind_from_dtype, kind_of
 
 
-@lru_cache(maxsize=None)
+@cache
 def _cached(values: Any, kind: ArrayKind) -> Any:
     if isinstance(values, Number):
         return from_flat([float(values)], (), kind)  # type: ignore[arg-type]
@@ -32,9 +32,8 @@ def get_constants(
     a tuple).
     """
     kind = kind_from_dtype(dtype, device)
-    if not isinstance(values, Number):
-        values = tuple(values)  # type: ignore[assignment]
-    return _cached(values, kind)
+    key: Any = values if isinstance(values, Number) else tuple(values)
+    return _cached(key, kind)
 
 
 def get_constants_like(
@@ -43,9 +42,8 @@ def get_constants_like(
 ) -> Any:
     """``get_constants`` with the dtype and device of the array ``ref``."""
     kind = kind_of(ref)
-    if not isinstance(values, Number):
-        values = tuple(values)  # type: ignore[assignment]
-    return _cached(values, kind)
+    key: Any = values if isinstance(values, Number) else tuple(values)
+    return _cached(key, kind)
 
 
 __all__ = ["get_constants", "get_constants_like"]

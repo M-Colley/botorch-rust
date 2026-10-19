@@ -14,7 +14,7 @@ import importlib
 import math
 import sys
 from collections.abc import Callable, Iterable, Iterator
-from functools import lru_cache
+from functools import cache
 from math import pi
 from typing import Any
 
@@ -218,7 +218,7 @@ def build_positional_indices(
     return _ops.int_array(total, out_shape, LIST)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _leggauss(deg: int) -> tuple[tuple[float, ...], tuple[float, ...]]:
     x, w = _rs.leggauss(deg)
     return tuple(x), tuple(w)
@@ -496,7 +496,7 @@ def _log_prob_feas_function() -> Any:
     fn = _ops._FUNCTIONS.get("log_prob_feas")
     if fn is not None:
         return fn
-    torch = importlib.import_module("torch")
+    torch: Any = importlib.import_module("torch")
 
     class _LogProbFeas(torch.autograd.Function):
         @staticmethod
@@ -508,6 +508,7 @@ def _log_prob_feas_function() -> Any:
             values, grads = _rs.log_prob_feas_from_bounds(
                 lower, upper, both, to_flat(means)[0], to_flat(sigmas)[0], m, True
             )
+            assert grads is not None
             ctx.gm = from_flat(grads[0], shape, kind)
             ctx.gs = from_flat(grads[1], shape, kind)
             return from_flat(values, shape[:-1], kind)

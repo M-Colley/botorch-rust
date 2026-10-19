@@ -51,6 +51,11 @@ class NormalMCSampler(MCSampler):
         """The number of MC samples (``prod(sample_shape)``)."""
         return math.prod(self.sample_shape)
 
+    @property
+    def seed(self) -> int:
+        """The seed of the base samples."""
+        return int(self._rs.seed)
+
 
 class SobolQMCNormalSampler(NormalMCSampler):
     r"""Draws standard-normal base samples from a scrambled Sobol sequence.
@@ -177,6 +182,15 @@ class IIDNormalSampler(NormalMCSampler):
         self.base_samples: Any = None
         self._base_shape: tuple[int, ...] | None = None
         self.batch_range_override: tuple[int, int] | None = None
+
+    @property
+    def seed(self) -> int:
+        """The seed of ``torch.manual_seed`` for the base samples."""
+        return self._seed
+
+    @seed.setter
+    def seed(self, value: int) -> None:
+        self._seed = int(value)
 
     def _draw(self, shape: tuple[int, ...], kind: Any) -> list[float]:
         # torch.randn(shape, dtype=torch.float64) after torch.manual_seed(seed).

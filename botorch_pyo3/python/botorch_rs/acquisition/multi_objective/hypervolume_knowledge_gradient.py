@@ -173,7 +173,9 @@ class qHypervolumeKnowledgeGradient(OneShotAcquisitionFunction):
         if inner_sampler is None:
             inner_sampler = SobolQMCNormalSampler(sample_shape=(DEFAULT_INNER_SAMPLES,))
         elif not isinstance(inner_sampler, NormalMCSampler):
-            raise UnsupportedError("`inner_sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
+            raise UnsupportedError(
+                "`inner_sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         if current_value is None and cost_aware_utility is not None:
             raise UnsupportedError("Cost-aware HVKG requires current_value to be specified.")
         if cost_aware_utility is not None and not isinstance(cost_aware_utility, CostAwareUtility):
@@ -390,7 +392,9 @@ class _HypervolumeValueFunction(AcquisitionFunction):
             )
         super().__init__(model)
         if sampler is not None and not isinstance(sampler, NormalMCSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         ref = ref_point_arg(ref_point)
         self.ref_point = from_flat(ref, (len(ref),), first_kind(ref_point))
         self.objective = objective

@@ -63,7 +63,9 @@ def get_feasible_samples(
     else:
         keep = [r for r in range(n) if feasible[r]]
         feasible_samples = from_flat(
-            [float(data[r * d + k]) for r in keep for k in range(d)], (len(keep), d), kind_of(samples)
+            [float(data[r * d + k]) for r in keep for k in range(d)],
+            (len(keep), d),
+            kind_of(samples),
         )
     p_linear = sum(feasible) / n
     return feasible_samples, p_linear
@@ -109,7 +111,7 @@ def get_outcome_feasibility_probability(
         )
 
     posterior = model.posterior(X)  # posterior consists of batch_shape marginals
-    sampler = get_sampler(posterior=posterior, sample_shape=(nsample_outcome,), seed=seed)
+    sampler: Any = get_sampler(posterior=posterior, sample_shape=(nsample_outcome,), seed=seed)
     # size of samples: (num outcome samples, batch_shape, 1, outcome dim)
     samples = sampler(posterior)
     sshape = tuple(_ops.shape_of(samples))[:-1]
@@ -224,9 +226,7 @@ def estimate_feasible_volume(
     )
 
     if verbose:  # pragma: no cover
-        logger.info(
-            "Proportion of volume that satisfies linear constraints: " + f"{p_feature:.4e}"
-        )
+        logger.info("Proportion of volume that satisfies linear constraints: " + f"{p_feature:.4e}")
         if p_feature <= 0.01:
             logger.warning(
                 "The proportion of satisfying volume is very low and may lead to "

@@ -63,7 +63,10 @@ def _grads(f: Any, inputs: list[Any]) -> tuple[list[list[float]], list[list[list
     for o in outs:
         gs = torch.autograd.grad(o.sum(), xs, retain_graph=True, allow_unused=True)
         grads.append(
-            [_finite_or_none(_list(torch.zeros_like(x) if g is None else g)) for g, x in zip(gs, xs, strict=True)]
+            [
+                _finite_or_none(_list(torch.zeros_like(x) if g is None else g))
+                for g, x in zip(gs, xs, strict=True)
+            ]
         )
     return values, grads
 
@@ -97,7 +100,15 @@ def _elementwise() -> list[dict[str, Any]]:
             }
         )
 
-    for name in ("ndtr", "phi", "log_phi", "log_ndtr", "log_erfc", "log_erfcx", "standard_normal_log_hazard"):
+    for name in (
+        "ndtr",
+        "phi",
+        "log_phi",
+        "log_ndtr",
+        "log_erfc",
+        "log_erfcx",
+        "standard_normal_log_hazard",
+    ):
         add(name, getattr(pu, name), [x])
     for name in ("exp", "log1pexp", "logexpit", "cauchy"):
         add(name, getattr(sm, name), [x])
@@ -115,7 +126,12 @@ def _elementwise() -> list[dict[str, Any]]:
     add("log_prob_normal_in", pu.log_prob_normal_in, [lo, hi])
     for tau, alpha in ((1.0, 2.0), (0.3, 0.5)):
         for name in ("fatmaximum", "fatminimum"):
-            add(name, lambda a, b, n=name, t=tau, al=alpha: getattr(sm, n)(a, b, tau=t, alpha=al), [x, y], [tau, alpha])
+            add(
+                name,
+                lambda a, b, n=name, t=tau, al=alpha: getattr(sm, n)(a, b, tau=t, alpha=al),
+                [x, y],
+                [tau, alpha],
+            )
     taus = torch.rand(x.numel(), generator=g, dtype=DT) + 0.05
     for name in ("fatplus", "log_fatplus", "fatmoid", "log_fatmoid"):
         add(name, lambda a, t, n=name: getattr(sm, n)(a, tau=t), [x, taus])
@@ -160,7 +176,15 @@ def _reductions() -> list[dict[str, Any]]:
         if name.startswith("fat"):
             kw.update(tau=params[0], alpha=params[1])
         values, grads = _grads(lambda t, n=name, k=kw: getattr(sm, n)(t, dim=-1, **k), [x])
-        cases.append({"name": name, "x": _list(x), "params": params, "values": values[0], "grads": grads[0][0]})
+        cases.append(
+            {
+                "name": name,
+                "x": _list(x),
+                "params": params,
+                "values": values[0],
+                "grads": grads[0][0],
+            }
+        )
     return cases
 
 
@@ -178,7 +202,9 @@ def _probability() -> dict[str, Any]:
         "con_upper": torch.tensor([0.7], dtype=DT),
         "con_both": torch.tensor([[-1.0, 0.5]], dtype=DT),
     }
-    values, grads = _grads(lambda m, s: pu.compute_log_prob_feas_from_bounds(means=m, sigmas=s, **kw), [means, sigmas])
+    values, grads = _grads(
+        lambda m, s: pu.compute_log_prob_feas_from_bounds(means=m, sigmas=s, **kw), [means, sigmas]
+    )
     data = torch.randn(3, 7, generator=g, dtype=DT).round(decimals=1)
     score = data[:, :1] + torch.tensor([[0.0], [0.05], [-3.0]], dtype=DT)
     return {
@@ -251,13 +277,24 @@ def _lin_ess() -> list[dict[str, Any]]:
     cases = []
     for label, kw in (
         ("standard", {}),
-        ("covariance", {"covariance_matrix": cov, "mean": torch.tensor([[0.2], [-0.1], [0.05]], dtype=DT)}),
+        (
+            "covariance",
+            {"covariance_matrix": cov, "mean": torch.tensor([[0.2], [-0.1], [0.05]], dtype=DT)},
+        ),
         ("chains", {"num_chains": 3}),
-        ("fixed", {"fixed_indices": [1], "covariance_root": torch.diag(torch.tensor([1.0, 2.0, 0.5], dtype=DT))}),
+        (
+            "fixed",
+            {
+                "fixed_indices": [1],
+                "covariance_root": torch.diag(torch.tensor([1.0, 2.0, 0.5], dtype=DT)),
+            },
+        ),
     ):
         steps = 40
         torch.manual_seed(7)
-        s = lin_ess.LinearEllipticalSliceSampler(inequality_constraints=(A, b), interior_point=x0, **kw)
+        s = lin_ess.LinearEllipticalSliceSampler(
+            inequality_constraints=(A, b), interior_point=x0, **kw
+        )
         state = torch.random.get_rng_state()
         k, c = s._z.shape
         nu, u = [], []

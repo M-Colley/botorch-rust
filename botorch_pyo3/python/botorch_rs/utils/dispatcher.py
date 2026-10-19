@@ -46,7 +46,9 @@ def _supercedes(a: tuple[type, ...], b: tuple[type, ...]) -> bool:
     return len(a) == len(b) and all(issubclass(x, y) for x, y in zip(a, b, strict=True))
 
 
-def _edge(a: tuple[type, ...], b: tuple[type, ...], tie_breaker: Callable[[Any], int] = hash) -> bool:
+def _edge(
+    a: tuple[type, ...], b: tuple[type, ...], tie_breaker: Callable[[Any], int] = hash
+) -> bool:
     return _supercedes(a, b) and (not _supercedes(b, a) or tie_breaker(a) > tie_breaker(b))
 
 
@@ -123,7 +125,9 @@ class Dispatcher:
 
     # -- registration ----------------------------------------------------------
 
-    def register(self, *types: Any, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def register(
+        self, *types: Any, **kwargs: Any
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator registering a method for the signature ``types``."""
 
         def _df(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -199,7 +203,7 @@ class Dispatcher:
             the function obtained via method lookup.
         """
         types = self.encode_args(args)
-        func = self.__getitem__(types=types)
+        func = self.__getitem__(None, types)
         errors = _md_not_implemented_errors()
         try:
             return func(*args, **kwargs)
@@ -241,7 +245,9 @@ class Dispatcher:
         most specific one."""
         n = len(types)
         for signature in self.ordering:
-            if len(signature) == n and all(issubclass(t, s) for t, s in zip(types, signature, strict=True)):
+            if len(signature) == n and all(
+                issubclass(t, s) for t, s in zip(types, signature, strict=True)
+            ):
                 yield self.funcs[signature]
 
     def encode_args(self, args: Any) -> tuple[type, ...]:

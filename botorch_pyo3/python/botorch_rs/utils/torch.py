@@ -19,6 +19,7 @@ class _BufferDictMixin:
     """The dictionary methods of ``BufferDict`` (on ``self._buffers``)."""
 
     _buffers: Any
+    register_buffer: Any
 
     def __getitem__(self, key: str) -> Any:
         return self._buffers[key]
@@ -98,6 +99,7 @@ class _BufferDictMixin:
                         "BufferDict update sequence element "
                         "#" + str(j) + " should be Iterable; is" + type(p).__name__
                     )
+                p = list(p)
                 if not len(p) == 2:
                     raise ValueError(
                         "BufferDict update sequence element "
@@ -132,7 +134,7 @@ class _PlainBufferDict(_BufferDictMixin):
 
 
 def _build() -> type:
-    torch = importlib.import_module("torch")
+    torch: Any = importlib.import_module("torch")
 
     class BufferDict(_BufferDictMixin, torch.nn.Module):
         r"""Holds buffers in a dictionary.
@@ -174,9 +176,7 @@ def _build() -> type:
             for k, p in self._buffers.items():
                 size_str = "x".join(str(size) for size in p.size())
                 device_str = "" if not p.is_cuda else f" (GPU {p.get_device()})"
-                parastr = "Buffer containing: [{} of size {}{}]".format(
-                    torch.typename(p), size_str, device_str
-                )
+                parastr = f"Buffer containing: [{torch.typename(p)} of size {size_str}{device_str}]"
                 child_lines.append("  (" + k + "): " + parastr)
             return "\n".join(child_lines)
 
@@ -199,4 +199,4 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["BufferDict"]
+__all__ = ["BufferDict"]  # noqa: F822 (created lazily by __getattr__)

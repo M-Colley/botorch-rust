@@ -140,14 +140,14 @@ class LinearEllipticalSliceSampler(PolytopeSampler):
             if root is not None:
                 rdata, rshape = root
                 n = rshape[0]
-                is_diag = all(
-                    rdata[r * n + c] == 0 for r in range(n) for c in range(n) if r != c
-                )
+                is_diag = all(rdata[r * n + c] == 0 for r in range(n) for c in range(n) if r != c)
                 if not is_diag:
                     raise ValueError("Provide either covariance_root or fixed_indices, not both.")
                 root_diag = [rdata[r * n + r] for r in range(n)]
                 root = None
         self._fixed_indices = fixed
+        self._is_fixed: Any
+        self._not_fixed: Any
         self._is_fixed, self._not_fixed = (
             get_index_tensors(fixed_indices=fixed, d=d) if fixed is not None else (None, None)
         )

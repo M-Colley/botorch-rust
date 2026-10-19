@@ -99,8 +99,7 @@ def _get_sampler_mvn(
     size = _collapsed_size(posterior)
     if size > SOBOL_MAXDIM:
         logger.warning(
-            f"Output dim {size} is too large for the "
-            "Sobol engine. Using IIDNormalSampler instead."
+            f"Output dim {size} is too large for the Sobol engine. Using IIDNormalSampler instead."
         )
         sampler = IIDNormalSampler(sample_shape=sample_shape, seed=seed)
     return sampler
@@ -131,7 +130,7 @@ def _get_sampler_list(
     correlations between samplers. Instead uses ``IIDNormalSampler``. See the following
     issue for details: https://github.com/meta-pytorch/botorch/issues/2658
     """
-    samplers = []
+    samplers: list[Any] = []
     for p in posterior.posteriors:
         sampler = get_sampler(posterior=p, sample_shape=sample_shape, seed=seed)
         if isinstance(sampler, SobolQMCNormalSampler):

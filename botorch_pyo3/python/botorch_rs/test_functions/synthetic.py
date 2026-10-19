@@ -494,7 +494,6 @@ class Shekel(SyntheticTestFunction):
         self.m = m
 
 
-
 # -- Problems of phase 11a: mixed, binary, trajectory and constrained ---------
 
 
@@ -667,7 +666,9 @@ class AckleyMixed(_NativeProblem):
 
             torch = _sys.modules.get("torch")
             if torch is not None:
-                tdt = dtype if dtype is not None and isinstance(dtype, torch.dtype) else torch.float64
+                tdt = (
+                    dtype if dtype is not None and isinstance(dtype, torch.dtype) else torch.float64
+                )
                 x_opt = torch.rand(dim, dtype=tdt).tolist()
             else:
                 import random
@@ -734,9 +735,7 @@ class Labs(_NativeProblem):
         seq = optimizers.get(dim)
         self._optimizers = None if seq is None else self._optimizer_from_binary_seq(seq)
         self.continuous_inds = []
-        self._setup(
-            dim, [(0.0, 1.0)] * dim, noise_std, negate, dtype, discrete=list(range(dim))
-        )
+        self._setup(dim, [(0.0, 1.0)] * dim, noise_std, negate, dtype, discrete=list(range(dim)))
 
     def _optimizer_from_binary_seq(self, seq: str) -> list[tuple[float, ...]]:
         """Converts a binary sequence into a an array."""
@@ -1064,7 +1063,7 @@ class ConstrainedHartmann(ConstrainedSyntheticTestFunction):
         if dim not in (3, 4, 6):
             raise ValueError(f"Hartmann with dim {dim} not defined")
         optvals = {3: -3.86278, 6: -3.32237}
-        optimizers = {
+        optimizers: dict[int, list[tuple[float, ...]]] = {
             3: [(0.114614, 0.555649, 0.852547)],
             6: [(0.20169, 0.150011, 0.476874, 0.275332, 0.311652, 0.6573)],
         }
@@ -1285,6 +1284,7 @@ class KeaneBumpFunction(ConstrainedSyntheticTestFunction):
             self._optimal_value = self._optimal_value_lookup[dim]
         self._setup(dim, bounds, noise_std, negate, dtype)
         self.constraint_noise_std = self._validate_constraint_noise(constraint_noise_std)
+
 
 __all__ = [
     "AckleyMixed",

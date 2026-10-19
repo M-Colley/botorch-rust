@@ -680,7 +680,7 @@ class SingleTaskGP(Model):
         space) defaults to the inferred noise level, or the mean training
         noise of a fixed-noise model."""
         from botorch_rs.exceptions.errors import DeprecationError
-        from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
+        from botorch_rs.sampling.normal import NormalMCSampler
 
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
@@ -689,7 +689,9 @@ class SingleTaskGP(Model):
                 "`fantasize` no longer accepts a boolean for `observation_noise`."
             )
         if not isinstance(sampler, NormalMCSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         self.eval()
         x = to_flat(X, "X")
         nz = None if observation_noise is None else to_flat(observation_noise, "observation_noise")

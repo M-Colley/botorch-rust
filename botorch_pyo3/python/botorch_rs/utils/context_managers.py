@@ -215,7 +215,8 @@ def zero_grad_ctx(
     exiting the context."""
 
     def zero_() -> None:
-        for param in parameters.values() if isinstance(parameters, dict) else parameters:
+        params: Any = parameters.values() if isinstance(parameters, dict) else parameters
+        for param in params:
             if getattr(param, "grad", None) is not None:
                 param.grad.zero_()
 

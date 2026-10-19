@@ -173,7 +173,9 @@ def compute_feasibility_indicator(
         if marginalize_dim < 0:
             # add 1 to the normalize marginalize_dim since we have already
             # removed the output dim
-            marginalize_dim = 1 + normalize_indices([marginalize_dim], d=len(shape))[0]
+            idx = normalize_indices([marginalize_dim], d=len(shape))
+            assert idx is not None
+            marginalize_dim = 1 + idx[0]
         d = marginalize_dim
         outer = math.prod(shape[:d])
         size = shape[d]

@@ -429,6 +429,7 @@ impl MvnxpbState {
     /// [`BotorchError::Unsupported`] if the factor is incomplete (BoTorch's
     /// `NotImplementedError`), [`BotorchError::NotPsd`] if the recovery
     /// fails, [`BotorchError::DimensionMismatch`] for inconsistent shapes.
+    #[allow(clippy::too_many_arguments)]
     pub fn augment(
         &self,
         cov: &[f64],

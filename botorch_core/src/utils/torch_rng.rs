@@ -135,7 +135,7 @@ impl TorchGenerator {
             normal_fill_16(&mut data[i..i + 16]);
             i += 16;
         }
-        if n % 16 != 0 {
+        if !n.is_multiple_of(16) {
             let tail = &mut data[n - 16..];
             for v in tail.iter_mut() {
                 *v = self.uniform();

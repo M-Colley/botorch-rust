@@ -155,9 +155,7 @@ def sample_cached_cholesky(
         for o in range(m):
             for j in range(q):
                 for s in range(S):
-                    out[((s * nb + b) * q + j) * m + o] = float(
-                        data[((b * m + o) * q + j) * S + s]
-                    )
+                    out[((s * nb + b) * q + j) * m + o] = float(data[((b * m + o) * q + j) * S + s])
     bad = [v for v in out if not math.isfinite(v)]
     if bad:
         suffix = []

@@ -202,7 +202,9 @@ class qMaxValueEntropy(MaxValueBase):
             fantasies_sampler = SobolQMCNormalSampler(sample_shape=(num_fantasies,))
         for s, name in ((sampler, "sampler"), (fantasies_sampler, "fantasies_sampler")):
             if not isinstance(s, NormalMCSampler):
-                raise UnsupportedError(f"`{name}` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
+                raise UnsupportedError(
+                    f"`{name}` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+                )
         self.sampler = sampler
         self.fantasies_sampler = fantasies_sampler
         self.num_fantasies = int(fantasies_sampler.num_samples)

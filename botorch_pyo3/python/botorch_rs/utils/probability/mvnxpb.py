@@ -36,7 +36,7 @@ from __future__ import annotations
 import importlib
 import math
 import warnings
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs import _ops
@@ -65,7 +65,7 @@ def _mvnxpb_function() -> Any:
     fn = _ops._FUNCTIONS.get("mvnxpb")
     if fn is not None:
         return fn
-    torch = importlib.import_module("torch")
+    torch: Any = importlib.import_module("torch")
 
     class _MvnxpbLogProb(torch.autograd.Function):
         @staticmethod
@@ -292,7 +292,7 @@ class MVNXPB:
                     f"but `other.{key}` is of type {type(_self)}."
                 )
             if isinstance(_self, PivotedCholesky):
-                state_dict[key] = _self.concat(_other, dim=dim)
+                state_dict[key] = _self.concat(cast(PivotedCholesky, _other), dim=dim)
             elif isinstance(_self, int):
                 if _self != _other:
                     raise ValueError(

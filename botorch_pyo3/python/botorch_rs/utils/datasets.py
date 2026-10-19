@@ -450,7 +450,9 @@ class MultiTaskDataset(SupervisedDataset):
         all_task_features = [float(data[i * d + tf]) for i in range(len(data) // d)]
         for task_value in sorted({int(v) for v in all_task_features}):
             default_name = (
-                dataset.outcome_names[0] if task_value == target_task_value else f"task_{task_value}"
+                dataset.outcome_names[0]
+                if task_value == target_task_value
+                else f"task_{task_value}"
             )
             outcome_name = outcome_names_per_task.get(task_value, default_name)
             keep = [v == task_value for v in all_task_features]
@@ -522,8 +524,7 @@ class MultiTaskDataset(SupervisedDataset):
         """
         if self.has_heterogeneous_features:
             raise UnsupportedError(
-                "Concatenating `X`s from datasets with heterogeneous feature sets "
-                "is not supported."
+                "Concatenating `X`s from datasets with heterogeneous feature sets is not supported."
             )
         all_Xs = []
         next_task = 1

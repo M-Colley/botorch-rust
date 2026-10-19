@@ -121,7 +121,7 @@ def _elementwise_function() -> Any:
     fn = _FUNCTIONS.get("elementwise")
     if fn is not None:
         return fn
-    torch = importlib.import_module("torch")
+    torch: Any = importlib.import_module("torch")
 
     class _Elementwise(torch.autograd.Function):
         @staticmethod
@@ -132,6 +132,7 @@ def _elementwise_function() -> Any:
             kind = ArrayKind("torch", inputs[0].dtype, inputs[0].device)
             datas = [to_flat(t)[0] for t in inputs]
             values, grads = _rs.elementwise(name, datas, params, single, True)
+            assert grads is not None
             ctx.grads = [[from_flat(g, shape, kind) for g in per_out] for per_out in grads]
             outs = tuple(from_flat(v, shape, kind) for v in values)
             return outs if len(outs) > 1 else outs[0]
@@ -156,7 +157,7 @@ def _reduce_function() -> Any:
     fn = _FUNCTIONS.get("reduce")
     if fn is not None:
         return fn
-    torch = importlib.import_module("torch")
+    torch: Any = importlib.import_module("torch")
 
     class _Reduce(torch.autograd.Function):
         @staticmethod
@@ -164,6 +165,7 @@ def _reduce_function() -> Any:
             rows, n = x2d.shape
             kind = ArrayKind("torch", x2d.dtype, x2d.device)
             values, grads = _rs.reduce(name, to_flat(x2d)[0], n, params, True)
+            assert grads is not None
             ctx.grads = from_flat(grads, (rows, n), kind)
             return from_flat(values, (rows,), kind)
 
@@ -315,10 +317,11 @@ def shape_of(x: Any) -> tuple[int, ...]:
     return to_flat(x)[1]
 
 
-def _basic_index(shape: tuple[int, ...], key: Any) -> tuple[list[list[int] | None], tuple[int, ...]]:
+def _basic_index(shape: tuple[int, ...], key: Any) -> tuple[list[Any], tuple[int, ...]]:
     """For basic indexing (ints, slices, Ellipsis, None) of an array of
-    ``shape``: the selected indices per dimension (``None`` for an int, which
-    drops the dimension, wrapped as ``[i]``) and the resulting shape."""
+    ``shape``: one entry per index, ``("new",)`` for ``None`` (a new
+    dimension), ``("int", i)`` for an int (which drops the dimension) and
+    ``("slice", indices)`` for a slice, and the resulting shape."""
     if not isinstance(key, tuple):
         key = (key,)
     n_ell = sum(1 for k in key if k is Ellipsis)
@@ -418,9 +421,7 @@ def expand(x: Any, shape: Sequence[int]) -> Any:
     if kind.lib == "torch":
         return x.expand(shape)
     xs = shape_of(x)
-    target = tuple(
-        xs[i - (len(shape) - len(xs))] if s == -1 else s for i, s in enumerate(shape)
-    )
+    target = tuple(xs[i - (len(shape) - len(xs))] if s == -1 else s for i, s in enumerate(shape))
     if kind.lib == "numpy":
         return importlib.import_module("numpy").broadcast_to(x, target)
     data, src = to_flat(x)

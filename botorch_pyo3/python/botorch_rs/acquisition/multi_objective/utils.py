@@ -97,7 +97,9 @@ def prune_inferior_points_multi_objective(
     base_samples = None
     if sampler is not None:
         if not isinstance(sampler, NormalMCSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         num_samples = sampler.num_samples
         base_samples = sampler._rs.base_samples(n * handle.num_outputs) if n > 0 else None
     pruned = _rs.prune_inferior_points_multi_objective(

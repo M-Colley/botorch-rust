@@ -136,7 +136,9 @@ def separate_mtmvn(mvn: Any) -> list[Any]:
     mvns = []
     for c in range(num_tasks):
         if mvn._interleaved:
-            task_indices = torch.arange(c, num_data * num_tasks, num_tasks, device=full_covar.device)
+            task_indices = torch.arange(
+                c, num_data * num_tasks, num_tasks, device=full_covar.device
+            )
             task_covar = full_covar[..., task_indices, :]
             task_covar = task_covar[..., :, task_indices]
         else:

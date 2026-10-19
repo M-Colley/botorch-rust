@@ -245,7 +245,9 @@ def test_safe_math_sigmoid_and_tensor_tau() -> None:
     (ge,) = grad_of(lambda a: bt_sm.log_softplus(a, tau=0.3), y)
     C.check("safe_math.log_softplus 0-dim tau grad x", ga[0], ge, GTOL)
     h = 1e-6
-    fd = (bt_sm.log_softplus(y, tau=t0 + h).sum() - bt_sm.log_softplus(y, tau=t0 - h).sum()) / (2 * h)
+    fd = (bt_sm.log_softplus(y, tau=t0 + h).sum() - bt_sm.log_softplus(y, tau=t0 - h).sum()) / (
+        2 * h
+    )
     C.check("safe_math.log_softplus tau grad vs central differences", ga[1], fd, 1e-8)
 
 

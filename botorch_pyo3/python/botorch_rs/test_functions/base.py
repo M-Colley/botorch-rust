@@ -651,7 +651,9 @@ class CorruptedTestProblem(BaseTestProblem, SeedingMixin):
                 import random
 
                 fl, sh = to_flat(f, "f")
-                f = from_flat([v + float(self.noise_std) * random.gauss(0.0, 1.0) for v in fl], sh, kind)
+                f = from_flat(
+                    [v + float(self.noise_std) * random.gauss(0.0, 1.0) for v in fl], sh, kind
+                )
             else:
                 f = _add_noise(f, self.noise_std, kind)
         if self.negate:
@@ -668,7 +670,9 @@ class CorruptedTestProblem(BaseTestProblem, SeedingMixin):
             if self.has_seeds:
                 torch.manual_seed(self.seed)
             corrupt = torch.rand(shape) < self.outlier_fraction
-            outliers = self.outlier_generator(problem=self.base_test_problem, X=X, bounds=self.bounds)
+            outliers = self.outlier_generator(
+                problem=self.base_test_problem, X=X, bounds=self.bounds
+            )
             return torch.where(corrupt.to(X.device), outliers, f)
         import math
         import random

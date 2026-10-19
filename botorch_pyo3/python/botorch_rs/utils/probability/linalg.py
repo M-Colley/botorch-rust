@@ -55,9 +55,7 @@ def block_matrix_concat(blocks: Sequence[Sequence[Any]]) -> Any:
     return _ops.concat(rows, dim=-2)
 
 
-def _augment_cholesky_torch(
-    Laa: Any, Kbb: Any, Kba: Any, Lba: Any, jitter: float | None
-) -> Any:
+def _augment_cholesky_torch(Laa: Any, Kbb: Any, Kba: Any, Lba: Any, jitter: float | None) -> Any:
     torch = importlib.import_module("torch")
     if jitter is not None:
         Kbb = Kbb.clone()
@@ -154,9 +152,7 @@ class PivotedCholesky:
             return
         tshape = _ops.shape_of(self.tril)
         if tshape[-2] != tshape[-1]:
-            raise ValueError(
-                f"Expected square matrices but `matrix` has shape `{_size(tshape)}`."
-            )
+            raise ValueError(f"Expected square matrices but `matrix` has shape `{_size(tshape)}`.")
         if _ops.shape_of(self.perm) != tshape[:-1]:
             raise ValueError(
                 f"`perm` of shape `{_size(_ops.shape_of(self.perm))}` incompatible with "
@@ -233,7 +229,7 @@ class PivotedCholesky:
         )
         self.tril = from_flat(tril, (*batch, n, n), kind)
         self.perm = _ops.int_array(perm, (*batch, n), kind_of(self.perm))
-        if self.diag is not None:
+        if self.diag is not None and diag is not None:
             self.diag = from_flat(diag, (*batch, n), kind_of(self.diag))
 
     def expand(self, *sizes: int) -> PivotedCholesky:
@@ -251,9 +247,7 @@ class PivotedCholesky:
         for name in ("tril", "perm", "diag"):
             a = getattr(self, name)
             b = getattr(other, name)
-            if (a is None) != (b is None) or (
-                a is not None and kind_of(a).lib != kind_of(b).lib
-            ):
+            if (a is None) != (b is None) or (a is not None and kind_of(a).lib != kind_of(b).lib):
                 raise NotImplementedError(f"Types of field {name} do not match.")
             if a is not None:
                 fields[name] = _ops.concat((a, b), dim=dim)

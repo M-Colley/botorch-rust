@@ -47,7 +47,7 @@ def _torch_function(name: str) -> Any:
     fn = _TORCH_FUNCTIONS.get(name)
     if fn is not None:
         return fn
-    torch = importlib.import_module("torch")
+    torch: Any = importlib.import_module("torch")
 
     class _Identity(torch.autograd.Function):
         @staticmethod

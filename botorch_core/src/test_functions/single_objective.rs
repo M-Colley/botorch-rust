@@ -290,7 +290,7 @@ impl SingleObjectiveProblem {
                 "AugmentedRosenbrock must be defined in at least 3 dimensions".into(),
             ));
         }
-        if kind == K::TrajectoryPlanning && (dim % 2 != 0 || trajectory.is_none()) {
+        if kind == K::TrajectoryPlanning && (!dim.is_multiple_of(2) || trajectory.is_none()) {
             return Err(BotorchError::InvalidArgument(format!(
                 "dim must be even, got {dim}"
             )));
@@ -539,6 +539,8 @@ impl SingleObjectiveProblem {
                 let (x1, x2, x3) = (x[0], x[1], x[2]);
                 tpow(x1, 2.0) * x2 * (x3 + 2.0)
             }
+            // BoTorch's literal 0.7854 (not pi / 4).
+            #[allow(clippy::approx_constant)]
             K::SpeedReducer => {
                 let (x1, x2, x3, x4, x5, x6, x7) = (x[0], x[1], x[2], x[3], x[4], x[5], x[6]);
                 0.7854 * x1 * tpow(x2, 2.0) * (3.3333 * tpow(x3, 2.0) + 14.9334 * x3 - 43.0934)

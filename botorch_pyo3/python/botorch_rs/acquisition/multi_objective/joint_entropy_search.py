@@ -92,7 +92,9 @@ class LowerBoundMultiObjectiveEntropySearch(AcquisitionFunction):
         if sampler is None:
             sampler = SobolQMCNormalSampler(sample_shape=[num_samples])
         elif not isinstance(sampler, NormalMCSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler.")
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         self.sampler = sampler
         self._cells = cells
         self._pending = pending_arg(X_pending, self._model_dim())

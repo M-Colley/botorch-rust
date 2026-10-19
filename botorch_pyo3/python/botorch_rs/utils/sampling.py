@@ -191,7 +191,7 @@ def manual_seed(seed: int | None = None) -> Generator[None, None, None]:
     """
     torch = sys.modules.get("torch")
     if torch is None:
-        np = sys.modules.get("numpy")
+        np: Any = sys.modules.get("numpy")
         old_np = np.random.get_state() if (np is not None and seed is not None) else None
         try:
             if seed is not None and np is not None:
@@ -863,9 +863,7 @@ class DelaunayPolytopeSampler(PolytopeSampler):
                 raise e  # pragma: no cover
             polytopes = np.array([delaunay.points[s] for s in delaunay.simplices])
             volumes = np.array([abs(np.linalg.det(p[1:] - p[0])) for p in polytopes])
-            self._polytopes = from_flat(
-                polytopes.reshape(-1).tolist(), polytopes.shape, kind
-            )
+            self._polytopes = from_flat(polytopes.reshape(-1).tolist(), polytopes.shape, kind)
             self._p = from_flat((volumes / volumes.sum()).tolist(), volumes.shape, kind)
             self._polytopes_np = polytopes
             self._p_np = volumes / volumes.sum()
@@ -904,7 +902,10 @@ class DelaunayPolytopeSampler(PolytopeSampler):
                 srnd = torch.cat([zeros, srnd, ones], dim=-1).to(self.A.device)
                 simplex_rvs = srnd[..., 1:] - srnd[..., :-1]
                 transformed = torch.stack(
-                    [rv @ self._polytopes[idx] for rv, idx in zip(simplex_rvs, index_rvs)]
+                    [
+                        rv @ self._polytopes[idx]
+                        for rv, idx in zip(simplex_rvs, index_rvs, strict=True)
+                    ]
                 )
             init_shift = self.x0.transpose(-1, -2)
             return init_shift + transformed @ self.nullC.transpose(-1, -2)
@@ -1008,6 +1009,7 @@ def optimize_posterior_samples(
     ``paths`` may be any callable (botorch_rs or BoTorch sample paths, a
     deterministic model).
     """
+
     def path_func(x: Any) -> Any:
         res = paths(x)
         if sample_transform:

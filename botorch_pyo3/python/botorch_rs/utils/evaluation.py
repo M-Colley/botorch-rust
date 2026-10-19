@@ -40,8 +40,7 @@ def compute_in_sample_model_fit_metric(model: Any, criterion: str) -> float:
 
     if not isinstance(model, SingleTaskGP):
         raise UnsupportedError(
-            "compute_in_sample_model_fit_metric requires a botorch_rs SingleTaskGP (or a "
-            "subclass)."
+            "compute_in_sample_model_fit_metric requires a botorch_rs SingleTaskGP (or a subclass)."
         )
     values, _ = _rs.data_log_likelihoods(model._rs)
     vals = [float(v) for v in values]
