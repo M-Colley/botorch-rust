@@ -280,14 +280,14 @@ class ModelListGP(Model):
         (``model_batch x 1 x m`` or ``x n' x m``, outcome-transformed space)
         defaults to each sub-model's noise."""
         from botorch_rs.sampling.list_sampler import ListSampler
-        from botorch_rs.sampling.normal import SobolQMCNormalSampler
+        from botorch_rs.sampling.normal import NormalMCSampler
 
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
         self._require_single_task("fantasize")
         if isinstance(sampler, ListSampler):
             samplers, shared = [s._rs for s in sampler.samplers], False
-        elif isinstance(sampler, SobolQMCNormalSampler):
+        elif isinstance(sampler, NormalMCSampler):
             samplers, shared = [sampler._rs], True
         else:
             raise UnsupportedError(

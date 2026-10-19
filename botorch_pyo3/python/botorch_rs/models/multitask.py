@@ -572,7 +572,7 @@ class MultiTaskGP(Model):
         ``n_f x batch_shape``. As in BoTorch, ``observation_noise`` tensors and
         fixed-noise models are not supported (``NotImplementedError``)."""
         from botorch_rs.exceptions.errors import DeprecationError
-        from botorch_rs.sampling.normal import SobolQMCNormalSampler
+        from botorch_rs.sampling.normal import NormalMCSampler
 
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
@@ -580,8 +580,10 @@ class MultiTaskGP(Model):
             raise DeprecationError(
                 "`fantasize` no longer accepts a boolean for `observation_noise`."
             )
-        if not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        if not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         x = to_flat(X, "X")
         d = self.num_non_task_features
         if len(x[1]) >= 2 and x[1][-1] == d:

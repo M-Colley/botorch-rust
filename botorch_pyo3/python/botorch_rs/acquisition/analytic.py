@@ -338,7 +338,7 @@ class _NoisyExpectedImprovementBase(AnalyticAcquisitionFunction):
     ) -> None:
         from botorch_rs._arrays import first_kind, from_flat, to_flat
         from botorch_rs.acquisition.objective import transform_arg
-        from botorch_rs.sampling.normal import SobolQMCNormalSampler
+        from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
         _check_noisy_ei_model(model)
         AcquisitionFunction.__init__(self, model)
@@ -348,8 +348,10 @@ class _NoisyExpectedImprovementBase(AnalyticAcquisitionFunction):
             raise UnsupportedError("AnalyticAcquisitionFunctions only support PosteriorTransforms.")
         if sampler is None:
             sampler = SobolQMCNormalSampler(sample_shape=(int(num_fantasies),))
-        elif not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        elif not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         self.posterior_transform = posterior_transform
         self.maximize = maximize
         self.num_fantasies = int(num_fantasies)

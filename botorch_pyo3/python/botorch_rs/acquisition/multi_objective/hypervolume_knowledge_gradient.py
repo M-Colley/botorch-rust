@@ -25,7 +25,7 @@ from botorch_rs.exceptions.errors import (
 )
 from botorch_rs.models.model_list_gp_regression import ModelListGP
 from botorch_rs.sampling.list_sampler import ListSampler
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
 #: BoTorch's default number of samples of the inner sampler.
 DEFAULT_INNER_SAMPLES = 32
@@ -172,8 +172,10 @@ class qHypervolumeKnowledgeGradient(OneShotAcquisitionFunction):
             )
         if inner_sampler is None:
             inner_sampler = SobolQMCNormalSampler(sample_shape=(DEFAULT_INNER_SAMPLES,))
-        elif not isinstance(inner_sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`inner_sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        elif not isinstance(inner_sampler, NormalMCSampler):
+            raise UnsupportedError(
+                "`inner_sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         if current_value is None and cost_aware_utility is not None:
             raise UnsupportedError("Cost-aware HVKG requires current_value to be specified.")
         if cost_aware_utility is not None and not isinstance(cost_aware_utility, CostAwareUtility):
@@ -389,8 +391,10 @@ class _HypervolumeValueFunction(AcquisitionFunction):
                 "single-output models."
             )
         super().__init__(model)
-        if sampler is not None and not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        if sampler is not None and not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         ref = ref_point_arg(ref_point)
         self.ref_point = from_flat(ref, (len(ref),), first_kind(ref_point))
         self.objective = objective

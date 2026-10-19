@@ -292,12 +292,163 @@ class NoisyExpectedHypervolumeMixin:
         return from_flat([self._rs_nehvi.prev_nehvi()], (), self._baseline_kind)
 
 
+def sort_by_dimension(nodes: list[Node], i: int) -> None:
+    r"""Sorts the list of nodes in-place by the specified objective.
+
+    Args:
+        nodes: A list of Nodes
+        i: The index of the objective to sort by
+
+    """
+    # build a list of tuples of (point[i], node)
+    decorated = [(_value(node.data, i), index, node) for index, node in enumerate(nodes)]
+    # sort by this value
+    decorated.sort(key=lambda t: (t[0], t[1]))
+    # write back to original list
+    nodes[:] = [node for (_, _, node) in decorated]
+
+
+def _value(data: Any, i: int) -> float:
+    return float(to_flat(data, "data")[0][i])
+
+
+class Node:
+    r"""Node in the MultiList data structure."""
+
+    def __init__(
+        self,
+        m: int,
+        dtype: Any = None,
+        device: Any = None,
+        data: Any = None,
+    ) -> None:
+        r"""Initialize MultiList.
+
+        Args:
+            m: The number of objectives
+            dtype: The dtype
+            device: The device
+            data: The tensor data to be stored in this Node.
+        """
+        from botorch_rs._arrays import kind_from_dtype
+
+        self.data = data
+        self.next: list[Any] = [None] * m
+        self.prev: list[Any] = [None] * m
+        self.ignore = 0
+        kind = kind_from_dtype(dtype, device)
+        self.area = from_flat([0.0] * m, (m,), kind)
+        self.volume = from_flat([0.0] * m, (m,), kind)
+
+
+def _min_into(bounds: Any, data: Any) -> None:
+    """``bounds.data = min(bounds, data)`` in place (element-wise)."""
+    if sys.modules.get("torch") is not None and isinstance(bounds, sys.modules["torch"].Tensor):
+        torch = sys.modules["torch"]
+        bounds.data = torch.min(bounds, torch.as_tensor(data).to(bounds))
+        return
+    bdata, bshape = to_flat(bounds, "bounds")
+    ddata, dshape = to_flat(data, "data")
+    from botorch_rs._arrays import broadcast_to
+
+    dd = broadcast_to(ddata, dshape, bshape)
+    new = [min(float(a), float(b)) for a, b in zip(bdata, dd, strict=True)]
+    if isinstance(bounds, list):
+        bounds[:] = from_flat(new, bshape, kind_of(bounds))
+    else:
+        bounds[...] = from_flat(new, bshape, kind_of(bounds))
+
+
+class MultiList:
+    r"""A special data structure used in hypervolume computation.
+
+    It consists of several doubly linked lists that share common nodes.
+    Every node has multiple predecessors and successors, one in every list.
+    """
+
+    def __init__(self, m: int, dtype: Any = None, device: Any = None) -> None:
+        r"""Initialize ``m`` doubly linked lists.
+
+        Args:
+            m: number of doubly linked lists
+            dtype: the dtype
+            device: the device
+
+        """
+        self.m = m
+        self.sentinel = Node(m=m, dtype=dtype, device=device)
+        self.sentinel.next = [self.sentinel] * m
+        self.sentinel.prev = [self.sentinel] * m
+
+    def append(self, node: Node, index: int) -> None:
+        r"""Appends a node to the end of the list at the given index.
+
+        Args:
+            node: the new node
+            index: the index where the node should be appended.
+        """
+        last = self.sentinel.prev[index]
+        node.next[index] = self.sentinel
+        node.prev[index] = last
+        # set the last element as the new one
+        self.sentinel.prev[index] = node
+        last.next[index] = node
+
+    def extend(self, nodes: list[Node], index: int) -> None:
+        r"""Extends the list at the given index with the nodes.
+
+        Args:
+            nodes: list of nodes to append at the given index.
+            index: the index where the nodes should be appended.
+
+        """
+        for node in nodes:
+            self.append(node=node, index=index)
+
+    def remove(self, node: Node, index: int, bounds: Any) -> Node:
+        r"""Removes and returns 'node' from all lists in [0, 'index'].
+
+        Args:
+            node: The node to remove
+            index: The upper bound on the range of indices
+            bounds: A ``2 x m``-dim tensor bounds on the objectives
+        """
+        for i in range(index):
+            predecessor = node.prev[i]
+            successor = node.next[i]
+            predecessor.next[i] = successor
+            successor.prev[i] = predecessor
+        _min_into(bounds, node.data)
+        return node
+
+    def reinsert(self, node: Node, index: int, bounds: Any) -> None:
+        r"""Re-inserts the node at its original position.
+
+        Re-inserts the node at its original position in all lists in [0, 'index']
+        before it was removed. This method assumes that the next and previous
+        nodes of the node that is reinserted are in the list.
+
+        Args:
+            node: The node
+            index: The upper bound on the range of indices
+            bounds: A ``2 x m``-dim tensor bounds on the objectives
+
+        """
+        for i in range(index):
+            node.prev[i].next[i] = node
+            node.next[i].prev[i] = node
+        _min_into(bounds, node.data)
+
+
 __all__ = [
     "MIN_Y_RANGE",
     "Hypervolume",
+    "MultiList",
+    "Node",
     "NoisyExpectedHypervolumeMixin",
     "SubsetIndexCachingMixin",
     "compute_subset_indices",
     "get_hypervolume_maximizing_subset",
     "infer_reference_point",
+    "sort_by_dimension",
 ]

@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs.exceptions.errors import UnsupportedError
-from botorch_rs.sampling.normal import MCSampler, SobolQMCNormalSampler
+from botorch_rs.sampling.normal import MCSampler, NormalMCSampler
 
 
 class ListSampler(MCSampler):
@@ -15,11 +15,11 @@ class ListSampler(MCSampler):
     hypervolume knowledge gradient). All samplers must have the same sample
     shape."""
 
-    def __init__(self, *samplers: SobolQMCNormalSampler) -> None:
+    def __init__(self, *samplers: NormalMCSampler) -> None:
         for s in samplers:
-            if not isinstance(s, SobolQMCNormalSampler):
+            if not isinstance(s, NormalMCSampler):
                 raise UnsupportedError(
-                    "The samplers of a ListSampler must be botorch_rs SobolQMCNormalSamplers."
+                    "The samplers of a ListSampler must be botorch_rs SobolQMCNormalSamplers or IIDNormalSamplers."
                 )
         self.samplers = list(samplers)
         self._validate_samplers()

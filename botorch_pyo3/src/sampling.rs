@@ -36,6 +36,23 @@ impl PySobolQMCNormalSampler {
         })
     }
 
+    /// A sampler of i.i.d. normal base samples: BoTorch's
+    /// `IIDNormalSampler(seed=seed)` draws in double precision
+    /// (`torch.randn` after `torch.manual_seed(seed)`, reproduced natively).
+    #[staticmethod]
+    #[pyo3(signature = (num_samples, seed=None))]
+    fn iid(num_samples: usize, seed: Option<u64>) -> PyResult<Self> {
+        Ok(Self {
+            inner: Arc::new(SobolQMCNormalSampler::iid(num_samples, seed).into_py_result()?),
+        })
+    }
+
+    /// Whether the base samples are i.i.d. draws (not a Sobol sequence).
+    #[getter]
+    fn is_iid(&self) -> bool {
+        self.inner.has_source()
+    }
+
     /// Number of MC samples.
     #[getter]
     fn num_samples(&self) -> usize {

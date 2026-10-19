@@ -1,5 +1,12 @@
 """Test functions (``botorch.test_functions``)."""
 
+from botorch_rs.test_functions.multi_fidelity import (
+    AugmentedBranin,
+    AugmentedHartmann,
+    AugmentedRosenbrock,
+    BoreholeMultiFidelity,
+    WingWeightMultiFidelity,
+)
 from botorch_rs.test_functions.multi_objective import (
     BNH,
     C2DTLZ2,
@@ -27,11 +34,16 @@ from botorch_rs.test_functions.multi_objective import (
     WeldedBeam,
 )
 from botorch_rs.test_functions.multi_objective_multi_fidelity import MOMFBraninCurrin, MOMFPark
+from botorch_rs.test_functions.sensitivity_analysis import Gsobol, Ishigami, Morris
 from botorch_rs.test_functions.synthetic import (
     Ackley,
+    AckleyMixed,
     Beale,
     Branin,
     Bukin,
+    ConstrainedGramacy,
+    ConstrainedHartmann,
+    ConstrainedHartmannSmooth,
     Cosine8,
     DixonPrice,
     DropWave,
@@ -39,16 +51,23 @@ from botorch_rs.test_functions.synthetic import (
     Griewank,
     Hartmann,
     HolderTable,
+    KeaneBumpFunction,
+    Labs,
     Levy,
     Michalewicz,
     Powell,
+    PressureVessel,
     Rastrigin,
     Rosenbrock,
     Shekel,
     SixHumpCamel,
+    SpeedReducer,
     StyblinskiTang,
     SyntheticTestFunction,
+    TensionCompressionString,
     ThreeHumpCamel,
+    TrajectoryPlanning,
+    WeldedBeamSO,
 )
 
 __all__ = [
@@ -100,4 +119,24 @@ __all__ = [
     "ZDT3",
     "MOMFBraninCurrin",
     "MOMFPark",
+    # Phase 11a: multi-fidelity, sensitivity analysis, mixed and constrained.
+    "AckleyMixed",
+    "AugmentedBranin",
+    "AugmentedHartmann",
+    "AugmentedRosenbrock",
+    "BoreholeMultiFidelity",
+    "ConstrainedGramacy",
+    "ConstrainedHartmann",
+    "ConstrainedHartmannSmooth",
+    "Gsobol",
+    "Ishigami",
+    "KeaneBumpFunction",
+    "Labs",
+    "Morris",
+    "PressureVessel",
+    "SpeedReducer",
+    "TensionCompressionString",
+    "TrajectoryPlanning",
+    "WeldedBeamSO",
+    "WingWeightMultiFidelity",
 ]

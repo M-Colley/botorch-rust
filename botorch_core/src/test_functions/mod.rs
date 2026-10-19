@@ -15,7 +15,9 @@
 //! to float32 exactly as in BoTorch, so that values agree to round-off.
 
 pub mod multi_objective;
+pub mod single_objective;
 mod synthetic;
 
 pub use multi_objective::{MultiObjectiveKind, MultiObjectiveTestProblem, NoiseStd};
+pub use single_objective::{SingleObjectiveKind, SingleObjectiveProblem};
 pub use synthetic::{SyntheticTestFunction, TestFunctionKind};

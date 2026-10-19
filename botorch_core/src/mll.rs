@@ -94,6 +94,19 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
             .map(|(v, _)| v)
     }
 
+    /// The log marginal likelihood of the (transformed) training targets at
+    /// the current hyperparameters, `log N(y | m, K + Σ)`: neither divided by
+    /// the number of training points nor including the log priors (GPyTorch's
+    /// `likelihood(model(*train_inputs)).log_prob(train_targets)` in train
+    /// mode).
+    ///
+    /// # Errors
+    /// See [`ExactMarginalLogLikelihood::value`].
+    pub fn data_log_likelihood(&self) -> Result<f64> {
+        self.evaluate_with(self.model.raw_parameters().as_slice(), false, false)
+            .map(|(v, _)| v)
+    }
+
     /// The MLL at the given flat raw hyperparameters (see
     /// [`crate::ParameterLayout`]).
     ///
@@ -118,6 +131,15 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
     }
 
     fn evaluate(&self, raw_params: &[f64], with_grad: bool) -> Result<(f64, Option<Vector>)> {
+        self.evaluate_with(raw_params, with_grad, true)
+    }
+
+    fn evaluate_with(
+        &self,
+        raw_params: &[f64],
+        with_grad: bool,
+        priors: bool,
+    ) -> Result<(f64, Option<Vector>)> {
         let model = self.model;
         let layout = model.parameter_layout();
         let h = Hyperparameters::from_slice(layout, raw_params)?;
@@ -184,6 +206,9 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
         let inv_quad = v.dot(&v);
         let logdet = chol.logdet();
         let mut res = -0.5 * (inv_quad + logdet + nf * LN_2PI);
+        if !priors {
+            return Ok((res, None));
+        }
 
         // Prior terms, in GPyTorch's `named_priors()` order.
         if let (Likelihood::Gaussian(lik), Some(noise)) = (model.likelihood(), noise_value) {

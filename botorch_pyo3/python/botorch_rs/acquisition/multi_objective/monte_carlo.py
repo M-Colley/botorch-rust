@@ -18,8 +18,8 @@ from botorch_rs.acquisition.multi_objective.base import (
 )
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import legacy_ei_numerics_warning
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
-from botorch_rs.sampling.stochastic_samplers import StochasticSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
+from botorch_rs.sampling.stochastic_samplers import ForkedRNGSampler, StochasticSampler
 from botorch_rs.utils.multi_objective.hypervolume import (
     NoisyExpectedHypervolumeMixin,
     SubsetIndexCachingMixin,
@@ -148,7 +148,7 @@ class _NEHVIBase(NoisyExpectedHypervolumeMixin):
     _mo_objective: tuple[Any, ...] | None
     _constraint_args: dict[str, Any]
     _pending_kind: Any
-    sampler: SobolQMCNormalSampler | StochasticSampler
+    sampler: NormalMCSampler | StochasticSampler | ForkedRNGSampler
 
     def _setup_nehvi(
         self,

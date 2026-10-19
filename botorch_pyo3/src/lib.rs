@@ -40,6 +40,7 @@ mod optim_ext;
 mod pathwise;
 mod polytope;
 mod preference;
+mod probability;
 mod risk_measures;
 mod sampling;
 mod so_acquisition;
@@ -147,5 +148,8 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     fully_bayesian::register(m)?;
     // Preference learning (phase 10b).
     preference::register(m)?;
+    // Probability and safe-math utilities, samplers and test functions of
+    // phase 11a.
+    probability::register(m)?;
     Ok(())
 }

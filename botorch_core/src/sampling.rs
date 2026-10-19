@@ -16,6 +16,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::error::{BotorchError, Result};
 use crate::utils::sampling::{draw_sobol_normal_samples, random_seed, SOBOL_MAX_SAMPLES};
+use crate::utils::torch_rng::TorchGenerator;
 use crate::Matrix;
 
 pub mod pathwise;
@@ -33,11 +34,18 @@ pub const DEFAULT_MC_SAMPLES: usize = 512;
 /// with [`draw_sobol_normal_samples`] and cached per `dim`. Explicit base
 /// samples can be installed with [`SobolQMCNormalSampler::set_base_samples`]
 /// (e.g. to reproduce BoTorch's values exactly).
+///
+/// With a [`BaseSampleSource`] ([`SobolQMCNormalSampler::with_source`]) the
+/// base samples come from the source instead of the Sobol sequence, e.g.
+/// i.i.d. normal draws ([`IidNormalSource`], BoTorch's `IIDNormalSampler`,
+/// or torch's draws passed in by the Python bindings); they are cached per
+/// `dim` in the same way.
 #[derive(Debug)]
 pub struct SobolQMCNormalSampler {
     num_samples: usize,
     seed: u64,
     cache: RwLock<HashMap<usize, Arc<Matrix>>>,
+    source: Option<Arc<dyn BaseSampleSource>>,
 }
 
 impl Clone for SobolQMCNormalSampler {
@@ -46,7 +54,38 @@ impl Clone for SobolQMCNormalSampler {
             num_samples: self.num_samples,
             seed: self.seed,
             cache: RwLock::new(read_lock(&self.cache).clone()),
+            source: self.source.clone(),
         }
+    }
+}
+
+/// A source of `N(0, 1)` base samples for [`SobolQMCNormalSampler`]: the
+/// `num_samples × dim` base samples for `dim` jointly sampled points (as a
+/// deterministic function of the source's seed, so that acquisition values
+/// are a sample-average approximation).
+pub trait BaseSampleSource: Send + Sync + std::fmt::Debug {
+    /// The base samples (`num_samples × dim`).
+    ///
+    /// # Errors
+    /// Implementation-specific (e.g. a failing Python callable).
+    fn draw(&self, num_samples: usize, dim: usize) -> Result<Matrix>;
+}
+
+/// I.i.d. standard normal base samples as BoTorch's `IIDNormalSampler`
+/// draws them in double precision: `torch.randn(num_samples x dim)` after
+/// `torch.manual_seed(seed)` (PyTorch's CPU generator, reproduced by
+/// [`TorchGenerator`]; row-major: all `dim` values of sample 0, then sample
+/// 1, ...).
+#[derive(Clone, Copy, Debug)]
+pub struct IidNormalSource {
+    /// The seed of the generator.
+    pub seed: u64,
+}
+
+impl BaseSampleSource for IidNormalSource {
+    fn draw(&self, num_samples: usize, dim: usize) -> Result<Matrix> {
+        let data = TorchGenerator::new(self.seed).randn(num_samples * dim);
+        Ok(Matrix::from_row_slice(num_samples, dim, &data))
     }
 }
 
@@ -74,7 +113,47 @@ impl SobolQMCNormalSampler {
             num_samples,
             seed: seed.unwrap_or_else(random_seed),
             cache: RwLock::new(HashMap::new()),
+            source: None,
         })
+    }
+
+    /// A sampler drawing `num_samples` base samples from `source` (any
+    /// positive number of samples; `seed` is reported by
+    /// [`SobolQMCNormalSampler::seed`]).
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] if `num_samples == 0`.
+    pub fn with_source(
+        num_samples: usize,
+        seed: Option<u64>,
+        source: Arc<dyn BaseSampleSource>,
+    ) -> Result<Self> {
+        if num_samples == 0 {
+            return Err(BotorchError::InvalidArgument(
+                "num_samples must be positive".into(),
+            ));
+        }
+        Ok(Self {
+            num_samples,
+            seed: seed.unwrap_or_else(random_seed),
+            cache: RwLock::new(HashMap::new()),
+            source: Some(source),
+        })
+    }
+
+    /// I.i.d. normal base samples ([`IidNormalSource`] seeded with `seed`).
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] if `num_samples == 0`.
+    pub fn iid(num_samples: usize, seed: Option<u64>) -> Result<Self> {
+        let seed = seed.unwrap_or_else(random_seed);
+        Self::with_source(num_samples, Some(seed), Arc::new(IidNormalSource { seed }))
+    }
+
+    /// Whether the base samples come from a [`BaseSampleSource`] (not the
+    /// Sobol sequence).
+    pub fn has_source(&self) -> bool {
+        self.source.is_some()
     }
 
     /// A sampler with explicit base samples (`num_samples × dim`) for `dim`
@@ -108,11 +187,28 @@ impl SobolQMCNormalSampler {
         if let Some(z) = read_lock(&self.cache).get(&dim) {
             return Ok(Arc::clone(z));
         }
-        let z = Arc::new(draw_sobol_normal_samples(
-            dim,
-            self.num_samples,
-            Some(self.seed),
-        )?);
+        if dim == 0 {
+            return Err(BotorchError::InvalidArgument("dim must be positive".into()));
+        }
+        let z = match &self.source {
+            Some(source) => {
+                let z = source.draw(self.num_samples, dim)?;
+                if z.shape() != (self.num_samples, dim) {
+                    return Err(BotorchError::DimensionMismatch(format!(
+                        "the base sample source returned {}x{} samples, expected {}x{dim}",
+                        z.nrows(),
+                        z.ncols(),
+                        self.num_samples
+                    )));
+                }
+                Arc::new(z)
+            }
+            None => Arc::new(draw_sobol_normal_samples(
+                dim,
+                self.num_samples,
+                Some(self.seed),
+            )?),
+        };
         Ok(Arc::clone(write_lock(&self.cache).entry(dim).or_insert(z)))
     }
 
@@ -163,5 +259,19 @@ mod tests {
         assert!(e.set_base_samples(Matrix::zeros(3, 2)).is_err());
         assert!(SobolQMCNormalSampler::new(0, None).is_err());
         assert!(e.base_samples(0).is_err());
+    }
+
+    #[test]
+    fn iid_source() {
+        let s = SobolQMCNormalSampler::iid(100_000, Some(3)).unwrap();
+        assert!(s.has_source());
+        let z = s.base_samples(2).unwrap();
+        assert_eq!(z.shape(), (100_000, 2));
+        let mean = z.column(0).mean();
+        let var = z.column(0).iter().map(|v| v * v).sum::<f64>() / 1e5;
+        assert!(mean.abs() < 0.02 && (var - 1.0).abs() < 0.02);
+        let t = SobolQMCNormalSampler::iid(100_000, Some(3)).unwrap();
+        assert_eq!(*t.base_samples(2).unwrap(), *z);
+        assert!(SobolQMCNormalSampler::iid(0, None).is_err());
     }
 }

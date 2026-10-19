@@ -41,7 +41,7 @@ from botorch_rs.acquisition.monte_carlo import MCAcquisitionFunction
 from botorch_rs.acquisition.objective import objective_arg, transform_arg
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import BotorchWarning
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
 #: ``(model, X) -> kwargs`` of a stage value function.
 TAcqfArgConstructor = Callable[..., dict[str, Any]]
@@ -249,7 +249,7 @@ class qMultiStepLookahead(MCAcquisitionFunction, OneShotAcquisitionFunction):
             samplers = [SobolQMCNormalSampler(sample_shape=(nf,)) for nf in num_fantasies]
         else:
             for s in samplers:
-                if not isinstance(s, SobolQMCNormalSampler):
+                if not isinstance(s, NormalMCSampler):
                     raise UnsupportedError(
                         "The samplers of qMultiStepLookahead must be botorch_rs "
                         "SobolQMCNormalSamplers."
