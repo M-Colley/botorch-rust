@@ -942,6 +942,97 @@ impl PySingleTaskGP {
         ArrayBuf(data, shape)
     }
 
+    /// Efficient leave-one-out moments and observations in transformed space,
+    /// all laid out as `batch x n x m`.
+    #[pyo3(signature = (observation_noise=true))]
+    fn loo_predictions(
+        &self,
+        py: Python<'_>,
+        observation_noise: bool,
+    ) -> PyResult<(ArrayBuf, ArrayBuf, ArrayBuf, Option<ArrayBuf>)> {
+        let model = self.snapshot();
+        let m = model.num_outputs();
+        let n = model.num_train();
+        let mut shape = model.batch_shape().to_vec();
+        shape.extend([n, m]);
+        let fixed = model.train_yvar(0).is_some();
+        let (mean, variance, targets, noise) = threads::run(py, || -> botorch_core::Result<_> {
+            let results = model
+                .models()
+                .par_iter()
+                .map(|gp| gp.loo_predictions(observation_noise))
+                .collect::<botorch_core::Result<Vec<_>>>()?;
+            let mut mean = Vec::with_capacity(model.batch_size() * n * m);
+            let mut variance = Vec::with_capacity(mean.capacity());
+            let mut targets = Vec::with_capacity(mean.capacity());
+            let mut noise = Vec::with_capacity(mean.capacity());
+            let noises: Vec<_> = model
+                .models()
+                .iter()
+                .map(|gp| gp.likelihood_noise())
+                .collect();
+            for b in 0..model.batch_size() {
+                for i in 0..n {
+                    for t in 0..m {
+                        let gp = model.model(b, t);
+                        let (mu, var) = &results[b * m + t];
+                        mean.push(mu[i]);
+                        variance.push(var[i]);
+                        targets.push(gp.transformed_train_targets()[i]);
+                        if fixed {
+                            noise.push(noises[b * m + t][i]);
+                        }
+                    }
+                }
+            }
+            Ok((mean, variance, targets, noise))
+        })
+        .into_py_result()?;
+        Ok((
+            ArrayBuf(mean, shape.clone()),
+            ArrayBuf(variance, shape.clone()),
+            ArrayBuf(targets, shape.clone()),
+            fixed.then(|| ArrayBuf(noise, shape)),
+        ))
+    }
+
+    /// Samples of independent Gaussian marginals, with collapsed or full
+    /// batch base samples. Used by the leave-one-out posterior.
+    #[staticmethod]
+    fn diagonal_samples(
+        py: Python<'_>,
+        mean: Vec<f64>,
+        variance: Vec<f64>,
+        base: Array,
+        qm: usize,
+    ) -> PyResult<Vec<f64>> {
+        if qm == 0 || !mean.len().is_multiple_of(qm) || variance.len() != mean.len() {
+            return Err(dimension_error("inconsistent diagonal posterior shape"));
+        }
+        let shape = &base.1;
+        let samples = shape.first().copied().unwrap_or(0);
+        let collapsed = shape.as_slice() == [samples, qm];
+        if !collapsed && shape.as_slice() != [samples, mean.len() / qm, qm] {
+            return Err(dimension_error(
+                "invalid diagonal posterior base sample shape",
+            ));
+        }
+        Ok(threads::run(py, || {
+            let mut out = Vec::with_capacity(samples * mean.len());
+            for s in 0..samples {
+                for i in 0..mean.len() {
+                    let z = if collapsed {
+                        base.0[s * qm + i % qm]
+                    } else {
+                        base.0[s * mean.len() + i]
+                    };
+                    out.push(mean[i] + variance[i].max(0.0).sqrt() * z);
+                }
+            }
+            out
+        }))
+    }
+
     /// The fitted input transform, if any.
     fn input_transform(&self) -> Option<PyNormalize> {
         let m = self.snapshot();

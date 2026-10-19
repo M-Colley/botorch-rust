@@ -38,3 +38,10 @@ approx = "0.5"
 [profile.release]
 codegen-units = 1
 lto = "thin"
+
+# Numerical integration tests do not need the multi-gigabyte debug symbols
+# emitted for this workspace by default. Keep them optimized without paying
+# release LTO costs for every separate test executable.
+[profile.test]
+debug = 0
+opt-level = 1

@@ -1191,6 +1191,35 @@ impl SingleTaskGP {
         Ok(&self.cache()?.chol)
     }
 
+    /// Leave-one-out means and variances at the training points, in the
+    /// transformed outcome space, without refitting hyperparameters.
+    ///
+    /// Reuses the training factorization. The diagonal of `K^-1` is the
+    /// squared column norms of `L^-1`, so no dense matrix inverse is needed.
+    /// Fixed noise is subtracted pointwise when `observation_noise` is false.
+    ///
+    /// # Errors
+    /// See [`SingleTaskGP::train_cholesky`].
+    pub fn loo_predictions(&self, observation_noise: bool) -> Result<(Vector, Vector)> {
+        let cache = self.cache()?;
+        let linv = cache.chol.inverse_factor();
+        let noise = self.likelihood_noise();
+        let n = self.num_train();
+        let mut mean = Vector::zeros(n);
+        let mut variance = Vector::zeros(n);
+        for i in 0..n {
+            let precision = linv.column(i).norm_squared();
+            mean[i] = self.train_y_tf[i] - cache.alpha[i] / precision;
+            let predictive = precision.recip();
+            variance[i] = if observation_noise {
+                predictive
+            } else {
+                (predictive - self.training_noise(&noise, i)).max(0.0)
+            };
+        }
+        Ok((mean, variance))
+    }
+
     fn check_columns(&self, x: &Matrix, mode: TransformMode) -> Result<()> {
         if x.ncols() != self.dim() {
             return Err(BotorchError::DimensionMismatch(format!(

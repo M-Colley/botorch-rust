@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from botorch_rs._arrays import first_kind, from_flat, to_flat
+from botorch_rs._arrays import broadcast_to, first_kind, from_flat, to_flat
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior, Posterior
 
 
@@ -24,14 +24,12 @@ def _affine(x: Any, offset: Any, scale: Any, power: int) -> Any:
     ``(data, shape)`` pairs of shape ``batch_shape x 1 x m`` (broadcast over
     the trailing output dimension of ``x``)."""
     data, shape = to_flat(x, "x")
-    m = shape[-1] if shape else 1
-    sdata = list(scale[0])
-    odata = list(offset[0]) if offset is not None else None
+    sdata = broadcast_to(scale[0], scale[1], shape)
+    odata = broadcast_to(offset[0], offset[1], shape) if offset is not None else None
     out = []
     for i, v in enumerate(data):
-        t = i % m
-        s = sdata[t % len(sdata)] ** power
-        o = odata[t % len(odata)] if odata is not None else 0.0
+        s = sdata[i] ** power
+        o = odata[i] if odata is not None else 0.0
         out.append(o + s * v if odata is not None else s * v)
     return from_flat(out, shape, first_kind(x))
 

@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, NamedTuple
 
+from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_flat, kind_of, to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
+from botorch_rs.posteriors.fully_bayesian import GaussianMixturePosterior
+from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 
 
 class CVFolds(NamedTuple):
@@ -151,4 +155,155 @@ def batch_cross_validation(
     )
 
 
-__all__ = ["CVFolds", "CVResults", "batch_cross_validation", "gen_loo_cv_folds"]
+class _DiagonalPosterior(GPyTorchPosterior):
+    """Independent Gaussian marginals with the normal posterior sampling API."""
+
+    def __init__(self, mean: Any, variance: Any, kind: Any) -> None:
+        mu, shape = to_flat(mean, "mean")
+        var, vshape = to_flat(variance, "variance")
+        if shape != vshape:
+            raise ValueError("mean and variance must have the same shape")
+        super().__init__(None, ([], (*shape[:-2], shape[-2], 0)), kind, False, shape[-1])
+        self._mean_data = list(mu)
+        self._variance_data = list(var)
+        self._marginals = (list(mu), [max(v, 1e-10) for v in var])
+
+    def _samples(self, z: Any) -> Any:
+        return _rs.SingleTaskGP.diagonal_samples(
+            self._mean_data, self._variance_data, z, self._q * self._m
+        )
+
+    def _get_joint(self) -> Any:
+        if self._joint is None:
+            q, m = self._q, self._m
+            qm = q * m
+            covariance = [0.0] * (math.prod(self._batch) * qm * qm)
+            for b in range(math.prod(self._batch)):
+                for t in range(m):
+                    for i in range(q):
+                        j = t * q + i
+                        covariance[b * qm * qm + j * qm + j] = self._variance_data[
+                            b * qm + i * m + t
+                        ]
+            self._joint = (
+                (self._mean_data, (*self._batch, q, m)),
+                (covariance, (*self._batch, qm, qm)),
+            )
+        return self._joint
+
+
+def _reshape(value: Any, shape: tuple[int, ...]) -> Any:
+    return from_flat(to_flat(value, "value")[0], shape, kind_of(value))
+
+
+def efficient_loo_cv(
+    model: Any, observation_noise: bool = True, untransform: bool = True
+) -> CVResults:
+    r"""Leave-one-out predictions without refitting, using one cached training
+    factorization per output and batch element. Results have shape
+    ``batch_shape x n x 1 x m``, as in BoTorch. Supports exact independent
+    output GPs, including fixed noise and input and outcome transforms.
+    """
+    from botorch_rs.posteriors.transformed import TransformedPosterior
+
+    if not isinstance(getattr(model, "_rs", None), _rs.SingleTaskGP):
+        raise UnsupportedError("efficient_loo_cv requires an exact SingleTaskGP model.")
+    model.eval()
+    kind = model._kind
+    mean, variance, targets, noise = model._rs.loo_predictions(bool(observation_noise))
+    shape = tuple(mean[1])
+    folds = (*shape[:-1], 1, shape[-1])
+    mu = from_flat(mean[0], shape, kind)
+    var = from_flat(variance[0], shape, kind)
+    observed = from_flat(targets[0], shape, kind)
+    observed_noise = from_flat(noise[0], shape, kind) if noise is not None else None
+    posterior: Any = _DiagonalPosterior(_reshape(mu, folds), _reshape(var, folds), kind)
+    transform = getattr(model, "outcome_transform", None) if untransform else None
+    if transform is not None:
+        observed, observed_noise = transform.untransform(observed, observed_noise)
+        if transform._is_linear:
+            mu, var = transform.untransform(mu, var)
+            posterior = _DiagonalPosterior(_reshape(mu, folds), _reshape(var, folds), kind)
+        else:
+            # Lay folds out as q while untransforming, so transform batch
+            # statistics broadcast against the model batch dimensions.
+            transformed = transform.untransform_posterior(_DiagonalPosterior(mu, var, kind))
+
+            def sample_transform(samples: Any) -> Any:
+                data, sshape = to_flat(samples, "samples")
+                squeezed = from_flat(data, (*sshape[:-2], sshape[-1]), kind)
+                output, _ = transform.untransform(squeezed)
+                return _reshape(output, tuple(sshape))
+
+            posterior = TransformedPosterior(
+                posterior,
+                sample_transform=sample_transform,
+                mean_transform=lambda m, v: _reshape(transformed.mean, folds),
+                variance_transform=lambda m, v: _reshape(transformed.variance, folds),
+            )
+    return CVResults(
+        model,
+        posterior,
+        _reshape(observed, folds),
+        _reshape(observed_noise, folds) if observed_noise is not None else None,
+    )
+
+
+def ensemble_loo_cv(
+    model: Any, observation_noise: bool = True, untransform: bool = True
+) -> CVResults:
+    """Leave-one-out predictions for exact GP ensembles, with the component
+    axis at ``MCMC_DIM=-3`` and a ``GaussianMixturePosterior``.
+    """
+    if not getattr(model, "_is_ensemble", False):
+        raise UnsupportedError("ensemble_loo_cv requires an ensemble model.")
+    members = getattr(model, "_ensemble_members", None)
+    if members is None:
+        raise UnsupportedError("ensemble_loo_cv requires an ensemble of exact SingleTaskGPs.")
+    model.eval()
+    results = [efficient_loo_cv(member, observation_noise, untransform) for member in members()]
+    if not results:
+        raise ValueError("ensemble_loo_cv requires at least one ensemble member")
+    kind = model._kind
+    n, _, m = to_flat(results[0].posterior.mean, "mean")[1]
+    count = len(results)
+    shape = (n, count, 1, m)
+
+    def stack(values: list[Any]) -> Any:
+        flat = [to_flat(value, "value")[0] for value in values]
+        return from_flat(
+            [flat[k][i * m + t] for i in range(n) for k in range(count) for t in range(m)],
+            shape,
+            kind,
+        )
+
+    mean = stack([r.posterior.mean for r in results])
+    variance = stack([r.posterior.variance for r in results])
+    posterior = _DiagonalMixturePosterior(mean, variance, kind)
+    return CVResults(
+        model,
+        posterior,
+        stack([r.observed_Y for r in results]),
+        stack([r.observed_Yvar for r in results]) if results[0].observed_Yvar is not None else None,
+    )
+
+
+class _DiagonalMixturePosterior(_DiagonalPosterior, GaussianMixturePosterior):
+    pass
+
+
+def loo_cv(model: Any, observation_noise: bool = True, untransform: bool = True) -> CVResults:
+    """Compute efficient LOO predictions for an exact GP or GP ensemble."""
+    function = ensemble_loo_cv if getattr(model, "_is_ensemble", False) else efficient_loo_cv
+    return function(model, observation_noise=observation_noise, untransform=untransform)
+
+
+__all__ = [
+    "CVFolds",
+    "CVResults",
+    "batch_cross_validation",
+    "gen_loo_cv_folds",
+    "efficient_loo_cv",
+    "ensemble_loo_cv",
+    "loo_cv",
+]
