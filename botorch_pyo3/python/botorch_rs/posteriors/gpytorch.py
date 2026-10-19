@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 from typing import Any
 
+from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import (
     ArrayKind,
     Flat,
@@ -29,9 +31,10 @@ from botorch_rs._arrays import (
     Pair,
     broadcast_shapes,
     from_flat,
+    kind_of,
     to_flat,
 )
-from botorch_rs.exceptions.errors import BotorchTensorDimensionError
+from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 
 
 def _as_shape(sample_shape: Any) -> tuple[int, ...]:
@@ -59,6 +62,23 @@ def _standard_normal(n: int, kind: ArrayKind) -> list[float]:
 
 class Posterior:
     """Base class of the posteriors."""
+
+    def rsample(self, sample_shape: Any = None) -> Any:
+        raise NotImplementedError
+
+    def sample(self, sample_shape: Any = None) -> Any:
+        """Draw samples without tracking gradients, preserving the array type."""
+        torch = sys.modules.get("torch")
+        if torch is not None:
+            with torch.no_grad():
+                return self.rsample(sample_shape=sample_shape)
+        return self.rsample(sample_shape=sample_shape)
+
+    def quantile(self, value: Any) -> Any:
+        raise NotImplementedError(f"{type(self).__name__} does not implement a `quantile` method.")
+
+    def density(self, value: Any) -> Any:
+        raise NotImplementedError(f"{type(self).__name__} does not implement a `density` method.")
 
 
 class GPyTorchPosterior(Posterior):
@@ -263,6 +283,31 @@ class GPyTorchPosterior(Posterior):
         out = self._samples(z)
         return self._out(out, (*sample_shape, *self._batch, self._q, self._m))
 
+    def _marginal_value(self, value: Any) -> Any:
+        """Arrange marginal evaluation values before the posterior dimensions."""
+        data, shape = to_flat(value, "value")
+        target = (*shape, *(1 for _ in range(len(self._batch) + 2))) if len(data) > 1 else ()
+        if hasattr(value, "reshape"):
+            return value.reshape(target)
+        return from_flat(data, target, kind_of(value))
+
+    def quantile(self, value: Any) -> Any:
+        """Quantiles of the Gaussian marginals, computed natively in Rust."""
+        from botorch_rs import _ops
+
+        z = _ops.apply("ndtri", self._marginal_value(value))
+        sd = _ops.apply("sqrt", self.variance)
+        return _ops.apply("add", self.mean, _ops.apply("mul", sd, z))
+
+    def density(self, value: Any) -> Any:
+        """Probability density of each Gaussian marginal at ``value``."""
+        from botorch_rs import _ops
+
+        sd = _ops.apply("sqrt", self.variance)
+        z = _ops.apply("div", _ops.apply("sub", self._marginal_value(value), self.mean), sd)
+        log_density = _ops.apply("sub", _ops.apply("log_phi", z), _ops.apply("log", sd))
+        return _ops.apply("exp", log_density)
+
     def __repr__(self) -> str:
         return f"GPyTorchPosterior(batch_shape={self._batch}, q={self._q}, m={self._m})"
 
@@ -363,4 +408,125 @@ class MultitaskMultivariateNormal(MultivariateNormal):
         return self._p._m
 
 
-__all__ = ["GPyTorchPosterior", "MultitaskMultivariateNormal", "MultivariateNormal", "Posterior"]
+def _validate_scalarize_inputs(weights: Any, m: int) -> list[float]:
+    values, shape = to_flat(weights, "weights")
+    if len(shape) != 1:
+        raise BotorchTensorDimensionError("`weights` must be one-dimensional")
+    if len(values) != m:
+        raise RuntimeError(
+            f"Output shape not equal to that of weights. Output shape is {m} and weights are {shape}"
+        )
+    return [float(v) for v in values]
+
+
+class _MomentPosterior(GPyTorchPosterior):
+    """A scalar Gaussian posterior backed by explicit native-computed moments."""
+
+    def __init__(self, mean: Pair, covariance: Pair, kind: ArrayKind) -> None:
+        batch, q = tuple(mean[1][:-1]), mean[1][-1]
+        super().__init__(None, ([], (*batch, q, 0)), kind, False)
+        self._joint = ((list(mean[0]), (*batch, q, 1)), (list(covariance[0]), tuple(covariance[1])))
+        diagonal = [
+            max(float(covariance[0][(b * q + i) * q + i]), 1e-10)
+            for b in range(math.prod(batch))
+            for i in range(q)
+        ]
+        self._marginals = (list(mean[0]), diagonal)
+
+    def _samples(self, z: Pair) -> list[float]:
+        data, zshape = z
+        samples, q, batches = zshape[0], self._q, math.prod(self._batch)
+        collapsed = len(zshape) == 2
+        base = [
+            data[s * q + i] if collapsed else data[(s * batches + b) * q + i]
+            for b in range(batches)
+            for i in range(q)
+            for s in range(samples)
+        ]
+        (mean, _), (covariance, _) = self._get_joint()
+        out, _ = _rs.sample_cached_cholesky(covariance, [], mean, base, batches, 0, q, samples, 3)
+        return [
+            out[(b * q + i) * samples + s]
+            for s in range(samples)
+            for b in range(batches)
+            for i in range(q)
+        ]
+
+
+def scalarize_posterior_gpytorch(
+    posterior: GPyTorchPosterior, weights: Any, offset: float = 0.0
+) -> tuple[Any, Any]:
+    """Mean and covariance of the affine scalarization of a Gaussian posterior."""
+    if not isinstance(posterior, GPyTorchPosterior):
+        raise UnsupportedError("scalarize_posterior_gpytorch requires a GPyTorchPosterior.")
+    w = _validate_scalarize_inputs(weights, posterior._m)
+    mean, covariance = posterior._get_joint()
+    mu, cov = _rs.scalarize_posterior_moments(mean, covariance, w, float(offset))
+    return posterior._out(mu[0], tuple(mu[1])), posterior._out(cov[0], tuple(cov[1]))
+
+
+def scalarize_posterior(posterior: Any, weights: Any, offset: float = 0.0) -> GPyTorchPosterior:
+    """Affine scalarization of Gaussian posteriors, or single-point PosteriorLists."""
+    from botorch_rs.posteriors.posterior_list import PosteriorList
+
+    if isinstance(posterior, GPyTorchPosterior):
+        w = _validate_scalarize_inputs(weights, posterior._m)
+        # Keep source-backed models lazy and use their native posterior sampler.
+        if posterior._rs is not None and not posterior._base:
+            original_weights = w
+            new_offset = float(offset)
+            if posterior._transform is not None:
+                old_weights, old_offset = posterior._transform
+                original_weights = [w[0] * v for v in old_weights]
+                new_offset += w[0] * old_offset
+            return GPyTorchPosterior(
+                posterior._rs,
+                posterior._x,
+                posterior._kind,
+                posterior._observation_noise,
+                num_outputs=len(original_weights),
+                model_batch_shape=posterior._batch,
+                output_indices=posterior._output_indices,
+                transform=(original_weights, new_offset),
+                points_per_input=posterior._points_per_input,
+            )
+        mean_moments, covariance_moments = posterior._get_joint()
+        mu, cov = _rs.scalarize_posterior_moments(mean_moments, covariance_moments, w, float(offset))
+        return _MomentPosterior(mu, cov, posterior._kind)
+    if not isinstance(posterior, PosteriorList):
+        raise NotImplementedError(
+            "scalarize_posterior only works with a posterior that has an attribute "
+            "`distribution`, such as a GPyTorchPosterior, or a posterior that contains "
+            "sub-posteriors in an attribute `posteriors`, as in a PosteriorList."
+        )
+    list_mean, shape = to_flat(posterior.mean, "mean")
+    q, m = shape[-2:]
+    w = _validate_scalarize_inputs(weights, m)
+    if q != 1:
+        raise NotImplementedError(
+            "scalarize_posterior only works with a PosteriorList if each sub-posterior has q=1."
+        )
+    if any(to_flat(p.mean)[1][-1] != 1 for p in posterior.posteriors):
+        raise NotImplementedError(
+            "scalarize_posterior only works with a PosteriorList if each sub-posterior has one outcome."
+        )
+    variance, _ = to_flat(posterior.variance, "variance")
+    batch = tuple(shape[:-2])
+    list_covariance = [0.0] * (math.prod(batch) * m * m)
+    for b in range(math.prod(batch)):
+        for t in range(m):
+            list_covariance[(b * m + t) * m + t] = variance[b * m + t]
+    mu, cov = _rs.scalarize_posterior_moments(
+        (list_mean, shape), (list_covariance, (*batch, m, m)), w, float(offset)
+    )
+    return _MomentPosterior(mu, cov, kind_of(posterior.mean))
+
+
+__all__ = [
+    "GPyTorchPosterior",
+    "MultitaskMultivariateNormal",
+    "MultivariateNormal",
+    "Posterior",
+    "scalarize_posterior",
+    "scalarize_posterior_gpytorch",
+]

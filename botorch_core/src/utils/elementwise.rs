@@ -56,6 +56,8 @@ pub struct Elementwise {
 pub fn arity(name: &str) -> Option<(usize, usize)> {
     Some(match name {
         "ndtr"
+        | "ndtri"
+        | "sqrt"
         | "phi"
         | "log_phi"
         | "log_ndtr"
@@ -168,6 +170,14 @@ fn fatmoid_with_grad(x: f64, tau: f64) -> (f64, f64, f64) {
 fn unary(name: &str, x: f64, single: bool) -> (f64, f64) {
     match name {
         "ndtr" => (prob::ndtr(x), prob::phi(x)),
+        "ndtri" => {
+            let value = prob::ndtri(x);
+            (value, prob::phi(value).recip())
+        }
+        "sqrt" => {
+            let value = x.sqrt();
+            (value, 0.5 / value)
+        }
         "phi" => {
             let p = prob::phi(x);
             (p, -x * p)
@@ -686,6 +696,20 @@ mod tests {
             let f = fd1("log1mexp", x, 1e-8);
             let g = e.grads.unwrap()[0][0][0];
             assert!((g - f).abs() <= 1e-5 * f.abs(), "{g} vs {f}");
+        }
+        for (name, xs) in [
+            ("ndtri", [0.01, 0.2, 0.5, 0.8, 0.99]),
+            ("sqrt", [0.01, 0.2, 0.5, 2.0, 10.0]),
+        ] {
+            for x in xs {
+                let e = elementwise(name, &[&[x]], &[], false, true).unwrap();
+                let g = e.grads.unwrap()[0][0][0];
+                let fd = fd1(name, x, 1e-7);
+                assert!(
+                    (g - fd).abs() <= 1e-6 * fd.abs(),
+                    "{name}'({x}): {g} vs {fd}"
+                );
+            }
         }
     }
 

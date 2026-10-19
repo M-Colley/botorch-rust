@@ -5,6 +5,8 @@ from botorch_rs.posteriors.gpytorch import (
     MultitaskMultivariateNormal,
     MultivariateNormal,
     Posterior,
+    scalarize_posterior,
+    scalarize_posterior_gpytorch,
 )
 from botorch_rs.posteriors.higher_order import HigherOrderGPPosterior
 from botorch_rs.posteriors.multitask import MultitaskGPPosterior
@@ -20,4 +22,6 @@ __all__ = [
     "Posterior",
     "PosteriorList",
     "TransformedPosterior",
+    "scalarize_posterior",
+    "scalarize_posterior_gpytorch",
 ]

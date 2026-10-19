@@ -924,8 +924,69 @@ fn detect_duplicates_py(
     Ok(threads::run(py, || detect_duplicates(&x, rtol, atol)))
 }
 
+/// Affine scalarization of means and output-major covariance matrices.
+#[pyfunction]
+#[pyo3(name = "scalarize_posterior_moments")]
+fn scalarize_posterior_moments_py(
+    py: Python<'_>,
+    mean: Array,
+    covariance: Array,
+    weights: Vec<f64>,
+    offset: f64,
+) -> PyResult<(ArrayBuf, ArrayBuf)> {
+    if mean.1.len() < 2 {
+        return Err(dimension_error(
+            "posterior mean must have shape batch x q x m",
+        ));
+    }
+    let rank = mean.1.len();
+    let q = mean.1[rank - 2];
+    let m = mean.1[rank - 1];
+    let batches: usize = mean.1[..rank - 2].iter().product();
+    let qm = q * m;
+    let mut covariance_shape = mean.1[..rank - 2].to_vec();
+    covariance_shape.extend([qm, qm]);
+    if weights.len() != m
+        || mean.0.len() != batches * qm
+        || covariance.1 != covariance_shape
+        || covariance.0.len() != batches * qm * qm
+    {
+        return Err(dimension_error("inconsistent scalarized posterior shapes"));
+    }
+    let (mu, cov) = threads::run(py, || {
+        let mut mu = vec![0.0; batches * q];
+        let mut cov = vec![0.0; batches * q * q];
+        for b in 0..batches {
+            for i in 0..q {
+                mu[b * q + i] = offset
+                    + (0..m)
+                        .map(|t| weights[t] * mean.0[(b * q + i) * m + t])
+                        .sum::<f64>();
+                for j in 0..q {
+                    let mut value = 0.0;
+                    for t in 0..m {
+                        for u in 0..m {
+                            value += weights[t]
+                                * covariance.0[b * qm * qm + (t * q + i) * qm + u * q + j]
+                                * weights[u];
+                        }
+                    }
+                    cov[(b * q + i) * q + j] = value;
+                }
+            }
+        }
+        (mu, cov)
+    });
+    let mut mean_shape = mean.1[..rank - 2].to_vec();
+    mean_shape.push(q);
+    let mut cov_shape = mean_shape.clone();
+    cov_shape.push(q);
+    Ok((ArrayBuf(mu, mean_shape), ArrayBuf(cov, cov_shape)))
+}
+
 /// Registers the functions and classes of this module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(scalarize_posterior_moments_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_duplicates_py, m)?)?;
     m.add_function(wrap_pyfunction!(elementwise_py, m)?)?;
     m.add_function(wrap_pyfunction!(reduce_py, m)?)?;
