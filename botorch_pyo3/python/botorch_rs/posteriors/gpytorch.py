@@ -72,7 +72,10 @@ class Posterior:
         if torch is not None:
             with torch.no_grad():
                 return self.rsample(sample_shape=sample_shape)
-        return self.rsample(sample_shape=sample_shape)
+        samples = self.rsample(sample_shape=sample_shape)
+        # A caller's posterior can itself import torch lazily while sampling.
+        torch = sys.modules.get("torch")
+        return samples.detach() if torch is not None and isinstance(samples, torch.Tensor) else samples
 
     def quantile(self, value: Any) -> Any:
         raise NotImplementedError(f"{type(self).__name__} does not implement a `quantile` method.")

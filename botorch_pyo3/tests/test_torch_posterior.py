@@ -131,4 +131,21 @@ def test_nested_metadata_containers_and_cycles() -> None:
     posterior = TorchPosterior(NestedDistribution())
     assert posterior.dtype == torch.float64 and posterior.device == torch.device("cpu")
     with pytest.raises(TypeError, match="no tensor parameters"):
-        TorchPosterior(torch.distributions.Distribution())
+        TorchPosterior(torch.distributions.Distribution(validate_args=False))
+
+
+def test_sample_detaches_when_custom_posterior_imports_torch_lazily() -> None:
+    pytest.importorskip("torch")
+    script = """
+import sys
+from botorch_rs.posteriors import Posterior
+assert 'torch' not in sys.modules
+class LazyPosterior(Posterior):
+    def rsample(self, sample_shape=None):
+        import torch
+        return 2 * torch.tensor(1.0, requires_grad=True)
+posterior = LazyPosterior()
+assert not posterior.sample().requires_grad
+assert posterior.rsample().requires_grad
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
