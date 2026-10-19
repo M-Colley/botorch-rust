@@ -428,3 +428,13 @@ On the branch merged with main at b539d34:
    model's posterior works. Fix: set `self._num_outputs = 1` in `__init__`.
    (`AnalyticExpectedUtilityOfBestOption` would still fail on such a model:
    it reads `pref_model.datapoints.dtype`.)
+
+### Upstream status
+
+| Bug | Fix |
+|---|---|
+| 1 | meta-pytorch/botorch#3385 |
+| 2 | meta-pytorch/botorch#3458 |
+| 3 | meta-pytorch/botorch#3461 |
+| 4 | meta-pytorch/botorch#3459 |
+| 5 | meta-pytorch/botorch#3460 |
