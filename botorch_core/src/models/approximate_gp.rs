@@ -1344,13 +1344,13 @@ impl SingleTaskVariationalGP {
         }
         // Kernel priors.
         let kernel_reps = if self.options.covar_batched { m } else { 1 };
-        for t in 0..kernel_reps {
-            let kernel = &parts[t].kernel;
+        for part in parts.iter().take(kernel_reps) {
+            let kernel = &part.kernel;
             let lp = if with_grad {
                 let (lp, g) = kernel.log_prior_and_grad()?;
-                let kraw: Vec<f64> = parts[t].kidx.iter().map(|&i| raw[i]).collect();
+                let kraw: Vec<f64> = part.kidx.iter().map(|&i| raw[i]).collect();
                 let deriv = self.options.covar_module.transform_derivatives(&kraw);
-                for (k, &gi) in parts[t].kidx.iter().enumerate() {
+                for (k, &gi) in part.kidx.iter().enumerate() {
                     grad[gi] += g[k] * deriv[k] / num_data;
                 }
                 lp

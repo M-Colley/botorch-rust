@@ -21,6 +21,53 @@ from botorch_rs.optim.parameter_constraints import (
     linear_constraints_arg,
     nonlinear_constraints_arg,
 )
+from botorch_rs.optim.utils.common import check_scipy_version_at_least
+
+# The supported SciPy driver range of the pinned official BoTorch API.
+# Native candidate generation uses Rust solvers and does not require SciPy.
+SCIPY_MIN_VERSION = 13
+SCIPY_UNTESTED_VERSION = 19
+
+
+def get_reasons_against_fast_path(
+    method: str,
+    with_grad: bool,
+    minimize_options: dict[str, Any],
+    timeout_sec: float | None,
+) -> list[str]:
+    """BoTorch's SciPy fast-path compatibility diagnostic.
+
+    This reports SciPy-driver eligibility for API interoperability; native
+    Rust candidate generation selects its own solvers independently.
+    """
+    reasons = []
+    if method != "L-BFGS-B":
+        reasons.append(f"method={method}, method needs to be L-BFGS-B")
+    if not with_grad:
+        reasons.append("with_grad=False, it needs to be True")
+    extra = set(minimize_options) - {
+        "maxiter",
+        "disp",
+        "iprint",
+        "max_cor",
+        "ftol",
+        "pgtol",
+        "factr",
+        "tol",
+        "maxls",
+    }
+    if extra:
+        reasons.append(f"options={extra} are not accepted")
+    if timeout_sec is not None:
+        reasons.append(f"timeout_sec={timeout_sec}, it needs to be None")
+    if not check_scipy_version_at_least(minor=SCIPY_MIN_VERSION) or check_scipy_version_at_least(
+        minor=SCIPY_UNTESTED_VERSION
+    ):
+        reasons.append(
+            f"Scipy version is not in the range from 1.{SCIPY_MIN_VERSION}.0 to "
+            f"1.{SCIPY_UNTESTED_VERSION}.x."
+        )
+    return reasons
 
 
 def _bounds_arg(
@@ -351,4 +398,9 @@ def get_best_candidates(batch_candidates: Any, batch_values: Any) -> Any:
     )
 
 
-__all__ = ["gen_candidates_scipy", "gen_candidates_torch", "get_best_candidates"]
+__all__ = [
+    "gen_candidates_scipy",
+    "gen_candidates_torch",
+    "get_best_candidates",
+    "get_reasons_against_fast_path",
+]
