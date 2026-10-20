@@ -120,6 +120,8 @@ def test_official_task_model_mll_and_posteriors(
     b = official.multitask_empirical_1d_gp.MultiTaskEmpiricalOneDimensionalGP(
         X, Y, task_feature, Xs, Ys, train_Yvar=variance
     )
+    torch.testing.assert_close(a.train_inputs[0], b.train_inputs[0], rtol=0, atol=0)
+    torch.testing.assert_close(a.train_targets, b.train_targets, rtol=0, atol=0)
     va, ga = ExactMarginalLogLikelihood(a.likelihood, a).value_and_grad()
     vb = OfficialMLL(b.likelihood, b)(b(*b.train_inputs), b.train_targets)
     torch.testing.assert_close(torch.as_tensor(va), vb, atol=3e-10, rtol=3e-10)

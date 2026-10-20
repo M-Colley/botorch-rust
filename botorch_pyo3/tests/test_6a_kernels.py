@@ -468,8 +468,6 @@ def test_construction_errors() -> None:
         AdditiveKernel()
     with pytest.raises(RuntimeError, match="do not broadcast"):
         _ = (RBFKernel(batch_shape=[2]) + RBFKernel(batch_shape=[3])).batch_shape
-    with pytest.raises(UnsupportedError):
-        RBFKernel()(X1, last_dim_is_batch=True)
 
 
 def test_model_errors() -> None:

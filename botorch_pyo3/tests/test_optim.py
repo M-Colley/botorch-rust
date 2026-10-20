@@ -152,12 +152,12 @@ def test_options(model: SingleTaskGP) -> None:
 
 def test_unsupported_arguments(model: SingleTaskGP) -> None:
     acqf = PosteriorMean(model)
-    for kwargs in (
-        {"acq_function_sequence": [acqf, acqf]},
-        {"unknown_ic_kwarg": 1},
-    ):
-        with pytest.raises(UnsupportedError):
-            optimize_acqf(acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, **kwargs)
+    with pytest.raises(UnsupportedError):
+        optimize_acqf(acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, unknown_ic_kwarg=1)
+    with pytest.raises(ValueError, match="requires sequential"):
+        optimize_acqf(
+            acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, acq_function_sequence=[acqf]
+        )
     with pytest.raises(UnsupportedError):
         optimize_acqf(object(), BOUNDS, q=1, num_restarts=2, raw_samples=8)  # type: ignore[arg-type]
     # Callables are evaluated on torch tensors (see test_deterministic.py); their

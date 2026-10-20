@@ -313,6 +313,13 @@ class MultiTaskEmpiricalOneDimensionalGP(EmpiricalOneDimensionalGP, MultiTaskGPy
         self.training = True
 
     @property
+    def train_inputs(self) -> tuple[Any]:
+        # The explicit task column already encodes the joint training event.
+        # Correlated wide-output models repeat scalar progression inputs;
+        # applying that representation here loses task labels and doubles rows.
+        return (self._train_X,)
+
+    @property
     def train_targets(self) -> Any:
         return _reshape(self._train_Y, (_ops.shape_of(self._train_X)[0],))
 
