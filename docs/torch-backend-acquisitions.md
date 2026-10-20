@@ -15,8 +15,10 @@ families and constructor options raise explicit errors.
 
 Noisy EI currently samples the exact full joint baseline/candidate posterior.
 Explicit `cache_root=True` warns and selects `False`. Unbatched baseline pruning
-uses 2,048 Sobol samples. Ensemble marginalization and batched-model pruning are
-not implemented in this backend. qLogNEI honors incremental pending points.
+uses 2,048 Sobol samples. Fully Bayesian ensembles use the final MCMC axis;
+pruning averages member objectives and rounds member feasibility as in the
+reference. Ordinary batched-model pruning remains unsupported. qLogNEI honors
+incremental pending points.
 By default the incumbent is detached, matching official BoTorch's deliberate
 `compute_best_feasible_objective` behavior. The keyword extension
 `detach_baseline=False` includes incumbent derivatives in the mathematical
@@ -105,5 +107,35 @@ geometry tests. Noisy acquisition values and first/second derivatives are
 compared against the pinned reference for two and three objectives on CPU and
 CUDA. The geometry algorithm supports higher dimensions, with the usual growth
 in the number of Pareto cells; this checkpoint does not establish practical
-performance at large objective counts. Approximate `alpha>0` partitioning and
-ensemble marginalization remain explicit boundaries in this checkpoint.
+performance at large objective counts. Approximate `alpha>0` partitioning remains
+an explicit boundary in this checkpoint.
+
+## Ensemble acquisition reductions
+
+Analytic acquisitions average the final MCMC axis, using `logmeanexp` for log
+acquisitions. Scalar MC acquisitions reduce both sample and MCMC axes after the
+pointwise objective and q reduction. Hypervolume acquisitions compute each
+member's improvement before averaging. Ordinary query batches remain distinct.
+Pruning supports an ensemble with one MCMC batch dimension; the explicit
+`marginalize_dim=-3` spelling is accepted for that configuration. Arbitrary
+marginalization axes and ensemble pruning with additional model batch dimensions
+raise errors.
+
+Fifty-five focused CPU/CUDA tests use three distinct Tensor GPs and the fully Bayesian query
+layout, comparing acquisition values, training/input/parameter gradients and
+mixed second derivatives against the pinned reference. These tests cover the
+scalar families above, noisy EI, constrained analytic acquisitions, weighted
+posterior means and all four hypervolume families. Separate tests check member
+marginalization during pruning and forbid host conversions during default
+sampling and double backward.
+The combined acquisition, geometry and sampler suites pass 278 tests.
+
+The pinned reference's `PosteriorStandardDeviation.forward` calls
+`std.view(X.shape[:-2])` before its ensemble averaging decorator. For a query
+batch `(2,4)`, three MCMC members and `q=1`, it attempts to reshape 24 values into
+eight and raises `RuntimeError`. The port preserves the member axis, removes
+only the singleton output axis and then averages. Its result and derivatives
+are tested against the direct mean of the three posterior standard deviations;
+the unmodified reference failure is asserted separately. A minimal upstream
+repair is to return `std.squeeze(-1)` instead of reshaping to the input batch,
+allowing the existing averaging decorator to retain the MCMC axis and its graph.

@@ -12,13 +12,18 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
-from botorch_rs.acquisition._torch_backend_acquisition import _log_softplus, _TensorAcquisition
+from botorch_rs.acquisition._torch_backend_acquisition import (
+    _average_ensemble,
+    _log_softplus,
+    _TensorAcquisition,
+)
 from botorch_rs.acquisition._torch_box_decomposition import nondominated_mask, partition_nd
 from botorch_rs.acquisition._torch_reductions import fatmax, logsumexp, smooth_amax
 from botorch_rs.acquisition.multi_objective.objective import IdentityMCMultiOutputObjective
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import legacy_ei_numerics_warning
 from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
+from botorch_rs.utils.transforms import is_ensemble
 
 
 def partition_2d(
@@ -262,7 +267,7 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
     def forward(self, X: Any) -> Tensor:
         X = self._candidates_tensor(X)
         samples, objective = self._draw_mo(X)
-        return self._hypervolume(samples, objective)
+        return _average_ensemble(self._hypervolume(samples, objective), self.model, self._log)
 
 
 def _dominated_volume(Y: Tensor, ref: Tensor, feasible: Tensor | None = None) -> Tensor:
@@ -307,9 +312,12 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
             raise ValueError(
                 "The reference point must match the model outcomes unless an objective selects or expands outputs."
             )
-        if values["alpha"] != 0 or values["marginalize_dim"] is not None:
+        marginalize = values["marginalize_dim"]
+        if values["alpha"] != 0 or (
+            marginalize is not None and not (is_ensemble(self.model) and marginalize == -3)
+        ):
             raise UnsupportedError(
-                "Torch noisy hypervolume currently requires exact alpha=0 partitioning without ensemble marginalization."
+                "Torch noisy hypervolume requires exact alpha=0 partitioning and automatic ensemble marginalization or marginalize_dim=-3."
             )
         baseline = values["X_baseline"]
         if not isinstance(baseline, Tensor) or baseline.ndim != 2:
@@ -431,6 +439,13 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
             )
             obj = self.objective(samples, X=self._X_baseline)
             feasible = self._feasible(samples)
+            if is_ensemble(self.model):
+                if len(self.model.batch_shape) != 1:
+                    raise UnsupportedError(
+                        "Ensemble noisy hypervolume pruning supports a single MCMC batch dimension."
+                    )
+                obj = obj.mean(dim=-3)
+                feasible = feasible.to(obj).mean(dim=-2).round().bool()
             possible = nondominated_mask(obj, self.ref_point, feasible)
             possible = possible.any(dim=tuple(range(possible.ndim - 1)))
             indices = possible.nonzero().flatten()
@@ -537,4 +552,4 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
                 observed_hv = pending_hv * 0
             previous = (pending_hv - observed_hv).clamp_min(0).mean()
             value = torch.logaddexp(value, previous.log()) if self._log else value + previous
-        return value
+        return _average_ensemble(value, self.model, self._log)

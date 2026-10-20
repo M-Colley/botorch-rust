@@ -17,6 +17,7 @@ from torch import Tensor, nn
 
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import BotorchWarning, legacy_ei_numerics_warning
+from botorch_rs.utils.transforms import is_ensemble
 
 _ANALYTIC = frozenset(
     {
@@ -152,6 +153,13 @@ def _logmeanexp(value: Tensor, dimensions: tuple[int, ...]) -> Tensor:
     return torch.logsumexp(value, dim=dimensions) - math.log(
         math.prod(value.shape[d] for d in dimensions)
     )
+
+
+def _average_ensemble(value: Tensor, model: Any, log: bool = False) -> Tensor:
+    """Match BoTorch's final-axis mixture reduction without merging t-batches."""
+    if not is_ensemble(model):
+        return value
+    return _logmeanexp(value, (-1,)) if log else value.mean(dim=-1)
 
 
 class _TensorAcquisition(nn.Module):
@@ -388,6 +396,8 @@ class _TensorAcquisition(nn.Module):
 
     def _reduce(self, utilities: Tensor) -> Tensor:
         sample_dims = tuple(range(len(self.sample_shape)))
+        if is_ensemble(self.model):
+            sample_dims += (-1,)
         if self._log:
             from botorch_rs.acquisition._torch_reductions import fatmax, smooth_amax
 
@@ -432,7 +442,7 @@ class _TensorAcquisition(nn.Module):
     def forward(self, X: Any) -> Tensor:
         X = self._candidates_tensor(X)
         if self._is_analytic:
-            return self._analytic_forward(X)
+            return _average_ensemble(self._analytic_forward(X), self.model, self._log)
         return self._reduce(self._non_reduced_forward(X))
 
     def value_and_grad(self, X: Tensor) -> tuple[Tensor, Tensor]:
@@ -450,9 +460,10 @@ class _TensorAcquisition(nn.Module):
         baseline = values["X_baseline"]
         if not isinstance(baseline, Tensor) or baseline.ndim != 2 or baseline.shape[-2] == 0:
             raise ValueError("X_baseline must be a nonempty n x d Torch tensor.")
-        if values.get("marginalize_dim") is not None:
+        marginalize = values.get("marginalize_dim")
+        if marginalize is not None and not (is_ensemble(self.model) and marginalize == -3):
             raise UnsupportedError(
-                "Ensemble marginalization is not yet supported by backend='torch'."
+                "Torch noisy EI supports automatic ensemble marginalization or marginalize_dim=-3 for an ensemble model."
             )
         self.incremental = bool(values.get("incremental", False))
         self.cache_root = self._cache_root = False
@@ -497,15 +508,21 @@ class _TensorAcquisition(nn.Module):
     def _prune_baseline(self) -> None:
         from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
-        if self.model.batch_shape:
+        ensemble = is_ensemble(self.model)
+        if self.model.batch_shape and not (ensemble and len(self.model.batch_shape) == 1):
             raise UnsupportedError("Noisy baseline pruning requires an unbatched Torch model.")
         sampler = SobolQMCNormalSampler((2048,), seed=int(getattr(self.sampler, "seed", 0)))
         with torch.no_grad():
             samples = sampler(self._posterior(self._X_baseline))
             objective = self.objective(samples=samples, X=self._X_baseline)
             feasible = self._feasible(samples)
+            if ensemble:
+                objective = objective.mean(dim=-2)
+                feasible = feasible.to(objective).mean(dim=-2).round().bool()
             if not feasible.any():
-                values = torch.zeros_like(objective)
+                # The reference fallback ranks each member's probability of
+                # feasibility when no point has majority ensemble feasibility.
+                values = torch.zeros_like(samples[..., 0])
                 for constraint in self._constraints or []:
                     values = values + torch.nn.functional.logsigmoid(-constraint(samples) / 1e-3)
             else:

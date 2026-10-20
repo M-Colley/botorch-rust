@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 import sys
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import wraps
 from typing import Any
 
@@ -55,7 +55,7 @@ def is_ensemble(model: Any) -> bool:
        True if at least one model is an ensemble model.
     """
     models = getattr(model, "models", None)
-    if isinstance(models, (list, tuple)):
+    if isinstance(models, Iterable):
         return any(is_ensemble(m) for m in models)
     return bool(getattr(model, "_is_ensemble", False))
 
@@ -70,7 +70,7 @@ def is_fully_bayesian(model: Any) -> bool:
         True if at least one model is a fully Bayesian model.
     """
     models = getattr(model, "models", None)
-    if isinstance(models, (list, tuple)):
+    if isinstance(models, Iterable):
         return any(is_fully_bayesian(m) for m in models)
     return bool(getattr(model, "_is_fully_bayesian", False))
 

@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
-from botorch_rs.acquisition._torch_backend_acquisition import _log_ei
+from botorch_rs.acquisition._torch_backend_acquisition import _average_ensemble, _log_ei
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import legacy_ei_numerics_warning
 
@@ -117,14 +117,16 @@ class TensorAnalyticExtra(nn.Module):
         if self._name == "ScalarizedPosteriorMean":
             if posterior.mean.shape[-1] != 1 or X.shape[-2] != self.weights.numel():
                 raise ValueError("The posterior must have one output and q must match weights.")
-            return posterior.mean.squeeze(-1) @ self.weights.to(X)
+            return _average_ensemble(posterior.mean.squeeze(-1) @ self.weights.to(X), self.model)
         means = posterior.mean.squeeze(-2)
         sigmas = posterior.variance.clamp_min(1e-12).sqrt().squeeze(-2)
         log_probability = self._compute_log_prob_feas(means, sigmas)
         if self._name == "LogProbabilityOfFeasibility":
-            return log_probability
+            return _average_ensemble(log_probability, self.model, log=True)
         mean, sigma = means[..., self.objective_index], sigmas[..., self.objective_index]
         sign = 1 if self.maximize else -1
         u = sign * (mean - self.best_f.to(mean)) / sigma
         log_improvement = _log_ei(u) + sigma.log() + log_probability
-        return log_improvement if self._name.startswith("Log") else log_improvement.exp()
+        log = self._name.startswith("Log")
+        value = log_improvement if log else log_improvement.exp()
+        return _average_ensemble(value, self.model, log)
