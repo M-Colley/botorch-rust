@@ -27,6 +27,17 @@ arrays or nested lists of floats, and results have the type of the
 corresponding input. See the repository's README for the supported API,
 accuracy, benchmarks and known differences from BoTorch.
 
+Native computation uses CPU float64. Torch/NumPy results preserve the
+input dtype and device, with transfers when needed. The audited official
+BoTorch core API inventory contains 776 public classes/functions, all
+available under matching paths; this measures API availability, not every
+configuration or Torch behavior. GPU computation, general higher-order
+autograd and some specialized model configurations remain unsupported.
+See the repository's [coverage and configuration limits](https://github.com/M-Colley/botorch-rust#readme)
+and [correctness findings](https://github.com/M-Colley/botorch-rust/blob/main/docs/correctness-findings.md).
+Performance depends on the workload and should be checked on representative
+data with release builds.
+
 ## Installation
 
 From a source checkout (requires a Rust toolchain):
