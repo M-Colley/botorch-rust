@@ -139,3 +139,37 @@ are tested against the direct mean of the three posterior standard deviations;
 the unmodified reference failure is asserted separately. A minimal upstream
 repair is to return `std.squeeze(-1)` instead of reshaping to the input batch,
 allowing the existing averaging decorator to retain the MCMC axis and its graph.
+
+## Fully Bayesian model lists
+
+Torch `ModelListGP` passes ordinary query batches to each fully Bayesian child
+and combines the component covariances into output-major independent blocks.
+The resulting Gaussian law remains a `GaussianMixturePosterior`, including
+after output selection and scalarization; mixture covariance includes the
+between-component mean covariance. Mixed ordinary and fully Bayesian children
+share the MCMC axis. Ordinary model batches are retained before that axis, so an
+ordinary batch of size two combined with three MCMC members has model batch
+shape `(2,3)`. A one-member mixture broadcasts to the other mixture's size;
+incompatible MCMC counts fail ordinary broadcast validation.
+An ordinary Gaussian child is evaluated once and its moments are expanded across
+MCMC members, avoiding redundant GP inference for those identical components.
+
+For nonlinear ordinary children, a leading component query batch and a Tensor
+axis view preserve captured outcome-transform coefficients in their original
+batch layout. This produces a `TorchPosteriorList` with differentiable moments
+and samples without rebuilding transforms or copying inference values to CPU.
+Twenty-four CPU/CUDA tests cover mixture/mixed lists, explicit and inferred
+observation noise, samples, ordinary model batches, nonlinear transforms,
+training/query/parameter derivatives, selected outputs, scalarization and noisy
+hypervolume acquisition graphs.
+The combined focused model/acquisition/sampler/geometry run passes 451 tests;
+the final ordinary-Gaussian inference optimization also passes all 24 list tests.
+
+The pinned reference additionally omits a noise-axis adjustment in fully Bayesian
+prediction: it inserts `X.unsqueeze(-3)` but passes explicit observation noise
+of shape `query_batch x q x 1` unchanged. With query batch `(2,4)` and three MCMC
+members this raises a broadcast error. Tests assert that unmodified failure and
+compare the port against independent reference component laws with the explicit
+noise expanded along the MCMC axis. The corresponding upstream repair is to
+insert the same singleton MCMC axis in tensor-valued observation noise before
+calling the parent posterior implementation.

@@ -10,6 +10,7 @@ from torch.nn.functional import pad
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.model_list_gp_regression import ModelListGP
 from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior, TorchPosteriorList
+from botorch_rs.utils.transforms import is_ensemble
 
 
 class TorchLikelihoodList(torch.nn.Module):
@@ -43,9 +44,11 @@ class TorchModelListGP(torch.nn.Module, ModelListGP):
         kinds = {(model._train_X.dtype, model._train_X.device) for model in models}
         if len(kinds) != 1:
             raise ValueError("All component models must share dtype and device.")
-        torch.broadcast_shapes(*(model.batch_shape for model in models))
         self.models = torch.nn.ModuleList(models)
         self.likelihood = TorchLikelihoodList(*(model.likelihood for model in models))
+        # Validate ordinary model batches separately from the MCMC component
+        # axis. An ordinary batched model retains its own batch dimensions.
+        _ = self.batch_shape
 
     @property
     def num_outputs(self) -> int:
@@ -53,7 +56,15 @@ class TorchModelListGP(torch.nn.Module, ModelListGP):
 
     @property
     def batch_shape(self) -> Any:
-        return torch.broadcast_shapes(*(model.batch_shape for model in self.models))
+        ensemble = is_ensemble(self)
+        return torch.broadcast_shapes(
+            *(
+                model.batch_shape
+                if is_ensemble(model) or not ensemble
+                else model.batch_shape + (1,)
+                for model in self.models
+            )
+        )
 
     def posterior(
         self,
@@ -63,15 +74,64 @@ class TorchModelListGP(torch.nn.Module, ModelListGP):
         posterior_transform: Any = None,
         **kwargs: Any,
     ) -> Any:
-        batch = torch.broadcast_shapes(self.batch_shape, X.shape[:-2])
+        ensemble = is_ensemble(self)
+        model_batch = self.batch_shape
+        outer_batch = model_batch[:-1] if ensemble else model_batch
+        batch = torch.broadcast_shapes(outer_batch, X.shape[:-2])
         X = X.expand(*batch, *X.shape[-2:])
+        count = model_batch[-1] if ensemble else 1
         parts = []
         start = 0
         for model in self.models:
             noise = observation_noise
             if isinstance(noise, torch.Tensor):
                 noise = noise[..., start : start + model.num_outputs]
-            parts.append(model.posterior(X, observation_noise=noise, **kwargs))
+            ordinary = ensemble and not is_ensemble(model)
+            outcome = getattr(model, "outcome_transform", None)
+            move_axis = ordinary and outcome is not None and not outcome._is_linear
+
+            def evaluate(move: bool, model: Any = model, noise: Any = noise) -> Any:
+                inputs, member_noise = X, noise
+                if move:
+                    inputs = X.unsqueeze(0).expand(count, *X.shape)
+                    if isinstance(noise, torch.Tensor):
+                        member_noise = noise.expand(*batch, X.shape[-2], model.num_outputs)
+                        member_noise = member_noise.unsqueeze(0).expand(count, *member_noise.shape)
+                return model.posterior(inputs, observation_noise=member_noise, **kwargs)
+
+            component = evaluate(move_axis)
+            if ordinary and not move_axis and not isinstance(component, TorchGPyTorchPosterior):
+                # A nested model list can return a non-Gaussian law without
+                # exposing a single outcome_transform on its outer container.
+                move_axis = True
+                component = evaluate(True)
+            if ordinary:
+                if isinstance(component, TorchGPyTorchPosterior):
+                    component = TorchGPyTorchPosterior(
+                        component.mean.movedim(0, -3)
+                        if move_axis
+                        else component.mean.unsqueeze(-3),
+                        component._covariance_tensor.movedim(0, -3)
+                        if move_axis
+                        else component._covariance_tensor.unsqueeze(-3),
+                    )
+                else:
+                    from botorch_rs.posteriors._torch_backend_list import MoveMCMCAxisPosterior
+
+                    component = MoveMCMCAxisPosterior(component)
+            if ensemble and isinstance(component, TorchGPyTorchPosterior):
+                component_type = (
+                    type(component)
+                    if getattr(component, "_is_gaussian_mixture", False)
+                    else TorchGPyTorchPosterior
+                )
+                component = component_type(
+                    component.mean.expand(*batch, count, *component.mean.shape[-2:]),
+                    component._covariance_tensor.expand(
+                        *batch, count, *component._covariance_tensor.shape[-2:]
+                    ),
+                )
+            parts.append(component)
             start += model.num_outputs
         if any(not isinstance(posterior, TorchGPyTorchPosterior) for posterior in parts):
             result = TorchPosteriorList(*parts)
@@ -91,7 +151,14 @@ class TorchModelListGP(torch.nn.Module, ModelListGP):
                 (start, size - start - width, start, size - start - width),
             )
             start += width
-        posterior = TorchGPyTorchPosterior(mean, covariance)
+        if ensemble:
+            from botorch_rs.models._torch_backend_fully_bayesian import (
+                TorchGaussianMixturePosterior,
+            )
+
+            posterior = TorchGaussianMixturePosterior(mean, covariance)
+        else:
+            posterior = TorchGPyTorchPosterior(mean, covariance)
         if output_indices is not None:
             posterior = posterior.subset_output(output_indices)
         return posterior if posterior_transform is None else posterior_transform(posterior, X=X)
