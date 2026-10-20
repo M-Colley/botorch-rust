@@ -93,7 +93,8 @@ class GPyTorchPosterior(Posterior):
     ``source`` is the extension object that evaluates the posterior (a
     ``SingleTaskGP`` or ``ModelListGP``); ``output_indices`` selects outputs
     and ``transform`` is a ``(weights, offset)`` scalarization (BoTorch's
-    ``ScalarizedPosteriorTransform``).
+    ``ScalarizedPosteriorTransform``). Mutable sources are snapshotted so
+    later fitting or parameter updates do not change this posterior's law.
     """
 
     def __init__(
@@ -110,7 +111,8 @@ class GPyTorchPosterior(Posterior):
         base: bool = False,
         interleaved: bool = False,
     ) -> None:
-        self._rs = source
+        snapshot = getattr(source, "copy", None)
+        self._rs = snapshot() if callable(snapshot) else source
         self._interleaved_mt = interleaved
         self._base = base
         self._points_per_input = points_per_input
