@@ -569,6 +569,19 @@ def _sample_max_value_Gumbel(
     quantiles; the same uniform numbers (BoTorch's ``torch.rand(num_samples,
     1)``) give the samples of every batch. botorch_rs extensions
     (keyword-only): the uniform numbers ``uniforms`` or their ``seed``."""
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.acquisition._torch_backend_entropy import sample_maximums
+
+        return sample_maximums(
+            model,
+            candidate_set,
+            num_samples,
+            posterior_transform,
+            maximize,
+            gumbel=True,
+            uniforms=uniforms,
+            seed=seed,
+        )
     import random
 
     if uniforms is None:
@@ -617,6 +630,19 @@ def _sample_max_value_Thompson(
     botorch_rs extensions (keyword-only): the standard normal
     ``base_samples`` (``num_samples x batch_shape x n``, independent between
     the batches as BoTorch's draws) or their ``seed``."""
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.acquisition._torch_backend_entropy import sample_maximums
+
+        return sample_maximums(
+            model,
+            candidate_set,
+            num_samples,
+            posterior_transform,
+            maximize,
+            gumbel=False,
+            base_samples=base_samples,
+            seed=seed,
+        )
     import random
 
     rs_model = model._acquisition_model(None)

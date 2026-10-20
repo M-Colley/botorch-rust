@@ -62,6 +62,14 @@ _EXTRA_ANALYTIC = frozenset(
     }
 )
 _WRAPPERS = frozenset({"FixedFeatureAcquisitionFunction", "ProjectedAcquisitionFunction"})
+_ENTROPY = frozenset(
+    {
+        "qMaxValueEntropy",
+        "qLowerBoundMaxValueEntropy",
+        "qMultiFidelityMaxValueEntropy",
+        "qMultiFidelityLowerBoundMaxValueEntropy",
+    }
+)
 _TYPES: dict[type, type] = {}
 _LOG_2PI = math.log(2 * math.pi)
 
@@ -70,7 +78,13 @@ def tensor_acquisition(public_class: type) -> Any:
     """Allocate a graph-native subtype without invoking a native constructor."""
     if (
         public_class.__name__
-        not in _ANALYTIC | _MC | _MULTI_OBJECTIVE | _LOOKAHEAD | _EXTRA_ANALYTIC | _WRAPPERS
+        not in _ANALYTIC
+        | _MC
+        | _MULTI_OBJECTIVE
+        | _LOOKAHEAD
+        | _EXTRA_ANALYTIC
+        | _WRAPPERS
+        | _ENTROPY
         or not public_class.__module__.startswith("botorch_rs.acquisition.")
     ):
         raise UnsupportedError(f"{public_class.__name__} does not yet support backend='torch'.")
@@ -109,6 +123,10 @@ def tensor_acquisition(public_class: type) -> Any:
                 if public_class.__name__ == "FixedFeatureAcquisitionFunction"
                 else TensorProjected
             )
+        elif public_class.__name__ in _ENTROPY:
+            from botorch_rs.acquisition._torch_backend_entropy import TensorMaxValueEntropy
+
+            mixin = TensorMaxValueEntropy
         name = f"Torch{public_class.__name__}"
         subtype = type(
             name,
