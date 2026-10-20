@@ -1451,7 +1451,11 @@ class OptimizeAcqfInputs:
                 raise ValueError("acq_function_sequence must have length q.")
             if self.q < 2:
                 raise ValueError("acq_function_sequence requires q > 1.")
-        shape = to_flat(self.bounds, "bounds")[1]
+        shape = (
+            tuple(self.bounds.shape)
+            if is_torch_tensor(self.bounds)
+            else to_flat(self.bounds, "bounds")[1]
+        )
         if self.inequality_constraints is None and not (len(shape) == 2 and shape[0] == 2):
             raise ValueError(f"bounds should be a `2 x d` tensor, current shape: {list(shape)}.")
         if self.batch_initial_conditions is None and self.ic_generator is None:

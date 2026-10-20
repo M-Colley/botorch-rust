@@ -214,10 +214,28 @@ def gen_torch(
     def evaluate() -> Tensor:
         opt.zero_grad(set_to_none=True)
         if isinstance(opt, torch.optim.LBFGS):
-            # A line search needs the actual current loss and derivative,
-            # including the candidate projection, at every closure invocation.
+            # Line-search trials may leave the box. Project the state before
+            # evaluating its physical query gradient: differentiating clamp
+            # outside the box would report a false zero gradient at a point
+            # from which moving inward still improves the acquisition.
+            with torch.no_grad():
+                parameter.copy_(candidates()[..., free])
             loss = -acquisition_function(candidates()).sum()
-            parameter.grad = torch.autograd.grad(loss, parameter)[0]
+            gradient = torch.autograd.grad(loss, parameter)[0]
+            # The projected gradient is zero for outward motion at an active
+            # bound, the correct box-constrained first-order condition.
+            for bound, lower in ((lower_bounds, True), (upper_bounds, False)):
+                if bound is not None:
+                    limit = torch.as_tensor(
+                        bound, dtype=start.dtype, device=start.device
+                    ).expand_as(start)[..., free]
+                    outward = (
+                        ((parameter <= limit) & (gradient > 0))
+                        if lower
+                        else ((parameter >= limit) & (gradient < 0))
+                    )
+                    gradient = gradient.masked_fill(outward, 0)
+            parameter.grad = gradient
         else:
             with torch.no_grad():
                 evaluated = candidates().requires_grad_(True)

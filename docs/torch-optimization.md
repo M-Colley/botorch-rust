@@ -153,9 +153,49 @@ default dispatch. Batched weighting follows PR 3390's category-axis correction.
 The KG initializer checkpoint passes 140 CPU/CUDA KG/HVKG, optimizer and
 initializer tests, including no-host-transfer guards; mypy and Ruff pass.
 
-Mixed alternating search and further public optimization helpers are
-subsequent checkpoints. Local lattice search retains the reference's
-unbatched, non-one-shot restriction. Sequential mixed search retains the
-reference's inter-point-constraint restriction. Forced parallel SciPy mode
-remains unsupported; this driver uses serial SciPy calls for each restart
-group. No optimization speedup is claimed here.
+`optimize_acqf_mixed_alternating` and its public building blocks now support
+device Tensor domains. Random, equally-spaced binary and continuously-relaxed
+starts are implemented; ordinal/categorical nearest neighbors, spray points,
+feasible-point sampling and Boltzmann restart selection retain candidate data
+on the device. The search alternates feasible discrete/categorical moves and
+actual continuous optimization, with independent optimizer state per restart.
+Large unconstrained ordinal domains use continuous relaxation and rounding;
+dimensions participating in constraints remain discrete. Fixed features,
+intra-point inequalities, continuous equalities, q > 1 pending conditioning,
+scoring limits and postprocessing are honored. General linear constraints
+select the explicit SLSQP interface; box/fixed-feature continuous steps use
+Torch L-BFGS. Postprocessing must retain a feasible in-bounds candidate in its
+specified discrete domain. The reference algorithm's unbatched scalar,
+non-one-shot restriction remains explicit.
+
+Bounded Torch L-BFGS now projects its candidate state before each fresh closure
+and uses the physical query gradient, masking outward motion at active bounds.
+This corrects a port defect: for one restart x=0.2, objective -(x-0.73)^2 and
+bounds [0,1], an unconstrained line-search trial can exceed 1. Differentiating
+its clamp reports zero and falsely accepts x=1. The projected closure returns
+x=0.73 and still recognizes genuine boundary optima. Mixed continuous steps
+honor independent restart aggregation rather than coupling their L-BFGS
+histories. Candidate optimization does not accumulate model parameter grads.
+
+The mixed checkpoint passes 34 focused CPU/CUDA tests, including independent
+reference building blocks, real GP candidate/value parity, all three start
+strategies, constrained optimization, relaxation, fixed features, no-host
+conversion guards, pending rollback, postprocessing rejection, and twelve
+single/multiple-restart interior/boundary L-BFGS cases. The broader mixed,
+discrete, polytope, KG, native and phase-9 parity checkpoint passes 226 tests
+with two CPU-callback/CUDA exclusions. Targeted mypy and Ruff checks pass.
+
+The pinned source also leaves augmented pending points installed if a later
+`optimize_acqf_mixed_alternating` initialization fails. Two source regressions
+(None and Tensor pending states) fail on unchanged b0dd01be6; a `try/finally`
+repair makes them pass alongside existing value/retry tests. The prepared
+patch is in `D:/botorch-pr-mixed-pending`, for extension of the existing
+[PR 3395](https://github.com/meta-pytorch/botorch/pull/3395). The native Rust
+alternating optimizer already restores pending state before propagating an
+error; the device implementation does likewise.
+
+Further public optimization helpers are being audited. Local lattice search
+retains the reference's unbatched, non-one-shot restriction. Sequential mixed
+search retains the reference's inter-point-constraint restriction. Forced
+parallel SciPy mode remains unsupported; this driver uses serial SciPy calls
+for each restart group. No optimization speedup is claimed here.

@@ -69,6 +69,8 @@ def _project(
 
 def feasible_batches(samples: Tensor, bounds: Tensor, inequalities: Any, equalities: Any) -> Tensor:
     """One feasibility flag per raw q-batch (including any model batches)."""
+    if samples.shape[0] == 0:
+        return torch.zeros(0, dtype=torch.bool, device=bounds.device)
     q = samples.shape[-2]
     flattened = samples.reshape(samples.shape[0], -1, q * samples.shape[-1])
     tolerance = 2e-6 if bounds.dtype == torch.float32 else 2e-10
