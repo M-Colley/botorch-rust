@@ -13,42 +13,15 @@ from botorch_rs.kernels import Kernel
 from botorch_rs.means import ConstantMean, ZeroMean
 from botorch_rs.mlls import MarginalLogLikelihood
 
-_kl_function: Any = None
-
 
 def kl_divergence_mvn(mu_p: Any, Sigma_p: Any, mu_q: Any, Sigma_q: Any) -> Any:
-    """Cholesky-based KL(p || q), with native first derivatives in all inputs."""
-    arrays = (mu_p, Sigma_p, mu_q, Sigma_q)
+    """KL(p || q), with device-local full Torch graphs or native array evaluation."""
     kind = kind_of(mu_p)
-    if kind.lib == "torch" and _ops._requires_grad(arrays):
-        global _kl_function
-        import torch
+    if kind.lib == "torch":
+        from botorch_rs.models.empirical_gps._torch_em_helpers import gaussian_kl
 
-        if _kl_function is None:
-            from torch.autograd.function import once_differentiable
-
-            class _GaussianKl(torch.autograd.Function):
-                @staticmethod
-                def forward(ctx: Any, *values: Any) -> Any:  # type: ignore[override]
-                    a, b, c, d = (to_flat(x) for x in values)
-                    result, derivatives = _rs.gaussian_kl(a, b, c, d, gradients=True)
-                    assert derivatives is not None
-                    ctx.save_for_backward(
-                        *(
-                            from_flat(g[0], tuple(g[1]), kind_of(x))
-                            for g, x in zip(derivatives, values, strict=True)
-                        )
-                    )
-                    return from_flat([result], (), kind_of(values[0]))
-
-                @staticmethod
-                @once_differentiable
-                def backward(ctx: Any, adjoint: Any) -> tuple[Any, ...]:  # type: ignore[override]
-                    return tuple(adjoint * derivative for derivative in ctx.saved_tensors)
-
-            _kl_function = _GaussianKl
-        return _kl_function.apply(*arrays)
-    a, b, c, d = (to_flat(x) for x in arrays)
+        return gaussian_kl(mu_p, Sigma_p, mu_q, Sigma_q)
+    a, b, c, d = (to_flat(x) for x in (mu_p, Sigma_p, mu_q, Sigma_q))
     value, _ = _rs.gaussian_kl(a, b, c, d)
     return from_flat([value], (), kind)
 
@@ -167,6 +140,11 @@ class KLPriorFitMLL(MarginalLogLikelihood):
         if likelihood is not model.likelihood:
             raise ValueError("The likelihood must be the model's likelihood.")
         super().__init__(likelihood, model)
+        if getattr(model, "_tensor_backend", None) == "torch":
+            self._X_ref = X_ref
+            self._mu_em = mu_em.detach().clone()
+            self._Sigma_em = Sigma_em.detach().clone()
+            return
         self._X_ref = _ops.clone(X_ref)
         self._mu_em = _ops.clone(mu_em)
         self._Sigma_em = _ops.clone(Sigma_em)
@@ -175,12 +153,25 @@ class KLPriorFitMLL(MarginalLogLikelihood):
         )
 
     def forward(self, function_dist: Any = None, target: Any = None) -> Any:
+        if getattr(self.model, "_tensor_backend", None) == "torch":
+            from botorch_rs.models.empirical_gps._torch_em import dense, mean_at
+
+            return -kl_divergence_mvn(
+                self._mu_em,
+                self._Sigma_em,
+                mean_at(self.model.mean_module, self._X_ref),
+                dense(self.model.covar_module, self._X_ref, self._X_ref),
+            )
         value, _ = self._objective.native.value_and_grad(self._objective.raw())
         return from_flat([value], (), self._objective.kind)
 
     __call__ = forward
 
     def value_and_grad(self, raw_parameters: Any = None) -> tuple[float, list[float]]:
+        if getattr(self.model, "_tensor_backend", None) == "torch":
+            raise UnsupportedError(
+                "The flat native KL protocol requires backend='native'; use mll() with torch.autograd.grad for Tensor models."
+            )
         shapes = list(self.model._rs.parameter_shapes())
         parameters = (
             self.model._rs.raw_parameters()
@@ -232,9 +223,22 @@ class KLPriorFitMLL(MarginalLogLikelihood):
 
 
 def fit_kernel_to_em_prior(
-    mean_module: Any, covar_module: Kernel, X_ref: Any, mu_em: Any, Sigma_em: Any
+    mean_module: Any,
+    covar_module: Kernel,
+    X_ref: Any,
+    mu_em: Any,
+    Sigma_em: Any,
+    *,
+    backend: str = "auto",
 ) -> None:
     """Fit caller-owned mean/kernel modules by native Gaussian KL minimization."""
+    from botorch_rs.models.empirical_gps.em_empirical_gp import _torch_em_requested
+
+    if _torch_em_requested(backend, (X_ref, mu_em, Sigma_em), (mean_module, covar_module)):
+        from botorch_rs.models.empirical_gps._torch_em_helpers import fit_kernel
+
+        fit_kernel(mean_module, covar_module, X_ref, mu_em, Sigma_em)
+        return
     _KernelFit(mean_module, covar_module, X_ref, mu_em, Sigma_em).fit()
 
 
@@ -259,10 +263,45 @@ def coordinate_ascent_em(
     mll_adam_lr: float = 0.01,
     mll_adam_steps: int = 200,
     container_history: list[Any] | None = None,
+    *,
+    backend: str = "auto",
 ) -> Any:
     """Alternate exact native EM with native fixed-moment kernel fitting."""
     import random
     from dataclasses import replace
+
+    from botorch_rs.models.empirical_gps.em_empirical_gp import _torch_em_requested
+
+    if _torch_em_requested(
+        backend,
+        [value for data in datasets for value in (data.X, data.Y)]
+        + [inducing_points, likelihood_noise],
+        (mean_module, covar_module),
+    ):
+        from botorch_rs.models.empirical_gps._torch_em_helpers import coordinate_ascent
+
+        return coordinate_ascent(
+            datasets,
+            mean_module,
+            covar_module,
+            likelihood_noise,
+            num_em_iterations,
+            n_coord_ascent_iterations,
+            inducing_points,
+            optimize_inducing_points,
+            use_mean_prior,
+            use_covar_prior,
+            iw_nu,
+            em_convergence_tol,
+            enable_interpolation,
+            init_mode,
+            mll_max_iter,
+            mll_dataset_subsample,
+            mll_use_adam,
+            mll_adam_lr,
+            mll_adam_steps,
+            container_history,
+        )
 
     from botorch_rs.constraints import GreaterThan
     from botorch_rs.likelihoods import GaussianLikelihood

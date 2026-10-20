@@ -201,9 +201,20 @@ def build_shared_gp_model_list(
     mean_module: Mean,
     covar_module: Kernel,
     observation_noise: float | None = None,
+    *,
+    backend: str = "auto",
 ) -> tuple[ModelListGP, SumMarginalLogLikelihood]:
     """Build exact GPs with one jointly fitted mean/kernel and separate noises."""
-    from botorch_rs.models.empirical_gps.em_empirical_gp import _copy_modules
+    from botorch_rs.models.empirical_gps.em_empirical_gp import _copy_modules, _torch_em_requested
+
+    if _torch_em_requested(
+        backend,
+        [value for data in datasets for value in (data.X, data.Y)] + [observation_noise],
+        (mean_module, covar_module),
+    ):
+        from botorch_rs.models.empirical_gps._torch_em_helpers import shared_models
+
+        return shared_models(datasets, mean_module, covar_module, observation_noise)
 
     if not datasets:
         raise ValueError("At least one historical dataset is required.")
@@ -233,7 +244,9 @@ def build_shared_gp_model_list(
             raise ValueError("Shared GP datasets require unbatched n x d inputs and n x 1 targets.")
         mean, kernel = _copy_modules(mean_module, covar_module)
         actual_mean = mean if isinstance(mean, ConstantMean) else ConstantMean()
-        model: Any = SingleTaskGP(data.X, data.Y, mean_module=actual_mean, covar_module=kernel)
+        model: Any = SingleTaskGP(
+            data.X, data.Y, mean_module=actual_mean, covar_module=kernel, outcome_transform=None
+        )
         if observation_noise is not None:
             model.likelihood.noise = observation_noise
         models.append(model)
@@ -243,8 +256,10 @@ def build_shared_gp_model_list(
     for model in models:
         model.mean_module, model.covar_module = mean_module, covar_module
     result = ModelListGP(*models)
-    backend = _SharedBackend(models, mean_module, covar_module, observation_noise is not None)
-    return result, _SharedSumMarginalLogLikelihood(result, backend)
+    shared_backend = _SharedBackend(
+        models, mean_module, covar_module, observation_noise is not None
+    )
+    return result, _SharedSumMarginalLogLikelihood(result, shared_backend)
 
 
 __all__ = ["build_shared_gp_model_list"]

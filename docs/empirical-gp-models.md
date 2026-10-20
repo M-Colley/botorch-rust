@@ -441,3 +441,46 @@ mixed Hessians through explicit inducing points and historical data, immutable
 warm snapshots, float32 zero-noise stabilization, reusable-container round trips,
 native-prior conversion, condition/fantasy/sample derivatives, and both fitting
 routes. Native EM and all existing empirical model regressions run alongside it.
+
+
+### Tensor KL, coordinate ascent and shared-kernel fitting
+
+The remaining empirical-prior public helpers have device-resident Tensor paths:
+`kl_divergence_mvn`, `KLPriorFitMLL`, `fit_kernel_to_em_prior`,
+`coordinate_ascent_em`, and `build_shared_gp_model_list`. Direct Gaussian KL
+retains all four input graphs, including broadcast batches and mixed Hessians.
+The KL fitting MLL detaches the target empirical moments as its upstream contract
+requires, while keeping live reference-coordinate and model-parameter graphs.
+Neither observation noise nor its priors enter the KL objective.
+
+Coordinate ascent performs actual fixed-moment historical likelihood fitting,
+then re-estimates EM moments using all historical datasets. Both SciPy and Adam
+steps, fixed observation variance, device RNG subsampling, optional inducing
+location optimization, automatic Adam selection, and deep container histories
+are supported. Native module descriptors are converted at the boundary; fitted
+parameter values are installed back into the caller-owned descriptors. Actual
+Torch modules retain their parameter identities. With no explicit inducing grid,
+the indexed fixed-moment objective can be constant in the kernel parameters;
+this is handled as an exact no-op rather than the pinned source's backward error.
+Registered parameter priors still participate if they give that objective a
+gradient. Optimizing inducing locations requires explicit locations.
+
+Shared model lists use one actual Tensor mean module and one actual Tensor
+kernel module across all children, so shared gradients accumulate at those same
+leaves and fitting optimizes the joint objective. Training targets remain on
+their raw scale (`outcome_transform=None`), following the correction in
+[BoTorch #3388](https://github.com/meta-pytorch/botorch/pull/3388); the native shared
+factory now uses this corrected convention too. Each child's normalized exact
+MLL is averaged over children, matching SumMarginalLogLikelihood. Learned noises
+remain independent; explicitly fixed noises retain their values and frozen
+flags. Port-native descriptors are converted to shared Tensor modules and
+synchronized after the high-level fit; external Tensor optimizers should use
+the actual modules exposed by the returned models. No independent native copies
+are rebound and presented as shared Tensor leaves.
+
+`test_torch_em_helpers.py` checks CPU/CUDA all-input KL Hessians, live reference
+coordinates with detached empirical targets, actual KL recovery, caller module
+identity and descriptor updates, raw-target joint likelihood and shared Hessians,
+both coordinate optimizers with fixed/learned locations and selected datasets,
+full-data EM refreshes, default no-op/zero-cycle behavior, and independent history
+snapshots. The helper, Tensor EM and legacy KL suites passed 76 tests together.

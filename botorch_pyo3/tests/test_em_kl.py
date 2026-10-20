@@ -137,4 +137,5 @@ def test_invalid_kl_shape_and_reference_gradient_are_explicit():
             x.requires_grad_(),
             torch.zeros(2, dtype=DT),
             torch.eye(2, dtype=DT),
+            backend="native",
         )
