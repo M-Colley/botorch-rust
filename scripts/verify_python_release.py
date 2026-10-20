@@ -38,6 +38,9 @@ def main() -> int:
             "--package-root must contain the installed botorch_rs package."
         )
     os.environ["PYTHONPATH"] = os.pathsep.join((str(package_root), str(reference)))
+    os.environ["BOTORCH_RS_REFERENCE_ROOT"] = str(reference)
+    inherited_addopts = os.environ.pop("PYTEST_ADDOPTS", "")
+    os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "RAYON_NUM_THREADS"):
         os.environ[name] = "1"
     os.environ["BOTORCH_RS_REQUIRE_BOTORCH"] = "1"
@@ -53,6 +56,8 @@ def main() -> int:
 
     torch.set_num_threads(1)
     native = Path(_botorch_rs.__file__).resolve()
+    if not Path(botorch_rs.__file__).resolve().is_relative_to(package):
+        raise RuntimeError("Python modules did not load from the installed package.")
     if not native.is_relative_to(package):
         raise RuntimeError(
             "Tests would load an extension outside the installed package."
@@ -149,6 +154,8 @@ def main() -> int:
         str(root / "botorch_pyo3/tests"),
         "-q",
         "-rs",
+        "-o",
+        "addopts=",
         "-m",
         marker,
         f"--junitxml={args.report.with_suffix('.xml')}",
@@ -206,6 +213,7 @@ def main() -> int:
         "phase_errors": phase_errors,
         "case_ids_exactly_once": exactly_once,
         "pytest_arguments": command,
+        "cleared_pytest_addopts": inherited_addopts,
         "environment": {
             name: os.environ[name]
             for name in (
@@ -215,6 +223,8 @@ def main() -> int:
                 "RAYON_NUM_THREADS",
                 "BOTORCH_RS_REQUIRE_BOTORCH",
                 "PYTHONDONTWRITEBYTECODE",
+                "BOTORCH_RS_REFERENCE_ROOT",
+                "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
             )
         },
         "selected": ledger.selected,
