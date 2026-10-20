@@ -208,40 +208,70 @@ class KernelSpec:
     def outputscale_constraint(self) -> Constraint | None: ...
 
 def posterior_query_vjp(
-    source: Any, x: Array, adjoint: Array, mode: str, observation_noise: bool = False,
-    output_indices: Sequence[int] | None = None, transform: Transform | None = None,
+    source: Any,
+    x: Array,
+    adjoint: Array,
+    mode: str,
+    observation_noise: bool = False,
+    output_indices: Sequence[int] | None = None,
+    transform: Transform | None = None,
     base: bool = False,
 ) -> ArrayBuf: ...
 def posterior_query_samples_vjp(
-    source: Any, x: Array, base_samples: Array, adjoint: Array, observation_noise: bool = False,
-    output_indices: Sequence[int] | None = None, transform: Transform | None = None,
+    source: Any,
+    x: Array,
+    base_samples: Array,
+    adjoint: Array,
+    observation_noise: bool = False,
+    output_indices: Sequence[int] | None = None,
+    transform: Transform | None = None,
     base: bool = False,
 ) -> ArrayBuf: ...
-def target_task_model(model: Model, feature_indices: Sequence[int], imputation: Sequence[float]) -> Model: ...
-
+def target_task_model(
+    model: Model, feature_indices: Sequence[int], imputation: Sequence[float]
+) -> Model: ...
 def additive_component_model(model: SingleTaskGP, extra_batch_dims: int = 0) -> Model: ...
 def gaussian_kl(
-    mu_p: Array, sigma_p: Array, mu_q: Array, sigma_q: Array,
+    mu_p: Array,
+    sigma_p: Array,
+    mu_q: Array,
+    sigma_q: Array,
     gradients: bool = False,
 ) -> tuple[float, tuple[ArrayBuf, ArrayBuf, ArrayBuf, ArrayBuf] | None]: ...
 
 class KernelPriorKl:
     def __init__(
-        self, node: KernelNode, points: Array, mean: Array, covariance: Array,
-        learn_mean: bool = True, mean_constraint: Constraint | None = None,
+        self,
+        node: KernelNode,
+        points: Array,
+        mean: Array,
+        covariance: Array,
+        learn_mean: bool = True,
+        mean_constraint: Constraint | None = None,
     ) -> None: ...
     def value_and_grad(self, raw: Sequence[float]) -> tuple[float, list[float]]: ...
     def fit(
-        self, raw: Sequence[float], maxcor: int | None = None,
-        pgtol: float | None = None, ftol: float | None = None,
-        maxiter: int | None = None, maxfun: int | None = None,
-        maxls: int | None = None, max_attempts: int | None = None,
+        self,
+        raw: Sequence[float],
+        maxcor: int | None = None,
+        pgtol: float | None = None,
+        ftol: float | None = None,
+        maxiter: int | None = None,
+        maxfun: int | None = None,
+        maxls: int | None = None,
+        max_attempts: int | None = None,
         seed: int | None = None,
     ) -> tuple[list[float], float, int, int, str, str, int]: ...
+
 def additive_kernel_parts(
-    node: KernelNode, raw: Sequence[float], input_dim: int,
-    x1: Array | None = None, x2: Array | None = None, mode: str = "base",
-    diag: bool = False, eps: float = 1e-6,
+    node: KernelNode,
+    raw: Sequence[float],
+    input_dim: int,
+    x1: Array | None = None,
+    x2: Array | None = None,
+    mode: str = "base",
+    diag: bool = False,
+    eps: float = 1e-6,
 ) -> ArrayBuf: ...
 
 class KernelNode:
@@ -492,11 +522,18 @@ class SingleTaskGP:
         transform: Transform | None = None,
         base: bool = False,
     ) -> ArrayBuf: ...
-    def replace_transformed_train_data(self, targets: Array, fixed_noise: Array | None = None,
-                                       strict: bool = True) -> None: ...
-    def set_sparse_outlier_noise(self, support: list[int], raw: list[float], convex: bool = True,
-                                lower: float = 0.0, upper: float = 0.999,
-                                prior: Prior | None = None) -> None: ...
+    def replace_transformed_train_data(
+        self, targets: Array, fixed_noise: Array | None = None, strict: bool = True
+    ) -> None: ...
+    def set_sparse_outlier_noise(
+        self,
+        support: list[int],
+        raw: list[float],
+        convex: bool = True,
+        lower: float = 0.0,
+        upper: float = 0.999,
+        prior: Prior | None = None,
+    ) -> None: ...
     def sparse_outlier_state(self) -> tuple[list[int], list[float]]: ...
     def sparse_outlier_expansion(self, loo: bool) -> list[float]: ...
     def mll(self, raw_parameters: Sequence[float] | None = None) -> ArrayOut: ...
@@ -810,8 +847,16 @@ class KroneckerMultiTaskGP:
         seed: int | None = None,
     ) -> tuple[float, int, int, str, str, int, list[ElementFit]]: ...
     def matheron_samples(self, x: Array, z: Array, observation_noise: bool = False) -> ArrayBuf: ...
-    def marginal_vjp(self, x: Array, mean_adjoint: Array, variance_adjoint: Array, observation_noise: bool = False) -> ArrayBuf: ...
-    def matheron_samples_vjp(self, x: Array, z: Array, adjoint: Array, observation_noise: bool = False) -> ArrayBuf: ...
+    def marginal_vjp(
+        self,
+        x: Array,
+        mean_adjoint: Array,
+        variance_adjoint: Array,
+        observation_noise: bool = False,
+    ) -> ArrayBuf: ...
+    def matheron_samples_vjp(
+        self, x: Array, z: Array, adjoint: Array, observation_noise: bool = False
+    ) -> ArrayBuf: ...
 
 def kronecker_model(model: KroneckerMultiTaskGP) -> Model: ...
 
@@ -1500,8 +1545,9 @@ class MultiOutputRiskMeasure:
     def forward(self, samples: Array) -> ArrayBuf: ...
     def vjp(self, samples: Array, adjoint: Array) -> ArrayBuf: ...
 
-def mvar_make_differentiable(prepared_samples: Array, mvars: Array,
-                             adjoint: Array | None = None) -> ArrayBuf: ...
+def mvar_make_differentiable(
+    prepared_samples: Array, mvars: Array, adjoint: Array | None = None
+) -> ArrayBuf: ...
 def mars_y_normalization_bounds(y: Array, ref_point: Sequence[float] | None = None) -> ArrayOut: ...
 def momf(
     model: Model,
@@ -3021,8 +3067,12 @@ class HigherOrderGP:
         self, x: Array, observation_noise: bool = False, original: bool = True
     ) -> tuple[ArrayBuf, ArrayBuf]: ...
     def samples(self, x: Array, base_samples: Array, original: bool = True) -> ArrayBuf: ...
-    def moment_vjp(self, x: Array, mean_adjoint: Array, variance_adjoint: Array, original: bool = True) -> ArrayBuf: ...
-    def samples_vjp(self, x: Array, base_samples: Array, adjoint: Array, original: bool = True) -> ArrayBuf: ...
+    def moment_vjp(
+        self, x: Array, mean_adjoint: Array, variance_adjoint: Array, original: bool = True
+    ) -> ArrayBuf: ...
+    def samples_vjp(
+        self, x: Array, base_samples: Array, adjoint: Array, original: bool = True
+    ) -> ArrayBuf: ...
     def condition_on_observations(self, x_tf: Array, y_tf: Array) -> HigherOrderGP: ...
     def train_inputs(self) -> ArrayOut: ...
     def train_targets(self) -> ArrayOut: ...
@@ -3059,7 +3109,9 @@ class EmpiricalGP:
     @property
     def dim(self) -> int: ...
     def model_handle(self) -> Model: ...
-    def task_model_handle(self, outputs: Sequence[int], task_feature: int | None = None) -> Model: ...
+    def task_model_handle(
+        self, outputs: Sequence[int], task_feature: int | None = None
+    ) -> Model: ...
     def mll(self, raw: list[float] | None = None) -> ArrayOut: ...
     def mll_value_and_grad(
         self, raw: list[float] | None = None
@@ -3119,8 +3171,12 @@ class LatentKroneckerGP:
         self, raw: Sequence[float] | None = None
     ) -> tuple[ArrayOut, list[float]]: ...
     def posterior_grid(self, x: Array, t: Array) -> tuple[ArrayBuf, ArrayBuf]: ...
-    def posterior_grid_vjp(self, x: Array, t: Array, mean_adjoint: Array, covariance_adjoint: Array) -> tuple[ArrayBuf, ArrayBuf]: ...
-    def samples_vjp(self, x: Array, t: Array, base: Array, adjoint: Array) -> tuple[ArrayBuf, ArrayBuf]: ...
+    def posterior_grid_vjp(
+        self, x: Array, t: Array, mean_adjoint: Array, covariance_adjoint: Array
+    ) -> tuple[ArrayBuf, ArrayBuf]: ...
+    def samples_vjp(
+        self, x: Array, t: Array, base: Array, adjoint: Array
+    ) -> tuple[ArrayBuf, ArrayBuf]: ...
     def samples(self, x: Array, t: Array, base: Array) -> ArrayBuf: ...
     def fit(self, **kwargs: Any) -> tuple[float, int, int, str, str, int]: ...
     def fit_torch(self, **kwargs: Any) -> tuple[int, float, int, float | None, str | None]: ...
@@ -3187,25 +3243,49 @@ class _LbfgsbState:
     def corrections(self) -> tuple[list[list[float]], list[list[float]]]: ...
     def inverse_hessian_product(self, vector: Sequence[float]) -> list[float]: ...
 
-
 def em_pretrain(
-    xs: Sequence[Array], ys: Sequence[Array], inducing: Array, kernel: KernelNode,
-    raw: Sequence[float], constant: float, indices: Sequence[Sequence[int]] | None,
-    noise: float, iterations: int, mean_prior: bool, covariance_prior: bool,
-    iw_nu: float | None, tolerance: float | None, naive_init: bool,
-    shrinkage: float, record_history: bool,
+    xs: Sequence[Array],
+    ys: Sequence[Array],
+    inducing: Array,
+    kernel: KernelNode,
+    raw: Sequence[float],
+    constant: float,
+    indices: Sequence[Sequence[int]] | None,
+    noise: float,
+    iterations: int,
+    mean_prior: bool,
+    covariance_prior: bool,
+    iw_nu: float | None,
+    tolerance: float | None,
+    naive_init: bool,
+    shrinkage: float,
+    record_history: bool,
 ) -> tuple[ArrayOut, ArrayBuf, ArrayBuf, ArrayOut, list[tuple[ArrayOut, ArrayBuf]], int]: ...
 def em_prior_state(prior: Prior) -> tuple[str, list[float], bool, float | None]: ...
 
 class EMGaussianProcess:
     def __init__(
-        self, x: Array, y: Array, history_x: Sequence[Array], history_y: Sequence[Array],
-        inducing: Array, mean: Array, covariance: Array, kernel: KernelNode,
-        kernel_raw: Sequence[float], likelihood: GaussianLikelihoodSpec, noise_raw: float,
-        constant: float = 0.0, learn_mean: bool = False, mean_prior: Prior | None = None,
-        mean_constraint: Constraint | None = None, base: KernelNode | None = None,
-        base_raw: Sequence[float] = (), interpolate: bool = True,
-        inducing_observations: bool = False, freeze_pretrained: bool = False,
+        self,
+        x: Array,
+        y: Array,
+        history_x: Sequence[Array],
+        history_y: Sequence[Array],
+        inducing: Array,
+        mean: Array,
+        covariance: Array,
+        kernel: KernelNode,
+        kernel_raw: Sequence[float],
+        likelihood: GaussianLikelihoodSpec,
+        noise_raw: float,
+        constant: float = 0.0,
+        learn_mean: bool = False,
+        mean_prior: Prior | None = None,
+        mean_constraint: Constraint | None = None,
+        base: KernelNode | None = None,
+        base_raw: Sequence[float] = (),
+        interpolate: bool = True,
+        inducing_observations: bool = False,
+        freeze_pretrained: bool = False,
     ) -> None: ...
     def raw_parameters(self) -> list[float]: ...
     def set_raw_parameters(self, raw: Sequence[float]) -> None: ...
@@ -3227,13 +3307,17 @@ class EMGaussianProcess:
     def freeze_pretrained(self, freeze: bool) -> None: ...
     def copy(self) -> EMGaussianProcess: ...
     def mll(self, raw: Sequence[float] | None = None) -> ArrayOut: ...
-    def mll_value_and_grad(self, raw: Sequence[float] | None = None) -> tuple[ArrayOut, list[float]]: ...
+    def mll_value_and_grad(
+        self, raw: Sequence[float] | None = None
+    ) -> tuple[ArrayOut, list[float]]: ...
     def sample_all_priors(self, seed: int | None = None) -> None: ...
     def fit(self, **kwargs: Any) -> tuple[float, int, int, str, str, int]: ...
     def fit_torch(self, **kwargs: Any) -> tuple[int, float, int, float | None, str | None]: ...
 
 class SharedGPFit:
-    def __init__(self, models: Sequence[SingleTaskGP], learn_mean: bool, freeze_noise: bool) -> None: ...
+    def __init__(
+        self, models: Sequence[SingleTaskGP], learn_mean: bool, freeze_noise: bool
+    ) -> None: ...
     def raw_parameters(self) -> list[float]: ...
     def set_raw_parameters(self, raw: Sequence[float]) -> None: ...
     def local_parameters(self) -> list[list[float]]: ...
@@ -3241,6 +3325,8 @@ class SharedGPFit:
     def parameter_shapes(self) -> list[tuple[str, list[int]]]: ...
     def raw_parameter_bounds(self) -> list[tuple[float, float]]: ...
     def mll(self, raw: Sequence[float] | None = None) -> ArrayOut: ...
-    def mll_value_and_grad(self, raw: Sequence[float] | None = None) -> tuple[ArrayOut, list[float]]: ...
+    def mll_value_and_grad(
+        self, raw: Sequence[float] | None = None
+    ) -> tuple[ArrayOut, list[float]]: ...
     def fit(self, **kwargs: Any) -> tuple[float, int, int, str, str, int]: ...
     def fit_torch(self, **kwargs: Any) -> tuple[int, float, int, float | None, str | None]: ...

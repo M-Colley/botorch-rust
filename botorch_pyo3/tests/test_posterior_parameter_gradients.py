@@ -12,9 +12,11 @@ torch = pytest.importorskip("torch")
 from botorch.models import SingleTaskGP as BtGP  # noqa: E402
 from botorch.models.transforms.input import Warp as BtWarp  # noqa: E402
 from botorch.models.transforms.outcome import Standardize as BtStandardize  # noqa: E402
+from botorch.settings import propagate_grads  # noqa: E402
 from gpytorch.kernels import LinearKernel as BtLinear  # noqa: E402
 from gpytorch.kernels import MaternKernel as BtMatern  # noqa: E402
 from gpytorch.kernels import ScaleKernel as BtScale  # noqa: E402
+from gpytorch.settings import fast_pred_var  # noqa: E402
 
 from botorch_rs.kernels import LinearKernel, MaternKernel, ScaleKernel  # noqa: E402
 from botorch_rs.models import SingleTaskGP  # noqa: E402
@@ -79,7 +81,17 @@ def model_pair(outputs=1, batch=(), tree=False, warp=False, fixed=False):
 def test_posterior_raw_parameter_vjp_matches_official(outputs, batch, tree, warp, fixed, noisy):
     actual, reference = model_pair(outputs, batch, tree, warp, fixed)
     query = torch.tensor([[[[0.2, 0.6], [0.7, 0.3]]]], dtype=torch.double).expand(3, 1, 2, 2)
-    post = reference.posterior(query, observation_noise=noisy)
+    # BoTorch normally detaches its training caches. The explicit native
+    # pullback differentiates the full conditional, including the solve.
+    with propagate_grads(True), fast_pred_var(False):
+        if warp:
+            # eval() stores transformed training inputs under no_grad. Rebuild
+            # that graph explicitly to compare the full Warp sensitivity.
+            reference.eval()
+            reference.set_train_data(
+                inputs=reference.input_transform(reference._original_train_inputs), strict=False
+            )
+        post = reference.posterior(query, observation_noise=noisy)
     covariance = post.distribution.covariance_matrix
     mean_bar = torch.linspace(-0.3, 0.7, post.mean.numel(), dtype=torch.double).reshape(
         post.mean.shape

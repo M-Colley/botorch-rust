@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import platform
+import random
 import statistics
 import subprocess
 import time
@@ -27,12 +28,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import botorch
-import botorch_rs
-from botorch_rs import _botorch_rs as extension
 import torch
 from botorch.acquisition.logei import qLogNoisyExpectedImprovement as ReferenceNEI
 from botorch.models import SingleTaskGP as ReferenceGP
 from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
+
+import botorch_rs
+from botorch_rs import _botorch_rs as extension
 from botorch_rs.acquisition.logei import qLogNoisyExpectedImprovement as RustNEI
 from botorch_rs.models import SingleTaskGP as RustGP
 from botorch_rs.sampling.normal import SobolQMCNormalSampler as RustSampler
@@ -67,9 +69,7 @@ def main() -> None:
             "repeats",
         )
     ):
-        parser.error(
-            "all workload sizes, thread counts, warmups and repeats must be positive"
-        )
+        parser.error("all workload sizes, thread counts, warmups and repeats must be positive")
     torch.set_default_dtype(torch.float32)
     torch.set_num_threads(args.threads)
     botorch_rs.set_num_threads(args.threads)
@@ -125,16 +125,21 @@ def main() -> None:
                         "rtol": 1e-6,
                     }
                 )
-            results = []
-            for (name, cache_root), acquisition in acquisitions.items():
+            timings = {key: [] for key in acquisitions}
+            for acquisition in acquisitions.values():
                 for _ in range(args.warmup):
                     acquisition(candidates)
-                elapsed = []
-                for _ in range(args.repeats):
+            order_rng = random.Random(20261020)
+            for _ in range(args.repeats):
+                order = list(acquisitions)
+                order_rng.shuffle(order)
+                for key in order:
                     start = time.perf_counter()
-                    value = acquisition(candidates)
-                    elapsed.append((time.perf_counter() - start) * 1000)
-                assert torch.isfinite(value).all()
+                    value = acquisitions[key](candidates)
+                    timings[key].append((time.perf_counter() - start) * 1000)
+                    assert torch.isfinite(value).all()
+            results = []
+            for (name, cache_root), elapsed in timings.items():
                 results.append(
                     {
                         "backend": name,
@@ -162,9 +167,7 @@ def main() -> None:
     extension_path = Path(extension.__file__).resolve()
     source_root = Path(botorch_rs.__file__).resolve().parents[3]
     report = {
-        "parameters": {
-            key: value for key, value in vars(args).items() if key != "output"
-        },
+        "parameters": {key: value for key, value in vars(args).items() if key != "output"},
         "python": platform.python_version(),
         "platform": platform.platform(),
         "torch": torch.__version__,
@@ -175,6 +178,7 @@ def main() -> None:
         "extension_path": str(extension_path),
         "extension_sha256": hashlib.sha256(extension_path.read_bytes()).hexdigest(),
         "draws": "torch.randn float64 with per-dimension seed=1000+dimension, shared across implementations",
+        "timing_protocol": "warm all variants, then shuffle all four variants in each measured round (seed=20261020)",
         "value_checks": checks,
         "botorch_rs": botorch_rs.__version__,
         "results": results,

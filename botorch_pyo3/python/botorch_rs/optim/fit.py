@@ -202,14 +202,23 @@ def fit_gpytorch_mll_scipy(
             mll, parameters, bounds, closure, closure_kwargs, method, options, callback, timeout_sec
         )
     if getattr(mll, "_rs_shared_fit", False) and (
-        parameters is not None or bounds is not None or closure is not None
-        or closure_kwargs is not None or method != "L-BFGS-B"
-        or callback is not None or timeout_sec is not None
+        parameters is not None
+        or bounds is not None
+        or closure is not None
+        or closure_kwargs is not None
+        or method != "L-BFGS-B"
+        or callback is not None
+        or timeout_sec is not None
     ):
-        raise UnsupportedError("Shared GP lists require the native L-BFGS-B closure over all parameters.")
+        raise UnsupportedError(
+            "Shared GP lists require the native L-BFGS-B closure over all parameters."
+        )
     if getattr(mll, "_rs_em_fit", False) and (
-        closure is not None or closure_kwargs is not None or method != "L-BFGS-B"
-        or callback is not None or timeout_sec is not None
+        closure is not None
+        or closure_kwargs is not None
+        or method != "L-BFGS-B"
+        or callback is not None
+        or timeout_sec is not None
     ):
         raise UnsupportedError("EM likelihoods require the native L-BFGS-B closure.")
     if (
@@ -235,7 +244,9 @@ def fit_gpytorch_mll_scipy(
         if getattr(mll, "_rs_em_fit", False):
             mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
             hogp_kwargs.update(mask=mask, bounds=flat_bounds)
-        loss, nit, _, status, message, _ = _native_fit_backend(mll).fit(max_attempts=1, **hogp_kwargs)
+        loss, nit, _, status, message, _ = _native_fit_backend(mll).fit(
+            max_attempts=1, **hogp_kwargs
+        )
         return OptimizationResult(
             step=int(nit), fval=float(loss), status=OptimizationStatus[status], message=message
         )
@@ -465,7 +476,9 @@ def fit_gpytorch_mll_torch(
                 )
             )
         if getattr(mll, "_rs_shared_fit", False) or getattr(mll, "_rs_em_fit", False):
-            raise UnsupportedError("EM and shared-GP Adam fitting require the native closure and stopping criterion, with no scheduler or callback.")
+            raise UnsupportedError(
+                "EM and shared-GP Adam fitting require the native closure and stopping criterion, with no scheduler or callback."
+            )
     if _is_approximate(mll):
         native = (
             closure is None

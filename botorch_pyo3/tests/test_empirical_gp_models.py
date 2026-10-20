@@ -31,10 +31,10 @@ from helpers import KINDS, as_kind, assert_close, check_kind, shape, to_list
 
 def test_scalar_empirical_kernel_in_single_task_gp(kind: str) -> None:
     H, curves, X, Y, _ = data(1)
-    kernel = EmpiricalOneDimensionalKernel(
-        as_kind(H, kind), as_kind(curves, kind)
+    kernel = EmpiricalOneDimensionalKernel(as_kind(H, kind), as_kind(curves, kind))
+    gp = SingleTaskGP(
+        as_kind(X, kind), as_kind(Y, kind), covar_module=kernel, outcome_transform=None
     )
-    gp = SingleTaskGP(as_kind(X, kind), as_kind(Y, kind), covar_module=kernel, outcome_transform=None)
     posterior = gp.posterior(as_kind([[0.15], [0.65]], kind))
     check_kind(posterior.mean, kind)
     assert shape(posterior.mean) == (2, 1)

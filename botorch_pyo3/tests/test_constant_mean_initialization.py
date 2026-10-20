@@ -57,7 +57,10 @@ def test_unbound_constant_matches_gpytorch() -> None:
     gpytorch = pytest.importorskip("gpytorch")
     actual = ConstantMean(batch_shape=(2, 3))
     expected = gpytorch.means.ConstantMean(batch_shape=torch.Size([2, 3])).double()
-    for value in (torch.tensor(-0.75, dtype=torch.double), torch.tensor([[1., 2., 3.]], dtype=torch.double)):
+    for value in (
+        torch.tensor(-0.75, dtype=torch.double),
+        torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.double),
+    ):
         actual.initialize(constant=value)
         expected.initialize(constant=value)
         assert_close(actual.constant, expected.constant)

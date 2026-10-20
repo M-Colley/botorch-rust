@@ -67,7 +67,9 @@ def fit_gpytorch_mll(
     from botorch_rs.models.empirical_gps.shared_gp import _SharedSumMarginalLogLikelihood
     from botorch_rs.models.robust_relevance_pursuit_model import RobustRelevancePursuitMixin
 
-    if isinstance(mll, (KLPriorFitMLL, EMEmpiricalMarginalLogLikelihood, _SharedSumMarginalLogLikelihood)):
+    if isinstance(
+        mll, (KLPriorFitMLL, EMEmpiricalMarginalLogLikelihood, _SharedSumMarginalLogLikelihood)
+    ):
         return mll._fit(closure, optimizer, closure_kwargs, optimizer_kwargs, **kwargs)
 
     if isinstance(mll.model, RobustRelevancePursuitMixin):

@@ -19,6 +19,13 @@ symmetric joint adjoint with analytic kernel derivatives. Learned input
 transforms receive both training-point and query-point contributions.
 Production gradients do not use finite differences.
 
+Reference comparisons use BoTorch's `propagate_grads(True)` and exact
+predictive covariance settings. BoTorch normally detaches training caches;
+that default graph omits derivatives through the training solve. The native
+explicit pullback computes the full conditional derivative. Native finite
+differences independently check this behavior with inferred/fixed noise,
+kernel trees, affine outcome transforms and learned input warping.
+
 This explicit derivative interface is a foundation for model-parameter
 autograd. It does not make `parameters()` return persistent Torch
 parameters or attach ordinary `posterior()` outputs to those parameters.
