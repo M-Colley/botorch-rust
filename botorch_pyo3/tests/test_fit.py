@@ -45,7 +45,6 @@ def test_fit_options() -> None:
         {"optimizer_kwargs": {"method": "Adam"}},
         {"optimizer_kwargs": {"options": {"unknown": 1}}},
         {"optimizer_kwargs": {"timeout_sec": 1.0}},
-        {"pick_best_of_all_attempts": True},
     ):
         with pytest.raises(UnsupportedError):
             fit_gpytorch_mll(mll, **kwargs)

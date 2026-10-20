@@ -128,8 +128,8 @@ hyperparameters, as in BoTorch; `batch_cross_validation` refits each fold.
   ([details](additive-components.md)).
 - EM empirical prior pretraining, historical likelihoods, exact target
   conditioning, shared-kernel fitting, coordinate ascent and native
-  differentiation through cold EM reruns are integrated. Warm starts and
-  learned inducing locations remain configuration work
+  differentiation through cold and warm EM reruns are integrated. Learned
+  inducing locations remain configuration work
   ([details](empirical-gp-models.md)).
 
 ## Phase 11: the rest

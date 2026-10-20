@@ -35,19 +35,17 @@ both with SciPy 1.18 and torch 2.x on CPU.
   `timeout_sec` on the constrained (SLSQP) path, which runs to completion.
 - External-data loss closures for exact MLLs. Variational minibatches are
   supported; see [the native closure protocol](variational-data-loader-closures.md).
-- `botorch.optim.batched_lbfgs_b` (BoTorch's internal batched L-BFGS-B; the
-  parallel path is reproduced with botorch-rs's L-BFGS-B port per restart),
-  `botorch.optim.utils.timeout` (`minimize_with_timeout`) and
-  `numpy_utils`: internals with native counterparts.
 - BoTorch's private `_optimize_acqf*` entry points: `OptimizeAcqfInputs` is
   accepted by the building blocks of `optimize_mixed` (`discrete_step`,
   `continuous_step`, `generate_starting_points`, ...) only.
-- `loo_cv`, `efficient_loo_cv` and `ensemble_loo_cv` of
-  `botorch.cross_validation` (outside this phase's scope: the efficient LOO
-  formulas need the model's kernel-matrix internals; `batch_cross_validation`
-  covers LOO by refitting).
 - Batch-shaped inputs of `initialize_q_batch*` (`batch x n x q x d`); the
   `n x q x d` case is supported.
+
+Native batched L-BFGS-B, timeout and NumPy optimization adapters are integrated
+([solver details](batched-lbfgsb.md)). Cached `loo_cv`, `efficient_loo_cv` and
+`ensemble_loo_cv` are also integrated ([cross-validation](cross-validation.md)).
+`SingleTaskGP` families support best-of-all L-BFGS-B and Adam fitting attempts
+with rollback and native prior resampling ([scope and tests](fit-attempts.md)).
 
 ## Deviations from BoTorch (migration notes)
 

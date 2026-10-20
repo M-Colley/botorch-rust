@@ -489,8 +489,8 @@ are integrated in this branch:
 
 The main remaining gaps are:
 
-- **Empirical fitting:** native derivatives through cold EM reruns and both
-  fitters are integrated. Warm starts and learned inducing locations remain
+- **Empirical fitting:** native derivatives through cold and warm EM reruns
+  and both fitters are integrated. Learned inducing locations remain
   configuration work. Frozen pretrained empirical priors also support
   native fitting and prediction.
 - **Model configurations:** batched training and additional transforms
@@ -1771,9 +1771,11 @@ The model fits alone are 140–550× faster.
   hyperparameter graph. Acquisition values support `torch.autograd`
   (exact gradients computed in Rust), and `acqf.value_and_grad(X)` returns
   gradients for any array type.
-- **Fitting.** `pick_best_of_all_attempts`, custom optimizers and closures are
-  not supported; retries sample hyperparameters from their priors with a
-  seeded generator (`fit_gpytorch_mll(mll, seed=...)`).
+- **Fitting.** `pick_best_of_all_attempts` selects the best native L-BFGS-B or
+  Adam result for `SingleTaskGP` families ([scope](docs/fit-attempts.md)).
+  Custom high-level optimizers and closures remain unsupported. Retries
+  sample hyperparameters from their priors with a seeded generator
+  (`fit_gpytorch_mll(mll, seed=...)`).
 - **Warnings and errors** follow BoTorch (`InputDataWarning` for unscaled
   data, `NumericsWarning` for legacy EI, `BadInitialCandidatesWarning`).
   Errors raised by the Rust core derive from

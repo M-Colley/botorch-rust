@@ -110,6 +110,15 @@ def fit_gpytorch_mll(
         )
     if closure is not None or closure_kwargs is not None:
         raise UnsupportedError("Custom closures are not supported by botorch_rs.")
+    if kwargs.pop("pick_best_of_all_attempts", False):
+        from botorch_rs._fit_attempts import fit_all_attempts
+        from botorch_rs.models.gp_regression import SingleTaskGP
+
+        if not isinstance(mll.model, SingleTaskGP):
+            raise UnsupportedError(
+                "Best-of-all fitting currently requires a SingleTaskGP family model."
+            )
+        return fit_all_attempts(mll, optimizer, optimizer_kwargs, kwargs)
     if optimizer is not None and getattr(optimizer, "__name__", None) == "fit_gpytorch_mll_torch":
         if not isinstance(mll, ExactMarginalLogLikelihood):
             raise UnsupportedError(
@@ -135,8 +144,6 @@ def fit_gpytorch_mll(
     unknown = set(options) - _LBFGSB_OPTIONS - _IGNORED_OPTIONS
     if unknown:
         raise UnsupportedError(f"Unsupported L-BFGS-B options: {sorted(unknown)}.")
-    if kwargs.pop("pick_best_of_all_attempts", False):
-        raise UnsupportedError("pick_best_of_all_attempts=True is not supported by botorch_rs.")
     batched = math.prod(getattr(mll.model, "_aug_batch_shape", ())) > 1
     if batched and "maxfun" in options:
         warnings.warn(
