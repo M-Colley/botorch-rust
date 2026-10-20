@@ -968,6 +968,8 @@ def test_learnable_inducing_full_em_gradients_match_official(
 @pytest.mark.parametrize("kind", ["list", "numpy", "torch"])
 @pytest.mark.parametrize("adam", [False, True])
 def test_inducing_locations_are_real_native_optimizer_parameters(kind: str, adam: bool) -> None:
+    if kind != "list":
+        pytest.importorskip(kind)
     mean, kernel = modules()
     prior = pretrain_em_prior(
         datasets(kind),

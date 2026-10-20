@@ -43,6 +43,9 @@ def test_scalar_empirical_kernel_in_single_task_gp(kind: str) -> None:
 
 @pytest.fixture(autouse=True)
 def restore_torch_dtype() -> Any:
+    if importlib.util.find_spec("torch") is None:
+        yield
+        return
     import torch
 
     before = torch.get_default_dtype()

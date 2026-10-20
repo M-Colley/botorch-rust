@@ -246,7 +246,6 @@ def test_batched_model() -> None:
 
 def test_acquisition_functions_and_optimization() -> None:
     from botorch_rs.acquisition.active_learning import PairwiseMCPosteriorVariance
-    from botorch_rs.acquisition.monte_carlo import qSimpleRegret
     from botorch_rs.optim import optimize_acqf
 
     m = PairwiseGP(X_LIST, C_LIST)
@@ -273,6 +272,13 @@ def test_acquisition_functions_and_optimization() -> None:
         mcv([[[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]]])
     with pytest.raises(UnsupportedError, match="deterministic"):
         AnalyticExpectedUtilityOfBestOption(m, outcome_model=SingleTaskGP(X_LIST, [[0.1]] * 6))
+
+
+def test_learned_objective_acquisition() -> None:
+    pytest.importorskip("torch")
+    from botorch_rs.acquisition.monte_carlo import qSimpleRegret
+
+    m = PairwiseGP(X_LIST, C_LIST)
     lo = LearnedObjective(m, sample_shape=(3,), seed=1)
     outcome = SingleTaskGP(X_LIST, [[0.1, 0.3]] * 6)
     assert math.isfinite(float(to_list(qSimpleRegret(outcome, objective=lo)([[[0.2, 0.4]]]))[0]))

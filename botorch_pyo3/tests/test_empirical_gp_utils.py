@@ -80,7 +80,7 @@ def test_covariance_centering_interpolation_and_metadata(kind: str) -> None:
 def test_official_orthogonal_basis_gram_invariant(
     official: object, method: str, rows: int, cols: int
 ) -> None:
-    import torch
+    torch = pytest.importorskip("torch")
 
     A = torch.randn(
         2, rows, cols, generator=torch.Generator().manual_seed(918), dtype=torch.float64
@@ -95,7 +95,7 @@ def test_official_orthogonal_basis_gram_invariant(
 
 
 def test_official_covariance_and_interpolation_values_and_gradients(official: object) -> None:
-    import torch
+    torch = pytest.importorskip("torch")
 
     generator = torch.Generator().manual_seed(913)
     for diag in (False, True):
@@ -129,7 +129,7 @@ def test_official_covariance_and_interpolation_values_and_gradients(official: ob
 def test_official_basis_and_mean_interpolants(
     official: object, vectorized: bool, use_svd: bool | None
 ) -> None:
-    import torch
+    torch = pytest.importorskip("torch")
 
     generator = torch.Generator().manual_seed(401)
     X = torch.tensor([[0.0], [0.3], [0.7], [1.0]], dtype=torch.float64)
@@ -163,7 +163,7 @@ def test_official_basis_and_mean_interpolants(
 
 
 def test_official_psd_projection_and_shrinkage_gradients(official: object) -> None:
-    import torch
+    torch = pytest.importorskip("torch")
 
     a = torch.tensor([[-0.3, 0.4], [0.4, 1.2]], dtype=torch.float64)
     target = torch.tensor([[1.0, 0.2], [0.2, 2.0]], dtype=torch.float64, requires_grad=True)
@@ -188,7 +188,7 @@ def test_official_psd_projection_and_shrinkage_gradients(official: object) -> No
 
 @pytest.mark.parametrize("floor,gap", [(1e-10, 5e-14), (0.0, 0.0)])
 def test_psd_clipping_boundary_gradients_are_symmetric(floor: float, gap: float) -> None:
-    import torch
+    torch = pytest.importorskip("torch")
 
     if gap:
         value = torch.diag(torch.tensor([floor + gap, floor - gap], dtype=torch.float64))
@@ -209,7 +209,7 @@ def test_psd_clipping_boundary_gradients_are_symmetric(floor: float, gap: float)
 
 
 def test_shrinkage_trace_clamp_boundary_gradient(official: object) -> None:
-    import torch
+    torch = pytest.importorskip("torch")
 
     covariance = torch.tensor([[2e-12]], dtype=torch.float64, requires_grad=True)
     target = torch.tensor([[1e-12]], dtype=torch.float64, requires_grad=True)
@@ -261,7 +261,7 @@ def test_invalid_inputs() -> None:
 
 
 def test_parameter_registration_and_em_mean_gradient() -> None:
-    import torch
+    torch = pytest.importorskip("torch")
 
     module = torch.nn.Module()
     rs.instantiate_ard(module, 3, dtype=torch.float64)
@@ -273,8 +273,8 @@ def test_parameter_registration_and_em_mean_gradient() -> None:
 
 
 def test_gpytorch_parameter_container_and_infinite_constraint_bounds() -> None:
-    import torch
-    from gpytorch.module import Module
+    torch = pytest.importorskip("torch")
+    Module = pytest.importorskip("gpytorch.module").Module
 
     from botorch_rs.utils.constraints import NonTransformedInterval
 
@@ -306,7 +306,7 @@ def test_interpolation_invalid_value_shape_has_clear_error(kind: str, values: ob
 
 
 def test_interpolation_nan_propagates_even_with_finite_fill(official: object) -> None:
-    import torch
+    torch = pytest.importorskip("torch")
 
     x = torch.tensor([0.0, 1.0], dtype=torch.float64)
     y = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float64)

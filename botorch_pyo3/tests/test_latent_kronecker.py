@@ -141,7 +141,7 @@ def test_construct_inputs_factorizes_observed_rows(kind: str) -> None:
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 def test_torch_observation_mask_preserves_training_device(device: str) -> None:
-    import torch
+    torch = pytest.importorskip("torch")
 
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
