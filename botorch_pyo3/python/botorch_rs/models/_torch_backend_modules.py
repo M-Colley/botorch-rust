@@ -857,6 +857,7 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
     from botorch_rs.models.kernels.contextual_sac import SACKernel
     from botorch_rs.models.kernels.heterogeneous_multitask import MultiTaskConditionalKernel
     from botorch_rs.models.kernels.infinite_width_bnn import InfiniteWidthBNNKernel
+    from botorch_rs.models.kernels.integrated_white_noise import IntegratedWhiteNoiseKernel
     from botorch_rs.models.kernels.orthogonal_additive_kernel import OrthogonalAdditiveKernel
     from botorch_rs.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
 
@@ -871,6 +872,10 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
             return memo[id(kernel)]
         if type(kernel) in (RBFKernel, MaternKernel):
             result: TorchKernel = TorchStationaryKernel(kernel, train_X)
+        elif type(kernel) is IntegratedWhiteNoiseKernel:
+            from botorch_rs.models._torch_backend_wiener import TorchIntegratedWhiteNoiseKernel
+
+            result = TorchIntegratedWhiteNoiseKernel(_source=kernel, _like=train_X)
         elif type(kernel) in (
             RQKernel,
             PeriodicKernel,

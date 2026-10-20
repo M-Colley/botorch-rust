@@ -23,20 +23,56 @@ inputs `x1=[[0.2]]`, `x2=[[0.5]]` and `order=2`: `k(x1,x2,diag=True)` returns
 `0.002666666666666667`, while `k(x1,x2).to_dense().diagonal()` returns the
 correct value `0.008666666666666666`. The proposed upstream fix replaces the
 early diagonal return with elementwise minimum and maximum, then evaluates
-the existing shared polynomial sum:
+the existing shared polynomial sum. For integration orders above one, choose
+one consistent polynomial region to retain correct coincident higher derivatives:
 
 ```python
 if diag:
-    min_val = torch.minimum(x1_squeezed, x2_squeezed)
-    max_val = torch.maximum(x1_squeezed, x2_squeezed)
+    left, right = x1_squeezed, x2_squeezed
 else:
-    min_val = torch.minimum(x1_squeezed.unsqueeze(-1), x2_squeezed.unsqueeze(-2))
-    max_val = torch.maximum(x1_squeezed.unsqueeze(-1), x2_squeezed.unsqueeze(-2))
+    left, right = x1_squeezed.unsqueeze(-1), x2_squeezed.unsqueeze(-2)
+if self.order == 1:
+    min_val, max_val = torch.minimum(left, right), torch.maximum(left, right)
+else:
+    lower_branch = left <= right
+    min_val = torch.where(lower_branch, left, right)
+    max_val = torch.where(lower_branch, right, left)
 # Keep the existing diff and polynomial sum below this branch.
 ```
 
 The official reference checkout and the separate local BoTorch audit fork
 are preserved; this proposed upstream patch has not been applied there.
+
+### Device-resident integrated Wiener graphs
+
+`IntegratedWhiteNoiseKernel(..., backend="torch")` is an ordinary Tensor
+module with active dimensions and declared batch broadcasting. It is also
+converted automatically when used inside a Torch GP or kernel tree. The
+parameterless covariance polynomial runs as port-owned device Tensor operations;
+no query is copied to the native CPU/f64 numerical model. Composition with
+`ScaleKernel` supplies a persistent learnable scale. Full and aligned cross-input
+diagonals, scalar feature batching, float32/float64 CPU/CUDA, and full GP fitting
+and data/parameter derivative graphs are supported.
+
+The original min/max source formula has an additional, independently verified
+coincident-Hessian defect. For `order=2`, independent scalar leaves `s=t=1`
+give `d²k/ds²=0.5` and `d²k/dsdt=0.5`. The continuous polynomial limits are
+respectively **0** and **1**, from `k=s²(3t-s)/6` when `s<=t`. Independently
+splitting both min/max gradients in half at the tie is responsible. Selecting
+the same region with `torch.where` for both ordered times preserves all
+derivatives through the kernel's smoothness order `2*order-2`; either region
+has the same derivatives through that order at the diagonal. This does not
+assert differentiability beyond that order. Brownian covariance (`order=1`)
+is genuinely nonsmooth at independent equal times and retains Torch's symmetric
+first-derivative convention.
+
+`tests/test_torch_wiener.py` adds 31 cases for CPU/CUDA, both float precisions,
+orders 1–6, direct source values/derivatives away from ties, corrected cross
+diagonals, coincident `gradcheck`/`gradgradcheck`, and the highest smooth mixed
+derivative (which recovers Brownian covariance). Scaled/active-dimension exact
+GP tests cover posterior/source parity, repeated training-data and parameter
+first/second graphs, and an actual Adam update. Inputs must be finite,
+nonnegative scalar times after active-dimension selection.
 
 ## Native feature batches
 

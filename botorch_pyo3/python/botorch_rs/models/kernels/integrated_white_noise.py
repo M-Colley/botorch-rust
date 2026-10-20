@@ -20,7 +20,20 @@ class IntegratedWhiteNoiseKernel(Kernel):
     b0dd01be6 instead ignores the second input set in this case.
     """
 
-    def __init__(self, order: int = 1, **kwargs: Any) -> None:
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        device = kwargs.get("device")
+        if cls is IntegratedWhiteNoiseKernel and (
+            _use_torch_backend(backend)
+            or (backend == "auto" and device is not None and str(device) != "cpu")
+        ):
+            from botorch_rs.models._torch_backend_wiener import TorchIntegratedWhiteNoiseKernel
+
+            return object.__new__(TorchIntegratedWhiteNoiseKernel)
+        return object.__new__(cls)
+
+    def __init__(self, order: int = 1, *, backend: str = "auto", **kwargs: Any) -> None:
         if isinstance(order, bool) or not isinstance(order, int) or order < 1:
             raise ValueError(
                 "IntegratedWhiteNoiseKernel requires an integer order >= 1, "
