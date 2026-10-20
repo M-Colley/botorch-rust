@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import sys
+from collections.abc import Iterator
 from typing import Any
 
 from botorch_rs._arrays import broadcast_shapes, broadcast_to, from_flat, to_flat
@@ -14,6 +16,38 @@ from botorch_rs.models.higher_order_gp import HigherOrderGP
 from botorch_rs.models.latent_kronecker_gp import LatentKroneckerGP
 from botorch_rs.models.model_list_gp_regression import ModelListGP
 from botorch_rs.models.multitask import KroneckerMultiTaskGP, MultiTaskGP
+
+
+def _persistent_parameter(value: Any) -> bool:
+    torch = sys.modules.get("torch")
+    return torch is not None and isinstance(value, torch.nn.Parameter)
+
+
+def _model_parameter_paths(model: Any) -> Iterator[tuple[str, Any, Any]]:
+    """Native parameter paths, retaining aliases until final traversal filtering."""
+    if isinstance(model, ModelListGP):
+        for index, child in enumerate(model.models):
+            for name, value, key in _model_parameter_paths(child):
+                yield f"models.{index}.{name}", value, key
+        for index, child in enumerate(model.models):
+            for name, value, key in _model_parameter_paths(child):
+                if name.startswith("likelihood."):
+                    yield f"likelihood.likelihoods.{index}.{name[11:]}", value, key
+        return
+    for name, value in model.named_parameters():
+        key = ("torch", id(value)) if _persistent_parameter(value) else ("native", id(model), name)
+        yield name, value, key
+
+
+def _named_mll_parameters(
+    paths: Any, prefix: str, remove_duplicate: bool
+) -> Iterator[tuple[str, Any]]:
+    seen = set()
+    for name, value, key in paths:
+        if remove_duplicate and key in seen:
+            continue
+        seen.add(key)
+        yield f"{prefix}.{name}" if prefix else name, value
 
 
 def _forward_pass(model: Any) -> None:
@@ -28,7 +62,10 @@ def _forward_pass(model: Any) -> None:
 
 
 class MarginalLogLikelihood:
-    """Base class of the marginal log likelihoods."""
+    """Native MLL with parameter traversal and basic Torch gradient controls.
+
+    This is a focused parameter protocol, not a ``torch.nn.Module`` subclass.
+    """
 
     training: bool = True
     #: Summary of the last ``fit_gpytorch_mll`` call (scipy-style keys).
@@ -45,6 +82,66 @@ class MarginalLogLikelihood:
 
     def eval(self) -> MarginalLogLikelihood:
         return self.train(False)
+
+    def _parameter_paths(self) -> Iterator[tuple[str, Any, Any]]:
+        paths = list(_model_parameter_paths(self.model))
+        # GPyTorch registers the likelihood before the model. The model also
+        # registers that same likelihood; remove_duplicate=False exposes both.
+        for name, value, key in paths:
+            if isinstance(self.model, ModelListGP):
+                _, child_index, child_name = name.split(".", 2)
+                if child_name.startswith("likelihood."):
+                    yield f"likelihood.likelihoods.{child_index}.{child_name[11:]}", value, key
+            elif name.startswith("likelihood."):
+                yield name, value, key
+        for name, value, key in paths:
+            yield f"model.{name}", value, key
+        for index, mll in enumerate(getattr(self, "mlls", ())):
+            for name, value, key in mll._parameter_paths():
+                yield f"mlls.{index}.{name}", value, key
+
+    def named_parameters(
+        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
+    ) -> Iterator[tuple[str, Any]]:
+        """Parameters in likelihood-then-model registration order.
+
+        Native MLLs have no direct parameters, so ``recurse=False`` is empty.
+        Array-backed models expose native parameter descriptors; CPU Torch
+        exact and variational models expose their persistent leaves.
+        """
+        if recurse:
+            yield from _named_mll_parameters(self._parameter_paths(), prefix, remove_duplicate)
+
+    def parameters(self, recurse: bool = True) -> Iterator[Any]:
+        if recurse:
+            for _, value in self.named_parameters():
+                yield value
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        """Clear managed Torch gradients; native array descriptors have none."""
+        for parameter in self.parameters():
+            if not _persistent_parameter(parameter) or parameter.grad is None:
+                continue
+            if set_to_none:
+                parameter.grad = None
+            else:
+                if parameter.grad.grad_fn is not None:
+                    parameter.grad.detach_()
+                else:
+                    parameter.grad.requires_grad_(False)
+                parameter.grad.zero_()
+
+    def requires_grad_(self, requires_grad: bool = True) -> MarginalLogLikelihood:
+        """Set trainability of persistent CPU Torch leaves in place."""
+        parameters = tuple(self.parameters())
+        if any(not _persistent_parameter(parameter) for parameter in parameters):
+            raise UnsupportedError(
+                "requires_grad_ requires persistent CPU Torch model parameters; "
+                "native array descriptors do not store trainability flags."
+            )
+        for parameter in parameters:
+            parameter.requires_grad_(requires_grad)
+        return self
 
 
 class ExactMarginalLogLikelihood(MarginalLogLikelihood):
@@ -318,16 +415,23 @@ class _ApproximateMarginalLogLikelihood(MarginalLogLikelihood):
         value, grad = self._rs.elbo_value_and_grad(float(self.num_data), float(self.beta), params)
         return value, list(grad)
 
-    def named_parameters(self) -> Any:
+    def named_parameters(
+        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
+    ) -> Any:
         """``(name, raw value)`` of every parameter (the likelihood's first)."""
-        return self.model._outer._named_raw()
+        if recurse:
+            paths = (
+                (name, value, ("torch", id(value)) if _persistent_parameter(value) else name)
+                for name, value in self.model._outer._named_raw()
+            )
+            yield from _named_mll_parameters(paths, prefix, remove_duplicate)
 
     def _param_entries(self) -> list[tuple[str, Any, int, int]]:
         offsets = self.model._outer._offsets()
         return [(n, v, *offsets[n]) for n, v in self.named_parameters()]
 
-    def parameters(self) -> Any:
-        for _, value in self.named_parameters():
+    def parameters(self, recurse: bool = True) -> Any:
+        for _, value in self.named_parameters(recurse=recurse):
             yield value
 
     def train(self, mode: bool = True) -> _ApproximateMarginalLogLikelihood:
