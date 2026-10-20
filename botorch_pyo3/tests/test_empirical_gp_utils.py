@@ -259,3 +259,21 @@ def test_gpytorch_parameter_container_and_infinite_constraint_bounds() -> None:
         assert constraint.lower_bound == lower and constraint.upper_bound == upper
         assert tuple(constraint._rs.raw_bounds) == (lower, upper)
         assert constraint.transform(0.7) == constraint.inverse_transform(0.7) == 0.7
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("values", [1.0, [1.0], []])
+def test_interpolation_invalid_value_shape_has_clear_error(kind: str, values: object) -> None:
+    with pytest.raises(ValueError, match="final dimension matching"):
+        rs.LinearInterpolation1D(as_kind([0.0, 1.0], kind), as_kind(values, kind))
+
+
+def test_interpolation_nan_propagates_even_with_finite_fill(official: object) -> None:
+    import torch
+
+    x = torch.tensor([0.0, 1.0], dtype=torch.float64)
+    y = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float64)
+    q = torch.tensor([math.nan, -0.1, 0.5, 1.1], dtype=torch.float64)
+    actual = rs.LinearInterpolation1D(x, y, bounds_error=False, fill_value=8.0)(q)
+    expected = official._interp1d_torch(x, y, q, bounds_error=False, fill_value=8.0)
+    torch.testing.assert_close(actual, expected, equal_nan=True)

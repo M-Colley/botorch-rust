@@ -275,14 +275,15 @@ impl LinearInterpolation {
             .iter()
             .map(|&q| self.interval(q, bounds_error))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Matrix::from_fn(
-            self.values.nrows(),
-            query.len(),
-            |i, j| match intervals[j] {
+        Ok(Matrix::from_fn(self.values.nrows(), query.len(), |i, j| {
+            if query[j].is_nan() {
+                return f64::NAN;
+            }
+            match intervals[j] {
                 Some((k, w)) => self.values[(i, k)] * (1.0 - w) + self.values[(i, k + 1)] * w,
                 None => fill_value,
-            },
-        ))
+            }
+        }))
     }
     /// First derivatives with respect to knots, curve values and query locations.
     pub fn vjp(
@@ -397,6 +398,7 @@ mod tests {
         }
         assert!(interp.evaluate(&[-1.0], true, 0.0).is_err());
         assert_eq!(interp.evaluate(&[-1.0], false, 7.0).unwrap()[(0, 0)], 7.0);
+        assert!(interp.evaluate(&[f64::NAN], false, 7.0).unwrap()[(0, 0)].is_nan());
     }
 
     #[test]

@@ -291,6 +291,11 @@ class LinearInterpolation1D:
         values, shape = to_flat(x)
         if len(shape) != 1:
             raise UnsupportedError(f"Expected x to be 1-dim, but got {shape}.")
+        value_shape = _ops.shape_of(y)
+        if not value_shape or value_shape[-1] != len(values):
+            raise ValueError("Expected y with a final dimension matching the number of knots.")
+        if len(values) < 2:
+            raise ValueError("Interpolation requires at least two knots.")
         if not assume_sorted:
             order = sorted(range(len(values)), key=values.__getitem__)
             x, y = _gather_final(x, order), _gather_final(y, order)
