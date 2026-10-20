@@ -1,0 +1,159 @@
+{
+  "parameters": {
+    "train": 32,
+    "baseline": 180,
+    "batches": 8,
+    "q": 2,
+    "samples": 128,
+    "threads": 1,
+    "warmup": 3,
+    "repeats": 21,
+    "rust_profile": "release"
+  },
+  "python": "3.13.12",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "torch": "2.13.0+cu132",
+  "botorch": "Unknown",
+  "botorch_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\.reference\\botorch\\botorch\\__init__.py",
+  "reference_source": {
+    "revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "status": ""
+  },
+  "rust_source": {
+    "revision": "8c5727ca788f70815a1d3f38aea675c7fd4fba0c",
+    "status": "M README.md\n M botorch_pyo3/python/botorch_rs/_botorch_rs.pyi\n M botorch_pyo3/python/botorch_rs/fit.py\n M botorch_pyo3/python/botorch_rs/models/empirical_gps/empirical_1d_gp.py\n M botorch_pyo3/python/botorch_rs/models/latent_kronecker_gp.py\n M botorch_pyo3/python/botorch_rs/optim/fit.py\n M botorch_pyo3/python/botorch_rs/sampling/normal.py\n M botorch_pyo3/tests/test_constant_mean_initialization.py\n M botorch_pyo3/tests/test_empirical_gp_models.py\n M botorch_pyo3/tests/test_posterior_parameter_gradients.py\n M docs/api_coverage.md\n M docs/batched-lbfgsb.md\n M docs/posterior-parameter-gradients.md\n M docs/roadmap.md\n M scripts/api_coverage.py\n M scripts/benchmark_noisy_cache.py\n?? docs/api_coverage.json\n?? docs/correctness-findings.md"
+  },
+  "extension_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\complete-api-release-python\\botorch_rs\\_botorch_rs.pyd",
+  "extension_sha256": "55b7161267609ce3fccb381f70287ad337e3f29dae18276095bdf1e43e9339a0",
+  "draws": "torch.randn float64 with per-dimension seed=1000+dimension, shared across implementations",
+  "timing_protocol": "warm all variants, then shuffle all four variants in each measured round (seed=20261020)",
+  "value_checks": [
+    {
+      "cache_root": false,
+      "max_abs_error": 8.544921321629317e-07,
+      "atol": 1e-06,
+      "rtol": 1e-06
+    },
+    {
+      "cache_root": true,
+      "max_abs_error": 1.5376531870003873e-07,
+      "atol": 1e-06,
+      "rtol": 1e-06
+    }
+  ],
+  "botorch_rs": "0.2.0",
+  "results": [
+    {
+      "backend": "rust",
+      "cache_root": false,
+      "median_ms": 14.409000054001808,
+      "times_ms": [
+        13.548400020226836,
+        13.11949995579198,
+        14.020000002346933,
+        17.756199988070875,
+        21.46570000331849,
+        16.665600007399917,
+        22.90109999012202,
+        20.949099969584495,
+        16.70340000418946,
+        10.972000018227845,
+        10.387999995145947,
+        15.063699975144118,
+        12.007899989839643,
+        10.569200036115944,
+        11.30470004864037,
+        15.918100019916892,
+        18.04299996001646,
+        14.409000054001808,
+        12.569700018502772,
+        10.79349999781698,
+        14.520700031425804
+      ]
+    },
+    {
+      "backend": "rust",
+      "cache_root": true,
+      "median_ms": 1.3205999857746065,
+      "times_ms": [
+        1.131800003349781,
+        1.1498999665491283,
+        1.1233999975956976,
+        1.6669000033289194,
+        1.0739999706856906,
+        1.4097000239416957,
+        1.8047000048682094,
+        1.6953999875113368,
+        1.039499999023974,
+        1.041900017298758,
+        1.3205999857746065,
+        1.2957999715581536,
+        1.06819998472929,
+        1.1027000145986676,
+        1.4070000033825636,
+        1.492900017183274,
+        1.075600041076541,
+        1.505599997472018,
+        1.3722999719902873,
+        1.8990000244230032,
+        1.4901000540703535
+      ]
+    },
+    {
+      "backend": "reference",
+      "cache_root": false,
+      "median_ms": 13.876500015612692,
+      "times_ms": [
+        14.752699993550777,
+        11.920699966140091,
+        12.172200018540025,
+        15.98209998337552,
+        13.78490001661703,
+        10.881500027608126,
+        15.73179999832064,
+        17.591700016055256,
+        12.58459995733574,
+        14.416399993933737,
+        13.870399969164282,
+        13.500600005500019,
+        13.091100030578673,
+        14.863100019283593,
+        14.944399998057634,
+        20.24329995037988,
+        14.30189999518916,
+        13.876500015612692,
+        11.537799960933626,
+        13.701400021091104,
+        15.091800014488399
+      ]
+    },
+    {
+      "backend": "reference",
+      "cache_root": true,
+      "median_ms": 7.663899974431843,
+      "times_ms": [
+        7.243899977765977,
+        8.269399986602366,
+        8.69559997227043,
+        13.902899983804673,
+        5.544699961319566,
+        6.662500032689422,
+        7.8295000130310655,
+        8.619099971838295,
+        12.52679998287931,
+        6.0329000116325915,
+        7.781199994497001,
+        7.644700002856553,
+        8.115099975839257,
+        6.423500017262995,
+        9.877000004053116,
+        7.663899974431843,
+        6.183999998029321,
+        6.282700051087886,
+        5.340599978808314,
+        8.284799987450242,
+        6.640399980824441
+      ]
+    }
+  ]
+}

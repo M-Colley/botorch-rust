@@ -60,3 +60,28 @@ The 2026-10-20 Windows run on an Intel Core Ultra 7 155H produced:
 These are medians of local measurements of this diagnostic, excluding
 fitting and imports. Other checks were active on the machine. They do not
 establish speedups for other models, workloads, machines or thread counts.
+
+For noisy improvement, `scripts/benchmark_noisy_cache.py` checks values
+using shared normal draws before timing four variants in shuffled order in
+each measured round. A release run with 32 training points, 180 baseline
+points, eight candidate batches of two points, 128 samples, one thread,
+three warmups and 21 measured rounds produced:
+
+| qLogNEI evaluation | BoTorch pinned reference (ms) | Rust release (ms) | BoTorch/Rust |
+|---|---:|---:|---:|
+| Full joint sampling | 13.8765 | 14.4090 | 0.96x |
+| Cached sampling | 7.6639 | 1.3206 | 5.80x |
+
+The cached native block computation improves this workload; uncached
+evaluation is slightly slower in this run. Maximum value differences are
+`8.55e-7` and `1.54e-7`, respectively, within the configured absolute and
+relative tolerances of `1e-6`. The test includes ill-conditioned latent
+baseline covariances. Timing excludes fitting, construction and imports;
+it evaluates forward values with Torch gradients disabled. Other work was
+active on the machine.
+
+[Raw timings and artifact provenance](benchmarks/noisy-cache-release-2026-10-20.json)
+record the source checkouts, settings and exact loaded extension path and
+SHA256. The native build checkpoint was `1ec588a`; its extension hash is
+`55b7161267609ce3fccb381f70287ad337e3f29dae18276095bdf1e43e9339a0`.
+The report's checkout revision includes subsequent Python-only changes.
