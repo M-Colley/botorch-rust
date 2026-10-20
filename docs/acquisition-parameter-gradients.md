@@ -63,6 +63,12 @@ parameter protocols. Learned-objective preference-model parameters are not
 connected by the outcome-model tape, even when the objective's native sample
 pullback supports outcome sensitivities.
 
+Persistent SVGP leaves support native ELBO gradients, but do not enable
+acquisition parameter tapes. SVGP acquisitions retain their marginal query
+path, including the BNN kernel's distinct lazy diagonal variance, and reject
+model-parameter backward explicitly. Their query gradients and explicit
+`value_and_grad` interface remain available with those leaves trainable.
+
 Tests compare values, arbitrarily weighted model derivatives, and query
 coordinates against official BoTorch `b0dd01be6` with `propagate_grads(True)`
 and exact predictive covariance. That setting includes the training solve;

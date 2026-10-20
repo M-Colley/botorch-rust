@@ -44,6 +44,60 @@ MONTE_CARLO = [
 ]
 
 
+@pytest.mark.parametrize("depth", [1, 3])
+@pytest.mark.parametrize("outputs", [1, 2])
+def test_exact_gp_bnn_tape_matches_official_marginal_and_parameter_gradients(depth, outputs):
+    from botorch.models import SingleTaskGP as BtGP
+    from botorch.models.kernels.infinite_width_bnn import InfiniteWidthBNNKernel as BtBNN
+
+    from botorch_rs.models import SingleTaskGP
+    from botorch_rs.models.kernels.infinite_width_bnn import InfiniteWidthBNNKernel
+
+    train = torch.tensor([[0.1, 0.2], [0.3, 0.8], [0.6, 0.4], [0.9, 0.7]], dtype=torch.double)
+    targets = (train[:, :1] * 4).sin()
+    if outputs == 2:
+        targets = torch.cat([targets, train[:, 1:].cos()], dim=-1)
+    batch = torch.Size([outputs]) if outputs > 1 else torch.Size()
+    noise = torch.full_like(targets, 0.03)
+    model = SingleTaskGP(
+        train,
+        targets,
+        noise,
+        outcome_transform=None,
+        covar_module=InfiniteWidthBNNKernel(depth=depth, batch_shape=batch),
+    )
+    reference = BtGP(
+        train,
+        targets,
+        noise,
+        outcome_transform=None,
+        covar_module=BtBNN(depth=depth, batch_shape=batch).double(),
+    )
+    kwargs, expected_kwargs = {}, {}
+    if outputs == 2:
+        weights = torch.tensor([0.3, -0.2], dtype=torch.double)
+        kwargs["posterior_transform"] = ScalarizedPosteriorTransform(weights)
+        expected_kwargs["posterior_transform"] = BtScalarize(weights)
+    best = torch.tensor(0.4, dtype=torch.double)
+    acquisition = analytic.LogExpectedImprovement(model, best_f=best, **kwargs)
+    expected_acquisition = bt_analytic.LogExpectedImprovement(
+        reference, best_f=best, **expected_kwargs
+    )
+    query = torch.tensor([[[0.2, 0.6]], [[0.7, 0.3]]], dtype=torch.double, requires_grad=True)
+    expected_query = query.detach().clone().requires_grad_()
+    actual = acquisition(query)
+    with propagate_grads(True), fast_pred_var(False):
+        expected = expected_acquisition(expected_query)
+    torch.testing.assert_close(actual, expected, rtol=1e-11, atol=1e-11)
+    upstream = torch.tensor([-0.3, 0.7], dtype=torch.double)
+    gradients = torch.autograd.grad((actual * upstream).sum(), (*model.parameters(), query))
+    expected_gradients = torch.autograd.grad(
+        (expected * upstream).sum(), (*reference.parameters(), expected_query)
+    )
+    for gradient, want in zip(gradients, expected_gradients, strict=True):
+        torch.testing.assert_close(gradient, want, rtol=2e-10, atol=2e-10)
+
+
 @pytest.mark.parametrize("name", ANALYTIC + MONTE_CARLO)
 @pytest.mark.parametrize("scalar", [False, True])
 def test_common_acquisition_parameter_and_query_gradients(name, scalar):

@@ -127,3 +127,36 @@ def test_explicit_gradient_does_not_repeat_objective_evaluation(name, cache_root
     assert calls == forward_calls
     assert torch.equal(values, actual.detach())
     assert torch.equal(gradient, derivative)
+
+
+@pytest.mark.parametrize("name", ["analytic", "mc"])
+def test_variational_leaves_do_not_enable_unsupported_acquisition_tapes(name):
+    from botorch_rs.exceptions.errors import UnsupportedError
+    from botorch_rs.models import SingleTaskVariationalGP
+    from botorch_rs.models.kernels.infinite_width_bnn import InfiniteWidthBNNKernel
+
+    train = torch.tensor([[0.1, 0.2], [0.3, 0.7], [0.6, 0.4], [0.9, 0.8]], dtype=torch.double)
+    model = SingleTaskVariationalGP(
+        train,
+        (train[:, :1] * 3).sin(),
+        inducing_points=train[:2],
+        covar_module=InfiniteWidthBNNKernel(depth=2),
+    )
+    if name == "analytic":
+        acquisition = LogExpectedImprovement(model, best_f=0.4)
+    else:
+        acquisition = qLogExpectedImprovement(
+            model, best_f=0.4, sampler=SobolQMCNormalSampler((8,), seed=19)
+        )
+    native = CountedNative(acquisition._rs)
+    acquisition._rs = native
+    query = torch.tensor([[[0.2, 0.6]]], dtype=torch.double, requires_grad=True)
+    actual = acquisition(query)
+    (derivative,) = torch.autograd.grad(actual.sum(), query, retain_graph=True)
+    values, gradient = acquisition.value_and_grad(query.detach())
+    assert native.calls == ["query", "query"]
+    assert torch.equal(values, actual.detach())
+    assert torch.equal(gradient, derivative)
+    assert all(isinstance(p, torch.nn.Parameter) and p.requires_grad for p in model.parameters())
+    with pytest.raises(UnsupportedError, match="SingleTaskVariationalGP.*not implemented"):
+        actual.sum().backward()

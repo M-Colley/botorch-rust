@@ -19,12 +19,30 @@ def _sources(model: Any) -> list[Any]:
     return [source] if source is not None and hasattr(source, "parameter_state_version") else []
 
 
+def _model_parameter_error(model: Any) -> str | None:
+    from botorch_rs.models.gp_regression import SingleTaskGP
+    from botorch_rs.models.model_list_gp_regression import ModelListGP
+
+    if type(model) is SingleTaskGP or (
+        isinstance(model, ModelListGP)
+        and all(type(child) is SingleTaskGP for child in model.models)
+    ):
+        return None
+    return (
+        "Automatic acquisition model-parameter gradients require an ordinary CPU Torch "
+        "SingleTaskGP or a ModelListGP of those models. The native acquisition parameter "
+        f"pullback for {type(model).__name__} is not implemented; query-only gradients "
+        "remain available."
+    )
+
+
 class ParameterSnapshot:
     def __init__(self, model: Any, state: Any) -> None:
         self.model = model
         self.entries = tuple(state.entries)
         self.registry = tuple((name, id(p), tuple(p.shape)) for name, p in self.entries)
         self.error = state.gradient_error
+        self.model_error = _model_parameter_error(model)
         self.versions = self._versions()
         self.values = self._values()
 
@@ -42,6 +60,7 @@ class ParameterSnapshot:
             model is not self.model
             or state is None
             or state.gradient_error != self.error
+            or _model_parameter_error(model) != self.model_error
             or tuple((name, id(p), tuple(p.shape)) for name, p in state.entries) != self.registry
             or self._versions() != self.versions
             or self._values() != self.values
@@ -66,8 +85,8 @@ def evaluate(acquisition: Any, X: Any, snapshot: ParameterSnapshot) -> Any:
 
     query_grad = X.requires_grad
     native = acquisition._rs
-    tape, error = None, snapshot.error
-    if native.supports_parameter_gradients:
+    tape, error = None, snapshot.error or snapshot.model_error
+    if native.supports_parameter_gradients and snapshot.model_error is None:
         values, gradient, tape = native.forward_with_adjoint_tape(to_flat(X), query_grad)
     else:
         error = error or (

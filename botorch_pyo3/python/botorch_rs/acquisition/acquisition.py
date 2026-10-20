@@ -440,6 +440,7 @@ class AcquisitionFunction:
         use_tape = False
         if (
             snapshot is not None
+            and snapshot.model_error is None
             and not self.__dict__.get("_ensemble_acqfs")
             and is_torch_tensor(X)
             and self._rs.supports_parameter_gradients
