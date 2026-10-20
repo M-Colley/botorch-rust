@@ -104,8 +104,9 @@ class AffineFidelityCostModel(DeterministicCostModel):
 
     The fidelity dimensions are the sorted keys of ``fidelity_weights``
     (default ``{-1: 1.0}``: the last column with weight 1). BoTorch stores the
-    weights in torch's default dtype (float32 unless changed); botorch_rs uses
-    them as exact float64 values.
+    weights in torch's default dtype (float32 unless changed). With Torch
+    already imported, native weights use those same rounded values; list-only
+    construction keeps float64 values without importing Torch.
 
     Example:
         >>> cost_model = AffineFidelityCostModel(fidelity_weights={6: 1.0}, fixed_cost=5.0)
@@ -122,6 +123,13 @@ class AffineFidelityCostModel(DeterministicCostModel):
         self.fidelity_dims = sorted(int(k) for k in fidelity_weights)
         self.fixed_cost = fixed_cost
         self._weights = [float(fidelity_weights[k]) for k in self.fidelity_dims]
+        torch = sys.modules.get("torch")
+        if torch is not None:
+            self._weights = torch.tensor(
+                self._weights, dtype=getattr(torch, self._buffer_factory_dtype), device="cpu"
+            ).tolist()
+        else:
+            self._buffer_factory_dtype = "float64"
         self._rs_cost = _rs.CostModel.affine(
             [(k, w) for k, w in zip(self.fidelity_dims, self._weights, strict=True)],
             float(fixed_cost),

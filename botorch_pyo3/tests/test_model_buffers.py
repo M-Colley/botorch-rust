@@ -217,6 +217,24 @@ def test_cost_buffers():
     assert_buffers(FixedCostModel(fixed), RefFixedCost(fixed))
 
 
+@pytest.mark.parametrize("default_dtype", [torch.float, torch.double])
+def test_cost_native_values_and_vjp_use_actual_buffer_weights(default_dtype):
+    previous = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(default_dtype)
+        actual = AffineFidelityCostModel({0: 0.123456789, 1: 0.345678912}, fixed_cost=0.1)
+        expected = RefAffineCost({0: 0.123456789, 1: 0.345678912}, fixed_cost=0.1)
+    finally:
+        torch.set_default_dtype(previous)
+    x = torch.tensor([[0.2, 1.7], [2.1, 0.8]], dtype=torch.double, requires_grad=True)
+    adjoint = torch.tensor([[1.5], [-0.7]], dtype=torch.double)
+    a, b = actual(x), expected(x)
+    torch.testing.assert_close(a, b, atol=1e-15, rtol=1e-15)
+    (gradient,) = torch.autograd.grad(a, x, grad_outputs=adjoint)
+    (reference_gradient,) = torch.autograd.grad(b, x, grad_outputs=adjoint)
+    torch.testing.assert_close(gradient, reference_gradient, atol=1e-15, rtol=1e-15)
+
+
 def test_custom_registered_and_torch_child_buffers_exclude_parameters_and_data():
     class Child(torch.nn.Module):
         def __init__(self):
