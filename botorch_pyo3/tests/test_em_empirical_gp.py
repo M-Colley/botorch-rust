@@ -627,7 +627,9 @@ def test_from_scratch_em_rerun_values_and_gradients_match_official(
     actual = EMEmpiricalGaussianProcess(
         X, Y, datasets=datasets("torch"), mean_module=mean, covar_module=kernel, **options
     )
-    ref_options = {} if defaults else {"likelihood": gpytorch.likelihoods.GaussianLikelihood().double()}
+    ref_options = (
+        {} if defaults else {"likelihood": gpytorch.likelihoods.GaussianLikelihood().double()}
+    )
     expected = official.em_empirical_gp.EMEmpiricalGaussianProcess(
         X,
         Y,

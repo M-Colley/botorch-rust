@@ -11,6 +11,8 @@ value-parity check, and one additional warmup call are excluded. Seven
 complete public-API forwards are timed under
 torch.no_grad; Rust array conversion and reference Python overhead remain
 included. This measures forwards, not fitting, gradients, or GPU work.
+The release label requires the loaded extension's SHA256 to match the local
+Cargo release artifact (or the explicit ``--rust-artifact`` path).
 """
 
 from __future__ import annotations
@@ -18,10 +20,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import random
 import statistics
 import subprocess
+import sys
 import time
 import warnings
 from pathlib import Path
@@ -54,6 +58,11 @@ def main() -> None:
     ):
         parser.add_argument(f"--{name}", type=int, default=default)
     parser.add_argument("--rust-profile", default="unspecified")
+    parser.add_argument(
+        "--rust-artifact",
+        type=Path,
+        help="Cargo release library to match when labeling a run --rust-profile release",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if any(
@@ -70,6 +79,31 @@ def main() -> None:
         )
     ):
         parser.error("all workload sizes, thread counts, warmups and repeats must be positive")
+    source_root = Path(__file__).resolve().parents[1]
+    extension_path = Path(extension.__file__).resolve()
+    extension_sha256 = hashlib.sha256(extension_path.read_bytes()).hexdigest()
+    artifact = args.rust_artifact
+    if args.rust_profile == "release" and artifact is None:
+        target = Path(os.environ.get("CARGO_TARGET_DIR", source_root / "target"))
+        if not target.is_absolute():
+            target = source_root / target
+        filename = {
+            "win32": "_botorch_rs.dll",
+            "darwin": "lib_botorch_rs.dylib",
+        }.get(sys.platform, "lib_botorch_rs.so")
+        artifact = target / "release" / filename
+    artifact_validation = None
+    if artifact is not None:
+        artifact = artifact.resolve()
+        if not artifact.is_file():
+            parser.error(f"Cargo artifact is missing: {artifact}")
+        artifact_sha256 = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        if artifact_sha256 != extension_sha256:
+            parser.error(
+                "the loaded extension does not match the declared Cargo artifact; "
+                "install the intended build before timing it"
+            )
+        artifact_validation = {"path": str(artifact), "sha256": artifact_sha256}
     torch.set_default_dtype(torch.float32)
     torch.set_num_threads(args.threads)
     botorch_rs.set_num_threads(args.threads)
@@ -164,10 +198,12 @@ def main() -> None:
             result[name] = command.stdout.strip() if command.returncode == 0 else None
         return result
 
-    extension_path = Path(extension.__file__).resolve()
-    source_root = Path(botorch_rs.__file__).resolve().parents[3]
     report = {
-        "parameters": {key: value for key, value in vars(args).items() if key != "output"},
+        "parameters": {
+            key: value
+            for key, value in vars(args).items()
+            if key not in ("output", "rust_artifact")
+        },
         "python": platform.python_version(),
         "platform": platform.platform(),
         "torch": torch.__version__,
@@ -176,7 +212,8 @@ def main() -> None:
         "reference_source": git_info(Path(botorch.__file__).resolve().parents[1]),
         "rust_source": git_info(source_root),
         "extension_path": str(extension_path),
-        "extension_sha256": hashlib.sha256(extension_path.read_bytes()).hexdigest(),
+        "extension_sha256": extension_sha256,
+        "matching_cargo_artifact": artifact_validation,
         "draws": "torch.randn float64 with per-dimension seed=1000+dimension, shared across implementations",
         "timing_protocol": "warm all variants, then shuffle all four variants in each measured round (seed=20261020)",
         "value_checks": checks,

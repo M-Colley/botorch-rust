@@ -98,11 +98,11 @@ jobs:
             python-version: "3.15"
             label: numpy
             packages: numpy
-          # Parity tests against the released BoTorch.
+          # Parity and API coverage against the audited official source.
           - os: ubuntu-latest
             python-version: "3.12"
             label: BoTorch parity
-            packages: botorch[fully_bayesian] numpy pymoo
+            packages: numpy pymoo
             parity: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -116,11 +116,22 @@ jobs:
         with:
           rustflags: ""
       - name: Install CPU-only torch
-        if: contains(matrix.packages, 'torch') || contains(matrix.packages, 'botorch')
+        if: matrix.parity || contains(matrix.packages, 'torch') || contains(matrix.packages, 'botorch')
         run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Install test dependencies
         shell: bash
         run: python -m pip install pytest ${{ matrix.packages }}
+      - name: Check out the pinned official BoTorch reference
+        if: matrix.parity
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: meta-pytorch/botorch
+          ref: b0dd01be61d517c387e234903a6e2cc38c057ea2
+          path: .reference/botorch
+          persist-credentials: false
+      - name: Install the pinned reference and optional trace dependencies
+        if: matrix.parity
+        run: python -m pip install "./.reference/botorch[fully_bayesian]"
       - name: Build and install botorch-rust (maturin)
         run: python -m pip install -v ./botorch_pyo3
       - name: Show versions
@@ -130,6 +141,9 @@ jobs:
           if [ "${{ matrix.parity }}" = "true" ]; then
             python -c "import botorch, gpytorch, torch; print('botorch', botorch.__version__, 'gpytorch', gpytorch.__version__, 'torch', torch.__version__)"
           fi
+      - name: Strict pinned core API inventory
+        if: matrix.parity
+        run: python scripts/api_coverage.py --require-full --out api-coverage-ci.md --json-out api-coverage-ci.json
       - name: Tests
         working-directory: botorch_pyo3
         env:

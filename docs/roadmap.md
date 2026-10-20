@@ -94,8 +94,10 @@ Ported:
 
 Sequential acquisition sequences now optimize each acquisition through the
 native candidate generator and restore pending points after failures
-([scope and upstream fixes](sequence-optimization.md)). Remaining:
-`data_loader` closures.
+([scope and upstream fixes](sequence-optimization.md)). Variational
+`data_loader` closures now evaluate external minibatches with native ELBO
+gradients and cycle epochs ([scope](variational-data-loader-closures.md)).
+External-data closures for exact GPs remain unsupported.
 
 `loo_cv`, `efficient_loo_cv` and `ensemble_loo_cv` now use native cached
 factorizations, with batched independent outputs, fixed noise, outcome
@@ -125,9 +127,10 @@ hyperparameters, as in BoTorch; `batch_cross_validation` refits each fold.
 - Native additive-component inference is integrated
   ([details](additive-components.md)).
 - EM empirical prior pretraining, historical likelihoods, exact target
-  conditioning, shared-kernel fitting and coordinate ascent are integrated.
-  Differentiable EM reruns and learned inducing locations remain configuration
-  work ([details](empirical-gp-models.md)).
+  conditioning, shared-kernel fitting, coordinate ascent and native
+  differentiation through cold EM reruns are integrated. Warm starts and
+  learned inducing locations remain configuration work
+  ([details](empirical-gp-models.md)).
 
 ## Phase 11: the rest
 

@@ -380,7 +380,7 @@ counterpart.
 | `botorch.optim.fit.fit_gpytorch_mll_torch`, `fit_gpytorch_mll_scipy` | `botorch_rs.optim.fit.*` | native for botorch_rs GPs (all outputs and batch elements in parallel): torch's Adam update and `ExpMAStoppingCriterion`, `step_limit`, `parameters`, `bounds`, `timeout_sec`; L-BFGS-B with BoTorch's options; other optimizers, closures, schedulers and callbacks run BoTorch's generic loop on the botorch_rs closure. `fit_gpytorch_mll(..., optimizer=fit_gpytorch_mll_torch)` retries like BoTorch |
 | `botorch.optim.core.OptimizationResult`, `OptimizationStatus`, `scipy_minimize`, `torch_minimize` | `botorch_rs.optim.core.*` | the generic minimizers run SciPy / torch on Python closures (NumPy / torch required) |
 | `botorch.optim.stopping.StoppingCriterion`, `ExpMAStoppingCriterion` | `botorch_rs.optim.stopping.*` | torch's float32 weights (bitwise for the defaults) |
-| `botorch.optim.closures.ForwardBackwardClosure`, `NdarrayOptimizationClosure`, `get_loss_closure`, `get_loss_closure_with_grads` | `botorch_rs.optim.closures.*` | loss and gradients of botorch_rs MLLs computed in Rust; `data_loader` is not supported |
+| `botorch.optim.closures.ForwardBackwardClosure`, `NdarrayOptimizationClosure`, `get_loss_closure`, `get_loss_closure_with_grads` | `botorch_rs.optim.closures.*` | loss and gradients of botorch_rs MLLs computed in Rust; variational `data_loader` closures evaluate actual minibatches and cycle epochs |
 | `botorch.optim.utils.columnwise_clamp`, `fix_features`, `get_X_baseline`, `get_parameters`, `get_parameters_and_bounds`, `get_name_filter`, `sample_all_priors`, `TorchAttr` | `botorch_rs.optim.utils.*` | BoTorch's parameter names and order (likelihood first) |
 | `botorch.cross_validation.gen_loo_cv_folds`, `batch_cross_validation`, `CVFolds`, `CVResults` | `botorch_rs.cross_validation.*` | batched LOO folds (also `train_Yvar`, multi-output), one batched model fitted per fold in parallel, `observation_noise`, `model_init_kwargs`; `MultiTaskGP` raises `UnsupportedError` as in BoTorch |
 | `botorch.exceptions.errors.OptimizationTimeoutError`, `OptimizationGradientError` | `botorch_rs.exceptions.errors.*` | with `current_x` and `runtime` |
@@ -489,9 +489,10 @@ are integrated in this branch:
 
 The main remaining gaps are:
 
-- **Empirical fitting:** differentiating through EM reruns and learned
-  inducing locations is still being completed. Frozen pretrained empirical
-  priors support native fitting and prediction.
+- **Empirical fitting:** native derivatives through cold EM reruns and both
+  fitters are integrated. Warm starts and learned inducing locations remain
+  configuration work. Frozen pretrained empirical priors also support
+  native fitting and prediction.
 - **Model configurations:** batched training and additional transforms
   for some specialized models; learned input transforms on approximate
   models; some model-list conditioning and fantasy combinations; and the
@@ -511,8 +512,9 @@ The main remaining gaps are:
 - **Acquisition and optimization configurations:** remaining posterior
   transforms and learned MC objectives, specialized-model combinations in
   lookahead and entropy search, some ensemble and batched multi-objective
-  configurations, batched box decompositions,
-  data-loader closures and low-level optimizer interfaces. See
+  configurations, batched box decompositions, exact-GP external-data
+  closures and low-level optimizer interfaces. Variational data-loader
+  closures are implemented with native minibatch gradients. See
   [acquisition construction](docs/acquisition-construction.md),
   [model limitations](docs/models.md), [transforms](docs/transforms.md)
   and [optimization](docs/optimization.md).
@@ -1763,9 +1765,12 @@ The model fits alone are 140–550× faster.
 - **Marginal log likelihood.** `mll()` without arguments evaluates the MLL on
   the model's training data (GPyTorch: `mll(model(*model.train_inputs),
   model.train_targets)`); `mll.value_and_grad()` also returns its gradient.
-- **Gradients.** There is no autograd through models. Acquisition values
-  support `torch.autograd` (exact gradients computed in Rust), and
-  `acqf.value_and_grad(X)` returns gradients for any array type.
+- **Gradients.** Native Gaussian posterior moments and samples support
+  first-order Torch query gradients. Exact GPs also expose explicit native
+  parameter pullbacks; ordinary posterior tensors do not yet carry a
+  hyperparameter graph. Acquisition values support `torch.autograd`
+  (exact gradients computed in Rust), and `acqf.value_and_grad(X)` returns
+  gradients for any array type.
 - **Fitting.** `pick_best_of_all_attempts`, custom optimizers and closures are
   not supported; retries sample hyperparameters from their priors with a
   seeded generator (`fit_gpytorch_mll(mll, seed=...)`).

@@ -172,7 +172,10 @@ means, input/outcome transforms, batched additive kernels and explicit
 tensor-valued posterior noise are rejected. Additive base-kernel parameters
 are shared across independent outputs. Model calls use the port's existing
 `mll()` interface, rather than accepting a Python GPyTorch distribution as an
-MLL argument. Conditioning/fantasizing these models is not implemented yet.
+MLL argument. Independent and correlated empirical one-dimensional GPs now
+support native conditioning and fantasy batches
+([scope and upstream workaround](empirical-conditioning.md)); heterogeneous
+multitask empirical conditioning remains unsupported.
 Multi-output model component descriptors directly expose their empirical
 kernel/mean, rather than the upstream internal vectorization wrappers.
 
@@ -191,8 +194,9 @@ include the interpolated mean and all posterior covariance blocks; task-label
 derivatives are zero. Historical task labels within `1e-6` of integers are
 rounded, matching the official validation.
 
-The EM prior/model/coordinate-ascent families are the next milestone. These
-ten exports do not establish full empirical-family completion.
+The EM prior/model/coordinate-ascent families are integrated as described
+above. Warm starts and learned inducing locations remain configuration work;
+the public exports do not establish full empirical-family completion.
 
 ## Upstream standalone kernel shape bug
 
