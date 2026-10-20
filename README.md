@@ -515,6 +515,8 @@ The main remaining gaps are:
   Variational GPs support persistent Torch parameters and native ELBO
   backward for full data and minibatches
   ([scope](docs/approximate-models.md)).
+  Gradients to model training inputs and targets, including fantasy training
+  data, remain unavailable; `propagate_grads(True)` does not enable them.
   Models compute on the CPU in float64
   and restore the caller's array dtype and device. Acquisition functions
   expose native input derivatives.

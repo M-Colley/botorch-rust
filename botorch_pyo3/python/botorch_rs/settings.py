@@ -45,10 +45,13 @@ class _Flag:
 
 
 class propagate_grads(_Flag):
-    r"""Flag for propagating gradients to model training inputs / training data.
+    r"""Compatibility flag for BoTorch's training-data gradient setting.
 
-    When set to ``True``, gradients will be propagated to the training inputs.
-    This is useful in particular for propagating gradients through fantasy models.
+    botorch_rs models do not propagate gradients to training inputs or targets,
+    including through fantasy training data. Setting this flag to ``True``
+    does not enable those derivatives. Supported query and model-parameter
+    derivatives are independent of this flag. The context preserves and
+    restores its state for callers that inspect ``on()`` or ``off()``.
     """
 
     _state: bool = False

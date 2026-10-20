@@ -60,7 +60,7 @@ element-wise / reduction kernels with torch autograd), `utils/safe_math.py`,
 | `botorch.utils.containers.*`, `botorch.utils.datasets.*` (`SupervisedDataset`, `RankingDataset`, `MultiTaskDataset`, `ContextualDataset`) | same paths | containers as `X` / `Y`; `MultiTaskDataset.from_joint_dataset`, `get_dataset_without_task_feature`; LCE-A / LCE-M contextual datasets |
 | `botorch.utils.constants`, `context_managers`, `dispatcher`, `evaluation`, `feasible_volume`, `torch.BufferDict` | same paths | `module_rollback_ctx` / `parameter_rollback_ctx` / `zero_grad_ctx` / `delattr_ctx` on botorch_rs models; `Dispatcher` with BoTorch's (multipledispatch's) ordering; `compute_in_sample_model_fit_metric` (MLL / AIC / BIC) natively |
 | `botorch.utils.sampling.{PolytopeSampler, HitAndRunPolytopeSampler, DelaunayPolytopeSampler, manual_seed, normalize_dense_linear_constraints, normalize_sparse_linear_constraints, optimize_posterior_samples}` | same path | `feasible`, `find_interior_point`; `DelaunayPolytopeSampler` with SciPy (as BoTorch); `optimize_posterior_samples` on torch (BoTorch's or botorch_rs's paths) |
-| `botorch.settings.{propagate_grads, validate_input_scaling, log_level}`, `botorch.logging.shape_to_str` | `botorch_rs.settings.*`, `botorch_rs.logging.shape_to_str` | `validate_input_scaling(False)` disables `SingleTaskGP`'s input-scaling warnings; `propagate_grads` is accepted (botorch_rs's gradients are always exact) |
+| `botorch.settings.{propagate_grads, validate_input_scaling, log_level}`, `botorch.logging.shape_to_str` | `botorch_rs.settings.*`, `botorch_rs.logging.shape_to_str` | `validate_input_scaling(False)` disables `SingleTaskGP`'s input-scaling warnings; `propagate_grads` retains the compatibility context's state, but training-data gradients are unavailable |
 | `botorch.utils.multi_objective.hypervolume.{MultiList, Node, sort_by_dimension}`, `botorch.utils.multi_objective.optimize.{BotorchPymooProblem, DiscreteParameterRepair}` | same paths | the pymoo classes are created lazily when pymoo is installed |
 
 Coverage against BoTorch main (`scripts/api_coverage.py`): utils 93/97
@@ -167,7 +167,10 @@ Coverage against BoTorch main (`scripts/api_coverage.py`): utils 93/97
     generator for NumPy inputs and from Python's `random` for lists.
 11. `percentile_of_score` of torch tensors has torch's default dtype (as
     BoTorch); of NumPy arrays and lists float64.
-12. `propagate_grads` has no effect: botorch_rs's gradients are exact.
+12. `propagate_grads(True)` does not enable gradients to model training inputs
+    or targets, including through fantasy training data. Its context state is
+    preserved and restored for compatibility. Supported query and
+    model-parameter derivatives are separate from this setting.
 13. `qLogNoisyExpectedImprovement` ignores `cache_root` (phase 8): with an
     `IIDNormalSampler` it equals BoTorch's `cache_root=False`.
 

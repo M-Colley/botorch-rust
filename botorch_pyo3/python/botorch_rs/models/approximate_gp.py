@@ -147,7 +147,11 @@ class _ApproximateOutput:
             return from_flat(data, (shape[0],), self._kind)
         return from_flat(data, tuple(shape), self._kind)
 
-    loc = mean
+    @property
+    def loc(self) -> Any:
+        """The scalar-event location, flattened across interleaved tasks."""
+        (data, shape), _, _ = self._parts()
+        return from_flat(data, (math.prod(shape),), self._kind)
 
     @property
     def variance(self) -> Any:

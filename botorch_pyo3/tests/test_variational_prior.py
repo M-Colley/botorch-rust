@@ -11,7 +11,7 @@ import copy
 
 import pytest
 
-from helpers import KINDS, as_kind, assert_close, check_kind, importorskip_botorch
+from helpers import KINDS, as_kind, assert_close, check_kind, importorskip_botorch, shape
 
 importorskip_botorch()
 torch = pytest.importorskip("torch")
@@ -36,6 +36,23 @@ PRIOR_CASES.append(Case("zero_mean_two_outputs", m=2, mean="zero"))
 
 def _prior(model, x, method):
     return model.model.forward(x) if method == "forward" else model.model(x, prior=True)
+
+
+@pytest.mark.parametrize("case", [CASES[0], CASES[5], CASES[6]], ids=lambda case: case.name)
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("training", [False, True])
+def test_variational_location_matches_official_flattened_task_layout(case, kind, training):
+    reference, model, x, _ = build_pair(case)
+    set_random_parameters(reference, model, 67)
+    reference.train(training)
+    model.train(training)
+    actual = model.model(as_kind(x[:5].tolist(), kind))
+    expected = reference.model(x[:5])
+    assert shape(actual.mean) == ((5, case.m) if case.m > 1 else (5,))
+    assert shape(actual.loc) == (5 * case.m,)
+    for name in ("mean", "loc"):
+        check_kind(getattr(actual, name), kind)
+        assert_close(getattr(actual, name), getattr(expected, name))
 
 
 @pytest.mark.parametrize("case", PRIOR_CASES, ids=lambda case: case.name)
