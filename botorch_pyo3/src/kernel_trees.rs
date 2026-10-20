@@ -3,7 +3,9 @@
 //! `botorch_rs.kernels` and `botorch_rs.models.kernels` build and pass to a
 //! `SingleTaskGP` as its `covar_module`.
 
+use crate::errors::value_error;
 use botorch_core::kernels::contextual::{LceaSpec, LceaState};
+use botorch_core::kernels::empirical::EmpiricalBasisSpec;
 use botorch_core::kernels::{KernelNode, KernelType, MatrixPrior, TreeKernel};
 use botorch_core::Matrix;
 use pyo3::prelude::*;
@@ -234,6 +236,44 @@ impl PyKernelNode {
         )
         .into_py_result()
         .map(Self::wrap)
+    }
+
+    /// `ScaleKernel(base)`.
+    #[staticmethod]
+    #[pyo3(signature=(knots,tables,weights,learn_weights,denominator,group_column=None,independent=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn empirical_basis(
+        knots: Vec<Vec<f64>>,
+        tables: Vec<Array>,
+        weights: Vec<f64>,
+        learn_weights: bool,
+        denominator: f64,
+        group_column: Option<usize>,
+        independent: bool,
+    ) -> PyResult<Self> {
+        let tables = tables
+            .into_iter()
+            .map(|a| {
+                let count = a.1.iter().try_fold(1usize, |n, &d| n.checked_mul(d));
+                if count != Some(a.0.len()) {
+                    return Err(value_error(
+                        "empirical basis array length differs from declared shape",
+                    ));
+                }
+                a.matrix("basis table")
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        KernelNode::empirical_basis(EmpiricalBasisSpec {
+            knots,
+            tables,
+            weights,
+            learn_weights,
+            denominator,
+            group_column,
+            independent,
+        })
+        .map(Self::wrap)
+        .into_py_result()
     }
 
     /// `ScaleKernel(base)`.

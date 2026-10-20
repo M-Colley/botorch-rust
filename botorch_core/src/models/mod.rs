@@ -24,6 +24,7 @@ pub mod batched;
 pub mod contextual_multioutput;
 pub mod cost;
 pub mod deterministic;
+pub mod empirical;
 pub mod ensemble;
 pub mod fantasize;
 pub mod gp;

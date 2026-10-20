@@ -24,6 +24,7 @@ use std::f64::consts::PI;
 
 use crate::error::{BotorchError, Result};
 use crate::kernels::contextual::LceaState;
+use crate::kernels::empirical::EmpiricalBasisState;
 use crate::kernels::nonfinite::{self, TrainingNan};
 use crate::kernels::oak::{gauss_legendre_01, OAK_NORMALIZER_EPS};
 use crate::kernels::tree::{KernelNode, KernelType, MatrixPrior, ParamSpec};
@@ -264,6 +265,7 @@ enum NodeKind {
         combinatorial: Box<Node>,
         use_combinatorial: bool,
     },
+    Empirical(Box<EmpiricalBasisState>),
     Lcea(Box<LceaState>),
     Stationary {
         kind: KernelKind,
@@ -734,6 +736,10 @@ fn build_node(spec: &KernelNode, cur: &mut Cursor<'_>, parent_dim: usize) -> Res
                 combinatorial,
                 use_combinatorial: *use_combinatorial,
             }
+        }
+        KernelType::EmpiricalBasis(spec) => {
+            let values: Vec<f64> = params.iter().flat_map(|p| cur.take(p).1).collect();
+            NodeKind::Empirical(Box::new(EmpiricalBasisState::new(spec, &values, off)?))
         }
         KernelType::ContextualLcea(spec) => {
             let values: Vec<f64> = params.iter().flat_map(|p| cur.take(p).1).collect();
@@ -1360,6 +1366,12 @@ impl Node {
             | NodeKind::Lcea(_)
             | NodeKind::IntegratedWhiteNoise(_)
             | NodeKind::Activation(_) => leaf(local, Vec::new()),
+            NodeKind::Empirical(state) => {
+                for x in local.chunks_exact(k) {
+                    state.spec.validate_point(x)?;
+                }
+                leaf(local, Vec::new())
+            }
             NodeKind::Ltf {
                 nonfid,
                 unbiased,
@@ -1432,6 +1444,7 @@ impl Node {
                 value
             }
             NodeKind::Lcea(state) => state.value(a.row(i), b.row(j)),
+            NodeKind::Empirical(state) => state.pair(a.row(i), b.row(j)).0,
             NodeKind::Stationary { kind, .. } => {
                 if same {
                     kind.value(0.0)
@@ -1834,6 +1847,15 @@ impl Node {
                     }
                 }
             }
+            NodeKind::Empirical(state) => {
+                for j in 0..nb {
+                    let (v, g) = state.pair(a.row(i), b.row(j));
+                    val[j] = v;
+                    for m in 0..k {
+                        grad[(j, m)] = g[m];
+                    }
+                }
+            }
             NodeKind::Stationary { kind, ls, .. } => {
                 let x = a.row(i);
                 for j in 0..nb {
@@ -2074,6 +2096,11 @@ impl Node {
                 if *use_combinatorial {
                     combinatorial.contract(&a.kids[spatial.len()], w, out);
                 }
+            }
+            NodeKind::Empirical(state) => {
+                for_pairs(w, true, |i, j, weight| {
+                    state.accumulate_parameter_gradient(a.row(i), a.row(j), weight, out)
+                });
             }
             NodeKind::Lcea(state) => {
                 for_pairs(w, true, |i, j, weight| {

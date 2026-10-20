@@ -25,6 +25,7 @@ use crate::{Matrix, Vector};
 
 pub mod contextual;
 mod covar;
+pub mod empirical;
 pub mod eval;
 pub mod nonfinite;
 pub mod oak;

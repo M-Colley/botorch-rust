@@ -1,1 +1,23 @@
-"""Native utilities for empirical Gaussian-process models."""
+"""Empirical Gaussian-process models with native interpolation and inference."""
+
+from botorch_rs.models.empirical_gps.empirical_1d_gp import (
+    BaseAugmentedEmpiricalKernel,
+    EmpiricalOneDimensionalGP,
+    EmpiricalOneDimensionalKernel,
+    EmpiricalOneDimensionalMean,
+)
+from botorch_rs.models.empirical_gps.multioutput_empirical_1d_gp import (
+    MultiOutputEmpiricalOneDimensionalGP,
+    MultiOutputEmpiricalOneDimensionalKernel,
+    MultiOutputEmpiricalOneDimensionalMean,
+)
+
+__all__ = [
+    "BaseAugmentedEmpiricalKernel",
+    "EmpiricalOneDimensionalGP",
+    "EmpiricalOneDimensionalKernel",
+    "EmpiricalOneDimensionalMean",
+    "MultiOutputEmpiricalOneDimensionalGP",
+    "MultiOutputEmpiricalOneDimensionalKernel",
+    "MultiOutputEmpiricalOneDimensionalMean",
+]

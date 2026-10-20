@@ -9,6 +9,10 @@ from botorch_rs.models.deterministic import (
     GenericDeterministicModel,
     PosteriorMeanModel,
 )
+from botorch_rs.models.empirical_gps.empirical_1d_gp import EmpiricalOneDimensionalGP
+from botorch_rs.models.empirical_gps.multioutput_empirical_1d_gp import (
+    MultiOutputEmpiricalOneDimensionalGP,
+)
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.gp_regression_fidelity import SingleTaskMultiFidelityGP
 from botorch_rs.models.gp_regression_mixed import MixedSingleTaskGP
@@ -38,6 +42,8 @@ __all__ = [
     "AffineFidelityCostModel",
     "ApproximateGPyTorchModel",
     "EnsembleMapSaasSingleTaskGP",
+    "EmpiricalOneDimensionalGP",
+    "MultiOutputEmpiricalOneDimensionalGP",
     "GenericDeterministicModel",
     "GPyTorchModel",
     "BatchedMultiOutputGPyTorchModel",

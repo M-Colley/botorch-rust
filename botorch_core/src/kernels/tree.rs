@@ -22,6 +22,7 @@
 use crate::constraints::{Constraint, GreaterThan};
 use crate::error::{BotorchError, Result};
 use crate::kernels::contextual::LceaSpec;
+use crate::kernels::empirical::EmpiricalBasisSpec;
 use crate::kernels::KernelKind;
 use crate::priors::Prior;
 
@@ -164,6 +165,8 @@ pub enum KernelType {
         /// Whether to include the final combinatorial child in the covariance.
         use_combinatorial: bool,
     },
+    /// Interpolated historical basis curves with optional learned weights.
+    EmpiricalBasis(Box<EmpiricalBasisSpec>),
     /// Latent context embedding additive covariance with shared parameters.
     ContextualLcea(Box<LceaSpec>),
     /// `RBFKernel` or `MaternKernel(nu)` (parameter `raw_lengthscale`).
@@ -556,6 +559,26 @@ impl KernelNode {
         Ok(Self::leaf(
             KernelType::IntegratedWhiteNoise { order },
             vec![],
+        ))
+    }
+
+    /// Empirical covariance of fixed historical basis curves.
+    pub fn empirical_basis(spec: EmpiricalBasisSpec) -> Result<Self> {
+        spec.validate(spec.group_column.map_or(1, |c| c + 1))?;
+        let params = if spec.learn_weights {
+            let mut p = ParamSpec::new(
+                "curve_weights",
+                vec![spec.weights.len()],
+                Some(GreaterThan::new(0.0, None, None).into()),
+            );
+            p.default_raw = 1.0;
+            vec![p]
+        } else {
+            vec![]
+        };
+        Ok(Self::leaf(
+            KernelType::EmpiricalBasis(Box::new(spec)),
+            params,
         ))
     }
 
@@ -1347,6 +1370,7 @@ impl KernelNode {
                 }
             }
             KernelType::ContextualLcea(spec) => spec.validate(k)?,
+            KernelType::EmpiricalBasis(spec) => spec.validate(k)?,
             KernelType::ContextualSac { contexts } => {
                 if let Some(&bad) = contexts.iter().flatten().find(|&&j| j >= k) {
                     return Err(BotorchError::Runtime(format!(

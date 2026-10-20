@@ -21,6 +21,7 @@ mod composite;
 mod contextual;
 mod deterministic;
 mod empirical;
+mod empirical_models;
 mod errors;
 mod fantasize;
 mod fully_bayesian;
@@ -65,6 +66,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     batched_lbfgsb::register(m)?;
     m.add_function(wrap_pyfunction!(heterogeneous::target_task_model, m)?)?;
     empirical::register(m)?;
+    empirical_models::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // Models and their components.
     m.add_class::<models::PySingleTaskGP>()?;

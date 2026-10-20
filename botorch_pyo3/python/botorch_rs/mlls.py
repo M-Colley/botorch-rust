@@ -8,6 +8,7 @@ from typing import Any
 from botorch_rs._arrays import broadcast_shapes, broadcast_to, from_flat, to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.likelihoods import Likelihood
+from botorch_rs.models.empirical_gps.empirical_1d_gp import EmpiricalOneDimensionalGP
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.higher_order_gp import HigherOrderGP
 from botorch_rs.models.latent_kronecker_gp import LatentKroneckerGP
@@ -69,7 +70,14 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
             raise RuntimeError("Likelihood must be Gaussian for exact inference")
         if not isinstance(
             model,
-            (SingleTaskGP, MultiTaskGP, KroneckerMultiTaskGP, HigherOrderGP, LatentKroneckerGP),
+            (
+                SingleTaskGP,
+                MultiTaskGP,
+                KroneckerMultiTaskGP,
+                HigherOrderGP,
+                LatentKroneckerGP,
+                EmpiricalOneDimensionalGP,
+            ),
         ):
             raise UnsupportedError(
                 "ExactMarginalLogLikelihood requires a botorch_rs SingleTaskGP, MultiTaskGP, "

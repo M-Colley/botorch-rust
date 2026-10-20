@@ -54,11 +54,12 @@ def _is_approximate(mll: Any) -> bool:
 
 def _is_higher_order(mll: Any) -> bool:
     from botorch_rs.mlls import ExactMarginalLogLikelihood
+    from botorch_rs.models.empirical_gps.empirical_1d_gp import EmpiricalOneDimensionalGP
     from botorch_rs.models.higher_order_gp import HigherOrderGP
     from botorch_rs.models.latent_kronecker_gp import LatentKroneckerGP
 
     return isinstance(mll, ExactMarginalLogLikelihood) and isinstance(
-        mll.model, (HigherOrderGP, LatentKroneckerGP)
+        mll.model, (HigherOrderGP, LatentKroneckerGP, EmpiricalOneDimensionalGP)
     )
 
 
