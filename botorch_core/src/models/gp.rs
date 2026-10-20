@@ -2114,6 +2114,21 @@ pub struct CrossPosterior {
 }
 
 impl Model for SingleTaskGP {
+    fn posterior_parameter_vjp(
+        &self,
+        x: &Matrix,
+        mean_adjoint: &Vector,
+        covariance_adjoint: &Matrix,
+        observation_noise: bool,
+    ) -> Result<Vector> {
+        SingleTaskGP::posterior_parameter_vjp(
+            self,
+            x,
+            mean_adjoint,
+            covariance_adjoint,
+            observation_noise,
+        )
+    }
     fn dim(&self) -> usize {
         SingleTaskGP::dim(self)
     }

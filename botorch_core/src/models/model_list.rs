@@ -263,6 +263,40 @@ pub(crate) fn concat_point_posteriors(parts: &[PointPosteriors]) -> PointPosteri
 }
 
 impl Model for ModelListGP {
+    fn posterior_parameter_vjp(
+        &self,
+        x: &Matrix,
+        mean_adjoint: &Vector,
+        covariance_adjoint: &Matrix,
+        observation_noise: bool,
+    ) -> Result<Vector> {
+        self.require_unbatched()?;
+        check_vjp_shapes_expanded(
+            x,
+            &(0..x.nrows()),
+            mean_adjoint,
+            covariance_adjoint,
+            self.num_outputs,
+            self.points_per_input(),
+        )?;
+        let q = x.nrows() * self.points_per_input();
+        let mut offset = 0;
+        let mut values = Vec::new();
+        for child in &self.models {
+            let size = q * child.num_outputs();
+            let gradient = child.posterior_parameter_vjp(
+                x,
+                &mean_adjoint.rows(offset, size).into_owned(),
+                &covariance_adjoint
+                    .view((offset, offset), (size, size))
+                    .into_owned(),
+                observation_noise,
+            )?;
+            values.extend_from_slice(gradient.as_slice());
+            offset += size;
+        }
+        Ok(Vector::from_vec(values))
+    }
     fn dim(&self) -> usize {
         ModelListGP::dim(self)
     }

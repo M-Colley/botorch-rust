@@ -358,6 +358,18 @@ impl crate::acquisition::SampleReducing for QLogExpectedImprovement {
 }
 
 impl AcquisitionFunction for QLogExpectedImprovement {
+    fn supports_parameter_gradients(&self) -> bool {
+        true
+    }
+
+    fn forward_with_adjoints(
+        &self,
+        x: &Matrix,
+        query_gradient: bool,
+    ) -> Result<crate::acquisition::adjoints::AcquisitionAdjoints> {
+        self.core
+            .evaluate_with_adjoints(x, query_gradient, true, |y, w, g| self.reduce(y, w, g))
+    }
     fn model(&self) -> &Arc<dyn Model> {
         &self.core.model
     }

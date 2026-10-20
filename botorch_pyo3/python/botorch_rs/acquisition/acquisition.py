@@ -351,6 +351,14 @@ class AcquisitionFunction:
                 _init_on_ensemble(self, init, args, kw)
                 return
             init(self, *args, **kw)
+            # Native wrappers reuse the wrapped acquisition's original model
+            # law, which may predate the model's current parameter state.
+            for argument in (*args, *kw.values()):
+                if isinstance(argument, AcquisitionFunction):
+                    inherited = argument.__dict__.get("_parameter_snapshot")
+                    if inherited is not None and inherited.model is self.model:
+                        self._parameter_snapshot = inherited
+                        break
 
         __init__._ensemble_aware = True  # type: ignore[attr-defined]
         cls.__init__ = __init__  # type: ignore[method-assign]
@@ -365,10 +373,17 @@ class AcquisitionFunction:
             )
         self.model = model
         self._pending_kind: ArrayKind = model._kind
+        from botorch_rs.acquisition._parameter_autograd import capture
+
+        self._parameter_snapshot = capture(model)
 
     def _model_handle(self, posterior_transform: Any = None) -> _RsModel:
         """The model seen through ``posterior_transform`` (if given)."""
-        return self.model._acquisition_model(posterior_transform)
+        native = self.model._acquisition_model(posterior_transform)
+        from botorch_rs.acquisition._parameter_autograd import capture
+
+        self._parameter_snapshot = capture(self.model)
+        return native
 
     def _candidates(self, X: Any) -> tuple[Flat, ArrayKind, tuple[int, ...]]:
         """``X`` as a flat ``batch x q x d`` array, its kind and original shape."""
@@ -386,9 +401,22 @@ class AcquisitionFunction:
 
     def forward(self, X: Any) -> Any:
         """Acquisition values at ``X`` (shape ``batch_shape``)."""
+        snapshot = self.__dict__.get("_parameter_snapshot")
+        if snapshot is not None and not self.__dict__.get("_ensemble_acqfs"):
+            snapshot.validate(self.model)
         if is_torch_tensor(X) and X.dim() >= 2:
             from botorch_rs import _torch_autograd
 
+            if snapshot is not None and not self.__dict__.get("_ensemble_acqfs"):
+                import torch
+
+                if torch.is_grad_enabled() and any(p.requires_grad for _, p in snapshot.entries):
+                    from botorch_rs.acquisition._parameter_autograd import evaluate
+
+                    X3 = X if X.dim() > 2 else X.unsqueeze(0)
+                    result = evaluate(self, X3, snapshot)
+                    self._after_evaluation()
+                    return result
             if _torch_autograd.requires_grad(X):
                 X3 = X if X.dim() > 2 else X.unsqueeze(0)
                 out = _torch_autograd.evaluate(self._rs, X3)
@@ -405,6 +433,9 @@ class AcquisitionFunction:
     def value_and_grad(self, X: Any) -> tuple[Any, Any]:
         """Acquisition values (shape ``batch_shape``) and their gradients with
         respect to ``X`` (shape of ``X``) -- a botorch_rs extension."""
+        snapshot = self.__dict__.get("_parameter_snapshot")
+        if snapshot is not None and not self.__dict__.get("_ensemble_acqfs"):
+            snapshot.validate(self.model)
         flat, kind, shape = self._candidates(X)
         (values, batch), (grads, _) = self._rs.forward_with_grad(flat)
         self._after_evaluation()

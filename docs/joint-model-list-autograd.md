@@ -19,8 +19,9 @@ covariance derivatives vanish because the model is independent across children.
 
 Unsupported child families cause an explicit parameter-backward error when
 mixed with supported persistent child leaves. Their existing query-input
-interfaces remain available. Native acquisition parameter graphs remain
-outside this implementation. Specialized all-unsupported lists retain their
+interfaces remain available. Common unbatched analytic/scalar MC acquisition
+parameter graphs are documented in `acquisition-parameter-gradients.md`.
+Specialized all-unsupported lists retain their
 existing parameter protocols; no new parameter differentiation is claimed.
 
 ## Reference defects and validated solutions

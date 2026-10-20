@@ -83,8 +83,9 @@ fixed native state remain available; freeze parameter leaves for query-only
 describes its independent raw parameter layout. Correct tied-parameter fitting
 requires a future native parameter-layout extension.
 
-Native acquisition outputs retain their established explicit query-gradient
-interfaces; this checkpoint does not attach acquisition parameter graphs.
-Native acquisitions capture model snapshots, so rebuild them after parameter
-updates. External Torch optimizers can train a model using supported posterior
-or exact-MLL losses.
+Common analytic and scalar MC acquisition values now attach native model
+parameter tapes for unbatched ordinary GP sources and Gaussian model lists.
+See `acquisition-parameter-gradients.md` for supported families, the retained
+posterior-adjoint route, immutable backward state, and explicit unsupported
+boundaries. Native acquisitions capture model snapshots: public forward calls
+require reconstruction after parameter or model-state updates.

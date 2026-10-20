@@ -881,6 +881,55 @@ impl McCore {
     where
         F: Fn(&Matrix, Option<&Matrix>, bool) -> Reduced,
     {
+        Ok(self
+            .evaluate_recorded(
+                x,
+                weights,
+                with_grad,
+                log_indicator,
+                reduce,
+                false,
+                with_grad,
+            )?
+            .0)
+    }
+
+    pub fn evaluate_with_adjoints<F>(
+        &self,
+        x: &Matrix,
+        query_gradient: bool,
+        log_indicator: bool,
+        reduce: F,
+    ) -> Result<crate::acquisition::adjoints::AcquisitionAdjoints>
+    where
+        F: Fn(&Matrix, Option<&Matrix>, bool) -> Reduced,
+    {
+        let ((value, gradients), tape) =
+            self.evaluate_recorded(x, None, true, log_indicator, reduce, true, query_gradient)?;
+        Ok(crate::acquisition::adjoints::AcquisitionAdjoints {
+            value,
+            query_gradient: query_gradient.then(|| gradients.expect("requested query gradient").0),
+            posterior: tape.expect("requested posterior tape"),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_recorded<F>(
+        &self,
+        x: &Matrix,
+        weights: Option<&[f64]>,
+        with_grad: bool,
+        log_indicator: bool,
+        reduce: F,
+        record: bool,
+        query_gradient: bool,
+    ) -> Result<(
+        crate::acquisition::WeightedEvaluation,
+        Option<crate::acquisition::adjoints::PosteriorAdjoints>,
+    )>
+    where
+        F: Fn(&Matrix, Option<&Matrix>, bool) -> Reduced,
+    {
         let d = self.model.dim();
         check_candidates(x, d, None)?;
         let q = x.nrows();
@@ -923,16 +972,20 @@ impl McCore {
             s,
         );
         if has_nan(&so.obj) {
-            return Ok(nan_evaluation(
-                q,
-                d,
-                weights.map_or(0, <[f64]>::len),
-                with_grad,
+            let tape = record.then(|| crate::acquisition::adjoints::PosteriorAdjoints {
+                model: self.model.clone(),
+                inputs: so.js.x.clone(),
+                mean: Vector::from_element(so.js.n * so.js.m, f64::NAN),
+                covariance: Matrix::from_element(so.js.n * so.js.m, so.js.n * so.js.m, f64::NAN),
+            });
+            return Ok((
+                nan_evaluation(q, d, weights.map_or(0, <[f64]>::len), with_grad),
+                tape,
             ));
         }
         let r = reduce(&so.obj, combined.as_ref(), with_grad);
         if !with_grad {
-            return Ok((r.value, None));
+            return Ok(((r.value, None), None));
         }
         let obj_bar = r.obj_bar.expect("gradient requested");
         let (ind_bar, w_bar) = split_indicator_adjoint(
@@ -945,8 +998,31 @@ impl McCore {
             (Some(ind), Some(ib)) => Some(ind.backward(&ib)?),
             _ => None,
         };
-        let grad = so.backward(self.model.as_ref(), &obj_bar, samples_bar, 0..q)?;
-        Ok((r.value, Some((grad, w_bar))))
+        let inputs = so.js.x.clone();
+        let (mean, covariance, direct) = so.posterior_adjoints(&obj_bar, samples_bar)?;
+        let mut grad = if query_gradient {
+            self.model
+                .joint_posterior_vjp(&inputs, 0..q, &mean, &covariance)?
+        } else {
+            Matrix::zeros(q, d)
+        };
+        if let Some(xb) = direct {
+            if xb.shape() != inputs.shape() {
+                return Err(BotorchError::DimensionMismatch(
+                    "The objective's direct input adjoint must match its full inputs".into(),
+                ));
+            }
+            if query_gradient {
+                grad += xb.rows(0, q);
+            }
+        }
+        let tape = record.then(|| crate::acquisition::adjoints::PosteriorAdjoints {
+            model: self.model.clone(),
+            inputs,
+            mean,
+            covariance,
+        });
+        Ok(((r.value, Some((grad, w_bar))), tape))
     }
 }
 
@@ -1247,6 +1323,19 @@ macro_rules! mc_common {
     () => {
         fn model(&self) -> &Arc<dyn Model> {
             &self.core.model
+        }
+
+        fn supports_parameter_gradients(&self) -> bool {
+            true
+        }
+
+        fn forward_with_adjoints(
+            &self,
+            x: &Matrix,
+            query_gradient: bool,
+        ) -> Result<crate::acquisition::adjoints::AcquisitionAdjoints> {
+            self.core
+                .evaluate_with_adjoints(x, query_gradient, false, |y, w, g| self.reduce(y, w, g))
         }
 
         fn x_pending(&self) -> Option<Matrix> {

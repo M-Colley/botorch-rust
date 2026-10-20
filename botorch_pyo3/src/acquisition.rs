@@ -58,6 +58,54 @@ pub struct PyAcquisitionFunction {
     objective_batch: Vec<usize>,
 }
 
+/// Immutable reverse tape from one parallel acquisition evaluation.
+#[pyclass(
+    frozen,
+    name = "AcquisitionParameterTape",
+    module = "botorch_rs._botorch_rs"
+)]
+pub struct PyAcquisitionParameterTape {
+    records: Vec<botorch_core::acquisition::adjoints::PosteriorAdjoints>,
+    batch_shape: Vec<usize>,
+}
+
+#[pymethods]
+impl PyAcquisitionParameterTape {
+    fn parameter_vjp(
+        &self,
+        py: Python<'_>,
+        weights: Array,
+        parameter_count: usize,
+    ) -> PyResult<ArrayBuf> {
+        if weights.1 != self.batch_shape || weights.0.len() != self.records.len() {
+            return Err(crate::errors::dimension_error(
+                "Acquisition adjoints must match candidate batch shape",
+            ));
+        }
+        let gradient = threads::run(py, || {
+            let mut gradient = Vector::zeros(parameter_count);
+            for (record, &weight) in self.records.iter().zip(&weights.0) {
+                if weight == 0.0 {
+                    continue;
+                }
+                let part = record.parameter_vjp(weight)?;
+                if part.len() != parameter_count {
+                    return Err(botorch_core::BotorchError::DimensionMismatch(
+                        "Acquisition tape parameter layout differs from its captured leaves".into(),
+                    ));
+                }
+                gradient += part;
+            }
+            Ok(gradient)
+        })
+        .into_py_result()?;
+        Ok(ArrayBuf(
+            gradient.as_slice().to_vec(),
+            vec![parameter_count],
+        ))
+    }
+}
+
 impl PyAcquisitionFunction {
     pub(crate) fn new_plain(inner: Arc<dyn AcquisitionFunction>, name: &'static str) -> Self {
         Self {
@@ -707,6 +755,46 @@ impl PyAcquisitionFunction {
             grads.extend(data);
         }
         Ok((ArrayBuf(values, batch), ArrayBuf(grads, x.1.clone())))
+    }
+
+    #[getter]
+    fn supports_parameter_gradients(&self) -> bool {
+        self.inner.supports_parameter_gradients()
+    }
+
+    #[pyo3(signature = (x, query_gradient=false))]
+    fn forward_with_adjoint_tape(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        query_gradient: bool,
+    ) -> PyResult<(ArrayBuf, Option<ArrayBuf>, PyAcquisitionParameterTape)> {
+        let (batch, sets) = candidate_sets(&x)?;
+        let results = threads::run(py, || {
+            sets.par_iter()
+                .map(|points| self.inner.forward_with_adjoints(points, query_gradient))
+                .collect::<botorch_core::Result<Vec<_>>>()
+        })
+        .into_py_result()?;
+        let mut values = Vec::with_capacity(results.len());
+        let mut gradients = Vec::new();
+        let mut records = Vec::with_capacity(results.len());
+        for result in results {
+            values.push(result.value);
+            if let Some(gradient) = result.query_gradient {
+                gradients.extend(matrix_out(&gradient).0);
+            }
+            records.push(result.posterior);
+        }
+        let tape = PyAcquisitionParameterTape {
+            records,
+            batch_shape: batch.clone(),
+        };
+        Ok((
+            ArrayBuf(values, batch),
+            query_gradient.then_some(ArrayBuf(gradients, x.1)),
+            tape,
+        ))
     }
 
     /// Cached-baseline incumbents, available before evaluation when enabled.

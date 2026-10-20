@@ -196,6 +196,24 @@ pub trait Model: Send + Sync + Debug {
         Ok(out)
     }
 
+    /// Raw model-parameter adjoint of a Gaussian posterior. Parameters follow
+    /// the concrete model's public flat layout; specialized models opt in.
+    ///
+    /// # Errors
+    /// Unsupported model families, inconsistent adjoint shapes, or numerical
+    /// failures of the full conditional training-solve derivative.
+    fn posterior_parameter_vjp(
+        &self,
+        _x: &Matrix,
+        _mean_adjoint: &Vector,
+        _covariance_adjoint: &Matrix,
+        _observation_noise: bool,
+    ) -> Result<Vector> {
+        Err(BotorchError::Unsupported(
+            "This model does not implement native posterior parameter gradients".into(),
+        ))
+    }
+
     /// Posteriors of every row of `x`, each evaluated on its own (a
     /// `b × 1 × d` batch in BoTorch), over all outputs, with *unclamped*
     /// output covariances and without observation noise.

@@ -98,6 +98,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     // Acquisition functions and their optimization.
     m.add_class::<acquisition::PyAcquisitionFunction>()?;
+    m.add_class::<acquisition::PyAcquisitionParameterTape>()?;
     m.add_function(wrap_pyfunction!(acquisition::prune_inferior_points_py, m)?)?;
     m.add_function(wrap_pyfunction!(optim::optimize_acqf, m)?)?;
     m.add_function(wrap_pyfunction!(optim::gen_batch_initial_conditions_py, m)?)?;

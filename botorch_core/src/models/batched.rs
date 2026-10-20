@@ -1169,6 +1169,38 @@ pub(crate) fn block_diagonal_grad(parts: &[JointPosteriorGrad]) -> JointPosterio
 }
 
 impl Model for BatchedMultiOutputGP {
+    fn posterior_parameter_vjp(
+        &self,
+        x: &Matrix,
+        mean_adjoint: &Vector,
+        covariance_adjoint: &Matrix,
+        observation_noise: bool,
+    ) -> Result<Vector> {
+        self.require_unbatched()?;
+        check_vjp_shapes_expanded(
+            x,
+            &(0..x.nrows()),
+            mean_adjoint,
+            covariance_adjoint,
+            self.num_outputs,
+            self.points_per_input(),
+        )?;
+        let q = x.nrows() * self.points_per_input();
+        let gradients = self
+            .outputs_of(0)
+            .iter()
+            .enumerate()
+            .map(|(t, model)| {
+                model.posterior_parameter_vjp(
+                    x,
+                    &mean_adjoint.rows(t * q, q).into_owned(),
+                    &covariance_adjoint.view((t * q, t * q), (q, q)).into_owned(),
+                    observation_noise,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(self.join(&gradients))
+    }
     fn dim(&self) -> usize {
         self.dim
     }
