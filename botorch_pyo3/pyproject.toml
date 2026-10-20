@@ -43,6 +43,8 @@ module-name = "botorch_rs._botorch_rs"
 python-source = "python"
 manifest-path = "Cargo.toml"
 features = ["pyo3/extension-module"]
+# Distribute source, without generated interpreter-specific bytecode caches.
+exclude = ["**/__pycache__/**", "**/*.pyc", "**/*.pyo"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
