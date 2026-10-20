@@ -101,7 +101,9 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
             )
         _forward_pass(self.model)
         data, shape = self.model._rs.mll()
-        return from_flat(data, tuple(shape), self.model._kind)
+        from botorch_rs.models._mll_autograd import mll_output
+
+        return mll_output(self.model, data, tuple(shape))
 
     forward = __call__
 

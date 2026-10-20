@@ -238,6 +238,31 @@ pub fn posterior_samples_with_vjp(
     Ok((samples, grad))
 }
 
+/// Pull explicit reparameterized sample adjoints back to their Gaussian mean
+/// and covariance (output-major), including root and outcome sample transforms.
+/// This shares the exact root differentiation used for query gradients.
+///
+/// # Errors
+/// Shape errors and errors of the posterior and its covariance roots.
+pub fn posterior_samples_moment_vjp(
+    model: &dyn Model,
+    x: &Matrix,
+    base: &Matrix,
+    weights: &Matrix,
+) -> Result<(Vector, Matrix)> {
+    let js = JointSamples::with_base_samples(model, x.clone(), Arc::new(base.clone()))?;
+    let (n, m) = (js.num_points(), js.m);
+    if weights.shape() != base.shape() {
+        return Err(BotorchError::DimensionMismatch(
+            "sample adjoints must have the shape of the base samples".into(),
+        ));
+    }
+    let ybar = Matrix::from_fn(m * n, base.nrows(), |r, s| {
+        weights[(s, (r % n) * m + r / n)]
+    });
+    js.posterior_adjoints(0..n, &ybar)
+}
+
 /// Joint posterior samples of a point set together with what is needed to
 /// backpropagate through them.
 ///

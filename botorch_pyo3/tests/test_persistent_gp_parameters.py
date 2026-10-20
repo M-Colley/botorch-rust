@@ -17,7 +17,6 @@ from gpytorch.settings import fast_pred_var  # noqa: E402
 from test_posterior_parameter_gradients import model_pair  # noqa: E402
 
 from botorch_rs.acquisition.objective import ScalarizedPosteriorTransform  # noqa: E402
-from botorch_rs.exceptions.errors import UnsupportedError  # noqa: E402
 from botorch_rs.models import SingleTaskGP  # noqa: E402
 from botorch_rs.optim.utils.model_utils import (  # noqa: E402
     get_parameters,
@@ -251,7 +250,7 @@ def test_native_low_level_fit_respects_frozen_leaves():
     torch.testing.assert_close(parameter, initial, rtol=0, atol=0)
 
 
-def test_sample_query_grad_still_works_parameter_grad_explicitly_rejected():
+def test_sample_query_and_parameter_gradients_are_both_available():
     model, _ = model_pair()
     query = torch.tensor([[0.2, 0.6], [0.7, 0.3]], dtype=torch.double, requires_grad=True)
     posterior = model.posterior(query)
@@ -259,5 +258,5 @@ def test_sample_query_grad_still_works_parameter_grad_explicitly_rejected():
         torch.Size([2]), torch.tensor([[-0.3, 0.5], [0.4, -0.8]], dtype=torch.double)
     )
     assert torch.isfinite(torch.autograd.grad(samples.sum(), query, retain_graph=True)[0]).all()
-    with pytest.raises(UnsupportedError, match="parameter gradients of posterior samples"):
-        torch.autograd.grad(samples.sum(), tuple(model.parameters()))
+    for gradient in torch.autograd.grad(samples.sum(), tuple(model.parameters())):
+        assert torch.isfinite(gradient).all()

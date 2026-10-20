@@ -10,7 +10,9 @@ from botorch_rs.exceptions.errors import UnsupportedError
 _function: Any = None
 
 
-def parameter_output(posterior: Any, mode: str, result: Any, shape: tuple[int, ...]) -> Any:
+def parameter_output(
+    posterior: Any, mode: str, result: Any, shape: tuple[int, ...], normals: Any = None
+) -> Any:
     """Attach a parameter-only graph, independently of the query-input graph.
 
     Keeping the graphs separate lets query-only differentiation work even when
@@ -29,10 +31,11 @@ def parameter_output(posterior: Any, mode: str, result: Any, shape: tuple[int, .
         class _NativePosteriorParameters(torch.autograd.Function):
             @staticmethod
             def forward(
-                ctx: Any, post: Any, operation: str, output_shape: Any, *leaves: Any
+                ctx: Any, post: Any, operation: str, output_shape: Any, base: Any, *leaves: Any
             ) -> Any:  # type: ignore[override]
                 ctx.posterior, ctx.operation = post, operation
                 ctx.layout = [(tuple(p.shape), p.numel(), kind_of(p)) for p in leaves]
+                ctx.normals = None if base is None else (list(base[0]), tuple(base[1]))
                 return torch.zeros((), dtype=post._kind.dtype, device=post._kind.device).expand(
                     output_shape
                 )
@@ -40,25 +43,31 @@ def parameter_output(posterior: Any, mode: str, result: Any, shape: tuple[int, .
             @staticmethod
             @once_differentiable
             def backward(ctx: Any, output_adjoint: Any) -> tuple[Any, ...]:  # type: ignore[override]
-                if ctx.operation == "samples":
-                    raise UnsupportedError(
-                        "Automatic GP parameter gradients of posterior samples are not yet "
-                        "supported. Posterior moment and query-input gradients are supported."
-                    )
                 post = ctx.posterior
-                data, _ = post._rs.posterior_moment_parameter_vjp(
-                    post._x,
-                    to_flat(output_adjoint),
-                    ctx.operation,
-                    observation_noise=post._observation_noise,
-                    **post._kwargs(),
-                )
+                if post._parameter_gradient_error is not None:
+                    raise UnsupportedError(post._parameter_gradient_error)
+                if ctx.operation == "samples":
+                    data, _ = post._rs.posterior_samples_parameter_vjp(
+                        post._x,
+                        ctx.normals,
+                        to_flat(output_adjoint),
+                        observation_noise=post._observation_noise,
+                        **post._kwargs(),
+                    )
+                else:
+                    data, _ = post._rs.posterior_moment_parameter_vjp(
+                        post._x,
+                        to_flat(output_adjoint),
+                        ctx.operation,
+                        observation_noise=post._observation_noise,
+                        **post._kwargs(),
+                    )
                 gradients: list[Any] = []
                 offset = 0
                 for shape_, size, kind in ctx.layout:
                     gradients.append(from_flat(data[offset : offset + size], shape_, kind))
                     offset += size
-                return None, None, None, *gradients
+                return None, None, None, None, *gradients
 
         _function = _NativePosteriorParameters
-    return result + _function.apply(posterior, mode, shape, *parameters)
+    return result + _function.apply(posterior, mode, shape, normals, *parameters)

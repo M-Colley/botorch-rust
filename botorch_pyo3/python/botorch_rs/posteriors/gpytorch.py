@@ -141,6 +141,7 @@ class GPyTorchPosterior(Posterior):
     ) -> None:
         self._rs: Any
         self._parameter_inputs: tuple[Any, ...] = ()
+        self._parameter_gradient_error: str | None = None
         self._marginals: tuple[list[float], list[float]] | None = None
         self._joint: tuple[Flat, Flat] | None = None
         if distribution is not None or (source is not None and X is None and kind is None):
@@ -166,6 +167,7 @@ class GPyTorchPosterior(Posterior):
             state = sync()
             if state is not None:
                 self._parameter_inputs = tuple(p for _, p in state.entries)
+                self._parameter_gradient_error = state.gradient_error
         snapshot = getattr(source, "copy", None)
         self._rs = snapshot() if callable(snapshot) else source
         self._interleaved_mt = interleaved
@@ -256,7 +258,7 @@ class GPyTorchPosterior(Posterior):
         if self.__dict__.get("_parameter_inputs"):
             from botorch_rs.posteriors._parameter_autograd import parameter_output
 
-            result = parameter_output(self, mode, result, shape)
+            result = parameter_output(self, mode, result, shape, base)
         return result
 
     def _moment_out(self, mode: str, shape: tuple[int, ...]) -> Any:

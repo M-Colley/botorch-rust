@@ -48,6 +48,7 @@ class TorchParameterState:
     def __init__(self, model: Any) -> None:
         import torch
 
+        self.gradient_error = _shared_transform_error(model)
         self.entries: list[tuple[str, Any]] = []
         self.shapes = [(name, tuple(shape)) for name, shape in model._rs.parameter_shapes()]
         raw = model._rs.raw_parameters()
@@ -116,3 +117,26 @@ class TorchParameterState:
 
     def parameter(self, name: str) -> Any:
         return dict(self.entries)[name]
+
+
+def _shared_transform_error(model: Any) -> str | None:
+    """Current native learned transforms have independent model-element state."""
+    from botorch_rs.models.transforms.input import Warp
+
+    def check(transform: Any) -> bool:
+        if isinstance(transform, Warp):
+            return tuple(transform.batch_shape) != tuple(model._rs.aug_batch_shape)
+        children = getattr(transform, "_transforms", {})
+        if isinstance(children, dict) and any(check(tf) for tf in children.values()):
+            return True
+        return any(check(tf) for tf in getattr(transform, "transforms", []))
+
+    if check(getattr(model, "input_transform", None)):
+        return (
+            "Automatic parameter gradients require Warp batch_shape to equal the model's "
+            "_aug_batch_shape. The native model currently stores independent concentrations "
+            "per output/batch element, while this Warp shares them. Shared learned-transform "
+            "parameter training is unsupported. Freeze model parameters or use torch.no_grad() "
+            "for forward/query-only evaluation; the explicit native VJP describes its own layout."
+        )
+    return None

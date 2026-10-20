@@ -1215,6 +1215,34 @@ impl PySingleTaskGP {
         self.parameter_state_version.load(Ordering::Acquire)
     }
 
+    #[pyo3(signature = (x, base_samples, adjoint, observation_noise=false, output_indices=None, transform=None, base=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn posterior_samples_parameter_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        base_samples: Array,
+        adjoint: Array,
+        observation_noise: bool,
+        output_indices: Option<Vec<usize>>,
+        transform: Option<TransformArg>,
+        base: bool,
+    ) -> PyResult<ArrayBuf> {
+        let model = self.snapshot();
+        threads::run(py, || {
+            posterior_autograd::sample_parameter_vjp(
+                model,
+                &x,
+                &base_samples,
+                &adjoint,
+                observation_noise,
+                output_indices,
+                transform,
+                base,
+            )
+        })
+    }
+
     #[pyo3(signature = (x, adjoint, mode, observation_noise=false, output_indices=None, transform=None, base=false))]
     #[allow(clippy::too_many_arguments)]
     fn posterior_moment_parameter_vjp(
@@ -1576,6 +1604,31 @@ impl PySingleTaskGP {
         let params = raw_parameters.unwrap_or_else(|| model.raw_parameters().as_slice().to_vec());
         let (v, g) = threads::run(py, || model.mll_values_and_grad(&params)).into_py_result()?;
         Ok(((v, model.aug_batch_shape()), g.as_slice().to_vec()))
+    }
+
+    /// Weighted per-element MLL pullback in the original flat raw layout.
+    fn mll_parameter_vjp(&self, py: Python<'_>, adjoint: Array) -> PyResult<ArrayBuf> {
+        let model = self.snapshot();
+        if adjoint.1 != model.aug_batch_shape() || adjoint.0.len() != model.num_elements() {
+            return Err(dimension_error(
+                "MLL adjoints must match the model's augmented batch shape",
+            ));
+        }
+        let (_, mut gradient) = threads::run(py, || {
+            model.mll_values_and_grad(model.raw_parameters().as_slice())
+        })
+        .into_py_result()?;
+        let mut offset = 0;
+        for (_, count) in model.models()[0].parameter_names() {
+            for element in 0..model.num_elements() {
+                for k in 0..count {
+                    gradient[offset + element * count + k] *= adjoint.0[element];
+                }
+            }
+            offset += model.num_elements() * count;
+        }
+        let size = gradient.len();
+        Ok(ArrayBuf(gradient.as_slice().to_vec(), vec![size]))
     }
 
     /// Fits the hyperparameters by maximizing the MLL with L-BFGS-B

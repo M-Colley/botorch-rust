@@ -2,7 +2,9 @@
 
 use std::ops::Range;
 
-use botorch_core::acquisition::monte_carlo::posterior_samples_with_vjp;
+use botorch_core::acquisition::monte_carlo::{
+    posterior_samples_moment_vjp, posterior_samples_with_vjp,
+};
 use botorch_core::{BotorchError, JointPosteriorGrad, Result};
 
 use super::*;
@@ -372,6 +374,95 @@ pub(super) fn moment_parameter_vjp(
     let mean = Array(means, [bc.shape.as_slice(), &[q, m]].concat());
     let covariance = Array(covariances, [bc.shape.as_slice(), &[q * m, q * m]].concat());
     parameter_grad::parameter_vjp(&gp, x, &mean, &covariance, observation_noise)
+}
+
+/// Reparameterized sample parameter adjoints, reduced into original model
+/// elements after lifting the selected/scalarized sample distribution.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn sample_parameter_vjp(
+    gp: Arc<BatchedMultiOutputGP>,
+    x: &Array,
+    normals: &Array,
+    adjoint: &Array,
+    observation_noise: bool,
+    outputs: Option<Vec<usize>>,
+    transform: Option<TransformArg>,
+    base: bool,
+) -> PyResult<ArrayBuf> {
+    let model = ModelRef::Gp(gp.clone());
+    let view = make_view(&model, outputs, transform, base)?;
+    check_dim(x, model.dim())?;
+    let (xbatch, mats) = x.batches("X")?;
+    let bc = broadcast(&xbatch, &model.batch_shape())?;
+    let q = x.1[x.1.len() - 2] * model.points_per_input();
+    let size = q * view.num_outputs;
+    let m = model.num_outputs();
+    let n = *normals
+        .1
+        .first()
+        .ok_or_else(|| dimension_error("Base samples require a sample dimension"))?;
+    let nb = bc.x_index.len();
+    let per_batch = match normals.1.as_slice() {
+        [_, k] if *k == size => false,
+        [_, b, k] if *b == nb && *k == size => true,
+        _ => {
+            return Err(dimension_error(
+                "Base samples do not match the posterior event and batch shapes",
+            ))
+        }
+    };
+    if adjoint.0.len() != n * nb * size || normals.0.len() != numel(&normals.1) {
+        return Err(dimension_error(
+            "Sample adjoints or base samples have inconsistent shapes",
+        ));
+    }
+    let mut means = Vec::with_capacity(nb * q * m);
+    let mut covariances = Vec::with_capacity(nb * q * m * q * m);
+    for b in 0..nb {
+        let points = &mats[bc.x_index[b]];
+        let at = SampleView {
+            model: At {
+                source: &model,
+                batch: bc.model_index[b],
+            },
+            view: &view,
+            noise: observation_noise,
+        };
+        let z = Matrix::from_fn(n, size, |s, k| {
+            normals.0[if per_batch {
+                (s * nb + b) * size + k
+            } else {
+                s * size + k
+            }]
+        });
+        let weights = Matrix::from_fn(n, size, |s, k| adjoint.0[(s * nb + b) * size + k]);
+        let (ma, ca) = posterior_samples_moment_vjp(&at, points, &z, &weights).into_py_result()?;
+        let post = model
+            .posterior_at(bc.model_index[b], points, observation_noise)
+            .into_py_result()?;
+        let (ma, ca) = if view.moments {
+            marginal_pullback(&view, &post, &ma, &ca.diagonal(), false).into_py_result()?
+        } else {
+            linear_pullback(&view, &post, &ma, &ca)
+        };
+        for p in 0..q {
+            for t in 0..m {
+                means.push(ma[t * q + p]);
+            }
+        }
+        for i in 0..q * m {
+            for j in 0..q * m {
+                covariances.push(ca[(i, j)]);
+            }
+        }
+    }
+    parameter_grad::parameter_vjp(
+        &gp,
+        x,
+        &Array(means, [bc.shape.as_slice(), &[q, m]].concat()),
+        &Array(covariances, [bc.shape.as_slice(), &[q * m, q * m]].concat()),
+        observation_noise,
+    )
 }
 
 /// Native VJP of posterior mean, variance, or covariance w.r.t. query inputs.

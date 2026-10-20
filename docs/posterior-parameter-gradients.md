@@ -29,7 +29,8 @@ kernel trees, affine outcome transforms and learned input warping.
 Ordinary `SingleTaskGP` constructed from CPU Torch tensors now exposes
 persistent `torch.nn.Parameter` leaves through `parameters()`,
 `named_parameters()`, and bound raw module attributes. Posterior mean,
-variance and joint covariance connect these leaves to the native pullback,
+variance, joint covariance and reparameterized samples connect these leaves
+to the native pullback,
 including selected/scalarized outputs, independent output/batch parameters,
 kernel trees and learned input warping. These graphs also retain existing
 query-input derivatives. They compute the full conditional derivative,
@@ -56,10 +57,29 @@ concrete ordinary `SingleTaskGP`; specialized GP subclasses and model lists
 retain their previous parameter protocols. Sparse-outlier likelihood
 parameters and conditioned input snapshots that do not match the stored
 input-transform program remain explicit unsupported native pullbacks.
-Posterior sample **parameter** backward raises `UnsupportedError`;
-sample query-input differentiation still works. Exact MLL values and native
-acquisition outputs retain their established explicit native-gradient/query
-interfaces; this checkpoint does not attach their parameter backward graphs.
+Sample backward reuses the native covariance-root and outcome-transform
+adjoints, then applies the same full conditional pullback. Explicit base
+samples are snapshotted; multi-dimensional sample shapes and per-batch base
+draws preserve their layout. Exact `ExactMarginalLogLikelihood(model.likelihood,
+model)()` losses also attach these leaves to native analytic MLL derivatives,
+including arbitrary per-output/batch loss weights and prior terms. For example,
+`(-mll().sum()).backward()` followed by a CPU Torch optimizer step works;
+the next evaluation pushes the updated leaves into Rust.
+
+Learned input-transform parameters currently have independent native state
+per model output and batch element. A Warp whose `batch_shape` differs from
+the model's `_aug_batch_shape` has shared parameters in official BoTorch.
+Such shared configurations are rejected by the native constructor. A
+defensive automatic-backward check also rejects incompatible Python transform
+descriptors on copied/conditioned models, rather than training independent
+concentrations as though they were tied. Query-only derivatives of a valid
+fixed native state remain available; freeze parameter leaves for query-only
+`backward()`, or use `torch.no_grad()` for values. The explicit native VJP
+describes its independent raw parameter layout. Correct tied-parameter fitting
+requires a future native parameter-layout extension.
+
+Native acquisition outputs retain their established explicit query-gradient
+interfaces; this checkpoint does not attach acquisition parameter graphs.
 Native acquisitions capture model snapshots, so rebuild them after parameter
-updates. External Torch optimizers can already train a model using a loss
-built from the supported posterior moments.
+updates. External Torch optimizers can train a model using supported posterior
+or exact-MLL losses.

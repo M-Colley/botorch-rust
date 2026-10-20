@@ -44,8 +44,8 @@ def model_pair(outputs=1, batch=(), tree=False, warp=False, fixed=False):
         ).double()
     if warp:
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
-        kwargs["input_transform"] = Warp(2, [0, 1], bounds=bounds)
-        other["input_transform"] = BtWarp(2, [0, 1], bounds=bounds)
+        kwargs["input_transform"] = Warp(2, [0, 1], bounds=bounds, batch_shape=batch)
+        other["input_transform"] = BtWarp(2, [0, 1], bounds=bounds, batch_shape=torch.Size(batch))
     actual = SingleTaskGP(
         x, y, noise, outcome_transform=Standardize(outputs, batch_shape=batch), **kwargs
     )

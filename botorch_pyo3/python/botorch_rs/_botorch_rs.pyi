@@ -484,6 +484,17 @@ class SingleTaskGP:
     def raw_parameters(self) -> list[float]: ...
     @property
     def parameter_state_version(self) -> int: ...
+    def posterior_samples_parameter_vjp(
+        self,
+        x: Array,
+        base_samples: Array,
+        adjoint: Array,
+        observation_noise: bool = False,
+        output_indices: list[int] | None = None,
+        transform: tuple[list[float], float] | None = None,
+        base: bool = False,
+    ) -> ArrayBuf: ...
+    def mll_parameter_vjp(self, adjoint: Array) -> ArrayBuf: ...
     def posterior_moment_parameter_vjp(
         self,
         x: Array,
