@@ -999,6 +999,20 @@ impl PyKroneckerMultiTaskGP {
         matrix_out(self.snapshot().transformed_train_targets()).into()
     }
 
+    /// Cached noiseless training covariance, interleaved point then task.
+    fn train_full_covar(&self, py: Python<'_>) -> PyResult<ArrayBuf> {
+        let model = self.snapshot();
+        let value = threads::run(py, || model.train_full_covar()).into_py_result()?;
+        Ok(matrix_out(value.as_ref()).into())
+    }
+
+    /// Cached transformed-space predictive mean solve (interleaved).
+    fn predictive_mean_cache(&self, py: Python<'_>) -> PyResult<ArrayBuf> {
+        let model = self.snapshot();
+        let value = threads::run(py, || model.predictive_mean_cache()).into_py_result()?;
+        Ok(ArrayBuf(value.as_slice().to_vec(), vec![value.len()]))
+    }
+
     /// The fitted outcome transform, if any.
     fn outcome_transform(&self) -> PyResult<Option<PyStandardize>> {
         let m = self.snapshot();

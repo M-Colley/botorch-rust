@@ -940,6 +940,22 @@ class KroneckerMultiTaskGP(GPyTorchModel):
         data, shape = self._rs.transformed_train_targets()
         return from_flat(data, tuple(shape), self._kind)
 
+    @property
+    def train_full_covar(self) -> Any:
+        """Cached noiseless `Kxx ⊗ Ktt` in transformed training units.
+
+        Returns a dense array in the model's input array type, with rows
+        and columns ordered by training point then task.
+        """
+        data, shape = self._rs.train_full_covar()
+        return from_flat(data, tuple(shape), self._kind)
+
+    @property
+    def predictive_mean_cache(self) -> Any:
+        """Cached `(Ktrain + noise)⁻¹ (train_targets - train_mean)` solve."""
+        data, shape = self._rs.predictive_mean_cache()
+        return from_flat(data, tuple(shape), self._kind)
+
     def train(self, mode: bool = True) -> KroneckerMultiTaskGP:
         self.training = mode
         for name in ("input_transform", "outcome_transform"):
