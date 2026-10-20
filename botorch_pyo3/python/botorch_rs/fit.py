@@ -63,9 +63,10 @@ def fit_gpytorch_mll(
         ``mll``, in evaluation mode.
     """
     from botorch_rs.models.empirical_gps.em_coordinate_ascent import KLPriorFitMLL
+    from botorch_rs.models.empirical_gps.em_empirical_gp import EMEmpiricalMarginalLogLikelihood
     from botorch_rs.models.robust_relevance_pursuit_model import RobustRelevancePursuitMixin
 
-    if isinstance(mll, KLPriorFitMLL):
+    if isinstance(mll, (KLPriorFitMLL, EMEmpiricalMarginalLogLikelihood)):
         return mll._fit(closure, optimizer, closure_kwargs, optimizer_kwargs, **kwargs)
 
     if isinstance(mll.model, RobustRelevancePursuitMixin):

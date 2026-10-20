@@ -1,6 +1,8 @@
 """Empirical Gaussian-process models with native interpolation and inference."""
 
 from botorch_rs.models.empirical_gps.em_empirical_gp import (
+    EMEmpiricalGaussianProcess,
+    EMEmpiricalMarginalLogLikelihood,
     EMPriorContainer,
     pretrain_em_prior,
 )
@@ -22,6 +24,8 @@ from botorch_rs.models.empirical_gps.multitask_empirical_1d_gp import (
 )
 
 __all__ = [
+    "EMEmpiricalGaussianProcess",
+    "EMEmpiricalMarginalLogLikelihood",
     "EMPriorContainer",
     "BaseAugmentedEmpiricalKernel",
     "EmpiricalOneDimensionalGP",

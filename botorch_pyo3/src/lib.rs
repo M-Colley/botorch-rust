@@ -23,6 +23,7 @@ mod contextual;
 mod deterministic;
 mod em_gp;
 mod em_kl;
+mod em_model;
 mod empirical;
 mod empirical_models;
 mod errors;
@@ -74,6 +75,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     em_kl::register(m)?;
     empirical_models::register(m)?;
     em_gp::register(m)?;
+    em_model::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // Models and their components.
     m.add_class::<models::PySingleTaskGP>()?;

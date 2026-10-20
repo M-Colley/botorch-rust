@@ -58,9 +58,32 @@ metadata and native mean, kernel, constraint and prior descriptors without
 serializing mutable model backreferences. This save format is native to the
 port and does not interchange files with `torch.save` upstream.
 
-The EM prediction model, its training likelihood, shared-kernel model-list
-fitting, and coordinate ascent are separate milestones; this prior-training
-milestone does not mark those names complete.
+## EM prediction and observed-data fitting
+
+`EMEmpiricalGaussianProcess` conditions a learned inducing prior on new target
+observations. Shift interpolation preserves the full Nyström residual and an
+optional additive base kernel contributes its full covariance at query points.
+When interpolation is disabled, queries must identify historical locations
+within the upstream `1e-6` distance tolerance. Explicit inducing points always
+enable interpolation. Queries may have batch dimensions; training is scalar
+and unbatched. Both prior distributions (`forward`) and conditioned posteriors
+have native first query derivatives, full joint covariances and sampling.
+Posterior objects retain immutable snapshots when model parameters change.
+
+`EMEmpiricalMarginalLogLikelihood` sums historical observed-data likelihoods
+and adds registered hyperpriors once, then divides by the total historical
+observation count. For `from_pretrained` models it differentiates through the
+parametric mean, interpolation kernel, Gaussian noise and optional additive
+kernel while holding learned inducing moments fixed. The default factory
+freezes the pretrained mean/kernel; `freeze_pretrained=False` enables their
+joint fitting. Native L-BFGS-B and Adam use these analytic gradients.
+
+Constructing from historical datasets performs native initial EM and supports
+cached evaluation. Differentiating through subsequent EM iterations, warm
+starts and learnable inducing locations are explicit current boundaries.
+Use a pretrained prior for analytic fixed-prior fitting. Arbitrary Python
+mean/likelihood objects and tensor-valued predictive noise are rejected.
+Shared-kernel model-list fitting and coordinate ascent are separate milestones.
 
 ## Current boundaries
 

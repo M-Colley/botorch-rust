@@ -19,7 +19,7 @@ type EMOutput = (
     usize,
 );
 
-fn matrix(a: Array, name: &str) -> PyResult<Matrix> {
+pub(crate) fn matrix(a: Array, name: &str) -> PyResult<Matrix> {
     if a.1.iter().try_fold(1usize, |n, &d| n.checked_mul(d)) != Some(a.0.len()) {
         return Err(value_error(format!(
             "{name} length differs from declared shape"
@@ -27,7 +27,7 @@ fn matrix(a: Array, name: &str) -> PyResult<Matrix> {
     }
     a.matrix(name)
 }
-fn vector(a: Array, name: &str) -> PyResult<Vector> {
+pub(crate) fn vector(a: Array, name: &str) -> PyResult<Vector> {
     if !(a.1.len() == 1 || a.1.len() == 2 && a.1[1] == 1)
         || a.1.iter().try_fold(1usize, |n, &d| n.checked_mul(d)) != Some(a.0.len())
     {
