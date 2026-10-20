@@ -52,6 +52,14 @@ _MULTI_OBJECTIVE = frozenset(
     }
 )
 _LOOKAHEAD = frozenset({"qKnowledgeGradient", "qMultiFidelityKnowledgeGradient"})
+_EXTRA_ANALYTIC = frozenset(
+    {
+        "ConstrainedExpectedImprovement",
+        "LogConstrainedExpectedImprovement",
+        "LogProbabilityOfFeasibility",
+        "ScalarizedPosteriorMean",
+    }
+)
 _TYPES: dict[type, type] = {}
 _LOG_2PI = math.log(2 * math.pi)
 
@@ -59,7 +67,8 @@ _LOG_2PI = math.log(2 * math.pi)
 def tensor_acquisition(public_class: type) -> Any:
     """Allocate a graph-native subtype without invoking a native constructor."""
     if (
-        public_class.__name__ not in _ANALYTIC | _MC | _MULTI_OBJECTIVE | _LOOKAHEAD
+        public_class.__name__
+        not in _ANALYTIC | _MC | _MULTI_OBJECTIVE | _LOOKAHEAD | _EXTRA_ANALYTIC
         or not public_class.__module__.startswith("botorch_rs.acquisition.")
     ):
         raise UnsupportedError(f"{public_class.__name__} does not yet support backend='torch'.")
@@ -83,6 +92,10 @@ def tensor_acquisition(public_class: type) -> Any:
             )
 
             mixin = TensorKnowledgeGradient
+        elif public_class.__name__ in _EXTRA_ANALYTIC:
+            from botorch_rs.acquisition._torch_backend_analytic import TensorAnalyticExtra
+
+            mixin = TensorAnalyticExtra
         name = f"Torch{public_class.__name__}"
         subtype = type(
             name,
