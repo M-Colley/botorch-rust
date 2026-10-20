@@ -201,6 +201,22 @@ class LCEMGP(MultiTaskGP):
 
     _rs: _botorch_rs.LCEMGP  # type: ignore[assignment]
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        if cls is LCEMGP and _use_torch_backend(backend, train_X, train_Y, *args, *kwargs.values()):
+            from botorch_rs.models._torch_backend_lcem import TorchLCEMGP
+
+            return object.__new__(TorchLCEMGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -219,6 +235,7 @@ class LCEMGP(MultiTaskGP):
         input_transform: Any = None,
         *,
         seed: int | None = None,
+        backend: str = "auto",
     ) -> None:
         self._init(
             train_X,

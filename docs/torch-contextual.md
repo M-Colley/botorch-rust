@@ -26,8 +26,8 @@ SAC models support ordinary model batches and independent output augmentation.
 LCEA models retain the official unbatched, one-output training contract; LCEA
 kernels can be batched independently. Both kernels implement aligned diagonal
 evaluation and unequal input grids. `last_dim_is_batch=True` is rejected: the
-context decomposition already defines grouped feature axes. LCEM and orthogonal
-additive Tensor models are separate work and are not claimed by this checkpoint.
+context decomposition already defines grouped feature axes. Orthogonal additive
+Tensor models are separate work and are not claimed by this checkpoint.
 
 `tests/test_torch_contextual.py` covers CPU/CUDA float32 and float64, official
 kernel and posterior values and first derivatives, independent context-pair
@@ -59,3 +59,42 @@ upstream repair registers each indexer as a buffer (with stable internal buffer
 names), then resolves those buffers during evaluation. The port does this and
 tests CPU construction followed by CUDA migration. This is distinct from the
 previously reported duplicate shared-prior counting defect.
+
+## Latent context embedding multitask GP
+
+`LCEMGP(..., backend="torch")` uses the same device-resident exact Gaussian
+solver as `MultiTaskGP`, with a separately learned RBF covariance on context
+embeddings. CUDA or differentiable Tensor arguments select it automatically.
+Learned embedding layers, per-task means/noise, continuous covariance parameters,
+and the context lengthscales are actual persistent `nn.Parameter` objects.
+Unlike the native CPU LCEM adapter, the Tensor implementation also supports fixed
+observation noise, custom mean/data covariance/Gaussian likelihood modules, input
+transforms, conditioning, and fantasies through the common multitask protocol.
+
+The context RBF has one lengthscale for every learned **and** supplied embedding
+dimension. Supplied Tensor embedding features retain their data gradients.
+Each categorical feature is independently mapped to contiguous indices, as are
+noncontiguous task labels. These address the previously documented source
+dimension and label-indexing defects. For an unobserved context, evaluation keeps
+its embedding and mean parameters; it skips the source `MultiTaskGP.eval`
+IndexKernel-factor update, since that factor does not exist in LCEM's embedding
+covariance. Training remains unbatched long format, with any task-column
+position and freely batched prediction inputs.
+
+`task_covar_module(task_idcs)` accepts mapped indices in `[0, num_tasks)`; model
+prediction inputs carry the original task labels. The task kernel can be replaced
+by a port descriptor or a Torch module. Fixed embedding/category arrays are
+registered buffers, and `device` follows the training Tensor after migration.
+The optional `seed` controls the private learned-embedding initialization stream.
+`ProvidedEmbeddingLCEMGP`, a project extension outside the official main package,
+retains its native CPU adapter and is not included in this Tensor checkpoint.
+
+`tests/test_torch_lcem.py` adds 21 CPU/CUDA cases: official full covariance,
+posterior/query/parameter gradients, and MLL values/gradients for all task-column
+positions and both learned/fixed noise; independent dense conditioning and
+first/second derivatives through training inputs/targets/noise, supplied and
+learned embeddings, and queries; noncontiguous labels; transformed float32
+models; unobserved contexts; Adam and bounded SciPy fitting; conditioning; task
+kernel replacement; and state reload. The reference posterior parameter-gradient
+oracle enables BoTorch's `propagate_grads` setting. The runtime never calls the
+reference model.
