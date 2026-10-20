@@ -172,8 +172,9 @@ separately.
 - Parameter autograd is integrated for ordinary CPU Torch `SingleTaskGP`
   posterior moments, samples and exact MLLs, including joint Gaussian model
   lists and summed MLLs. Variational GPs also expose persistent Torch leaves
-  and full-data/minibatch ELBO gradients. Extend posterior graphs to
-  specialized models and acquisition parameter graphs
+  and full-data/minibatch ELBO gradients. Common analytic and scalar MC
+  acquisitions retain native parameter-adjoint tapes. Extend posterior
+  graphs to specialized models and the remaining acquisition families
   ([current scope](posterior-parameter-gradients.md)).
 - Faster dense linear algebra for larger n. At n = 300, fitting is only 1.4×
   faster than BoTorch, which uses multithreaded BLAS/LAPACK.

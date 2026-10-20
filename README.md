@@ -507,8 +507,10 @@ The main remaining gaps are:
   ([scope](docs/posterior-query-autograd.md)); native structured Matheron
   posteriors also expose query adjoints, with documented fantasy-batch limits.
   Joint Gaussian model lists also carry child parameter graphs
-  ([scope](docs/joint-model-list-autograd.md)). Acquisition parameter graphs
-  remain configuration work. Exact GPs also expose explicit native
+  ([scope](docs/joint-model-list-autograd.md)). Common analytic and scalar MC
+  acquisitions carry parameter graphs for unbatched exact GPs and Gaussian
+  model lists ([families and snapshot semantics](docs/acquisition-parameter-gradients.md)).
+  Other acquisition families remain configuration work. Exact GPs also expose explicit native
   [posterior parameter pullbacks](docs/posterior-parameter-gradients.md).
   Variational GPs support persistent Torch parameters and native ELBO
   backward for full data and minibatches
