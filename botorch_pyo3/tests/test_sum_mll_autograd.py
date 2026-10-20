@@ -97,9 +97,7 @@ def test_sum_mll_accumulates_repeated_models_and_shared_parameter_leaves(alias):
 
 
 def test_sum_mll_backward_uses_child_snapshots_after_parameter_updates():
-    mll, _ = paired_mlls(
-        [(2, (2,), False, False, False), (1, (2,), True, False, True)]
-    )
+    mll, _ = paired_mlls([(2, (2,), False, False, False), (1, (2,), True, False, True)])
     value = mll.forward()
     weights = torch.tensor([[0.3, -0.7], [1.2, 0.4]], dtype=torch.double)
     leaves = unique_parameters(mll.model)
@@ -120,9 +118,7 @@ def test_sum_mll_backward_uses_child_snapshots_after_parameter_updates():
 
 
 def test_sum_mll_freezing_no_grad_and_external_adam():
-    mll, _ = paired_mlls(
-        [(1, (), False, False, False), (1, (), True, False, True)]
-    )
+    mll, _ = paired_mlls([(1, (), False, False, False), (1, (), True, False, True)])
     leaves = unique_parameters(mll.model)
     leaves[0].requires_grad_(False)
     optimizer = torch.optim.Adam(leaves[1:], lr=0.001)
@@ -158,8 +154,6 @@ def test_sum_mll_preserves_non_torch_types_and_values(kind):
 
 
 def test_sum_mll_keeps_incompatible_shape_error():
-    mll, _ = paired_mlls(
-        [(2, (), False, False, False), (3, (), True, False, True)]
-    )
+    mll, _ = paired_mlls([(2, (), False, False, False), (3, (), True, False, True)])
     with pytest.raises(RuntimeError, match="shapes that cannot be broadcast"):
         mll()

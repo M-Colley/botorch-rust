@@ -37,11 +37,15 @@ def reference(tmp_path_factory: Any) -> Any:
     source = root / relative
     if not source.is_file():
         pytest.skip("Requires official BoTorch b0dd01be6 via BOTORCH_RS_REFERENCE_ROOT")
-    patch = Path(__file__).resolve().parents[2] / "docs/patches/botorch-categorical-feature-axis.patch"
+    patch = (
+        Path(__file__).resolve().parents[2] / "docs/patches/botorch-categorical-feature-axis.patch"
+    )
     original = source.read_bytes()
     checked = subprocess.run(
         ["git", "-C", str(root), "apply", "--check", str(patch)],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert checked.returncode == 0, checked.stderr
     isolated = tmp_path_factory.mktemp("categorical-feature-patch")
@@ -50,7 +54,9 @@ def reference(tmp_path_factory: Any) -> Any:
     copied.write_bytes(original)
     applied = subprocess.run(
         ["git", "-C", str(isolated), "apply", str(patch)],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert applied.returncode == 0, applied.stderr
     assert source.read_bytes() == original
@@ -111,7 +117,9 @@ def test_patched_categorical_matches_independent_feature_covariance(
             # GPyTorch1.15.2 __call__ incorrectly extracts another diagonal
             # when feature_count == point_count; test this kernel's branch.
             kernel.forward(selected_x, selected_y, diag=True, last_dim_is_batch=True),
-            expected.diagonal(dim1=-2, dim2=-1), rtol=1e-14, atol=1e-14,
+            expected.diagonal(dim1=-2, dim2=-1),
+            rtol=1e-14,
+            atol=1e-14,
         )
 
 

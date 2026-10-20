@@ -23,8 +23,8 @@ functions build on them.
   Kernel trees in `SingleTaskGP`, the GPyTorch kernels (Matérn ν = 0.5, 1.5,
   2.5, RBF, RQ, periodic, linear, polynomial, cosine, `IndexKernel`), BoTorch's
   own kernels, the Normal / Uniform / half-Cauchy / half-normal / LKJ / Beta
-  priors and `LessThan`. Remaining: the kernels of later model phases,
-  `SmoothedBoxPrior` and other priors, `last_dim_is_batch`.
+  priors and `LessThan`. Standard kernel trees now also support native
+  `last_dim_is_batch`; specialized kernel feature modes remain explicit.
 - **6b: transforms (done; [details](transforms.md)).** All 35 names of
   `botorch.models.transforms`: the input transforms (`Normalize` in full,
   `InputStandardize`, `Warp`, `Round`, `AppendFeatures`, `FilterFeatures`,
@@ -109,9 +109,11 @@ hyperparameters, as in BoTorch; `batch_cross_validation` refits each fold.
 - Fully Bayesian single-task, linear and multi-task GPs, native NUTS and
   BALD are integrated ([implementation and parity notes](drafts/10a-fully-bayesian.md)).
 - `PairwiseGP` with its Laplace MLL and likelihoods, EUBO and the preference
-  BALD (done; [details](preference.md)). Remaining: `LearnedObjective` in the
-  Monte-Carlo acquisition functions, learned input transforms in
-  `PairwiseGP`.
+  BALD (done; [details](preference.md)). `LearnedObjective` is integrated
+  with native Monte Carlo acquisitions, including expanded preference
+  samples and a joint-law noisy-improvement correction
+  ([scope](learned-objective-acquisitions.md)). Learned input transforms in
+  `PairwiseGP` remain configuration work.
 - `SingleTaskVariationalGP` with the inducing-point allocators and
   `HigherOrderGP` are integrated ([details and limits](approximate-models.md)).
 - `LatentKroneckerGP`, contextual `SACGP` / `LCEAGP` and hierarchical
@@ -128,8 +130,9 @@ hyperparameters, as in BoTorch; `batch_cross_validation` refits each fold.
   ([details](additive-components.md)).
 - EM empirical prior pretraining, historical likelihoods, exact target
   conditioning, shared-kernel fitting, coordinate ascent and native
-  differentiation through cold and warm EM reruns are integrated. Learned
-  inducing locations remain configuration work
+  differentiation through cold and warm EM reruns and learned explicit
+  inducing locations are integrated. Moving historical index grids remains
+  configuration work
   ([details](empirical-gp-models.md)).
 
 ## Phase 11: the rest
@@ -166,8 +169,10 @@ separately.
 
 - Batched models and batched box decompositions in the multi-objective
   acquisition functions.
-- Autograd through models: posteriors as torch tensors with gradients with
-  respect to the hyperparameters, not only the inputs.
+- Parameter autograd is integrated for ordinary CPU Torch `SingleTaskGP`
+  posterior moments, samples and exact MLLs. Extend this to specialized
+  models, joint model lists and acquisition parameter graphs
+  ([current scope](posterior-parameter-gradients.md)).
 - Faster dense linear algebra for larger n. At n = 300, fitting is only 1.4×
   faster than BoTorch, which uses multithreaded BLAS/LAPACK.
 

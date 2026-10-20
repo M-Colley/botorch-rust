@@ -260,7 +260,7 @@ counterpart.
 | `botorch.acquisition.preference.qExpectedUtilityOfBestOption` | `botorch_rs.acquisition.preference.qExpectedUtilityOfBestOption` | `outcome_model`, `sampler`, `objective`, `posterior_transform`, `X_pending` |
 | `botorch.acquisition.preference.PairwiseBayesianActiveLearningByDisagreement` | `botorch_rs.acquisition.preference.PairwiseBayesianActiveLearningByDisagreement` | `outcome_model`, `num_samples`, `std_noise`; draws from the caller's array library (torch: BoTorch's draws for the same seed) |
 | `botorch.acquisition.active_learning.PairwiseMCPosteriorVariance` | `botorch_rs.acquisition.active_learning.PairwiseMCPosteriorVariance` | any MC objective as link function |
-| `botorch.acquisition.objective.LearnedObjective` | `botorch_rs.acquisition.objective.LearnedObjective` | `PairwiseGP` or deterministic `pref_model`, `sample_shape`, `seed` (torch's draws); values and exact torch autograd; not accepted by the MC acquisition functions (see below) |
+| `botorch.acquisition.objective.LearnedObjective` | `botorch_rs.acquisition.objective.LearnedObjective` | `PairwiseGP` or deterministic `pref_model`, `sample_shape`, `seed`; native MC values and query derivatives, expanded preference samples, constraints and noisy improvement; [scope and joint-sampling correction](docs/learned-objective-acquisitions.md) |
 | `botorch.sampling.pairwise_samplers.PairwiseMCSampler`, `PairwiseIIDNormalSampler`, `PairwiseSobolQMCNormalSampler` | `botorch_rs.sampling.pairwise_samplers.*` | `max_num_comparisons`, `seed` (numpy's choice of pairs); the preferred item first (BoTorch bug 1) |
 | `botorch.sampling.normal.IIDNormalSampler` | `botorch_rs.sampling.IIDNormalSampler` | partial: sampling posteriors (torch's draws for `seed`), `batch_range_override`; not in MC acquisition functions |
 | `PairwiseGP` in `ModelListGP` / `ModelList` | same | posteriors and acquisition functions; fits and fantasies raise BoTorch's errors |
@@ -489,22 +489,25 @@ are integrated in this branch:
 
 The main remaining gaps are:
 
-- **Empirical fitting:** native derivatives through cold and warm EM reruns
-  and both fitters are integrated. Learned inducing locations remain
-  configuration work. Frozen pretrained empirical priors also support
-  native fitting and prediction.
+- **Empirical fitting:** native derivatives through cold and warm EM reruns,
+  learned explicit inducing locations and both fitters are integrated.
+  Movement of historical index grids remains configuration work. Frozen
+  pretrained empirical priors also support native fitting and prediction.
 - **Model configurations:** batched training and additional transforms
   for some specialized models; learned input transforms on approximate
   models; some model-list conditioning and fantasy combinations; and the
   shared-parameter fitting across some training batches. Each model chapter
   documents its current limits. Unsupported options raise `UnsupportedError`.
-- **Tensor semantics:** GPU execution, model-hyperparameter autograd,
-  general higher-order derivatives and custom torch modules throughout
-  models. Native Gaussian posterior means, covariances and samples have
-  first-order Torch query autograd with fixed hyperparameters
+- **Tensor semantics:** GPU execution, general higher-order derivatives and
+  custom torch modules throughout models remain unsupported. Ordinary CPU
+  Torch `SingleTaskGP` models have persistent parameters and first-order
+  parameter gradients through posterior moments, samples and exact MLLs
+  ([scope](docs/posterior-parameter-gradients.md)). Other native Gaussian
+  posteriors retain first-order Torch query autograd
   ([scope](docs/posterior-query-autograd.md)); native structured Matheron
   posteriors also expose query adjoints, with documented fantasy-batch limits.
-  Exact GPs expose explicit native
+  Acquisition and joint model-list parameter graphs remain configuration
+  work. Exact GPs also expose explicit native
   [posterior parameter pullbacks](docs/posterior-parameter-gradients.md).
   Models compute on the CPU in float64
   and restore the caller's array dtype and device. Acquisition functions
@@ -1766,9 +1769,10 @@ The model fits alone are 140–550× faster.
   the model's training data (GPyTorch: `mll(model(*model.train_inputs),
   model.train_targets)`); `mll.value_and_grad()` also returns its gradient.
 - **Gradients.** Native Gaussian posterior moments and samples support
-  first-order Torch query gradients. Exact GPs also expose explicit native
-  parameter pullbacks; ordinary posterior tensors do not yet carry a
-  hyperparameter graph. Acquisition values support `torch.autograd`
+  first-order Torch query gradients. Ordinary CPU Torch `SingleTaskGP`
+  posteriors and exact MLLs also carry native parameter gradients through
+  persistent leaves. Exact GPs expose explicit parameter pullbacks as well.
+  Acquisition values support query `torch.autograd`
   (exact gradients computed in Rust), and `acqf.value_and_grad(X)` returns
   gradients for any array type.
 - **Fitting.** `pick_best_of_all_attempts` selects the best native L-BFGS-B or

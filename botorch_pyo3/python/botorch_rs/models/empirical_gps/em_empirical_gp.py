@@ -363,7 +363,9 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
         if not isinstance(em_prior, EMPriorContainer):
             raise TypeError("em_prior must be an EMPriorContainer.")
         if learnable_inducing_points and not em_prior.use_inducing_points:
-            raise UnsupportedError("Learnable EM locations require explicit inducing points and interpolation.")
+            raise UnsupportedError(
+                "Learnable EM locations require explicit inducing points and interpolation."
+            )
         if _ops.shape_of(em_prior.X_inducing)[-1] != xs[-1]:
             raise ValueError("The EM prior and train_X feature dimensions differ.")
         if using_pretrained:

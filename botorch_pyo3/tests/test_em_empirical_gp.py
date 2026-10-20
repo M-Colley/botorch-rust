@@ -221,7 +221,9 @@ def test_prior_roundtrip_preserves_native_prior_precision(tmp_path: Path) -> Non
     assert_close(loaded.mean_module.mean_prior.log_prob(0.8), mean.mean_prior.log_prob(0.8))
 
 
-def model_pair(official: Any, inducing: bool, base: bool, learnable: bool = False) -> tuple[Any, Any]:
+def model_pair(
+    official: Any, inducing: bool, base: bool, learnable: bool = False
+) -> tuple[Any, Any]:
     import gpytorch
     import torch
 
@@ -735,10 +737,13 @@ def test_warm_start_em_values_gradients_and_state_match_official(
         X, Y, datasets=datasets("torch"), mean_module=mean, covar_module=kernel, **options
     )
     expected = official.em_empirical_gp.EMEmpiricalGaussianProcess(
-        X, Y,
+        X,
+        Y,
         datasets=[official.utils.ExperimentDataset(X=d.X, Y=d.Y) for d in datasets("torch")],
-        mean_module=ref_mean, covar_module=ref_kernel,
-        likelihood=gpytorch.likelihoods.GaussianLikelihood().double(), **options,
+        mean_module=ref_mean,
+        covar_module=ref_kernel,
+        likelihood=gpytorch.likelihoods.GaussianLikelihood().double(),
+        **options,
     )
     a_mll = EMEmpiricalMarginalLogLikelihood(actual.likelihood, actual)
     b_mll = official.em_empirical_gp.EMEmpiricalMarginalLogLikelihood(expected.likelihood, expected)
@@ -752,7 +757,12 @@ def test_warm_start_em_values_gradients_and_state_match_official(
         for name, shape in actual._rs.parameter_shapes():
             size = math.prod(shape)
             g = parameters[name].grad
-            assert_close(gradient[offset:offset+size], [0.0]*size if g is None else g.reshape(-1), rtol=3e-5, atol=3e-7)
+            assert_close(
+                gradient[offset : offset + size],
+                [0.0] * size if g is None else g.reshape(-1),
+                rtol=3e-5,
+                atol=3e-7,
+            )
             offset += size
         assert_close(actual._mu_inducing, expected._mu_inducing, rtol=3e-7, atol=3e-9)
         assert_close(actual._Sigma_inducing, expected._Sigma_inducing, rtol=3e-7, atol=3e-9)
@@ -768,9 +778,14 @@ def test_warm_start_em_values_gradients_and_state_match_official(
 def test_warm_em_native_fit_updates_moments_and_preserves_posterior(adam: bool) -> None:
     mean, kernel = modules()
     model = EMEmpiricalGaussianProcess(
-        [[0.1], [0.5]], [[0.7], [0.6]], datasets=datasets("list"),
-        mean_module=mean, covar_module=kernel, warm_start_em=True,
-        inducing_points=[[0.05], [0.4], [0.85]], num_em_iterations=2,
+        [[0.1], [0.5]],
+        [[0.7], [0.6]],
+        datasets=datasets("list"),
+        mean_module=mean,
+        covar_module=kernel,
+        warm_start_em=True,
+        inducing_points=[[0.05], [0.4], [0.85]],
+        num_em_iterations=2,
         em_convergence_tol=None,
     )
     mll = EMEmpiricalMarginalLogLikelihood(model.likelihood, model)
@@ -793,7 +808,9 @@ def test_learnable_pretrained_inducing_gradients_and_posteriors(official: Any, b
     torch = pytest.importorskip("torch")
     actual, expected = model_pair(official, True, base, learnable=True)
     mll = EMEmpiricalMarginalLogLikelihood(actual.likelihood, actual)
-    ref_mll = official.em_empirical_gp.EMEmpiricalMarginalLogLikelihood(expected.likelihood, expected)
+    ref_mll = official.em_empirical_gp.EMEmpiricalMarginalLogLikelihood(
+        expected.likelihood, expected
+    )
     value, gradient = mll.value_and_grad()
     reference = ref_mll(None, None)
     reference.backward()
@@ -802,7 +819,12 @@ def test_learnable_pretrained_inducing_gradients_and_posteriors(official: Any, b
     offset = 0
     for name, shape in actual._rs.parameter_shapes():
         count = math.prod(shape)
-        assert_close(gradient[offset:offset+count], parameters[name].grad.reshape(-1), rtol=3e-6, atol=3e-8)
+        assert_close(
+            gradient[offset : offset + count],
+            parameters[name].grad.reshape(-1),
+            rtol=3e-6,
+            atol=3e-8,
+        )
         offset += count
     query = torch.tensor([[0.15], [0.62]], dtype=torch.double)
     snapshot = actual.posterior(query)
@@ -835,21 +857,31 @@ def test_learnable_inducing_full_em_gradients_match_official(
     Y = torch.tensor([[0.7], [0.6]], dtype=torch.double)
     points = torch.tensor([[0.05], [0.4], [0.85]], dtype=torch.double, requires_grad=True)
     options = dict(
-        warm_start_em=warm, learnable_inducing_points=True, inducing_points=points,
-        num_em_iterations=2, em_convergence_tol=None, covariance_shrinkage=0.13,
-        use_mean_prior=priors, use_covar_prior=priors,
+        warm_start_em=warm,
+        learnable_inducing_points=True,
+        inducing_points=points,
+        num_em_iterations=2,
+        em_convergence_tol=None,
+        covariance_shrinkage=0.13,
+        use_mean_prior=priors,
+        use_covar_prior=priors,
     )
     actual = EMEmpiricalGaussianProcess(
         X, Y, datasets=datasets("torch"), mean_module=mean, covar_module=kernel, **options
     )
     expected = official.em_empirical_gp.EMEmpiricalGaussianProcess(
-        X, Y,
+        X,
+        Y,
         datasets=[official.utils.ExperimentDataset(X=d.X, Y=d.Y) for d in datasets("torch")],
-        mean_module=ref_mean, covar_module=ref_kernel,
-        likelihood=gpytorch.likelihoods.GaussianLikelihood().double(), **options,
+        mean_module=ref_mean,
+        covar_module=ref_kernel,
+        likelihood=gpytorch.likelihoods.GaussianLikelihood().double(),
+        **options,
     )
     mll = EMEmpiricalMarginalLogLikelihood(actual.likelihood, actual)
-    ref_mll = official.em_empirical_gp.EMEmpiricalMarginalLogLikelihood(expected.likelihood, expected)
+    ref_mll = official.em_empirical_gp.EMEmpiricalMarginalLogLikelihood(
+        expected.likelihood, expected
+    )
     for _ in range(2):
         value, gradient = mll.value_and_grad()
         reference = ref_mll(None, None)
@@ -859,7 +891,12 @@ def test_learnable_inducing_full_em_gradients_match_official(
         offset = 0
         for name, shape in actual._rs.parameter_shapes():
             count = math.prod(shape)
-            assert_close(gradient[offset:offset+count], parameters[name].grad.reshape(-1), rtol=5e-5, atol=5e-7)
+            assert_close(
+                gradient[offset : offset + count],
+                parameters[name].grad.reshape(-1),
+                rtol=5e-5,
+                atol=5e-7,
+            )
             offset += count
         expected.zero_grad(set_to_none=True)
         assert points.grad is None
@@ -870,11 +907,17 @@ def test_learnable_inducing_full_em_gradients_match_official(
 def test_inducing_locations_are_real_native_optimizer_parameters(kind: str, adam: bool) -> None:
     mean, kernel = modules()
     prior = pretrain_em_prior(
-        datasets(kind), mean, kernel, inducing_points=as_kind([[0.05], [0.4], [0.85]], kind),
-        num_em_iterations=2, likelihood_noise=0.035,
+        datasets(kind),
+        mean,
+        kernel,
+        inducing_points=as_kind([[0.05], [0.4], [0.85]], kind),
+        num_em_iterations=2,
+        likelihood_noise=0.035,
     )
     model = EMEmpiricalGaussianProcess.from_pretrained(
-        prior, as_kind([[0.1], [0.5]], kind), as_kind([[0.7], [0.6]], kind),
+        prior,
+        as_kind([[0.1], [0.5]], kind),
+        as_kind([[0.7], [0.6]], kind),
         learnable_inducing_points=True,
     )
     mll = EMEmpiricalMarginalLogLikelihood(model.likelihood, model)
@@ -891,7 +934,9 @@ def test_inducing_locations_are_real_native_optimizer_parameters(kind: str, adam
 
 def test_freezing_after_mll_evaluation_handles_computed_em_caches(official: Any) -> None:
     actual, expected = model_pair(official, True, False, learnable=True)
-    ref_mll = official.em_empirical_gp.EMEmpiricalMarginalLogLikelihood(expected.likelihood, expected)
+    ref_mll = official.em_empirical_gp.EMEmpiricalMarginalLogLikelihood(
+        expected.likelihood, expected
+    )
     ref_mll(None, None)
     assert not expected._cached_L_kernel_inducing.is_leaf
     with pytest.raises(RuntimeError, match="leaf"):
@@ -903,7 +948,10 @@ def test_freezing_after_mll_evaluation_handles_computed_em_caches(official: Any)
     raw, bounds = actual._rs.raw_parameters(), actual._rs.raw_parameter_bounds()
     for name, (offset, count) in actual._offsets().items():
         if name.startswith("initial_"):
-            assert bounds[offset:offset+count] == [(v, v) for v in raw[offset:offset+count]]
+            assert bounds[offset : offset + count] == [(v, v) for v in raw[offset : offset + count]]
         if name == "_X_inducing":
-            assert all(math.isinf(lo) and lo < 0 and math.isinf(hi) and hi > 0 for lo, hi in bounds[offset:offset+count])
-            assert any(abs(v) > 1e-5 for v in gradient[offset:offset+count])
+            assert all(
+                math.isinf(lo) and lo < 0 and math.isinf(hi) and hi > 0
+                for lo, hi in bounds[offset : offset + count]
+            )
+            assert any(abs(v) > 1e-5 for v in gradient[offset : offset + count])
