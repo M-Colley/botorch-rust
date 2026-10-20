@@ -62,7 +62,7 @@ the MLL, and every raw-parameter gradient, in addition to Laplace state.
 
 ## Learned input transforms
 
-Unbatched PairwiseGP now supports learned Warp, including feature subsets,
+PairwiseGP now supports learned Warp, including feature subsets,
 nondefault epsilon, concentration priors, and supported native input chains
 such as Normalize followed by Warp. The warp, Laplace approximation,
 parameter derivatives, optimizer, prediction, and query derivatives execute
@@ -98,10 +98,47 @@ sampler orientation correction only inside the reference test.
 
 This checkpoint exposes explicit native MLL gradients and query autograd;
 persistent Torch parameter graphs through PairwiseGP inference are not
-claimed. Batched learned-transform construction and fitting still require
-shared/per-member parameter mapping. Fantasy batch predictions inherited
-from an unbatched warped model work; refitting their learned input parameters
-is explicitly rejected pending that mapping. One-to-many transforms,
+claimed. One-to-many transforms,
 `Warp(reverse=True)`, and chains that learn new normalization coefficients
 after a learned transform retain explicit errors. A fixed transform after
 Warp does not have that coefficient-dependence restriction.
+
+## Batched Warp and global parameter ownership
+
+Training batches support shared Warp concentrations or independent
+concentrations with exactly the model's batch shape. A chain may mix these
+two ownership patterns. The Warp's internal normalization and a preceding
+shared Normalize learn their bounds over all training batches; the member
+Laplace solves use frozen copies of those coefficients with their own trial
+concentrations. Native data gradients accumulate through each member's map
+into the global raw vector. Every global concentration prior contributes
+once, including when several members or fantasy dimensions share it.
+
+This works with the default independent batched RBF parameters, shared
+standard kernels, and shared composite kernel trees. Independent batched
+parameters inside a composite kernel tree retain an explicit error.
+Per-member coefficient-learning chains, such as a Normalize with a batch
+shape, remain unsupported; the constructor rejects them explicitly. Warp
+batch shapes broadcast from a smaller nonempty shape are not accepted at
+initial construction. Conditioned models retain their parent's parameter
+batch shape when adding fantasy dimensions, with shared native maps and
+folded gradients.
+
+The same work fixes two additional port defects. Conditioning previously
+kept each member's parameter values for prediction, but rebuilt the global
+raw vector and ownership map using only member zero. Updating parameters,
+evaluating priors, or fitting that conditioned model could therefore lose
+independent member values. Conditioning now preserves the parent's raw
+vector and repeats its existing member maps over new fantasy axes.
+Replacing batched training data also used to discard learned kernel values;
+the wrapper now materializes every bound kernel and Warp parameter before
+rebuilding its native data state.
+
+Regression tests compare named parameter values/shapes, Laplace state,
+MLLs and every global gradient, posterior query adjoints, changed trial
+concentrations, fitting, conditioning in both modes, state restoration,
+data replacement, and extra fantasy dimensions against the official pinned
+reference. They include list/NumPy/Torch inputs, probit/logit likelihoods,
+one- and two-dimensional model batches, shared/per-member concentrations,
+and shared composite kernels. Native finite differences independently
+check all four shared/per-member kernel and Warp ownership combinations.

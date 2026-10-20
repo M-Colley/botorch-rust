@@ -196,8 +196,8 @@ def test_native_warp_fitting_matches_official(chained):
 
 
 def test_warp_boundaries_are_explicit():
-    with pytest.raises(UnsupportedError, match="parameter mapping"):
-        RsGP([X, X], [C, C], input_transform=RsWarp(2, [0]))
+    with pytest.raises(UnsupportedError, match="per-member coefficient chains"):
+        RsGP([X, X], [C, C], input_transform=RsNormalize(2, batch_shape=(2,)))
     with pytest.raises(UnsupportedError, match="learns its coefficients after"):
         RsGP(X, C, input_transform=RsChain(warp=RsWarp(2, [0]), norm=RsNormalize(2)))
     with pytest.raises(UnsupportedError, match="reverse=True"):

@@ -3,6 +3,18 @@
 use super::*;
 
 impl PairwiseGP {
+    /// Local prior terms, separated for batched global ownership accounting.
+    pub(super) fn local_priors(&self, raw: &[f64]) -> Result<(f64, Vec<f64>)> {
+        let kernel = num_raw_parameters(&self.covar_module);
+        let (mut value, mut gradient) = prior_raw_grad(&self.covar_module, &raw[..kernel])?;
+        if let Some(chain) = &self.input_transform {
+            let (prior, input_gradient) = chain.with_params(&raw[kernel..])?.log_prior_and_grad();
+            value += prior;
+            gradient.extend(input_gradient);
+        }
+        Ok((value, gradient))
+    }
+
     pub(super) fn kernel_raw_parameters(&self) -> &[f64] {
         &self.raw[..num_raw_parameters(&self.covar_module)]
     }
@@ -209,5 +221,82 @@ mod tests {
             model.raw_parameters()[kernel..]
         );
         assert!(!model.training());
+    }
+
+    #[test]
+    fn batched_warp_global_parameter_gradient_and_prior_ownership() {
+        for shared_kernel in [false, true] {
+            for shared_warp in [false, true] {
+                let template = model(false, true, PairwiseLikelihood::Probit);
+                let (points, comparisons) = super::super::tests::data();
+                let shifted = points.map(|x| x + 2.0);
+                let kernel = num_raw_parameters(&template.covar_module);
+                let local = template.raw_parameters();
+                let mut raw = local[..kernel].to_vec();
+                let second_kernel: Vec<usize> = if shared_kernel {
+                    (0..kernel).collect()
+                } else {
+                    let start = raw.len();
+                    raw.extend(&local[..kernel]);
+                    (start..raw.len()).collect()
+                };
+                let start = raw.len();
+                raw.extend(&local[kernel..]);
+                let first_warp: Vec<usize> = (start..raw.len()).collect();
+                let second_warp = if shared_warp {
+                    first_warp.clone()
+                } else {
+                    let start = raw.len();
+                    raw.extend(local[kernel..].iter().map(|x| x + 0.1));
+                    (start..raw.len()).collect()
+                };
+                let maps = vec![
+                    (0..kernel).chain(first_warp).collect(),
+                    second_kernel.into_iter().chain(second_warp).collect(),
+                ];
+                let options = PairwiseGPOptions {
+                    input_transform: template.input_transform.clone(),
+                    ..Default::default()
+                };
+                let draws = super::super::tests::draws(12);
+                let batch = BatchedPairwiseGP::new(
+                    vec![2],
+                    vec![(points, comparisons.clone()), (shifted, comparisons)],
+                    2,
+                    options,
+                    Some(raw.clone()),
+                    Some(maps),
+                    Some(&draws),
+                )
+                .unwrap();
+                let (_, gradient, states) = batch.mll_value_and_grad(&raw, true).unwrap();
+                let gradient = gradient.unwrap();
+                let value_at = |trial: &[f64]| {
+                    let mut value = batch.global_priors(trial).unwrap().0;
+                    for (i, el) in batch.elements.iter().enumerate() {
+                        let local: Vec<f64> =
+                            batch.param_map[i].iter().map(|&j| trial[j]).collect();
+                        value += el
+                            .evaluate_trial_from_start(&local, Start::Solved(&states[i].x0), false)
+                            .unwrap()
+                            .0
+                            - el.local_priors(&local).unwrap().0;
+                    }
+                    value
+                };
+                for j in 0..raw.len() {
+                    let mut plus = raw.clone();
+                    let mut minus = raw.clone();
+                    plus[j] += 1e-6;
+                    minus[j] -= 1e-6;
+                    let finite = (value_at(&plus) - value_at(&minus)) / 2e-6;
+                    assert!((gradient[j] - finite).abs() < 4e-6 * finite.abs().max(1.0),
+                        "shared_kernel={shared_kernel}, shared_warp={shared_warp}, j={j}: {} vs {finite}", gradient[j]);
+                }
+                let first = batch.elements[0].input_transform.as_ref().unwrap().params();
+                let second = batch.elements[1].input_transform.as_ref().unwrap().params();
+                assert_eq!(first == second, shared_warp);
+            }
+        }
     }
 }

@@ -854,10 +854,20 @@ impl PyPairwiseGP {
                         let ck = &comps[if comps.len() == 1 { 0 } else { k }];
                         els.push(base.with_observations(xk, ck, true)?);
                     }
-                    Inner::Batched(BatchedPairwiseGP::from_elements_with_transform(
+                    let (raw, maps) = match &inner {
+                        Inner::Single(m) => (
+                            m.raw_parameters().to_vec(),
+                            vec![(0..m.raw_parameters().len()).collect()],
+                        ),
+                        Inner::Batched(m) => (m.raw_parameters().to_vec(), m.param_map().to_vec()),
+                    };
+                    let maps = (0..total).map(|k| maps[k % nb].clone()).collect();
+                    Inner::Batched(BatchedPairwiseGP::from_elements_with_mapping(
                         shape,
                         els,
                         inner.input_transform().cloned(),
+                        raw,
+                        maps,
                     )?)
                 }
             };

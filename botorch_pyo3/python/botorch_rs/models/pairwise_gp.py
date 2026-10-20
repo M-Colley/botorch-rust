@@ -316,7 +316,7 @@ class PairwiseGP(Model, FantasizeMixin):
             return {"covar_spec": spec}
         return {"covar_tree": self.covar_module._node()}
 
-    def _transform_args(self, d: int) -> dict[str, Any]:
+    def _transform_args(self, d: int, batch: tuple[int, ...] = ()) -> dict[str, Any]:
         if self.input_transform is None:
             return {}
         if not isinstance(self.input_transform, InputTransform):
@@ -324,7 +324,19 @@ class PairwiseGP(Model, FantasizeMixin):
                 "`input_transform` must be a botorch_rs input transform (from "
                 "botorch_rs.models.transforms.input)."
             )
-        self._spec = chain_spec(self.input_transform, d, ())
+        if self.input_transform._per_batch() is not None:
+            raise UnsupportedError(
+                "PairwiseGP supports shared transform coefficients and shared or "
+                "per-member Warp concentrations; per-member coefficient chains "
+                "(such as Normalize(batch_shape=...)) are not supported."
+            )
+        self._spec = chain_spec(self.input_transform, d, batch)
+        for step in self._spec.chains[0]:
+            parameter_batch = tuple(getattr(step.owner, "batch_shape", ()))
+            if getattr(step.rs, "params", []) and parameter_batch not in ((), batch):
+                raise UnsupportedError(
+                    f"A PairwiseGP Warp must have batch_shape=() or {batch}, got {parameter_batch}."
+                )
         steps = self._spec.chains[0]
         return {
             "input_chain": [st.rs for st in steps],
@@ -349,6 +361,7 @@ class PairwiseGP(Model, FantasizeMixin):
         c = _check_comparisons(to_flat(comparisons, "comparisons"))
         d = int(x[1][-1])
         batch = tuple(x[1][:-2])
+        transform_args = self._transform_args(d, batch)
         param_map = None
         if batch:
             raw, param_map = self._batched_params(d, batch)
@@ -358,7 +371,7 @@ class PairwiseGP(Model, FantasizeMixin):
         # from the model.
         for k in self.covar_module._all_kernels():
             k._local = {}
-        args = {**self._covar_args(d), **self._transform_args(d), **self._settings()}
+        args = {**self._covar_args(d), **transform_args, **self._settings()}
         draws = None
         if batch:
             n = int(x[1][-2])
@@ -413,6 +426,26 @@ class PairwiseGP(Model, FantasizeMixin):
                     vals = vals[:size]
                 layout.append((size, batched))
                 values.append(vals)
+        if self._spec is not None:
+            local_offset = 0
+            for step in self._spec.chains[0]:
+                params = list(getattr(step.rs, "params", []))
+                batched = bool(getattr(step.owner, "batch_shape", ()))
+                for _, shape in getattr(step.rs, "param_shapes", []):
+                    size = math.prod(shape)
+                    if batched:
+                        assert self._spec.batch_params is not None
+                        vals = [
+                            value
+                            for member in self._spec.batch_params
+                            for value in member[local_offset : local_offset + size]
+                        ]
+                    else:
+                        vals = params[:size]
+                    layout.append((size, batched))
+                    values.append(vals)
+                    local_offset += size
+                    params = params[size:]
         raw: list[float] = []
         offsets = []
         for (size, batched), vals in zip(layout, values, strict=True):
@@ -460,7 +493,12 @@ class PairwiseGP(Model, FantasizeMixin):
         if self._spec is None:
             return []
         return [
-            (step.prefix + name, tuple(shape))
+            (
+                step.prefix + name,
+                tuple(step.owner._param_shape())
+                if hasattr(step.owner, "_param_shape")
+                else tuple(shape),
+            )
             for step in self._spec.chains[0]
             for name, shape in getattr(step.rs, "param_shapes", [])
         ]
@@ -470,9 +508,7 @@ class PairwiseGP(Model, FantasizeMixin):
             return dict(self._input_param_shapes())[suffix]
         k, name = self._kernel_param(suffix)
         shape = k._element_shapes()[name]
-        if self._batch and tuple(k._batch_shape) == self._batch:
-            return (*self._batch, *shape)
-        return tuple(shape)
+        return (*k._batch_shape, *shape)
 
     def _kernel_param(self, suffix: str) -> tuple[Kernel, str]:
         full = suffix[len("covar_module.") :] if suffix.startswith("covar_module.") else suffix
@@ -801,8 +837,17 @@ class PairwiseGP(Model, FantasizeMixin):
         if self._rs is None or self._batch or len(to_flat(datapoints)[1]) > 2:
             self._kind = kind_of(datapoints)
             if self._rs is not None:
-                self.covar_module._model = None
-                self.covar_module._local = {}
+                # Preserve all member parameters before replacing the native
+                # model that owns their bound module views.
+                for kernel in self.covar_module._all_kernels():
+                    local = {name: kernel._raw_values(name) for name, _, _ in kernel._own_params()}
+                    kernel._model = None
+                    kernel._local = local
+                if self._spec is not None:
+                    for step in self._spec.chains[0]:
+                        if hasattr(step.owner, "_current_steps"):
+                            step.owner._steps = step.owner._current_steps()
+                            step.owner._model = None
             self._rs = None
             self._build(datapoints, comparisons)
             return
@@ -1079,6 +1124,12 @@ class PairwiseLaplaceMarginalLogLikelihood(MarginalLogLikelihood):
         the Laplace approximation is recomputed (warm-started) and installed,
         and the MLL and its gradient with respect to the raw hyperparameters
         are returned (a botorch_rs extension)."""
+        self.model.train()
+        if self.model._batch and self.model.input_transform is not None:
+            # A conditioned eval-mode batch may carry bounds frozen before
+            # its new observations. A training forward relearns those bounds
+            # jointly before evaluating any member's parameter pullback.
+            self.model._update()
         params = None if raw_parameters is None else [float(v) for v in to_flat(raw_parameters)[0]]
         value, grad = self.model._rs.forward_mll(params)
         return value, list(grad)
