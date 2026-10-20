@@ -207,9 +207,17 @@ class KernelSpec:
     @property
     def outputscale_constraint(self) -> Constraint | None: ...
 
-def target_task_model(
-    model: Model, feature_indices: Sequence[int], imputation: Sequence[float]
-) -> Model: ...
+def posterior_query_vjp(
+    source: Any, x: Array, adjoint: Array, mode: str, observation_noise: bool = False,
+    output_indices: Sequence[int] | None = None, transform: Transform | None = None,
+    base: bool = False,
+) -> ArrayBuf: ...
+def posterior_query_samples_vjp(
+    source: Any, x: Array, base_samples: Array, adjoint: Array, observation_noise: bool = False,
+    output_indices: Sequence[int] | None = None, transform: Transform | None = None,
+    base: bool = False,
+) -> ArrayBuf: ...
+def target_task_model(model: Model, feature_indices: Sequence[int], imputation: Sequence[float]) -> Model: ...
 
 class KernelNode:
     @staticmethod

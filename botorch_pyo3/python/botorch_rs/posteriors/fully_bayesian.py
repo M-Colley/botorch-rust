@@ -275,6 +275,38 @@ class _StackedMixturePosterior(GaussianMixturePosterior):
         parts = [(p._samples((data, (n, shape[-1]))), ()) for p in self._parts]
         return _stack(parts, n * nb)
 
+    def _query_out(self, mode: str, data: Any, shape: tuple[int, ...], base: Any = None) -> Any:
+        import sys
+
+        torch = sys.modules.get("torch")
+        connected = any(
+            getattr(getattr(part, "_query_inputs", None), "requires_grad", False)
+            for part in self._parts
+        )
+        if (
+            self._kind.lib != "torch"
+            or not connected
+            or torch is None
+            or not torch.is_grad_enabled()
+        ):
+            return super()._query_out(mode, data, shape, base)
+        from botorch_rs import _ops
+
+        sample_shape = shape[: len(shape) - len(self._batch) - 2] if mode == "samples" else ()
+        axis = len(sample_shape) + len(self._outer)
+        values = []
+        for part in self._parts:
+            if mode == "samples":
+                value = part._samples_out(base, sample_shape)
+            elif mode == "covariance":
+                value = part.distribution.covariance_matrix
+            else:
+                value = getattr(part, mode)
+            values.append(
+                _ops.getitem(value, (*(slice(None) for _ in range(axis)), None, Ellipsis))
+            )
+        return _ops.concat(values, dim=axis).reshape(shape)
+
     def rsample(self, sample_shape: Any = None) -> Any:
         """Posterior samples, shape ``sample_shape x batch_shape x q x m``,
         with base samples shared by the components."""
@@ -284,8 +316,7 @@ class _StackedMixturePosterior(GaussianMixturePosterior):
         n = math.prod(sample_shape)
         qm = self._q * self._m
         z = _standard_normal(n * qm, self._kind)
-        data = self._samples((z, (n, qm)))
-        return self._out(data, (*sample_shape, *self._batch, self._q, self._m))
+        return self._samples_out((z, (n, qm)), sample_shape)
 
     def rsample_from_base_samples(self, sample_shape: Any, base_samples: Any) -> Any:
         """Posterior samples from base samples ``sample_shape x 1 ... x q``
@@ -301,8 +332,7 @@ class _StackedMixturePosterior(GaussianMixturePosterior):
                 f"botorch_rs expects base samples shared by the batch and the mixture components "
                 f"({n * qm} values), got shape {tuple(zshape)}."
             )
-        out = self._samples((list(data), (n, qm)))
-        return self._out(out, (*sample_shape, *self._batch, self._q, self._m))
+        return self._samples_out((list(data), (n, qm)), sample_shape)
 
     def __repr__(self) -> str:
         return f"GaussianMixturePosterior(batch_shape={self._batch}, q={self._q}, m={self._m})"

@@ -750,6 +750,7 @@ class ApproximateGPyTorchModel(GPyTorchModel):
             model_batch_shape=(),
             transform=transform_arg(posterior_transform, m),
             interleaved=True,
+            query_inputs=X,
         )
 
     def _acquisition_model(self, posterior_transform: Any = None) -> Any:

@@ -230,9 +230,7 @@ class SobolQMCNormalSampler(NormalMCSampler):
             return posterior.rsample_from_base_samples(self.sample_shape, base)
         q, m = posterior._q, posterior._m
         z: Pair = self._rs.base_samples(q * m)
-        out = posterior._samples(z)
-        shape = (*self.sample_shape, *posterior._batch, q, m)
-        return from_flat(out, shape, posterior._kind)
+        return posterior._samples_out(z, self.sample_shape)
 
     __call__ = forward
 
@@ -369,9 +367,7 @@ class IIDNormalSampler(NormalMCSampler):
                     off = i * per + idx * qm
                     data.extend(z[off : off + qm])
             pair = (data, (n, nb, qm))
-        out = posterior._samples(pair)
-        shape = (*self.sample_shape, *posterior._batch, posterior._q, posterior._m)
-        return from_flat(out, shape, posterior._kind)
+        return posterior._samples_out(pair, self.sample_shape)
 
     __call__ = forward
 

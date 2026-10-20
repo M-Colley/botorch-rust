@@ -585,6 +585,14 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
         if not isinstance(observation_noise, bool):
             raise UnsupportedError("`observation_noise` must be a bool in botorch_rs.")
         kind = kind_of(X)
+        from botorch_rs.posteriors._query_autograd import requires_query_grad
+
+        if requires_query_grad(X):
+            raise UnsupportedError(
+                "Direct HigherOrderGP posterior query gradients require a structured "
+                "Matheron adjoint path, which is not implemented; native acquisition "
+                "functions provide query gradients through the model handle."
+            )
         flat = to_flat(X, "X")
         if len(flat[1]) < 2:
             raise BotorchTensorDimensionError(

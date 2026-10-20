@@ -874,6 +874,7 @@ class PairwiseGP(Model, FantasizeMixin):
             num_outputs=1,
             model_batch_shape=self.batch_shape,
             transform=transform_arg(posterior_transform, 1),
+            query_inputs=X,
         )
 
     def __call__(self, X: Any) -> Any:

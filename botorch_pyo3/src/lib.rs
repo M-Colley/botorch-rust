@@ -63,6 +63,7 @@ mod transforms;
 #[pymodule]
 #[pyo3(name = "_botorch_rs")]
 fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    models::posterior_autograd::register(m)?;
     batched_lbfgsb::register(m)?;
     m.add_function(wrap_pyfunction!(heterogeneous::target_task_model, m)?)?;
     empirical::register(m)?;

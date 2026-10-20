@@ -205,6 +205,22 @@ class GPyTorchPosterior(Posterior):
     def _out(self, data: FloatData, shape: tuple[int, ...]) -> Any:
         return from_flat(data, shape, self._kind)
 
+    def _query_out(self, mode: str, data: Any, shape: tuple[int, ...], base: Any = None) -> Any:
+        query = getattr(self, "_query_inputs", None)
+        if query is not None and query.requires_grad and sys.modules["torch"].is_grad_enabled():
+            from botorch_rs.posteriors._query_autograd import query_output
+
+            return query_output(self, mode, data, shape, base)
+        return self._out(data, shape)
+
+    def _moment_out(self, mode: str, shape: tuple[int, ...]) -> Any:
+        return self._query_out(mode, self._get_marginals()[0 if mode == "mean" else 1], shape)
+
+    def _samples_out(self, z: Pair, sample_shape: tuple[int, ...]) -> Any:
+        return self._query_out(
+            "samples", self._samples(z), (*sample_shape, *self._batch, self._q, self._m), z
+        )
+
     def _samples(self, z: Pair) -> list[float]:
         out = self._rs.posterior_samples(self._x, z, self._observation_noise, **self._kwargs())
         return out[0]
@@ -214,12 +230,12 @@ class GPyTorchPosterior(Posterior):
     @property
     def mean(self) -> Any:
         """The posterior mean, shape ``batch_shape x q x m``."""
-        return self._out(self._get_marginals()[0], (*self._batch, self._q, self._m))
+        return self._moment_out("mean", (*self._batch, self._q, self._m))
 
     @property
     def variance(self) -> Any:
         """The posterior variance (clamped at 1e-10), shape ``batch_shape x q x m``."""
-        return self._out(self._get_marginals()[1], (*self._batch, self._q, self._m))
+        return self._moment_out("variance", (*self._batch, self._q, self._m))
 
     @property
     def distribution(self) -> MultivariateNormal:
@@ -281,8 +297,7 @@ class GPyTorchPosterior(Posterior):
         nb = math.prod(self._batch)
         qm = self._q * self._m
         z = _standard_normal(n * nb * qm, self._kind)
-        data = self._samples((z, [n, nb, qm]))
-        return self._out(data, (*sample_shape, *self._batch, self._q, self._m))
+        return self._samples_out((z, [n, nb, qm]), sample_shape)
 
     def rsample_from_base_samples(self, sample_shape: Any, base_samples: Any) -> Any:
         """Posterior samples ``mean + L z`` from explicit base samples ``z`` of
@@ -317,8 +332,7 @@ class GPyTorchPosterior(Posterior):
             raise BotorchTensorDimensionError(
                 f"base samples of shape {zshape} do not match the batch shape {self._batch}."
             )
-        out = self._samples(z)
-        return self._out(out, (*sample_shape, *self._batch, self._q, self._m))
+        return self._samples_out(z, sample_shape)
 
     def _marginal_value(self, value: Any) -> Any:
         """Arrange marginal evaluation values before the posterior dimensions."""
@@ -365,18 +379,19 @@ class MultivariateNormal:
     def mean(self) -> Any:
         """Shape ``batch_shape x q`` (``batch_shape x q x m`` for several outputs)."""
         p = self._p
-        return p._out(p._get_marginals()[0], (*p._batch, *self._event()))
+        return p._moment_out("mean", (*p._batch, *self._event()))
 
     @property
     def variance(self) -> Any:
         """Marginal variances (clamped at 1e-10), shape of ``mean``."""
         p = self._p
-        return p._out(p._get_marginals()[1], (*p._batch, *self._event()))
+        return p._moment_out("variance", (*p._batch, *self._event()))
 
     @property
     def stddev(self) -> Any:
-        p = self._p
-        return p._out([math.sqrt(v) for v in p._get_marginals()[1]], (*p._batch, *self._event()))
+        from botorch_rs import _ops
+
+        return _ops.apply("sqrt", self.variance)
 
     @property
     def covariance_matrix(self) -> Any:
@@ -384,7 +399,7 @@ class MultivariateNormal:
         (q m) x (q m)`` over the output-major flattening for several outputs)."""
         p = self._p
         _, cov = p._get_joint()
-        return p._out(cov[0], tuple(cov[1]))
+        return p._query_out("covariance", cov[0], tuple(cov[1]))
 
     @property
     def batch_shape(self) -> tuple[int, ...]:
@@ -401,9 +416,11 @@ class MultivariateNormal:
             out = p.rsample(sample_shape)
         else:
             out = p.rsample_from_base_samples(_as_shape(sample_shape), base_samples)
-        data, shape = to_flat(out, "samples")
         if p._is_mt:
             return out
+        if hasattr(out, "reshape"):
+            return out.reshape(*out.shape[:-1])
+        data, shape = to_flat(out, "samples")
         return p._out(data, shape[:-1])
 
 
@@ -424,6 +441,14 @@ class MultitaskMultivariateNormal(MultivariateNormal):
         interleaved distribution (e.g. that of a ``SingleTaskVariationalGP``)."""
         p = self._p
         _, (data, shape) = p._get_joint()
+        if p._kind.lib == "torch":
+            covariance = p._query_out("covariance", data, tuple(shape))
+            if self._interleaved:
+                k = len(p._batch)
+                covariance = covariance.reshape(*p._batch, p._m, p._q, p._m, p._q)
+                covariance = covariance.permute(*range(k), k + 1, k, k + 3, k + 2)
+                covariance = covariance.reshape(*shape)
+            return covariance
         if not self._interleaved:
             return p._out(data, tuple(shape))
         q, m = p._q, p._m
@@ -537,6 +562,7 @@ def scalarize_posterior(posterior: Any, weights: Any, offset: float = 0.0) -> GP
                 output_indices=posterior._output_indices,
                 transform=(original_weights, new_offset),
                 points_per_input=posterior._points_per_input,
+                query_inputs=posterior._query_inputs,
             )
         mean_moments, covariance_moments = posterior._get_joint()
         mu, cov = _rs.scalarize_posterior_moments(

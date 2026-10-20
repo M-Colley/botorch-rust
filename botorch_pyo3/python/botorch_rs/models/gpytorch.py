@@ -203,6 +203,7 @@ class BatchedMultiOutputGPyTorchModel(GPyTorchModel):
             points_per_input=self._rs.points_per_input,
             transformed=list(self._rs.transformed_outputs),
             is_list=False,
+            query_inputs=X,
         )
 
 
@@ -318,6 +319,7 @@ class ModelListGPyTorchModel(ModelList, GPyTorchModel):
             output_indices=oi,
             transform=transform,
             points_per_input=rs_list.points_per_input,
+            query_inputs=X,
         )
 
     def _transformed_outputs(self) -> list[bool]:
@@ -465,6 +467,7 @@ class MultiTaskGPyTorchModel(GPyTorchModel):
             num_outputs=num_outputs,
             model_batch_shape=self.batch_shape,
             transform=transform_arg(posterior_transform),
+            query_inputs=X,
         )
 
     def subset_output(self, idcs: list[int]) -> Any:

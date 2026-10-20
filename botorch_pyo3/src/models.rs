@@ -32,6 +32,8 @@ use crate::threads;
 use crate::transforms::{numel, PyNormalize, PyStandardize};
 use pyo3::IntoPyObjectExt;
 
+pub mod posterior_autograd;
+
 /// Rows per parallel work item of the marginal posterior.
 const MARGINAL_CHUNK: usize = 256;
 
@@ -62,7 +64,7 @@ fn status_name(status: FitStatus) -> &'static str {
 
 /// A model evaluated per model batch element: a `SingleTaskGP`, a
 /// `ModelListGP`, or any unbatched model (e.g. an `LCEMGP` or a list of them).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum ModelRef {
     Gp(Arc<BatchedMultiOutputGP>),
     List(ModelListGP),
@@ -154,6 +156,7 @@ impl ModelRef {
 
 /// BoTorch's `output_indices` and `posterior_transform` applied to the
 /// posteriors of a model.
+#[derive(Clone, Debug)]
 struct View {
     outputs: Option<Vec<usize>>,
     transform: Option<ScalarizedPosteriorTransform>,

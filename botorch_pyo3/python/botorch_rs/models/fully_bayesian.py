@@ -843,7 +843,9 @@ class AbstractFullyBayesianSingleTaskGP(SingleTaskGP):
         shape = tuple(shape)
         if len(shape) < 2:
             raise ValueError(f"Expected X to be `batch_shape x q x d`, got shape {shape}.")
-        Xu = from_flat(data, (*shape[:-2], 1, *shape[-2:]), kind_of(X))
+        from botorch_rs import _ops
+
+        Xu = _ops.getitem(X, (Ellipsis, None, slice(None), slice(None)))
         posterior = SingleTaskGP.posterior(
             self,
             X=Xu,

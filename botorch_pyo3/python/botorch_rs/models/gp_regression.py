@@ -818,6 +818,7 @@ def _model_posterior(
     points_per_input: int,
     transformed: list[bool],
     is_list: bool,
+    query_inputs: Any = None,
 ) -> Any:
     """The posterior of a model: a ``GPyTorchPosterior``, or a
     ``TransformedPosterior`` if a selected output has a nonlinear outcome
@@ -832,6 +833,7 @@ def _model_posterior(
         "output_indices": output_indices,
         "transform": transform,
         "points_per_input": points_per_input,
+        "query_inputs": query_inputs,
     }
     native = GPyTorchPosterior(*args, **kwargs)
     if not any(selected):
