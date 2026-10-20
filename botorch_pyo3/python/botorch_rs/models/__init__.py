@@ -9,6 +9,7 @@ from botorch_rs.models.deterministic import (
     GenericDeterministicModel,
     PosteriorMeanModel,
 )
+from botorch_rs.models.empirical_gps.em_empirical_gp import EMPriorContainer, pretrain_em_prior
 from botorch_rs.models.empirical_gps.empirical_1d_gp import EmpiricalOneDimensionalGP
 from botorch_rs.models.empirical_gps.multioutput_empirical_1d_gp import (
     MultiOutputEmpiricalOneDimensionalGP,
@@ -41,6 +42,8 @@ from botorch_rs.models.robust_relevance_pursuit_model import RobustRelevancePurs
 
 __all__ = [
     "RobustRelevancePursuitSingleTaskGP",
+    "EMPriorContainer",
+    "pretrain_em_prior",
     "LCEMGP",
     "AdditiveMapSaasSingleTaskGP",
     "AffineDeterministicModel",

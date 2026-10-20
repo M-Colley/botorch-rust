@@ -39,6 +39,29 @@ fitters, immutable posterior snapshots and additive-kernel parameter binding.
 Native tests independently finite-difference all shared raw parameters and the
 entire posterior mean/covariance Jacobian.
 
+## EM prior pretraining
+
+`pretrain_em_prior` and `EMPriorContainer` perform exact native EM over
+independent historical datasets. They support partial observations on the
+union input set, explicit inducing points with shift interpolation, Gaussian
+mean and inverse-Wishart covariance priors, kernel or identity initialization,
+trace-matched covariance shrinkage, PSD stabilization, convergence stopping,
+and optional iteration histories. All matrix operations run in Rust.
+Historical data and inducing locations are fixed; gradients through EM
+pretraining are rejected explicitly. The mean must be an unbatched native
+`ZeroMean` or `ConstantMean`, and the covariance an unbatched native kernel.
+
+Official-source tests compare every EM iteration and the resulting moments,
+inducing Cholesky factors and shifts for both observation layouts, ML/MAP
+updates, both initializations, and shrinkage. Saved containers preserve array
+metadata and native mean, kernel, constraint and prior descriptors without
+serializing mutable model backreferences. This save format is native to the
+port and does not interchange files with `torch.save` upstream.
+
+The EM prediction model, its training likelihood, shared-kernel model-list
+fitting, and coordinate ascent are separate milestones; this prior-training
+milestone does not mark those names complete.
+
 ## Current boundaries
 
 Training data must be unbatched, although posterior queries may have batch

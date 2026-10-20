@@ -110,7 +110,13 @@ class EmpiricalOneDimensionalMean(Mean):
             for i in range(self.num_outputs)
         ]
         return _rs.KernelNode.empirical_basis(
-            [knots] * self.num_outputs, tables, [1.0], False, 1.0, 1, False
+            [knots] * self.num_outputs,
+            tables,
+            [1.0],
+            False,
+            1.0,
+            None if self.num_outputs == 1 else 1,
+            False,
         )
 
 
@@ -203,7 +209,7 @@ class EmpiricalOneDimensionalKernel(Kernel):
             weights,
             self.ard,
             float(self.num_curves - self.correction),
-            1,
+            None if self.num_outputs == 1 else 1,
             not self._vectorize_outputs,
         )
 

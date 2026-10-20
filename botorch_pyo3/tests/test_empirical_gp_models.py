@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from botorch_rs.mlls import ExactMarginalLogLikelihood
+from botorch_rs.models import SingleTaskGP
 from botorch_rs.models.empirical_gps.empirical_1d_gp import (
     EmpiricalOneDimensionalGP,
     EmpiricalOneDimensionalKernel,
@@ -26,6 +27,18 @@ from botorch_rs.models.empirical_gps.multioutput_empirical_1d_gp import (
 )
 from botorch_rs.optim.fit import fit_gpytorch_mll_scipy, fit_gpytorch_mll_torch
 from helpers import KINDS, as_kind, assert_close, check_kind, shape, to_list
+
+
+def test_scalar_empirical_kernel_in_single_task_gp(kind: str) -> None:
+    H, curves, X, Y, _ = data(1)
+    kernel = EmpiricalOneDimensionalKernel(
+        as_kind(H, kind), as_kind(curves, kind)
+    )
+    gp = SingleTaskGP(as_kind(X, kind), as_kind(Y, kind), covar_module=kernel, outcome_transform=None)
+    posterior = gp.posterior(as_kind([[0.15], [0.65]], kind))
+    check_kind(posterior.mean, kind)
+    assert shape(posterior.mean) == (2, 1)
+    assert all(math.isfinite(v) for row in to_list(posterior.variance) for v in row)
 
 
 @pytest.fixture(autouse=True)
