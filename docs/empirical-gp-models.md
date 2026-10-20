@@ -508,7 +508,9 @@ Raw source buffers retain data graphs; sorting and gathering are rebuilt during
 each forward so independent backward calls work. Device/dtype moves preserve
 these live sources. Loading state or explicitly replacing public table buffers
 installs the supplied tables as interpolation data; it does not recreate the
-external constructor tensors' former graphs. Queries retain gradients through
+external constructor tensors' former graphs. Public table snapshots own their
+storage, so external updates to live constructor tensors preserve their data
+graphs even with `assume_sorted=True`. Queries retain gradients through
 loaded tables. Out-of-range filling and NaN query propagation match the source.
 Mean/basis builders retain their ordinary construction graphs; rebuilding a
 builder reconstructs its statistics or decomposition for a new training graph.
@@ -523,6 +525,7 @@ Two pinned-source defects are isolated in `test_torch_empirical_utils.py`:
   `||(B.T @ B)||²` is NaN. The port uses the smaller row Gram when rows are fewer
   than columns and returns `U.T @ A`; rows retain their singular scaling and
   `B.T @ B == A.T @ A`. No artificial nullspace enters the derivative.
+  The source repair is [BoTorch #3507](https://github.com/meta-pytorch/botorch/pull/3507).
 - `LinearInterpolation1D` sorts differentiable knots/values once in its
   constructor. A second independent backward through the interpolant then
   raises a consumed-graph error. Rebuilding the sort/gather from raw sources

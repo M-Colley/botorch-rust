@@ -129,8 +129,9 @@ Learned preferences retain independent preference and outcome ensemble axes
 through nonlinear acquisition reductions, constraints and baseline pruning.
 The [standalone kernel catalogue](torch-kernel-catalogue.md) now includes
 core, categorical, fidelity and task kernels with device prior graphs.
-Direct empirical utility entry points and final installed-wheel verification
-are being completed. Device-resident NUTS fits scalar and
+Direct empirical utility entry points also retain device calculations and
+derivative graphs. Final installed-wheel verification is being completed.
+Device-resident NUTS fits scalar and
 latent-task multitask Matérn, SAAS and linear fully Bayesian models. Custom
 probabilistic overrides remain unsupported. See
 [sampler semantics and verification](torch-fully-bayesian.md).
@@ -195,7 +196,8 @@ and the local CUDA GPU. The complete Rust workspace passed 528 tests and doc
 tests in 46 groups; its 300 Rust source files were unchanged by the later
 Python-only model additions through that checkpoint. The subsequent EM prior
 centering, duplicate equality coefficient and rank-zero task-kernel repairs
-require a new native build and workspace run, currently in progress. These
+are now included in a fresh native build whose full workspace passes 532
+tests and doctests in 46 groups, with strict Clippy and rustfmt passing. These
 checks are separate from an installed-wheel release certificate.
 
 Earlier integrated checks passed 327 Rust core unit tests, 355 kernel/scalar

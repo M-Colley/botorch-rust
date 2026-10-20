@@ -77,7 +77,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Cached normal sampler and low-rank draws with multidimensional sample shapes | New [BoTorch #3501](https://github.com/meta-pytorch/botorch/pull/3501); eight source tests and 64 subtests pass |
 | Multitask data-kernel active dimensions | Existing [GPyTorch #2809](https://github.com/cornellius-gp/gpytorch/pull/2809) |
 | Repeated equality coefficients overwrite terms and get incorrect derivatives | New [BoTorch #3505](https://github.com/meta-pytorch/botorch/pull/3505); 26 source tests and four subtests pass |
-| PSD projection derivatives at repeated eigenspaces | New [BoTorch #3506](https://github.com/meta-pytorch/botorch/pull/3506); source gradient regressions pass; near-floor stability refinement under verification |
+| PSD projection derivatives at repeated eigenspaces and tiny floors | New [BoTorch #3506](https://github.com/meta-pytorch/botorch/pull/3506); 57 source tests and 14 subtests pass, including independent near-floor first/second derivative checks |
 | Wide empirical orthogonal bases introduce repeated zero eigenspaces and NaN derivatives | New [BoTorch #3507](https://github.com/meta-pytorch/botorch/pull/3507); 19 source tests and 24 subtests pass |
 | Multistep incumbent units and batched analytic thresholds | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) and [#3453](https://github.com/meta-pytorch/botorch/pull/3453) |
 | Multistep fantasy base ranges and query-batch tree layout | Existing [BoTorch #3452](https://github.com/meta-pytorch/botorch/pull/3452) |

@@ -1,10 +1,14 @@
 """Public empirical utilities execute on device with complete Tensor graphs."""
 
+# ruff: noqa: E402
 from __future__ import annotations
 
 import copy
 
 import pytest
+
+pytest.importorskip("torch")
+
 import test_empirical_gp_utils as reference_helpers
 import torch
 from test_torch_em_empirical_gp import DEVICES
@@ -227,3 +231,49 @@ def test_pinned_official_sorted_interpolation_reuses_construction_graph(device, 
     for _ in range(2):
         gradients = torch.autograd.grad(repaired(query).square().sum(), (x, y), create_graph=True)
         assert all(torch.isfinite(value).all() for value in gradients)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("assume_sorted", [False, True])
+@pytest.mark.parametrize("save_before_update", [False, True])
+def test_live_sorted_interpolation_sources_survive_external_updates(
+    device, assume_sorted, save_before_update
+):
+    order = [0, 1, 2] if assume_sorted else [1, 2, 0]
+    x = torch.tensor(
+        [0.0, 0.4, 1.0] if assume_sorted else [1.0, 0.0, 0.4],
+        dtype=torch.double,
+        device=device,
+        requires_grad=True,
+    )
+    y = x.new_tensor([[0.2, 0.7, -0.1]], requires_grad=True)
+    query = x.new_tensor([0.2, 0.7], requires_grad=True)
+    interpolant = utils.LinearInterpolation1D(x, y, assume_sorted=assume_sorted)
+    # Public state is a snapshot. Mutating caller-owned live source tensors
+    # must not be mistaken for an explicit replacement of those state tables.
+    for iteration in range(2):
+        if save_before_update:
+            interpolant.state_dict()
+        with torch.no_grad():
+            x.add_(0.01)
+            y.add_(0.03)
+        xs, ys = x[order], y[..., order]
+        expected = torch.stack(
+            [
+                ys[..., 0] + (ys[..., 1] - ys[..., 0]) * (query[0] - xs[0]) / (xs[1] - xs[0]),
+                ys[..., 1] + (ys[..., 2] - ys[..., 1]) * (query[1] - xs[1]) / (xs[2] - xs[1]),
+            ],
+            -1,
+        )
+        result = interpolant(query)
+        torch.testing.assert_close(result, expected)
+        gradients = torch.autograd.grad(result.square().sum(), (x, y, query), create_graph=True)
+        reference = torch.autograd.grad(expected.square().sum(), (x, y, query), create_graph=True)
+        for actual, wanted in zip(gradients, reference, strict=True):
+            torch.testing.assert_close(actual, wanted)
+        second = torch.autograd.grad(sum(g.square().sum() for g in gradients), (x, y, query))
+        reference_second = torch.autograd.grad(
+            sum(g.square().sum() for g in reference), (x, y, query)
+        )
+        for actual, wanted in zip(second, reference_second, strict=True):
+            torch.testing.assert_close(actual, wanted)

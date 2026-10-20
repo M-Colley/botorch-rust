@@ -102,8 +102,8 @@ class TensorInterpolation(nn.Module, LinearInterpolation1D):
         self.register_buffer("_source_y", y, persistent=False)
         knots, values = self._sorted_sources()
         interpolate(knots, values, x.new_empty(0), False, fill_value)
-        self.register_buffer("_x", knots.detach())
-        self.register_buffer("_y", values.detach())
+        self.register_buffer("_x", knots.detach().clone())
+        self.register_buffer("_y", values.detach().clone())
         # Capture the source's default logical fill dtype (which may differ
         # from the data dtype), without transferring numerical data to CPU.
         self.register_buffer("_bounds_error", torch.tensor(bounds_error, dtype=torch.bool))
@@ -139,7 +139,7 @@ class TensorInterpolation(nn.Module, LinearInterpolation1D):
         self._adopt_public_changes()
         knots, values = self._sorted_sources()
         result = interpolate(knots, values, x_new, bool(self._bounds_error), self._fill_value)
-        self._x, self._y = knots.detach(), values.detach()
+        self._x, self._y = knots.detach().clone(), values.detach().clone()
         self._record_versions()
         return result
 
@@ -154,7 +154,7 @@ class TensorInterpolation(nn.Module, LinearInterpolation1D):
     def _save_to_state_dict(self, *args: Any, **kwargs: Any) -> None:
         self._adopt_public_changes()
         knots, values = self._sorted_sources()
-        self._x, self._y = knots.detach(), values.detach()
+        self._x, self._y = knots.detach().clone(), values.detach().clone()
         self._record_versions()
         nn.Module._save_to_state_dict(self, *args, **kwargs)
 
