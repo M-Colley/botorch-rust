@@ -89,7 +89,8 @@ acquisition lists and cyclic search now have device implementations. Linear
 constrained automatic initialization, around-best sampling and KG/hypervolume
 initialization heuristics retain their device calculations. Mixed alternating
 search now alternates device categorical/ordinal steps with actual bounded
-continuous optimization. Further public helpers are still being completed. See
+continuous optimization. Homotopy stages, feasibility checks, feature fixing,
+candidate selection and equality projection retain their Tensor graphs. See
 [optimization verification](torch-optimization.md).
 
 MAP SAAS, additive MAP SAAS and MAP SAAS ensembles now retain their coupled
@@ -122,11 +123,14 @@ including conditioning, fantasies and data/parameter higher derivatives. The
 integrated Wiener kernel uses consistent polynomial branches at coincident
 inputs so its smooth Hessians remain correct.
 
-Remaining GPU families and configurations include iterative EM models,
-preference-ensemble integration, and remaining public optimization helpers.
+Iterative empirical EM now has device cold/warm/pretrained inference, full
+update graphs, prior fitting, coordinate ascent and shared-model fitting.
+Learned preferences retain independent preference and outcome ensemble axes
+through nonlinear acquisition reductions, constraints and baseline pruning.
 The [standalone kernel catalogue](torch-kernel-catalogue.md) now includes
-categorical, fidelity and positive task kernels with device prior graphs.
-Some are under active implementation. Device-resident NUTS fits scalar and
+core, categorical, fidelity and task kernels with device prior graphs.
+Direct empirical utility entry points and final installed-wheel verification
+are being completed. Device-resident NUTS fits scalar and
 latent-task multitask Matérn, SAAS and linear fully Bayesian models. Custom
 probabilistic overrides remain unsupported. See
 [sampler semantics and verification](torch-fully-bayesian.md).
@@ -189,8 +193,10 @@ At source checkpoint `ac07139`, a combined run of all `test_torch*.py` files
 passed 2,337 cases with two skips, using the rebuilt release extension on CPU
 and the local CUDA GPU. The complete Rust workspace passed 528 tests and doc
 tests in 46 groups; its 300 Rust source files were unchanged by the later
-Python-only model additions. These checks are separate from an installed-wheel
-release certificate.
+Python-only model additions through that checkpoint. The subsequent EM prior
+centering, duplicate equality coefficient and rank-zero task-kernel repairs
+require a new native build and workspace run, currently in progress. These
+checks are separate from an installed-wheel release certificate.
 
 Earlier integrated checks passed 327 Rust core unit tests, 355 kernel/scalar
 acquisition cases (11 skips) with the rebuilt release binary, 99 multitask

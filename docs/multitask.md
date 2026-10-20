@@ -380,7 +380,7 @@ kernel matrices (see "Tolerances above nominal").
 | 7 | [GPyTorch #2809](https://github.com/cornellius-gp/gpytorch/pull/2809) |
 | 8 | meta-pytorch/botorch#3389 and #3374 |
 | 9 | meta-pytorch/botorch#3448 (also affects `SingleTaskGP`) |
-| 10 | `fantasize` and qKG: meta-pytorch/botorch#3374. MES/GIBBON: verified source repair prepared in `D:/botorch-pr-multitask-entropy`, commit `92d08a63f`, for centralized publication. |
+| 10 | `fantasize` and qKG: meta-pytorch/botorch#3374. MES/GIBBON: [BoTorch #3504](https://github.com/meta-pytorch/botorch/pull/3504). |
 | 11 | meta-pytorch/botorch#3374 |
 
 The MES/GIBBON follow-up passes 161 port CPU/CUDA max-entropy and multitask

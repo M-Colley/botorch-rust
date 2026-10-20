@@ -221,20 +221,20 @@ constraint and phase-9 parity tests. Independent source formulas, first and
 second derivatives, source stage/value parity, genuine optimizations and
 forbidden-host-conversion guards are included. Targeted mypy and Ruff pass.
 
-Two independently reproduced source defects are prepared for upstream review
+Two independently reproduced source defects are submitted for upstream review
 against official b0dd01be6. `generation/gen.py` makes graph-attached initial
 conditions optimizer parameters without detaching, so Adam raises
 `ValueError: can't optimize a non-leaf Tensor`, including consecutive homotopy
 stages. Detaching the new decision variables fixes all four CPU/CUDA and
-fixed/free regression cases and repeated stages; the patch is
-`D:/botorch-pr-generator-leaf`, commit `e71f02396`. Port stage-parity tests
+fixed/free regression cases and repeated stages; the repair is
+[BoTorch #3502](https://github.com/meta-pytorch/botorch/pull/3502). Port stage-parity tests
 explicitly use this corrected reference generator. Separately,
 `optimize_acqf_homotopy` only restores parameters and pending points after
 successful optimization. All four q=1/q=2 and None/Tensor pending regression
-cases fail on the pinned source. The prepared finally-based repair in
-`D:/botorch-pr-homotopy-rollback`, commit `08d1bb9ab`, passes the 13 source
-homotopy tests and four regression subcases. These are source patches prepared
-for publication; they are not claims that official main already contains them.
+cases fail on the pinned source. The finally-based repair in
+[BoTorch #3503](https://github.com/meta-pytorch/botorch/pull/3503) passes all 14
+source homotopy tests and six regression subcases, including cleanup failures
+that preserve the primary exception. These are proposed source repairs.
 
 `project_to_equality_constraints` now constructs the constraint matrix and
 solves the actual least-squares projection on the Tensor's device. Points,
@@ -260,8 +260,9 @@ its central finite difference is zero. The port deliberately follows the
 declared sum, with every repeated coefficient contributing additively.
 Independent one-row closed forms, declared-constraint residuals and complete
 point/coefficient/RHS numerical derivative checks cover vector/scalar duplicate
-coefficients. The corrected Tensor suite passes 36 CPU/CUDA cases before the
-fresh native build; added Rust/native binding tests await that integrated build.
+coefficients. The corrected Tensor suite passes 36 CPU/CUDA cases. With the
+fresh native library, all 164 combined equality, rank-zero task-kernel and
+empirical EM/helper tests pass, including the native projection and adjoint.
 The earlier 75-case checkpoint remains historical; repeated-index expectations
 now use the corrected summed-constraint oracle rather than last-write values.
 

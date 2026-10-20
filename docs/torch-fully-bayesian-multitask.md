@@ -60,7 +60,8 @@ reference behavior as the desired law:
   its default Warp construction also uses continuous width where full physical
   input width is needed. The parity oracle installs the selected-column,
   full-width sampled Warp with the sampled epsilon. This is the previously
-  documented loader defect.
+  documented loader defect, covered by
+  [BoTorch #3465](https://github.com/meta-pytorch/botorch/pull/3465).
 * `LinearPyroModel.load_mcmc_samples` hardcodes `ConstantMean(batch_shape=[S])`
   and assigns the mixin's `[S,T]` means to it. For `S=3,T=2`, the public
   `LatentFeatureMultiTaskPyroMixin, LinearPyroModel` composition fails with
@@ -70,7 +71,8 @@ reference behavior as the desired law:
   `_build_mean_module` / `_build_multitask_covariance` dispatch as the Matern
   loader, then retain a full-width transform that centers only continuous
   columns. Tests reproduce the exception before constructing that corrected
-  reference oracle.
+  reference oracle. The same PR now includes this Linear-loader repair, with
+  16 source tests and 30 subtests passing on CPU/CUDA.
 
 The reference lazy product operator can add jitter while rooting its singular
 Linear covariance before multiplying it by the task covariance. For that

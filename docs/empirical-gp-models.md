@@ -424,13 +424,17 @@ locations become actual learnable Parameters only when requested. Conditioning,
 fantasies, sampling, direct-index queries and batched prediction preserve the
 same learned prior.
 
-PSD projection uses an analytic matrix-absolute/Sylvester rule for a mixed
-clipped spectrum, including repeated eigenvalues. The backward solve has its
+PSD projection uses a gap-centered spectral projector and an analytic
+matrix-absolute/Sylvester rule for a mixed clipped spectrum, including repeated
+eigenvalues. Centering inside the actual spectral gap avoids cancellation near
+tiny positive floors. The backward solve has its
 own analytic backward, so higher derivatives never differentiate eigenvectors.
 All-positive and all-clipped spectra retain direct identity/constant branches.
 Mixed float32 projections work internally in float64 before restoring dtype.
 CPU/CUDA finite-difference `gradcheck` and `gradgradcheck` verify repeated mixed
-spectra; float32 third-derivative graphs are finite. The clipping threshold
+spectra; independent divided differences and valid local finite differences
+check first derivatives and Hessian-vector products near zero. Float32
+third-derivative graphs are finite. The clipping threshold
 itself remains nonsmooth. Training data are scalar
 and unbatched; query/fantasy batches are supported. Input/outcome transforms
 remain outside this upstream model API.

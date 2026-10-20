@@ -32,11 +32,14 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Validated empty Beta expansion | New [BoTorch #3473](https://github.com/meta-pytorch/botorch/pull/3473) |
 | Multi-axis fantasy observation noise | New [BoTorch #3476](https://github.com/meta-pytorch/botorch/pull/3476) |
 | EM dataset subset indices | Existing [BoTorch #3388](https://github.com/meta-pytorch/botorch/pull/3388) |
+| EM Gaussian mean-prior location and shared-model target units | Existing [BoTorch #3388](https://github.com/meta-pytorch/botorch/pull/3388); both port backends now use the corrected mean prior and raw shared target law |
 | Constant EM fitting objective | New [BoTorch #3475](https://github.com/meta-pytorch/botorch/pull/3475), including scalar and batched closure regressions |
 | Fully Bayesian known-noise prior trace | New [BoTorch #3477](https://github.com/meta-pytorch/botorch/pull/3477) |
 | Fully Bayesian default multitask warp columns | Existing [BoTorch #3465](https://github.com/meta-pytorch/botorch/pull/3465) |
 | Higher-order fantasy covariance wrappers and sample axes | New [BoTorch #3491](https://github.com/meta-pytorch/botorch/pull/3491); 19 tests and 12 subtests pass |
 | Sequential acquisition dispatch and leaked pending state | New [BoTorch #3469](https://github.com/meta-pytorch/botorch/pull/3469) |
+| Graph-attached Torch candidate restarts are not optimizer leaves | New [BoTorch #3502](https://github.com/meta-pytorch/botorch/pull/3502); six source tests and 46 subtests pass |
+| Homotopy failures leave schedule/pending state behind | New [BoTorch #3503](https://github.com/meta-pytorch/botorch/pull/3503); 14 source tests and six subtests pass |
 | Acquisition-list own pending baseline and list/mixed-alternating exception cleanup | Existing [BoTorch #3395](https://github.com/meta-pytorch/botorch/pull/3395) extended with `finally` rollback; nine integrated list/mixed tests and six exception subtests pass |
 | Fixed-feature values follow unsorted caller columns | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391); both port backends corrected and 14 wrapper tests pass |
 | All-fixed candidate feasibility | New [BoTorch #3470](https://github.com/meta-pytorch/botorch/pull/3470) |
@@ -60,6 +63,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | GIBBON pending covariance units | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) |
 | GIBBON multiple query batch axes | New [BoTorch #3483](https://github.com/meta-pytorch/botorch/pull/3483) |
 | MES zero-variance and one-draw control variates | New [BoTorch #3481](https://github.com/meta-pytorch/botorch/pull/3481); native regressions pass in `35884d0` |
+| MES/GIBBON long-format multitask training baselines | New [BoTorch #3504](https://github.com/meta-pytorch/botorch/pull/3504); ten source tests and 14 subtests pass |
 | Scalar JES conditional normal standardization | New [BoTorch #3479](https://github.com/meta-pytorch/botorch/pull/3479); native CPU and GPU repaired with independent Gaussian regression |
 | PES damping accepts failed first-pivot Cholesky | New [BoTorch #3480](https://github.com/meta-pytorch/botorch/pull/3480); native CPU and GPU regressions cover the repair |
 | Additive MAP SAAS factory dtype/device | New [BoTorch #3478](https://github.com/meta-pytorch/botorch/pull/3478) |
@@ -72,11 +76,15 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Independent empirical lazy kernel output batches and rectangular query broadcasting | New [BoTorch #3500](https://github.com/meta-pytorch/botorch/pull/3500); four source tests and 34 subtests pass |
 | Cached normal sampler and low-rank draws with multidimensional sample shapes | New [BoTorch #3501](https://github.com/meta-pytorch/botorch/pull/3501); eight source tests and 64 subtests pass |
 | Multitask data-kernel active dimensions | Existing [GPyTorch #2809](https://github.com/cornellius-gp/gpytorch/pull/2809) |
+| Repeated equality coefficients overwrite terms and get incorrect derivatives | New [BoTorch #3505](https://github.com/meta-pytorch/botorch/pull/3505); 26 source tests and four subtests pass |
+| PSD projection derivatives at repeated eigenspaces | New [BoTorch #3506](https://github.com/meta-pytorch/botorch/pull/3506); source gradient regressions pass; near-floor stability refinement under verification |
+| Wide empirical orthogonal bases introduce repeated zero eigenspaces and NaN derivatives | New [BoTorch #3507](https://github.com/meta-pytorch/botorch/pull/3507); 19 source tests and 24 subtests pass |
 | Multistep incumbent units and batched analytic thresholds | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) and [#3453](https://github.com/meta-pytorch/botorch/pull/3453) |
 | Multistep fantasy base ranges and query-batch tree layout | Existing [BoTorch #3452](https://github.com/meta-pytorch/botorch/pull/3452) |
 | TriangularLinearOperator second derivatives through matrix parameters | Narrow analytic-VJP enhancement in new [linear_operator #152](https://github.com/cornellius-gp/linear_operator/pull/152); 130 tests and 12 subtests pass |
 | Port cosine float32 large-phase accuracy | Fixed in `4f1ad62`; CPU/CUDA regressions fail against old frozen binary and all 132 focused tensor cases pass with repair |
 | Port bounded Torch L-BFGS false stationary trial | Fixed in `4062e86`, included in port PR #1; isolated CPU/CUDA interior and boundary regressions pass |
+| Port rank-zero Index/PositiveIndex rejection | Fixed in `9a74f3f`, included in port PR #1; all 18 focused native/Tensor cases pass with the rebuilt library |
 
 ## Retracted report
 
