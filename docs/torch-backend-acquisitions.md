@@ -44,7 +44,7 @@ pullback through a sampled GP posterior. This is a higher-order limitation of
 that reference path, not a value or first-gradient discrepancy. For an exact
 one-dimensional GP with `X=[.05,.35,.72,.95]`,
 `Y=[.12,.62,-.17,.31]`, default kernel/noise/standardization, qLogEI with
-`best_f=.25`, 24 fixed normal draws from seed 11, and query `[.21,.56]`, the
+`best_f=.25`, 24 CPU float64 normal draws from seed 11, and query `[.21,.56]`, the
 port and reference agree in value to `7e-16` and first query gradient to `9e-15`.
 With `detach_test_caches(False)` and `fast_pred_var(False)`, differentiation
 of the reference gradient in direction `[1,1]` yields approximately
@@ -60,3 +60,23 @@ complete port inference/acquisition graph. An upstream repair should preserve
 the complete differentiable solve/root-decomposition graph in the sampled
 posterior backward, or explicitly reject unsupported higher-order derivatives;
 no reference code is patched by this implementation.
+
+## Multi-objective checkpoint
+
+qEHVI and qLogEHVI use Tensor inclusion/exclusion over box cells, including
+the actual log-fatplus, smooth minimum and signed log-area formulas for
+qLogEHVI. Fixed decompositions support any objective dimension; two and three
+objectives are tested on CPU and CUDA. Constraints, differentiable multi-output
+objectives, pending points, and objective-weight/temperature/training/query
+graphs are covered by 32 focused tests. Tests forbid inference data transfers
+through CPU, NumPy, lists or flat buffers and verify first and second derivatives.
+
+For differentiable two-objective observed fronts, the acquisition rebuilds exact
+staircase cells from retained caller-owned outcomes with device-side comparisons,
+sorting and gathering. Native CPU box decomposition methods retain their
+original numerical behavior. Observed-front and reference-point derivatives pass
+`gradcheck` and `gradgradcheck`. Differentiable observed-front rebuilding above
+two objectives and noisy hypervolume acquisitions remain outside this checkpoint;
+they raise explicit errors on this backend. Static native partition construction
+may still run on CPU; the acquisition's posterior inference and HVI calculations
+remain on the model device.

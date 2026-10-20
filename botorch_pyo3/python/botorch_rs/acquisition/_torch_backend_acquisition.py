@@ -43,22 +43,33 @@ _MC = frozenset(
     }
 )
 _NOISY = frozenset({"qNoisyExpectedImprovement", "qLogNoisyExpectedImprovement"})
+_MULTI_OBJECTIVE = frozenset(
+    {"qExpectedHypervolumeImprovement", "qLogExpectedHypervolumeImprovement"}
+)
 _TYPES: dict[type, type] = {}
 _LOG_2PI = math.log(2 * math.pi)
 
 
 def tensor_acquisition(public_class: type) -> Any:
     """Allocate a graph-native subtype without invoking a native constructor."""
-    if public_class.__name__ not in _ANALYTIC | _MC or not public_class.__module__.startswith(
-        "botorch_rs.acquisition."
+    if (
+        public_class.__name__ not in _ANALYTIC | _MC | _MULTI_OBJECTIVE
+        or not public_class.__module__.startswith("botorch_rs.acquisition.")
     ):
         raise UnsupportedError(f"{public_class.__name__} does not yet support backend='torch'.")
     subtype = _TYPES.get(public_class)
     if subtype is None:
+        mixin: type = _TensorAcquisition
+        if public_class.__name__ in _MULTI_OBJECTIVE:
+            from botorch_rs.acquisition._torch_backend_multi_objective import (
+                TensorMultiObjectiveAcquisition,
+            )
+
+            mixin = TensorMultiObjectiveAcquisition
         name = f"Torch{public_class.__name__}"
         subtype = type(
             name,
-            (_TensorAcquisition, public_class),
+            (mixin, public_class),
             {"__module__": __name__, "_public_class": public_class},
         )
         _TYPES[public_class] = subtype
