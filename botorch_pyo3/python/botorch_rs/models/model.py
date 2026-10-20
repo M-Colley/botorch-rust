@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import Any
 
 from botorch_rs.exceptions.errors import UnsupportedError
@@ -39,6 +40,11 @@ class Model:
     @property
     def num_outputs(self) -> int:  # pragma: no cover - abstract
         raise NotImplementedError
+
+    @property
+    def batch_shape(self) -> tuple[int, ...] | None:
+        """Batch dimensions of the model, supplied by concrete subclasses."""
+        raise NotImplementedError(f"{self.__class__.__name__} does not define batch_shape property")
 
     def subset_output(self, idcs: list[int]) -> Model:
         r"""Subset the model along the output dimension.
@@ -90,7 +96,7 @@ def _check_unsupported_kwargs(kwargs: dict[str, Any]) -> None:
         raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
 
 
-class FantasizeMixin:
+class FantasizeMixin(ABC):
     """
     Mixin to add a ``fantasize`` method to a ``Model``.
 
@@ -107,6 +113,21 @@ class FantasizeMixin:
         model = ModelThatCanFantasize(...)
         model.fantasize(X, sampler)
     """
+
+    @abstractmethod
+    def condition_on_observations(self, X: Any, Y: Any, **kwargs: Any) -> Any:
+        """Condition the implementing model on sampled observations."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def posterior(self, X: Any, *args: Any, **kwargs: Any) -> Any:
+        """Return a posterior accepted by the supplied sampler."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def transform_inputs(self, X: Any, input_transform: Any = None) -> Any:
+        """Apply the implementing model's input transform."""
+        raise NotImplementedError
 
     def fantasize(
         self,
@@ -137,19 +158,51 @@ class FantasizeMixin:
         Returns:
             The constructed fantasy model.
         """
+        from botorch_rs import _ops, settings
+        from botorch_rs._arrays import kind_of
         from botorch_rs.exceptions.errors import DeprecationError
+        from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood
+        from botorch_rs.models.utils.assorted import fantasize
 
         if isinstance(observation_noise, bool):
             raise DeprecationError(
                 "`fantasize` no longer accepts a boolean for `observation_noise`."
             )
-        post_X = self.posterior(  # type: ignore[attr-defined]
-            X, observation_noise=True if observation_noise is None else observation_noise
-        )
-        Y_fantasized = sampler(post_X)
-        if observation_noise is not None:
-            kwargs["noise"] = observation_noise
-        return self.condition_on_observations(X=X, Y=Y_fantasized, **kwargs)  # type: ignore[attr-defined]
+        if observation_noise is None and isinstance(
+            getattr(self, "likelihood", None), FixedNoiseGaussianLikelihood
+        ):
+            noise = self.likelihood.noise  # type: ignore[attr-defined]
+            noise = (
+                _ops.transpose(noise)
+                if self.num_outputs > 1  # type: ignore[attr-defined]
+                else _ops.getitem(noise, (Ellipsis, None))
+            )
+            observation_noise = _ops.reduce("mean", noise, dim=-2, keepdim=True)
+        sample_shape = tuple(sampler.sample_shape)
+        if _ops.shape_of(X)[-2] == 0:
+            output_shape = (
+                sample_shape
+                + _ops.shape_of(X)[:-2]
+                + tuple(self.batch_shape or ())  # type: ignore[attr-defined]
+                + (0, self.num_outputs)  # type: ignore[attr-defined]
+            )
+            Y_fantasized = _ops.full(output_shape, 0.0, kind_of(X))
+            if observation_noise is not None:
+                kwargs["noise"] = _ops.expand(observation_noise, output_shape[len(sample_shape) :])
+            return self.condition_on_observations(X=X, Y=Y_fantasized, **kwargs)
+        propagate_grads = kwargs.pop("propagate_grads", False)
+        with fantasize():
+            with settings.propagate_grads(propagate_grads):
+                post_X = self.posterior(
+                    X,
+                    observation_noise=True if observation_noise is None else observation_noise,
+                )
+            Y_fantasized = sampler(post_X)
+            if observation_noise is not None:
+                kwargs["noise"] = _ops.expand(
+                    observation_noise, _ops.shape_of(Y_fantasized)[len(sample_shape) :]
+                )
+            return self.condition_on_observations(X=X, Y=Y_fantasized, **kwargs)
 
 
 class ModelList(Model):
