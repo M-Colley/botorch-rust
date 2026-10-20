@@ -251,7 +251,7 @@ def test_live_sorted_interpolation_sources_survive_external_updates(
     interpolant = utils.LinearInterpolation1D(x, y, assume_sorted=assume_sorted)
     # Public state is a snapshot. Mutating caller-owned live source tensors
     # must not be mistaken for an explicit replacement of those state tables.
-    for iteration in range(2):
+    for _iteration in range(2):
         if save_before_update:
             interpolant.state_dict()
         with torch.no_grad():
