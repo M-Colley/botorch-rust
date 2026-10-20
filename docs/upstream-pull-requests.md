@@ -13,19 +13,19 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Batched LOO and fully Bayesian target layout | Existing [BoTorch #3386](https://github.com/meta-pytorch/botorch/pull/3386) |
 | Shared SAC prior counted repeatedly | New [GPyTorch #2812](https://github.com/cornellius-gp/gpytorch/pull/2812) |
 | SAC/LCEA dataset constructors omit optional noise | New [BoTorch #3472](https://github.com/meta-pytorch/botorch/pull/3472) |
-| Latent Kronecker conditional sample covariance and outcome-space moments | Patch and upstream regressions pending |
+| Latent Kronecker sample covariance, outcome-space moments, time batches and composite factors | New [BoTorch #3488](https://github.com/meta-pytorch/botorch/pull/3488) |
 | Batched Boltzmann normalization | Existing [BoTorch #3435](https://github.com/meta-pytorch/botorch/pull/3435) |
 | Integrated white-noise cross diagonal | Existing [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387) |
 | Invalid expectation weights | New [BoTorch #3467](https://github.com/meta-pytorch/botorch/pull/3467) |
-| LCEA embeddings | Batch-table repair in existing [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387); declared feature order and categorical label mapping pending |
+| LCEA embeddings | Batch-table repair in existing [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387); declared feature order and label mapping in new [#3487](https://github.com/meta-pytorch/botorch/pull/3487) |
 | Hierarchical category validation, transform fitting, task-column mapping and cycles | Patches and upstream regressions pending |
 | Batched L-BFGS-B restored objective | New [BoTorch #3471](https://github.com/meta-pytorch/botorch/pull/3471) |
 | SciPy L-BFGS-B restored objective | Tested [branch](https://github.com/M-Colley/scipy/compare/main...codex/lbfgsb-restored-objective); human submission required, see below |
-| Heterogeneous multitask conditioning input layout | Patch and upstream regressions pending |
+| Heterogeneous multitask conditioning input layout | New [BoTorch #3484](https://github.com/meta-pytorch/botorch/pull/3484) |
 | Empirical multitask unseen-task noise | Existing [BoTorch #3389](https://github.com/meta-pytorch/botorch/pull/3389) |
 | Sparse-outlier / relevance-pursuit numerical and state defects | New [BoTorch #3482](https://github.com/meta-pytorch/botorch/pull/3482), including gradient-probe rollback; 43 tests and 120 subtests pass |
 | Selecting one output from a multi-output GP | Existing [BoTorch #3396](https://github.com/meta-pytorch/botorch/pull/3396) |
-| Additive component bias broadcasting and repeated outcome location | Patches and upstream regressions pending |
+| Additive component bias broadcasting and repeated outcome location | New [BoTorch #3486](https://github.com/meta-pytorch/botorch/pull/3486) |
 | Validated empty Beta expansion | New [BoTorch #3473](https://github.com/meta-pytorch/botorch/pull/3473) |
 | Multi-axis fantasy observation noise | New [BoTorch #3476](https://github.com/meta-pytorch/botorch/pull/3476) |
 | EM dataset subset indices | Existing [BoTorch #3388](https://github.com/meta-pytorch/botorch/pull/3388) |
@@ -51,13 +51,17 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Fully Bayesian explicit prediction-noise batch axis | New [BoTorch #3474](https://github.com/meta-pytorch/botorch/pull/3474) |
 | Multitask kernel repeats existing task covariance batches | New [GPyTorch #2817](https://github.com/cornellius-gp/gpytorch/pull/2817) |
 | GIBBON pending covariance units | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) |
-| GIBBON multiple query batch axes | Upstream patch and regressions pending |
-| MES zero-variance and one-draw control variates | New [BoTorch #3481](https://github.com/meta-pytorch/botorch/pull/3481); native one-draw repair in progress |
+| GIBBON multiple query batch axes | New [BoTorch #3483](https://github.com/meta-pytorch/botorch/pull/3483) |
+| MES zero-variance and one-draw control variates | New [BoTorch #3481](https://github.com/meta-pytorch/botorch/pull/3481); native regressions pass in `35884d0` |
 | Scalar JES conditional normal standardization | New [BoTorch #3479](https://github.com/meta-pytorch/botorch/pull/3479); native CPU and GPU repaired with independent Gaussian regression |
 | PES damping accepts failed first-pivot Cholesky | New [BoTorch #3480](https://github.com/meta-pytorch/botorch/pull/3480); native CPU and GPU regressions cover the repair |
 | Additive MAP SAAS factory dtype/device | New [BoTorch #3478](https://github.com/meta-pytorch/botorch/pull/3478) |
 | ZeroLinearOperator device/dtype and batched logdet | New [linear_operator #151](https://github.com/cornellius-gp/linear_operator/pull/151) |
-| Multiobjective entropy at infinite integration bounds | GPU repaired with Gaussian-limit and derivative regressions; native and upstream repairs in progress |
+| Multiobjective entropy at infinite integration bounds | New [BoTorch #3485](https://github.com/meta-pytorch/botorch/pull/3485); GPU and native Gaussian-limit and derivative regressions pass |
+| Linear latent-task MCMC loader bypasses mixin dispatch | Newly confirmed; upstream repair and regressions pending |
+| Pairwise model broadcasting to singleton query batches | Newly confirmed; upstream repair and regressions in progress |
+| Pairwise self-comparisons after duplicate consolidation | Native and GPU cancel the comparison; upstream scatter-add repair and regression in progress |
+| Multistep incumbent units and batched analytic thresholds | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) and [#3453](https://github.com/meta-pytorch/botorch/pull/3453) |
 | Port cosine float32 large-phase accuracy | Fixed in `4f1ad62`; CPU/CUDA regressions fail against old frozen binary and all 132 focused tensor cases pass with repair |
 
 ## Retracted report

@@ -42,7 +42,8 @@ candidate, value = optimize_acqf(
 
 Supported model paths include exact single-task independent outputs and
 batches, Gaussian and nonlinear-outcome model lists, long-format `MultiTaskGP`,
-`MixedSingleTaskGP`, `SingleTaskMultiFidelityGP`, `KroneckerMultiTaskGP`, `HigherOrderGP`,
+`MixedSingleTaskGP`, `SingleTaskMultiFidelityGP`, `KroneckerMultiTaskGP`,
+`HigherOrderGP`, `LatentKroneckerGP`, `PairwiseGP` with probit/logit likelihoods,
 whitened `SingleTaskVariationalGP`, and loaded-sample fully Bayesian Matérn,
 SAAS and linear single-task and latent-task multitask models. Exact single-task and correlated multitask
 conditioning and fantasies retain training-data and parameter graphs. See the
@@ -55,10 +56,10 @@ The acquisition backend covers EI, LogEI, PI, LogPI, UCB, posterior mean and
 standard deviation; constrained EI/LogEI and log feasibility; weighted q means;
 the standard scalar MC improvement, regret, confidence-bound and standard
 deviation families; noisy EI and noisy LogEI in their MC forms; EHVI, LogEHVI,
-NEHVI and LogNEHVI; one-shot KG and multi-fidelity KG; MES, GIBBON and their
+NEHVI and LogNEHVI; one-shot KG, hypervolume KG and their multi-fidelity forms; MES, GIBBON and their
 multi-fidelity forms; scalar JES with LB and MC estimation; and scalar and
 multi-objective PES with device EP; and multi-objective lower-bound MES/JES
-with all four entropy estimators. Hypervolume geometry
+with all four entropy estimators; and multistep lookahead fantasy trees. Hypervolume geometry
 uses device-resident exact box decomposition, including more than two outputs.
 Ensemble acquisitions reduce their MCMC components using means or log means
 as appropriate. Feature-fixing and projection wrappers preserve live Tensor
@@ -89,9 +90,8 @@ heuristics still need the Torch path. Unsupported configurations raise errors.
 MAP SAAS, additive MAP SAAS and MAP SAAS ensembles now retain their coupled
 shrinkage priors and fitting graphs on device. See [MAP SAAS verification](torch-map-saas.md).
 
-Remaining GPU families include latent Kronecker models,
-preference, contextual, hierarchical, heterogeneous and empirical multitask
-models, robust relevance pursuit, hypervolume KG, multistep lookahead and
+Remaining GPU families include preference acquisitions, contextual, hierarchical,
+heterogeneous and empirical multitask models, robust relevance pursuit and
 pathwise acquisitions.
 Some are under active implementation. Device-resident NUTS fits scalar and
 latent-task multitask Matérn, SAAS and linear fully Bayesian models. Custom
@@ -131,9 +131,11 @@ Further details: [tensor algebra](tensor-native-algebra.md),
 [mixed and multi-fidelity models](torch-specialized-exact.md),
 [Kronecker model](torch-kronecker.md),
 [higher-order model](torch-higher-order.md),
+[latent Kronecker model](latent-kronecker.md),
 [MAP SAAS](torch-map-saas.md),
 [fully Bayesian models](torch-fully-bayesian.md),
 [fully Bayesian multitask models](torch-fully-bayesian-multitask.md),
+[preference model](torch-pairwise-gp.md),
 [entropy search](torch-entropy-search.md),
 [acquisitions](torch-backend-acquisitions.md).
 
@@ -149,6 +151,14 @@ The Rust workspace passed 522 tests in 46 groups; strict Clippy, rustfmt,
 Ruff and mypy also passed. These results describe the frozen wheel recorded in
 that report. Subsequent specialized-model, entropy-search and NUTS changes
 have separate focused verification; a fresh combined release is pending.
+
+Later integrated checks passed 327 Rust core unit tests, 355 kernel/scalar
+acquisition cases (11 skips) with the rebuilt release binary, 99 multitask
+fully Bayesian CPU/CUDA cases, 48 latent Kronecker cases, 34 hypervolume KG
+cases, and 78 PairwiseGP/multistep cases. These focused suites overlap other
+checks and are not added to the older wheel's release totals. The source
+extension now uses the repaired release binary; the frozen wheel and its
+recorded binary remain preserved separately.
 
 The [machine-readable verification report](verification-torch-release-2026-10-20.json)
 records the exact local wheel, hashes, commands, test ledger, benchmarks and

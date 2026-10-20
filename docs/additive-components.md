@@ -62,5 +62,5 @@ Reference: `b0dd01be61d517c387e234903a6e2cc38c057ea2`.
 
 The official unbatched, untransformed cases are compared directly. Batched
 cases use the conditioning equations and official kernel values independently,
-because the unmodified reference crashes. No upstream source checkout was
-modified and the patch has not been submitted.
+because the unmodified reference crashes. The upstream repairs and regressions
+are submitted in [BoTorch #3486](https://github.com/meta-pytorch/botorch/pull/3486).

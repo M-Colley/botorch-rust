@@ -31,8 +31,8 @@ The native mixin removes `len(sampler.sample_shape)` dimensions. The
 proposed `patches/botorch-fantasy-noise-sample-shape.patch` makes that same
 change in both the empty and nonempty official-reference branches.
 This addresses noise layout; a particular model may separately restrict
-the fantasy batch shapes that it can condition on. No upstream submission
-has been made.
+the fantasy batch shapes that it can condition on. The upstream regression and
+repair are submitted in [BoTorch #3476](https://github.com/meta-pytorch/botorch/pull/3476).
 
 Native models still have separate training-data differentiation limits.
 Setting `propagate_grads=True` scopes the generic model protocol and allows
