@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -34,6 +35,19 @@ from botorch_rs.models.empirical_gps.utils import (
 from botorch_rs.models.gpytorch import BatchedMultiOutputGPyTorchModel, GPyTorchModel
 from botorch_rs.models.model import FantasizeMixin
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
+
+
+def _use_tensor_backend(values: Any, backend: str) -> bool:
+    if backend not in ("auto", "native", "torch"):
+        raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+    return backend == "torch" or (
+        backend == "auto"
+        and any(
+            getattr(value, "requires_grad", False)
+            or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
+            for value in values
+        )
+    )
 
 
 class _SharedKernelBinding:
@@ -93,7 +107,30 @@ def _validate_history(X: Any, Y: Any) -> tuple[int, int, int]:
 class EmpiricalOneDimensionalMean(Mean):
     """Piecewise-linear interpolation of the historical sample mean."""
 
-    def __init__(self, X_full: Any, Y_full: Any) -> None:
+    def __new__(
+        cls,
+        X_full: Any = None,
+        Y_full: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if _use_tensor_backend((X_full, Y_full), backend):
+            from botorch_rs.models.empirical_gps._torch_backend import (
+                TensorCorrelatedMean,
+                TensorEmpiricalMean,
+            )
+            from botorch_rs.models.empirical_gps.multioutput_empirical_1d_gp import (
+                MultiOutputEmpiricalOneDimensionalMean,
+            )
+
+            if cls is MultiOutputEmpiricalOneDimensionalMean:
+                return object.__new__(TensorCorrelatedMean)
+            if cls is EmpiricalOneDimensionalMean:
+                return object.__new__(TensorEmpiricalMean)
+        return object.__new__(cls)
+
+    def __init__(self, X_full: Any, Y_full: Any, *, backend: str = "auto") -> None:
         _validate_history(X_full, Y_full)
         self.f, self.num_outputs, self.mean_full = build_mean_interpolant(X_full, Y_full)
 
@@ -130,6 +167,29 @@ class EmpiricalOneDimensionalKernel(Kernel):
 
     _vectorize_outputs = False
 
+    def __new__(
+        cls,
+        X_full: Any = None,
+        Y_full: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if _use_tensor_backend((X_full, Y_full), backend):
+            from botorch_rs.models.empirical_gps._torch_backend import (
+                TensorCorrelatedKernel,
+                TensorEmpiricalKernel,
+            )
+            from botorch_rs.models.empirical_gps.multioutput_empirical_1d_gp import (
+                MultiOutputEmpiricalOneDimensionalKernel,
+            )
+
+            if cls is MultiOutputEmpiricalOneDimensionalKernel:
+                return object.__new__(TensorCorrelatedKernel)
+            if cls is EmpiricalOneDimensionalKernel:
+                return object.__new__(TensorEmpiricalKernel)
+        return object.__new__(cls)
+
     def __init__(
         self,
         X_full: Any,
@@ -138,6 +198,8 @@ class EmpiricalOneDimensionalKernel(Kernel):
         curve_weights: Any = None,
         use_svd: bool | None = None,
         correction: int = 0,
+        *,
+        backend: str = "auto",
     ) -> None:
         self.num_curves, _, self.num_outputs = _validate_history(X_full, Y_full)
         if not isinstance(correction, int) or correction >= self.num_curves:
@@ -258,6 +320,18 @@ class EmpiricalOneDimensionalKernel(Kernel):
 class BaseAugmentedEmpiricalKernel(AdditiveKernel):
     """Empirical covariance plus an ordinary native covariance on progression."""
 
+    def __new__(cls, empirical_kernel: Any = None, base_kernel: Any = None) -> Any:
+        torch = sys.modules.get("torch")
+        if (
+            cls is BaseAugmentedEmpiricalKernel
+            and torch is not None
+            and isinstance(empirical_kernel, torch.nn.Module)
+        ):
+            from botorch_rs.models.empirical_gps._torch_backend import TensorBaseAugmentedKernel
+
+            return object.__new__(TensorBaseAugmentedKernel)
+        return object.__new__(cls)
+
     def __init__(
         self, empirical_kernel: EmpiricalOneDimensionalKernel, base_kernel: Kernel
     ) -> None:
@@ -317,6 +391,43 @@ class EmpiricalOneDimensionalGP(GPyTorchModel, FantasizeMixin):
 
     get_batch_dimensions = staticmethod(BatchedMultiOutputGPyTorchModel.get_batch_dimensions)
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        historical_X: Any = None,
+        historical_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        torch = sys.modules.get("torch")
+        modules = [
+            kwargs.get(name)
+            for name in ("mean_module", "covar_module", "likelihood", "base_covar_module")
+        ]
+        use_tensor = _use_tensor_backend(
+            (train_X, train_Y, historical_X, historical_Y, *args[:1]), backend
+        )
+        if backend == "auto" and torch is not None:
+            use_tensor = use_tensor or any(
+                isinstance(module, torch.nn.Module) for module in modules
+            )
+        if use_tensor:
+            from botorch_rs.models.empirical_gps._torch_backend import (
+                TensorCorrelatedGP,
+                TensorEmpiricalGP,
+            )
+            from botorch_rs.models.empirical_gps.multioutput_empirical_1d_gp import (
+                MultiOutputEmpiricalOneDimensionalGP,
+            )
+
+            if cls is MultiOutputEmpiricalOneDimensionalGP:
+                return object.__new__(TensorCorrelatedGP)
+            if cls is EmpiricalOneDimensionalGP:
+                return object.__new__(TensorEmpiricalGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -331,6 +442,8 @@ class EmpiricalOneDimensionalGP(GPyTorchModel, FantasizeMixin):
         covar_module: Any = None,
         base_covar_module: Any = None,
         ard: bool = False,
+        *,
+        backend: str = "auto",
     ) -> None:
         validate_no_transforms(input_transform, outcome_transform, type(self).__name__)
         _, _, m = _validate_history(historical_X, historical_Y)

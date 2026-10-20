@@ -13,7 +13,7 @@ The first model milestone implements these public classes:
   `MultiOutputEmpiricalOneDimensionalKernel`,
   `MultiOutputEmpiricalOneDimensionalGP`
 
-Interpolation, basis decomposition, empirical covariance, Cholesky inference,
+On the native CPU backend, interpolation, basis decomposition, empirical covariance, Cholesky inference,
 MLL evaluation, parameter derivatives, input derivatives, sampling and both
 L-BFGS-B and Adam fitting run in Rust. Python arranges array shapes and module
 metadata. Torch and NumPy are optional array containers; neither implements
@@ -292,3 +292,54 @@ convention already used by single-output fixed-noise GPs. Callers needing a
 different noise assumption for unseen tasks can supply explicit predictive
 noise upstream; explicit tensor-valued predictive noise is a current port
 boundary. The reference source was not modified.
+
+## Device-resident empirical curve models
+
+`EmpiricalOneDimensionalGP` and `MultiOutputEmpiricalOneDimensionalGP` now
+accept `backend="torch"`; CUDA or differentiable training/historical inputs
+select this backend automatically. Their mean and kernel constructors accept
+the same selection. The independent model retains independent outputs and
+shared curve-weight leaves. The correlated model retains the full historical
+cross-output covariance and conditions jointly on the interleaved observation
+grid. Its public training inputs and prior distribution use the expanded
+point/output layout, and its public posterior exposes the actual joint Gaussian.
+
+Interpolation, centering, compression, and basis contractions use device-local
+Torch Tensor operations. Exact factorization, Gaussian prediction, normalized
+MLL and sampling use the Rust Torch dispatcher. No Tensor numerical evaluation
+is flattened or transferred to the native CPU float64 backend. Historical knots
+and curve values are actual registered buffers; they retain their data graphs.
+Statistics and compressed bases are recomputed when evaluated, so independent
+backward calls do not reuse an already-consumed construction graph. Knots must
+be distinct, and out-of-range queries raise as in the reference. Derivatives of
+piecewise interpolation apply away from interval/order changes. Spectral
+derivatives use Torch's own eigendecomposition/SVD rules; repeated singular or
+eigenvalues retain the usual spectral derivative limitations.
+
+Both models support model batches, ARD, fixed observation variances, learned
+Gaussian likelihoods, additive base kernels, custom Torch modules, first- and
+second-order training/query/history/parameter derivatives, base-sample sampling,
+conditioning, and fantasies. Correlated predictive Tensor noise broadcasts over
+the point/output grid and is cast to the query dtype/device without detaching its
+graph. Native empirical descriptors are converted from their actual fixed
+interpolation buffers and curve weights, including descriptors built from
+different historical values than the model's default history argument. Such
+conversion preserves the descriptor's fixed-data status; it does not invent
+gradients through the descriptor's earlier native decomposition. ARD parameters
+and actual custom Torch Gaussian likelihood objects retain their live identities.
+Fixed-noise models are constructed with `train_Yvar`; arbitrary likelihood types
+raise. Input/outcome transforms and correlated `output_indices` remain explicitly
+unsupported, matching these upstream model APIs. Independent output subsetting
+updates the historical output tables as well as the likelihood and training data.
+
+The Tensor checkpoint does not establish GPU support for the empirical multitask
+or iterative EM families, which remain separate work. Validation in
+`test_torch_empirical_gp.py` includes CPU/CUDA official mean, kernel, full
+posterior and MLL parity, independent dense historical-curve mixed Hessians,
+compressed-basis historical Hessians, additive kernels and real fits, native
+descriptor conversion, explicit predictive/conditioning noise, live likelihood
+identity, sampling, conditioning and fantasies. The existing native model and
+conditioning suites pass alongside these tests. The standalone correlated lazy
+metadata regression also proves the previously documented upstream repair:
+`num_outputs_per_input` returning the historical output count makes the unchanged
+forward covariance usable through the ordinary GPyTorch lazy call.
