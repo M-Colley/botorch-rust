@@ -28,7 +28,8 @@ from botorch_rs.sampling.normal import IIDNormalSampler
 
 @pytest.fixture(scope="module")
 def corrected_official():
-    original = reference_helpers.official.__wrapped__()
+    fixture = reference_helpers.official.__wrapped__()
+    original = next(fixture)
     source = Path(original.em_empirical_gp.__file__).read_text(encoding="utf-8")
     missing = "Sigma_current=Sigma,\n            psd_stabilization=True,"
     repair = "Sigma_current=Sigma,\n            m_0=_evaluate_mean(mean_module, X_inducing),\n            psd_stabilization=True,"
@@ -41,7 +42,11 @@ def corrected_official():
     )
     # The only changed line implements the documented prior mu ~ N(m(Z), K).
     # This known upstream defect is already repaired by BoTorch PR #3388.
-    return SimpleNamespace(utils=original.utils, em_empirical_gp=module)
+    try:
+        yield SimpleNamespace(utils=original.utils, em_empirical_gp=module)
+    finally:
+        sys.modules.pop(module.__name__, None)
+        fixture.close()
 
 
 DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
@@ -363,10 +368,11 @@ def test_indexed_no_interpolation_and_repeated_positive_eigenvalue_hessian(devic
     hessian = torch.autograd.grad(gradient.sum(), matrix)[0]
     torch.testing.assert_close(hessian, 2 * torch.ones_like(matrix))
     clipped = torch.diag(matrix.new_tensor([-1.0, -1.0, 2.0])).requires_grad_()
-    from botorch_rs.exceptions.errors import UnsupportedError
-
-    with pytest.raises(UnsupportedError, match="spectral Fréchet"):
-        psd_projection(clipped)
+    first = torch.autograd.grad(psd_projection(clipped).square().sum(), clipped, create_graph=True)[
+        0
+    ]
+    second = torch.autograd.grad(first.square().sum(), clipped)[0]
+    assert torch.isfinite(first).all() and torch.isfinite(second).all()
     with torch.no_grad():
         torch.testing.assert_close(
             psd_projection(clipped), torch.diag(matrix.new_tensor([1e-10, 1e-10, 2.0]))

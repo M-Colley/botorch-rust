@@ -424,14 +424,14 @@ locations become actual learnable Parameters only when requested. Conditioning,
 fantasies, sampling, direct-index queries and batched prediction preserve the
 same learned prior.
 
-PSD projection returns the symmetric input directly when all eigenvalues exceed
-the floor, avoiding artificial eigenvector singularities at repeated positive
-eigenvalues. A mixed clipped spectrum with repeated eigenvalues currently raises
-`UnsupportedError` when a gradient is requested, rather than returning the NaN
-gradients produced by a plain `eigh` backward. Such spectra require a dedicated
-spectral Fréchet rule for the Tensor path; the native first-order rule remains
-available. Distinct clipped spectra use Torch's eigendecomposition derivative
-rules, with the usual nonsmooth boundary at the floor. Training data are scalar
+PSD projection uses an analytic matrix-absolute/Sylvester rule for a mixed
+clipped spectrum, including repeated eigenvalues. The backward solve has its
+own analytic backward, so higher derivatives never differentiate eigenvectors.
+All-positive and all-clipped spectra retain direct identity/constant branches.
+Mixed float32 projections work internally in float64 before restoring dtype.
+CPU/CUDA finite-difference `gradcheck` and `gradgradcheck` verify repeated mixed
+spectra; float32 third-derivative graphs are finite. The clipping threshold
+itself remains nonsmooth. Training data are scalar
 and unbatched; query/fantasy batches are supported. Input/outcome transforms
 remain outside this upstream model API.
 

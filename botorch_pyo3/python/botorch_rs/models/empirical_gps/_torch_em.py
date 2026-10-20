@@ -124,17 +124,10 @@ def psd_projection(value: Any, floor: float = 1e-10) -> Any:
         return symmetric * 0 + floor * torch.eye(
             value.shape[-1], device=value.device, dtype=value.dtype
         )
-    tolerance = (
-        torch.finfo(value.dtype).eps * eigenvalues.abs().max().clamp_min(1) * value.shape[-1]
-    )
-    if (
-        torch.is_grad_enabled()
-        and symmetric.requires_grad
-        and bool((eigenvalues.diff().abs() <= tolerance).any())
-    ):
-        raise UnsupportedError(
-            "Differentiating a mixed PSD-floor projection with repeated eigenvalues requires a spectral Fréchet rule; this Tensor configuration is not yet supported."
-        )
+    if torch.is_grad_enabled() and symmetric.requires_grad:
+        from botorch_rs.models.empirical_gps._torch_spectral import smooth_psd_floor
+
+        return smooth_psd_floor(symmetric, floor)
     eigenvalues, vectors = torch.linalg.eigh(symmetric)
     return (vectors * eigenvalues.clamp_min(floor).unsqueeze(-2)) @ vectors.mT
 
