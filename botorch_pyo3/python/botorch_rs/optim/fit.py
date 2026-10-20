@@ -134,6 +134,8 @@ def _mask_and_bounds(
     from botorch_rs.optim.utils.model_utils import _entries
 
     entries = _entries(mll)
+    if parameters is None and any(not getattr(e.value, "requires_grad", True) for e in entries):
+        parameters = {e.name: e.value for e in entries if getattr(e.value, "requires_grad", True)}
     known = {e.name for e in entries}
     if parameters is not None:
         unknown = [n for n in parameters if n not in known]

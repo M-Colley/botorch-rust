@@ -289,6 +289,91 @@ fn make_view(
     }
 }
 
+/// Lift exposed moment adjoints to the full source Gaussian, then use its
+/// analytic training-solve and kernel-parameter pullback. Selection,
+/// scalarization, nonlinear outcome moments, and clamps share the query path.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn moment_parameter_vjp(
+    gp: Arc<BatchedMultiOutputGP>,
+    x: &Array,
+    adjoint: &Array,
+    mode: &str,
+    observation_noise: bool,
+    output_indices: Option<Vec<usize>>,
+    transform: Option<TransformArg>,
+    base: bool,
+) -> PyResult<ArrayBuf> {
+    let model = ModelRef::Gp(gp.clone());
+    let view = make_view(&model, output_indices, transform, base)?;
+    check_dim(x, model.dim())?;
+    let (xbatch, mats) = x.batches("X")?;
+    let bc = broadcast(&xbatch, &model.batch_shape())?;
+    let q = x.1[x.1.len() - 2] * model.points_per_input();
+    let mo = view.num_outputs;
+    let m = model.num_outputs();
+    let covariance = mode == "covariance";
+    if !matches!(mode, "mean" | "variance" | "covariance") {
+        return Err(unsupported(
+            "Parameter gradients currently support posterior moments",
+        ));
+    }
+    let tail = if covariance {
+        vec![q * mo, q * mo]
+    } else {
+        vec![q, mo]
+    };
+    if adjoint.1 != [bc.shape.as_slice(), &tail].concat() {
+        return Err(dimension_error(
+            "Posterior adjoint shape does not match its output",
+        ));
+    }
+    let width = numel(&tail);
+    let mut means = Vec::with_capacity(bc.x_index.len() * q * m);
+    let mut covariances = Vec::with_capacity(bc.x_index.len() * q * m * q * m);
+    for b in 0..bc.x_index.len() {
+        let post = model
+            .posterior_at(bc.model_index[b], &mats[bc.x_index[b]], observation_noise)
+            .into_py_result()?;
+        let values = &adjoint.0[b * width..(b + 1) * width];
+        let (ma, ca) = if covariance {
+            let matrix = Matrix::from_row_slice(q * mo, q * mo, values);
+            if view.moments {
+                marginal_pullback(
+                    &view,
+                    &post,
+                    &Vector::zeros(q * mo),
+                    &matrix.diagonal(),
+                    false,
+                )
+                .into_py_result()?
+            } else {
+                linear_pullback(&view, &post, &Vector::zeros(q * mo), &matrix)
+            }
+        } else {
+            let ordered = Vector::from_fn(q * mo, |i, _| values[(i % q) * mo + i / q]);
+            let zero = Vector::zeros(q * mo);
+            if mode == "mean" {
+                marginal_pullback(&view, &post, &ordered, &zero, true).into_py_result()?
+            } else {
+                marginal_pullback(&view, &post, &zero, &ordered, true).into_py_result()?
+            }
+        };
+        for p in 0..q {
+            for t in 0..m {
+                means.push(ma[t * q + p]);
+            }
+        }
+        for i in 0..q * m {
+            for j in 0..q * m {
+                covariances.push(ca[(i, j)]);
+            }
+        }
+    }
+    let mean = Array(means, [bc.shape.as_slice(), &[q, m]].concat());
+    let covariance = Array(covariances, [bc.shape.as_slice(), &[q * m, q * m]].concat());
+    parameter_grad::parameter_vjp(&gp, x, &mean, &covariance, observation_noise)
+}
+
 /// Native VJP of posterior mean, variance, or covariance w.r.t. query inputs.
 #[pyfunction]
 #[pyo3(signature = (source, x, adjoint, mode, observation_noise=false, output_indices=None, transform=None, base=false))]

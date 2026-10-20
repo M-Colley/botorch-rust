@@ -1,11 +1,10 @@
 """Utilities for fitting and manipulating models
 (``botorch.optim.utils.model_utils``).
 
-botorch_rs models keep their hyperparameters in Rust: ``named_parameters()``
-returns copies of the raw values, so the dictionaries returned here map
-BoTorch's parameter names to the current values (arrays of the model's array
-type). The fitting routines use the names to select the optimized
-parameters.
+botorch_rs models keep their hyperparameters in Rust. Ordinary Torch
+SingleTaskGPs expose persistent synchronized parameter leaves; other models
+return snapshots. Dictionaries map BoTorch's parameter names to these values.
+The native fitting routines use the names to select optimized parameters.
 """
 
 from __future__ import annotations
@@ -133,7 +132,7 @@ def get_parameters(
     Args:
         module: A botorch_rs model or marginal log likelihood.
         requires_grad: Optional Boolean used to filter parameters based on
-            whether they are trainable (all botorch_rs hyperparameters are).
+            whether they are trainable. Torch leaves retain their actual flags.
         name_filter: Optional Boolean function used to filter parameters by
             name.
 
@@ -141,9 +140,12 @@ def get_parameters(
         A dictionary of parameters (name to current raw value).
     """
     out: dict[str, Any] = {}
-    if requires_grad is False:
-        return out
     for name, value, _ in _named_parameters(module):
+        if (
+            requires_grad is not None
+            and bool(getattr(value, "requires_grad", True)) != requires_grad
+        ):
+            continue
         if name_filter and not name_filter(name):
             continue
         out[name] = value
@@ -165,9 +167,12 @@ def get_parameters_and_bounds(
     """
     params: dict[str, Any] = {}
     bounds: dict[str, tuple[float | None, float | None]] = {}
-    if requires_grad is False:
-        return params, bounds
     for name, value, (lo, hi) in _named_parameters(module):
+        if (
+            requires_grad is not None
+            and bool(getattr(value, "requires_grad", True)) != requires_grad
+        ):
+            continue
         if name_filter and not name_filter(name):
             continue
         params[name] = value

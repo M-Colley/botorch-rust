@@ -42,6 +42,9 @@ class GPModule(NativeBufferModule):
                 f"{type(self).__name__} is not part of a model yet; its parameters are "
                 "available once a model has been built with it."
             )
+        sync = getattr(self._model, "_sync_torch_parameters", None)
+        if sync is not None:
+            sync()
         return self._model._rs
 
     @property

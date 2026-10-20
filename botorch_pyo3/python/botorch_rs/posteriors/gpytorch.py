@@ -135,10 +135,12 @@ class GPyTorchPosterior(Posterior):
         base: bool = False,
         interleaved: bool = False,
         query_inputs: Any = None,
+        parameter_owner: Any = None,
         *,
         distribution: Any = None,
     ) -> None:
         self._rs: Any
+        self._parameter_inputs: tuple[Any, ...] = ()
         self._marginals: tuple[list[float], list[float]] | None = None
         self._joint: tuple[Flat, Flat] | None = None
         if distribution is not None or (source is not None and X is None and kind is None):
@@ -159,6 +161,11 @@ class GPyTorchPosterior(Posterior):
             return
         if X is None or kind is None:
             raise TypeError("Provide distribution, or a native source, X, and kind.")
+        sync = getattr(parameter_owner, "_sync_torch_parameters", None)
+        if kind.lib == "torch" and sync is not None:
+            state = sync()
+            if state is not None:
+                self._parameter_inputs = tuple(p for _, p in state.entries)
         snapshot = getattr(source, "copy", None)
         self._rs = snapshot() if callable(snapshot) else source
         self._interleaved_mt = interleaved
@@ -243,8 +250,14 @@ class GPyTorchPosterior(Posterior):
         if query is not None and query.requires_grad and sys.modules["torch"].is_grad_enabled():
             from botorch_rs.posteriors._query_autograd import query_output
 
-            return query_output(self, mode, data, shape, base)
-        return self._out(data, shape)
+            result = query_output(self, mode, data, shape, base)
+        else:
+            result = self._out(data, shape)
+        if self.__dict__.get("_parameter_inputs"):
+            from botorch_rs.posteriors._parameter_autograd import parameter_output
+
+            result = parameter_output(self, mode, result, shape)
+        return result
 
     def _moment_out(self, mode: str, shape: tuple[int, ...]) -> Any:
         return self._query_out(mode, self._get_marginals()[0 if mode == "mean" else 1], shape)

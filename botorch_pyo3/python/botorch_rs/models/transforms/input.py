@@ -990,6 +990,9 @@ class Warp(ReversibleInputTransform):
         return (*self.batch_shape, 1, k) if self.batch_shape else (k,)
 
     def _get(self, i: int) -> Any:
+        getter = getattr(self._model, "_raw_param_array", None)
+        if getter is not None:
+            return getter(self._prefix + f"concentration{i}")
         k = len(self.indices)
         data: list[float] = []
         for c in self._concentrations():

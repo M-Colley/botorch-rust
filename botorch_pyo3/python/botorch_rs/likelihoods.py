@@ -70,6 +70,10 @@ class GaussianLikelihood(Likelihood):
     @property
     def noise(self) -> Any:
         """The noise variance, shape ``batch_shape x 1``."""
+        if getattr(self._model, "_sync_torch_parameters", lambda: None)() is not None:
+            from botorch_rs.models._torch_parameters import constrained_parameter
+
+            return constrained_parameter(self.raw_noise, self.noise_constraint)
         return self._param_out(self._rs_model.noise, (1,))
 
     @noise.setter
@@ -78,7 +82,12 @@ class GaussianLikelihood(Likelihood):
 
     @property
     def raw_noise(self) -> Any:
-        return self._param_out(self._model._raw_param("raw_noise"), (1,))
+        getter = getattr(self._model, "_raw_param_array", None)
+        return (
+            getter("raw_noise")
+            if getter is not None
+            else self._param_out(self._model._raw_param("raw_noise"), (1,))
+        )
 
     @raw_noise.setter
     def raw_noise(self, value: Any) -> None:

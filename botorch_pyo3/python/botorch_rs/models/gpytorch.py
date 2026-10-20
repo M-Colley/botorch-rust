@@ -204,6 +204,7 @@ class BatchedMultiOutputGPyTorchModel(GPyTorchModel):
             transformed=list(self._rs.transformed_outputs),
             is_list=False,
             query_inputs=X,
+            parameter_owner=self,
         )
 
 

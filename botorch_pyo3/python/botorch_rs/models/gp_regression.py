@@ -483,6 +483,7 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         from botorch_rs._buffers import adopt_buffer_dtype
 
         adopt_buffer_dtype(self, kind)
+        self._torch_parameters_ready = True
 
     # -- data --------------------------------------------------------------
 
@@ -553,6 +554,7 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
     # -- modes -------------------------------------------------------------
 
     def train(self, mode: bool = True) -> SingleTaskGP:
+        self._sync_torch_parameters()
         self.training = mode
         self.likelihood.train(mode)
         for name in ("input_transform", "outcome_transform"):
@@ -567,6 +569,7 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         """The model handle that acquisition functions are built on."""
         from botorch_rs.acquisition.objective import transform_arg
 
+        self._sync_torch_parameters()
         return _rs.Model.from_single_task_gp(
             self._rs, transform_arg(posterior_transform, self.num_outputs)
         )
@@ -579,6 +582,16 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         new = self.__class__.__new__(self.__class__)
         memo: dict[int, Any] = {id(self): new}
         for key, value in self.__dict__.items():
+            if (
+                key == "_torch_parameter_requires_grad"
+                and "_torch_parameter_state" in self.__dict__
+            ):
+                continue
+            if key == "_torch_parameter_state":
+                new.__dict__["_torch_parameter_requires_grad"] = {
+                    name: p.requires_grad for name, p in value.entries
+                }
+                continue
             new.__dict__[key] = rs if key == "_rs" else copy.deepcopy(value, memo)
         new.training = False
         return new
@@ -696,9 +709,18 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         new = SingleTaskGP.__new__(SingleTaskGP)
         memo: dict[int, Any] = {id(self): new}
         for key, value in self.__dict__.items():
+            if (
+                key == "_torch_parameter_requires_grad"
+                and "_torch_parameter_state" in self.__dict__
+            ):
+                continue
             if key == "_rs":
                 new.__dict__[key] = value.batch_element(k)
-            elif key in ("taus", "_ensemble_cache"):
+            elif key in ("taus", "_ensemble_cache", "_torch_parameter_state"):
+                if key == "_torch_parameter_state":
+                    new.__dict__["_torch_parameter_requires_grad"] = {
+                        name: p.requires_grad for name, p in value.entries
+                    }
                 continue
             else:
                 new.__dict__[key] = copy.deepcopy(value, memo)
@@ -716,6 +738,23 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
 
     # -- parameters --------------------------------------------------------
 
+    def _sync_torch_parameters(self) -> Any:
+        """Synchronize the persistent leaves of ordinary Torch SingleTaskGPs."""
+        if (
+            type(self) is not SingleTaskGP
+            or self._kind.lib != "torch"
+            or not self.__dict__.get("_torch_parameters_ready", False)
+        ):
+            return None
+        state = self.__dict__.get("_torch_parameter_state")
+        if state is None:
+            from botorch_rs.models._torch_parameters import TorchParameterState
+
+            state = self._torch_parameter_state = TorchParameterState(self)
+        else:
+            state.sync(self)
+        return state
+
     def _param_index(self, suffix: str) -> tuple[str, int, int]:
         """The full name, offset and size of the parameter named ``suffix``
         (a full name, or the end of one)."""
@@ -729,11 +768,15 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         raise AttributeError(f"The model has no parameter {suffix!r}.")
 
     def _raw_param(self, suffix: str) -> list[float]:
+        self._sync_torch_parameters()
         _, offset, size = self._param_index(suffix)
         return self._rs.raw_parameters()[offset : offset + size]
 
     def _raw_param_array(self, suffix: str) -> Any:
         """The raw parameter named ``suffix`` as an array of its shape."""
+        state = self._sync_torch_parameters()
+        if state is not None:
+            return state.parameter(self._param_index(suffix)[0])
         return from_flat(self._raw_param(suffix), self._raw_param_shape(suffix), self._kind)
 
     def _raw_param_shape(self, suffix: str) -> tuple[int, ...]:
@@ -741,6 +784,7 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         return tuple(dict(self._rs.parameter_shapes())[name])
 
     def _set_raw_param(self, suffix: str, value: Any) -> None:
+        self._sync_torch_parameters()
         data, shape = to_flat(value, suffix)
         name, offset, size = self._param_index(suffix)
         values = self._rs.raw_parameters()
@@ -760,6 +804,10 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
     def named_parameters(self) -> Iterator[tuple[str, Any]]:
         """``(name, raw value)`` of every hyperparameter, with BoTorch's names,
         order and shapes."""
+        state = self._sync_torch_parameters()
+        if state is not None:
+            yield from state.entries
+            return
         values = self._rs.raw_parameters()
         offset = 0
         for name, shape in self._rs.parameter_shapes():
@@ -787,6 +835,7 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         is reduced into the original model parameters. The result is an
         explicit first-order gradient; no prior-density terms are added.
         """
+        self._sync_torch_parameters()
         return from_pair(
             self._rs.posterior_parameter_vjp(
                 to_flat(X, "X"),
@@ -814,9 +863,20 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
     # -- copying -----------------------------------------------------------
 
     def __deepcopy__(self, memo: dict[int, Any]) -> SingleTaskGP:
+        self._sync_torch_parameters()
         new = self.__class__.__new__(self.__class__)
         memo[id(self)] = new
         for key, value in self.__dict__.items():
+            if (
+                key == "_torch_parameter_requires_grad"
+                and "_torch_parameter_state" in self.__dict__
+            ):
+                continue
+            if key == "_torch_parameter_state":
+                new.__dict__["_torch_parameter_requires_grad"] = {
+                    name: p.requires_grad for name, p in value.entries
+                }
+                continue
             if key == "_rs":
                 new.__dict__[key] = value.copy()
             else:
@@ -848,6 +908,7 @@ def _model_posterior(
     transformed: list[bool],
     is_list: bool,
     query_inputs: Any = None,
+    parameter_owner: Any = None,
 ) -> Any:
     """The posterior of a model: a ``GPyTorchPosterior``, or a
     ``TransformedPosterior`` if a selected output has a nonlinear outcome
@@ -863,6 +924,7 @@ def _model_posterior(
         "transform": transform,
         "points_per_input": points_per_input,
         "query_inputs": query_inputs,
+        "parameter_owner": parameter_owner,
     }
     native = GPyTorchPosterior(*args, **kwargs)
     if not any(selected):

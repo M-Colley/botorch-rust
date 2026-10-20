@@ -314,6 +314,9 @@ class Kernel(GPModule):
         raise AttributeError(f"{type(self).__name__} has no parameter {name!r}.")
 
     def _get_raw(self, name: str) -> Any:
+        getter = getattr(self._model, "_raw_param_array", None)
+        if getter is not None:
+            return getter(self._prefix + name)
         return from_flat(self._raw_values(name), self._param_shape(name), self._kind_out())
 
     def _set_raw(self, name: str, value: Any) -> None:
@@ -335,6 +338,12 @@ class Kernel(GPModule):
 
     def _get_value(self, name: str) -> Any:
         c = self._constraint_of(name)
+        if self._model is not None:
+            raw_parameter = self._get_raw(name)
+            if getattr(raw_parameter, "requires_grad", False):
+                from botorch_rs.models._torch_parameters import constrained_parameter
+
+                return constrained_parameter(raw_parameter, c)
         raw = self._raw_values(name)
         values = raw if c is None else [c.transform(v) for v in raw]
         return from_flat(values, self._param_shape(name), self._kind_out())

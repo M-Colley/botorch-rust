@@ -19,6 +19,9 @@ from botorch_rs.models.multitask import KroneckerMultiTaskGP, MultiTaskGP
 def _forward_pass(model: Any) -> None:
     """The side effects of a forward pass of the model (the in-place
     renormalization of LCEMGP's embeddings)."""
+    sync = getattr(model, "_sync_torch_parameters", None)
+    if sync is not None:
+        sync()
     hook = getattr(model, "_forward_pass", None)
     if hook is not None:
         hook()

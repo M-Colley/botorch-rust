@@ -71,6 +71,9 @@ class ConstantMean(Mean):
         """The constant, shape ``batch_shape``."""
         if self._model is None:
             return from_flat(self._local_raw, self.batch_shape, self._local_kind)
+        getter = getattr(self._model, "_raw_param_array", None)
+        if getter is not None:
+            return getter("mean_module.raw_constant")
         return self._param_out(self._rs_model.constant, ())
 
     @constant.setter

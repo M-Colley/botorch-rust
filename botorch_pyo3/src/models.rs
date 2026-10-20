@@ -10,6 +10,7 @@
 //! new snapshot (copy on write), so the GIL can be released during heavy work
 //! without data races.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use botorch_core::acquisition::{ScalarizedModel, ScalarizedPosteriorTransform};
@@ -605,6 +606,7 @@ fn summary(r: &BatchedFitResult) -> FitSummary {
 #[pyclass(frozen, name = "SingleTaskGP", module = "botorch_rs._botorch_rs")]
 pub struct PySingleTaskGP {
     inner: RwLock<Arc<BatchedMultiOutputGP>>,
+    parameter_state_version: AtomicU64,
 }
 
 impl PySingleTaskGP {
@@ -612,6 +614,7 @@ impl PySingleTaskGP {
     pub(crate) fn from_model(model: BatchedMultiOutputGP) -> Self {
         Self {
             inner: RwLock::new(Arc::new(model)),
+            parameter_state_version: AtomicU64::new(0),
         }
     }
 
@@ -622,6 +625,7 @@ impl PySingleTaskGP {
 
     fn replace(&self, model: BatchedMultiOutputGP) {
         *self.inner.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(model);
+        self.parameter_state_version.fetch_add(1, Ordering::Release);
     }
 
     /// Replaces the model (after a fit).
@@ -824,6 +828,7 @@ impl PySingleTaskGP {
             .into_py_result()?;
         Ok(Self {
             inner: RwLock::new(Arc::new(model)),
+            parameter_state_version: AtomicU64::new(0),
         })
     }
 
@@ -831,6 +836,7 @@ impl PySingleTaskGP {
     fn copy(&self) -> Self {
         Self {
             inner: RwLock::new(Arc::new((*self.snapshot()).clone())),
+            parameter_state_version: AtomicU64::new(0),
         }
     }
 
@@ -1202,6 +1208,39 @@ impl PySingleTaskGP {
     /// The raw hyperparameters in flat order (BoTorch's `named_parameters()`).
     fn raw_parameters(&self) -> Vec<f64> {
         self.snapshot().raw_parameters().as_slice().to_vec()
+    }
+
+    #[getter]
+    fn parameter_state_version(&self) -> u64 {
+        self.parameter_state_version.load(Ordering::Acquire)
+    }
+
+    #[pyo3(signature = (x, adjoint, mode, observation_noise=false, output_indices=None, transform=None, base=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn posterior_moment_parameter_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        adjoint: Array,
+        mode: &str,
+        observation_noise: bool,
+        output_indices: Option<Vec<usize>>,
+        transform: Option<TransformArg>,
+        base: bool,
+    ) -> PyResult<ArrayBuf> {
+        let model = self.snapshot();
+        threads::run(py, || {
+            posterior_autograd::moment_parameter_vjp(
+                model,
+                &x,
+                &adjoint,
+                mode,
+                observation_noise,
+                output_indices,
+                transform,
+                base,
+            )
+        })
     }
 
     #[pyo3(signature = (x, mean_adjoint, covariance_adjoint, observation_noise=false))]
