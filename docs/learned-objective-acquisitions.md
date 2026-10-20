@@ -186,7 +186,7 @@ evaluation, so repeated backward calls do not reuse a freed constructor-time
 index-selection graph. Selected membership remains fixed until pruning is
 explicitly repeated.
 
-The 16-case CPU/CUDA focused suite compares learned samples and sample
+The ordinary CPU/CUDA focused suite compares learned samples and sample
 derivatives against the independent reference, verifies that both cache
 settings give identical joint values and first/second derivatives, checks
 near-zero improvement for an exact baseline duplicate, and executes repeated
@@ -194,9 +194,39 @@ full data/query/parameter backwards with default pruning. Ordinary and
 batched PairwiseGP preferences and multidimensional preference sample shapes
 are covered.
 
-Preference-model ensembles currently raise `UnsupportedError` in this Tensor
-path: independent outcome/preference MCMC axes need explicit alignment and
-marginalization. Selected-member callbacks from the native objective bridge
-also require a native preference model; use a Torch outcome model for a
-fully device-resident learned objective. These boundaries are explicit rather
-than returning incorrectly aligned or unmarginalized utilities.
+Loaded fully Bayesian preference models now retain their own final MCMC
+axis, independently of any outcome-model MCMC axis. A learned objective returns
+`augmented_outcome_samples x outcome_batches x preference_members x q`.
+Preference sample dimensions combine with the leading outcome sample dimension;
+preference members remain distinct until acquisition reduction. EI/PI and regret
+compute each member's nonlinear utility before averaging. Confidence bounds and
+posterior standard deviation center each member separately, then integrate its
+value. Log acquisitions use log-mean-exp over the same independent axes. Taking
+an average preference utility before improvement, or flattening preference
+members into the sample axis before computing their centered deviation, would
+change these probability laws.
+
+The 79-case ensemble suite checks all nine scalar MC families against explicit
+member-by-member Gaussian sampling and independent acquisition formulas. It
+covers ordinary outcome batches, nested outcome/preference ensembles with
+different member counts, ordinary preference batches crossed with an outcome
+ensemble, multidimensional preference draws, full-joint noisy
+baselines, first and second query/data/parameter derivatives, and repeated
+backward calls. Pruning first averages preference members for selection, then
+uses the existing outcome-ensemble majority feasibility rule. Raw outcome
+samples acquire a matching singleton preference axis before feasibility or
+constraints. Legacy constrained and penalized objective wrappers propagate the
+axis protocol, and constrained objectives forward the actual `X`. The
+all-infeasible lower-bound calculation supplies an explicit leading Monte Carlo
+axis so learned objectives also work in that branch.
+
+Selected-member callbacks from the native objective bridge still require a
+native preference model; use a Torch outcome model for fully device-resident
+learned utilities. Arbitrary callable wrappers around a learned ensemble can
+forward `_tensor_preference_ensemble = True` when preserving this axis protocol.
+The built-in generic, constrained and penalized wrappers forward it directly.
+Acquisition calls carry outcome-ensemble metadata in a scoped context, including
+pruning and lower-bound evaluation. Its token resets even when a caller
+objective raises. This prevents an outcome MCMC axis from being mistaken for
+an ordinary preference-model batch while retaining the leading outcome sample
+axis used to share preference base normals.

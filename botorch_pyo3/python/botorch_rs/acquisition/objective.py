@@ -14,11 +14,26 @@ are accepted as well.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from botorch_rs._arrays import as_float, from_flat, is_torch_tensor, kind_of, to_flat
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
+
+_tensor_outcome_ensemble: ContextVar[bool] = ContextVar(
+    "botorch_rs_tensor_outcome_ensemble", default=False
+)
+
+
+@contextmanager
+def _tensor_objective_context(outcome_ensemble: bool) -> Iterator[None]:
+    token = _tensor_outcome_ensemble.set(outcome_ensemble)
+    try:
+        yield
+    finally:
+        _tensor_outcome_ensemble.reset(token)
 
 
 def _clamp_min_zero(x: Any) -> Any:
@@ -355,6 +370,10 @@ class GenericMCObjective(MCAcquisitionObjective):
     def __init__(self, objective: Callable[..., Any]) -> None:
         self.objective = objective
 
+    @property
+    def _tensor_preference_ensemble(self) -> bool:
+        return bool(getattr(self.objective, "_tensor_preference_ensemble", False))
+
     def forward(self, samples: Any, X: Any = None) -> Any:
         return self.objective(samples, X=X)
 
@@ -406,8 +425,13 @@ class ConstrainedMCObjective(GenericMCObjective):
 
         from botorch_rs.acquisition.utils import repeat_to_match_aug_dim
 
-        obj = self.objective(samples, X=None)
-        samples = repeat_to_match_aug_dim(samples, obj)
+        obj = self.objective(samples, X=X)
+        if is_torch_tensor(samples):
+            from botorch_rs.acquisition._torch_backend_acquisition import _objective_samples
+
+            samples = _objective_samples(samples, obj, 1, self._tensor_preference_ensemble)
+        else:
+            samples = repeat_to_match_aug_dim(samples, obj)
         if len(self._eta) != len(self.constraints):
             raise ValueError(
                 "Number of provided constraints and number of provided etas do not match."
@@ -727,6 +751,14 @@ class LearnedObjective(MCAcquisitionObjective):
             return values.permute(order).reshape(-1, 1, shape[-2])
         return self._native_samples(samples)
 
+    @property
+    def _tensor_preference_ensemble(self) -> bool:
+        from botorch_rs.utils.transforms import is_ensemble
+
+        return getattr(self.pref_model, "_tensor_backend", None) == "torch" and is_ensemble(
+            self.pref_model
+        )
+
     def _native_samples(self, samples: Any, model_index: int | None = None) -> Any:
         import math
 
@@ -742,22 +774,36 @@ class LearnedObjective(MCAcquisitionObjective):
                 )
             from botorch_rs.utils.transforms import is_ensemble
 
-            if is_ensemble(self.pref_model):
-                raise UnsupportedError(
-                    "Torch learned objectives do not yet marginalize preference-model ensembles; "
-                    "use an ordinary or batched preference GP."
-                )
-            missing = len(self.pref_model.batch_shape) - (samples.ndim - 3)
+            # Isolate the outcome MCMC axis from ordinary preference batches.
+            # Preserve leading outcome MC so common normals retain their public
+            # sharing pattern. Restore the member axis after posterior sampling.
+            outcome_ensemble = _tensor_outcome_ensemble.get()
+            preference_ensemble = is_ensemble(self.pref_model)
+            if outcome_ensemble:
+                samples = samples.movedim(-3, 1)
+            missing = (
+                len(self.pref_model.batch_shape)
+                - int(preference_ensemble)
+                - (samples.ndim - (4 if outcome_ensemble else 3))
+            )
             if missing > 0:
-                # The leading dimension is outcome MC, not a model batch.
-                samples = samples.reshape(samples.shape[0], *((1,) * missing), *samples.shape[1:])
+                prefix = 2 if outcome_ensemble else 1
+                samples = samples.reshape(
+                    *samples.shape[:prefix], *((1,) * missing), *samples.shape[prefix:]
+                )
             posterior = self.pref_model.posterior(samples)
+            axes = 0 if self.sampler is None else len(self.sampler.sample_shape)
+            utility = (
+                posterior.mean.squeeze(-1)
+                if self.sampler is None
+                else self.sampler(posterior).squeeze(-1)
+            )
+            if outcome_ensemble:
+                utility = utility.movedim(axes + 1, -3 if preference_ensemble else -2)
             if self.sampler is None:
-                return posterior.mean.squeeze(-1)
-            utility = self.sampler(posterior).squeeze(-1)
-            # The port's public convention combines all preference sample
-            # dimensions with the leading outcome MC dimension.
-            axes = len(self.sampler.sample_shape)
+                return utility
+            # Preference MC dimensions combine with the first outcome MC axis;
+            # both independent MCMC axes remain available to utility reduction.
             return utility.reshape(-1, *utility.shape[axes + 1 :])
 
         from botorch_rs import _botorch_rs as _rs

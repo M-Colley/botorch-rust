@@ -156,19 +156,3 @@ def test_default_pruning_augmented_utilities_and_independent_backwards(device, b
         results.append((value, *first, *second))
     for left, right in zip(*results, strict=True):
         torch.testing.assert_close(left, right, atol=0, rtol=0)
-
-
-@pytest.mark.parametrize("device", DEVICES)
-def test_preference_ensemble_requires_explicit_future_marginalization(device):
-    from botorch_rs.exceptions.errors import UnsupportedError
-    from botorch_rs.models.fully_bayesian import SaasFullyBayesianSingleTaskGP
-
-    _, _, data = _models(device)
-    x, y, noise, _ = data
-    model = SaasFullyBayesianSingleTaskGP(x, y[:, :1], noise[:, :1], backend="torch")
-    model.load_mcmc_samples(
-        {"mean": x.new_zeros(3), "lengthscale": x.new_ones(3, 2), "outputscale": x.new_ones(3)}
-    )
-    objective = LearnedObjective(model, sample_shape=(4,), seed=82)
-    with pytest.raises(UnsupportedError, match="preference-model ensembles"):
-        objective(x.unsqueeze(0))

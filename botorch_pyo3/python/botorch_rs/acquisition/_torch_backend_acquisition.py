@@ -249,8 +249,12 @@ def _average_ensemble(value: Tensor, model: Any, log: bool = False) -> Tensor:
     return _logmeanexp(value, (-1,)) if log else value.mean(dim=-1)
 
 
-def _objective_samples(samples: Tensor, objective: Tensor, sample_ndim: int) -> Tensor:
-    """Align outcomes with augmented utility draws and preference batches."""
+def _objective_samples(
+    samples: Tensor, objective: Tensor, sample_ndim: int, preference_ensemble: bool = False
+) -> Tensor:
+    """Align outcomes with utility draws and independent preference members."""
+    if preference_ensemble:
+        samples = samples.unsqueeze(-3)
     if samples.shape[0] != objective.shape[0]:
         if objective.shape[0] % samples.shape[0]:
             raise RuntimeError("An augmented objective must repeat the first sample dimension.")
@@ -446,14 +450,25 @@ class _TensorAcquisition(nn.Module):
         phi = (-0.5 * u.square() - 0.5 * _LOG_2PI).exp()
         return (sigma * (phi + u * torch.special.ndtr(u))).squeeze(-1)
 
+    def _objective_values(self, samples: Tensor, X: Tensor) -> Tensor:
+        from botorch_rs.acquisition.objective import _tensor_objective_context
+
+        with _tensor_objective_context(is_ensemble(self.model)):
+            return self.objective(samples=samples, X=X)
+
     def _draw(self, X: Tensor) -> tuple[Tensor, Tensor]:
         samples = self.sampler(self._posterior(X))
-        objective = self.objective(samples=samples, X=X)
+        objective = self._objective_values(samples, X)
         if not isinstance(objective, Tensor) or objective.shape[-1] != samples.shape[-2]:
             raise RuntimeError(
                 "The MC objective must return sample_shape x batch_shape x q tensors."
             )
-        return _objective_samples(samples, objective, len(self.sample_shape)), objective
+        return (
+            _objective_samples(
+                samples, objective, len(self.sample_shape), self._preference_ensemble
+            ),
+            objective,
+        )
 
     def _constraint_indicator(self, samples: Tensor, log: bool) -> Tensor:
         result = torch.zeros_like(samples[..., 0])
@@ -482,6 +497,14 @@ class _TensorAcquisition(nn.Module):
             result = result + contribution
         return result if log else result.exp()
 
+    @property
+    def _preference_ensemble(self) -> bool:
+        return bool(getattr(self.objective, "_tensor_preference_ensemble", False))
+
+    def _utility_parameter(self, value: Any, objective: Tensor) -> Tensor:
+        result = _as_tensor(value, objective)
+        return result.unsqueeze(-1) if self._preference_ensemble else result
+
     def _utilities(self, objective: Tensor, best_f: Tensor | None = None) -> Tensor:
         name = self._name
         if name == "qSimpleRegret":
@@ -495,12 +518,14 @@ class _TensorAcquisition(nn.Module):
             deviation = (objective - center).abs()
             if name == "qPosteriorStandardDeviation":
                 return deviation * math.sqrt(math.pi / 2)
-            factor = (_as_tensor(self.beta, objective) * math.pi / 2).sqrt().unsqueeze(-1)
+            factor = (
+                (self._utility_parameter(self.beta, objective) * math.pi / 2).sqrt().unsqueeze(-1)
+            )
             if name == "qLowerConfidenceBound":
                 factor = -factor
             return center + factor * deviation
         if best_f is None:
-            best_f = _as_tensor(self.best_f, objective)
+            best_f = self._utility_parameter(self.best_f, objective)
         difference = objective - best_f.unsqueeze(-1)
         if name == "qProbabilityOfImprovement":
             return (difference / _as_tensor(self.tau, difference)).sigmoid()
@@ -510,8 +535,10 @@ class _TensorAcquisition(nn.Module):
 
     def _reduce(self, utilities: Tensor) -> Tensor:
         sample_dims = tuple(range(len(self.sample_shape)))
-        if is_ensemble(self.model):
+        if self._preference_ensemble:
             sample_dims += (-1,)
+        if is_ensemble(self.model):
+            sample_dims += (-2 if self._preference_ensemble else -1,)
         if self._log:
             from botorch_rs.acquisition._torch_reductions import fatmax, smooth_amax
 
@@ -636,9 +663,12 @@ class _TensorAcquisition(nn.Module):
         sampler = SobolQMCNormalSampler((2048,), seed=int(getattr(self.sampler, "seed", 0)))
         with torch.no_grad():
             samples = sampler(self._posterior(self._X_baseline))
-            objective = self.objective(samples=samples, X=self._X_baseline)
-            samples = _objective_samples(samples, objective, 1)
+            objective = self._objective_values(samples, self._X_baseline)
+            samples = _objective_samples(samples, objective, 1, self._preference_ensemble)
             feasible = self._feasible(samples)
+            if self._preference_ensemble:
+                objective = objective.mean(dim=-2)
+                feasible = feasible.all(dim=-2)
             if ensemble:
                 objective = objective.mean(dim=-2)
                 feasible = feasible.to(objective).mean(dim=-2).round().bool()
@@ -676,8 +706,8 @@ class _TensorAcquisition(nn.Module):
         posterior = self._posterior(points)
         deviation = posterior.variance.clamp_min(0).sqrt() * 6
         lower = torch.minimum(
-            self.objective(samples=posterior.mean - deviation, X=points),
-            self.objective(samples=posterior.mean + deviation, X=points),
+            self._objective_values((posterior.mean - deviation).unsqueeze(0), points),
+            self._objective_values((posterior.mean + deviation).unsqueeze(0), points),
         ).amin()
         return lower.clamp_max(0)
 
