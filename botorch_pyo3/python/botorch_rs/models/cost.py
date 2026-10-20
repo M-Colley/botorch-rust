@@ -3,14 +3,16 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import (
+    LIST,
+    ArrayKind,
     from_flat,
     from_pair,
     is_torch_tensor,
-    kind_from_dtype,
     kind_of,
     to_flat,
 )
@@ -127,9 +129,14 @@ class AffineFidelityCostModel(DeterministicCostModel):
 
     @property
     def weights(self) -> Any:
-        """The weights of the fidelity dimensions (a list, or a float64 tensor
-        if torch is available)."""
-        return from_flat(self._weights, (len(self._weights),), kind_from_dtype())
+        """Weights in the constructor's default floating dtype."""
+        torch = sys.modules.get("torch")
+        kind = (
+            LIST
+            if torch is None
+            else ArrayKind("torch", getattr(torch, self._buffer_factory_dtype))
+        )
+        return from_flat(self._weights, (len(self._weights),), kind)
 
     def __repr__(self) -> str:
         return (

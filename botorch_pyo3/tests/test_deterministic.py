@@ -415,12 +415,18 @@ def test_generic_deterministic_model() -> None:
     with pytest.raises(UnsupportedError, match="dim"):
         qLogExpectedHypervolumeImprovement(GenericDeterministicModel(f, num_outputs=2), ref, part)
     pm = PosteriorMeanModel(_model_list("torch"))
-    # botorch_rs models are not differentiable with torch.autograd.
-    not_differentiable = GenericDeterministicModel(lambda X: pm(X), num_outputs=2, dim=2)
-    acqf = qLogExpectedHypervolumeImprovement(not_differentiable, ref, part)
-    assert torch.isfinite(acqf(X[:, :1])).all()
-    with pytest.raises(RuntimeError, match="does not require gradients"):
-        acqf(X[:, :1].clone().requires_grad_(True))
+    # Nested native posteriors support query autograd. Their pullback through
+    # the Python callable must equal direct native acquisition differentiation.
+    nested = GenericDeterministicModel(lambda X: pm(X), num_outputs=2, dim=2)
+    acqf = qLogExpectedHypervolumeImprovement(nested, ref, part)
+    direct = qLogExpectedHypervolumeImprovement(pm, ref, part)
+    Xg = X[:, :1].clone().requires_grad_(True)
+    value = acqf(Xg)
+    reference = direct(Xg)
+    torch.testing.assert_close(value, reference, atol=1e-10, rtol=1e-9)
+    (gradient,) = torch.autograd.grad(value.sum(), Xg)
+    (reference_gradient,) = torch.autograd.grad(reference.sum(), Xg)
+    torch.testing.assert_close(gradient, reference_gradient, atol=1e-9, rtol=1e-8)
 
 
 _NESTED_SCRIPT = """

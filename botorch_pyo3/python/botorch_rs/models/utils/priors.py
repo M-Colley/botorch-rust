@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import struct
+import sys
 from operator import index as integer_index
 from typing import Any
 
@@ -21,8 +22,8 @@ class BetaPrior(Prior):
 
     def __init__(
         self,
-        concentration1: float,
-        concentration0: float,
+        concentration1: Any,
+        concentration0: Any,
         validate_args: bool = False,
         transform: Any = None,
     ) -> None:
@@ -30,6 +31,16 @@ class BetaPrior(Prior):
         a = as_float(concentration1, "concentration1")
         b = as_float(concentration0, "concentration0")
         self._kind = first_kind(concentration1, concentration0)
+        torch = sys.modules.get("torch")
+        if torch is not None and all(
+            isinstance(value, torch.Tensor) for value in (concentration1, concentration0)
+        ):
+            self._kind = self._kind._replace(
+                dtype=torch.promote_types(concentration1.dtype, concentration0.dtype)
+            )
+        elif self._kind.lib == "numpy":
+            np = sys.modules["numpy"]
+            self._kind = self._kind._replace(dtype=np.result_type(concentration1, concentration0))
         shape = broadcast_shapes(to_flat(concentration1)[1], to_flat(concentration0)[1])
         assert shape is not None
         self._batch_shape = shape

@@ -480,6 +480,10 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
                 self._subset_batch_dict["likelihood.noise_covar.raw_noise"] = -2
         self.training = True
 
+        from botorch_rs._buffers import adopt_buffer_dtype
+
+        adopt_buffer_dtype(self, kind)
+
     # -- data --------------------------------------------------------------
 
     @property

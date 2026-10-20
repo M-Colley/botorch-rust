@@ -305,6 +305,9 @@ class PairwiseGP(Model, FantasizeMixin):
         self._train_targets: Any = None
         if self._has_data:
             self._build(datapoints, comparisons)
+        from botorch_rs._buffers import adopt_buffer_dtype
+
+        adopt_buffer_dtype(self, self._kind)
 
     # -- construction --------------------------------------------------------
 

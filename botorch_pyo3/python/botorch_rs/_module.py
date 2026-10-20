@@ -15,10 +15,11 @@ import math
 from typing import Any
 
 from botorch_rs._arrays import LIST, from_flat
+from botorch_rs._buffers import NativeBufferModule, adopt_buffer_dtype
 from botorch_rs.exceptions.errors import UnsupportedError
 
 
-class GPModule:
+class GPModule(NativeBufferModule):
     """A GPyTorch-style module whose parameters live in a bound model."""
 
     _model: Any = None
@@ -32,6 +33,7 @@ class GPModule:
                 "create a new one for each model."
             )
         self._model = model
+        adopt_buffer_dtype(self, model._kind)
 
     @property
     def _rs_model(self) -> Any:

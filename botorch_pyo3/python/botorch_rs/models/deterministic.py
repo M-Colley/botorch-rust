@@ -266,6 +266,7 @@ class AffineDeterministicModel(DeterministicModel):
                 models or if the offset is shared), or a ``m``-dim tensor (with
                 different offset values for the ``m`` different outputs).
         """
+        from botorch_rs._buffers import _default_dtype
         from botorch_rs.priors import _float32
 
         adata, ashape = to_flat(a, "a")
@@ -294,7 +295,21 @@ class AffineDeterministicModel(DeterministicModel):
         self.a = a
         self._a = (list(adata), tuple(ashape))
         self._b = [float(v) for v in bdata] * (m if len(bdata) == 1 else 1)
-        self.b = from_flat(self._b, (m,), kind_of(a))
+        if isinstance(b, (int, float)):
+            a_kind = kind_of(a)
+            dtype: Any = _default_dtype()
+            if a_kind.lib == "torch":
+                import torch
+
+                dtype = getattr(torch, dtype)
+            b_kind = ArrayKind(a_kind.lib, dtype, a_kind.device)
+        else:
+            b_kind = kind_of(b)
+        self.b = from_flat(self._b, (m,), b_kind)
+        # Integer/bool tensor offsets are buffers too; ArrayKind intentionally
+        # restores floating result types only, so retain the original dtype.
+        if hasattr(b, "dtype") and b_kind.dtype is None:
+            self.b = b.expand(m) if hasattr(b, "expand") else self.b.astype(b.dtype)
         self._num_outputs = m
         self._kind = kind_of(a)
 
@@ -322,7 +337,8 @@ class AffineDeterministicModel(DeterministicModel):
         b_sub = [self._b[t] for t in idcs]
         kind = kind_of(self.a)
         return self.__class__(
-            a=from_flat(a_sub, (d, len(idcs)), kind), b=from_flat(b_sub, (len(idcs),), kind)
+            a=from_flat(a_sub, (d, len(idcs)), kind),
+            b=self.b[idcs] if hasattr(self.b, "shape") else b_sub,
         )
 
     def forward(self, X: Any) -> Any:

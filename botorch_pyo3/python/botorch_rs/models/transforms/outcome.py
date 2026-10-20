@@ -23,6 +23,7 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import LIST, ArrayKind, first_kind, from_flat, from_pair, to_flat
+from botorch_rs._buffers import NativeBufferModule
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 
 
@@ -56,7 +57,7 @@ def _set_col(values: list[float], m: int, t: int, col: list[float]) -> None:
     values[t::m] = col
 
 
-class OutcomeTransform:
+class OutcomeTransform(NativeBufferModule):
     """Abstract base class for outcome transforms."""
 
     training: bool = True

@@ -35,6 +35,7 @@ from botorch_rs._arrays import (
     kind_of,
     to_flat,
 )
+from botorch_rs._buffers import NativeBufferModule
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.exceptions.warnings import UserInputWarning
 from botorch_rs.models.utils.assorted import fantasize as _fantasize
@@ -69,7 +70,7 @@ def _check_flat_matrix(x: Any, name: str = "X") -> tuple[Any, tuple[int, ...]]:
     return data, tuple(shape)
 
 
-class InputTransform:
+class InputTransform(NativeBufferModule):
     r"""Abstract base class for input transforms.
 
     Properties:

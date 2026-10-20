@@ -5,13 +5,23 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from botorch_rs._buffers import NativeBufferModule
 from botorch_rs.exceptions.errors import UnsupportedError
 
 
-class Model:
+class Model(NativeBufferModule):
     """Abstract base class of botorch_rs models."""
 
     training: bool = True
+
+    @property
+    def dtypes_of_buffers(self) -> set[Any]:
+        """Dtypes of registered buffers, including supported native state.
+
+        Native state is read as tensor snapshots in its logical public dtype;
+        training data and model parameters are not registered buffers.
+        """
+        return {buffer.dtype for buffer in self.buffers()}
 
     def train(self, mode: bool = True) -> Model:
         """Sets the training flag (for API compatibility; it has no effect)."""

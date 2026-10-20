@@ -32,10 +32,11 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import as_float, from_flat, kind_of, to_flat
+from botorch_rs._buffers import NativeBufferModule, _default_dtype
 from botorch_rs.exceptions.errors import UnsupportedError
 
 
-class Prior:
+class Prior(NativeBufferModule):
     """Base class of the priors."""
 
     _rs: _rs.Prior
@@ -412,6 +413,7 @@ def _from_rs(prior: _rs.Prior | None) -> Prior | None:
         obj._validate_args = False
         obj._transform = None
     obj._rs = prior
+    obj._buffer_factory_dtype = _default_dtype()
     return obj
 
 
