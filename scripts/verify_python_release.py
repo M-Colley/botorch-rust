@@ -62,15 +62,49 @@ def main() -> int:
         raise RuntimeError("Installed extension SHA256 differs from --native-sha256.")
     if not Path(botorch.__file__).resolve().is_relative_to(reference):
         raise RuntimeError("The independent reference did not load from --reference.")
-    source_hash = hashlib.sha256()
-    files = sorted(
-        p
-        for p in package.rglob("*")
-        if p.is_file() and (p.suffix in {".py", ".pyi"} or p.name == "py.typed")
-    )
-    for path in files:
-        source_hash.update(path.relative_to(package).as_posix().encode() + b"\0")
-        source_hash.update(path.read_bytes() + b"\0")
+
+    def fingerprints() -> dict[str, Any]:
+        source_hash = hashlib.sha256()
+        files = sorted(
+            p
+            for p in package.rglob("*")
+            if p.is_file() and (p.suffix in {".py", ".pyi"} or p.name == "py.typed")
+        )
+        for path in files:
+            source_hash.update(path.relative_to(package).as_posix().encode() + b"\0")
+            source_hash.update(path.read_bytes() + b"\0")
+        return {
+            "native_sha256": hashlib.sha256(native.read_bytes()).hexdigest(),
+            "python_sources_sha256": source_hash.hexdigest(),
+            "python_source_files": len(files),
+            "helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "source_revision": revision(root),
+            "reference_revision": revision(reference),
+            "source_tree_status": subprocess.check_output(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=no",
+                ],
+                text=True,
+            ),
+            "reference_tree_status": subprocess.check_output(
+                [
+                    "git",
+                    "-C",
+                    str(reference),
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=no",
+                ],
+                text=True,
+            ),
+        }
+
+    before = fingerprints()
 
     class Ledger:
         selected: list[str] = []
@@ -84,7 +118,7 @@ def main() -> int:
         def pytest_collection_finish(self, session: Any) -> None:
             self.selected = [item.nodeid for item in session.items]
             self.results = {
-                nodeid: {"outcome": "not_run", "duration_s": 0.0}
+                nodeid: {"outcome": "not_run", "duration_s": 0.0, "reports": {}}
                 for nodeid in self.selected
             }
 
@@ -94,6 +128,7 @@ def main() -> int:
 
         def pytest_runtest_logreport(self, report: Any) -> None:
             result = self.results[report.nodeid]
+            result["reports"].setdefault(report.when, []).append(report.outcome)
             result["duration_s"] += report.duration
             if report.failed:
                 result["outcome"] = "failed" if report.when == "call" else "error"
@@ -123,13 +158,33 @@ def main() -> int:
     duplicates = [
         name for name, count in Counter(ledger.selected).items() if count != 1
     ]
+    phase_errors = []
+    for nodeid, case in ledger.results.items():
+        phases = case["reports"]
+        setup, call, teardown = (
+            phases.get(name, []) for name in ("setup", "call", "teardown")
+        )
+        if (
+            len(setup) != 1
+            or len(teardown) != 1
+            or len(call) != (1 if setup == ["passed"] else 0)
+        ):
+            phase_errors.append(nodeid)
+    after = fingerprints()
+    stable = before == after
+    clean = not before["source_tree_status"] and not before["reference_tree_status"]
+    exactly_once = (
+        not duplicates
+        and not phase_errors
+        and all(case["outcome"] != "not_run" for case in ledger.results.values())
+    )
     report = {
         "started_utc": started.isoformat(),
         "finished_utc": datetime.now(UTC).isoformat(),
         "exit_code": int(result),
         "phase": args.phase,
-        "source_revision": revision(root),
-        "reference_revision": revision(reference),
+        "source_revision": before["source_revision"],
+        "reference_revision": before["reference_revision"],
         "python_executable": sys.executable,
         "platform": platform.platform(),
         "python": platform.python_version(),
@@ -140,9 +195,16 @@ def main() -> int:
         "package_path": botorch_rs.__file__,
         "native_path": str(native),
         "native_sha256": native_hash,
-        "python_sources_sha256": source_hash.hexdigest(),
-        "python_source_files": len(files),
-        "helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "python_sources_sha256": before["python_sources_sha256"],
+        "python_source_files": before["python_source_files"],
+        "helper_sha256": before["helper_sha256"],
+        "fingerprints_before": before,
+        "fingerprints_after": after,
+        "fingerprints_stable": stable,
+        "tracked_trees_clean": clean,
+        "phases_valid": not phase_errors,
+        "phase_errors": phase_errors,
+        "case_ids_exactly_once": exactly_once,
         "pytest_arguments": command,
         "environment": {
             name: os.environ[name]
@@ -172,7 +234,7 @@ def main() -> int:
             }
         )
     )
-    return int(result) or int(bool(duplicates))
+    return int(result) or int(not (exactly_once and stable and clean))
 
 
 if __name__ == "__main__":
