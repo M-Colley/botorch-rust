@@ -132,6 +132,15 @@ def _sync_native_parameters(module: Any) -> None:
         sync()
 
 
+def _copy_native_parameter_leaves(state: Any, values: Any) -> None:
+    offset = 0
+    for (_, parameter), (_, shape) in zip(state.entries, state.shapes, strict=True):
+        size = math.prod(shape)
+        value = from_flat(values[offset : offset + size], shape, kind_of(parameter))
+        _assign(parameter, value, parameter.device, parameter.dtype)
+        offset += size
+
+
 @contextmanager
 def module_rollback_ctx(
     module: Any,
@@ -222,11 +231,22 @@ def _rs_rollback(
                 "Native rollback requires an unchanged parameter layout; "
                 "support/shape-changing model updates cannot be restored from raw parameters."
             )
-        # A body may only have edited held Torch leaves. Push those edits first
-        # so that restoring the entry vector is an unambiguous native update.
-        _sync_native_parameters(module)
         if checkpoint:
-            values = list(module._rs.raw_parameters())
+            native_values = list(module._rs.raw_parameters())
+            values = list(native_values)
+            state = module.__dict__.get("_torch_parameter_state")
+            if state is not None:
+                leaf_values = state._values()
+                if leaf_values != state.leaf_values:
+                    if (
+                        module._rs.parameter_state_version != state.version
+                        and tuple(values) != state.raw
+                    ):
+                        raise RuntimeError(
+                            "Native GP parameters and Torch leaves were both modified since "
+                            "their last synchronization. Synchronize before native updates."
+                        )
+                    values = list(leaf_values)
             offset = 0
             for name, shape in layout:
                 size = math.prod(shape)
@@ -236,9 +256,39 @@ def _rs_rollback(
                         raise ValueError(
                             f"Checkpoint {name!r} requires {size} values, got {len(data)}."
                         )
+                    if any(not math.isfinite(v) for v in data):
+                        raise ValueError(f"Checkpoint {name!r} must contain finite values.")
                     values[offset : offset + size] = [float(v) for v in data]
                 offset += size
+            rejected = values if any(not math.isfinite(v) for v in values) else None
+            if rejected is not None:
+                # Keep invalid untracked edits pending for the caller to repair,
+                # while still restoring the tracked state and valid other edits.
+                values = [
+                    value if math.isfinite(value) else previous
+                    for value, previous in zip(values, native_values, strict=True)
+                ]
+            # Restore the desired state atomically before trying to commit any
+            # invalid tracked edits. Valid untracked pending edits remain in it.
             module._rs.set_raw_parameters(values)
+            if state is not None:
+                # A normal pull rejects simultaneous native and dirty-leaf
+                # changes. Clear only its pending state using the last synced
+                # leaf values; the pull below then copies the restored native
+                # vector into the same held leaves (including dtype rounding).
+                _copy_native_parameter_leaves(state, state.leaf_values)
+            _sync_native_parameters(module)
+            if rejected is not None:
+                if state is not None:
+                    _copy_native_parameter_leaves(state, rejected)
+                raise ValueError(
+                    "Native rollback cannot preserve non-finite edits to untracked parameters; "
+                    "tracked values were restored, but invalid untracked edits remain pending. "
+                    "Repair those edits or include the parameters in the checkpoint."
+                )
+        else:
+            # An explicitly empty/cleared checkpoint commits pending edits and
+            # retains the model's normal validation rules.
             _sync_native_parameters(module)
 
 

@@ -52,6 +52,29 @@ def _data(kind: str, m: int = 1, n: int = 12) -> tuple[object, object]:
 
 
 @pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("outputs,mean_batch", [(1, ()), (2, ()), (2, (2,))])
+def test_zero_mean_supported_batch_shapes(kind, outputs, mean_batch):
+    X, Y = _data(kind, m=outputs)
+    model = SingleTaskVariationalGP(
+        X, Y, inducing_points=3, mean_module=ZeroMean(batch_shape=mean_batch)
+    )
+    output = model.model(X)
+    assert output.batch_shape == ()
+    assert shape(output.mean) == ((12, outputs) if outputs > 1 else (12,))
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("outputs", [1, 2])
+@pytest.mark.parametrize("mean_batch", [(1,), (3,), (2, 1)])
+def test_zero_mean_rejects_extra_model_batch_dimensions(kind, outputs, mean_batch):
+    X, Y = _data(kind, m=outputs)
+    with pytest.raises(UnsupportedError, match="additional variational model batch"):
+        SingleTaskVariationalGP(
+            X, Y, inducing_points=3, mean_module=ZeroMean(batch_shape=mean_batch)
+        )
+
+
+@pytest.mark.parametrize("kind", KINDS)
 def test_array_kinds_posterior_and_elbo(kind: str) -> None:
     X, Y = _data(kind)
     model = SingleTaskVariationalGP(X, Y, inducing_points=4)

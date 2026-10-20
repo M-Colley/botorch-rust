@@ -114,7 +114,9 @@ The regression test uses that workaround for a valid numerical comparison.
 
 Current limitations are explicit errors: batched training data, learned input
 transforms such as `Warp`, non-Gaussian variational likelihoods, and variational
-strategies other than the whitened Cholesky family. Higher-order GP latent
+strategies other than the whitened Cholesky family. `ZeroMean` accepts an empty
+batch shape or the independent-output augmentation shape; extra variational
+model batch dimensions are explicitly rejected. Higher-order GP latent
 initialization with a GP prior currently requires one coordinate per output
 dimension. Higher-order fantasy models support unbatched query inputs; repeated
 conditioning of an existing fantasy batch and posterior output selection are

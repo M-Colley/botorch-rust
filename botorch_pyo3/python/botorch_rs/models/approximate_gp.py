@@ -436,6 +436,11 @@ class _SingleTaskVariationalGP:
             raise UnsupportedError("Only a ConstantMean or ZeroMean `mean_module` is supported.")
         elif isinstance(mean_module, ConstantMean):
             _check_module_batch_shape(mean_module, aug, "mean_module")
+        elif tuple(mean_module.batch_shape) not in ((), aug):
+            raise UnsupportedError(
+                f"ZeroMean batch_shape must be () or the independent-output shape {aug}; "
+                "additional variational model batch dimensions are not supported."
+            )
         self.mean_module: Mean = mean_module
         self.covar_module: Kernel = covar_module
         self._num_outputs = num_outputs

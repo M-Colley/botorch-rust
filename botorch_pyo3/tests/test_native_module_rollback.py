@@ -103,6 +103,96 @@ def test_native_rollback_syncs_pending_entry_and_in_context_leaf_edits(family, p
 
 
 @pytest.mark.parametrize("family", ["exact", "variational"])
+@pytest.mark.parametrize("parameter", ["raw_constant", "raw_lengthscale"])
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -float("inf")])
+@pytest.mark.parametrize("exception", [False, True])
+def test_native_rollback_restores_invalid_tracked_leaves_and_preserves_body_exception(
+    family, parameter, invalid, exception
+):
+    model, _ = make_model(family, 1)
+    leaves = dict(model.named_parameters())
+    name = next(name for name in leaves if name.endswith(parameter))
+    held = leaves[name]
+    held.requires_grad_(False)
+    before = raw(model)
+
+    def body():
+        with torch.no_grad():
+            held.fill_(invalid)
+        if exception:
+            raise RuntimeError("original body failure")
+
+    if exception:
+        with pytest.raises(RuntimeError, match="original body failure"), module_rollback_ctx(model):
+            body()
+    else:
+        with module_rollback_ctx(model):
+            body()
+    assert raw(model) == before
+    assert not held.requires_grad
+    check_leaves(model, leaves)
+
+
+@pytest.mark.parametrize("family", ["exact", "variational"])
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf")])
+@pytest.mark.parametrize("exception", [False, True])
+def test_partial_native_rollback_keeps_valid_untracked_pending_leaf_edits(
+    family, invalid, exception
+):
+    model, _ = make_model(family, 1)
+    leaves = dict(model.named_parameters())
+    mean_name = next(name for name in leaves if name.endswith("raw_constant"))
+    noise_name = next(name for name in leaves if name.endswith("raw_noise"))
+    mean, noise = leaves[mean_name], leaves[noise_name]
+    expected_mean, expected_noise = mean.detach().clone(), noise.detach().clone() + 0.3
+
+    def body():
+        with torch.no_grad():
+            mean.fill_(invalid)
+            noise.add_(0.3)
+        if exception:
+            raise RuntimeError("original body failure")
+
+    if exception:
+        with (
+            pytest.raises(RuntimeError, match="original body failure"),
+            module_rollback_ctx(model, name_filter=lambda name: name == mean_name),
+        ):
+            body()
+    else:
+        with module_rollback_ctx(model, name_filter=lambda name: name == mean_name):
+            body()
+    torch.testing.assert_close(mean, expected_mean, rtol=0, atol=0)
+    torch.testing.assert_close(noise, expected_noise, rtol=0, atol=0)
+    check_leaves(model, leaves)
+
+
+@pytest.mark.parametrize("family", ["exact", "variational"])
+def test_partial_native_rollback_rejects_nonfinite_untracked_pending_edits_explicitly(family):
+    model, _ = make_model(family, 1)
+    leaves = dict(model.named_parameters())
+    mean_name = next(name for name in leaves if name.endswith("raw_constant"))
+    noise_name = next(name for name in leaves if name.endswith("raw_noise"))
+    before = raw(model)
+    expected_mean = leaves[mean_name].detach().clone()
+    expected_noise = leaves[noise_name].detach().clone()
+    with pytest.raises(ValueError, match="non-finite edits to untracked parameters"):
+        with module_rollback_ctx(model, name_filter=lambda name: name == mean_name):
+            inner(model, family).mean_module.constant = 0.7
+            with torch.no_grad():
+                leaves[mean_name].fill_(float("nan"))
+                leaves[noise_name].fill_(float("inf"))
+    # Restore the tracked native and held values even when the untracked edit
+    # cannot commit. Preserve the pending invalid value for the caller to repair.
+    assert raw(model) == before
+    torch.testing.assert_close(leaves[mean_name], expected_mean, rtol=0, atol=0)
+    assert torch.isinf(leaves[noise_name]).all()
+    with torch.no_grad():
+        leaves[noise_name].copy_(expected_noise)
+    check_leaves(model, leaves)
+
+
+@pytest.mark.parametrize("family", ["exact", "variational"])
 @pytest.mark.parametrize("kind", KINDS)
 def test_native_rollback_filter_and_explicit_checkpoint_values(family, kind):
     model, _ = make_model(family, 1, kind=kind)

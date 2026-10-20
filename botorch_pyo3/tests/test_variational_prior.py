@@ -123,6 +123,27 @@ def test_prior_true_normalizes_one_dimensional_inputs_like_gpytorch():
     torch.testing.assert_close(actual.covariance_matrix, expected.covariance_matrix)
 
 
+@pytest.mark.parametrize("outputs,mean_batch", [(1, ()), (2, ()), (2, (2,))])
+def test_supported_zero_mean_shapes_keep_the_official_variational_law(outputs, mean_batch):
+    from botorch.models import SingleTaskVariationalGP as BtSVGP
+    from gpytorch.means import ZeroMean as BtZeroMean
+
+    from botorch_rs.means import ZeroMean
+
+    x = torch.tensor([[0.1], [0.3], [0.6], [0.9]], dtype=torch.float64)
+    y = torch.cat([torch.sin((3 + t) * x) for t in range(outputs)], dim=-1)
+    reference = BtSVGP(x, y, inducing_points=x[:2], mean_module=BtZeroMean(batch_shape=mean_batch))
+    model = SingleTaskVariationalGP(
+        x, y, inducing_points=x[:2], mean_module=ZeroMean(batch_shape=mean_batch)
+    )
+    set_random_parameters(reference, model, 19)
+    actual, expected = model.model(x), reference.model(x)
+    assert actual.batch_shape == tuple(expected.batch_shape)
+    assert actual.event_shape == tuple(expected.event_shape)
+    torch.testing.assert_close(actual.mean, expected.mean)
+    torch.testing.assert_close(actual.covariance_matrix, expected.covariance_matrix)
+
+
 @pytest.mark.parametrize("case", [CASES[7], CASES[8]], ids=lambda case: case.name)
 def test_inner_prior_uses_supplied_transformed_space_and_outer_forward_stays_variational(case):
     reference, model, x, _ = build_pair(case)

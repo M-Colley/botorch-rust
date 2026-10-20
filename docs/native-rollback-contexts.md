@@ -8,6 +8,16 @@ exits. Restoration updates held parameter leaves in place and preserves their
 identities and trainability flags. Saved native loss graphs retain their own
 source snapshots.
 
+Tracked pending leaf edits may contain NaN or infinity: their checkpoint values
+replace those edits before native validation, so restoration still completes and
+an original exception from the body is preserved. With a partial checkpoint,
+valid pending edits to untracked parameters are committed alongside the restored
+tracked values. Non-finite untracked edits cannot be preserved in native storage;
+they raise an explicit validation error after restoring tracked values and
+committing valid untracked edits. Invalid untracked leaf edits remain pending
+for the caller to repair or include in a larger checkpoint. Checkpoint values
+themselves must be finite.
+
 `name_filter` limits the saved parameters. Passing an explicit checkpoint uses
 those values, and changes to its `TensorCheckpoint.values` determine the restored
 state. Passing an empty checkpoint or clearing the yielded checkpoint commits
