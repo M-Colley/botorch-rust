@@ -54,7 +54,8 @@ impl Model for At<'_> {
                 let parts = m
                     .models()
                     .iter()
-                    .map(|g| g.batch_element(self.batch))
+                    .enumerate()
+                    .map(|(i, g)| g.batch_element(m.child_batch_index(i, self.batch)?))
                     .collect::<Result<Vec<_>>>()?;
                 ModelListGP::new(parts)?.joint_posterior_with_grad(x)
             }
@@ -87,10 +88,10 @@ impl Model for At<'_> {
                 let mut gradient = Matrix::zeros(rows.len(), self.dim());
                 let q = x.nrows() * self.points_per_input();
                 let mut offset = 0;
-                for child in m.models() {
+                for (i, child) in m.models().iter().enumerate() {
                     let size = q * child.num_outputs();
                     gradient += child.joint_posterior_vjp_at(
-                        self.batch,
+                        m.child_batch_index(i, self.batch)?,
                         x,
                         rows.clone(),
                         &mean.rows(offset, size).into_owned(),
@@ -291,12 +292,78 @@ fn make_view(
     }
 }
 
+/// Full parent Gaussian bars split into independent child blocks. Queries are
+/// expanded to the parent's output batch shape before each child's pullback;
+/// otherwise dimensions introduced only by another child would be lost.
+fn source_parameter_vjp(
+    source: &ModelRef,
+    x: &Array,
+    mean: &Array,
+    covariance: &Array,
+    noisy: bool,
+) -> PyResult<ArrayBuf> {
+    let list = match source {
+        ModelRef::Gp(gp) => return parameter_grad::parameter_vjp(gp, x, mean, covariance, noisy),
+        ModelRef::List(list) => list,
+        ModelRef::Dyn(_) => {
+            return Err(unsupported(
+                "Parameter gradients require ordinary native GP children",
+            ))
+        }
+    };
+    let q = mean.1[mean.1.len() - 2];
+    let batch = &mean.1[..mean.1.len() - 2];
+    let nb = numel(batch);
+    let m = list.num_outputs();
+    let size = q * m;
+    let input_tail = &x.1[x.1.len() - 2..];
+    let expanded_shape = [batch, input_tail].concat();
+    let expanded = Array(
+        broadcast_to(&x.0, &x.1, &expanded_shape)
+            .ok_or_else(|| dimension_error("X does not broadcast to the joint posterior batch"))?,
+        expanded_shape,
+    );
+    let mut gradient = Vec::new();
+    let mut offset = 0;
+    for child in list.models() {
+        let child_m = child.num_outputs();
+        let child_size = q * child_m;
+        let mut ma = Vec::with_capacity(nb * child_size);
+        let mut ca = Vec::with_capacity(nb * child_size * child_size);
+        for b in 0..nb {
+            for p in 0..q {
+                for t in 0..child_m {
+                    ma.push(mean.0[b * size + p * m + offset + t]);
+                }
+            }
+            for i in 0..child_size {
+                for j in 0..child_size {
+                    ca.push(
+                        covariance.0[b * size * size + (offset * q + i) * size + offset * q + j],
+                    );
+                }
+            }
+        }
+        let result = parameter_grad::parameter_vjp(
+            child,
+            &expanded,
+            &Array(ma, [batch, &[q, child_m]].concat()),
+            &Array(ca, [batch, &[child_size, child_size]].concat()),
+            noisy,
+        )?;
+        gradient.extend_from_slice(&result.0);
+        offset += child_m;
+    }
+    let n = gradient.len();
+    Ok(ArrayBuf(gradient, vec![n]))
+}
+
 /// Lift exposed moment adjoints to the full source Gaussian, then use its
 /// analytic training-solve and kernel-parameter pullback. Selection,
 /// scalarization, nonlinear outcome moments, and clamps share the query path.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn moment_parameter_vjp(
-    gp: Arc<BatchedMultiOutputGP>,
+    model: ModelRef,
     x: &Array,
     adjoint: &Array,
     mode: &str,
@@ -305,7 +372,6 @@ pub(super) fn moment_parameter_vjp(
     transform: Option<TransformArg>,
     base: bool,
 ) -> PyResult<ArrayBuf> {
-    let model = ModelRef::Gp(gp.clone());
     let view = make_view(&model, output_indices, transform, base)?;
     check_dim(x, model.dim())?;
     let (xbatch, mats) = x.batches("X")?;
@@ -373,14 +439,14 @@ pub(super) fn moment_parameter_vjp(
     }
     let mean = Array(means, [bc.shape.as_slice(), &[q, m]].concat());
     let covariance = Array(covariances, [bc.shape.as_slice(), &[q * m, q * m]].concat());
-    parameter_grad::parameter_vjp(&gp, x, &mean, &covariance, observation_noise)
+    source_parameter_vjp(&model, x, &mean, &covariance, observation_noise)
 }
 
 /// Reparameterized sample parameter adjoints, reduced into original model
 /// elements after lifting the selected/scalarized sample distribution.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn sample_parameter_vjp(
-    gp: Arc<BatchedMultiOutputGP>,
+    model: ModelRef,
     x: &Array,
     normals: &Array,
     adjoint: &Array,
@@ -389,7 +455,6 @@ pub(super) fn sample_parameter_vjp(
     transform: Option<TransformArg>,
     base: bool,
 ) -> PyResult<ArrayBuf> {
-    let model = ModelRef::Gp(gp.clone());
     let view = make_view(&model, outputs, transform, base)?;
     check_dim(x, model.dim())?;
     let (xbatch, mats) = x.batches("X")?;
@@ -456,8 +521,8 @@ pub(super) fn sample_parameter_vjp(
             }
         }
     }
-    parameter_grad::parameter_vjp(
-        &gp,
+    source_parameter_vjp(
+        &model,
         x,
         &Array(means, [bc.shape.as_slice(), &[q, m]].concat()),
         &Array(covariances, [bc.shape.as_slice(), &[q * m, q * m]].concat()),

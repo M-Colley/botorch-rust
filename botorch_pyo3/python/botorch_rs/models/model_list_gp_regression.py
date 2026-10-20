@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import to_flat
+from botorch_rs._arrays import broadcast_shapes, to_flat
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.likelihoods import LikelihoodList
 from botorch_rs.models.gp_regression import SingleTaskGP
@@ -53,11 +53,8 @@ class ModelListGP(ModelListGPyTorchModel):
                 f"All sub-models must have the same input dimension, got {sorted(dims)}."
             )
         shapes = {m.batch_shape for m in gp_models}
-        if len(shapes) > 1:
-            raise NotImplementedError(
-                "`ModelListGP.batch_shape` is only supported if all constituent models have "
-                "the same `batch_shape`."
-            )
+        if broadcast_shapes(*shapes) is None:
+            raise NotImplementedError("Component model batch shapes must be broadcastable.")
         self.models: list[Any] = list(gp_models)
         self.likelihood = LikelihoodList(*[m.likelihood for m in gp_models])
         self.training = True
@@ -240,14 +237,30 @@ class ModelListGP(ModelListGPyTorchModel):
 
     # -- parameters --------------------------------------------------------
 
-    def named_parameters(self) -> Iterator[tuple[str, Any]]:
+    def named_parameters(
+        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
+    ) -> Iterator[tuple[str, Any]]:
         """``(name, raw value)`` of every hyperparameter (``models.<i>.<name>``)."""
+        if not recurse:
+            return
+        seen_models: set[int] = set()
+        # Keep snapshots alive as well: non-Torch descriptors are freshly
+        # allocated, so retaining only IDs could mistake allocator reuse for
+        # an actual shared parameter.
+        seen_parameters: dict[int, Any] = {}
         for i, m in enumerate(self.models):
+            if remove_duplicate and id(m) in seen_models:
+                continue
+            seen_models.add(id(m))
             for name, value in m.named_parameters():
-                yield f"models.{i}.{name}", value
+                if remove_duplicate and id(value) in seen_parameters:
+                    continue
+                seen_parameters[id(value)] = value
+                path = f"models.{i}.{name}"
+                yield f"{prefix}.{path}" if prefix else path, value
 
-    def parameters(self) -> Iterator[Any]:
-        for _, value in self.named_parameters():
+    def parameters(self, recurse: bool = True) -> Iterator[Any]:
+        for _, value in self.named_parameters(recurse=recurse):
             yield value
 
     def initialize(self, **kwargs: Any) -> ModelListGP:

@@ -1231,7 +1231,7 @@ impl PySingleTaskGP {
         let model = self.snapshot();
         threads::run(py, || {
             posterior_autograd::sample_parameter_vjp(
-                model,
+                ModelRef::Gp(model),
                 &x,
                 &base_samples,
                 &adjoint,
@@ -1259,7 +1259,7 @@ impl PySingleTaskGP {
         let model = self.snapshot();
         threads::run(py, || {
             posterior_autograd::moment_parameter_vjp(
-                model,
+                ModelRef::Gp(model),
                 &x,
                 &adjoint,
                 mode,
@@ -1683,6 +1683,60 @@ pub struct PyModelListGP {
 
 #[pymethods]
 impl PyModelListGP {
+    #[pyo3(signature = (x, adjoint, mode, observation_noise=false, output_indices=None, transform=None, base=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn posterior_moment_parameter_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        adjoint: Array,
+        mode: &str,
+        observation_noise: bool,
+        output_indices: Option<Vec<usize>>,
+        transform: Option<TransformArg>,
+        base: bool,
+    ) -> PyResult<ArrayBuf> {
+        threads::run(py, || {
+            posterior_autograd::moment_parameter_vjp(
+                ModelRef::List(self.inner.clone()),
+                &x,
+                &adjoint,
+                mode,
+                observation_noise,
+                output_indices,
+                transform,
+                base,
+            )
+        })
+    }
+
+    #[pyo3(signature = (x, base_samples, adjoint, observation_noise=false, output_indices=None, transform=None, base=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn posterior_samples_parameter_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        base_samples: Array,
+        adjoint: Array,
+        observation_noise: bool,
+        output_indices: Option<Vec<usize>>,
+        transform: Option<TransformArg>,
+        base: bool,
+    ) -> PyResult<ArrayBuf> {
+        threads::run(py, || {
+            posterior_autograd::sample_parameter_vjp(
+                ModelRef::List(self.inner.clone()),
+                &x,
+                &base_samples,
+                &adjoint,
+                observation_noise,
+                output_indices,
+                transform,
+                base,
+            )
+        })
+    }
+
     /// A list of the current snapshots of `models`.
     #[new]
     fn new(models: Vec<PyRef<'_, PySingleTaskGP>>) -> PyResult<Self> {

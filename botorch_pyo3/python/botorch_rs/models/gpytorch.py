@@ -236,6 +236,29 @@ class ModelListGPyTorchModel(ModelList, GPyTorchModel):
 
         return all(isinstance(m, SingleTaskGP) for m in self.models)
 
+    def _sync_torch_parameters(self) -> Any:
+        """Collect actual child leaves; native list pullbacks preserve order."""
+        from types import SimpleNamespace
+
+        from botorch_rs.models.gp_regression import SingleTaskGP
+
+        entries: list[tuple[str, Any]] = []
+        error: str | None = None
+        for i, model in enumerate(self.models):
+            sync = getattr(model, "_sync_torch_parameters", None)
+            state = None if sync is None else sync()
+            if state is None or type(model) is not SingleTaskGP:
+                error = (
+                    "Joint ModelListGP parameter gradients require every child to be an "
+                    "ordinary CPU Torch SingleTaskGP. Unsupported child: "
+                    f"models.{i} ({type(model).__name__})."
+                )
+                if state is None:
+                    continue
+            entries.extend((f"models.{i}.{name}", leaf) for name, leaf in state.entries)
+            error = error or state.gradient_error
+        return SimpleNamespace(entries=entries, gradient_error=error) if entries else None
+
     def _rs_list(self) -> Any:
         """A list of the current snapshots of the sub-models (a generic list
         of model handles if a sub-model is not a ``SingleTaskGP``)."""
@@ -243,10 +266,6 @@ class ModelListGPyTorchModel(ModelList, GPyTorchModel):
             sync = getattr(model, "_sync_torch_parameters", None)
             if sync is not None:
                 sync()
-        if len({tuple(m.batch_shape) for m in self.models}) > 1:
-            raise UnsupportedError(
-                "Native joint GP lists require a common model batch shape; use ModelList for differing batches."
-            )
         if self._all_single_task:
             return _rs.ModelListGP([m._rs for m in self.models])
         return _rs.Model.from_models([m._acquisition_model(None) for m in self.models])
@@ -325,6 +344,7 @@ class ModelListGPyTorchModel(ModelList, GPyTorchModel):
             transform=transform,
             points_per_input=rs_list.points_per_input,
             query_inputs=X,
+            parameter_owner=self,
         )
 
     def _transformed_outputs(self) -> list[bool]:

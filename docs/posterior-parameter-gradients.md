@@ -52,11 +52,14 @@ change future posteriors, while an earlier graph differentiates its original
 law into the same parameter leaves. NumPy/list queries preserve their array
 types, and `torch.no_grad()` suppresses parameter graph attachment.
 
-This checkpoint attaches automatic parameter graphs to posteriors of the
-concrete ordinary `SingleTaskGP`. Specialized GP subclasses and joint
-`ModelListGP` Gaussian posteriors retain their established query-gradient
-interfaces. Containers expose child parameters, which can be persistent
-leaves when the children are ordinary Torch `SingleTaskGP`s. Sparse-outlier likelihood
+Automatic parameter graphs attach to posteriors of concrete ordinary
+`SingleTaskGP`s and joint Gaussian `ModelListGP` posteriors whose children
+are ordinary CPU Torch `SingleTaskGP`s. Joint lists support different training
+sets, independent multioutput children, output selection/scalarization and
+broadcast child batch shapes. See `joint-model-list-autograd.md` for the
+child-block pullback and corrected official reference comparisons.
+Specialized GP subclasses retain their established query-gradient interfaces.
+Containers expose their actual child parameters. Sparse-outlier likelihood
 parameters and conditioned input snapshots that do not match the stored
 input-transform program remain explicit unsupported native pullbacks.
 Sample backward reuses the native covariance-root and outcome-transform

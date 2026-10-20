@@ -1,0 +1,12 @@
+diff --git a/botorch/utils/multitask.py b/botorch/utils/multitask.py
+--- a/botorch/utils/multitask.py
++++ b/botorch/utils/multitask.py
+@@ -22,7 +22,7 @@ def separate_mtmvn(mvn: MultitaskMultivariateNormal) -> list[MultivariateNormal]:
+     are preserved, while covariance across task are dropped.
+     """
+     # T150340766 Upstream as a class method on gpytorch MultitaskMultivariateNormal.
+-    full_covar = mvn.lazy_covariance_matrix
++    full_covar = mvn.covariance_matrix
+     num_data, num_tasks = mvn.mean.shape[-2:]
+ 
+     mvns = []

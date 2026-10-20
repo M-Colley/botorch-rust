@@ -589,6 +589,26 @@ class SingleTaskGP:
     ) -> tuple[float, int, int, str, str, int, list[ElementFit]]: ...
 
 class ModelListGP:
+    def posterior_moment_parameter_vjp(
+        self,
+        x: Array,
+        adjoint: Array,
+        mode: str,
+        observation_noise: bool = False,
+        output_indices: list[int] | None = None,
+        transform: tuple[list[float], float] | None = None,
+        base: bool = False,
+    ) -> ArrayBuf: ...
+    def posterior_samples_parameter_vjp(
+        self,
+        x: Array,
+        base_samples: Array,
+        adjoint: Array,
+        observation_noise: bool = False,
+        output_indices: list[int] | None = None,
+        transform: tuple[list[float], float] | None = None,
+        base: bool = False,
+    ) -> ArrayBuf: ...
     def __init__(self, models: Sequence[SingleTaskGP]) -> None: ...
     @property
     def transformed_outputs(self) -> list[bool]: ...
