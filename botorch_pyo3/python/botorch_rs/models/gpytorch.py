@@ -239,6 +239,10 @@ class ModelListGPyTorchModel(ModelList, GPyTorchModel):
     def _rs_list(self) -> Any:
         """A list of the current snapshots of the sub-models (a generic list
         of model handles if a sub-model is not a ``SingleTaskGP``)."""
+        for model in self.models:
+            sync = getattr(model, "_sync_torch_parameters", None)
+            if sync is not None:
+                sync()
         if len({tuple(m.batch_shape) for m in self.models}) > 1:
             raise UnsupportedError(
                 "Native joint GP lists require a common model batch shape; use ModelList for differing batches."

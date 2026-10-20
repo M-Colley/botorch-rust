@@ -271,6 +271,18 @@ def test_derived_models_push_pending_torch_parameter_edits(operation):
     )
 
 
+def test_gp_list_acquisition_snapshots_push_child_leaf_edits():
+    from botorch_rs.models import ModelListGP
+
+    first, _ = model_pair()
+    second, _ = model_pair()
+    combined = ModelListGP(first, second)
+    with torch.no_grad():
+        first.mean_module.raw_constant.fill_(0.45)
+    combined._acquisition_model()
+    assert first._rs.raw_parameters()[1] == pytest.approx(0.45)
+
+
 def test_sample_query_and_parameter_gradients_are_both_available():
     model, _ = model_pair()
     query = torch.tensor([[0.2, 0.6], [0.7, 0.3]], dtype=torch.double, requires_grad=True)
