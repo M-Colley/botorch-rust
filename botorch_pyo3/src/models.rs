@@ -1880,7 +1880,28 @@ impl PyModel {
         model: PyRef<'_, PySingleTaskGP>,
         transform: Option<TransformArg>,
     ) -> PyResult<Self> {
-        let m: Arc<dyn Model> = model.snapshot();
+        let snapshot = model.snapshot();
+        let m: Arc<dyn Model> = if snapshot.batch_shape().is_empty() {
+            snapshot
+        } else {
+            // Preserve native member inference (including transforms and
+            // cached training solves) behind the generic Model protocol.
+            let members = (0..snapshot.batch_size())
+                .map(|b| {
+                    snapshot
+                        .batch_element(b)
+                        .map(|m| Arc::new(m) as Arc<dyn Model>)
+                })
+                .collect::<botorch_core::Result<Vec<_>>>()
+                .into_py_result()?;
+            Arc::new(
+                botorch_core::models::model_batch::ModelBatch::new(
+                    members,
+                    snapshot.batch_shape().to_vec(),
+                )
+                .into_py_result()?,
+            )
+        };
         Ok(Self {
             inner: with_transform(m, transform)?,
         })

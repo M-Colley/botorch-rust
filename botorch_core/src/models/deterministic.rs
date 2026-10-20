@@ -30,17 +30,47 @@ use crate::{Matrix, Vector};
 #[derive(Clone, Debug)]
 pub struct PosteriorMeanModel {
     model: Arc<dyn Model>,
+    member: Option<usize>,
+    members: Vec<Self>,
 }
 
 impl PosteriorMeanModel {
     /// The posterior mean of `model`.
     pub fn new(model: Arc<dyn Model>) -> Self {
-        Self { model }
+        // A child retains the original immutable snapshot and resolves just
+        // its selected member. No training state or inference cache is copied.
+        let count: usize = model.batch_shape().iter().product();
+        let members = if !model.batch_shape().is_empty()
+            && (0..count).all(|b| model.batch_element(b).is_some())
+        {
+            (0..count)
+                .map(|b| Self {
+                    model: Arc::clone(&model),
+                    member: Some(b),
+                    members: Vec::new(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Self {
+            model,
+            member: None,
+            members,
+        }
     }
 
     /// The wrapped model.
     pub fn model(&self) -> &Arc<dyn Model> {
         &self.model
+    }
+
+    fn source(&self) -> &dyn Model {
+        self.member.map_or(self.model.as_ref(), |b| {
+            self.model
+                .batch_element(b)
+                .expect("validated member of an immutable model snapshot")
+        })
     }
 }
 
@@ -61,19 +91,27 @@ fn point_mass_grad(mut g: JointPosteriorGrad) -> JointPosteriorGrad {
 
 impl Model for PosteriorMeanModel {
     fn dim(&self) -> usize {
-        self.model.dim()
+        self.source().dim()
     }
 
     fn num_outputs(&self) -> usize {
-        self.model.num_outputs()
+        self.source().num_outputs()
     }
 
     fn batch_shape(&self) -> &[usize] {
-        self.model.batch_shape()
+        if self.member.is_some() {
+            &[]
+        } else {
+            self.model.batch_shape()
+        }
+    }
+
+    fn batch_element(&self, b: usize) -> Option<&dyn Model> {
+        self.members.get(b).map(|m| m as &dyn Model)
     }
 
     fn points_per_input(&self) -> usize {
-        self.model.points_per_input()
+        self.source().points_per_input()
     }
 
     fn is_deterministic(&self) -> bool {
@@ -83,11 +121,11 @@ impl Model for PosteriorMeanModel {
     /// The wrapped model's posterior mean with a zero covariance;
     /// `observation_noise` is ignored, as by BoTorch's ensemble models.
     fn posterior(&self, x: &Matrix, _observation_noise: bool) -> Result<Posterior> {
-        Ok(point_mass(self.model.posterior(x, false)?))
+        Ok(point_mass(self.source().posterior(x, false)?))
     }
 
     fn joint_posterior_with_grad(&self, x: &Matrix) -> Result<JointPosteriorGrad> {
-        Ok(point_mass_grad(self.model.joint_posterior_with_grad(x)?))
+        Ok(point_mass_grad(self.source().joint_posterior_with_grad(x)?))
     }
 
     /// The vector-Jacobian product of the mean (the covariance is constant).
@@ -107,17 +145,18 @@ impl Model for PosteriorMeanModel {
             self.points_per_input(),
         )?;
         let zero = Matrix::zeros(covariance_adjoint.nrows(), covariance_adjoint.ncols());
-        self.model.joint_posterior_vjp(x, rows, mean_adjoint, &zero)
+        self.source()
+            .joint_posterior_vjp(x, rows, mean_adjoint, &zero)
     }
 
     fn point_posteriors(&self, x: &Matrix) -> Result<PointPosteriors> {
-        let mut pp = self.model.point_posteriors(x)?;
+        let mut pp = self.source().point_posteriors(x)?;
         pp.covariance.fill(0.0);
         Ok(pp)
     }
 
     fn point_posterior_with_grad(&self, x: &[f64]) -> Result<JointPosteriorGrad> {
-        Ok(point_mass_grad(self.model.point_posterior_with_grad(x)?))
+        Ok(point_mass_grad(self.source().point_posterior_with_grad(x)?))
     }
 }
 
@@ -486,6 +525,40 @@ mod tests {
         for j in 0..4 {
             let fwd = ma.dot(&g.dmean[j]);
             assert!((vjp[(j / 2, j % 2)] - fwd).abs() < 1e-12 * fwd.abs().max(1.0));
+        }
+    }
+
+    #[test]
+    fn posterior_mean_batch_members_reuse_native_predictions_and_derivatives() {
+        use crate::models::model_batch::ModelBatch;
+
+        let first = list();
+        let second = list();
+        let batch = Arc::new(ModelBatch::new(vec![first, second], vec![2, 1]).unwrap());
+        let mean = PosteriorMeanModel::new(batch.clone());
+        assert_eq!(mean.batch_shape(), &[2, 1]);
+        assert!(mean.batch_element(2).is_none());
+        let x = Matrix::from_row_slice(2, 2, &[0.3, 0.7, 0.8, 0.15]);
+        for b in 0..2 {
+            let member = mean.batch_element(b).unwrap();
+            let source = batch.batch_element(b).unwrap();
+            assert!(member.batch_shape().is_empty());
+            assert!(member.is_deterministic());
+            let expected = source.posterior(&x, false).unwrap();
+            let actual = member.posterior(&x, true).unwrap();
+            assert_eq!(actual.mean, expected.mean);
+            assert!(actual.covariance.iter().all(|&v| v == 0.0));
+            let native = source.joint_posterior_with_grad(&x).unwrap();
+            let derivative = member.joint_posterior_with_grad(&x).unwrap();
+            assert_eq!(derivative.dmean, native.dmean);
+            assert!(derivative.dcov.iter().all(|c| c.iter().all(|&v| v == 0.0)));
+            fd_check(member, &x);
+        }
+        // Nested mean wrappers retain the same row-major member selection.
+        let nested = PosteriorMeanModel::new(Arc::new(mean));
+        assert_eq!(nested.batch_shape(), &[2, 1]);
+        for b in 0..2 {
+            fd_check(nested.batch_element(b).unwrap(), &x);
         }
     }
 

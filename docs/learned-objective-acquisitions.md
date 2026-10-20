@@ -51,8 +51,9 @@ tests explicitly expand queries to `(4, 2)` before calling official code;
 Torch then folds the expansion adjoint to the original query. The native
 binding performs that symmetric broadcast directly.
 
-Native MC acquisitions also support native `PairwiseGP` preference training
-batches. Each
+Native MC acquisitions also support preference training batches for native
+`PairwiseGP` and `PosteriorMeanModel` utilities over native `PairwiseGP` or
+`SingleTaskGP`. Each
 candidate worker selects the corresponding native preference-model member
 using standard batch broadcasting. Its preference draws retain the joint
 covariance across q points and the expanded preference/outcome sample axes;
@@ -82,6 +83,13 @@ explicitly selected preference model. Batched deterministic wrappers whose
 native handle does not expose independent `batch_element` models remain
 unsupported, as do batched caller-defined deterministic utilities. Ordinary
 unbatched deterministic and caller-defined utilities remain supported.
+
+Native posterior-mean member views share the original immutable model
+snapshot. They retain the selected member's mean and its exact query VJP,
+with zero covariance and covariance derivatives. Generic batched
+`SingleTaskGP` handles now expose independent native members using their
+existing cached training solves; constructing this handle does not refit
+the model. Nested posterior-mean wrappers retain the same member mapping.
 
 ## Correcting the noisy-improvement cache law
 
