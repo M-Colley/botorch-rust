@@ -86,6 +86,8 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Port cosine float32 large-phase accuracy | Fixed in `4f1ad62`; CPU/CUDA regressions fail against old frozen binary and all 132 focused tensor cases pass with repair |
 | Port bounded Torch L-BFGS false stationary trial | Fixed in `4062e86`, included in port PR #1; isolated CPU/CUDA interior and boundary regressions pass |
 | Port rank-zero Index/PositiveIndex rejection | Fixed in `9a74f3f`, included in port PR #1; all 18 focused native/Tensor cases pass with the rebuilt library |
+| Port CUDA MAP SAAS factory converts metadata twice | Fixed in `5b32fd2`, included in [port PR #1](https://github.com/M-Colley/botorch-rust/pull/1); 106 focused MAP SAAS / core-kernel cases pass, including CUDA active columns and coupled prior derivatives |
+| Port Tensor validation and constant-batch restart diagnostics | Fixed in `6963a5c`, `01845f1` and `5867b1c`, included in [port PR #1](https://github.com/M-Colley/botorch-rust/pull/1); source-compatible constraint/fantasy width errors and warning categories/messages retain the existing numerical behavior |
 
 ## Retracted report
 
