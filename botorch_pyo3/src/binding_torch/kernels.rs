@@ -133,6 +133,9 @@ fn cosine<'py>(
     let period = tensor_parameter(torch, parameters, "period_length")?;
     let (a, b) = feature_batches(&x1.div(&period)?, &x2.div(&period)?, last)?;
     let squared = squared_distance(&a, &b, diag)?;
+    let small = squared.call_method1("lt", (1e-4,))?;
+    let near_zero =
+        squared.call_method1("masked_fill", (small.call_method0("logical_not")?, 0.0))?;
     // exp([[0,-pi²s],[1,0]])[0,0] = cos(pi sqrt(s)). Unlike sqrt's
     // usual clamp, this entire matrix function retains every derivative at s=0.
     let zeros = torch.call_method1("zeros_like", (&squared,))?;
@@ -142,18 +145,27 @@ fn cosine<'py>(
         (
             PyTuple::new(
                 torch.py(),
-                [zeros.clone(), squared.mul(-std::f64::consts::PI.powi(2))?],
+                [zeros.clone(), near_zero.mul(-std::f64::consts::PI.powi(2))?],
             )?,
             -1,
         ),
     )?;
     let row2 = torch.call_method1("stack", (PyTuple::new(torch.py(), [ones, zeros])?, -1))?;
     let matrix = torch.call_method1("stack", (PyTuple::new(torch.py(), [row1, row2])?, -2))?;
-    torch
+    let local = torch
         .getattr("linalg")?
         .call_method1("matrix_exp", (matrix,))?
         .call_method1("select", (-1, 0))?
-        .call_method1("select", (-1, 0))
+        .call_method1("select", (-1, 0))?;
+    // The ordinary expression is accurate for large phases in float32.
+    // Mask its square root's input first, so the unused branch is regular
+    // at coincident points and every derivative still comes from `local`.
+    let regular = squared
+        .call_method1("masked_fill", (&small, 1.0))?
+        .call_method0("sqrt")?
+        .mul(std::f64::consts::PI)?
+        .call_method0("cos")?;
+    torch.call_method1("where", (small, local, regular))
 }
 
 fn dot_kernel<'py>(

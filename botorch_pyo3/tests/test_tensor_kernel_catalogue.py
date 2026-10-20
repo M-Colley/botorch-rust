@@ -119,6 +119,41 @@ def test_tensor_kernels_values_parameters_query_and_hvp_against_gpytorch(
 
 
 @pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_cosine_large_phase_accuracy_and_higher_derivatives(device, dtype):
+    x = torch.tensor(
+        [[4.0, 1.0], [2.0, 2.0], [8.0, 0.0]],
+        device=device,
+        dtype=dtype,
+        requires_grad=True,
+    )
+    z = torch.tensor(
+        [[0.0, 0.0], [2.0, 1.0], [1.0, 0.0]],
+        device=device,
+        dtype=dtype,
+        requires_grad=True,
+    )
+    period = torch.ones(1, 1, device=device, dtype=dtype, requires_grad=True)
+    result = native.tensor_kernel("cosine", x, z, parameters={"period_length": period})
+    distance = ((x.unsqueeze(-2) - z.unsqueeze(-3)) / period).norm(dim=-1)
+    expected = (math.pi * distance).cos()
+    tolerance = 3e-6 if dtype == torch.float32 else 3e-12
+    torch.testing.assert_close(result, expected, rtol=tolerance, atol=tolerance)
+    variables = (x, z, period)
+    actual_grad = torch.autograd.grad(result.sum(), variables, create_graph=True)
+    expected_grad = torch.autograd.grad(expected.sum(), variables, create_graph=True)
+    actual_hvp = torch.autograd.grad(sum(g.square().sum() for g in actual_grad), variables)
+    expected_hvp = torch.autograd.grad(sum(g.square().sum() for g in expected_grad), variables)
+    for actual_value, expected_value in zip(actual_hvp, expected_hvp, strict=True):
+        torch.testing.assert_close(
+            actual_value,
+            expected_value,
+            rtol=4e-5 if dtype == torch.float32 else 2e-10,
+            atol=2e-3 if dtype == torch.float32 else 2e-9,
+        )
+
+
+@pytest.mark.parametrize("device", DEVICES)
 def test_cosine_all_derivative_orders_at_coincident_points(device):
     point = torch.zeros(1, 1, device=device, dtype=torch.double, requires_grad=True)
     period = torch.ones(1, 1, device=device, dtype=torch.double)

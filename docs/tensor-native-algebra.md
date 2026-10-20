@@ -64,6 +64,14 @@ Tests verify its first six derivatives at zero. This costs more than a direct
 cosine evaluation and is not a performance claim for this kernel. Pairwise
 distance arithmetic also uses memory proportional to the coordinate dimension.
 
+The entire-function branch is now restricted to squared distances below `1e-4`.
+Away from zero, a separately masked square root and ordinary cosine preserve
+large-phase float32 accuracy. The previous all-matrix-exponential calculation
+had errors up to `2.92e-5` in a three-point example on both CPU and CUDA.
+The new regression fails against the frozen `52c03c6` binary and passes with
+the repair, including first/sixth derivatives at zero and mixed Hessian-vector
+products away from zero. The focused native tensor suites pass 132 cases.
+
 Tests exercise CPU and the available NVIDIA RTX 4050 CUDA device, float32 and
 float64, arbitrary broadcast batches, noncontiguous inputs, scalar and ARD
 parameters, numerical gradient checks, second derivatives, and likelihood and
@@ -99,3 +107,10 @@ return (x1 @ x2.transpose(-2, -1) + offset).pow(self.power)
 The tensor implementation aligns the offset correctly. Its regression oracle
 stacks the actual reference kernel evaluated separately on each feature; it
 does not skip the affected configurations.
+
+Upstream repairs are filed as
+[GPyTorch #2814](https://github.com/cornellius-gp/gpytorch/pull/2814) for polynomial
+feature offsets and
+[GPyTorch #2816](https://github.com/cornellius-gp/gpytorch/pull/2816) for periodic
+and cosine higher derivatives. Their upstream regressions fail on unchanged
+main and pass with the proposed fixes.
