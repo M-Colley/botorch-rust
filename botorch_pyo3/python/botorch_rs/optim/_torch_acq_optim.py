@@ -557,6 +557,12 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
         "alpha",
         "largest",
         "sorted",
+        "n_burnin",
+        "n_thinning",
+        "sample_around_best",
+        "sample_around_best_sigma",
+        "sample_around_best_subset_sigma",
+        "sample_around_best_prob_perturb",
     }
     if args["ic_generator"] is None:
         unsupported = (options.keys() & _INIT_KEYS) - init_keys
@@ -579,13 +585,9 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
             **args["ic_gen_kwargs"],
         )
     elif initial is None:
-        if (
-            args["inequality_constraints"]
-            or args["equality_constraints"]
-            or args["nonlinear_inequality_constraints"]
-        ):
+        if args["nonlinear_inequality_constraints"]:
             raise UnsupportedError(
-                "Constrained Torch optimization currently requires feasible batch_initial_conditions or an ic_generator."
+                "Nonlinear constrained Torch optimization requires feasible batch_initial_conditions or an ic_generator."
             )
         raw = args["raw_samples"]
         if raw is None or raw < restarts:
@@ -595,7 +597,15 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
         from botorch_rs.optim._torch_acq_initializers import gen_initial_conditions
 
         initial = gen_initial_conditions(
-            acquisition, bounds, augmented, restarts, raw, args["fixed_features"], options
+            acquisition,
+            bounds,
+            augmented,
+            restarts,
+            raw,
+            args["fixed_features"],
+            options,
+            inequality_constraints=args["inequality_constraints"],
+            equality_constraints=args["equality_constraints"],
         )
     initial = initial.to(bounds)
     from botorch_rs.optim._torch_acq_initializers import acquisition_batch_shape

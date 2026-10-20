@@ -192,6 +192,8 @@ def gen_initial_conditions(
     options: Mapping[str, Any],
     raw_generator: Any = None,
     fixed_X_fantasies: Any = None,
+    inequality_constraints: Any = None,
+    equality_constraints: Any = None,
 ) -> Tensor:
     """Generate Sobol candidates and apply the reference scalar restart heuristic."""
     from botorch_rs.optim._torch_acq_optim import _fixed_values, fix_features
@@ -211,6 +213,10 @@ def gen_initial_conditions(
         or bool((bounds[0] > bounds[1]).any())
     ):
         raise ValueError("Initial condition bounds must be finite ordered 2 x d Tensors.")
+    if options.get("sample_around_best") and equality_constraints:
+        raise UnsupportedError("Sample-around-best is not supported with equality constraints.")
+    if options.get("sample_around_best") and raw_generator is not None:
+        raise UnsupportedError("Sample-around-best is not supported with a raw generator.")
     for attempt in range(4):
         current_seed = None if seed is None else int(seed) + attempt
         count = raw_samples * (attempt + 1)
@@ -220,11 +226,27 @@ def gen_initial_conditions(
             if current_seed is None
             else torch.Generator(device=bounds.device).manual_seed(current_seed)
         )
+        constrained = bool(inequality_constraints or equality_constraints)
         if raw_generator is not None:
             samples = raw_generator(count, q, current_seed)
             if not isinstance(samples, Tensor) or samples.shape != (count, q, bounds.shape[-1]):
                 raise ValueError("A raw generator must return a raw_samples x q x d Tensor.")
             samples = samples.to(bounds)
+            uniform = None
+        elif constrained:
+            from botorch_rs.optim._torch_initialization_sampling import sample_polytope
+
+            samples = sample_polytope(
+                count,
+                q,
+                bounds,
+                n_burnin=options.get("n_burnin", 10000),
+                n_thinning=options.get("n_thinning", 32),
+                seed=current_seed,
+                inequality_constraints=inequality_constraints,
+                equality_constraints=equality_constraints,
+                fixed_features=fixed_features,
+            )
             uniform = None
         elif dimension <= torch.quasirandom.SobolEngine.MAXDIM:
             engine = torch.quasirandom.SobolEngine(dimension, scramble=True, seed=current_seed)
@@ -241,9 +263,24 @@ def gen_initial_conditions(
                 device=bounds.device,
                 generator=generator,
             )
-        if raw_generator is None:
+        if raw_generator is None and not constrained:
             assert uniform is not None
             samples = bounds[0] + (bounds[1] - bounds[0]) * uniform
+        if options.get("sample_around_best"):
+            from botorch_rs.optim._torch_initialization_sampling import around_best
+
+            extra = around_best(
+                acquisition,
+                count * q,
+                options.get("sample_around_best_sigma", 1e-3),
+                bounds,
+                subset_sigma=options.get("sample_around_best_subset_sigma", 1e-1),
+                prob_perturb=options.get("sample_around_best_prob_perturb"),
+                seed=current_seed,
+            )
+            if extra is not None:
+                samples = torch.cat((samples, extra.reshape(count, q, -1)), dim=0)
+                count = samples.shape[0]
         batch = acquisition_batch_shape(acquisition)
         if batch:
             samples = samples.reshape(count, *((1,) * len(batch)), q, -1).expand(
@@ -252,6 +289,15 @@ def gen_initial_conditions(
         samples = fix_features(
             samples, _fixed_values(samples, fixed_features, bounds[0], bounds[1])
         )
+        if constrained:
+            from botorch_rs.optim._torch_initialization_sampling import feasible_batches
+
+            samples = samples[
+                feasible_batches(samples, bounds, inequality_constraints, equality_constraints)
+            ]
+            count = samples.shape[0]
+            if count < restarts:
+                raise ValueError("Fewer feasible raw initial conditions than requested restarts.")
         if fixed_X_fantasies is not None:
             fantasies = torch.as_tensor(fixed_X_fantasies, dtype=bounds.dtype, device=bounds.device)
             if fantasies.ndim != 2 or fantasies.shape[-1] != bounds.shape[-1]:

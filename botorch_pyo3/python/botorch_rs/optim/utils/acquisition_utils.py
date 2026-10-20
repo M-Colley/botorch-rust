@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Mapping
 from typing import Any
 
-from botorch_rs._arrays import from_flat, kind_of, to_flat
+from botorch_rs._arrays import from_flat, is_torch_tensor, kind_of, to_flat
 from botorch_rs.exceptions.errors import BotorchError, BotorchTensorDimensionError
 from botorch_rs.exceptions.warnings import BotorchWarning
 
@@ -160,7 +160,7 @@ def get_X_baseline(acq_function: Any) -> Any:
     X = None
     try:
         X = acq_function.X_baseline
-        if X is None or to_flat(X, "X_baseline")[1][0] == 0:
+        if X is None or (X.shape[0] if is_torch_tensor(X) else to_flat(X, "X_baseline")[1][0]) == 0:
             raise BotorchError
     except (BotorchError, AttributeError, IndexError):
         try:
@@ -174,6 +174,10 @@ def get_X_baseline(acq_function: Any) -> Any:
         except (BotorchError, AttributeError, IndexError, TypeError):
             warnings.warn("Failed to extract X_baseline.", BotorchWarning, stacklevel=2)
             return None
+    if is_torch_tensor(X):
+        while X.ndim > 2:
+            X = X[0]
+        return X
     kind = kind_of(X)
     data, shape = to_flat(X, "X_baseline")
     while len(shape) > 2:

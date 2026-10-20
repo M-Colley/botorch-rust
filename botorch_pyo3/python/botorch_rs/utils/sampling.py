@@ -668,6 +668,15 @@ def sample_truncated_normal_perturbations(
     Returns:
         An ``n_discrete_points x d`` array.
     """
+    if is_torch_tensor(X):
+        from botorch_rs.optim._torch_initialization_sampling import truncated_perturbations
+
+        generator = (
+            None
+            if seed is None
+            else sys.modules["torch"].Generator(device=X.device).manual_seed(seed)
+        )
+        return truncated_perturbations(X, n_discrete_points, sigma, bounds, qmc, generator)
     out = _rs.sample_truncated_normal_perturbations_py(
         to_flat(X, "X"),
         int(n_discrete_points),
@@ -702,6 +711,17 @@ def sample_perturbed_subset_dims(
     Returns:
         An ``n_discrete_points x d`` array.
     """
+    if is_torch_tensor(X):
+        from botorch_rs.optim._torch_initialization_sampling import subset_perturbations
+
+        generator = (
+            None
+            if seed is None
+            else sys.modules["torch"].Generator(device=X.device).manual_seed(seed)
+        )
+        return subset_perturbations(
+            X, bounds, n_discrete_points, sigma, qmc, prob_perturb, generator
+        )
     bshape = to_flat(bounds, "bounds")[1]
     xshape = to_flat(X, "X")[1]
     if len(bshape) != 2:

@@ -148,9 +148,6 @@ def test_high_level_initializer_options_follow_reference_formula(device, options
 @pytest.mark.parametrize("device", DEVICES)
 def test_unimplemented_optimizer_options_are_rejected(device):
     bounds = torch.tensor([[0.0], [1.0]], dtype=torch.double, device=device)
-    for options in ({"sample_around_best": True},):
-        with pytest.raises(UnsupportedError):
-            optimize_acqf(Quadratic(), bounds, 1, 2, 8, options=options)
     with pytest.raises(UnsupportedError, match="custom ic_generator"):
         optimize_acqf(Quadratic(), bounds, 1, 2, 8, unknown_initializer_argument=True)
     initial = bounds.new_full((2, 1, 1), 0.5)

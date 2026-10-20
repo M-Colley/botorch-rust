@@ -144,12 +144,6 @@ def gen_batch_initial_conditions(
     if getattr(acq_function, "_tensor_backend", None) == "torch":
         from botorch_rs.optim._torch_acq_initializers import gen_initial_conditions
 
-        if inequality_constraints or equality_constraints:
-            raise UnsupportedError("Device polytope initial conditions are not implemented yet.")
-        if options and options.get("sample_around_best"):
-            raise UnsupportedError(
-                "Device sample-around-best initial conditions are not implemented yet."
-            )
         return gen_initial_conditions(
             acq_function,
             bounds,
@@ -160,6 +154,8 @@ def gen_batch_initial_conditions(
             options or {},
             raw_generator=generator,
             fixed_X_fantasies=fixed_X_fantasies,
+            inequality_constraints=inequality_constraints,
+            equality_constraints=equality_constraints,
         )
     check_unsupported(generator=generator)
     if not isinstance(acq_function, AcquisitionFunction):
@@ -922,6 +918,19 @@ def sample_points_around_best(
         An ``n_discrete_points x d`` array, or ``None`` if no baseline points
         are found.
     """
+    if getattr(acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_initialization_sampling import around_best
+
+        return around_best(
+            acq_function,
+            n_discrete_points,
+            sigma,
+            bounds,
+            best_pct,
+            subset_sigma,
+            prob_perturb,
+            seed,
+        )
     kind = first_kind(bounds)
     bounds_flat = to_flat(bounds, "bounds")
     d = bounds_flat[1][-1]
@@ -955,6 +964,19 @@ def sample_q_batches_from_polytope(
     inter-point constraints the ``q x d`` space is sampled jointly (thinning
     ``n_thinning * q``), as in BoTorch. The chain differs from BoTorch's
     (torch RNG) for the same seed; the distribution is the same."""
+    if is_torch_tensor(bounds):
+        from botorch_rs.optim._torch_initialization_sampling import sample_polytope
+
+        return sample_polytope(
+            n,
+            q,
+            bounds,
+            n_burnin,
+            n_thinning,
+            seed,
+            inequality_constraints,
+            equality_constraints,
+        )
     out = _rs.sample_q_batches_from_polytope(
         int(n),
         int(q),
@@ -980,6 +1002,11 @@ def transform_constraints(
         return None
     out: list[tuple[Any, Any, float]] = []
     for constraint in constraints:
+        if is_torch_tensor(constraint[0]):
+            from botorch_rs.optim._torch_initialization_sampling import transform_constraint
+
+            out.extend(transform_constraint(constraint, d, q))
+            continue
         if len(to_flat(constraint[0], "indices")[1]) == 1:
             out.extend(transform_intra_point_constraint(constraint, d=d, q=q))
         else:
@@ -992,6 +1019,12 @@ def transform_intra_point_constraint(
 ) -> list[tuple[Any, Any, float]]:
     """Repeat a pointwise constraint for each point of a flattened q-batch."""
     indices, coefficients, rhs = constraint
+    if is_torch_tensor(indices):
+        from botorch_rs.optim._torch_initialization_sampling import transform_constraint
+
+        if indices.ndim != 1:
+            raise ValueError("Intra-point constraint indices must be one-dimensional.")
+        return transform_constraint(constraint, d, q)
     values, shape = to_flat(indices, "indices")
     if len(shape) != 1 or any(int(value) != value for value in values):
         raise ValueError("Intra-point constraint indices must be a one-dimensional integer array.")
@@ -1012,6 +1045,10 @@ def transform_inter_point_constraint(
 ) -> tuple[Any, Any, float]:
     """Map (point, feature) pairs to indices of the flattened q-batch."""
     indices, coefficients, rhs = constraint
+    if is_torch_tensor(indices):
+        from botorch_rs.optim._torch_initialization_sampling import transform_constraint
+
+        return transform_constraint(constraint, d)[0]
     values, shape = to_flat(indices, "indices")
     if len(shape) != 2 or shape[1] != 2 or any(int(value) != value for value in values):
         raise ValueError("Inter-point constraint indices must be an integer array of shape (n, 2).")

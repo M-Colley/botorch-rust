@@ -81,10 +81,52 @@ A focused upstream `try/finally` repair and regression are prepared in
 repairs the separate `optimize_acqf` sequential dispatcher, so it does not
 cover this list API failure path.
 
-Constrained automatic sampling, sample-around-best, specialized KG starting
-point heuristics, mixed alternating search and further public initialization
-helpers are subsequent checkpoints. Local lattice search retains the
-reference's unbatched, non-one-shot restriction. Sequential mixed search
-retains the reference's inter-point-constraint restriction. Forced parallel
-SciPy mode remains unsupported; this driver uses serial SciPy calls for each
-restart group. No optimization speedup is claimed here.
+Automatic linear-constrained initialization now uses device affine-polytope
+sampling. Intra-point constraints are repeated across q points, inter-point
+indices are flattened jointly, and scalar fixed features are included as
+exact equalities. An SVD nullspace removes equality constraints; Dykstra
+projections find a feasible relative-interior point, with smaller margins
+for narrow polytopes. Independent vectorized hit-and-run chains then draw
+q-batches on the bounds' device. `n_burnin` and `n_thinning` control chain
+transitions, including the reference's q multiplier for inter-point thinning.
+The sampler shares the reference's uniform stationary law; its independent
+chains and device RNG do not reproduce the serial CPU chain's draws.
+
+Public `sample_q_batches_from_polytope` and constraint-transform helpers keep
+Tensor constraints and points on their device. Bounds must be finite. The
+polytope's affine hull must be represented by explicit equality constraints;
+inconsistent equalities or failure to find a feasible relative interior raise
+an explicit error. As with the reference's finite burn-in, uniformity is a
+stationary-law guarantee, rather than an assertion of independent exact
+uniform draws after arbitrary user-specified transition counts.
+
+Sample-around-best initialization is also available on the device. It scores
+baseline posterior means, handles scalar objectives/Pareto sets, output
+constraint callables and analytic constraint dictionaries, and generates
+bounds-truncated perturbations. The public perturbation helpers retain input
+graphs and support repeatable seeded draws. Subset perturbations retain the
+port's corrections: every perturbed coordinate uses the same selected center,
+and `subset_sigma` actually controls subset noise. Around-best raw batches
+are checked for parameter-constraint feasibility after fixed features are
+applied, so infeasible extras cannot become initial conditions. Equality
+constraints and custom raw generators exclude around-best mode, as in the
+reference. Nonlinear constrained automatic initialization still requires a
+user-supplied feasible initializer or initial conditions. Adam/SGD candidate
+optimization remains box/fixed-feature constrained; general parameter
+constraints use the explicit SLSQP interface.
+
+The constrained/around-best checkpoint passes 185 targeted optimizer,
+initializer, native optimization and phase-9 parity tests. Its focused
+CPU/CUDA tests check independent simplex moments, equalities/inter-point
+constraints, fixed and degenerate features, actual SLSQP convergence,
+reference perturbation draws, gradient and gradient-gradient checks,
+analytic constraint dictionaries, a single subset draw, repeatability and
+forbidden host conversions. Narrow-polytope interior selection is tested
+separately. Targeted mypy and Ruff checks pass.
+
+Specialized KG starting-point heuristics, mixed alternating search and further
+public initialization helpers are subsequent checkpoints. Local lattice
+search retains the reference's unbatched, non-one-shot restriction. Sequential
+mixed search retains the reference's inter-point-constraint restriction.
+Forced parallel SciPy mode remains unsupported; this driver uses serial SciPy
+calls for each restart group. No optimization speedup is claimed here.
