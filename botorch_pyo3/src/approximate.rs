@@ -433,6 +433,28 @@ impl PySingleTaskVariationalGP {
         Ok((t.value(), g))
     }
 
+    /// Evaluate the actual external minibatch without changing training data.
+    #[pyo3(signature = (x, y, num_data, beta=1.0, raw=None))]
+    fn elbo_value_and_grad_on_data(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        y: Array,
+        num_data: f64,
+        beta: f64,
+        raw: Option<Vec<f64>>,
+    ) -> PyResult<(f64, Vec<f64>)> {
+        let x = x.matrix("X")?;
+        let y = y.matrix("target")?;
+        let model = self.get();
+        let raw = raw.unwrap_or_else(|| model.raw_parameters().to_vec());
+        let (terms, gradient) = threads::run(py, || {
+            model.elbo_value_and_grad_on_data(&raw, &x, &y, num_data, beta)
+        })
+        .into_py_result()?;
+        Ok((terms.value(), gradient))
+    }
+
     /// `fit_gpytorch_mll` on the ELBO with L-BFGS-B and BoTorch's retries
     /// (prior samples of the kernel and mean parameters).
     #[pyo3(signature = (num_data, beta=1.0, maxcor=None, pgtol=None, ftol=None, maxiter=None, maxfun=None, maxls=None, max_attempts=None, seed=None))]

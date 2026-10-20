@@ -1107,7 +1107,24 @@ impl SingleTaskVariationalGP {
                 "the model has no training targets (`train_Y` was not given)".into(),
             )
         })?;
-        let (terms, g) = self.elbo_impl(raw, &self.train_x, y, num_data, beta, true)?;
+        self.elbo_value_and_grad_on_data(raw, &self.train_x, y, num_data, beta)
+    }
+
+    /// The ELBO and all raw-parameter gradients for an external minibatch.
+    /// Inputs must already be transformed and targets standardized, as for
+    /// [`Self::elbo_terms`]. The stored training data are not replaced.
+    ///
+    /// # Errors
+    /// See [`Self::elbo_terms`] for shape and numerical failures.
+    pub fn elbo_value_and_grad_on_data(
+        &self,
+        raw: &[f64],
+        x: &Matrix,
+        y: &Matrix,
+        num_data: f64,
+        beta: f64,
+    ) -> Result<(ElboTerms, Vec<f64>)> {
+        let (terms, g) = self.elbo_impl(raw, x, y, num_data, beta, true)?;
         Ok((terms, g.expect("gradient requested")))
     }
 
@@ -1765,6 +1782,41 @@ mod tests {
         // diagonal of its full matrix.
         let bnn = KernelNode::scale(KernelNode::infinite_width_bnn(2, 1e-7).unwrap());
         check_gradient(&model(1, true, bnn, false));
+    }
+
+    #[test]
+    fn external_minibatch_elbo_gradient_matches_finite_differences() {
+        for m in [1, 2] {
+            let mdl = model(m, true, scale_tree(2), m > 1);
+            let (x, y) = data(3, 2, m, 83);
+            let raw = mdl.raw_parameters().to_vec();
+            let (terms, grad) = mdl
+                .elbo_value_and_grad_on_data(&raw, &x, &y, 19.0, 0.6)
+                .unwrap();
+            let stored = mdl.elbo_value_and_grad(&raw, 19.0, 0.6).unwrap().0;
+            assert!((terms.value() - stored.value()).abs() > 1e-3);
+            for k in 0..raw.len() {
+                let h = 1e-6 * raw[k].abs().max(1.0);
+                let mut plus = raw.clone();
+                let mut minus = raw.clone();
+                plus[k] += h;
+                minus[k] -= h;
+                let fp = mdl
+                    .elbo_terms(Some(&plus), &x, &y, 19.0, 0.6)
+                    .unwrap()
+                    .value();
+                let fm = mdl
+                    .elbo_terms(Some(&minus), &x, &y, 19.0, 0.6)
+                    .unwrap()
+                    .value();
+                let fd = (fp - fm) / (2.0 * h);
+                assert!(
+                    (fd - grad[k]).abs() < 2e-5 * (1.0 + fd.abs()),
+                    "parameter {k}: {fd} vs {}",
+                    grad[k]
+                );
+            }
+        }
     }
 
     #[test]

@@ -24,18 +24,17 @@ both with SciPy 1.18 and torch 2.x on CPU.
 | `botorch.optim.fit.fit_gpytorch_mll_torch`, `fit_gpytorch_mll_scipy` | `botorch_rs.optim.fit.*` | native for botorch_rs GPs (all outputs and batch elements in parallel): torch's Adam update and `ExpMAStoppingCriterion`, `step_limit`, `parameters`, `bounds`, `timeout_sec`; L-BFGS-B with BoTorch's options; other optimizers, closures, schedulers and callbacks run BoTorch's generic loop on the botorch_rs closure. `fit_gpytorch_mll(..., optimizer=fit_gpytorch_mll_torch)` retries like BoTorch |
 | `botorch.optim.core.OptimizationResult`, `OptimizationStatus`, `scipy_minimize`, `torch_minimize` | `botorch_rs.optim.core.*` | the generic minimizers run SciPy / torch on Python closures (NumPy / torch required) |
 | `botorch.optim.stopping.StoppingCriterion`, `ExpMAStoppingCriterion` | `botorch_rs.optim.stopping.*` | torch's float32 weights (bitwise for the defaults) |
-| `botorch.optim.closures.ForwardBackwardClosure`, `NdarrayOptimizationClosure`, `get_loss_closure`, `get_loss_closure_with_grads` | `botorch_rs.optim.closures.*` | loss and gradients of botorch_rs MLLs computed in Rust; `data_loader` is not supported |
+| `botorch.optim.closures.ForwardBackwardClosure`, `NdarrayOptimizationClosure`, `get_loss_closure`, `get_loss_closure_with_grads` | `botorch_rs.optim.closures.*` | loss and gradients computed in Rust; native variational ELBOs support actual external DataLoader minibatches and epoch cycling |
 | `botorch.optim.utils.columnwise_clamp`, `fix_features`, `get_X_baseline`, `get_parameters`, `get_parameters_and_bounds`, `get_name_filter`, `sample_all_priors`, `TorchAttr` | `botorch_rs.optim.utils.*` | BoTorch's parameter names and order (likelihood first) |
 | `botorch.cross_validation.gen_loo_cv_folds`, `batch_cross_validation`, `CVFolds`, `CVResults` | `botorch_rs.cross_validation.*` | batched LOO folds (also `train_Yvar`, multi-output), one batched model fitted per fold in parallel, `observation_noise`, `model_init_kwargs`; `MultiTaskGP` raises `UnsupportedError` as in BoTorch |
 | `botorch.exceptions.errors.OptimizationTimeoutError`, `OptimizationGradientError` | `botorch_rs.exceptions.errors.*` | with `current_x` and `runtime` |
 
 ## What remains unported (in this area)
 
-- `optimize_acqf(acq_function_sequence=...)` (raises `UnsupportedError`),
-  per-t-batch (tensor-valued) fixed features in `gen_candidates_*`, and
+- per-t-batch (tensor-valued) fixed features in `gen_candidates_*`, and
   `timeout_sec` on the constrained (SLSQP) path, which runs to completion.
-- `get_loss_closure(data_loader=...)` and `get_data_loader` (botorch_rs MLLs
-  are evaluated on the model's training data).
+- External-data loss closures for exact MLLs. Variational minibatches are
+  supported; see [the native closure protocol](variational-data-loader-closures.md).
 - `botorch.optim.batched_lbfgs_b` (BoTorch's internal batched L-BFGS-B; the
   parallel path is reproduced with botorch-rs's L-BFGS-B port per restart),
   `botorch.optim.utils.timeout` (`minimize_with_timeout`) and

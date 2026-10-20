@@ -2725,6 +2725,14 @@ class SingleTaskVariationalGP:
     def elbo_value_and_grad(
         self, num_data: float, beta: float = 1.0, raw: Sequence[float] | None = None
     ) -> tuple[float, list[float]]: ...
+    def elbo_value_and_grad_on_data(
+        self,
+        x: Array,
+        y: Array,
+        num_data: float,
+        beta: float = 1.0,
+        raw: Sequence[float] | None = None,
+    ) -> tuple[float, list[float]]: ...
     def fit(
         self,
         num_data: float,

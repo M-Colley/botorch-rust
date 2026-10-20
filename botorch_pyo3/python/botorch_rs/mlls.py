@@ -230,7 +230,8 @@ class _ApproximateMarginalLogLikelihood(MarginalLogLikelihood):
     def _kind(self) -> Any:
         return self.model._outer._kind
 
-    def _terms(self, approximate_dist_f: Any, target: Any) -> tuple[float, float, float]:
+    def _elbo_data(self, approximate_dist_f: Any, target: Any) -> tuple[Any, Any]:
+        """Validate and prepare the same data for native values and gradients."""
         from botorch_rs.models.approximate_gp import _ApproximateOutput
 
         outer = self.model._outer
@@ -257,8 +258,11 @@ class _ApproximateMarginalLogLikelihood(MarginalLogLikelihood):
                 f"The target of shape {tuple(yshape)} does not match the output of event "
                 f"shape {(n, m) if m > 1 else (n,)}."
             )
-        ll, kl, lp = self._rs.elbo(x, (list(ydata), [n, m]), float(self.num_data), float(self.beta))
-        return ll, kl, lp
+        return x, (list(ydata), [n, m])
+
+    def _terms(self, approximate_dist_f: Any, target: Any) -> tuple[float, float, float]:
+        x, y = self._elbo_data(approximate_dist_f, target)
+        return self._rs.elbo(x, y, float(self.num_data), float(self.beta))  # type: ignore[no-any-return]
 
     def __call__(self, approximate_dist_f: Any = None, target: Any = None, **kwargs: Any) -> Any:
         r"""The ELBO of the targets ``target`` under ``approximate_dist_f =

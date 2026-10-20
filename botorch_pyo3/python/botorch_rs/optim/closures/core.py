@@ -43,7 +43,7 @@ class ForwardBackwardClosure:
         if native is not None:
             from botorch_rs.optim.closures.model_closures import _grads_out
 
-            value, grads = native.value_and_grad(list(self.parameters))
+            value, grads = native.value_and_grad(list(self.parameters), **kwargs)
             return value, _grads_out(self.parameters, grads)
         import torch
 

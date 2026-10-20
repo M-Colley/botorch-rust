@@ -9,6 +9,11 @@ Adam fitting. The 132 Python API, parity and randomized equivalence tests
 compare against installed BoTorch 0.18.1; Rust fixtures test the same numerical
 formulas independently of Python.
 
+Variational [external-data loss closures](variational-data-loader-closures.md)
+evaluate actual DataLoader minibatches and selected parameter gradients in
+Rust, including epoch cycling and multiple outputs. This does not change
+the full-data closures used by the default fitting convenience routines.
+
 `HigherOrderGP` uses Kronecker factor eigendecompositions for its exact
 likelihood, analytic likelihood gradient, posterior means and variances,
 joint posterior derivatives and Matheron samples. Its Python API supports
