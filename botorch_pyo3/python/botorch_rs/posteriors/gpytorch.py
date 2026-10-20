@@ -134,6 +134,7 @@ class GPyTorchPosterior(Posterior):
         points_per_input: int = 1,
         base: bool = False,
         interleaved: bool = False,
+        query_inputs: Any = None,
     ) -> None:
         snapshot = getattr(source, "copy", None)
         self._rs = snapshot() if callable(snapshot) else source
@@ -141,6 +142,11 @@ class GPyTorchPosterior(Posterior):
         self._base = base
         self._points_per_input = points_per_input
         self._x = X
+        # Keep the query's graph and value snapshot separately from the flat
+        # native buffer. Cloning preserves first-order input connectivity.
+        self._query_inputs = (
+            query_inputs.clone() if kind.lib == "torch" and query_inputs is not None else None
+        )
         self._kind = kind
         self._observation_noise = observation_noise
         self._output_indices = output_indices
