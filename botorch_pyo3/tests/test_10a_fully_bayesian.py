@@ -414,7 +414,9 @@ def test_acquisition_on_fully_bayesian_lists() -> None:
         qLogNoisyExpectedHypervolumeImprovement(
             lst, ref_point=ref, X_baseline=X, sampler=sampler, marginalize_dim=-1
         )
-    with pytest.raises(NotImplementedError, match="same `batch_shape`"):
+    # The four- and two-member ensemble axes cannot broadcast. The list
+    # protocol now also supports unequal shapes that do broadcast.
+    with pytest.raises(NotImplementedError, match="broadcast"):
         ModelListGP(m1, m3)
     with pytest.raises(UnsupportedError, match="different sizes"):
         qLogNoisyExpectedHypervolumeImprovement(
