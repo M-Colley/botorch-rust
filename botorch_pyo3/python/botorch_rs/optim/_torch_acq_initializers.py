@@ -31,9 +31,19 @@ def _check(X: Tensor, acq_vals: Tensor, n: int) -> int:
     return count
 
 
-def _random(X: Tensor, values: Tensor, n: int, generator: Any) -> tuple[Tensor, Tensor]:
+def _random(
+    X: Tensor,
+    values: Tensor,
+    n: int,
+    generator: Any,
+    *,
+    message: str = (
+        "Raw acquisition values are constant, nonpositive or nonfinite; "
+        "choosing initial conditions at random."
+    ),
+) -> tuple[Tensor, Tensor]:
     warnings.warn(
-        "Raw acquisition values are constant, nonpositive or nonfinite; choosing initial conditions at random.",
+        message,
         BadInitialCandidatesWarning,
         stacklevel=3,
     )
@@ -77,7 +87,16 @@ def initialize_q_batch(
         return X, acq_vals
     std = acq_vals.std(dim=0)
     if bool(((std == 0) | ~torch.isfinite(std)).any()):
-        return _random(X, acq_vals, n, generator)
+        return _random(
+            X,
+            acq_vals,
+            n,
+            generator,
+            message=(
+                "All acquisition values for raw samples points are the same or not "
+                "finite for at least one batch. Choosing initial conditions at random."
+            ),
+        )
     standardized = (acq_vals - acq_vals.mean(dim=0)) / std.where(std >= 1e-9, 1.0)
     weights = (eta * standardized).exp()
     while bool(torch.isinf(weights).any()):

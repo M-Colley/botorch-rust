@@ -59,6 +59,31 @@ def test_restart_selection_matches_unmodified_reference_rng(device, kind, values
 
 
 @pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("case", ["one_constant_batch", "nonfinite", "nonpositive"])
+def test_random_restart_warning_describes_the_fallback_and_preserves_selection(device, case):
+    from botorch_rs.exceptions.warnings import BadInitialCandidatesWarning
+
+    X = torch.arange(32, dtype=torch.double, device=device).reshape(8, 2, 1, 2)
+    if case == "one_constant_batch":
+        scores = torch.stack([X.new_zeros(8), X.new_tensor(range(8))], -1)
+        initialize, message = port.initialize_q_batch, "same.*at least one batch"
+    else:
+        X = X[:, 0]
+        scores = X.new_full((8,), -float("inf") if case == "nonfinite" else -1.0)
+        initialize = (
+            port.initialize_q_batch if case == "nonfinite" else port.initialize_q_batch_nonneg
+        )
+        message = "not finite.*at least one batch" if case == "nonfinite" else "nonpositive"
+    expected_generator = torch.Generator(device=device).manual_seed(19)
+    indices = torch.randperm(8, device=device, generator=expected_generator)[:3]
+    generator = torch.Generator(device=device).manual_seed(19)
+    with pytest.warns(BadInitialCandidatesWarning, match=message):
+        points, values = initialize(X, scores, 3, generator=generator)
+    torch.testing.assert_close(points, X[indices], rtol=0, atol=0)
+    torch.testing.assert_close(values, scores[indices], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("device", DEVICES)
 def test_automatic_initialization_uses_boltzmann_seed_and_chunks_without_host_data(
     device, monkeypatch
 ):
