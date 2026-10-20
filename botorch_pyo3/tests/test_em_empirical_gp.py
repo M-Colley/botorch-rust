@@ -50,8 +50,10 @@ def official() -> Any:
         pkg = ModuleType(package)
         pkg.__path__ = [str(folder)]
         sys.modules[package] = pkg
+    names = ("utils", "em_empirical_gp", "em_coordinate_ascent")
+    previous = {f"{package}.{name}": sys.modules.get(f"{package}.{name}") for name in names}
     modules = {}
-    for name in ("utils", "em_empirical_gp", "em_coordinate_ascent"):
+    for name in names:
         spec = importlib.util.spec_from_file_location(f"{package}.{name}", folder / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
@@ -70,7 +72,14 @@ def official() -> Any:
         + "\n            m_0=mean_module(X_inducing).reshape(-1) if K_mu is not None else None,",
     )
     exec(compile(corrected, str(folder / "em_empirical_gp.py"), "exec"), em.__dict__)
-    return SimpleNamespace(**modules)
+    try:
+        yield SimpleNamespace(**modules)
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = value
 
 
 def datasets(kind: str) -> list[ExperimentDataset]:
@@ -664,7 +673,13 @@ def test_from_scratch_em_rerun_values_and_gradients_match_official(
     if inducing:
         options["inducing_points"] = torch.tensor([[0.05], [0.4], [0.85]], dtype=torch.double)
     actual = EMEmpiricalGaussianProcess(
-        X, Y, datasets=datasets("torch"), mean_module=mean, covar_module=kernel, **options
+        X,
+        Y,
+        datasets=datasets("torch"),
+        mean_module=mean,
+        covar_module=kernel,
+        backend="native",
+        **options,
     )
     ref_options = (
         {} if defaults else {"likelihood": gpytorch.likelihoods.GaussianLikelihood().double()}
@@ -902,7 +917,13 @@ def test_learnable_inducing_full_em_gradients_match_official(
         use_covar_prior=priors,
     )
     actual = EMEmpiricalGaussianProcess(
-        X, Y, datasets=datasets("torch"), mean_module=mean, covar_module=kernel, **options
+        X,
+        Y,
+        datasets=datasets("torch"),
+        mean_module=mean,
+        covar_module=kernel,
+        backend="native",
+        **options,
     )
     expected = official.em_empirical_gp.EMEmpiricalGaussianProcess(
         X,
