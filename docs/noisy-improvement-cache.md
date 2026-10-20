@@ -50,3 +50,16 @@ reshape. The correction is to subtract `len(self.sample_shape)`. The port
 already preserves all sample axes; the test compares its actual forward
 incumbents with the official correctly initialized cached incumbents and
 records the reference forward exception.
+
+Cached numerical fallback correctness
+-------------------------------------
+
+The native cached-root fallback previously evaluated a contextual objective
+over `[baseline; candidates]`, while the ordinary low-rank cached path
+evaluated it over candidates alone. A forced-fallback regression reproduced
+an improvement of `0.491707425270575` instead of `0.464582425270575` for an
+objective that adds the mean of its input points. The corrected fallback
+evaluates the same candidate-only objective and embeds its sample and direct
+input adjoints into the full joint posterior layout. The regression checks
+linear and log reduction values, unchanged baseline incumbents, matching
+analytic gradients, and central finite differences.

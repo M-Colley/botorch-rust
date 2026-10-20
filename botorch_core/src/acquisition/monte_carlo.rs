@@ -584,6 +584,99 @@ impl SampledObjective {
         })
     }
 
+    /// A cached-root fallback samples the joint posterior, but evaluates
+    /// the objective only on new points, just like the low-rank path.
+    /// Lift its pullback into the joint layout without adding baseline
+    /// values or baseline inputs to the objective's evaluation context.
+    fn from_cached_joint(
+        js: JointSamples,
+        n_baseline: usize,
+        objective: Option<&dyn McObjective>,
+        with_grad: bool,
+    ) -> Result<Self> {
+        let n = js.num_points();
+        let n_in = js.x.nrows();
+        if n_baseline >= n_in {
+            return Err(BotorchError::DimensionMismatch(
+                "cached joint samples must contain new candidate inputs".into(),
+            ));
+        }
+        let start = n_baseline * js.points_per_input();
+        let samples = js.samples(0..n);
+        let new_samples = samples.points(start..n);
+        let new_x = js.x.rows(n_baseline, n_in - n_baseline).into_owned();
+        let (n_new, d) = new_x.shape();
+        let s = samples.num_samples();
+        let m = samples.num_outputs();
+        let (values, candidate_pullback) = match objective {
+            Some(o) => {
+                let evaluated = o.evaluate(&new_samples, Some(&new_x), with_grad)?;
+                if evaluated.values.shape() != (n_new, s) {
+                    return Err(crate::acquisition::mc_objective::q_batch_mismatch(
+                        evaluated.values.nrows(),
+                        n_new,
+                    ));
+                }
+                (evaluated.values, evaluated.pullback)
+            }
+            None => {
+                if m != 1 {
+                    return Err(BotorchError::Unsupported(MULTI_OUTPUT_MESSAGE.into()));
+                }
+                if new_samples.num_points() != n_new {
+                    return Err(crate::acquisition::mc_objective::q_batch_mismatch(
+                        new_samples.num_points(),
+                        n_new,
+                    ));
+                }
+                (new_samples.data().clone(), None)
+            }
+        };
+        let mut obj = Matrix::zeros(n_in, s);
+        obj.rows_mut(n_baseline, n_new).copy_from(&values);
+        let pullback: Option<SamplePullback> = with_grad.then(|| {
+            Box::new(move |bar: &Matrix| {
+                let candidate_bar = bar.rows(n_baseline, n_new).into_owned();
+                let (candidate_samples_bar, candidate_x_bar) = match candidate_pullback {
+                    Some(pb) => pb(&candidate_bar)?,
+                    None => (candidate_bar, None),
+                };
+                let n_new_points = n - start;
+                if candidate_samples_bar.shape() != (m * n_new_points, s) {
+                    return Err(BotorchError::DimensionMismatch(
+                        "the cached candidate objective returned an invalid sample adjoint".into(),
+                    ));
+                }
+                let mut samples_bar = Matrix::zeros(m * n, s);
+                for t in 0..m {
+                    samples_bar
+                        .rows_mut(t * n + start, n_new_points)
+                        .copy_from(&candidate_samples_bar.rows(t * n_new_points, n_new_points));
+                }
+                let x_bar = candidate_x_bar
+                    .map(|xb| {
+                        if xb.shape() != (n_new, d) {
+                            return Err(BotorchError::DimensionMismatch(
+                                "the cached candidate objective returned an invalid input adjoint"
+                                    .into(),
+                            ));
+                        }
+                        let mut full = Matrix::zeros(n_in, d);
+                        full.rows_mut(n_baseline, n_new).copy_from(&xb);
+                        Ok(full)
+                    })
+                    .transpose()?;
+                Ok((samples_bar, x_bar))
+            }) as SamplePullback
+        });
+        Ok(Self {
+            js,
+            samples,
+            obj,
+            pullback,
+        })
+    }
+
     /// Propagates the adjoint of the objective values (`n_in × S`) and an
     /// additional adjoint of the samples to the adjoints of the posterior
     /// mean and covariance and the direct adjoint of the inputs (`n_in ×
@@ -1962,8 +2055,9 @@ impl QNoisyExpectedImprovement {
                     Some(p) => p,
                     None => {
                         let js = JointSamples::with_base_samples(model, x_full, z)?;
-                        NeiSamples::Joint(SampledObjective::from_joint(
+                        NeiSamples::Joint(SampledObjective::from_cached_joint(
                             js,
+                            n_in,
                             self.core.objective.as_deref(),
                             with_grad,
                         )?)
@@ -2220,5 +2314,116 @@ impl AcquisitionFunction for QNoisyExpectedImprovement {
 
     fn is_nonnegative(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod cached_fallback_tests {
+    use super::*;
+    use crate::acquisition::logei::LogImprovementReduction;
+    use crate::acquisition::mc_objective::SampleValues;
+    use crate::models::{SingleTaskGP, SingleTaskGPOptions};
+    use crate::OutcomeTransformChoice;
+
+    #[derive(Debug)]
+    struct ContextualObjective;
+
+    impl McObjective for ContextualObjective {
+        fn evaluate(
+            &self,
+            samples: &McSamples,
+            x: Option<&Matrix>,
+            with_grad: bool,
+        ) -> Result<SampleValues> {
+            let x = x.expect("the acquisition must pass the objective's inputs");
+            let (n, d) = x.shape();
+            let values = samples.data().map(|v| v + x.sum() / (n * d) as f64);
+            let pullback: Option<SamplePullback> = with_grad.then(|| {
+                Box::new(move |bar: &Matrix| {
+                    Ok((
+                        bar.clone(),
+                        Some(Matrix::from_element(n, d, bar.sum() / (n * d) as f64)),
+                    ))
+                }) as SamplePullback
+            });
+            Ok(SampleValues { values, pullback })
+        }
+    }
+
+    #[test]
+    fn cached_joint_fallback_preserves_contextual_objective_and_input_gradients() {
+        let train_x = Matrix::from_fn(9, 1, |i, _| i as f64 / 8.0);
+        let train_y = train_x.map(|v| (5.0 * v).sin());
+        let model: Arc<dyn Model> = Arc::new(
+            SingleTaskGP::new(
+                train_x,
+                train_y,
+                SingleTaskGPOptions {
+                    train_yvar: Some(Matrix::from_element(9, 1, 0.03)),
+                    outcome_transform: OutcomeTransformChoice::None,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        let baseline = Matrix::from_column_slice(3, 1, &[0.05, 0.55, 0.95]);
+        let candidates = Matrix::from_column_slice(2, 1, &[0.23, 0.71]);
+        let mut acq = QNoisyExpectedImprovement::new(
+            model,
+            &baseline,
+            QNoisyExpectedImprovementOptions {
+                sampler: Some(Arc::new(SobolQMCNormalSampler::new(32, Some(17)).unwrap())),
+                objective: Some(Arc::new(ContextualObjective)),
+                prune_baseline: false,
+                cache_root: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let log = LogImprovementReduction {
+            fat: true,
+            tau_max: 1e-2,
+            tau_relu: 1e-6,
+            constraint_fat: Vec::new(),
+        };
+        for reduction in [None, Some(&log)] {
+            let (low_rank, low_best) = acq
+                .evaluate_captured(&candidates, None, true, reduction)
+                .unwrap();
+            // Force the same native fallback used for a nontriangular
+            // baseline root or failed low-rank Schur decomposition.
+            let roots = acq.baseline.as_mut().unwrap().roots.take();
+            assert!(roots.is_some());
+            let (fallback, fallback_best) = acq
+                .evaluate_captured(&candidates, None, true, reduction)
+                .unwrap();
+            assert!(
+                (low_rank.0 - fallback.0).abs() < 1e-10,
+                "low-rank={}, fallback={}",
+                low_rank.0,
+                fallback.0
+            );
+            assert_eq!(low_best, fallback_best);
+            let gradient = fallback.1.unwrap().0;
+            assert!((&gradient - low_rank.1.unwrap().0).amax() < 1e-9);
+            for i in 0..candidates.nrows() {
+                let mut plus = candidates.clone();
+                let mut minus = candidates.clone();
+                plus[(i, 0)] += 1e-6;
+                minus[(i, 0)] -= 1e-6;
+                let positive = acq
+                    .evaluate_captured(&plus, None, false, reduction)
+                    .unwrap()
+                    .0
+                     .0;
+                let negative = acq
+                    .evaluate_captured(&minus, None, false, reduction)
+                    .unwrap()
+                    .0
+                     .0;
+                assert!((gradient[(i, 0)] - (positive - negative) / 2e-6).abs() < 2e-7);
+            }
+            acq.baseline.as_mut().unwrap().roots = roots;
+        }
     }
 }
