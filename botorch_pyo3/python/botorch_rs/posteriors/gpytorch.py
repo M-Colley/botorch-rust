@@ -63,6 +63,30 @@ def _standard_normal(n: int, kind: ArrayKind) -> list[float]:
 class Posterior:
     """Base class of the posteriors."""
 
+    def rsample_from_base_samples(self, sample_shape: Any, base_samples: Any) -> Any:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement `rsample_from_base_samples`."
+        )
+
+    @property
+    def device(self) -> Any:
+        raise NotImplementedError(f"{type(self).__name__} does not implement `device`.")
+
+    @property
+    def dtype(self) -> Any:
+        raise NotImplementedError(f"{type(self).__name__} does not implement `dtype`.")
+
+    @property
+    def base_sample_shape(self) -> tuple[int, ...]:
+        raise NotImplementedError(f"{type(self).__name__} does not implement `base_sample_shape`.")
+
+    @property
+    def batch_range(self) -> tuple[int, int]:
+        raise NotImplementedError(f"{type(self).__name__} does not implement `batch_range`.")
+
+    def _extended_shape(self, sample_shape: Any = ()) -> tuple[int, ...]:
+        raise NotImplementedError(f"{type(self).__name__} does not implement `_extended_shape`.")
+
     def rsample(self, sample_shape: Any = None) -> Any:
         raise NotImplementedError
 

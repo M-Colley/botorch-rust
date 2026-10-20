@@ -126,6 +126,18 @@ class HigherOrderGPPosterior(Posterior):
         return _DiagonalNormal(self)
 
     @property
+    def mvn(self) -> _DiagonalNormal:
+        return self.distribution
+
+    @property
+    def dtype(self) -> Any:
+        return self._kind.dtype
+
+    @property
+    def device(self) -> Any:
+        return self._kind.device
+
+    @property
     def batch_shape(self) -> tuple[int, ...]:
         return self._batch
 

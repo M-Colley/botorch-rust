@@ -110,6 +110,10 @@ class LatentKroneckerGPPosterior(Posterior):
         return _GridDistribution(self)
 
     @property
+    def mvn(self) -> _GridDistribution:
+        return self.distribution
+
+    @property
     def base_sample_shape(self) -> tuple[int, ...]:
         full = self._rs.num_train * self.model.num_outputs
         return (full + self._rs.num_observed + self._q * self._tasks,)

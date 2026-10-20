@@ -725,6 +725,14 @@ class _BatchPosterior(Posterior):
         self._kind = kind
         self.batch_shape = batch_shape
 
+    @property
+    def dtype(self) -> Any:
+        return self._kind.dtype
+
+    @property
+    def device(self) -> Any:
+        return self._kind.device
+
     def _stack(self, attr: str) -> Any:
         parts = [to_flat(getattr(p, attr), attr) for p in self._posteriors]
         data = [v for d, _ in parts for v in d]
