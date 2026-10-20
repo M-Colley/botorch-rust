@@ -31,12 +31,14 @@ Example:
 
 from __future__ import annotations
 
+import importlib
 import warnings
 from collections.abc import Callable
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import first_kind, from_flat, from_pair, kind_of, to_flat
+from botorch_rs import _ops
+from botorch_rs._arrays import first_kind, from_flat, from_pair, is_torch_tensor, kind_of, to_flat
 from botorch_rs.acquisition import _native_objective
 from botorch_rs.acquisition.multi_objective.objective import (
     IdentityMCMultiOutputObjective,
@@ -52,6 +54,32 @@ from botorch_rs.acquisition.risk_measures import (
 )
 from botorch_rs.exceptions.errors import BotorchError, UnsupportedError
 from botorch_rs.exceptions.warnings import BotorchWarning
+
+_MVAR_MAPPING_AUTOGRAD: Any = None
+
+
+def _mapping_autograd() -> Any:
+    global _MVAR_MAPPING_AUTOGRAD
+    if _MVAR_MAPPING_AUTOGRAD is None:
+        torch: Any = importlib.import_module("torch")
+
+        class _Mapping(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx: Any, prepared: Any, mvars: Any) -> Any:  # type: ignore[override]
+                ctx.prepared = to_flat(prepared, "prepared_samples")
+                ctx.mvars = to_flat(mvars, "mvars")
+                ctx.kind = kind_of(prepared)
+                return from_pair(_rs.mvar_make_differentiable(ctx.prepared, ctx.mvars), ctx.kind)
+
+            @staticmethod
+            def backward(ctx: Any, gradient: Any) -> tuple[Any, None]:  # type: ignore[override]
+                values = _rs.mvar_make_differentiable(
+                    ctx.prepared, ctx.mvars, to_flat(gradient, "adjoint")
+                )
+                return from_pair(values, ctx.kind), None
+
+        _MVAR_MAPPING_AUTOGRAD = _Mapping
+    return _MVAR_MAPPING_AUTOGRAD
 
 
 class MultiOutputRiskMeasureMCObjective(RiskMeasureMCObjective, MCMultiOutputObjective):
@@ -197,6 +225,24 @@ class MVaR(MultiOutputRiskMeasureMCObjective):
             self.use_counting,
         )
 
+    def make_differentiable(self, prepared_samples: Any, mvars: Any) -> Any:
+        """Map each MVaR component to the mean of matching sample components.
+
+        Exact native VJPs divide gradient equally among ties. Unattained
+        components retain upstream's NaN value and zero sample gradients.
+        The supplied MVaR values select matches and do not receive gradients.
+        """
+        if is_torch_tensor(prepared_samples) and prepared_samples.requires_grad:
+            torch = importlib.import_module("torch")
+            if torch.is_grad_enabled():
+                return _mapping_autograd().apply(prepared_samples, mvars)
+        return from_pair(
+            _rs.mvar_make_differentiable(
+                to_flat(prepared_samples, "prepared_samples"), to_flat(mvars, "mvars")
+            ),
+            kind_of(prepared_samples),
+        )
+
     def _mvar_sets(self, Y: Any, use_counting: bool) -> list[Any]:
         kind = kind_of(Y)
         data, shape = to_flat(Y, "Y")
@@ -252,6 +298,7 @@ class MARS(VaR, MultiOutputRiskMeasureMCObjective):
             preprocessing_function: A preprocessing function to apply to the
                 samples before computing the risk measure.
         """
+        self._chebyshev_objective: Any = None
         self._kind = first_kind(chebyshev_weights, baseline_Y, ref_point)
         self._weights = _weights_arg(chebyshev_weights)
         self._ref = None if ref_point is None else [float(v) for v in to_flat(ref_point)[0]]
@@ -289,14 +336,54 @@ class MARS(VaR, MultiOutputRiskMeasureMCObjective):
         return _native_objective.evaluate(self._rs, samples)
 
     @property
+    def chebyshev_objective(self) -> Callable[[Any, Any], Any]:
+        """Cached normalized Chebyshev scalarization, before VaR reduction."""
+        if self._chebyshev_objective is None:
+            if self._baseline is None:
+                raise RuntimeError(
+                    "baseline_Y must be set before constructing the Chebyshev objective."
+                )
+            bounds = self._rs.normalization_bounds
+            assert bounds is not None
+            values, shape = bounds
+            m = shape[-1]
+            lower = list(values[:m])
+            upper = list(values[m:])
+            reference = None if self.ref_point is None else list(to_flat(self.ref_point)[0])
+
+            def objective(Y: Any, X: Any = None) -> Any:
+                samples = self.preprocessing_function(Y)
+                kind = kind_of(samples)
+                if not _ops.shape_of(samples) or _ops.shape_of(samples)[-1] != m:
+                    raise BotorchError(
+                        f"Chebyshev scalarization expects {m} preprocessed outcomes."
+                    )
+                lo = from_flat(lower, (m,), kind)
+                hi = from_flat(upper, (m,), kind)
+                width = _ops.apply("sub_raw", hi, lo)
+                normalized = _ops.apply("div_raw", _ops.apply("sub_raw", samples, lo), width)
+                if reference is not None:
+                    point = from_flat(reference, (m,), kind)
+                    point = _ops.apply("div_raw", _ops.apply("sub_raw", point, lo), width)
+                    normalized = _ops.apply("sub_raw", normalized, point)
+                weights = from_flat(self._weights, (len(self._weights),), kind)
+                return _ops.reduce("min", _ops.apply("mul_raw", normalized, weights), -1)
+
+            self._chebyshev_objective = objective
+        result: Callable[[Any, Any], Any] = self._chebyshev_objective
+        return result
+
+    @property
     def chebyshev_weights(self) -> Any:
         """The weights of the Chebyshev scalarization."""
         return from_flat(self._weights, (len(self._weights),), self._kind)
 
     @chebyshev_weights.setter
     def chebyshev_weights(self, chebyshev_weights: Any) -> None:
-        self._weights = _weights_arg(chebyshev_weights)
-        self._rs = self._rs.with_chebyshev_weights(self._weights)
+        weights = _weights_arg(chebyshev_weights)
+        native = self._rs.with_chebyshev_weights(weights)
+        self._weights, self._rs = weights, native
+        self._chebyshev_objective = None
 
     @property
     def baseline_Y(self) -> Any:
@@ -308,6 +395,7 @@ class MARS(VaR, MultiOutputRiskMeasureMCObjective):
 
     @baseline_Y.setter
     def baseline_Y(self, baseline_Y: Any) -> None:
+        self._chebyshev_objective = None
         if baseline_Y is None:
             self._baseline = None
             self._rs = self._build()
@@ -343,6 +431,7 @@ class MARS(VaR, MultiOutputRiskMeasureMCObjective):
             self._kind = first_kind(Y_samples, self._kind)
             rs = self._rs.with_baseline_from_samples(to_flat(Y_samples, "Y_samples"))
         self._rs = rs
+        self._chebyshev_objective = None
         y = rs.baseline_y
         self._baseline = None if y is None else (y[0], tuple(y[1]))
 

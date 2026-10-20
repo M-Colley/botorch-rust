@@ -61,6 +61,7 @@ pub fn arity(name: &str) -> Option<(usize, usize)> {
         | "sin"
         | "cos"
         | "log_raw"
+        | "beta_log_prob"
         | "phi"
         | "log_phi"
         | "log_ndtr"
@@ -77,11 +78,10 @@ pub fn arity(name: &str) -> Option<(usize, usize)> {
         | "fat_sigmoid"
         | "log_fat_sigmoid"
         | "cauchy" => (1, 1),
-        "add" | "sub" | "mul" | "div" | "add_raw" | "mul_raw" | "div_raw" | "logplusexp"
-        | "logdiffexp" | "log_prob_normal_in" | "fatmaximum" | "fatminimum" | "fatplus"
-        | "log_fatplus" | "log_softplus" | "fatmoid" | "log_fatmoid" | "approximate_round" => {
-            (2, 1)
-        }
+        "add" | "sub" | "mul" | "div" | "add_raw" | "sub_raw" | "mul_raw" | "div_raw"
+        | "logplusexp" | "logdiffexp" | "log_prob_normal_in" | "fatmaximum" | "fatminimum"
+        | "fatplus" | "log_fatplus" | "log_softplus" | "fatmoid" | "log_fatmoid"
+        | "approximate_round" => (2, 1),
         "bvnu" => (3, 1),
         "bvn" => (5, 1),
         "bvnmom" => (6, 2),
@@ -247,6 +247,7 @@ fn fatmax2(a: f64, b: f64, tau: f64, alpha: f64) -> (f64, f64, f64) {
 fn binary(name: &str, a: f64, b: f64, params: &[f64], single: bool) -> Result<(f64, f64, f64)> {
     Ok(match name {
         "add_raw" => (a + b, 1.0, 1.0),
+        "sub_raw" => (a - b, 1.0, -1.0),
         "mul_raw" => (a * b, b, a),
         "div_raw" => (a / b, b.recip(), -(a / b) / b),
         "add" => {
@@ -357,12 +358,26 @@ pub fn elementwise(
             "Received input tensors a, b for which not all a < b.".into(),
         ));
     }
+    let beta = if name == "beta_log_prob" {
+        if params.len() != 2 {
+            return Err(BotorchError::InvalidArgument(
+                "beta_log_prob takes (alpha, beta)".into(),
+            ));
+        }
+        Some(crate::priors::Prior::beta(params[0], params[1])?)
+    } else {
+        None
+    };
     let mut values = vec![vec![0.0; len]; nout];
     let mut grads = with_grad.then(|| vec![vec![vec![0.0; len]; nin]; nout]);
     for i in 0..len {
         match nin {
             1 => {
-                let (v, g) = unary(name, inputs[0][i], single_precision);
+                let x = inputs[0][i];
+                let (v, g) = match beta {
+                    Some(prior) => (prior.log_prob(x), prior.grad_log_prob(x)),
+                    None => unary(name, x, single_precision),
+                };
                 values[0][i] = v;
                 if let Some(gr) = grads.as_mut() {
                     gr[0][0][i] = g;
@@ -420,7 +435,7 @@ fn bvn_family<S: Scalar>(name: &str, x: &[S]) -> Vec<S> {
 /// The names of the reductions of [`reduce`] and their number of parameters.
 pub fn reduction_params(name: &str) -> Option<usize> {
     Some(match name {
-        "sum" | "mean" | "logsumexp" | "logmeanexp" => 0,
+        "sum" | "mean" | "min" | "logsumexp" | "logmeanexp" => 0,
         "smooth_amax" | "smooth_amin" => 1,
         "fatmax" | "fatmin" => 2,
         _ => return None,
@@ -484,6 +499,22 @@ pub fn reduce(
     let mut grads = with_grad.then(|| vec![0.0; x.len()]);
     for (r, row) in x.chunks(n).enumerate() {
         let (v, g): (f64, Option<Vec<f64>>) = match name {
+            "min" => {
+                let mut selected = 0;
+                for i in 1..n {
+                    if row[i] < row[selected] || row[i].is_nan() && !row[selected].is_nan() {
+                        selected = i;
+                    }
+                }
+                (
+                    row[selected],
+                    with_grad.then(|| {
+                        let mut gradient = vec![0.0; n];
+                        gradient[selected] = 1.0;
+                        gradient
+                    }),
+                )
+            }
             "sum" | "mean" => {
                 let scale = if name == "mean" { 1.0 / n as f64 } else { 1.0 };
                 (
@@ -674,6 +705,34 @@ mod tests {
         let up = elementwise(name, &[&[x + h]], &[], false, false).unwrap();
         let dn = elementwise(name, &[&[x - h]], &[], false, false).unwrap();
         (up.values[0][0] - dn.values[0][0]) / (2.0 * h)
+    }
+
+    #[test]
+    fn minimum_and_beta_density_gradients() {
+        let values = reduce(
+            "min",
+            &[2., 2., 3., f64::INFINITY, 1., f64::INFINITY],
+            3,
+            &[],
+            true,
+        )
+        .unwrap();
+        assert_eq!(values.0, vec![2., 1.]);
+        assert_eq!(values.1.unwrap(), vec![1., 0., 0., 0., 1., 0.]);
+        let beta = elementwise(
+            "beta_log_prob",
+            &[&[0.2, 0.5, 0.8]],
+            &[2.3, 1.7],
+            false,
+            true,
+        )
+        .unwrap();
+        for (j, &x) in [0.2, 0.5, 0.8].iter().enumerate() {
+            let p = crate::priors::Prior::beta(2.3, 1.7).unwrap();
+            assert_eq!(beta.values[0][j], p.log_prob(x));
+            let numeric = (p.log_prob(x + 1e-6) - p.log_prob(x - 1e-6)) / 2e-6;
+            assert!((beta.grads.as_ref().unwrap()[0][0][j] - numeric).abs() < 1e-8);
+        }
     }
 
     #[test]

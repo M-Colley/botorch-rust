@@ -406,7 +406,11 @@ def _from_rs(prior: _rs.Prior | None) -> Prior | None:
         from botorch_rs.models.utils.priors import BetaPrior
 
         obj = BetaPrior.__new__(BetaPrior)
-        obj.concentration1, obj.concentration0 = params
+        obj._a, obj._b = params
+        obj._kind = kind_of(0.0)
+        obj._batch_shape = ()
+        obj._validate_args = False
+        obj._transform = None
     obj._rs = prior
     return obj
 
