@@ -231,8 +231,12 @@ derivatives are zero. Historical task labels within `1e-6` of integers are
 rounded, matching the official validation.
 
 The EM prior/model/coordinate-ascent families are integrated as described
-above. Warm starts and learned inducing locations remain configuration work;
-the public exports do not establish full empirical-family completion.
+above, including cold/warm reruns and learned explicit inducing locations.
+The device-resident implementation below retains their higher-order graphs.
+Historical union-grid locations and observation membership remain fixed when
+explicit inducing points are absent; other configuration limits remain as
+documented for each backend. Public exports alone do not establish exhaustive
+empirical-family parity.
 
 ## Upstream standalone kernel shape bug
 

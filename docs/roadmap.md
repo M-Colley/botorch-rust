@@ -17,6 +17,14 @@ BoTorch, live side-by-side tests, randomized sweeps). This file orders the
 remaining work. Foundations come first, because most models and acquisition
 functions build on them.
 
+The [integrated Tensor release](torch-backend.md#release-verification) includes
+specialized and empirical models, scalar/multitask device NUTS, entropy and
+lookahead acquisitions, and continuous/mixed/discrete device optimization.
+Supported paths retain training-data, query and parameter graphs, including
+higher derivatives. The phase notes below primarily describe the native CPU
+route and its remaining configurations. The linked backend and family notes
+retain the exact configuration and performance limits.
+
 ## Phase 6: modeling building blocks
 
 - **6a: kernels, priors and constraints (done; [details](kernels-and-priors.md)).**
@@ -73,13 +81,14 @@ Ported, with equivalence tests ([details](single-objective-acquisition.md)):
 Also ported (phase 8b, [details](acquisition-construction.md)): the input
 constructors with `get_acquisition_function`, `qMultiStepLookahead`,
 `SampleReducingMCAcquisitionFunction` as a public base class, and t-batched
-max-value samplers and fixed features.
+max-value samplers and fixed features. BALD, analytic EUBO and qEUBO input
+constructors and pairwise/fully Bayesian active-learning acquisitions are
+integrated with Phase 10.
 
 Remaining:
-- the input constructors of BALD and EUBO (with Phase 10);
-- `qMultiStepLookahead` with other value functions and models;
-- the active learning that needs pairwise or fully Bayesian models
-  (Phase 10).
+
+- `qMultiStepLookahead` with value functions and model combinations outside
+  its documented native or Tensor scope.
 
 ## Phase 9: optimization and candidate generation (done; [details](optimization.md))
 
@@ -112,8 +121,10 @@ hyperparameters, as in BoTorch; `batch_cross_validation` refits each fold.
   BALD (done; [details](preference.md)). `LearnedObjective` is integrated
   with native Monte Carlo acquisitions, including expanded preference
   samples and a joint-law noisy-improvement correction
-  ([scope](learned-objective-acquisitions.md)). Learned input transforms in
-  `PairwiseGP` remain configuration work.
+  ([scope](learned-objective-acquisitions.md)). Native learned Warp transforms,
+  including shared/per-member batches and Laplace fitting, are integrated
+  ([scope](pairwise-input-transforms.md)); the
+  [Tensor preference model](torch-pairwise-gp.md) has separate device graph notes.
 - `SingleTaskVariationalGP` with the inducing-point allocators and
   `HigherOrderGP` are integrated ([details and limits](approximate-models.md)).
 - `LatentKroneckerGP`, contextual `SACGP` / `LCEAGP` and hierarchical
@@ -176,15 +187,17 @@ separately.
   acquisitions and qNEI/qLogNEI/qLogNParEGO now attach native parameter
   tapes for unbatched ordinary GP sources. Noisy tapes preserve the actual
   cached/joint path and its detached baseline quantities
-  ([scope](noisy-acquisition-parameter-gradients.md)). Extend posterior
-  graphs to specialized models and parameter tapes to other acquisition
+  ([scope](noisy-acquisition-parameter-gradients.md)). Extend native CPU posterior
+  parameter graphs to specialized models and parameter tapes to other acquisition
   families ([posterior scope](posterior-parameter-gradients.md),
   [acquisition scope](acquisition-parameter-gradients.md)).
 - Faster dense linear algebra for larger n. At n = 300, fitting is only 1.4×
   faster than BoTorch, which uses multithreaded BLAS/LAPACK.
-- Training-data and fantasy-data autograd. Gradients to stored training inputs
-  and targets are unavailable; `propagate_grads(True)` currently does not
-  change that. Query and parameter gradients have the separate scopes above.
+- Native CPU training-data and fantasy-data autograd. Gradients to stored
+  training inputs and targets remain unavailable on that route;
+  `propagate_grads(True)` does not change it. Supported Tensor model paths
+  already retain these graphs, with the family-specific scope documented in
+  [the current backend notes](torch-backend.md).
 
 Correctness deviations and reproductions are indexed in
 [correctness-findings.md](correctness-findings.md). Public symbol availability

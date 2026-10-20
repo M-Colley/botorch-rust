@@ -6,9 +6,15 @@ BoTorch bugs found. Ported: `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`,
 the MAP SAAS models, `AffineDeterministicModel`, `FixedSingleSampleModel`,
 `EnsembleModel` / `EnsemblePosterior` / `IndexSampler`, `ModelList` /
 `ModelDict` / `PosteriorList`, `FantasizeMixin`, `subset_output` and
-`construct_inputs`, `OrthogonalAdditiveGP` (without component posteriors),
+`construct_inputs`, `OrthogonalAdditiveGP` (including component posteriors),
 and the ensemble paths of the acquisition functions. Reference: BoTorch main at
 da00e0401 and BoTorch 0.18.1 (GPyTorch 1.15.2, linear_operator 0.6.1).
+
+This chapter records the native CPU implementation and its phase-specific
+verification. The integrated [Torch backend](torch-backend.md) also provides
+device and higher-order graphs for the documented mixed, multi-fidelity,
+MAP SAAS, ensemble and additive model paths. The configuration limits below
+describe the native CPU route; Tensor configurations have separate family notes.
 
 ## Supported API
 
@@ -27,15 +33,18 @@ da00e0401 and BoTorch 0.18.1 (GPyTorch 1.15.2, linear_operator 0.6.1).
 | `botorch.models.model.ModelList`, `ModelDict`, `FantasizeMixin` | same paths (`ModelList` also in `botorch_rs.models`) | `ModelList` of botorch_rs models (GPs and deterministic models): `posterior` (`PosteriorList`), `batch_shape`, `num_outputs`, `subset_output`, `transform_inputs`, `fantasize` (per sub-model), acquisition functions on the joint model; `ModelDict` with BoTorch's `InputDataError` |
 | `Model.subset_output`, `Model.construct_inputs` | same names | `subset_output` for `SingleTaskGP` (any covariance module), `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`, the MAP SAAS models, `ModelListGP`, `ModelList`, the deterministic models; `construct_inputs` for every model above with BoTorch's or botorch_rs's `SupervisedDataset` |
 | `botorch.utils.datasets.SupervisedDataset` | same path | `X`, `Y`, `Yvar`, names, validation, `clone`, equality |
-| `botorch.models.additive_gp.OrthogonalAdditiveGP` | same path (not exported from `botorch_rs.models`, as in BoTorch) | `SingleTaskGP` with an `OrthogonalAdditiveKernel` (first and second order); `posterior(..., infer_all_components=True)` raises `UnsupportedError` |
+| `botorch.models.additive_gp.OrthogonalAdditiveGP` | same path (not exported from `botorch_rs.models`, as in BoTorch) | `SingleTaskGP` with an `OrthogonalAdditiveKernel` (first and second order); conditioned component posteriors with `infer_all_components=True`, component metadata and `evaluate_first_order_on_grid` ([scope](additive-components.md)) |
 | `gpytorch.constraints.LogTransformedInterval`, `botorch.utils.constraints.LogTransformedInterval` / `NonTransformedInterval` | `botorch_rs.utils.constraints.*`, `botorch_rs.constraints` | raw = `log(value)`, raw bounds `(log lb, log ub)`, float32 bounds and initial raw value as in BoTorch |
 | `gpytorch.means.ConstantMean(constant_prior, constant_constraint)` | `botorch_rs.means.ConstantMean` | priors on the constant (MLL term, gradient, prior sampling); non-enforced constraints only |
 
-## What remains unported (in this area)
+<a id="what-remains-unported-in-this-area"></a>
 
-- `OrthogonalAdditiveGP` component posteriors (`infer_all_components=True`)
-  and the first-order grid evaluation: they need a component-wise posterior
-  that the Rust posterior does not have; raises `UnsupportedError`.
+## Native CPU configuration limits
+
+- `OrthogonalAdditiveGP` component inference requires a single output and an
+  affine outcome transform. Nonlinear outcome transforms do not preserve the
+  additive decomposition and are rejected for component inference; full-model
+  posteriors retain their transform support ([details](additive-components.md)).
 - Ensemble paths of the acquisition functions other than the listed ones
   (knowledge gradient, entropy searches, HVKG and the multi-objective
   acquisition functions on `EnsembleMapSaasSingleTaskGP` /
