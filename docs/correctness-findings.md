@@ -5,7 +5,9 @@ These findings are reproducible against official BoTorch revision
 where that API exists. The separate local BoTorch fork at `c98dd9452`
 contains earlier proposed fixes; it is not the official reference.
 The linked chapters contain reproductions, corrected formulas and tests.
-No upstream issues or pull requests have been submitted by this work.
+Verified repairs have been submitted upstream. The
+[submission ledger](upstream-pull-requests.md) links existing and new PRs and
+identifies findings whose upstream regression or submission is still pending.
 
 | Area | Failure | Solution and evidence |
 |---|---|---|
@@ -85,7 +87,8 @@ feasibility check and recompute the returned acquisition value at that point.
 reference failure and verifies that the Tensor port raises
 `CandidateGenerationError` on CPU and CUDA. It supplies initial conditions to
 exercise the port's constrained solver directly, without depending on a
-constraint-aware automatic initializer. No upstream patch has been submitted.
+constraint-aware automatic initializer. The upstream repair and regressions are
+submitted in [BoTorch #3470](https://github.com/meta-pytorch/botorch/pull/3470).
 
 The port also fixes its own integration issues: batched outcome untransform
 layout, unseeded QMC stream continuation, native projection and infeasible

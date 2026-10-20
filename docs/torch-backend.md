@@ -42,19 +42,22 @@ candidate, value = optimize_acqf(
 
 Supported model paths include exact single-task independent outputs and
 batches, Gaussian and nonlinear-outcome model lists, long-format `MultiTaskGP`,
+`MixedSingleTaskGP`, `SingleTaskMultiFidelityGP`, `KroneckerMultiTaskGP`, `HigherOrderGP`,
 whitened `SingleTaskVariationalGP`, and loaded-sample fully Bayesian Matérn,
-SAAS and linear single-task models. See the detailed module, variational,
-multi-task and fully Bayesian notes for their configuration limits. Exact
-single-task conditioning and fantasies preserve training-data and parameter
-graphs; multi-task conditioning/fantasies remain a separate missing feature.
-Loaded MCMC values become registered leaves, matching the reference loader;
-this does not differentiate through an upstream MCMC sampler.
+SAAS and linear single-task models. Exact single-task and correlated multitask
+conditioning and fantasies retain training-data and parameter graphs. See the
+detailed model notes for configuration limits. The Kronecker implementation
+currently uses dense exact factorization; its structured performance work is
+still pending. Loaded MCMC values become registered leaves, matching the
+reference loader. Markov-chain choices are not differentiated.
 
 The acquisition backend covers EI, LogEI, PI, LogPI, UCB, posterior mean and
 standard deviation; constrained EI/LogEI and log feasibility; weighted q means;
 the standard scalar MC improvement, regret, confidence-bound and standard
 deviation families; noisy EI and noisy LogEI in their MC forms; EHVI, LogEHVI,
-NEHVI and LogNEHVI; and one-shot KG and multi-fidelity KG. Hypervolume geometry
+NEHVI and LogNEHVI; one-shot KG and multi-fidelity KG; MES, GIBBON and their
+multi-fidelity forms; scalar JES with LB and MC estimation; and scalar and
+multi-objective PES with device EP. Hypervolume geometry
 uses device-resident exact box decomposition, including more than two outputs.
 Ensemble acquisitions reduce their MCMC components using means or log means
 as appropriate. Feature-fixing and projection wrappers preserve live Tensor
@@ -85,13 +88,18 @@ heuristics still need the Torch path. Unsupported configurations raise errors.
 MAP SAAS, additive MAP SAAS and MAP SAAS ensembles now retain their coupled
 shrinkage priors and fitting graphs on device. See [MAP SAAS verification](torch-map-saas.md).
 
-Specialized model and entropy/search acquisition families remain outside this
-backend. Device-resident NUTS now fits scalar Matérn, SAAS and linear fully
-Bayesian models; custom probabilistic overrides and multitask Tensor NUTS remain
-unsupported. [Sampler semantics and verification](torch-fully-bayesian.md). Noisy acquisition root caching currently falls back to exact joint
-sampling with an explicit warning. The 776-name API availability audit does not
-measure GPU or behavioral parity. The old CPU release certificate remains a
-separate artifact and must not be read as a GPU certificate.
+Remaining GPU families include latent Kronecker models,
+preference, contextual, hierarchical, heterogeneous and empirical multitask
+models, robust relevance pursuit, multi-objective MES/JES,
+hypervolume KG, multistep lookahead and pathwise acquisitions.
+Some are under active implementation. Device-resident NUTS fits scalar Matérn,
+SAAS and linear fully Bayesian models; custom probabilistic overrides and
+multitask Tensor NUTS remain unsupported. See
+[sampler semantics and verification](torch-fully-bayesian.md).
+Noisy acquisition root caching currently falls back to exact joint sampling
+with an explicit warning. The 776-name API availability audit does not measure
+GPU or behavioral parity. New checkpoints receive focused CPU/CUDA and autograd
+tests; the older release certificate does not certify these later changes.
 
 ## Measured prediction costs
 
@@ -119,7 +127,12 @@ checks and loaded native binary hashes are in
 Further details: [tensor algebra](tensor-native-algebra.md),
 [modules and transforms](torch-backend-modules.md),
 [multi-task model](torch-backend-multitask.md),
+[mixed and multi-fidelity models](torch-specialized-exact.md),
+[Kronecker model](torch-kronecker.md),
+[higher-order model](torch-higher-order.md),
+[MAP SAAS](torch-map-saas.md),
 [fully Bayesian models](torch-fully-bayesian.md),
+[entropy search](torch-entropy-search.md),
 [acquisitions](torch-backend-acquisitions.md).
 
 ## Release verification
@@ -131,11 +144,17 @@ installed Python sources, native binary, helper and reference fingerprints
 remain consistent before and after both runs. The wheel contains 265 matching
 Python source files, no bytecode caches and no duplicate archive members.
 The Rust workspace passed 522 tests in 46 groups; strict Clippy, rustfmt,
-Ruff and mypy also passed. The source checkout now uses the same validated
-native binary and passes a real CUDA first/second-derivative smoke check.
+Ruff and mypy also passed. These results describe the frozen wheel recorded in
+that report. Subsequent specialized-model, entropy-search and NUTS changes
+have separate focused verification; a fresh combined release is pending.
 
 The [machine-readable verification report](verification-torch-release-2026-10-20.json)
 records the exact local wheel, hashes, commands, test ledger, benchmarks and
 remaining limits. Its `gpu_coverage_complete` and `behavioral_parity_complete`
 flags remain false. Main-package public-symbol availability is 776/776;
 that inventory is separate from behavioral and GPU coverage.
+
+The continuing implementation is reviewable in
+[port PR #1](https://github.com/M-Colley/botorch-rust/pull/1).
+[Upstream submissions](upstream-pull-requests.md) track verified defects and
+their proposed repairs separately from coverage work.

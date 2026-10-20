@@ -26,11 +26,11 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Seven sparse-outlier / relevance-pursuit defects | Patches and upstream regressions pending |
 | Selecting one output from a multi-output GP | Existing [BoTorch #3396](https://github.com/meta-pytorch/botorch/pull/3396) |
 | Additive component bias broadcasting and repeated outcome location | Patches and upstream regressions pending |
-| Validated empty Beta expansion | Upstream patch and regressions in progress |
-| Multi-axis fantasy observation noise | Existing proposed patch; upstream regression and submission pending |
+| Validated empty Beta expansion | New [BoTorch #3473](https://github.com/meta-pytorch/botorch/pull/3473) |
+| Multi-axis fantasy observation noise | New [BoTorch #3476](https://github.com/meta-pytorch/botorch/pull/3476) |
 | EM dataset subset indices | Existing [BoTorch #3388](https://github.com/meta-pytorch/botorch/pull/3388) |
-| Constant EM fitting objective | Exact existing-PR coverage still being checked |
-| Fully Bayesian known-noise prior trace | Patch and upstream regression pending |
+| Constant EM fitting objective | New [BoTorch #3475](https://github.com/meta-pytorch/botorch/pull/3475), including scalar and batched closure regressions |
+| Fully Bayesian known-noise prior trace | New [BoTorch #3477](https://github.com/meta-pytorch/botorch/pull/3477) |
 | Fully Bayesian default multitask warp columns | Existing [BoTorch #3465](https://github.com/meta-pytorch/botorch/pull/3465) |
 | Higher-order fantasy covariance wrappers | Patch and upstream regressions pending |
 | Sequential acquisition dispatch and leaked pending state | New [BoTorch #3469](https://github.com/meta-pytorch/botorch/pull/3469) |
@@ -48,10 +48,14 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Periodic/cosine second derivatives | New [GPyTorch #2816](https://github.com/cornellius-gp/gpytorch/pull/2816) |
 | Polynomial feature-batched offset | New [GPyTorch #2814](https://github.com/cornellius-gp/gpytorch/pull/2814) |
 | Ensemble posterior standard deviation | Existing [BoTorch #3444](https://github.com/meta-pytorch/botorch/pull/3444) |
-| Fully Bayesian explicit prediction-noise batch axis | Patch and upstream regression pending |
-| GIBBON pending covariance units and multiple query batch axes | Newly verified; upstream patch and regressions pending |
+| Fully Bayesian explicit prediction-noise batch axis | New [BoTorch #3474](https://github.com/meta-pytorch/botorch/pull/3474) |
+| Multitask kernel repeats existing task covariance batches | New [GPyTorch #2817](https://github.com/cornellius-gp/gpytorch/pull/2817) |
+| GIBBON pending covariance units | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) |
+| GIBBON multiple query batch axes | Upstream patch and regressions pending |
 | MES zero-variance control variate | Newly verified; upstream patch and regression pending |
-| Scalar JES conditional normal standardization | Newly verified in upstream and the native CPU port; both repairs in progress |
+| Scalar JES conditional normal standardization | Native CPU and GPU repaired with independent Gaussian regression; upstream patch and regression pending |
+| PES damping accepts failed first-pivot Cholesky | Confirmed in upstream and native CPU port; repairs and regressions in progress |
+| Additive MAP SAAS factory dtype/device | Standalone factory leaves output scales on the default device/dtype; upstream repair in progress |
 | Port cosine float32 large-phase accuracy | Fixed in `4f1ad62`; CPU/CUDA regressions fail against old frozen binary and all 132 focused tensor cases pass with repair |
 
 ## Retracted report
