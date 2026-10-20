@@ -1,0 +1,12 @@
+diff --git a/botorch/models/kernels/categorical.py b/botorch/models/kernels/categorical.py
+--- a/botorch/models/kernels/categorical.py
++++ b/botorch/models/kernels/categorical.py
+@@ -46,7 +46,7 @@
+         delta = x1.unsqueeze(-2) != x2.unsqueeze(-3)
+         dists = delta / self.lengthscale.unsqueeze(-2)
+         if last_dim_is_batch:
+-            dists = dists.transpose(-3, -1)
++            dists = dists.movedim(-1, -3)
+         else:
+             dists = dists.mean(-1)
+         return torch.exp(-dists)

@@ -38,6 +38,64 @@ else:
 The official reference checkout and the separate local BoTorch audit fork
 are preserved; this proposed upstream patch has not been applied there.
 
+## Verified upstream feature-batch bugs
+
+The categorical reproduction uses official BoTorch `b0dd01be6`, with GPyTorch
+`1.15.2` for the lazy composite reproduction. The proposed
+[categorical patch](patches/botorch-categorical-feature-axis.patch) changes only
+the full-covariance feature-axis permutation; the reference checkout and the
+user's separate audit fork remain unchanged. `git apply --check` succeeds
+against the pinned official checkout. Tests apply the patch to an isolated
+copy and compare its outputs with independent per-feature categorical
+covariances, including kernel/input batches and reordered active dimensions.
+
+`CategoricalKernel.forward` constructs distances shaped `... x N x M x D`,
+then uses `transpose(-3, -1)` for `last_dim_is_batch=True`. That produces
+`... x D x M x N`, reversing the point axes. For `x=[[0],[1]]` and
+`y=[[1],[2],[0]]`, the expected feature covariance has shape `1 x 2 x 3`,
+while the original forward returns `1 x 3 x 2`; lazy evaluation raises an
+expected-shape error. With equal-sized but different inputs the shape passes
+validation and the returned cross-covariance is silently transposed. Replacing
+that permutation with `movedim(-1, -3)` produces `... x D x N x M`. The
+separate `diag=True` branch already uses the correct permutation.
+For equal-sized `x=[[0],[1]]`, `y=[[1],[2]]` and
+`c=exp(-1/lengthscale)`, the correct matrix is `[[c,c],[1,c]]`, while the
+original returns `[[c,1],[c,c]]`.
+
+GPyTorch's lazy composite shape inference has a separate issue. With 3D
+inputs, `RBFKernel(active_dims=[0,2]) + RBFKernel(active_dims=[1,2])`
+produces two feature covariance batches, while its lazy wrapper assumes
+three from the unsliced input width. For `x.shape=(2,3)` and
+`y.shape=(3,3)`, `.to_dense()` raises an error comparing expected shape
+`(3,2,3)` with actual `(2,2,3)`. The same call succeeds inside
+`gpytorch.settings.lazily_evaluate_kernels(False)` and equals the sum of the
+two child feature batches. This eager setting is an upstream workaround.
+The library fix should derive the lazy feature count by broadcasting child
+selected-feature widths, respecting `ScaleKernel.forward`'s bypass of its
+base kernel's active-dimension selection. The native port uses the actual
+child feature-batch widths and preserves the correct point axes.
+
+GPyTorch `1.15.2` also mishandles feature diagonals when the selected feature
+count equals the point count. `RBFKernel(ard_num_dims=3)` on two inputs of
+shape `(3,3)` returns a correct `(3,3)` feature diagonal from `forward`, but
+`__call__(..., diag=True, last_dim_is_batch=True)` mistakes that tensor for a
+full covariance matrix and extracts another diagonal, returning only `(3,)`.
+The postprocessing heuristic compares output rank to input rank without
+accounting for the added feature axis. A fix should test the full covariance
+rank including that feature axis before extracting its diagonal. Computing
+the diagonal of the full feature covariance is a correct reference workaround.
+The categorical patch does not change this separate shared-wrapper issue.
+The replacement guard should include both input and kernel batch broadcasting:
+
+```python
+batch = torch.broadcast_shapes(x1_.shape[:-2], x2_.shape[:-2], self.batch_shape)
+full_covar_ndim = len(batch) + 2 + int(last_dim_is_batch)
+if res.dim() == full_covar_ndim and res.shape[-2:] == torch.Size(
+    (x1_.size(-2), x2_.size(-2))
+):
+    res = res.diagonal(dim1=-1, dim2=-2)
+```
+
 `SingleTaskGP` (one or several outputs, batched, in a `ModelListGP`) takes any
 tree of GPyTorch's and BoTorch's kernels as `covar_module`: `ScaleKernel`
 around any kernel, `AdditiveKernel` and `ProductKernel` (also `k1 + k2` and
