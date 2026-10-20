@@ -698,7 +698,7 @@ class TorchVariationalELBO(nn.Module, VariationalELBO):
         beta: float = 1,
         combine_terms: bool = True,
     ) -> None:
-        super().__init__()
+        nn.Module.__init__(self)
         if (
             not isinstance(model, _TorchVariationalInner)
             or likelihood is not model._outer.likelihood

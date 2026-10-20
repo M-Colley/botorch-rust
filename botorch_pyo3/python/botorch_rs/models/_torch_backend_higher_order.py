@@ -183,7 +183,7 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
     ) -> None:
         from botorch_rs.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
 
-        super().__init__()
+        nn.Module.__init__(self)
         if not isinstance(train_X, Tensor) or not isinstance(train_Y, Tensor) or train_X.ndim < 2:
             raise ValueError(
                 "HigherOrderGP requires Tensor training features and tensor-grid targets."

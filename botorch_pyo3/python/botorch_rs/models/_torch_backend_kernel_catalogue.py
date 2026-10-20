@@ -111,7 +111,9 @@ class TorchLinearTruncatedFidelityKernel(_BatchShape, _Fidelity, LinearTruncated
     ) -> None:
         external: dict[str, nn.Module] = {}
         if _source is None:
-            metadata = {key: kwargs.pop(key) for key in ("dtype", "device") if key in kwargs}
+            metadata: dict[str, Any] = {
+                key: kwargs.pop(key) for key in ("dtype", "device") if key in kwargs
+            }
             values = inspect.signature(LinearTruncatedFidelityKernel.__init__).bind(
                 None, *args, **kwargs
             )

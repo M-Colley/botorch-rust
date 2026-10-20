@@ -228,6 +228,10 @@ def convert_task_module(source: Any, like: Any) -> Any:
 class TensorTaskEmpiricalGP(TorchMultiTaskGP, MultiTaskEmpiricalOneDimensionalGP):
     _supports_batched_models = True
 
+    def train(self, mode: bool = True) -> TensorTaskEmpiricalGP:
+        nn.Module.train(self, mode)
+        return self
+
     def _training_values(self, clamp_noise: bool = True) -> Any:
         return TorchSingleTaskGP._training_values(cast(Any, self), clamp_noise=clamp_noise)
 

@@ -142,7 +142,7 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         *,
         backend: str = "torch",
     ) -> None:
-        super().__init__()
+        nn.Module.__init__(self)
         if (
             not all(isinstance(v, Tensor) for v in (train_X, train_T, train_Y))
             or train_X.ndim < 2

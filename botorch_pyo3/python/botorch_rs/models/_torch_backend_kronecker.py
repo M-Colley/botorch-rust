@@ -366,7 +366,7 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
     ) -> None:
         from botorch_rs.priors import SmoothedBoxPrior
 
-        super().__init__()
+        nn.Module.__init__(self)
         self._validate_data(train_X, train_Y)
         if set(kwargs) - {"eta", "sd_prior", "likelihood_rank"}:
             raise UnsupportedError(f"Unsupported Kronecker options: {sorted(kwargs)}.")
