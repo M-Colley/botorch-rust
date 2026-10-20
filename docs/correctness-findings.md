@@ -31,6 +31,7 @@ No upstream issues or pull requests have been submitted by this work.
 | Fully Bayesian traces | Known-noise prior prediction broadcasts a length-n latent vector against n-by-1 scales, producing n-by-n observations; default multitask warping can include the task column. | Flatten per-observation scales and select actual non-task features. [Trace parity and corrected formulas](numpyro-trace-interoperability.md). |
 | Higher-order fantasy caches | A generic fantasy training cache can be an `AddedDiagLinearOperator`, so the posterior's Kronecker-specific `.linear_op` access raises. Batch-repeat wrappers also require explicit unwrapping. | Inspect the actual added-diagonal and repeated-factor structures before extracting noiseless factors. Native fantasy predictions use their own cached factors. [Reproduction and validation](higher-order-public-methods.md). |
 | Sequential acquisitions | A legal `None` primary acquisition fails during dataclass replacement; exceptions leak pending points; all-fixed optimization bypasses the sequence and returns a scalar. | Retain the sequence through initialization, restore pending state in `finally`, and evaluate each fixed candidate's actual acquisition. [Verified patch and parity tests](sequence-optimization.md). |
+| All-fixed constraints | The all-features-fixed optimizer shortcut returns an infeasible candidate without checking parameter constraints. | Pass constraints into the shortcut and call `evaluate_feasibility` before returning; reject an impossible fixed candidate. [Isolated reproduction and proposed repair](#all-fixed-optimization-ignores-constraints). |
 | Correlated empirical fantasies | Generic conditioning treats correlated outputs as independent batches, creating an extra fantasy dimension or dropping fixed observation noise. | Repeat inputs per output and flatten targets and noise together before `get_fantasy_model`. Native conditioning uses the joint event directly. [Tested workaround](empirical-conditioning.md). |
 | Empty data loaders | A closure retries empty loader epochs indefinitely. | Raise after one exhausted restart. The port evaluates real variational minibatches and their native derivatives. [Regression and proposed patch](variational-data-loader-closures.md). |
 | Learned preference caches | Sampling learned preferences separately for baseline and candidates breaks their joint law; a duplicate baseline candidate can report improvement about `0.45`. | Sample preferences jointly over baseline and candidates. Native stochastic learned objectives use full-joint noisy improvement; deterministic preference caches remain available. [Reproduction and solution](learned-objective-acquisitions.md). |
@@ -39,6 +40,53 @@ No upstream issues or pull requests have been submitted by this work.
 | Variational zero-mean prior (GPyTorch 1.15.2) | An unbatched multioutput `prior=True` call with `ZeroMean(batch_shape=())` passes a rank-one mean into `from_batch_mvn` and raises. | Expand the mean to the MVN's batch and event shape before permuting it; an output-batched `ZeroMean` is a workaround. The port returns the valid multitask prior. [Reproduction, independently tested repair and parity workaround](approximate-models.md). |
 | Neural-kernel diagonal conventions | Intentional `acos_eps` clipping affects full self covariances but is bypassed by `diag=True`, producing different values and derivatives; the native kernel matches both. | Preserve the model's lazy marginal variance in analytic acquisitions. For upstream consistency, choose a common differentiable self-variance recurrence; avoid evaluating singular self `acos` terms. [Reproduction, closed forms, and tested repair prototype](infinite-width-bnn-diagonals.md). |
 | Overcomplete linear roots (GPyTorch 1.15.2) | A linear posterior can advertise `q` base normals but retain a covariance root with more than `q` columns; sampling fails during reshape. | Compress the root with reduced QR or construct the same dense covariance law before sampling. The device-resident port uses the canonical square root. [Exact reproduction, workaround and proposed repair](torch-fully-bayesian.md#overcomplete-linear-covariance-roots-in-gpytorch). |
+| Constant-target Standardize | Taking a square root of zero variance before replacing its result can propagate NaN first and second target derivatives through the inactive branch. | Clamp variance before `sqrt`, then select the constant-one branch using the original variance. [CPU/CUDA reproduction and finite-difference checks](torch-backend-modules.md#verification-and-reference-limitations). |
+| Periodic/cosine higher derivatives (GPyTorch 1.15.2 / Torch 2.13.0) | A second query derivative raises because `_cdist_backward` has no derivative in this runtime. | Use differentiable pairwise arithmetic for periodic distances and a nonsingular cosine-of-squared-distance primitive. These are port primitives and independent reference-formula checks, not a submitted upstream fix. [Evidence and formulas](tensor-native-algebra.md#reference-issues-and-solutions). |
+| Polynomial feature batches (GPyTorch 1.15.2) | A model-batched offset lacks the extra feature axis under `last_dim_is_batch=True`, causing incorrect broadcasting or an error. | Insert the feature axis into the offset for both full and diagonal evaluations. [Concrete proposed repair and per-feature reference oracle](tensor-native-algebra.md#reference-issues-and-solutions). |
+| Ensemble posterior standard deviation | The reference reshapes standard deviations to the query batch before reducing its MCMC axis, and raises when both axes are present. | Remove the singleton output axis with `squeeze(-1)` while preserving the MCMC axis for the existing ensemble reduction. [Pinned reproduction and direct posterior oracle](torch-backend-acquisitions.md#ensemble-acquisition-reductions). |
+| Fully Bayesian explicit prediction noise | The reference inserts an MCMC axis into queries but leaves tensor-valued observation noise unchanged, causing a broadcast error for query batches. | Insert the same singleton MCMC axis into explicit observation noise. [Unmodified failure and independent component-law comparison](torch-backend-acquisitions.md#fully-bayesian-model-lists). |
+
+## All-fixed optimization ignores constraints
+
+In official revision `b0dd01be61d517c387e234903a6e2cc38c057ea2`,
+`botorch/optim/optimize.py:831` dispatches directly to
+`_optimize_acqf_all_features_fixed` (defined at line 195) when every input
+feature is fixed. The helper receives no parameter constraints and returns the
+fixed point without checking feasibility. This is separate from the sequential
+acquisition issue above and occurs in an ordinary scalar optimization:
+
+```python
+import torch
+from botorch.optim import optimize_acqf
+
+class Quadratic(torch.nn.Module):
+    def forward(self, X):
+        return -X.square().sum(dim=(-2, -1))
+
+candidate, value = optimize_acqf(
+    Quadratic(), torch.tensor([[0.], [1.]], dtype=torch.double),
+    q=1, num_restarts=1, raw_samples=4,
+    fixed_features={0: 0.},
+    inequality_constraints=[(torch.tensor([0]), torch.tensor([1.]), 0.5)],
+)
+# candidate == tensor([[0.]]) despite the required x >= 0.5.
+```
+
+The concrete upstream repair is to forward `inequality_constraints`,
+`equality_constraints`, and `nonlinear_inequality_constraints` at the line-831
+dispatch and add those keyword arguments to the helper. After constructing
+`X`, call `evaluate_feasibility(X, ...)` with all three constraint collections;
+raise `CandidateGenerationError` if any fixed q-batch is infeasible. Also check
+the fixed values against `bounds`. There are no free coordinates to project or
+optimize, so returning a constraint-violating point cannot resolve this case.
+If postprocessing is supported in this shortcut, apply it before the final
+feasibility check and recompute the returned acquisition value at that point.
+
+`test_all_fixed_constraint_regression.py` preserves the unmodified pinned
+reference failure and verifies that the Tensor port raises
+`CandidateGenerationError` on CPU and CUDA. It supplies initial conditions to
+exercise the port's constrained solver directly, without depending on a
+constraint-aware automatic initializer. No upstream patch has been submitted.
 
 The port also fixes its own integration issues: batched outcome untransform
 layout, unseeded QMC stream continuation, native projection and infeasible
