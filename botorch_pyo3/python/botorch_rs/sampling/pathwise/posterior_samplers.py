@@ -10,7 +10,8 @@ r"""Posterior sample paths by Matheron's rule
 
 The prior paths are random Fourier feature approximations of the GP prior
 (``draw_kernel_feature_paths``) and the updates are exact
-(``gaussian_update``); both are computed in Rust.
+(``gaussian_update``). The native backend computes both in Rust. The Tensor
+backend retains device graphs for exact and scalar whitened variational GPs.
 
 References:
     J. Wilson, V. Borovitskiy, A. Terenin, P. Mostowsky and M. Deisenroth.
@@ -193,6 +194,13 @@ def draw_matheron_paths(
     ``prod(sample_shape) x n``), e.g. BoTorch's ``feature_map.weight`` and
     ``weight`` of its prior paths and the standard normal noise of its update.
     Given BoTorch's draws, the paths equal BoTorch's to rounding.
+
+    For device scalar ``SingleTaskVariationalGP`` models, the third draw is
+    the whitened variational standard normal and its last dimension is the
+    number of inducing points. The current variational distribution supplies
+    latent targets; no observation noise is added. Multi-output variational
+    prior paths are supported, but their Matheron update is not registered
+    by the reference's ``IndependentMultitaskVariationalStrategy`` dispatcher.
     """
     num_features = _num_features(prior_sampler)
     if getattr(update_strategy, "__name__", None) != "gaussian_update":

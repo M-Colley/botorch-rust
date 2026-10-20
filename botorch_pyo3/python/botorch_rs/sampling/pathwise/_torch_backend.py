@@ -1,4 +1,4 @@
-"""Device Fourier paths and exact Gaussian Matheron corrections.
+"""Device Fourier paths and exact/whitened variational Matheron corrections.
 
 Stationary covariances and PSD factorization use the port's native Tensor
 bindings. All feature, solve, transform and path operations preserve graphs.
@@ -16,6 +16,7 @@ from botorch_rs import _botorch_rs as _rs
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models._torch_backend import TorchSingleTaskGP
 from botorch_rs.models._torch_backend_modules import TorchScaleKernel, TorchStationaryKernel
+from botorch_rs.models._torch_backend_variational import TorchSingleTaskVariationalGP
 from botorch_rs.models.deterministic import MatheronPathModel
 from botorch_rs.sampling.pathwise.features.maps import KernelEvaluationMap, KernelFeatureMap
 from botorch_rs.sampling.pathwise.paths import GeneralizedLinearPath, PathList
@@ -199,10 +200,21 @@ def tensor_kernel_features(kernel: Any, num_inputs: int, num_outputs: int, seed:
 
 
 def _require_model(model: Any) -> None:
-    if not isinstance(model, TorchSingleTaskGP):
+    if not isinstance(model, (TorchSingleTaskGP, TorchSingleTaskVariationalGP)):
         raise UnsupportedError(
-            "Device Gaussian path updates currently require an exact SingleTaskGP or ModelListGP thereof."
+            "Device Gaussian paths require SingleTaskGP or SingleTaskVariationalGP models, or ModelLists thereof."
         )
+
+
+def _modules(model: Any) -> Any:
+    return model.model if isinstance(model, TorchSingleTaskVariationalGP) else model
+
+
+def _fit_transforms(model: Any) -> None:
+    if isinstance(model, TorchSingleTaskVariationalGP):
+        model._fit_transforms()
+    else:
+        model._fit_transform_graphs()
 
 
 def _outcome(model: Any) -> Any:
@@ -210,7 +222,7 @@ def _outcome(model: Any) -> Any:
         return None
 
     def untransform(values: Tensor) -> Tensor:
-        model._fit_transform_graphs()
+        _fit_transforms(model)
         outcomes = values.unsqueeze(-1) if model.num_outputs == 1 else values.transpose(-1, -2)
         result = model.outcome_transform.untransform(outcomes)[0]
         return result.squeeze(-1) if model.num_outputs == 1 else result.transpose(-1, -2)
@@ -223,13 +235,14 @@ def _draw_components(
 ) -> Any:
     _require_model(model)
     model.eval()
-    model._fit_transform_graphs()
-    batch = tuple(model.covar_module.batch_shape)
+    _fit_transforms(model)
+    modules = _modules(model)
+    batch = tuple(modules.covar_module.batch_shape)
     if draws is None:
         feature_map = tensor_kernel_features(
-            model.covar_module, model._train_X.shape[-1], features, seed
+            modules.covar_module, model._train_X.shape[-1], features, seed
         )
-        weight = _normals((*shape, *batch, features), model._train_Y, (seed + 2) % (2**31 - 1))
+        weight = _normals((*shape, *batch, features), model._train_X, (seed + 2) % (2**31 - 1))
     else:
         if len(draws) != model.num_outputs or any(len(d) != 2 for d in draws):
             raise ValueError("Provide one (frequencies, weights) tuple per output.")
@@ -241,9 +254,9 @@ def _draw_components(
             torch.as_tensor(d[1], dtype=model._train_X.dtype, device=model._train_X.device)
             for d in draws
         ]
-        _, dimensions = _leaf(model.covar_module, model._train_X.shape[-1])
+        _, dimensions = _leaf(modules.covar_module, model._train_X.shape[-1])
         feature_map = TorchKernelFeatureMap(
-            model.covar_module,
+            modules.covar_module,
             frequencies[0] if model.num_outputs == 1 else torch.stack(frequencies, -3),
         )
         weight = weights[0] if model.num_outputs == 1 else torch.stack(weights, -2)
@@ -263,7 +276,7 @@ def _draw_components(
     return TorchGeneralizedLinearPath(
         feature_map,
         weight,
-        bias_module=model.mean_module,
+        bias_module=modules.mean_module,
         input_transform=model.input_transform,
         output_transform=_outcome(model) if original else None,
     )
@@ -290,11 +303,25 @@ def tensor_prior_paths(
 
 
 def tensor_gaussian_update(
-    model: Any, sample_values: Tensor, likelihood: Any, target_values: Any, noise: Any, seed: Any
+    model: Any,
+    sample_values: Tensor,
+    likelihood: Any,
+    target_values: Any,
+    noise: Any,
+    seed: Any,
+    noise_covariance: Any = None,
 ) -> Any:
     from botorch_rs.sampling.pathwise.update_strategies import DEFAULT
 
     _require_model(model)
+    if isinstance(model, TorchSingleTaskVariationalGP):
+        return _variational_update(
+            model, sample_values, target_values, noise, seed, noise_covariance
+        )
+    if noise_covariance is not None:
+        raise UnsupportedError(
+            "Explicit noise covariance is not supported by device exact path updates."
+        )
     if likelihood not in (DEFAULT, None) and likelihood is not model.likelihood:
         raise UnsupportedError("Gaussian updates require the model likelihood or None.")
     points, targets, fixed = model._training_values()
@@ -330,6 +357,71 @@ def tensor_gaussian_update(
     return TorchGeneralizedLinearPath(features, weight)
 
 
+def _variational_update(
+    model: Any,
+    sample_values: Tensor,
+    target_values: Any,
+    noise: Any,
+    seed: Any,
+    noise_covariance: Any = None,
+) -> Any:
+    if model.num_outputs != 1:
+        raise NotImplementedError(
+            "Matheron updates require the scalar whitened VariationalStrategy; the reference does not register IndependentMultitaskVariationalStrategy updates."
+        )
+    if noise_covariance is not None:
+        raise NotImplementedError(
+            "Variational path updates do not support observation noise covariance."
+        )
+    model.eval()
+    _fit_transforms(model)
+    strategy, modules = model._strategy, model.model
+    points = strategy.inducing_points  # Already in transformed input coordinates.
+    batch = tuple(modules.covar_module.batch_shape)
+    if (
+        not isinstance(sample_values, Tensor)
+        or sample_values.dtype != points.dtype
+        or sample_values.device != points.device
+        or sample_values.ndim < len(batch) + 1
+        or sample_values.shape[-1] != points.shape[-2]
+        or tuple(sample_values.shape[-len(batch) - 1 : -1]) != batch
+    ):
+        raise ValueError(
+            "Variational prior values must have shape sample_shape x model_batch x num_inducing with the model dtype/device."
+        )
+    covariance = modules.covar_module(points, points)
+    # The official update factors K_ZZ itself, not K_ZZ + strategy.jitter_val I.
+    # Like its _cholesky_factor, factor in float64 and cast to the path dtype.
+    factor = _rs.tensor_psd_safe_cholesky(covariance.double()).to(sample_values.dtype)
+    if target_values is None:
+        if noise is None:
+            generator = torch.Generator(device=points.device).manual_seed(_seed(seed))
+            noise = torch.randn(
+                sample_values.shape, dtype=points.dtype, device=points.device, generator=generator
+            )
+        else:
+            noise = torch.as_tensor(noise, dtype=points.dtype, device=points.device)
+            if noise.shape != sample_values.shape:
+                raise ValueError(
+                    "Whitened variational base normals must match sample_values.shape."
+                )
+        distribution = strategy._variational_distribution
+        whitened = distribution.variational_mean + (
+            distribution.chol_variational_covar.tril() @ noise.unsqueeze(-1)
+        ).squeeze(-1)
+        target = modules.mean_module(points) + (factor @ whitened.unsqueeze(-1)).squeeze(-1)
+    else:
+        if noise is not None:
+            raise ValueError("Whitened base normals are only used when target_values is absent.")
+        target = torch.as_tensor(target_values, dtype=points.dtype, device=points.device)
+    errors = target - sample_values
+    weight = torch.cholesky_solve(errors.unsqueeze(-1), factor).squeeze(-1)
+    features = TorchKernelEvaluationMap(
+        modules.covar_module, points, input_transform=model.input_transform
+    )
+    return TorchGeneralizedLinearPath(features, weight)
+
+
 def tensor_matheron_paths(
     model: Any, shape: tuple[int, ...], features: int, seed: Any, draws: Any
 ) -> Any:
@@ -355,7 +447,15 @@ def tensor_matheron_paths(
     prior = _draw_components(
         model, shape, features, value, None if draws is None else [d[:2] for d in draws], False
     )
-    points = model._training_values()[0]
+    if isinstance(model, TorchSingleTaskVariationalGP) and model.num_outputs != 1:
+        raise NotImplementedError(
+            "The reference Matheron sampler does not support IndependentMultitaskVariationalStrategy."
+        )
+    points = (
+        model._strategy.inducing_points
+        if isinstance(model, TorchSingleTaskVariationalGP)
+        else model._training_values()[0]
+    )
     sample_values = prior.forward(points)
     if draws is None:
         generator = torch.Generator(device=points.device).manual_seed((value + 3) % (2**63 - 1))

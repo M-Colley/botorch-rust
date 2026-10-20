@@ -336,7 +336,7 @@ source patch is `D:/botorch-pr-multitask-entropy`, commit `92d08a63f`; see
 ## Device pathwise sampling
 
 `draw_kernel_feature_paths`, `draw_matheron_paths`, `gaussian_update` and
-`gen_kernel_features` now support device exact SingleTaskGP models with
+`gen_kernel_features` support device exact SingleTaskGP models with
 RBF/Matérn kernels, optional ScaleKernel/active dimensions, model/output
 batches and ModelLists. Fourier frequencies, Gaussian weights and update
 noise can be supplied explicitly, preserving their gradients. The exact
@@ -364,10 +364,36 @@ acquisition. No inference data is converted to host arrays. Together with
 the existing feature, path-constructor and utility regressions, 142 cases
 pass; the no-Torch/no-NumPy subprocess import check also passes.
 
-Device updates currently require exact SingleTaskGP models or ModelLists
-thereof. Structured/variational/fully Bayesian device path updates and
-arbitrary custom prior/update strategies remain explicit unsupported
-configurations. As with the existing native path model and reference,
+Device `SingleTaskVariationalGP` prior paths and scalar whitened Matheron
+updates are also supported. This follows the pinned official BoTorch
+`b0dd01be61d517c387e234903a6e2cc38c057ea2` registrations for
+`ApproximateGPyTorchModel` and `VariationalStrategy`: draw the current
+whitened variational Gaussian, multiply by the Cholesky factor of `K_ZZ`,
+add the mean at the inducing points, then solve the latent Gaussian
+correction. The inducing points are already in transformed coordinates;
+only subsequent raw queries pass through the input transform. This update
+adds neither observation noise nor `VariationalStrategy.jitter_val` to
+`K_ZZ`; it retains the factorization's PSD fallback behavior. The stored
+third draw is the whitened standard normal, so explicit draws and seeds
+reproduce paths without changing the variational parameters or initializing
+an untouched variational distribution.
+
+The additional 28-case CPU/CUDA suite checks synchronized unmodified
+reference update formulas for RBF/Matérn, model batches and
+Normalize/Standardize; all training-data, query, parameter and draw Hessian
+products against an independent RBF formula; complete data/query/draw
+`gradcheck` and `gradgradcheck`; seeded and explicit targets; path-model
+MC acquisition use; and dtype conversion. No inference tensor is converted
+to a host array. Training-data gradients arise through fitted transforms;
+the already fitted variational Gaussian is a separate model state, and
+observation-noise parameters intentionally do not enter this latent update.
+
+Independent multi-output variational prior paths match the reference.
+Its Matheron sampler fails on `IndependentMultitaskVariationalStrategy`
+because that wrapper has no direct `inducing_points` attribute; the port
+reports this same unsupported strategy explicitly. Structured/fully Bayesian
+device path updates and arbitrary custom prior/update strategies remain
+explicit unsupported configurations. As with the native path model and reference,
 MatheronPathModel requires single-output components in a ModelList.
 Random Sobol uniforms originate from Torch's CPU Sobol generator; only new
 random numbers are transferred, and all normal transforms/inference run

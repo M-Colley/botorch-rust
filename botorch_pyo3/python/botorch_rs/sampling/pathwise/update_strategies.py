@@ -52,8 +52,9 @@ def gaussian_update(
     target_values: Any = None,
     noise: Any = None,
     seed: int | None = None,
+    noise_covariance: Any = None,
 ) -> GeneralizedLinearPath:
-    r"""The Gaussian pathwise update of an exact GP (BoTorch's
+    r"""The Gaussian pathwise update of a GP (BoTorch's
     ``gaussian_update``)::
 
         update(·) = k(·, X) (K + Σ)^{-1} (y - f(X) - ε),   ε ~ N(0, Σ),
@@ -64,17 +65,29 @@ def gaussian_update(
     transformed outcome space). The returned path applies the model's input
     transform and returns values in the transformed outcome space.
 
-    botorch_rs extensions (keyword-only): ``noise``, the standard normal
-    draws of ``ε / sqrt(Σ)`` (shape of ``sample_values``; BoTorch's
-    ``torch.randn_like``), or ``seed`` (the noise of ``draw_matheron_paths``
-    with the same seed).
+    For device ``SingleTaskVariationalGP`` models with a scalar whitened
+    ``VariationalStrategy``, ``X`` is instead the already transformed
+    inducing points ``Z`` and ``y`` is sampled from the current unwhitened
+    variational distribution. The update factors ``K_ZZ`` without observation
+    noise or the strategy's predictive jitter, matching BoTorch's update.
+    ``target_values`` may supply these latent values explicitly. The device
+    update accepts ``noise_covariance=None``; explicit covariance overrides
+    are not supported.
+
+    botorch_rs extensions (keyword-only): ``noise`` supplies standard normals
+    for the exact observation-noise draw or the whitened variational draw,
+    with the shape of ``sample_values``; ``seed`` makes that draw repeatable.
     """
     from botorch_rs.models.gp_regression import SingleTaskGP
 
     if getattr(model, "_tensor_backend", None) == "torch":
         from botorch_rs.sampling.pathwise._torch_backend import tensor_gaussian_update
 
-        return tensor_gaussian_update(model, sample_values, likelihood, target_values, noise, seed)
+        return tensor_gaussian_update(
+            model, sample_values, likelihood, target_values, noise, seed, noise_covariance
+        )
+    if noise_covariance is not None:
+        raise UnsupportedError("Explicit noise covariance is not supported by native path updates.")
     if not isinstance(model, SingleTaskGP):
         raise UnsupportedError("botorch_rs gaussian_update requires a botorch_rs SingleTaskGP.")
     if likelihood not in (DEFAULT, None) and likelihood is not getattr(model, "likelihood", None):
