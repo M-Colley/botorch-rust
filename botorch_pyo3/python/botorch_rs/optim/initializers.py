@@ -244,6 +244,10 @@ def gen_one_shot_hvkg_initial_conditions(
     ``raw_inner_samples`` (1024). The random choices use botorch_rs's
     generator, seeded by ``seed`` (BoTorch uses the global torch generator).
     """
+    if getattr(acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_kg_initializers import one_shot_hvkg
+
+        return one_shot_hvkg(locals())
     from botorch_rs.acquisition.multi_objective.hypervolume_knowledge_gradient import (
         qHypervolumeKnowledgeGradient,
     )
@@ -323,6 +327,10 @@ def gen_one_shot_kg_initial_conditions(
     botorch_rs's generator, seeded by ``seed`` (BoTorch uses the global torch
     generator).
     """
+    if getattr(acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_kg_initializers import one_shot_kg
+
+        return one_shot_kg(locals())
     from botorch_rs.acquisition.knowledge_gradient import qKnowledgeGradient
 
     if not isinstance(acq_function, qKnowledgeGradient):
@@ -606,6 +614,12 @@ def gen_value_function_initial_conditions(
     multinomial generators; other array types use the port's native Sobol
     stream and their usual sampling generators.
     """
+    if getattr(acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_kg_initializers import (
+            value_function as initialize_value_function,
+        )
+
+        return initialize_value_function(locals())
     from botorch_rs.acquisition.knowledge_gradient import _get_value_function
     from botorch_rs.optim.optimize import optimize_acqf
     from botorch_rs.optim.utils.acquisition_utils import fix_features

@@ -300,10 +300,17 @@ def gen_initial_conditions(
                 raise ValueError("Fewer feasible raw initial conditions than requested restarts.")
         if fixed_X_fantasies is not None:
             fantasies = torch.as_tensor(fixed_X_fantasies, dtype=bounds.dtype, device=bounds.device)
-            if fantasies.ndim != 2 or fantasies.shape[-1] != bounds.shape[-1]:
-                raise ValueError("fixed_X_fantasies must have shape k x d.")
+            if fantasies.ndim < 2 or fantasies.shape[-1] != bounds.shape[-1]:
+                raise ValueError("fixed_X_fantasies must have shape batch_shape x k x d.")
+            if (
+                torch.broadcast_shapes(fantasies.shape[:-2], samples.shape[1:-2])
+                != samples.shape[1:-2]
+            ):
+                raise ValueError(
+                    "Fixed fantasy batches must broadcast to the acquisition's batches."
+                )
             samples = torch.cat(
-                (samples, fantasies.expand(*samples.shape[:-2], *fantasies.shape)), -2
+                (samples, fantasies.expand(*samples.shape[:-2], *fantasies.shape[-2:])), -2
             )
         with torch.no_grad():
             values = torch.cat(

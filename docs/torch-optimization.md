@@ -124,9 +124,37 @@ analytic constraint dictionaries, a single subset draw, repeatability and
 forbidden host conversions. Narrow-polytope interior selection is tested
 separately. Targeted mypy and Ruff checks pass.
 
-Specialized KG starting-point heuristics, mixed alternating search and further
-public initialization helpers are subsequent checkpoints. Local lattice
-search retains the reference's unbatched, non-one-shot restriction. Sequential
-mixed search retains the reference's inter-point-constraint restriction.
-Forced parallel SciPy mode remains unsupported; this driver uses serial SciPy
-calls for each restart group. No optimization speedup is claimed here.
+One-shot KG and HVKG now select their specialized default initializers.
+`gen_one_shot_kg_initial_conditions` first scores augmented raw starts, then
+replaces the prescribed fantasy tail with Boltzmann draws from optimized
+current-model decisions. A zero-length optimized tail leaves the random
+starts intact, following the existing PR 3395 repair for a single fantasy.
+`gen_one_shot_hvkg_initial_conditions` optimizes current-model hypervolume
+sets, fills the prescribed restart quota with sampled sets, and scores
+candidate starts conditional on each fixed fantasy set. Multi-fidelity
+HVKG optimizes full physical coordinates with target fidelity features fixed.
+`gen_value_function_initial_conditions` mixes sampled current-model optima
+with Sobol candidates and selects starts independently for each fantasy/model
+batch. Scalar and model-batched KG, batched HVKG and conditional fantasy
+layouts are tested. Fixed fantasy inputs may carry batch dimensions that
+broadcast to the acquisition's batch shape.
+
+The inner problem uses the port's actual value acquisition and device Torch
+candidate optimizer by default. Specified SciPy solver options or linear
+constraints select the explicit SciPy/SLSQP interface; inference remains on
+the model's device. Inner restart/sample counts, optimizer settings, random
+fraction, Boltzmann temperature and seeded draws are honored. The device
+solver can converge to different optima from reference SciPy; no identical
+optimization trajectory is claimed. Independent formula tests synchronize
+raw and optimized decisions to compare the exact KG tail law to the pinned
+reference, and separate tests run genuine inner optimization and high-level
+default dispatch. Batched weighting follows PR 3390's category-axis correction.
+The KG initializer checkpoint passes 140 CPU/CUDA KG/HVKG, optimizer and
+initializer tests, including no-host-transfer guards; mypy and Ruff pass.
+
+Mixed alternating search and further public optimization helpers are
+subsequent checkpoints. Local lattice search retains the reference's
+unbatched, non-one-shot restriction. Sequential mixed search retains the
+reference's inter-point-constraint restriction. Forced parallel SciPy mode
+remains unsupported; this driver uses serial SciPy calls for each restart
+group. No optimization speedup is claimed here.

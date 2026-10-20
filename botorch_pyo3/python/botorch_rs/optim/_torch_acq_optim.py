@@ -564,6 +564,14 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
         "sample_around_best_subset_sigma",
         "sample_around_best_prob_perturb",
     }
+    from botorch_rs.acquisition.knowledge_gradient import qKnowledgeGradient
+    from botorch_rs.acquisition.multi_objective.hypervolume_knowledge_gradient import (
+        qHypervolumeKnowledgeGradient,
+    )
+
+    specialized = isinstance(acquisition, (qKnowledgeGradient, qHypervolumeKnowledgeGradient))
+    if specialized:
+        init_keys |= {"frac_random", "num_inner_restarts", "raw_inner_samples"}
     if args["ic_generator"] is None:
         unsupported = (options.keys() & _INIT_KEYS) - init_keys
         if unsupported:
@@ -594,19 +602,42 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
             raise ValueError(
                 "raw_samples must be at least num_restarts when no initial conditions are given."
             )
-        from botorch_rs.optim._torch_acq_initializers import gen_initial_conditions
+        if specialized:
+            from botorch_rs.optim.initializers import (
+                gen_one_shot_hvkg_initial_conditions,
+                gen_one_shot_kg_initial_conditions,
+            )
 
-        initial = gen_initial_conditions(
-            acquisition,
-            bounds,
-            augmented,
-            restarts,
-            raw,
-            args["fixed_features"],
-            options,
-            inequality_constraints=args["inequality_constraints"],
-            equality_constraints=args["equality_constraints"],
-        )
+            initialize = (
+                gen_one_shot_kg_initial_conditions
+                if isinstance(acquisition, qKnowledgeGradient)
+                else gen_one_shot_hvkg_initial_conditions
+            )
+            initial = initialize(
+                acquisition,
+                bounds,
+                q,
+                restarts,
+                raw,
+                args["fixed_features"],
+                options,
+                inequality_constraints=args["inequality_constraints"],
+                equality_constraints=args["equality_constraints"],
+            )
+        else:
+            from botorch_rs.optim._torch_acq_initializers import gen_initial_conditions
+
+            initial = gen_initial_conditions(
+                acquisition,
+                bounds,
+                augmented,
+                restarts,
+                raw,
+                args["fixed_features"],
+                options,
+                inequality_constraints=args["inequality_constraints"],
+                equality_constraints=args["equality_constraints"],
+            )
     initial = initial.to(bounds)
     from botorch_rs.optim._torch_acq_initializers import acquisition_batch_shape
 
