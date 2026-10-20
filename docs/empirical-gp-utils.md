@@ -38,7 +38,10 @@ probabilistic moments match. Interpolation requires at least two strictly
 increasing finite knots; duplicate knots raise a clear error.
 
 `instantiate_ard` attaches nonnegative native parameter-constraint metadata
-and respects optional registration methods. The interpolation object stores
+and respects optional registration methods. Optional torch/GPyTorch modules
+receive a torch-module metadata container around the native untransformed
+constraint, including serializable bounds; this performs no tensor arithmetic.
+The interpolation object stores
 its data in a state dictionary and moves torch buffers with `.to`. It is a
 native callable descriptor rather than a torch module subclass.
 

@@ -66,6 +66,37 @@ def _reject_decomposition_grad(*values: Any) -> None:
 
 
 _AUTOGRAD: Any = None
+_CONSTRAINT_MODULE: Any = None
+
+
+def _constraint_container(constraint: Any, like: Any) -> Any:
+    """Optional torch-module container for native constraint metadata."""
+    global _CONSTRAINT_MODULE
+    torch: Any = importlib.import_module("torch")
+    if _CONSTRAINT_MODULE is None:
+
+        class ConstraintContainer(torch.nn.Module):
+            def __init__(self, native: Any, reference: Any) -> None:
+                super().__init__()
+                self._native = native
+                kind = kind_of(reference)
+                self.register_buffer("lower_bound", from_flat([native.lower_bound], (), kind))
+                self.register_buffer("upper_bound", from_flat([native.upper_bound], (), kind))
+                self.initial_value = None
+                self.enforced = False
+
+            def transform(self, value: Any) -> Any:
+                return value
+
+            inverse_transform = transform
+
+            def check(self, value: Any) -> bool:
+                return all(self._native.check(v) for v in to_flat(value)[0])
+
+            check_raw = check
+
+        _CONSTRAINT_MODULE = ConstraintContainer
+    return _CONSTRAINT_MODULE(constraint, like)
 
 
 def _native_function() -> Any:
@@ -203,6 +234,16 @@ def instantiate_ard(
     if generated:
         kind = ArrayKind("torch", dtype or torch.float32, device) if torch is not None else LIST
         curve_weights = from_flat([1.0] * num_curves, (num_curves,), kind)
+    if (
+        torch is not None
+        and isinstance(obj, torch.nn.Module)
+        and not is_torch_tensor(curve_weights)
+    ):
+        curve_weights = from_flat(
+            to_flat(curve_weights)[0],
+            (num_curves,),
+            ArrayKind("torch", dtype or torch.float32, device),
+        )
     if _ops.shape_of(curve_weights) != (num_curves,):
         raise ValueError("curve_weights must have shape (num_curves,).")
     if is_torch_tensor(curve_weights) and not isinstance(curve_weights, torch.nn.Parameter):
@@ -215,6 +256,8 @@ def instantiate_ard(
     else:
         obj.curve_weights = curve_weights
     if callable(getattr(obj, "register_constraint", None)):
+        if torch is not None and isinstance(obj, torch.nn.Module):
+            constraint = _constraint_container(constraint, curve_weights)
         obj.register_constraint("curve_weights", constraint)
     else:
         obj.curve_weights_constraint = constraint

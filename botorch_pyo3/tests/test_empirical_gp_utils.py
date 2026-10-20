@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 import os
 import sys
 from pathlib import Path
@@ -232,3 +233,29 @@ def test_parameter_registration_and_em_mean_gradient() -> None:
     mu = torch.tensor([1.0, 2.0], dtype=torch.float64, requires_grad=True)
     curves = rs.em_prior_to_basis_curves(mu, torch.eye(2, dtype=torch.float64))
     torch.testing.assert_close(torch.autograd.grad(curves.sum(), mu)[0], torch.full_like(mu, 3.0))
+
+
+def test_gpytorch_parameter_container_and_infinite_constraint_bounds() -> None:
+    import torch
+    from gpytorch.module import Module
+
+    from botorch_rs.utils.constraints import NonTransformedInterval
+
+    module = Module()
+    rs.instantiate_ard(module, 3, dtype=torch.float64)
+    assert module.curve_weights.requires_grad and module.ard
+    constraint = module.curve_weights_constraint
+    assert not constraint.enforced
+    assert constraint.check(torch.tensor([0.0, 1.0]))
+    assert not constraint.check(torch.tensor([-1.0, 1.0]))
+    assert set(module.state_dict()) == {
+        "curve_weights",
+        "curve_weights_constraint.lower_bound",
+        "curve_weights_constraint.upper_bound",
+    }
+    for lower, upper in [(0.0, math.inf), (-math.inf, 1.0), (-math.inf, math.inf)]:
+        constraint = NonTransformedInterval(lower, upper)
+        assert not constraint.enforced
+        assert constraint.lower_bound == lower and constraint.upper_bound == upper
+        assert tuple(constraint._rs.raw_bounds) == (lower, upper)
+        assert constraint.transform(0.7) == constraint.inverse_transform(0.7) == 0.7
