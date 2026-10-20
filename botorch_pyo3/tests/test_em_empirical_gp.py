@@ -72,6 +72,13 @@ def official() -> Any:
         + "\n            m_0=mean_module(X_inducing).reshape(-1) if K_mu is not None else None,",
     )
     exec(compile(corrected, str(folder / "em_empirical_gp.py"), "exec"), em.__dict__)
+    # Shared modules describe raw historical targets. Independent Standardize
+    # transforms change the units of that shared law (also corrected by #3388).
+    shared = inspect.getsource(em.build_shared_gp_model_list)
+    old = "covar_module=covar_module,  # Shared across all GPs"
+    assert shared.count(old) == 1
+    shared = shared.replace(old, old + "\n            outcome_transform=None,")
+    exec(compile(shared, str(folder / "em_empirical_gp.py"), "exec"), em.__dict__)
     try:
         yield SimpleNamespace(**modules)
     finally:
