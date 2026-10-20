@@ -25,6 +25,39 @@ def _tensor(value: Any, like: Tensor) -> Tensor:
     return torch.as_tensor(value, dtype=like.dtype, device=like.device)
 
 
+def module_log_prior(module: nn.Module, batch_shape: Any) -> Any:
+    """Prior terms of a port or registered-prior Torch module.
+
+    Return a Python zero for modules without priors: an empty custom module
+    has no parameter or buffer from which to infer its device. Tensor prior
+    terms always retain their device and gradient graph.
+    """
+    method = getattr(module, "log_prior", None)
+    if callable(method):
+        return method()
+    named = getattr(module, "named_priors", None)
+    if not callable(named):
+        return 0.0
+    result: Tensor | None = None
+    seen: set[tuple[int, str, int]] = set()
+    for name, owner, prior, closure, _ in named():
+        key = (id(owner), name.rsplit(".", 1)[-1], id(prior))
+        if key in seen:
+            continue
+        seen.add(key)
+        value = prior.log_prob(closure(owner))
+        if not isinstance(value, Tensor):
+            raise TypeError("A registered Torch prior must return a Tensor log density.")
+        owner_shape = getattr(owner, "batch_shape", batch_shape)
+        event_ndim = max(0, value.ndim - len(owner_shape))
+        if event_ndim:
+            value = value.sum(tuple(range(-event_ndim, 0)))
+        if result is None:
+            result = value.new_zeros(batch_shape)
+        result = result + value
+    return 0.0 if result is None else result
+
+
 class TorchConstraint(nn.Module):
     """Differentiable constraint with the original port constraint's bounds."""
 
@@ -930,6 +963,7 @@ class TorchInputChain(_TorchModule):
 
 class TorchStandardize(nn.Module):
     _tensor_backend = "torch"
+    _is_linear = True
 
     def __init__(
         self, m: int, batch_shape: Any, like: Tensor, outputs: Any = None, min_stdv: float = 1e-8
@@ -989,6 +1023,174 @@ class TorchStandardize(nn.Module):
         scale = self.stdvs.movedim(-1, -2).unsqueeze(-1)
         return value, covariance * scale.square()
 
+    def untransform_posterior(self, posterior: Any, X: Any = None) -> Any:
+        from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+        from botorch_rs.posteriors.transformed import TransformedPosterior
+
+        means, stdvs = self.means.clone(), self.stdvs.clone()
+        if isinstance(posterior, TorchGPyTorchPosterior):
+            q = posterior.mean.shape[-2]
+            scale = stdvs.movedim(-1, -2).expand(*stdvs.shape[:-2], self._m, q).flatten(-2)
+            covariance = posterior._covariance_tensor * scale.unsqueeze(-1) * scale.unsqueeze(-2)
+            return TorchGPyTorchPosterior(posterior.mean * stdvs + means, covariance)
+        return TransformedPosterior(
+            posterior,
+            sample_transform=lambda samples: samples * stdvs + means,
+            mean_transform=lambda mean, variance: mean * stdvs + means,
+            variance_transform=lambda mean, variance: variance * stdvs.square(),
+        )
+
+
+def _elementwise_outcome(value: Tensor, kind: str, power: float, inverse: bool) -> Tensor:
+    if kind == "Log":
+        return value.exp() if inverse else value.log()
+    if kind == "Power":
+        return value.pow(1 / power if inverse else power)
+    # Bilog is C1 with slope one at zero. sign(x)*log1p(abs(x)) has the
+    # incorrect Torch derivative zero there. Clamp each inactive branch to
+    # keep all its operations in their domain, including repeated backward.
+    positive, negative = value.clamp_min(0), (-value).clamp_min(0)
+    if inverse:
+        return torch.where(value >= 0, positive.expm1(), -negative.expm1())
+    return torch.where(value >= 0, positive.log1p(), -negative.log1p())
+
+
+class TorchElementwiseOutcome(nn.Module):
+    _tensor_backend = "torch"
+    _is_linear = False
+    _m: int
+
+    def __init__(self, source: Any, m: int) -> None:
+        super().__init__()
+        self.kind = type(source).__name__
+        self._m = m
+        self.power = float(getattr(source, "power", 1))
+        if self.kind == "Power" and (not math.isfinite(self.power) or self.power == 0):
+            raise ValueError(
+                "Power must be finite and nonzero for an invertible outcome transform."
+            )
+        indices = getattr(source, "_outputs", None)
+        if indices is not None and any(i < -m or i >= m for i in indices):
+            raise IndexError("Outcome transform output index out of range.")
+        self._outputs = None if indices is None else tuple(i % m for i in indices)
+
+    def _select(self, original: Tensor, transformed: Tensor) -> Tensor:
+        if self._outputs is None:
+            return transformed
+        used = torch.zeros(self._m, dtype=torch.bool, device=original.device)
+        used[list(self._outputs)] = True
+        return torch.where(used, transformed, original)
+
+    def _map(self, Y: Tensor, Yvar: Tensor | None, inverse: bool) -> tuple[Tensor, Tensor | None]:
+        if Y.ndim < 2 or Y.shape[-1] != self._m:
+            raise ValueError(f"Outcome transform expected ... x n x {self._m} values.")
+        if Yvar is not None and self.kind != "Log":
+            raise NotImplementedError(
+                f"{self.kind} does not support transforming observation noise."
+            )
+        if self.kind == "Log" and not inverse:
+            selected = Y if self._outputs is None else Y[..., list(self._outputs)]
+            if not bool((selected > 0).all()):
+                raise ValueError("Log-transformed outcomes must be positive.")
+        safe_values = self._select(torch.ones_like(Y), Y)
+        transformed = _elementwise_outcome(safe_values, self.kind, self.power, inverse)
+        output = self._select(Y, transformed)
+        variance = None
+        if Yvar is not None:
+            transformed_variance = (
+                Yvar * (2 * Y).exp() if inverse else Yvar / Y.clamp_min(1e-8).square()
+            )
+            variance = self._select(Yvar, transformed_variance)
+        return output, variance
+
+    def forward(
+        self, Y: Tensor, Yvar: Tensor | None = None, X: Tensor | None = None
+    ) -> tuple[Tensor, Tensor | None]:
+        return self._map(Y, Yvar, False)
+
+    def fit(self, Y: Tensor) -> TorchElementwiseOutcome:
+        return self
+
+    def untransform(
+        self, Y: Tensor, Yvar: Tensor | None = None, X: Tensor | None = None
+    ) -> tuple[Tensor, Tensor | None]:
+        return self._map(Y, Yvar, True)
+
+    def untransform_posterior(self, posterior: Any, X: Any = None) -> Any:
+        from botorch_rs.posteriors.transformed import TransformedPosterior
+
+        kind, power, outputs, m = self.kind, self.power, self._outputs, self._m
+
+        def select(original: Tensor, value: Tensor) -> Tensor:
+            if outputs is None:
+                return value
+            used = torch.zeros(m, dtype=torch.bool, device=original.device)
+            used[list(outputs)] = True
+            return torch.where(used, value, original)
+
+        def samples(value: Tensor) -> Tensor:
+            safe_values = select(torch.ones_like(value), value)
+            return select(value, _elementwise_outcome(safe_values, kind, power, True))
+
+        def mean(value: Tensor, variance: Tensor) -> Tensor:
+            return select(value, (value + 0.5 * variance).exp())
+
+        def variance(value: Tensor, var: Tensor) -> Tensor:
+            return select(var, var.expm1() * (2 * value + var).exp())
+
+        return TransformedPosterior(
+            posterior, samples, mean if kind == "Log" else None, variance if kind == "Log" else None
+        )
+
+
+class TorchOutcomeChain(nn.Module):
+    _tensor_backend = "torch"
+
+    def __init__(self, transforms: dict[str, nn.Module]) -> None:
+        super().__init__()
+        self._transform_names = tuple(transforms)
+        for name, transform in transforms.items():
+            self.add_module(name, transform)
+
+    def __getitem__(self, name: str) -> Any:
+        if name not in self._transform_names:
+            raise KeyError(name)
+        return getattr(self, name)
+
+    @property
+    def _is_linear(self) -> bool:
+        return all(getattr(self[name], "_is_linear", False) for name in self._transform_names)
+
+    def forward(
+        self, Y: Tensor, Yvar: Tensor | None = None, X: Tensor | None = None
+    ) -> tuple[Tensor, Tensor | None]:
+        for name in self._transform_names:
+            Y, Yvar = self[name](Y, Yvar, X=X)
+        return Y, Yvar
+
+    def fit(self, Y: Tensor) -> TorchOutcomeChain:
+        states = [(self[name], self[name].training) for name in self._transform_names]
+        try:
+            for module, _ in states:
+                module.train()
+                Y, _ = module(Y)
+        finally:
+            for module, state in states:
+                module.train(state)
+        return self
+
+    def untransform(
+        self, Y: Tensor, Yvar: Tensor | None = None, X: Tensor | None = None
+    ) -> tuple[Tensor, Tensor | None]:
+        for name in reversed(self._transform_names):
+            Y, Yvar = self[name].untransform(Y, Yvar, X=X)
+        return Y, Yvar
+
+    def untransform_posterior(self, posterior: Any, X: Any = None) -> Any:
+        for name in reversed(self._transform_names):
+            posterior = self[name].untransform_posterior(posterior, X=X)
+        return posterior
+
 
 def build_input_transform(source: Any, d: int, train_X: Tensor) -> nn.Module | None:
     from botorch_rs.models.transforms.input import ChainedInputTransform, Normalize, Warp
@@ -1017,24 +1219,50 @@ def build_input_transform(source: Any, d: int, train_X: Tensor) -> nn.Module | N
 
 
 def build_outcome_transform(source: Any, m: int, train_Y: Tensor) -> nn.Module | None:
-    from botorch_rs.models.transforms.outcome import Standardize
+    from botorch_rs.models.transforms.outcome import (
+        Bilog,
+        ChainedOutcomeTransform,
+        Log,
+        Power,
+        Standardize,
+    )
     from botorch_rs.utils.types import DEFAULT
 
     if source is None:
         return None
-    if isinstance(source, nn.Module):
-        return source.to(train_Y)
     if source is DEFAULT or type(source).__name__ == "_DefaultType":
         result = TorchStandardize(m, train_Y.shape[:-2], train_Y)
-    elif type(source) is Standardize:
+    elif type(source) is Standardize or (
+        isinstance(source, nn.Module)
+        and all(
+            hasattr(source, attribute)
+            for attribute in ("_m", "_batch_shape", "_min_stdv", "_outputs", "means", "stdvs")
+        )
+        and not hasattr(source, "_stratification_idx")
+    ):
         if source._m != m:
             raise ValueError("Standardize's m must equal the model's number of outputs.")
+        minimum_stdv: Any = source._min_stdv
         result = TorchStandardize(
-            m, source._batch_shape, train_Y, source._outputs, source._min_stdv
+            m, source._batch_shape, train_Y, source._outputs, float(minimum_stdv)
         )
+    elif type(source) in (Log, Bilog, Power):
+        return TorchElementwiseOutcome(source, m).eval()
+    elif type(source) is ChainedOutcomeTransform:
+        children: dict[str, nn.Module] = {}
+        values = train_Y
+        with torch.no_grad():
+            for name, child in source.items():
+                transform = build_outcome_transform(child, m, values)
+                assert transform is not None
+                children[name] = transform
+                values, _ = transform(values)
+        return TorchOutcomeChain(children).eval()
+    elif isinstance(source, nn.Module):
+        return source.to(train_Y)
     else:
         raise UnsupportedError(
-            "Torch backend outcome transforms currently support Standardize or a torch.nn.Module."
+            "Torch backend outcome transforms support Standardize, Log, Bilog, Power, ChainedOutcomeTransform or a torch.nn.Module."
         )
     with torch.no_grad():
         result(train_Y)

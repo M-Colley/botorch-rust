@@ -19,7 +19,11 @@ Normalize, Warp and ChainedInputTransform are implemented as Torch components.
 Warp concentrations are actual Parameters with optimizer bounds. Normalize and
 Standardize expose differentiable `fit` methods; a model can rebuild fitting
 statistics from its original training tensors before each differentiable
-evaluation. Query evaluation reuses fitted statistics. Standardize converts
+evaluation. This retains the functional derivative through training-data
+preprocessing; BoTorch's ordinary eval-mode cached-training-input path detaches
+that graph. Values and the differentiable transform formulas match the
+reference, while the port deliberately retains training-data gradients in this
+backend. Query evaluation reuses fitted statistics. Standardize converts
 independent output covariance blocks with shape `(..., m, q, q)`.
 
 The Gaussian likelihood registers its learned parameter at
@@ -31,6 +35,21 @@ snapshots; the model recomputes its transformed observation noise from the
 original training Tensor for inference and gradients. Noise floors are 1e-4 for
 float32 and 1e-6 for float64, matching GPyTorch defaults.
 
+Log, Bilog, Power and ChainedOutcomeTransform adapters preserve complete Torch
+sample graphs through `TransformedPosterior`. Log provides analytic lognormal
+means and variances and the reference delta-method observation-noise transform.
+Power and Bilog retain the reference's explicit missing-moment and
+observation-noise errors. Standardize un-transforms Gaussian covariance directly
+and affine-transforms nonlinear posterior samples and moments where available.
+Returned posterior transforms capture their fitted statistics so later refitting
+does not change an existing posterior. Plain Torch Standardize modules are
+converted by their parameter/statistics protocol without importing BoTorch.
+
+Custom Torch modules with GPyTorch's `named_priors` registration protocol can
+use `module_log_prior(module, batch_shape)`. The helper evaluates the actual
+registered prior closures with Tensor operations, reduces event dimensions,
+preserves batch axes and shared leaves, and requires no BoTorch numerical code.
+
 Prior terms reduce parameter event dimensions and preserve model/output batch
 axes. Shared kernel/prior objects are visited once. The default LogNormal prior
 retains its construction-precision variance and log-scale constants, matching
@@ -40,8 +59,8 @@ and higher derivatives.
 
 ## Verification and reference limitations
 
-`test_torch_backend_modules.py` passes 218 cases on the available CPU and CUDA
-device. Tests compare values and first derivatives to the installed GPyTorch
+`test_torch_backend_modules.py` and `test_torch_backend_outcomes.py` pass 262
+cases on the available CPU and CUDA device. Tests compare values and first derivatives to the installed GPyTorch
 1.15.2 / official BoTorch reference, compare Hessian-vector products to central
 differences of reference first derivatives, check full versus diagonal
 covariance and finite self-covariance Hessians in float32/float64, and exercise
@@ -71,3 +90,10 @@ transformed-distribution state after GPyTorch `.to(...)`; tests of a general
 device-local prior construct the reference from Tensor hyperparameters on the
 intended device and dtype. A separate default-prior regression checks the
 historical cached-constant behavior to 2e-14 instead of relaxing MLL tolerance.
+
+Bilog's reference expression `sign(y) * log1p(abs(y))` gives Torch derivative
+zero at `y=0`, although its mathematical derivative is one. The Torch adapter
+uses domain-safe positive/negative branches, giving slope one for both Bilog
+and its inverse. Away from zero, values and first/second derivatives match the
+reference. The function is C1 and is not C2 at zero; no unique Hessian exists
+there. The repair is checked with a centered finite difference at the origin.
