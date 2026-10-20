@@ -1,0 +1,241 @@
+"""Native Gaussian KL and kernel fitting for empirical-Bayes priors."""
+
+from __future__ import annotations
+
+import math
+from typing import Any
+
+from botorch_rs import _botorch_rs as _rs
+from botorch_rs import _ops
+from botorch_rs._arrays import from_flat, kind_of, to_flat
+from botorch_rs.exceptions.errors import UnsupportedError
+from botorch_rs.kernels import Kernel
+from botorch_rs.means import ConstantMean, ZeroMean
+from botorch_rs.mlls import MarginalLogLikelihood
+
+_kl_function: Any = None
+
+
+def kl_divergence_mvn(mu_p: Any, Sigma_p: Any, mu_q: Any, Sigma_q: Any) -> Any:
+    """Cholesky-based KL(p || q), with native first derivatives in all inputs."""
+    arrays = (mu_p, Sigma_p, mu_q, Sigma_q)
+    kind = kind_of(mu_p)
+    if kind.lib == "torch" and _ops._requires_grad(arrays):
+        global _kl_function
+        import torch
+
+        if _kl_function is None:
+            from torch.autograd.function import once_differentiable
+
+            class _GaussianKl(torch.autograd.Function):
+                @staticmethod
+                def forward(ctx: Any, *values: Any) -> Any:  # type: ignore[override]
+                    a, b, c, d = (to_flat(x) for x in values)
+                    result, derivatives = _rs.gaussian_kl(a, b, c, d, gradients=True)
+                    assert derivatives is not None
+                    ctx.save_for_backward(
+                        *(
+                            from_flat(g[0], tuple(g[1]), kind_of(x))
+                            for g, x in zip(derivatives, values, strict=True)
+                        )
+                    )
+                    return from_flat([result], (), kind_of(values[0]))
+
+                @staticmethod
+                @once_differentiable
+                def backward(ctx: Any, adjoint: Any) -> tuple[Any, ...]:  # type: ignore[override]
+                    return tuple(adjoint * derivative for derivative in ctx.saved_tensors)
+
+            _kl_function = _GaussianKl
+        return _kl_function.apply(*arrays)
+    a, b, c, d = (to_flat(x) for x in arrays)
+    value, _ = _rs.gaussian_kl(a, b, c, d)
+    return from_flat([value], (), kind)
+
+
+class _KernelFit:
+    def __init__(
+        self, mean_module: Any, covar_module: Kernel, X_ref: Any, mu_em: Any, Sigma_em: Any
+    ) -> None:
+        if not isinstance(mean_module, (ConstantMean, ZeroMean)) or not isinstance(
+            covar_module, Kernel
+        ):
+            raise UnsupportedError(
+                "KL prior fitting requires a native ConstantMean/ZeroMean and covariance kernel."
+            )
+        if tuple(mean_module.batch_shape) or tuple(covar_module.batch_shape):
+            raise UnsupportedError(
+                "KL prior fitting currently requires unbatched mean and kernel modules."
+            )
+        if _ops._requires_grad([X_ref]):
+            raise UnsupportedError(
+                "KL kernel fitting currently treats reference locations as fixed; query-location gradients are not implemented."
+            )
+        self.mean_module, self.covar_module = mean_module, covar_module
+        self.kind = kind_of(X_ref)
+        self.learn_mean = isinstance(mean_module, ConstantMean)
+        constraint = getattr(mean_module, "raw_constant_constraint", None)
+        self.native = _rs.KernelPriorKl(
+            covar_module._node(),
+            to_flat(X_ref, "X_ref"),
+            to_flat(mu_em, "mu_em"),
+            to_flat(Sigma_em, "Sigma_em"),
+            self.learn_mean,
+            None if constraint is None else constraint._rs,
+        )
+
+    def raw(self) -> list[float]:
+        return (
+            []
+            if not isinstance(self.mean_module, ConstantMean)
+            else list(to_flat(self.mean_module.raw_constant)[0])
+        ) + self.covar_module._raw_flat()
+
+    def install(self, raw: list[float]) -> None:
+        offset = 0
+        if isinstance(self.mean_module, ConstantMean):
+            self.mean_module.raw_constant = from_flat(raw[:1], (), self.kind)
+            offset = 1
+        for name, value in self.covar_module.named_parameters():
+            shape = to_flat(value)[1]
+            size = math.prod(shape)
+            module: Any = self.covar_module
+            *parents, attribute = name.split(".")
+            for parent in parents:
+                module = getattr(module, parent)
+            setattr(module, attribute, from_flat(raw[offset : offset + size], shape, self.kind))
+            offset += size
+        if offset != len(raw):
+            raise RuntimeError("Native KL fit returned an inconsistent parameter vector.")
+
+    def fit(self, optimizer_kwargs: Any = None, **kwargs: Any) -> dict[str, Any]:
+        optimizer_kwargs = dict(optimizer_kwargs or {})
+        if optimizer_kwargs.pop("method", "L-BFGS-B") != "L-BFGS-B":
+            raise UnsupportedError("KL prior fitting supports native L-BFGS-B.")
+        options = dict(optimizer_kwargs.pop("options", None) or {})
+        unknown = set(options) - {
+            "maxiter",
+            "maxfun",
+            "gtol",
+            "ftol",
+            "maxcor",
+            "maxls",
+            "disp",
+            "iprint",
+        }
+        if unknown or optimizer_kwargs:
+            raise UnsupportedError(
+                f"Unsupported KL fit options: {sorted(unknown | set(optimizer_kwargs))}."
+            )
+        raw, loss, iterations, evaluations, status, message, attempts = self.native.fit(
+            self.raw(),
+            maxcor=options.get("maxcor"),
+            pgtol=options.get("gtol"),
+            ftol=options.get("ftol"),
+            maxiter=options.get("maxiter"),
+            maxfun=options.get("maxfun"),
+            maxls=options.get("maxls"),
+            max_attempts=kwargs.pop("max_attempts", 5),
+            seed=kwargs.pop("seed", None),
+        )
+        if kwargs:
+            raise UnsupportedError(f"Unsupported KL fit arguments: {sorted(kwargs)}.")
+        self.install(raw)
+        return {
+            "loss": loss,
+            "iterations": iterations,
+            "evaluations": evaluations,
+            "status": status,
+            "message": message,
+            "attempts": attempts,
+        }
+
+
+class KLPriorFitMLL(MarginalLogLikelihood):
+    """Negative Gaussian KL at reference points; no likelihood or prior terms.
+
+    The raw gradient follows the model's full parameter order. Likelihood noise
+    and input-transform parameters have zero derivatives, as they do not enter
+    this objective. Native fitting updates the mean and kernel in place.
+    """
+
+    def __init__(self, likelihood: Any, model: Any, X_ref: Any, mu_em: Any, Sigma_em: Any) -> None:
+        if getattr(model, "num_outputs", 1) != 1 or tuple(getattr(model, "batch_shape", ())):
+            raise UnsupportedError(
+                "KLPriorFitMLL currently requires an unbatched single-output model."
+            )
+        if likelihood is not model.likelihood:
+            raise ValueError("The likelihood must be the model's likelihood.")
+        super().__init__(likelihood, model)
+        self._X_ref = _ops.clone(X_ref)
+        self._mu_em = _ops.clone(mu_em)
+        self._Sigma_em = _ops.clone(Sigma_em)
+        self._objective = _KernelFit(
+            model.mean_module, model.covar_module, self._X_ref, self._mu_em, self._Sigma_em
+        )
+
+    def forward(self, function_dist: Any = None, target: Any = None) -> Any:
+        value, _ = self._objective.native.value_and_grad(self._objective.raw())
+        return from_flat([value], (), self._objective.kind)
+
+    __call__ = forward
+
+    def value_and_grad(self, raw_parameters: Any = None) -> tuple[float, list[float]]:
+        shapes = list(self.model._rs.parameter_shapes())
+        parameters = (
+            self.model._rs.raw_parameters()
+            if raw_parameters is None
+            else list(to_flat(raw_parameters)[0])
+        )
+        if len(parameters) != sum(math.prod(shape) for _, shape in shapes):
+            raise ValueError("Wrong number of raw model parameters.")
+        offsets: dict[str, tuple[int, int]] = {}
+        offset = 0
+        for name, shape in shapes:
+            count = math.prod(shape)
+            offsets[name] = (offset, count)
+            offset += count
+        names = (["mean_module.raw_constant"] if self._objective.learn_mean else []) + [
+            "covar_module." + name for name, _ in self.model.covar_module.named_parameters()
+        ]
+        selected = [
+            index for name in names for index in range(offsets[name][0], sum(offsets[name]))
+        ]
+        value, values = self._objective.native.value_and_grad(
+            [parameters[index] for index in selected]
+        )
+        gradient = [0.0] * len(parameters)
+        for index, derivative in zip(selected, values, strict=True):
+            gradient[index] = derivative
+        return float(value), gradient
+
+    def _fit(
+        self,
+        closure: Any = None,
+        optimizer: Any = None,
+        closure_kwargs: Any = None,
+        optimizer_kwargs: Any = None,
+        **kwargs: Any,
+    ) -> KLPriorFitMLL:
+        if (
+            closure is not None
+            or closure_kwargs is not None
+            or (
+                optimizer is not None
+                and getattr(optimizer, "__name__", "") != "fit_gpytorch_mll_scipy"
+            )
+        ):
+            raise UnsupportedError("KL prior fitting supports the default native L-BFGS-B closure.")
+        self._fit_result = self._objective.fit(optimizer_kwargs, **kwargs)
+        self.eval()
+        return self
+
+
+def fit_kernel_to_em_prior(
+    mean_module: Any, covar_module: Kernel, X_ref: Any, mu_em: Any, Sigma_em: Any
+) -> None:
+    """Fit caller-owned mean/kernel modules by native Gaussian KL minimization."""
+    _KernelFit(mean_module, covar_module, X_ref, mu_em, Sigma_em).fit()
+
+
+__all__ = ["KLPriorFitMLL", "fit_kernel_to_em_prior", "kl_divergence_mvn"]

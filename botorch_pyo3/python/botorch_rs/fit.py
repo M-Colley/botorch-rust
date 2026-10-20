@@ -62,7 +62,11 @@ def fit_gpytorch_mll(
     Returns:
         ``mll``, in evaluation mode.
     """
+    from botorch_rs.models.empirical_gps.em_coordinate_ascent import KLPriorFitMLL
     from botorch_rs.models.robust_relevance_pursuit_model import RobustRelevancePursuitMixin
+
+    if isinstance(mll, KLPriorFitMLL):
+        return mll._fit(closure, optimizer, closure_kwargs, optimizer_kwargs, **kwargs)
 
     if isinstance(mll.model, RobustRelevancePursuitMixin):
         return cast(

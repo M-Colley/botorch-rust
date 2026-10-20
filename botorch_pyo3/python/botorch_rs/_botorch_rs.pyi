@@ -220,6 +220,24 @@ def posterior_query_samples_vjp(
 def target_task_model(model: Model, feature_indices: Sequence[int], imputation: Sequence[float]) -> Model: ...
 
 def additive_component_model(model: SingleTaskGP, extra_batch_dims: int = 0) -> Model: ...
+def gaussian_kl(
+    mu_p: Array, sigma_p: Array, mu_q: Array, sigma_q: Array,
+    gradients: bool = False,
+) -> tuple[float, tuple[ArrayBuf, ArrayBuf, ArrayBuf, ArrayBuf] | None]: ...
+
+class KernelPriorKl:
+    def __init__(
+        self, node: KernelNode, points: Array, mean: Array, covariance: Array,
+        learn_mean: bool = True, mean_constraint: Constraint | None = None,
+    ) -> None: ...
+    def value_and_grad(self, raw: Sequence[float]) -> tuple[float, list[float]]: ...
+    def fit(
+        self, raw: Sequence[float], maxcor: int | None = None,
+        pgtol: float | None = None, ftol: float | None = None,
+        maxiter: int | None = None, maxfun: int | None = None,
+        maxls: int | None = None, max_attempts: int | None = None,
+        seed: int | None = None,
+    ) -> tuple[list[float], float, int, int, str, str, int]: ...
 def additive_kernel_parts(
     node: KernelNode, raw: Sequence[float], input_dim: int,
     x1: Array | None = None, x2: Array | None = None, mode: str = "base",

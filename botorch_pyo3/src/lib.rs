@@ -21,6 +21,7 @@ mod callbacks;
 mod composite;
 mod contextual;
 mod deterministic;
+mod em_kl;
 mod empirical;
 mod empirical_models;
 mod errors;
@@ -69,6 +70,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     batched_lbfgsb::register(m)?;
     m.add_function(wrap_pyfunction!(heterogeneous::target_task_model, m)?)?;
     empirical::register(m)?;
+    em_kl::register(m)?;
     empirical_models::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // Models and their components.
