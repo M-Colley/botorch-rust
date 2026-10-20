@@ -82,7 +82,10 @@ SciPy mode and aggregation limits raise explicit errors. Batched model restart s
 specialized mixed/discrete/cyclic optimization and remaining initial-condition
 heuristics still need the Torch path. Unsupported configurations raise errors.
 
-MAP SAAS, additive MAP SAAS and MAP SAAS ensembles now retain their coupledshrinkage priors and fitting graphs on device. See [MAP SAAS verification](torch-map-saas.md).Specialized model and entropy/search acquisition families remain outside this
+MAP SAAS, additive MAP SAAS and MAP SAAS ensembles now retain their coupled
+shrinkage priors and fitting graphs on device. See [MAP SAAS verification](torch-map-saas.md).
+
+Specialized model and entropy/search acquisition families remain outside this
 backend. Device-resident NUTS now fits scalar Matérn, SAAS and linear fully
 Bayesian models; custom probabilistic overrides and multitask Tensor NUTS remain
 unsupported. [Sampler semantics and verification](torch-fully-bayesian.md). Noisy acquisition root caching currently falls back to exact joint
