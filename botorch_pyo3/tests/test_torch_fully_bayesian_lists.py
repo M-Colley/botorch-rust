@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """Fully Bayesian lists retain mixture axes, component graphs and transforms."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 import warnings
 
-import pytest
 import torch
 
 from botorch_rs.models import ModelListGP, SingleTaskGP

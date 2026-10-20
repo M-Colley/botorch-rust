@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Device affine-polytope laws, feasibility and real constrained initialization."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 from test_torch_acq_discrete import DEVICES, no_host
 from test_torch_acq_optimization_configs import Quadratic

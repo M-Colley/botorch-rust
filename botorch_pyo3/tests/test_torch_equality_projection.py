@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Device equality projection has actual complete point/coefficient/RHS graphs."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 from test_torch_acq_discrete import DEVICES, no_host
 

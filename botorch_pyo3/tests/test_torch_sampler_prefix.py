@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Device-only common normals for baseline/joint posterior sampling."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 
 from botorch_rs.models import SingleTaskGP

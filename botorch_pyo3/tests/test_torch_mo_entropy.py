@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Device multiobjective entropy, synchronized reference samples and full graphs."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 
 from botorch_rs.acquisition.multi_objective.joint_entropy_search import (

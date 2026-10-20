@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """Actual device GP entropy inference, synchronized sampling and full graphs."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 from functools import partial
 
-import pytest
 import torch
 
 from botorch_rs.acquisition import max_value_entropy_search as port

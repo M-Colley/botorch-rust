@@ -82,7 +82,7 @@ def test_zero_rank_exact_gp_mll_parameter_graph(backend, device, positive):
     noise = torch.full_like(y, 0.03)
     model = SingleTaskGP(x, y, noise, covar_module=kernel, outcome_transform=None, backend=backend)
     mll = ExactMarginalLogLikelihood(model.likelihood, model)
-    loss = -mll(model(*model.train_inputs), model.train_targets).sum()
+    loss = -mll().sum()
     assert torch.isfinite(loss)
     loss.backward()
     parameters = list(model.parameters())

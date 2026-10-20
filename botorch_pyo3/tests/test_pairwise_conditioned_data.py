@@ -4,8 +4,12 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+
+
+import numpy as np
 
 from helpers import assert_close, importorskip_botorch
 

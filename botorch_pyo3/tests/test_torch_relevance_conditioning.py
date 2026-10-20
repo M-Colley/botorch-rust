@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """Sparse observation labels extend atomically with the actual Gaussian law."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.exceptions.errors import UnsupportedError

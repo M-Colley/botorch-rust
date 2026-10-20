@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """MES/GIBBON use selected-task designs without appending categorical columns."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 from test_torch_acq_discrete import DEVICES, no_host
 from test_torch_backend_multitask import paired_models
@@ -92,7 +97,9 @@ def test_multitask_entropy_source_constructor_failure_and_explicit_train_baselin
     from botorch.acquisition import max_value_entropy_search as reference
 
     X, Y, continuous, candidate = data(device, 1)
-    model, source = paired_models(X, Y, 1, noise=torch.full_like(Y, 0.03), output_tasks=[5], outcome_transform=None)
+    model, source = paired_models(
+        X, Y, 1, noise=torch.full_like(Y, 0.03), output_tasks=[5], outcome_transform=None
+    )
     with pytest.raises(RuntimeError, match="Sizes of tensors must match"):
         getattr(reference, name)(source, candidate)
     kwargs = dict(num_mv_samples=3, use_gumbel=False, seed=13)

@@ -1,9 +1,14 @@
+# ruff: noqa: E402
 """Actual candidate search using device-native acquisition derivatives."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 import functools
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.acquisition.analytic import LogExpectedImprovement, PosteriorMean

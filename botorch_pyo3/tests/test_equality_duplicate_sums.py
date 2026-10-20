@@ -1,7 +1,13 @@
+# ruff: noqa: E402
 """Repeated linear-constraint terms add, independently of source indexed assignment."""
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+pytest.importorskip("torch")
+
+
+import numpy as np
 import torch
 from test_torch_acq_discrete import DEVICES, no_host
 
@@ -64,7 +70,7 @@ def test_array_duplicate_sum_projection_matches_independent_closed_form(kind, sc
         convert(X), [(convert(torch.tensor([0, 0, 2])), convert(coefficient), 0.4)]
     )
     torch.testing.assert_close(
-        torch.as_tensor(actual),
+        torch.as_tensor(actual, dtype=X.dtype),
         closed_form(X, coefficient, X.new_tensor(0.4), scalar),
         atol=1e-12,
         rtol=1e-12,

@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Hierarchical Tensor gates, exact inference and higher-order graphs."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 
 from botorch_rs.mlls import ExactMarginalLogLikelihood

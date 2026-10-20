@@ -1,9 +1,14 @@
+# ruff: noqa: E402
 """GPU RFF/Matheron paths compared with explicit reference draws and full graphs."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 import functools
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.kernels import MaternKernel, RBFKernel, ScaleKernel

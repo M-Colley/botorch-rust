@@ -1,8 +1,14 @@
+# ruff: noqa: E402
 """Actual cached-root / joint NEI samples, incumbents and native gradients."""
+
+import pytest
+
+pytest.importorskip("torch")
+pytest.importorskip("botorch")
+
 
 import warnings
 
-import pytest
 import torch
 from botorch.acquisition.logei import qLogNoisyExpectedImprovement as RefLogNEI
 from botorch.acquisition.monte_carlo import qNoisyExpectedImprovement as RefNEI

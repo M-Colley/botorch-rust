@@ -1,8 +1,14 @@
+# ruff: noqa: E402
 """External variational minibatches use native ELBO values and gradients."""
 
 from __future__ import annotations
 
 import pytest
+
+pytest.importorskip("torch")
+pytest.importorskip("botorch")
+
+
 import torch
 from approximate_helpers import Case, build_pair, elbo_pair, set_random_parameters
 from botorch.optim.closures.model_closures import get_loss_closure as reference_loss

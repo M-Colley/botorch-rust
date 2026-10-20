@@ -1,7 +1,14 @@
+# ruff: noqa: E402
 """Public risk-measure and expanded-prior methods against official BoTorch."""
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+pytest.importorskip("torch")
+pytest.importorskip("botorch")
+
+
+import numpy as np
 import torch
 from botorch.acquisition.multi_objective.multi_output_risk_measures import MARS as RefMARS
 from botorch.acquisition.multi_objective.multi_output_risk_measures import MVaR as RefMVaR

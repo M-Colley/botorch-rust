@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """Reference restart laws, device-local RNG, and optimizer option correctness."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 import warnings
 
-import pytest
 import torch
 from test_torch_acq_optimization import Quadratic
 

@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """Actual device KG/HVKG starts and independent heuristic/reference laws."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 from unittest.mock import patch
 
-import pytest
 import torch
 from test_torch_acq_discrete import DEVICES, no_host
 from test_torch_hypervolume_knowledge_gradient import build as build_hv

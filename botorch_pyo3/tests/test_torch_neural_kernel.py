@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Arc-cosine device parity and independent coincident/overflow laws."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 
 from botorch_rs.kernels import ScaleKernel

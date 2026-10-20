@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Exact general-dimensional Tensor local-upper-bound geometry."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 
 from botorch_rs.acquisition._torch_box_decomposition import partition_nd

@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """True masked feature/time Tensor laws and full correlated sampling graphs."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.exceptions.errors import UnsupportedError

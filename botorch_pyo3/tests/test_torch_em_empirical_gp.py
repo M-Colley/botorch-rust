@@ -1,6 +1,13 @@
+# ruff: noqa: E402
 """Device-local empirical EM laws and complete training graphs."""
 
 from __future__ import annotations
+
+import pytest
+
+pytest.importorskip("gpytorch")
+pytest.importorskip("torch")
+
 
 import copy
 import sys
@@ -8,7 +15,6 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import gpytorch
-import pytest
 import test_em_empirical_gp as reference_helpers
 import torch
 

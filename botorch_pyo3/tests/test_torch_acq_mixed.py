@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Mixed alternating device algorithms and public search building blocks."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 from test_torch_acq_discrete import DEVICES, no_host
 from test_torch_acq_optimization_configs import Quadratic

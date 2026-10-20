@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Device EP/PES value parity and derivatives within fixed damping branches."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 
 from botorch_rs.acquisition.multi_objective.predictive_entropy_search import (

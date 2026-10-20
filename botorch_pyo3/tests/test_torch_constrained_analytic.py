@@ -1,9 +1,14 @@
+# ruff: noqa: E402
 """Gaussian analytic constraints, live thresholds, and weighted q means."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 import importlib
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.acquisition._torch_backend_analytic import log_normal_interval

@@ -1,9 +1,17 @@
+# ruff: noqa: E402
 """Sparse-noise and pursuit regressions against official BoTorch."""
+
+import pytest
+
+pytest.importorskip("numpy")
+pytest.importorskip("torch")
+pytest.importorskip("botorch")
+pytest.importorskip("gpytorch")
+
 
 import copy
 
 import numpy as np
-import pytest
 import torch
 from botorch.fit import fit_gpytorch_mll as ref_fit
 from botorch.models import SingleTaskGP as RefGP

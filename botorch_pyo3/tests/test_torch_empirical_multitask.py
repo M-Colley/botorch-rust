@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Paired historical curves define a genuine correlated task-indexed GP."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 
 from botorch_rs.fit import fit_gpytorch_mll

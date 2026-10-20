@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Empirical Tensor covariances preserve their actual cross-output law."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 
 from botorch_rs.mlls import ExactMarginalLogLikelihood

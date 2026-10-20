@@ -1,9 +1,14 @@
+# ruff: noqa: E402
 """Exact sparse variances, full Tensor graphs, and genuine support search."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 import copy
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.exceptions.errors import UnsupportedError

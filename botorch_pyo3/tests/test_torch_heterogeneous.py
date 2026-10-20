@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Device transfer, Gaussian conditioning and complete heterogeneous graphs."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 
 from botorch_rs.kernels import ScaleKernel

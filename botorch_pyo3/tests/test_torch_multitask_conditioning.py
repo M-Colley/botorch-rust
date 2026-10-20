@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """Correlated long-format conditioning, fantasies and observation-noise graphs."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 from unittest.mock import patch
 
-import pytest
 import torch
 from test_torch_backend_multitask import DEVICES, data, paired_models
 

@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """One-shot lookahead values and full functional derivatives on CPU/CUDA."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.acquisition.knowledge_gradient import (

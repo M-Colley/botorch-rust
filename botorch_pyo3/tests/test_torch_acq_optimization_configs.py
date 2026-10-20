@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """Restart/model batches, real generation chunks and acquisition sequences."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.generation.gen import gen_candidates_scipy, gen_candidates_torch

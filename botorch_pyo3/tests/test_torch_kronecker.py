@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """Correlated Kronecker Tensor laws, priors, Matheron samples and derivatives."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.models import KroneckerMultiTaskGP

@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Pinned upstream all-fixed optimization must not bypass feasibility checks."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 
 from botorch_rs.exceptions.errors import CandidateGenerationError

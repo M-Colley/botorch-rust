@@ -1,11 +1,17 @@
+# ruff: noqa: E402
 """Empirical-prior public helpers retain device, shared leaves and exact laws."""
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("gpytorch")
+pytest.importorskip("torch")
+
+
 import copy
 
 import gpytorch
-import pytest
 import torch
 from test_torch_em_empirical_gp import DEVICES, data, modules
 

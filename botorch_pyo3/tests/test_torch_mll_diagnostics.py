@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Detached MLL diagnostics must not alter the live model's parameters or graph."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 
 from botorch_rs.mlls import ExactMarginalLogLikelihood

@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Homotopy stages, pruning and state rollback on the acquisition device."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 from test_torch_acq_discrete import DEVICES, no_host
 from test_torch_acq_optimization_configs import Quadratic

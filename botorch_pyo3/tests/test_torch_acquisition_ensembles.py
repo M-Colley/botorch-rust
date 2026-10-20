@@ -1,10 +1,15 @@
+# ruff: noqa: E402
 """Mixture reductions preserve ordinary batches, graphs, and shared normals."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 import importlib
 import warnings
 from types import SimpleNamespace
 
-import pytest
 import torch
 from test_torch_backend_acquisition import ANALYTIC, MC, FixedSampler, acquisition, native_data
 

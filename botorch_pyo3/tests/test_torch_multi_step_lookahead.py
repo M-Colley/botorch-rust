@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """Recursive device lookahead, synchronized trees and complete derivatives."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.acquisition.analytic import ExpectedImprovement, PosteriorMean

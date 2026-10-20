@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """JES device graphs and independently corrected conditional-Gaussian oracle."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 import math
 
-import pytest
 import torch
 
 from botorch_rs.acquisition.joint_entropy_search import qJointEntropySearch

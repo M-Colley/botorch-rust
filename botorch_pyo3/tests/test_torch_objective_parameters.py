@@ -1,6 +1,11 @@
+# ruff: noqa: E402
 """Live objective weights must remain differentiable after construction."""
 
 import pytest
+
+pytest.importorskip("torch")
+
+
 import torch
 
 from botorch_rs.acquisition.objective import LinearMCObjective, ScalarizedPosteriorTransform

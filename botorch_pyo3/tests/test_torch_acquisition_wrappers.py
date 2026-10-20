@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """Feature wrappers retain fixed-value, projection, and model derivative graphs."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.acquisition.analytic import PosteriorMean

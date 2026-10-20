@@ -1,10 +1,15 @@
+# ruff: noqa: E402
 """Official mixed/fidelity covariance laws, devices and complete derivative graphs."""
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("torch")
+
+
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.models.gp_regression_fidelity import SingleTaskMultiFidelityGP

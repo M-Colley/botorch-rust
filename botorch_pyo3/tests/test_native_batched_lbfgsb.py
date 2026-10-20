@@ -1,9 +1,14 @@
+# ruff: noqa: E402
 """Batched scheduling, resumable state, curvature, and official solver parity."""
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+
+
+import numpy as np
 
 from botorch_rs.optim.batched_lbfgs_b import OptimState, fmin_l_bfgs_b_batched
 from helpers import importorskip_botorch

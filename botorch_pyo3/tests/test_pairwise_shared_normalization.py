@@ -4,10 +4,15 @@
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("numpy")
+pytest.importorskip("botorch")
+
+
 import math
 
 import numpy as np
-import pytest
 
 from helpers import KINDS, as_kind, assert_close, importorskip_botorch
 

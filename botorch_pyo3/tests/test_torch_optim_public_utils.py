@@ -1,7 +1,13 @@
+# ruff: noqa: E402
 """Public optimization utilities retain device tensors and their selected graphs."""
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+pytest.importorskip("torch")
+
+
+import numpy as np
 import torch
 from test_torch_acq_discrete import DEVICES, no_host
 

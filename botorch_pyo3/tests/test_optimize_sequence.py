@@ -1,9 +1,16 @@
+# ruff: noqa: E402
 """Sequential acquisition sequences use the actual native optimizer per step."""
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+pytest.importorskip("torch")
+pytest.importorskip("botorch")
+
+
+import numpy as np
 import torch
 from botorch.acquisition.acquisition import AcquisitionFunction as ReferenceAcquisition
 from botorch.acquisition.monte_carlo import qExpectedImprovement as RefEI

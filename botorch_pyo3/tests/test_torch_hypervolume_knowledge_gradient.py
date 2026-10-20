@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """Device HVKG fantasies, reference values and complete functional graphs."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 from unittest.mock import patch
 
-import pytest
 import torch
 
 from botorch_rs.acquisition.multi_objective.hypervolume_knowledge_gradient import (

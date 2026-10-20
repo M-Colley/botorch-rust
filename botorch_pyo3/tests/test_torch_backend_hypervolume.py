@@ -1,9 +1,14 @@
+# ruff: noqa: E402
 """Device-resident hypervolume inclusion/exclusion and front derivatives."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 import importlib
 import warnings
 
-import pytest
 import torch
 from test_torch_backend_acquisition import FixedSampler, native_data
 

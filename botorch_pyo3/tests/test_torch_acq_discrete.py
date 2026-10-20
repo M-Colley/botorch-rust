@@ -1,8 +1,13 @@
+# ruff: noqa: E402
 """Device discrete/mixed/cyclic search with independent reference checks."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 from unittest.mock import patch
 
-import pytest
 import torch
 from test_torch_acq_optimization_configs import Quadratic
 

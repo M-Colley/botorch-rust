@@ -1,12 +1,19 @@
+# ruff: noqa: E402
 """Real registered-buffer parity with official BoTorch (including mixed dtypes)."""
 
 from __future__ import annotations
+
+import pytest
+
+pytest.importorskip("torch")
+pytest.importorskip("botorch")
+pytest.importorskip("gpytorch")
+
 
 import subprocess
 import sys
 from contextlib import nullcontext
 
-import pytest
 import torch
 from botorch.models.cost import AffineFidelityCostModel as RefAffineCost
 from botorch.models.cost import FixedCostModel as RefFixedCost

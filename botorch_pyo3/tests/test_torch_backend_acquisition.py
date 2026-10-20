@@ -1,9 +1,14 @@
+# ruff: noqa: E402
 """Tensor-backend acquisition formulas, device residency, and higher derivatives."""
+
+import pytest
+
+pytest.importorskip("torch")
+
 
 import importlib
 import warnings
 
-import pytest
 import torch
 from torch import nn
 
