@@ -26,6 +26,8 @@ use crate::kernels::empirical::EmpiricalBasisSpec;
 use crate::kernels::KernelKind;
 use crate::priors::Prior;
 
+mod feature_batch;
+
 /// One parameter of a kernel (per model element).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParamSpec {
@@ -856,14 +858,13 @@ impl KernelNode {
     // Configuration
     // ------------------------------------------------------------------
 
-    /// Sets `active_dims` (the input columns the kernel acts on). A
-    /// `ScaleKernel` keeps the `active_dims` taken over from its base kernel.
+    /// Sets `active_dims` (the input columns the kernel acts on), replacing
+    /// any selection previously inherited by a `ScaleKernel`.
     ///
     /// # Errors
     /// [`BotorchError::InvalidArgument`] for empty `active_dims` and
     /// [`BotorchError::Unsupported`] for `active_dims` of an
-    /// `AdditiveKernel` / `ProductKernel` (GPyTorch has none) or a second set
-    /// for a `ScaleKernel`.
+    /// `AdditiveKernel` / `ProductKernel` (GPyTorch has none).
     pub fn with_active_dims(mut self, active_dims: Vec<usize>) -> Result<Self> {
         if active_dims.is_empty() {
             return Err(BotorchError::InvalidArgument(
@@ -875,10 +876,6 @@ impl KernelNode {
                 return Err(BotorchError::Unsupported(
                     "AdditiveKernel and ProductKernel have no active_dims".into(),
                 ))
-            }
-            KernelType::Scale if self.active_dims.is_some() => {
-                // GPyTorch replaces them with the base kernel's.
-                return Ok(self);
             }
             _ => {}
         }

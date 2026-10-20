@@ -38,6 +38,25 @@ else:
 The official reference checkout and the separate local BoTorch audit fork
 are preserved; this proposed upstream patch has not been applied there.
 
+## Native feature batches
+
+Kernel calls support `last_dim_is_batch=True` for RBF, Matérn, rational
+quadratic, periodic, linear, polynomial, cosine and categorical kernels,
+including Scale, Additive and Product trees. Rust evaluates one native
+kernel view per selected feature, preserving ARD entries, constraints and
+the declared `active_dims` order. Child feature counts broadcast, including
+a single-feature child shared across the other child's feature batches.
+Full covariances and diagonals retain their point axes and support ordinary
+kernel/input batch broadcasting. Empty NumPy/Torch input batches preserve
+the feature and point dimensions.
+
+The tests compare list, NumPy and Torch results with GPyTorch, and compare
+the affected upstream bug cases below with independent formulas or the
+diagonal of the actual full covariance. Native Rust tests independently
+check ARD values, selected-feature ordering and composite broadcasting.
+Specialized kernels without an implemented featurewise interpretation raise
+`UnsupportedError`. Kernel calls continue to return dense arrays.
+
 ## Verified upstream feature-batch bugs
 
 The categorical reproduction uses official BoTorch `b0dd01be6`, with GPyTorch
@@ -173,7 +192,8 @@ default model: not specific to this phase).
   inducing-point kernels, ...), priors (`SmoothedBoxPrior`,
   `MultivariateNormalPrior`, `HorseshoePrior`) and prior transforms: not in
   the 6a scope; `SmoothedBoxPrior` comes with `MultiTaskGP` (phase 7).
-- `last_dim_is_batch`, `LinearOperator` results of kernel calls.
+- Feature-batch modes of specialized kernels and `LinearOperator` results
+  of kernel calls.
 - One kernel object used twice in a tree (GPyTorch shares its parameters):
   `UnsupportedError`.
 - Kernel batch shapes other than the model's `_aug_batch_shape` (GPyTorch

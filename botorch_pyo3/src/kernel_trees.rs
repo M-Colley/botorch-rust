@@ -14,6 +14,49 @@ use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
 use crate::errors::{dimension_error, unsupported, IntoPyResult};
 use crate::specs::{kind_from_name, kind_name, PyConstraint, PyKernelSpec, PyPrior};
 
+fn evaluate_tree(
+    node: &KernelNode,
+    raw: &[f64],
+    a: &Matrix,
+    b: Option<&Matrix>,
+    diag: bool,
+) -> botorch_core::Result<ArrayBuf> {
+    let kern = TreeKernel::build(node, raw, a.ncols())?;
+    let pa = kern.prepare(a)?;
+    let n = a.nrows();
+    let other = match b {
+        Some(b) if b != a => Some(kern.prepare(b)?),
+        _ => None,
+    };
+    if diag {
+        let values = match &other {
+            Some(pb) => {
+                if pb.len() != n {
+                    return Err(botorch_core::BotorchError::DimensionMismatch(
+                        "diag=True requires x1 and x2 with the same number of points".into(),
+                    ));
+                }
+                let k = kern.cross(&pa, pb);
+                (0..n).map(|i| k[(i, i)]).collect()
+            }
+            None => (0..n).map(|i| kern.diag_mode(&pa, i)).collect(),
+        };
+        return Ok(ArrayBuf(values, vec![n]));
+    }
+    let k: Matrix = match &other {
+        Some(pb) => kern.cross(&pa, pb),
+        None => kern.symmetric(&pa),
+    };
+    let (n1, n2) = k.shape();
+    let mut data = Vec::with_capacity(n1 * n2);
+    for i in 0..n1 {
+        for j in 0..n2 {
+            data.push(k[(i, j)]);
+        }
+    }
+    Ok(ArrayBuf(data, vec![n1, n2]))
+}
+
 /// A kernel (tree) configuration: the kernel class, its parameters with
 /// constraints and priors, `active_dims` and sub-kernels.
 #[pyclass(frozen, name = "KernelNode", module = "botorch_rs._botorch_rs")]
@@ -504,7 +547,14 @@ impl PyKernelNode {
     /// The kernel matrix `K(x1, x2)` (`n1 × n2`), or the `diag=True` values
     /// `k(x1_i, x1_i)` if `diag`, with the raw parameter values `raw` (flat,
     /// one model element) for inputs with `x1.shape[-1]` columns.
-    #[pyo3(signature = (raw, x1, x2=None, diag=false))]
+    fn feature_batch_size(&self, input_dim: usize) -> PyResult<usize> {
+        self.inner
+            .feature_batch_nodes(&vec![0.0; self.inner.num_raw()], input_dim)
+            .map(|plans| plans.len())
+            .into_py_result()
+    }
+
+    #[pyo3(signature = (raw, x1, x2=None, diag=false, last_dim_is_batch=false))]
     fn evaluate(
         &self,
         py: Python<'_>,
@@ -512,6 +562,7 @@ impl PyKernelNode {
         x1: Array,
         x2: Option<Array>,
         diag: bool,
+        last_dim_is_batch: bool,
     ) -> PyResult<ArrayBuf> {
         let a = x1.matrix("x1")?;
         let b = match &x2 {
@@ -528,41 +579,19 @@ impl PyKernelNode {
         }
         let node = &self.inner;
         let out = crate::threads::run(py, || -> botorch_core::Result<ArrayBuf> {
-            let kern = TreeKernel::build(node, &raw, d)?;
-            let pa = kern.prepare(&a)?;
-            let n = a.nrows();
-            let other = match &b {
-                Some(b) if b != &a => Some(kern.prepare(b)?),
-                _ => None,
-            };
-            if diag {
-                let values = match &other {
-                    Some(pb) => {
-                        if pb.len() != n {
-                            return Err(botorch_core::BotorchError::DimensionMismatch(
-                                "diag=True requires x1 and x2 with the same number of points"
-                                    .into(),
-                            ));
-                        }
-                        let k = kern.cross(&pa, pb);
-                        (0..n).map(|i| k[(i, i)]).collect()
-                    }
-                    None => (0..n).map(|i| kern.diag_mode(&pa, i)).collect(),
-                };
-                return Ok(ArrayBuf(values, vec![n]));
+            if !last_dim_is_batch {
+                return evaluate_tree(node, &raw, &a, b.as_ref(), diag);
             }
-            let k: Matrix = match &other {
-                Some(pb) => kern.cross(&pa, pb),
-                None => kern.symmetric(&pa),
-            };
-            let (n1, n2) = k.shape();
-            let mut data = Vec::with_capacity(n1 * n2);
-            for i in 0..n1 {
-                for j in 0..n2 {
-                    data.push(k[(i, j)]);
-                }
+            let plans = node.feature_batch_nodes(&raw, d)?;
+            let mut shape = vec![plans.len(), a.nrows()];
+            if !diag {
+                shape.push(b.as_ref().unwrap_or(&a).nrows());
             }
-            Ok(ArrayBuf(data, vec![n1, n2]))
+            let mut data = Vec::new();
+            for (feature, parameters) in plans {
+                data.extend(evaluate_tree(&feature, &parameters, &a, b.as_ref(), diag)?.0);
+            }
+            Ok(ArrayBuf(data, shape))
         });
         out.into_py_result()
     }
