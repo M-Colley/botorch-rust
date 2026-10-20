@@ -18,7 +18,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Integrated white-noise cross diagonal | Existing [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387) |
 | Invalid expectation weights | New [BoTorch #3467](https://github.com/meta-pytorch/botorch/pull/3467) |
 | LCEA embeddings | Batch-table repair in existing [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387); declared feature order and label mapping in new [#3487](https://github.com/meta-pytorch/botorch/pull/3487) |
-| Hierarchical category validation, transform fitting, task-column mapping and cycles | Patches and upstream regressions pending |
+| Hierarchical category validation, transform fitting, task-column mapping and cycles | New [BoTorch #3490](https://github.com/meta-pytorch/botorch/pull/3490); 19 tests and 22 subtests pass |
 | Batched L-BFGS-B restored objective | New [BoTorch #3471](https://github.com/meta-pytorch/botorch/pull/3471) |
 | SciPy L-BFGS-B restored objective | Tested [branch](https://github.com/M-Colley/scipy/compare/main...codex/lbfgsb-restored-objective); human submission required, see below |
 | Heterogeneous multitask conditioning input layout | New [BoTorch #3484](https://github.com/meta-pytorch/botorch/pull/3484) |
@@ -32,7 +32,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Constant EM fitting objective | New [BoTorch #3475](https://github.com/meta-pytorch/botorch/pull/3475), including scalar and batched closure regressions |
 | Fully Bayesian known-noise prior trace | New [BoTorch #3477](https://github.com/meta-pytorch/botorch/pull/3477) |
 | Fully Bayesian default multitask warp columns | Existing [BoTorch #3465](https://github.com/meta-pytorch/botorch/pull/3465) |
-| Higher-order fantasy covariance wrappers | Patch and upstream regressions pending |
+| Higher-order fantasy covariance wrappers and sample axes | New [BoTorch #3491](https://github.com/meta-pytorch/botorch/pull/3491); 19 tests and 12 subtests pass |
 | Sequential acquisition dispatch and leaked pending state | New [BoTorch #3469](https://github.com/meta-pytorch/botorch/pull/3469) |
 | All-fixed candidate feasibility | New [BoTorch #3470](https://github.com/meta-pytorch/botorch/pull/3470) |
 | Correlated empirical fantasies | Existing [BoTorch #3388](https://github.com/meta-pytorch/botorch/pull/3388) |
@@ -59,9 +59,11 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | ZeroLinearOperator device/dtype and batched logdet | New [linear_operator #151](https://github.com/cornellius-gp/linear_operator/pull/151) |
 | Multiobjective entropy at infinite integration bounds | New [BoTorch #3485](https://github.com/meta-pytorch/botorch/pull/3485); GPU and native Gaussian-limit and derivative regressions pass |
 | Linear latent-task MCMC loader bypasses mixin dispatch | Newly confirmed; upstream repair and regressions pending |
-| Pairwise model broadcasting to singleton query batches | Newly confirmed; upstream repair and regressions in progress |
+| Pairwise model broadcasting to singleton query batches | New [BoTorch #3489](https://github.com/meta-pytorch/botorch/pull/3489); 17 model tests and 32 subtests pass |
 | Pairwise self-comparisons after duplicate consolidation | Native and GPU cancel the comparison; upstream scatter-add repair and regression in progress |
 | Multistep incumbent units and batched analytic thresholds | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) and [#3453](https://github.com/meta-pytorch/botorch/pull/3453) |
+| Multistep fantasy base ranges and query-batch tree layout | Existing [BoTorch #3452](https://github.com/meta-pytorch/botorch/pull/3452) |
+| TriangularLinearOperator second derivatives through matrix parameters | Confirmed first-order-only VJP; narrow analytic-VJP enhancement and regression in preparation |
 | Port cosine float32 large-phase accuracy | Fixed in `4f1ad62`; CPU/CUDA regressions fail against old frozen binary and all 132 focused tensor cases pass with repair |
 
 ## Retracted report

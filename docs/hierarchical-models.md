@@ -13,7 +13,7 @@ Lengthscales, optional SAAS priors and bounded outputscales are trainable.
 Native parameter paths include an internal activation-product component;
 public subkernel attributes continue to address their native parameters.
 
-`HierarchicalConditionalKernelGP` supports unbatched single-output training,
+The native `HierarchicalConditionalKernelGP` supports unbatched single-output training,
 inferred or fixed noise, the usual SingleTaskGP transforms, exact likelihoods,
 native fitting, posterior inference and cloning. Shared kernel parameters
 across model batches or outputs are explicitly unsupported by the current
@@ -22,10 +22,38 @@ MultiTaskGP backend and its documented likelihood, transform and output-task
 restrictions. It maps non-task feature indices correctly when the task
 column is first, last or between other features.
 
+## GPU and autograd backend
+
+Both model constructors and the standalone hierarchical kernel accept
+`backend="torch"`. CUDA or gradient-bearing training data automatically select
+the Tensor models. Their covariance blocks are real Torch modules with the
+original coupled SAAS priors and outputscale constraints; Rust dispatches their
+Matérn evaluations and Gaussian algebra to the active Torch device. Native
+hierarchical kernel objects can also be supplied to a Tensor `SingleTaskGP`.
+
+The Tensor single-task model supports model batches and independent outputs,
+inferred or fixed noise, exact likelihoods, conditioning and multidimensional
+fantasies. Category targets are transformed from the raw forest on each
+evaluation using already-fitted transform state. Batched Normalize statistics
+and the non-task-to-physical-column mapping therefore remain correct. Gates
+are discrete; their active continuous covariance branches retain full data,
+query, hyperparameter and higher-order autograd. No derivative is assigned to
+a change in discrete branch membership.
+
+The focused Tensor suite has 22 CPU/CUDA cases. It checks official standalone
+kernel values and first derivatives, all-parameter second derivatives,
+numerical data/query gradcheck and gradgradcheck, batched-transform/output
+equivalence, independent Gaussian conditioning, fantasy axes, dtype/device
+migration, automatic selection, and forbidden CPU/NumPy/list conversions during
+posterior/likelihood backward. Together with the existing hierarchical model
+and forest tests, 71 cases pass with the rebuilt release extension.
+
 ## Confirmed upstream problems and solutions
 
 The reference is official BoTorch `b0dd01be6`; numerical parity also runs
 against the installed 0.18.1 release.
+The four repairs below are submitted in
+[BoTorch #3490](https://github.com/meta-pytorch/botorch/pull/3490).
 
 - The official constructor compares all parent category values globally.
   Separate parents can legitimately have close labels: `{0: {1.0: [1]},

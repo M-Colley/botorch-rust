@@ -90,9 +90,15 @@ heuristics still need the Torch path. Unsupported configurations raise errors.
 MAP SAAS, additive MAP SAAS and MAP SAAS ensembles now retain their coupled
 shrinkage priors and fitting graphs on device. See [MAP SAAS verification](torch-map-saas.md).
 
-Remaining GPU families include preference acquisitions, contextual, hierarchical,
-heterogeneous and empirical multitask models, robust relevance pursuit and
-pathwise acquisitions.
+Hierarchical scalar and multitask models now use device covariance gates,
+including batched transforms, independent scalar-model outputs, conditioning,
+fantasies and higher-order graphs. EUBO and pairwise BALD acquisitions retain
+their preference-model graphs. Device Fourier priors and exact Matheron paths
+support pathwise acquisitions; see [pathwise verification](pathwise-public-constructors.md).
+
+Remaining GPU families and configurations include learned-preference objective
+integration, contextual, heterogeneous and empirical multitask models, and
+robust relevance pursuit.
 Some are under active implementation. Device-resident NUTS fits scalar and
 latent-task multitask Matérn, SAAS and linear fully Bayesian models. Custom
 probabilistic overrides remain unsupported. See

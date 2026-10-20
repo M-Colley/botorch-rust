@@ -852,6 +852,7 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
         RQKernel,
         ScaleKernel,
     )
+    from botorch_rs.models.hierarchical.conditional_kernel_gp import HierarchicalConditionalKernel
     from botorch_rs.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
 
     if source is None:
@@ -881,6 +882,12 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
                 "add" if type(kernel) is AdditiveKernel else "product",
                 train_X,
             )
+        elif type(kernel) is HierarchicalConditionalKernel:
+            from botorch_rs.models._torch_backend_hierarchical import (
+                TorchHierarchicalConditionalKernel,
+            )
+
+            result = TorchHierarchicalConditionalKernel(_source=kernel, _like=train_X)
         else:
             raise UnsupportedError(
                 "Torch backend kernels currently support RBF, Matérn, RQ, Periodic, Cosine, Linear, Polynomial, Scale, Additive and Product; a custom torch.nn.Module kernel is also accepted."

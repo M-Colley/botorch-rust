@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import operator
+import sys
 from collections.abc import Sequence
 from typing import Any
 
@@ -20,6 +21,20 @@ from botorch_rs.utils.types import DEFAULT
 
 RTOL, ATOL = 1e-5, 1e-8
 LOG_OUTPUTSCALE_CONSTRAINT = LogTransformedInterval(1e-2, 1e4, initial_value=10)
+
+
+def _torch_requested(backend: str, *values: Any) -> bool:
+    if backend not in {"auto", "native", "torch"}:
+        raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+    if backend != "auto":
+        return backend == "torch"
+    torch = sys.modules.get("torch")
+    return any(
+        getattr(value, "requires_grad", False)
+        or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
+        or (torch is not None and isinstance(value, torch.nn.Module))
+        for value in values
+    )
 
 
 class _ActivatedKernel(Kernel):
@@ -39,6 +54,15 @@ class _ActivatedKernel(Kernel):
 class HierarchicalConditionalKernel(AdditiveKernel):
     """Sum block kernels when both points activate the block's ancestor path."""
 
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        if cls is HierarchicalConditionalKernel and _torch_requested(backend):
+            from botorch_rs.models._torch_backend_hierarchical import (
+                TorchHierarchicalConditionalKernel,
+            )
+
+            return object.__new__(TorchHierarchicalConditionalKernel)
+        return object.__new__(cls)
+
     def __init__(
         self,
         dim: int,
@@ -47,6 +71,8 @@ class HierarchicalConditionalKernel(AdditiveKernel):
         separate_hierarchical_features: bool = True,
         use_saas_prior: bool = True,
         use_outputscale: bool = True,
+        *,
+        backend: str = "auto",
     ) -> None:
         self._components: list[Kernel] = []
         Kernel.__init__(self)
@@ -149,6 +175,17 @@ def _transform_dependencies(
 class HierarchicalConditionalKernelGP(SingleTaskGP):
     """Single-task exact GP with correlations over common active features."""
 
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        if cls is HierarchicalConditionalKernelGP and _torch_requested(
+            backend, *args, *kwargs.values()
+        ):
+            from botorch_rs.models._torch_backend_hierarchical import (
+                TorchHierarchicalConditionalKernelGP,
+            )
+
+            return object.__new__(TorchHierarchicalConditionalKernelGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -161,6 +198,8 @@ class HierarchicalConditionalKernelGP(SingleTaskGP):
         use_outputscale: bool = True,
         input_transform: Any = None,
         outcome_transform: Any = DEFAULT,
+        *,
+        backend: str = "auto",
     ) -> None:
         kernel = HierarchicalConditionalKernel(
             to_flat(train_X)[1][-1],
@@ -202,6 +241,17 @@ class HierarchicalConditionalKernelGP(SingleTaskGP):
 class HierarchicalConditionalKernelMultiTaskGP(MultiTaskGP):
     """Multi-task GP combining hierarchical input blocks and a task covariance."""
 
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        if cls is HierarchicalConditionalKernelMultiTaskGP and _torch_requested(
+            backend, *args, *kwargs.values()
+        ):
+            from botorch_rs.models._torch_backend_hierarchical import (
+                TorchHierarchicalConditionalKernelMultiTaskGP,
+            )
+
+            return object.__new__(TorchHierarchicalConditionalKernelMultiTaskGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -221,6 +271,8 @@ class HierarchicalConditionalKernelMultiTaskGP(MultiTaskGP):
         outcome_transform: Any = DEFAULT,
         input_transform: Any = None,
         validate_task_values: bool = True,
+        *,
+        backend: str = "auto",
     ) -> None:
         d = to_flat(train_X)[1][-1]
         feature = operator.index(task_feature)
