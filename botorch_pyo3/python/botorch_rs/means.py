@@ -87,6 +87,9 @@ class ConstantMean(Mean):
             self._has_local_constant = True
         else:
             self._rs_model.set_constant((data, shape))
+            sync = getattr(self._model, "_sync_torch_parameters", None)
+            if sync is not None:
+                sync()
 
     def initialize(self, **kwargs: Any) -> ConstantMean:
         for name, value in kwargs.items():

@@ -248,6 +248,7 @@ class VariationalStrategy(_VariationalStrategy):
     def inducing_points(self, value: Any) -> None:
         self._owner._sync_torch_parameters()
         self._owner._rs.set_inducing_points(to_flat(value, "inducing_points"))
+        self._owner._sync_torch_parameters()
 
     @property
     def variational_params_initialized(self) -> _Flag:

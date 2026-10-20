@@ -803,6 +803,7 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
             new = [float(v) for v in data]
         values[offset : offset + size] = new
         self._rs.set_raw_parameters(values)
+        self._sync_torch_parameters()
 
     def named_parameters(self) -> Iterator[tuple[str, Any]]:
         """``(name, raw value)`` of every hyperparameter, with BoTorch's names,

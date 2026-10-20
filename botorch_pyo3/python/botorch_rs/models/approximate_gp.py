@@ -646,6 +646,7 @@ class ApproximateGPyTorchModel(GPyTorchModel):
         values = list(self._rs.raw_parameters())
         values[off : off + size] = new
         self._rs.set_raw_parameters(values)
+        self._sync_torch_parameters()
 
     def _named_raw(self) -> Iterator[tuple[str, Any]]:
         """``(name, raw value)`` in the ELBO's order (likelihood first)."""

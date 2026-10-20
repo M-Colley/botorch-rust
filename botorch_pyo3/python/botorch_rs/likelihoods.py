@@ -79,6 +79,9 @@ class GaussianLikelihood(Likelihood):
     @noise.setter
     def noise(self, value: Any) -> None:
         self._rs_model.set_noise(to_flat(value, "noise"))
+        sync = getattr(self._model, "_sync_torch_parameters", None)
+        if sync is not None:
+            sync()
 
     @property
     def raw_noise(self) -> Any:

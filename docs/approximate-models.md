@@ -19,7 +19,9 @@ The same objects are returned from `parameters()`, `named_parameters()`, the
 variational mean / Cholesky / learned inducing-point properties, and raw
 kernel, constant-mean and likelihood properties. Torch optimizer updates are
 synchronized into Rust before evaluation; native fits update those held leaves
-without changing their identities. Frozen leaves remain fixed during native
+without changing their identities. Public mean, kernel, noise, variational and
+inducing-point setters update held leaf references immediately, retaining their
+trainability flags and saved native graph snapshots. Frozen leaves remain fixed during native
 Adam and L-BFGS-B fits, including prior restarts. Copies preserve their flags
 and have independent leaves.
 
