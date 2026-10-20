@@ -249,6 +249,24 @@ def _average_ensemble(value: Tensor, model: Any, log: bool = False) -> Tensor:
     return _logmeanexp(value, (-1,)) if log else value.mean(dim=-1)
 
 
+def _objective_samples(samples: Tensor, objective: Tensor, sample_ndim: int) -> Tensor:
+    """Align outcomes with augmented utility draws and preference batches."""
+    if samples.shape[0] != objective.shape[0]:
+        if objective.shape[0] % samples.shape[0]:
+            raise RuntimeError("An augmented objective must repeat the first sample dimension.")
+        samples = samples.repeat(
+            objective.shape[0] // samples.shape[0], *([1] * (samples.ndim - 1))
+        )
+    missing = objective.ndim + 1 - samples.ndim
+    if missing < 0:
+        raise RuntimeError("Objective batch dimensions cannot remove outcome sample dimensions.")
+    if missing:
+        samples = samples.reshape(
+            *samples.shape[:sample_ndim], *((1,) * missing), *samples.shape[sample_ndim:]
+        )
+    return samples.expand(*objective.shape, samples.shape[-1])
+
+
 class _TensorAcquisition(nn.Module):
     """Mixin preceding the public acquisition class in the dispatched MRO."""
 
@@ -263,6 +281,8 @@ class _TensorAcquisition(nn.Module):
     objective: Any
     _X_pending: Tensor | None
     _X_baseline: Tensor
+    _baseline_source: Tensor
+    _baseline_indices: Tensor | None
     _lower_bound_points: Tensor | None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -433,13 +453,7 @@ class _TensorAcquisition(nn.Module):
             raise RuntimeError(
                 "The MC objective must return sample_shape x batch_shape x q tensors."
             )
-        if samples.shape[0] != objective.shape[0]:
-            if objective.shape[0] % samples.shape[0]:
-                raise RuntimeError("An augmented objective must repeat the first sample dimension.")
-            samples = samples.repeat(
-                objective.shape[0] // samples.shape[0], *([1] * (samples.ndim - 1))
-            )
-        return samples, objective
+        return _objective_samples(samples, objective, len(self.sample_shape)), objective
 
     def _constraint_indicator(self, samples: Tensor, log: bool) -> Tensor:
         result = torch.zeros_like(samples[..., 0])
@@ -576,13 +590,15 @@ class _TensorAcquisition(nn.Module):
             )
         self.prune_baseline = bool(values.get("prune_baseline", True))
         self.register_buffer("_lower_bound_points", values.get("lower_bound_points"))
+        self.register_buffer("_baseline_source", baseline)
+        self.register_buffer("_baseline_indices", None)
         self.register_buffer("_X_baseline", baseline)
         if self.prune_baseline:
             self._prune_baseline()
 
     @property
     def X_baseline(self) -> Tensor:
-        baseline = self._X_baseline
+        baseline = self._selected_baseline()
         if self.incremental and self._X_pending is not None:
             pending = self._X_pending.to(baseline)
             batch = torch.broadcast_shapes(baseline.shape[:-2], pending.shape[:-2])
@@ -594,6 +610,12 @@ class _TensorAcquisition(nn.Module):
                 dim=-2,
             )
         return baseline
+
+    def _selected_baseline(self) -> Tensor:
+        indices = self._baseline_indices
+        return (
+            self._X_baseline if indices is None else self._baseline_source.index_select(-2, indices)
+        )
 
     @property
     def lower_bound_points(self) -> Tensor | None:
@@ -615,6 +637,7 @@ class _TensorAcquisition(nn.Module):
         with torch.no_grad():
             samples = sampler(self._posterior(self._X_baseline))
             objective = self.objective(samples=samples, X=self._X_baseline)
+            samples = _objective_samples(samples, objective, 1)
             feasible = self._feasible(samples)
             if ensemble:
                 objective = objective.mean(dim=-2)
@@ -628,10 +651,13 @@ class _TensorAcquisition(nn.Module):
             else:
                 values = torch.where(feasible, objective, objective.amin() - 1)
             indices = values.argmax(dim=-1).unique()
-        self._X_baseline = self._X_baseline.index_select(-2, indices)
+        if self._baseline_indices is not None:
+            indices = self._baseline_indices.index_select(0, indices)
+        self._baseline_indices = indices
+        self._X_baseline = self._baseline_source.index_select(-2, indices)
 
     def _infeasible_lower_bound(self) -> Tensor:
-        baseline = self._X_baseline
+        baseline = self._selected_baseline()
         if self._lower_bound_points is None:
             generator = torch.Generator(device=baseline.device)
             generator.manual_seed(int(getattr(self.sampler, "seed", 0)) ^ 0x5DEECE66D)

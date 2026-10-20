@@ -159,3 +159,38 @@ The port's existing multi-dimensional preference `sample_shape` convention
 flattens all preference draws into the leading utility axis. The official
 standalone method leaves extra sample dimensions in its output; this known
 shape deviation remains documented in the preference audit.
+
+## Torch preference models
+
+`LearnedObjective` now evaluates ordinary and batched Torch preference GPs
+directly on their device. It samples the preference posterior of the complete
+outcome sample table and keeps the full data, parameter, and sample graph.
+The Tensor path does not flatten samples, request a native model handle, or
+invoke the CPU preference bridge. All preference sample dimensions combine
+with the leading outcome Monte Carlo dimension, following the port's existing
+convention. Ordinary preference-model batch axes are distinct from that
+outcome Monte Carlo dimension.
+
+Tensor NEI and LogNEI use full-joint noisy sampling; requesting root caching
+explicitly warns and selects that law. Default baseline pruning now repeats
+outcome samples to match augmented preference draws before computing
+feasibility, including added preference-model batch axes. Pruning stores its
+discrete selected indices and reconstructs selected baseline inputs on every
+evaluation, so repeated backward calls do not reuse a freed constructor-time
+index-selection graph. Selected membership remains fixed until pruning is
+explicitly repeated.
+
+The 16-case CPU/CUDA focused suite compares learned samples and sample
+derivatives against the independent reference, verifies that both cache
+settings give identical joint values and first/second derivatives, checks
+near-zero improvement for an exact baseline duplicate, and executes repeated
+full data/query/parameter backwards with default pruning. Ordinary and
+batched PairwiseGP preferences and multidimensional preference sample shapes
+are covered.
+
+Preference-model ensembles currently raise `UnsupportedError` in this Tensor
+path: independent outcome/preference MCMC axes need explicit alignment and
+marginalization. Selected-member callbacks from the native objective bridge
+also require a native preference model; use a Torch outcome model for a
+fully device-resident learned objective. These boundaries are explicit rather
+than returning incorrectly aligned or unmarginalized utilities.

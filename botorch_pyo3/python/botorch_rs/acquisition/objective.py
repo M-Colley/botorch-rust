@@ -730,6 +730,36 @@ class LearnedObjective(MCAcquisitionObjective):
     def _native_samples(self, samples: Any, model_index: int | None = None) -> Any:
         import math
 
+        if getattr(self.pref_model, "_tensor_backend", None) == "torch":
+            if not is_torch_tensor(samples):
+                raise TypeError("A Torch preference model requires Tensor outcome samples.")
+            if samples.ndim < 3:
+                raise ValueError("samples should have at least 3 dimensions.")
+            if model_index is not None:
+                raise UnsupportedError(
+                    "Selected native preference-member callbacks require a native preference "
+                    "model; use a Torch outcome model for device-resident learned utilities."
+                )
+            from botorch_rs.utils.transforms import is_ensemble
+
+            if is_ensemble(self.pref_model):
+                raise UnsupportedError(
+                    "Torch learned objectives do not yet marginalize preference-model ensembles; "
+                    "use an ordinary or batched preference GP."
+                )
+            missing = len(self.pref_model.batch_shape) - (samples.ndim - 3)
+            if missing > 0:
+                # The leading dimension is outcome MC, not a model batch.
+                samples = samples.reshape(samples.shape[0], *((1,) * missing), *samples.shape[1:])
+            posterior = self.pref_model.posterior(samples)
+            if self.sampler is None:
+                return posterior.mean.squeeze(-1)
+            utility = self.sampler(posterior).squeeze(-1)
+            # The port's public convention combines all preference sample
+            # dimensions with the leading outcome MC dimension.
+            axes = len(self.sampler.sample_shape)
+            return utility.reshape(-1, *utility.shape[axes + 1 :])
+
         from botorch_rs import _botorch_rs as _rs
 
         shape = tuple(to_flat(samples, "samples")[1])
