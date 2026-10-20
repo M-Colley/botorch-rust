@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import to_flat
+from botorch_rs._arrays import is_torch_tensor, to_flat
 
 
 class StoppingCriterion(Protocol):
@@ -92,6 +92,24 @@ class ExpMAStoppingCriterion:
         self.iter += 1
         if self.iter == self.maxiter:
             return True
+        if is_torch_tensor(fvals):
+            import torch
+
+            history = getattr(self, "_tensor_history", [])
+            history = history[-self.n_window :] + [fvals.detach()]
+            self._tensor_history = history
+            if len(history) < self.n_window + 1:
+                return False
+            tensor_values = torch.stack(history)
+            weights = torch.as_tensor(self.weights, dtype=fvals.dtype, device=fvals.device).reshape(
+                -1, *((1,) * fvals.ndim)
+            )
+            previous, current = (
+                (tensor_values[:-1] * weights).sum(0),
+                (tensor_values[1:] * weights).sum(0),
+            )
+            relative = (previous - current) / previous.abs()
+            return bool((relative if self.minimize else -relative).amax() < self.rel_tol)
         values = [float(v) for v in to_flat(fvals, "fvals")[0]]
         if self._prev_fvals is None:
             self._prev_fvals = [values]
@@ -123,6 +141,7 @@ class ExpMAStoppingCriterion:
         r"""Reset the stopping criterion to its initial state."""
         self.iter = 0
         self._prev_fvals = None
+        self._tensor_history = []
 
 
 __all__ = ["ExpMAStoppingCriterion", "StoppingCriterion"]

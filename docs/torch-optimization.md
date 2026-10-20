@@ -39,8 +39,52 @@ existing native port. The unmodified reference standardizes across batches
 and can sample nearly uniformly despite unequal values within a batch.
 Scalar laws continue to match the unmodified reference and RNG.
 
+Discrete enumeration, discrete local search, mixed continuous/discrete
+optimization, acquisition lists and cyclic search now run device acquisitions
+and Tensor candidate operations on CPU or CUDA. Enumeration chunks choice
+scores, supports intra-point inequalities and avoidance, and selects choices
+independently per model batch. Lattice local search evaluates one-coordinate
+neighbors and supports supplied or generated lattice starts. Mixed search
+optimizes each supplied fixed-feature combination, chooses the winning
+combination, and uses greedy pending-point conditioning for q > 1. Cyclic
+search reoptimizes each candidate against the others with a device exponential
+moving-average stopping criterion. The explicit SciPy interface remains
+available for the continuous subproblem; `gen_candidates_torch` keeps that
+subproblem on the device.
+
+Acquisition lists append prior selected candidates to each acquisition's own
+original pending points and restore every original state on success or failure.
+This deliberately follows the corrected law in
+[PR 3395](https://github.com/meta-pytorch/botorch/pull/3395), rather than the
+pinned reference's accidental reuse of the first acquisition's baseline.
+The same correction applies to CPU native acquisition orchestration. Cyclic
+search defaults to maximization, another PR 3395 correction; an explicit
+`cyclic_options={"minimize": True}` still selects the requested stopping law.
+Discrete local search restores pending state even when values are disabled.
+
+The second checkpoint passes 230 tests across the new device search cases,
+previous device optimizer/initializer configurations, native sequence and
+optimization tests, and the phase-9 parity suite (two CPU-callback/CUDA cases
+are skipped). Tests include real batched exact-GP choice selection, source
+candidate/value comparisons, both CPU and CUDA, no host conversion guards,
+actual mixed Torch/SciPy optimization, and error-state cleanup. Cyclic parity
+uses the corrected maximization setting on both implementations; existing
+criterion-view aliasing is isolated by cloning reference values as before.
+Targeted mypy and Ruff checks pass.
+
+A separate exception defect remains beyond PR 3395's success-only cleanup:
+if the second list optimization raises, `optimize_acqf_list` leaves its
+augmented pending points installed. A regression against unmodified pinned
+BoTorch fails in all four ordinary/mixed and None/Tensor-pending cases.
+A focused upstream `try/finally` repair and regression are prepared in
+`D:/botorch-pr-list-pending`; publication is tracked centrally. PR 3469
+repairs the separate `optimize_acqf` sequential dispatcher, so it does not
+cover this list API failure path.
+
 Constrained automatic sampling, sample-around-best, specialized KG starting
-point heuristics, mixed/discrete/cyclic optimizers and further public
-initialization helpers are subsequent checkpoints. Forced parallel SciPy
-mode remains unsupported; this driver uses serial SciPy calls for each
+point heuristics, mixed alternating search and further public initialization
+helpers are subsequent checkpoints. Local lattice search retains the
+reference's unbatched, non-one-shot restriction. Sequential mixed search
+retains the reference's inter-point-constraint restriction. Forced parallel
+SciPy mode remains unsupported; this driver uses serial SciPy calls for each
 restart group. No optimization speedup is claimed here.

@@ -17,6 +17,7 @@ from botorch_rs._arrays import (
     first_kind,
     from_flat,
     from_pair,
+    is_torch_tensor,
     kind_of,
     to_flat,
 )
@@ -847,9 +848,9 @@ def optimize_acqf_cyclic(
     The candidates are first generated sequentially; then, in cycles, every
     candidate is re-optimized from its current value with all other
     candidates as pending points, until BoTorch's
-    ``ExpMAStoppingCriterion(**cyclic_options)`` holds on the ``q`` values
-    (its default ``minimize=True`` stops after 10 cycles when the values
-    improve). The loop runs natively.
+    ``ExpMAStoppingCriterion(minimize=False, **cyclic_options)`` holds on
+    the ``q`` values. Maximization is the default, correcting the upstream
+    minimization default (PR #3395). The CPU loop runs natively.
 
     Returns:
         A two-element tuple containing
@@ -860,6 +861,10 @@ def optimize_acqf_cyclic(
           candidates except candidate ``i`` (``None`` if
           ``return_acq_values=False``).
     """
+    if getattr(acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_acq_discrete import cyclic
+
+        return cyclic(locals())
     from botorch_rs.optim.stopping import ExpMAStoppingCriterion
 
     kind = first_kind(bounds, batch_initial_conditions)
@@ -877,7 +882,7 @@ def optimize_acqf_cyclic(
             "use the `ic_generator` kwarg to generate initial conditions "
             "for the case of nonlinear inequality constraints."
         )
-    criterion = ExpMAStoppingCriterion(**(cyclic_options or {}))
+    criterion = ExpMAStoppingCriterion(**{"minimize": False, **(cyclic_options or {})})
     kwargs = _optimize_kwargs(
         acq_function,
         native_acqf,
@@ -941,7 +946,7 @@ def optimize_acqf_list(
 
     The acquisition functions are optimized in sequence for ``q = 1`` with
     :func:`optimize_acqf`, each with the previous candidates (appended to the
-    first acquisition function's pending points) set as ``X_pending``; this
+    current acquisition function's pending points) set as ``X_pending``; this
     is also known as sequential greedy optimization. With
     ``fixed_features_list``, every step is :func:`optimize_acqf_mixed`.
 
@@ -951,6 +956,10 @@ def optimize_acqf_list(
         conditional on the previous candidates (``None`` with
         ``return_acq_values=False``).
     """
+    if acq_function_list and getattr(acq_function_list[0], "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_acq_discrete import acquisition_list
+
+        return acquisition_list(locals())
     if fixed_features and fixed_features_list:
         raise ValueError(
             "Èither `fixed_feature` or `fixed_features_list` can be provided, not both."
@@ -961,55 +970,70 @@ def optimize_acqf_list(
     candidate_list: list[Any] = []
     acq_value_list: list[float] = []
     candidates: Any = None
-    base_X_pending = acq_function_list[0].X_pending
-    for acq_function in acq_function_list:
-        if candidate_list:
-            acq_function.set_X_pending(
-                _concat_rows([base_X_pending, candidates], kind)
-                if base_X_pending is not None
-                else candidates
-            )
-        if fixed_features_list:
-            candidate, acq_value = optimize_acqf_mixed(
-                acq_function=acq_function,
-                bounds=bounds,
-                q=1,
-                num_restarts=num_restarts,
-                raw_samples=raw_samples,
-                options=options or {},
-                inequality_constraints=inequality_constraints,
-                equality_constraints=equality_constraints,
-                nonlinear_inequality_constraints=nonlinear_inequality_constraints,
-                fixed_features_list=fixed_features_list,
-                post_processing_func=post_processing_func,
-                ic_generator=ic_generator,
-                ic_gen_kwargs=ic_gen_kwargs,
-                return_acq_values=True,
-                retry_on_optimization_warning=retry_on_optimization_warning,
-            )
-        else:
-            candidate, acq_value = optimize_acqf(
-                acq_function=acq_function,
-                bounds=bounds,
-                q=1,
-                num_restarts=num_restarts,
-                raw_samples=raw_samples,
-                options=options or {},
-                inequality_constraints=inequality_constraints,
-                equality_constraints=equality_constraints,
-                nonlinear_inequality_constraints=nonlinear_inequality_constraints,
-                fixed_features=fixed_features,
-                post_processing_func=post_processing_func,
-                return_best_only=True,
-                sequential=False,
-                ic_generator=ic_generator,
-                retry_on_optimization_warning=retry_on_optimization_warning,
-                **(ic_gen_kwargs or {}),
-            )
-        candidate_list.append(candidate)
-        if return_acq_values:
-            acq_value_list.append(float(to_flat(acq_value, "acq_value")[0][0]))
-        candidates = _concat_rows(candidate_list, kind)
+    originals = [getattr(acq, "X_pending", None) for acq in acq_function_list]
+    failed = False
+    try:
+        for i, acq_function in enumerate(acq_function_list):
+            if candidate_list:
+                acq_function.set_X_pending(
+                    _concat_rows([originals[i], candidates], kind)
+                    if originals[i] is not None
+                    else candidates
+                )
+            if fixed_features_list:
+                candidate, acq_value = optimize_acqf_mixed(
+                    acq_function=acq_function,
+                    bounds=bounds,
+                    q=1,
+                    num_restarts=num_restarts,
+                    raw_samples=raw_samples,
+                    options=options or {},
+                    inequality_constraints=inequality_constraints,
+                    equality_constraints=equality_constraints,
+                    nonlinear_inequality_constraints=nonlinear_inequality_constraints,
+                    fixed_features_list=fixed_features_list,
+                    post_processing_func=post_processing_func,
+                    ic_generator=ic_generator,
+                    ic_gen_kwargs=ic_gen_kwargs,
+                    return_acq_values=True,
+                    retry_on_optimization_warning=retry_on_optimization_warning,
+                )
+            else:
+                candidate, acq_value = optimize_acqf(
+                    acq_function=acq_function,
+                    bounds=bounds,
+                    q=1,
+                    num_restarts=num_restarts,
+                    raw_samples=raw_samples,
+                    options=options or {},
+                    inequality_constraints=inequality_constraints,
+                    equality_constraints=equality_constraints,
+                    nonlinear_inequality_constraints=nonlinear_inequality_constraints,
+                    fixed_features=fixed_features,
+                    post_processing_func=post_processing_func,
+                    return_best_only=True,
+                    sequential=False,
+                    ic_generator=ic_generator,
+                    retry_on_optimization_warning=retry_on_optimization_warning,
+                    **(ic_gen_kwargs or {}),
+                )
+            candidate_list.append(candidate)
+            if return_acq_values:
+                acq_value_list.append(float(to_flat(acq_value, "acq_value")[0][0]))
+            candidates = _concat_rows(candidate_list, kind)
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        restore_error = None
+        for acquisition, original in zip(acq_function_list, originals, strict=True):
+            try:
+                acquisition.set_X_pending(original)
+            except Exception as error:
+                if restore_error is None:
+                    restore_error = error
+        if restore_error is not None and not failed:
+            raise restore_error
     if not return_acq_values:
         return candidates, None
     return candidates, from_flat(acq_value_list, (len(acq_value_list),), kind)
@@ -1072,6 +1096,10 @@ def optimize_acqf_mixed(
         - the associated acquisition value(s) (``None`` if
           ``return_acq_values=False``).
     """
+    if getattr(acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_acq_discrete import mixed
+
+        return mixed(locals())
     kind = first_kind(bounds, batch_initial_conditions)
     bounds_flat = _check_bounds(bounds)
     d = bounds_flat[1][1]
@@ -1197,6 +1225,10 @@ def optimize_acqf_discrete(
     """
     from botorch_rs.acquisition.acquisition import OneShotAcquisitionFunction
 
+    if getattr(acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_acq_discrete import discrete
+
+        return discrete(locals())
     if isinstance(acq_function, OneShotAcquisitionFunction):
         raise UnsupportedError(
             "Discrete optimization is not supported for one-shot acquisition functions."
@@ -1257,6 +1289,15 @@ def _gen_batch_initial_conditions_local_search(
     (e.g. to reproduce given random draws); otherwise the points are drawn in
     Rust.
     """
+    if discrete_choices and is_torch_tensor(discrete_choices[0]):
+        from botorch_rs.optim._torch_acq_discrete import lattice_points
+
+        avoid = (
+            discrete_choices[0].new_empty(0, len(discrete_choices)) if X_avoid is None else X_avoid
+        )
+        return lattice_points(
+            discrete_choices, raw_samples, avoid, inequality_constraints, min_points, max_tries
+        )
     kind = kind_of(discrete_choices[0]) if discrete_choices else first_kind()
     choices = [[float(v) for v in to_flat(c, "discrete_choices")[0]] for c in discrete_choices]
     avoid = to_flat(X_avoid, "X_avoid") if X_avoid is not None else ([], (0, len(choices)))
@@ -1309,6 +1350,10 @@ def optimize_acqf_discrete_local_search(
         - a ``q x d`` array of generated candidates.
         - an associated (joint) acquisition value.
     """
+    if getattr(acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_acq_discrete import local_search
+
+        return local_search(locals())
     if batch_initial_conditions is not None:
         bshape = to_flat(batch_initial_conditions, "batch_initial_conditions")[1]
         if not (len(bshape) == 3 and bshape[-2] == 1):
