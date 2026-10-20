@@ -58,6 +58,7 @@ _LOOKAHEAD = frozenset(
         "qMultiFidelityKnowledgeGradient",
         "qHypervolumeKnowledgeGradient",
         "qMultiFidelityHypervolumeKnowledgeGradient",
+        "qMultiStepLookahead",
     }
 )
 _EXTRA_ANALYTIC = frozenset(
@@ -115,7 +116,13 @@ def tensor_acquisition(public_class: type) -> Any:
                 else TensorMultiObjectiveAcquisition
             )
         elif public_class.__name__ in _LOOKAHEAD:
-            if "Hypervolume" in public_class.__name__:
+            if public_class.__name__ == "qMultiStepLookahead":
+                from botorch_rs.acquisition._torch_backend_multi_step import (
+                    TensorMultiStepLookahead,
+                )
+
+                mixin = TensorMultiStepLookahead
+            elif "Hypervolume" in public_class.__name__:
                 from botorch_rs.acquisition._torch_backend_hvkg import (
                     TensorHypervolumeKnowledgeGradient,
                 )

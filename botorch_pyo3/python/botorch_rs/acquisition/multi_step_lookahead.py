@@ -655,6 +655,9 @@ def make_best_f(model: Any, X: Any) -> dict[str, Any]:
     argument factory of ``qMultiStepLookahead``, every fantasy model gets the
     best value of its observed and fantasized data.
     """
+    if getattr(model, "_tensor_backend", None) == "torch" and hasattr(model, "_train_Y"):
+        best = model._train_Y.amax(dim=-2)
+        return {"best_f": best.squeeze(-1) if model.num_outputs == 1 else best}
     rs = getattr(model, "_rs", None)
     if rs is not None and hasattr(rs, "train_targets"):
         data, shape = rs.train_targets()

@@ -244,3 +244,62 @@ native implementation. Trace observations remain unsupported, matching
 BoTorch. The reserved `valfunc_cls` and `valfunc_argfac` arguments have no
 effect, matching the pinned official value factory. No HVKG speedup has been
 measured.
+
+## Multi-step lookahead
+
+`qMultiStepLookahead` now recursively conditions device models and evaluates
+port analytic or MC acquisition classes at every stage. User argument
+factories receive each actual fantasy model and that stage's design Tensor.
+The complete training, fantasy-observation, kernel/noise-parameter and query
+graphs are retained, including the initial fantasy distribution. Nonuniform
+`base_weights` remain differentiable. Pending observations, scalarizing
+posterior transforms, nonlinear MC objectives, tree extraction and the
+induced fantasy model are supported. Initial/later analytic stages still
+require `q=1`, matching the corresponding acquisition; pending points can
+make an initial analytic stage invalid.
+
+The 38-case CPU/CUDA suite covers one/two stages, mean/EI/qEI values against
+the pinned reference, pending points, multiple query batches, nonlinear
+objectives and scalarized ModelLists, all-parameter Hessian products and
+complete training/query `gradcheck` and `gradgradcheck`, explicit fantasy
+layouts, live integration weights and forbidden host data conversions.
+Combined HVKG/multistep validation passes 72 cases. Multioutput reference
+tests use ModelListGP: the pinned GPyTorch SingleTaskGP multioutput fantasy
+path can fail its prediction reshape before the stage value is evaluated.
+Stage classes must be port classes (or explicitly supplied custom classes),
+and their device-supported configurations determine the supported stage
+values. Nested lookahead value functions are rejected, as in BoTorch.
+
+Two incumbent defects are already covered by existing upstream proposals;
+they are not new unique reports:
+
+- **Outcome scale:** pinned `multi_step_lookahead.py:679` returns
+  `model.train_targets.max(-1).values`. With standardized targets this is a
+  standardized incumbent, although EI compares it with an original-scale
+  posterior. For `Y=12*sin(5.3*X)+7`, `X=[[.04],[.27],[.56],[.81]]`, it
+  differs from `Y.max()` by construction. The Tensor branch of the port's
+  `make_best_f` reads the live raw targets, including fantasy observations,
+  retaining shape `fantasy_shape x batch_shape` and gradients. Existing
+  [PR 3391](https://github.com/meta-pytorch/botorch/pull/3391) proposes
+  untransforming source targets before taking the maximum.
+- **Batched analytic layout:** with two fantasies and two query batches,
+  `make_best_f` has shape `2 x 2`, while analytic EI's mean retains shape
+  `2 x 2 x 1`. The pinned EI broadcasts these to `2 x 2 x 2` and fails its
+  output shape assertion. Construct a lookahead with `batch_sizes=[1]`,
+  `num_fantasies=[2]`, `valfunc_cls=[None, ExpectedImprovement]`,
+  `valfunc_argfacs=[None, make_best_f]`, and evaluate a `2 x 3 x d` tree to
+  reproduce it. Existing [PR 3453](https://github.com/meta-pytorch/botorch/pull/3453)
+  adds the missing output dimension to batched analytic `best_f`, as the
+  port already does. Unmodified-reference analytic-stage parity therefore
+  uses a scalar incumbent; a separate regression exercises the dynamic
+  fantasy-batch incumbent with the port's corrected layout/scale.
+
+When fantasy base samples are not collapsed, the Tensor implementation
+derives the collapsed query-batch range from the posterior's actual event
+rank (`q` for scalar, `q,m` for multioutput). This preserves separate normal
+streams for earlier fantasy nodes. The pinned implementation hard-codes
+two event axes, which collapses a scalar fantasy axis and retains a query
+axis instead. A regression checks the independent scalar streams' complete
+shape. This is a deliberate correction, not a claim of identical draws for
+that noncollapsed reference configuration. Tree partitioning also preserves
+the existing native port's per-query fantasy grouping for `q_i>1`.
