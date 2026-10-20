@@ -49,11 +49,12 @@ changes. Private native calls bypass the public validation/synchronization
 protocol. Native candidate optimization uses its original fixed acquisition
 snapshot; construct that acquisition after synchronizing the model.
 
-Noisy EI and LogNEI now expose actual-path cached/joint parameter tapes with
+Noisy EI, LogNEI, and its fixed-scalarization qLogNParEGO wrapper expose
+actual-path cached/joint parameter tapes with
 explicitly detached baseline factors/incumbents; see
 `noisy-acquisition-parameter-gradients.md` for that distinct derivative contract.
-Knowledge-gradient, entropy, multiobjective, and acquisition-wrapper parameter
-pullbacks remain outside this implementation. When an unsupported native
+Knowledge-gradient, entropy, other multiobjective acquisitions, and general
+acquisition-wrapper parameter pullbacks remain outside this implementation. When an unsupported native
 family is used with persistent trainable leaves, requesting its parameter
 backward raises an explicit `UnsupportedError`; its query-only derivative
 interface remains available. Nonlinear moment-matched scalarization also

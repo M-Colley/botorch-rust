@@ -289,6 +289,18 @@ impl QLogNParEGO {
 }
 
 impl AcquisitionFunction for QLogNParEGO {
+    fn supports_parameter_gradients(&self) -> bool {
+        self.inner.supports_parameter_gradients()
+    }
+
+    fn forward_with_adjoints(
+        &self,
+        x: &Matrix,
+        query_gradient: bool,
+    ) -> Result<crate::acquisition::adjoints::AcquisitionAdjoints> {
+        self.inner.forward_with_adjoints(x, query_gradient)
+    }
+
     fn model(&self) -> &Arc<dyn Model> {
         self.inner.model()
     }

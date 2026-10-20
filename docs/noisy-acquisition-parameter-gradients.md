@@ -1,7 +1,7 @@
 # Noisy acquisition parameter gradients and cached constants
 
-`qNoisyExpectedImprovement` and `qLogNoisyExpectedImprovement` now expose
-native first-order model-parameter tapes for the ordinary unbatched CPU Torch
+`qNoisyExpectedImprovement`, `qLogNoisyExpectedImprovement`, and their
+`qLogNParEGO` scalarization wrapper expose native first-order model-parameter tapes for the ordinary unbatched CPU Torch
 GP sources supported by `acquisition-parameter-gradients.md`. This includes
 Gaussian scalarization, independent-output model lists and aliases, custom
 objectives, candidate constraints, learned input warping, single-output
@@ -67,7 +67,16 @@ and incumbent fixed while updating live GP cross/candidate solves. A forced
 fallback test uses a live joint factor with the same saved incumbent, and
 checks that its parameter graph differs from the successful cached path.
 
-Native multiobjective wrappers, including `qLogNParEGO`, retain explicit
-unsupported parameter backward in this checkpoint; their query derivatives
+`qLogNParEGO` delegates directly to its saved qLogNEI backend. Its existing
+Chebyshev objective pullback carries sample and direct-input bars through the
+fixed constructor scalarization. Weights and posterior-mean baseline
+normalization stay constant, matching official construction under `no_grad`.
+Tests verify cached/joint parameter and query graphs with signed loss weights,
+negative scalarization weights, transformed multioutput objectives, constraints,
+and both incremental pending modes. No separate model or objective evaluation
+is added by the delegate.
+
+Other native multiobjective acquisitions and general acquisition wrappers
+retain explicit unsupported parameter backward; their query derivatives
 continue to work. Eigen-root derivatives and specialized model parameter
 layouts retain their existing explicit unsupported boundaries.

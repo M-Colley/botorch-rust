@@ -230,11 +230,11 @@ def test_learned_objective_tapes_preserve_member_dispatch_and_outcome_gradients(
 
 
 @pytest.mark.parametrize("cache_root", [False, True])
-def test_parego_wrapper_remains_explicit_parameter_boundary(cache_root):
+@pytest.mark.parametrize("minimize_first", [False, True])
+def test_parego_parameter_tape_preserves_fixed_scalarization(cache_root, minimize_first):
     from botorch.acquisition.multi_objective.parego import qLogNParEGO as BtParEGO
 
     from botorch_rs.acquisition.multi_objective.parego import qLogNParEGO
-    from botorch_rs.exceptions.errors import UnsupportedError
 
     model, reference = model_pair(outputs=2)
     baseline = model.train_inputs[0][0, :3]
@@ -242,22 +242,98 @@ def test_parego_wrapper_remains_explicit_parameter_boundary(cache_root):
         X_baseline=baseline,
         prune_baseline=False,
         cache_root=cache_root,
-        scalarization_weights=torch.tensor([0.35, 0.65], dtype=torch.double),
+        scalarization_weights=torch.tensor(
+            [-0.35 if minimize_first else 0.35, 0.65], dtype=torch.double
+        ),
     )
     with seeded_draws():
         acquisition = qLogNParEGO(model, sampler=rs_sampler(S, [6, 10]), **shared)
         expected_acquisition = BtParEGO(
             reference, sampler=BtSampler(torch.Size([S]), seed=0), **shared
         )
-        query = torch.tensor([[[0.2, 0.6], [0.7, 0.3]]], dtype=torch.double, requires_grad=True)
+        query = torch.linspace(0.15, 0.85, 12, dtype=torch.double).reshape(3, 2, 2).requires_grad_()
+        expected_query = query.detach().clone().requires_grad_()
         actual = acquisition(query)
         with propagate_grads(True), fast_pred_var(False):
             refresh_live_training_solve(reference)
-            expected = expected_acquisition(query)
+            expected = expected_acquisition(expected_query)
         torch.testing.assert_close(actual, expected, rtol=4e-6, atol=4e-7)
-        assert torch.isfinite(torch.autograd.grad(actual.sum(), query, retain_graph=True)[0]).all()
-        with pytest.raises(UnsupportedError, match="does not support automatic model-parameter"):
-            actual.sum().backward()
+        weights = torch.tensor([-0.3, 0.0, 0.7], dtype=torch.double)
+        gradients = torch.autograd.grad((actual * weights).sum(), (*model.parameters(), query))
+        expected_gradients = torch.autograd.grad(
+            (expected * weights).sum(), (*reference.parameters(), expected_query)
+        )
+        for result, want in zip(gradients, expected_gradients, strict=True):
+            torch.testing.assert_close(result, want, rtol=4e-6, atol=4e-7)
+        assert not acquisition.Y_baseline.requires_grad
+        assert not expected_acquisition.Y_baseline.requires_grad
+        dummy = torch.zeros(S, 3, 2, dtype=torch.double)
+        torch.testing.assert_close(
+            acquisition.compute_best_f(dummy),
+            expected_acquisition.compute_best_f(dummy),
+            rtol=2e-9,
+            atol=2e-10,
+        )
+
+
+@pytest.mark.parametrize("cache_root", [False, True])
+@pytest.mark.parametrize("incremental", [False, True])
+def test_parego_custom_objective_constraints_and_pending_graph(cache_root, incremental):
+    from botorch.acquisition.multi_objective.objective import (
+        GenericMCMultiOutputObjective as BtObjective,
+    )
+    from botorch.acquisition.multi_objective.parego import qLogNParEGO as BtParEGO
+
+    from botorch_rs.acquisition.multi_objective.objective import GenericMCMultiOutputObjective
+    from botorch_rs.acquisition.multi_objective.parego import qLogNParEGO
+
+    model, reference = model_pair(outputs=2)
+    baseline = model.train_inputs[0][0, :3]
+    pending = torch.tensor([[0.4, 0.6]], dtype=torch.double)
+
+    def objective(samples, X=None):
+        result = torch.stack([samples[..., 1], -samples[..., 0]], dim=-1)
+        return result if X is None else result + 0.1 * X[..., :1]
+
+    def constraint(samples):
+        return -samples[..., 1].square() - 0.05
+
+    shared = dict(
+        X_baseline=baseline,
+        X_pending=pending,
+        prune_baseline=False,
+        cache_root=cache_root,
+        incremental=incremental,
+        constraints=[constraint],
+        eta=0.2,
+        scalarization_weights=torch.tensor([-0.35, 0.65], dtype=torch.double),
+    )
+    with seeded_draws():
+        acquisition = qLogNParEGO(
+            model,
+            sampler=rs_sampler(S, [8 if incremental else 6, 12]),
+            objective=GenericMCMultiOutputObjective(objective),
+            **shared,
+        )
+        expected_acquisition = BtParEGO(
+            reference,
+            sampler=BtSampler(torch.Size([S]), seed=0),
+            objective=BtObjective(objective),
+            **shared,
+        )
+        query = torch.tensor([[[0.2, 0.6], [0.7, 0.3]]], dtype=torch.double, requires_grad=True)
+        expected_query = query.detach().clone().requires_grad_()
+        actual = acquisition(query)
+        with propagate_grads(True), fast_pred_var(False):
+            refresh_live_training_solve(reference)
+            expected = expected_acquisition(expected_query)
+        torch.testing.assert_close(actual, expected, rtol=4e-6, atol=4e-7)
+        gradients = torch.autograd.grad(actual.sum(), (*model.parameters(), query))
+        expected_gradients = torch.autograd.grad(
+            expected.sum(), (*reference.parameters(), expected_query)
+        )
+        for result, want in zip(gradients, expected_gradients, strict=True):
+            torch.testing.assert_close(result, want, rtol=4e-6, atol=4e-7)
 
 
 @pytest.mark.parametrize("requested_cache", [False, True])

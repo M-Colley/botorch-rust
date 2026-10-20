@@ -172,10 +172,14 @@ separately.
 - Parameter autograd is integrated for ordinary CPU Torch `SingleTaskGP`
   posterior moments, samples and exact MLLs, including joint Gaussian model
   lists and summed MLLs. Variational GPs also expose persistent Torch leaves
-  and full-data/minibatch ELBO gradients. Common analytic and scalar MC
-  acquisitions retain native parameter-adjoint tapes. Extend posterior
-  graphs to specialized models and the remaining acquisition families
-  ([current scope](posterior-parameter-gradients.md)).
+  and full-data/minibatch ELBO gradients. Common analytic/scalar MC
+  acquisitions and qNEI/qLogNEI/qLogNParEGO now attach native parameter
+  tapes for unbatched ordinary GP sources. Noisy tapes preserve the actual
+  cached/joint path and its detached baseline quantities
+  ([scope](noisy-acquisition-parameter-gradients.md)). Extend posterior
+  graphs to specialized models and parameter tapes to other acquisition
+  families ([posterior scope](posterior-parameter-gradients.md),
+  [acquisition scope](acquisition-parameter-gradients.md)).
 - Faster dense linear algebra for larger n. At n = 300, fitting is only 1.4×
   faster than BoTorch, which uses multithreaded BLAS/LAPACK.
 

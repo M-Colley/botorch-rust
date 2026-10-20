@@ -1780,9 +1780,15 @@ The model fits alone are 140–550× faster.
   first-order Torch query gradients. Ordinary CPU Torch `SingleTaskGP`
   posteriors and exact MLLs also carry native parameter gradients through
   persistent leaves. Exact GPs expose explicit parameter pullbacks as well.
-  Acquisition values support query `torch.autograd`
-  (exact gradients computed in Rust), and `acqf.value_and_grad(X)` returns
-  gradients for any array type.
+  Common analytic/scalar MC acquisitions, qNEI, qLogNEI and qLogNParEGO
+  also carry model-parameter gradients for unbatched ordinary CPU Torch GPs
+  and Gaussian model lists. Cached noisy EI holds baseline factors and
+  incumbents constant; qLogNParEGO also holds its scalarization state fixed.
+  Reconstruct acquisitions after model updates. See the
+  [acquisition scope](docs/acquisition-parameter-gradients.md) and
+  [noisy-gradient contract](docs/noisy-acquisition-parameter-gradients.md).
+  Acquisition values support query `torch.autograd` (exact gradients computed
+  in Rust), and `acqf.value_and_grad(X)` returns query gradients for any array type.
 - **Fitting.** `pick_best_of_all_attempts` selects the best native L-BFGS-B or
   Adam result for `SingleTaskGP` families ([scope](docs/fit-attempts.md)).
   Custom high-level optimizers and closures remain unsupported. Retries
