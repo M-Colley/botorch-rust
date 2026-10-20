@@ -311,9 +311,9 @@ class _TensorAcquisition(nn.Module):
             "ProbabilityOfImprovement",
             "LogProbabilityOfImprovement",
         }:
-            from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+            from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 
-            if not isinstance(posterior, TorchGPyTorchPosterior):
+            if not isinstance(posterior, GPyTorchPosterior):
                 raise UnsupportedError(
                     "Analytic EI/PI requires a Gaussian posterior; use an MC acquisition for nonlinear outcome transforms."
                 )
