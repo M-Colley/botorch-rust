@@ -60,6 +60,7 @@ pub fn arity(name: &str) -> Option<(usize, usize)> {
         | "sqrt"
         | "sin"
         | "cos"
+        | "log_raw"
         | "phi"
         | "log_phi"
         | "log_ndtr"
@@ -184,6 +185,7 @@ fn unary(name: &str, x: f64, single: bool) -> (f64, f64) {
         }
         "sin" => (x.sin(), x.cos()),
         "cos" => (x.cos(), -x.sin()),
+        "log_raw" => (x.ln(), x.recip()),
         "phi" => {
             let p = prob::phi(x);
             (p, -x * p)
@@ -753,6 +755,11 @@ mod tests {
         assert_eq!(mul.values[0][2..], [0.0, 0.0, 8.0]);
         let div = elementwise("div", &[&a, &b], &[], false, false).unwrap();
         assert_eq!(div.values[0], vec![-1.0, 1.0, 1.0, 0.0, 0.5]);
+        let natural_log = elementwise("log_raw", &[&[0.0, -1.0, 1.0]], &[], false, true).unwrap();
+        assert_eq!(natural_log.values[0][0], f64::NEG_INFINITY);
+        assert!(natural_log.values[0][1].is_nan());
+        assert_eq!(natural_log.values[0][2], 0.0);
+        assert_eq!(natural_log.grads.unwrap()[0][0], [f64::INFINITY, -1.0, 1.0]);
         assert!(elementwise("log_prob_normal_in", &[&[1.0], &[0.0]], &[], false, false).is_err());
     }
 
