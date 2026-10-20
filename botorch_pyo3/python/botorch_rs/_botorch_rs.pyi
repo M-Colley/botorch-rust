@@ -3444,6 +3444,7 @@ def tensor_kernel(
     nu: float = 2.5,
     diag: bool = False,
     last_dim_is_batch: bool = False,
+    parameters: dict[str, Any] | None = None,
 ) -> Any: ...
 def tensor_exact_gp_posterior(
     train_y: Any,

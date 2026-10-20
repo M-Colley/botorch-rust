@@ -9,6 +9,8 @@ use pyo3::types::PyDict;
 
 use crate::errors::{dimension_error, unsupported, value_error};
 
+mod kernels;
+
 type Tensor<'py> = Bound<'py, PyAny>;
 type TensorPair<'py> = (Tensor<'py>, Tensor<'py>);
 
@@ -77,7 +79,7 @@ fn check_training_shapes(targets: &Tensor<'_>, covariance: &Tensor<'_>) -> PyRes
 
 /// Dense RBF or Matern covariance using only differentiable Torch operations.
 #[pyfunction]
-#[pyo3(signature = (kind, x1, x2, lengthscale=None, nu=2.5, diag=false, last_dim_is_batch=false))]
+#[pyo3(signature = (kind, x1, x2, lengthscale=None, nu=2.5, diag=false, last_dim_is_batch=false, parameters=None))]
 #[allow(clippy::too_many_arguments)]
 fn tensor_kernel<'py>(
     py: Python<'py>,
@@ -88,6 +90,7 @@ fn tensor_kernel<'py>(
     nu: f64,
     diag: bool,
     last_dim_is_batch: bool,
+    parameters: Option<&Bound<'py, PyDict>>,
 ) -> PyResult<Tensor<'py>> {
     let torch = torch_module(py)?;
     require_tensor(&torch, x1, "x1")?;
@@ -99,6 +102,23 @@ fn tensor_kernel<'py>(
     if diag && s1[s1.len() - 2] != s2[s2.len() - 2] {
         return Err(dimension_error(
             "diag=True requires equal numbers of kernel input rows",
+        ));
+    }
+    if !matches!(kind.to_ascii_lowercase().as_str(), "rbf" | "matern") {
+        return kernels::evaluate(
+            &torch,
+            kind,
+            x1,
+            x2,
+            lengthscale,
+            diag,
+            last_dim_is_batch,
+            parameters,
+        );
+    }
+    if parameters.is_some_and(|p| !p.is_empty()) {
+        return Err(value_error(
+            "RBF/Matern kernel parameters use lengthscale and nu arguments",
         ));
     }
     let (mut a, mut b) = if let Some(ls) = lengthscale {
