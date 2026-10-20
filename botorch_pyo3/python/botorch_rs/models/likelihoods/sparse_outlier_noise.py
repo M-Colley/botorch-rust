@@ -116,6 +116,7 @@ class SparseOutlierNoise(Likelihood, RelevancePursuitMixin):
 
     def _push(self, values: list[float]) -> None:
         if self._model is not None:
+            self._model._sync_torch_parameters()
             c = self.raw_rho_constraint
             indices = self.support if self.is_sparse else list(range(self.dim))
             self._model._rs.set_sparse_outlier_noise(
@@ -134,7 +135,9 @@ class SparseOutlierNoise(Likelihood, RelevancePursuitMixin):
 
     @property
     def raw_rho(self) -> Any:
-        values = self._raw if self._model is None else self._model._rs.sparse_outlier_state()[1]
+        if self._model is not None:
+            return self._model._raw_param_array("raw_rho")
+        values = self._raw
         return from_flat(values, (len(values),), self._kind)
 
     @raw_rho.setter

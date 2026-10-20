@@ -100,3 +100,17 @@ iterates, standalone likelihoods, support-search snapshots, robust fixed-noise
 MAP selection, failed-fit restoration, and atomic target/noise replacement.
 BoTorch default prior factories are authored in their canonical float32 mode
 before constructing double-precision models in the parity tests.
+# Persistent parameter layout during pursuit
+
+Changing sparse support changes the native raw-parameter layout. Torch
+synchronization refreshes the layout before pulling values, retaining
+unchanged kernel, mean and noise leaves and replacing a resized `raw_rho`
+leaf with its new shape. Its trainability flag is preserved. Public sparse
+updates first push pending Torch edits, so support changes cannot discard
+those edits or write a stale parameter vector into Rust. Recreate an
+external optimizer after changing support because its parameter list and
+state may refer to the previous sparse layout. Float32/float64 regressions
+check expansion, contraction, pending edits and leaf identities; the full
+forward/backward pursuit and robust-model fitting tests cover repeated
+layout changes.
+

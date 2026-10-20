@@ -88,6 +88,37 @@ def pair(convex=True, kind="torch", support=None, rho_prior=False):
     return model, reference
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_support_resize_preserves_other_leaves_and_sparse_trainability(dtype):
+    likelihood = SparseOutlierGaussianLikelihood(
+        get_gaussian_likelihood_with_lognormal_prior(), len(X), [], loo=False
+    )
+    model = SingleTaskGP(X.to(dtype), Y.to(dtype), likelihood=likelihood, outcome_transform=None)
+    noise = model.likelihood.noise_covar
+    before = dict(model.named_parameters())
+    rho_name = "likelihood.noise_covar.raw_rho"
+    before[rho_name].requires_grad_(False)
+    mean = model.mean_module.raw_constant
+    with torch.no_grad():
+        mean.fill_(0.37)
+    noise.expand_support([2, 0])
+    rho = noise.raw_rho
+    assert isinstance(rho, torch.nn.Parameter) and rho.shape == (2,)
+    assert rho is not before[rho_name] and not rho.requires_grad
+    with torch.no_grad():
+        rho.fill_(0.2)
+    noise.expand_support([4])
+    torch.testing.assert_close(noise.raw_rho, torch.tensor([0.2, 0.2, 0.0], dtype=dtype))
+    noise.contract_support([0])
+    torch.testing.assert_close(noise.raw_rho, torch.tensor([0.2, 0.0], dtype=dtype))
+    assert not noise.raw_rho.requires_grad
+    after = dict(model.named_parameters())
+    for name, leaf in before.items():
+        if name != rho_name:
+            assert leaf is after[name]
+    torch.testing.assert_close(mean, torch.full_like(mean, 0.37), rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("convex", [False, True])
 @pytest.mark.parametrize("kind", ["torch", "numpy", "list"])
 def test_mll_all_gradients_and_candidate_posterior(convex, kind):

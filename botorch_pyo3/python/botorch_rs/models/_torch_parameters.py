@@ -92,6 +92,34 @@ class TorchParameterState:
         dirty = values != self.leaf_values
         if model._rs.parameter_state_version != self.version:
             raw = tuple(model._rs.raw_parameters())
+            describe = getattr(model._rs, "parameter_shapes", None)
+            shapes = (
+                [(name, tuple(shape)) for name, shape in describe()]
+                if describe is not None
+                else self.shapes
+            )
+            if shapes != self.shapes:
+                if dirty:
+                    raise RuntimeError(
+                        "Native GP parameter layout and Torch leaves were both modified since "
+                        "their last synchronization. Synchronize before changing native support."
+                    )
+                existing = dict(self.entries)
+                refreshed = []
+                offset = 0
+                for name, shape in shapes:
+                    size = math.prod(shape)
+                    parameter = existing.get(name)
+                    if parameter is None or tuple(parameter.shape) != shape:
+                        parameter = torch.nn.Parameter(
+                            from_flat(raw[offset : offset + size], shape, model._kind),
+                            requires_grad=True if parameter is None else parameter.requires_grad,
+                        )
+                    refreshed.append((name, parameter))
+                    offset += size
+                if offset != len(raw):
+                    raise RuntimeError("Native GP parameter shapes do not match its raw values.")
+                self.shapes, self.entries = shapes, refreshed
             if raw != self.raw:
                 if dirty:
                     raise RuntimeError(
