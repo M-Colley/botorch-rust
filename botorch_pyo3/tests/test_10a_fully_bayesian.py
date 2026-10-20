@@ -104,8 +104,8 @@ def test_unfitted_model(name: str) -> None:
     assert model._is_fully_bayesian and model._is_ensemble
     assert is_fully_bayesian(model) and is_ensemble(model)
     assert not hasattr(model, "fantasize")
-    with pytest.raises(UnsupportedError):
-        model.pyro_model.sample()
+    # NumPyro tracing is an optional public interface, separately tested
+    # with seeded effect handlers. Native model construction needs no JAX.
 
 
 # ---------------------------------------------------------------------------

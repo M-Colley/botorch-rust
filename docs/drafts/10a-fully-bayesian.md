@@ -5,13 +5,19 @@ branch `phase10/fully-bayesian`). Reference: BoTorch main (da00e0401) and
 the released 0.18.1; both fit fully Bayesian GPs with NumPyro (JAX), not
 Pyro.
 
+This is the historical phase-10 audit, rather than the current full-port
+inventory. Optional public NumPyro tracing was subsequently implemented and
+audited against official revision `b0dd01be6`; see
+[`../numpyro-trace-interoperability.md`](../numpyro-trace-interoperability.md).
+Native NUTS remains the default fitter.
+
 ## Supported API (rows for README)
 
 | BoTorch | botorch_rs | Notes |
 | --- | --- | --- |
 | `botorch.models.fully_bayesian.SaasFullyBayesianSingleTaskGP` | same path | SAAS prior; the samples form a batched `SingleTaskGP` (batch `num_mcmc_samples`); `GaussianMixturePosterior`; `median_lengthscale`, `num_mcmc_samples`, `batch_shape`, `load_mcmc_samples`, `condition_on_observations`, `construct_inputs`, `train_Yvar`, input warping, `Normalize`/`Standardize` transforms |
 | `FullyBayesianSingleTaskGP`, `FullyBayesianLinearSingleTaskGP`, `AbstractFullyBayesianSingleTaskGP` | same path | Matérn-5/2 with a log-normal lengthscale prior; linear kernel with SAAS-style weight variances (`median_weight_variance`) |
-| `PyroModel`, `MaternPyroModel`, `SaasPyroModel`, `LinearPyroModel` | same path | the NumPyro model is a native Rust potential energy (NumPyro's unconstrained parameterization) with analytic gradients; `set_inputs`, `postprocess_mcmc_samples`, `load_mcmc_samples`, `get_dummy_mcmc_samples`, `warp`; `sample` raises `UnsupportedError` |
+| `PyroModel`, `MaternPyroModel`, `SaasPyroModel`, `LinearPyroModel` | same path | native Rust potential and NUTS remain the default; public `sample` / `sample_*` support optional NumPyro tracing (subsequent implementation linked above); `set_inputs`, `postprocess_mcmc_samples`, `load_mcmc_samples`, `get_dummy_mcmc_samples`, `warp` |
 | `compute_dists`, `matern52_kernel`, `linear_kernel`, `reshape_and_detach`, `MCMC_DIM` | same path | on torch tensors, NumPy arrays or lists instead of JAX arrays; kernel helpers run in Rust and support arbitrary batch and elementwise scale broadcasting |
 | `Model.transform_inputs` | same path | applies an explicit transform or the model's input transform; the identity without a transform |
 | `botorch.models.fully_bayesian_multitask.SaasFullyBayesianMultiTaskGP` | same path | `MultitaskSaasPyroModel`, `MultiTaskPyroMixin`, `LatentFeatureMultiTaskPyroMixin`; latent task features with a Matérn task kernel; `posterior` (task column or `output_indices`), `condition_on_observations`, `median_lengthscale`; `fantasize` raises like BoTorch |
@@ -27,13 +33,10 @@ Pyro.
 
 ## Not ported (and why)
 
-- The NumPyro program itself: `PyroModel.sample` and the primitive
-  methods (`sample_mean`, `sample_noise`, `sample_lengthscale`,
-  `sample_outputscale`, `sample_concentrations`, `sample_weight_variance`,
-  `sample_latent_features`, `sample_task_lengthscale`,
-  `sample_observations`, `_warp_jax`, `_prepare_features`, ...). The
-  potential energy is native Rust; custom `PyroModel` subclasses with
-  NumPyro code are not supported (`UnsupportedError`).
+- The NumPyro-program gap recorded in this phase is now resolved by the
+  optional trace interface linked above. Custom trace overrides are supported
+  with explicit NumPyro inference; the native Rust fitter rejects custom
+  sampling overrides that its potential does not implement.
 - `load_state_dict` of the fully Bayesian GPs (botorch_rs models have no
   state dicts) and `forward` (the batched prior; raises
   `UnsupportedError`).

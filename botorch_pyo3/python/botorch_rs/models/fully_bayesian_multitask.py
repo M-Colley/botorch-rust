@@ -22,6 +22,7 @@ from botorch_rs.constraints import GreaterThan
 from botorch_rs.exceptions.errors import InputDataError, UnsupportedError
 from botorch_rs.kernels import IndexKernel, Kernel, MaternKernel, ScaleKernel
 from botorch_rs.likelihoods import GaussianLikelihood
+from botorch_rs.models import _numpyro
 from botorch_rs.models.fully_bayesian import (
     MCMC_DIM,
     MIN_INFERRED_NOISE_LEVEL,
@@ -88,6 +89,26 @@ class MultiTaskPyroMixin:
     def _task_structure(self) -> tuple[int, int, int] | None:
         return (self.task_feature, self.num_tasks, self.task_rank)
 
+    def sample_mean(self) -> Any:
+        return _numpyro.mean(self, self.num_tasks)
+
+    def _get_task_indices_and_base_idxr_jax(self) -> tuple[Any, Any]:
+        jnp, _, _ = _numpyro.backend()
+        values, shape = to_flat(self.train_X, "train_X")  # type: ignore[attr-defined]
+        tasks_values = values[self.task_feature :: shape[-1]]
+        if any(int(t) != t or t < 0 or t >= self.num_tasks for t in tasks_values):
+            raise InputDataError(
+                "Pyro task identifiers must be mapped to indices in [0, num_tasks). "
+                "SaasFullyBayesianMultiTaskGP performs this mapping automatically."
+            )
+        base = jnp.asarray([i for i in range(self.ard_num_dims + 1) if i != self.task_feature])  # type: ignore[attr-defined]
+        tasks = self.train_X_jax[..., self.task_feature].astype(jnp.int32)  # type: ignore[attr-defined]
+        return tasks, base
+
+    def _prepare_features(self, X: Any) -> Any:
+        _, base = self._get_task_indices_and_base_idxr_jax()
+        return X[..., base]
+
 
 class LatentFeatureMultiTaskPyroMixin(MultiTaskPyroMixin):
     r"""Mixin that adds ICM-style multi-task capabilities via latent features.
@@ -96,6 +117,21 @@ class LatentFeatureMultiTaskPyroMixin(MultiTaskPyroMixin):
     features (``latent_features ~ N(0, 1)``, ``num_tasks x task_rank``) with
     lengthscales ``task_lengthscale ~ Gamma(6, 3)``; the means are per task.
     """
+
+    def sample_latent_features(self) -> Any:
+        return _numpyro.latent_features(self.num_tasks, self.task_rank)
+
+    def sample_task_lengthscale(self, concentration: float = 6.0, rate: float = 3.0) -> Any:
+        return _numpyro.task_lengthscale(self.task_rank, concentration, rate)
+
+    def _build_task_covar(self) -> tuple[Any, Any]:
+        tasks, _ = self._get_task_indices_and_base_idxr_jax()
+        features = self.sample_latent_features()[tasks]
+        return _numpyro.kernel(features, self.sample_task_lengthscale(), "matern52"), tasks
+
+    def _maybe_multitask_transform(self, K_noiseless: Any, mean: Any) -> tuple[Any, Any]:
+        task_covar, tasks = self._build_task_covar()
+        return K_noiseless * task_covar, mean[tasks]
 
     def _member_modules(self, mcmc_samples: dict[str, Any], s: int) -> dict[str, Any]:
         """The hyperparameters of sample ``s`` of a multi-task model."""

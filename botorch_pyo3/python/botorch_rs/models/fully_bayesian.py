@@ -45,6 +45,7 @@ from botorch_rs.exceptions.errors import InputDataError, UnsupportedError
 from botorch_rs.kernels import LinearKernel, MaternKernel, ScaleKernel
 from botorch_rs.likelihoods import GaussianLikelihood
 from botorch_rs.means import ConstantMean
+from botorch_rs.models import _numpyro
 from botorch_rs.models.gp_regression import SingleTaskGP, _validate_input_scaling
 from botorch_rs.models.transforms.input import (
     ChainedInputTransform,
@@ -65,6 +66,8 @@ MIN_INFERRED_NOISE_LEVEL = 1e-4
 
 
 def _kernel_helper(X: Any, scale: Any, kernel: str) -> Any:
+    if _numpyro.is_jax(X) or _numpyro.is_jax(scale):
+        return _numpyro.kernel(X, scale, kernel)
     data, shape = _rs.fully_bayesian_kernel(kernel, to_flat(X, "X"), to_flat(scale, "scale"))
     return from_flat(data, tuple(shape), kind_of(X))
 
@@ -133,12 +136,13 @@ class PyroModel:
     ``fit_fully_bayesian_model_nuts``. (By default, its subclass ``SaasPyroModel``
     is used).
 
-    In botorch_rs, the model is not a NumPyro program: its potential energy
+    The default native fitter evaluates its potential energy
     (the negative log joint density of the unconstrained hyperparameters,
-    NumPyro's parameterization) and its gradient are evaluated in Rust, and
+    NumPyro's parameterization) and its gradient in Rust.
     ``fit_fully_bayesian_model_nuts`` samples it with a port of NumPyro's
-    NUTS. Custom subclasses that override ``sample`` with NumPyro code are
-    not supported.
+    NUTS. The public ``sample`` / ``sample_*`` methods additionally implement
+    optional NumPyro named-site tracing. Custom trace overrides can be used
+    with NumPyro directly; the native fitter rejects such overrides.
     """
 
     _prior_mode: bool = False
@@ -197,6 +201,25 @@ class PyroModel:
         self.train_Yvar = train_Yvar
         self.ard_num_dims = to_flat(train_X, "train_X")[1][-1]
         self._rs = None
+        self._trace_inputs: dict[str, Any] = {}
+
+    def _trace_input(self, name: str) -> Any:
+        if name not in self._trace_inputs:
+            value = getattr(self, name)
+            self._trace_inputs[name] = None if value is None else _numpyro.array(value)
+        return self._trace_inputs[name]
+
+    @property
+    def train_X_jax(self) -> Any:
+        return self._trace_input("train_X")
+
+    @property
+    def train_Y_jax(self) -> Any:
+        return self._trace_input("train_Y")
+
+    @property
+    def train_Yvar_jax(self) -> Any:
+        return self._trace_input("train_Yvar")
 
     def _task_structure(self) -> tuple[int, int, int] | None:
         """``(task_feature, num_tasks, rank)`` of a multi-task model."""
@@ -209,6 +232,36 @@ class PyroModel:
 
     def _potential(self) -> _rs.PyroModel:
         """The Rust model (potential energy) of the training data."""
+        if self._prior_mode:
+            raise UnsupportedError(
+                "The native NUTS fitter conditions on training observations. "
+                "Use NumPyro directly for the optional prior-mode trace."
+            )
+        for name in (
+            "sample",
+            "sample_mean",
+            "sample_noise",
+            "sample_concentrations",
+            "sample_lengthscale",
+            "sample_outputscale",
+            "sample_weight_variance",
+            "sample_observations",
+            "sample_latent_features",
+            "sample_task_lengthscale",
+            "_prepare_features",
+            "_maybe_input_warp",
+            "_warp_jax",
+            "_maybe_multitask_transform",
+        ):
+            method = getattr(self, name, None)
+            if method is not None and getattr(method, "__module__", "") not in (
+                __name__,
+                "botorch_rs.models.fully_bayesian_multitask",
+            ):
+                raise UnsupportedError(
+                    f"The native NUTS potential does not implement the custom {name} override. "
+                    "Use the optional NumPyro trace interface with NumPyro inference directly."
+                )
         if self._rs is None:
             if not self._rs_kernel:
                 raise UnsupportedError(
@@ -243,11 +296,35 @@ class PyroModel:
         return self._rs
 
     def sample(self) -> None:
-        r"""Sample from the model (a NumPyro program in BoTorch)."""
-        raise UnsupportedError(
-            "botorch_rs's PyroModels are not NumPyro programs: their potential energy is "
-            "evaluated in Rust and sampled by fit_fully_bayesian_model_nuts."
-        )
+        """Define a NumPyro program in a concrete subclass."""
+        raise NotImplementedError
+
+    def sample_noise(self) -> Any:
+        return _numpyro.noise(self)
+
+    def sample_mean(self) -> Any:
+        return _numpyro.mean(self)
+
+    def sample_concentrations(self) -> tuple[Any, Any]:
+        return _numpyro.concentrations(self)
+
+    def _warp_jax(self, X: Any, c0: Any, c1: Any) -> Any:
+        return _numpyro.warp(self, X, c0, c1)
+
+    def _maybe_input_warp(self, X_jax: Any) -> Any:
+        if not self.use_input_warping:
+            return X_jax
+        c0, c1 = self.sample_concentrations()
+        return self._warp_jax(X_jax, c0, c1)
+
+    def _prepare_features(self, X: Any) -> Any:
+        return X
+
+    def _maybe_multitask_transform(self, K_noiseless: Any, mean: Any) -> tuple[Any, Any]:
+        return K_noiseless, mean
+
+    def sample_observations(self, mean: Any, K_noiseless: Any, noise: Any) -> None:
+        _numpyro.observations(self, mean, K_noiseless, noise)
 
     def postprocess_mcmc_samples(self, mcmc_samples: dict[str, Any]) -> dict[str, Any]:
         """Post-process the final MCMC samples.
@@ -348,6 +425,17 @@ class MaternPyroModel(PyroModel):
     _outputscale_prior_concentration: float | None = None
     _outputscale_prior_rate: float | None = None
 
+    def sample(self) -> None:
+        _numpyro.matern_sample(self)
+
+    def sample_lengthscale(self, dim: int) -> Any:
+        return _numpyro.lengthscale(dim)
+
+    def sample_outputscale(
+        self, concentration: float | None = None, rate: float | None = None
+    ) -> Any:
+        return _numpyro.outputscale(concentration, rate)
+
     def postprocess_mcmc_samples(self, mcmc_samples: dict[str, Any]) -> dict[str, Any]:
         r"""Post-process the MCMC samples (and convert ``noise`` to the noise
         variance of the likelihood, see ``PyroModel``)."""
@@ -437,6 +525,9 @@ class SaasPyroModel(MaternPyroModel):
     _outputscale_prior_concentration: float | None = 2.0
     _outputscale_prior_rate: float | None = 0.15
 
+    def sample_lengthscale(self, dim: int, alpha: float = 0.1) -> Any:
+        return _numpyro.saas_lengthscale(dim, alpha)
+
     def postprocess_mcmc_samples(self, mcmc_samples: dict[str, Any]) -> dict[str, Any]:
         r"""Post-process the MCMC samples.
 
@@ -473,6 +564,12 @@ class LinearPyroModel(PyroModel):
     """
 
     _rs_kernel = "linear"
+
+    def sample(self) -> None:
+        _numpyro.linear_sample(self)
+
+    def sample_weight_variance(self, alpha: float = 0.1) -> Any:
+        return _numpyro.weight_variance(self.ard_num_dims, alpha)
 
     def postprocess_mcmc_samples(self, mcmc_samples: dict[str, Any]) -> dict[str, Any]:
         r"""Post-process the MCMC samples.

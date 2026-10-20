@@ -42,7 +42,7 @@ def features(batch=(), kind="torch"):
         .reshape(*(1 for _ in batch), 1, 2)
         .expand(*batch, 1, 2)
     )
-    kernel.lengthscale = as_kind(ls, kind)
+    kernel.lengthscale = as_kind(ls.tolist(), kind)
     reference.lengthscale = ls
     frequency = (
         torch.arange(max(1, torch.Size(batch).numel()) * 6, dtype=torch.float64).reshape(
@@ -53,7 +53,7 @@ def features(batch=(), kind="torch"):
     )
     actual = KernelFeatureMap(
         kernel,
-        as_kind(frequency, kind),
+        as_kind(frequency.tolist(), kind),
         input_transform=InverseLengthscaleTransform(kernel),
         output_transform=SineCosineTransform(0.4),
     )
@@ -71,9 +71,9 @@ def test_native_feature_map_and_weight_constructor_arrays(kind):
     actual, reference = features(kind=kind)
     weight = torch.arange(18, dtype=torch.float64).reshape(3, 6) / 13 - 0.2
     x = torch.tensor([[0.2, 0.7], [0.8, 0.1]], dtype=torch.float64)
-    a = GeneralizedLinearPath(feature_map=actual, weight=as_kind(weight, kind))
+    a = GeneralizedLinearPath(feature_map=actual, weight=as_kind(weight.tolist(), kind))
     b = BtLinear(reference, weight)
-    assert_close(a(as_kind(x, kind)), b(x), rtol=2e-8, atol=2e-9)
+    assert_close(a(as_kind(x.tolist(), kind)), b(x), rtol=2e-8, atol=2e-9)
     assert shape(a.weight) == (3, 6) and a.feature_map is actual
 
 
@@ -230,7 +230,7 @@ def test_factory_dictionary_edits_and_standardize_snapshot_preserve_query_graph(
 
     x = torch.tensor([[0.1], [0.4], [0.8]], dtype=torch.float64)
     y = torch.cat([1 + 3 * x, 4 - x], dim=-1)[..., :outputs]
-    model = SingleTaskGP(as_kind(x, kind), as_kind(y, kind))
+    model = SingleTaskGP(as_kind(x.tolist(), kind), as_kind(y.tolist(), kind))
     native = draw_matheron_paths(
         model,
         (3,),
@@ -240,7 +240,7 @@ def test_factory_dictionary_edits_and_standardize_snapshot_preserve_query_graph(
     query = torch.tensor([[0.2], [0.6]], dtype=torch.float64, requires_grad=kind == "torch")
     if outputs == 2:
         query = query.unsqueeze(-3)
-    query = as_kind(query, kind) if kind != "torch" else query
+    query = as_kind(query.tolist(), kind) if kind != "torch" else query
     expected = native(query)
     composed = MatheronPath(
         native["prior_paths"], native["update_paths"], output_transform=native.output_transform
@@ -252,7 +252,7 @@ def test_factory_dictionary_edits_and_standardize_snapshot_preserve_query_graph(
     edited = native(query)
     assert_close(edited, replacement, rtol=2e-8, atol=2e-9)
     # Updating the original model's transform cannot mutate the path snapshot.
-    model.outcome_transform.train()(as_kind(y * 10, kind))
+    model.outcome_transform.train()(as_kind((y * 10).tolist(), kind))
     assert_close(native(query), replacement, rtol=2e-8, atol=2e-9)
     assert_close(copy.deepcopy(native)(query), replacement, rtol=2e-8, atol=2e-9)
     if kind == "torch":

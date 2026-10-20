@@ -44,5 +44,6 @@ weight snapshots. Their feature metadata is not a replacement for the fully
 callable maps returned by `gen_kernel_features` or supplied to the public
 constructor. Native model sampling restrictions, including unbatched
 `SingleTaskGP`/`ModelListGP` factories and supported stationary kernels,
-continue to apply. Public Pyro/NumPyro generative effect-handler methods are
-separate remaining work.
+continue to apply. Optional Pyro/NumPyro generative effect-handler
+interoperability is documented separately in
+[`numpyro-trace-interoperability.md`](numpyro-trace-interoperability.md).
