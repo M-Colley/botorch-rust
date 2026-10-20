@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 import warnings
 from typing import Any
 
@@ -48,6 +49,18 @@ class SparseOutlierNoise(Likelihood, RelevancePursuitMixin):
     Batched sparse parameters are rejected at construction rather than being
     indexed along the wrong dimension.
     """
+
+    def __new__(cls, base_noise: Any = None, *args: Any, **kwargs: Any) -> Any:
+        torch = sys.modules.get("torch")
+        if (
+            cls is SparseOutlierNoise
+            and torch is not None
+            and isinstance(base_noise, torch.nn.Module)
+        ):
+            from botorch_rs.models._torch_backend_relevance import TorchSparseOutlierNoise
+
+            return object.__new__(TorchSparseOutlierNoise)
+        return object.__new__(cls)
 
     def __init__(
         self,
@@ -247,6 +260,20 @@ class SparseOutlierNoise(Likelihood, RelevancePursuitMixin):
 
 
 class SparseOutlierGaussianLikelihood(Likelihood):
+    def __new__(cls, base_noise: Any = None, *args: Any, **kwargs: Any) -> Any:
+        torch = sys.modules.get("torch")
+        if (
+            cls is SparseOutlierGaussianLikelihood
+            and torch is not None
+            and isinstance(base_noise, torch.nn.Module)
+        ):
+            from botorch_rs.models._torch_backend_relevance import (
+                TorchSparseOutlierGaussianLikelihood,
+            )
+
+            return object.__new__(TorchSparseOutlierGaussianLikelihood)
+        return object.__new__(cls)
+
     def __init__(
         self,
         base_noise: Any,

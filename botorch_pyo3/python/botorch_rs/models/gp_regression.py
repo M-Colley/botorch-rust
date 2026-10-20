@@ -295,7 +295,15 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
             )
             if tensor_backend:
                 from botorch_rs.models._torch_backend import TorchSingleTaskGP
+                from botorch_rs.models.likelihoods.sparse_outlier_noise import (
+                    SparseOutlierGaussianLikelihood,
+                )
 
+                likelihood = kwargs.get("likelihood", args[1] if len(args) > 1 else None)
+                if isinstance(likelihood, SparseOutlierGaussianLikelihood):
+                    from botorch_rs.models._torch_backend_relevance import TorchSparseSingleTaskGP
+
+                    return object.__new__(TorchSparseSingleTaskGP)
                 return object.__new__(TorchSingleTaskGP)
         return object.__new__(cls)
 

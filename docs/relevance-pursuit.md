@@ -34,7 +34,7 @@ inactive variance factors are zero. A supplied constraint initial value is
 honored. Public setters validate exact bounds; native line-search evaluations
 project excursions of a few ulps back to box endpoints.
 
-The implementation currently supports unbatched single-output exact GPs.
+The native CPU numerical backend supports unbatched single-output exact GPs.
 Batched sparse parameters, variational inference, samplewise likelihood
 evaluation, changing training inputs, sparse support remapping for fantasy
 models, and time limits on an entire pursuit explicitly raise unsupported
@@ -65,8 +65,9 @@ from the older local fork and the installed BoTorch 0.18.1 baseline.
   first axis. For batch size two, `dim=5`, and support `[2]`, reading `.rho`
   raises `IndexError`. Selection indices must be assigned with `[..., j]`
   and gathered along the final dimension; the generic pursuit mixin's sparse
-  indexing also needs consistent final-axis handling. This port rejects that
-  configuration until the full batched semantics are implemented.
+  indexing also needs consistent final-axis handling. The native CPU backend
+  rejects that configuration; the Tensor backend below implements the final-axis
+  likelihood law and rejects undefined batched discrete ranking.
 * `expand_support([1, 1])` accepts duplicate indices, creating invalid support
   state. Validate uniqueness, integer range, and disjointness with the existing
   support before mutation. The port performs these checks atomically.
@@ -151,3 +152,58 @@ both device cases as regressions. The sparse-noise repair uses a
 shape, dtype and device even before that dependency repair is released.
 Publication and deduplication are tracked centrally in
 [upstream-pull-requests.md](upstream-pull-requests.md).
+
+## Tensor backend: CPU, CUDA, and higher-order autograd
+
+`RobustRelevancePursuitSingleTaskGP(..., backend="torch")` uses the Rust Tensor
+factorization, prediction, and exact-MLL operations. CUDA training data or data
+requiring gradients select this path automatically. A sparse likelihood supplied
+to `SingleTaskGP(..., backend="torch")` selects the same exact observation law.
+An actual Torch noise module supplied to `SparseOutlierNoise` or
+`SparseOutlierGaussianLikelihood` creates a device-resident module directly;
+registered base-noise and rho priors remain in the MLL and parameter traversal.
+The base noise module's own forward is used, including fixed-noise event-size
+behavior, and custom Torch covariance/mean modules retain their live parameters.
+
+Fixed-support likelihoods and exact posteriors support independent output and
+model batches. Sparse/dense conversion, expansion, and contraction act on the
+last parameter axis, preserve trainability, and validate support changes before
+replacing the rho leaf. The covariance contains the actual diagonal correction,
+not an independent substitute model. Tensor mean, covariance, samples, normalized
+MLL, transforms, training inputs/targets/fixed noise, and model parameters retain
+first- and second-order graphs on their original device. Matching-training-input
+observation noise applies convex rho to the **posterior** covariance diagonal,
+as the public upstream likelihood does; training factorization instead uses the
+prior covariance diagonal. Fixed-noise query values are recomputed from current
+transform statistics when the event count matches.
+
+Forward/backward discrete pursuit performs genuine joint hyperparameter/rho
+fits, either through the existing bounded SciPy adapter or a supplied
+`fit_gpytorch_mll_torch` optimizer. Tensor covariance calculations stay on device;
+an explicitly selected SciPy optimizer exchanges its optimizer state with SciPy.
+Support ranking uses Tensor scores; only the selected integer support labels are
+converted to Python metadata. The corrected LOO criterion centers targets by the
+actual GP mean. Gradient probes restore the original rho leaf, trainability, and
+sparse/dense representation on success or failure. Support posterior evaluation
+uses Tensor logsumexp and calls a custom support prior on scalar Tensor sizes,
+matching official BoTorch. Fitted model-selection probabilities are detached
+diagnostics; the separate support-posterior function retains its evaluation graph.
+Support selection and optimization are not advertised as differentiable mappings
+from training data to the chosen fitted parameters.
+
+Discrete support ranking requires an unbatched single-output model and rejects
+other layouts before changing support or parameters. Sparse conditioning/fantasies
+require an explicit support-extension policy and currently raise rather than
+silently discarding outlier noise. Whole-search timeouts remain unsupported;
+per-fit iteration, step, and timeout limits are available. Variational and
+samplewise sparse likelihood evaluation remain unsupported. Recreate an external
+optimizer after support resizing because the rho leaf changes identity. The first
+Tensor implementation recomputes training factors rather than caching them.
+
+`test_torch_relevance_pursuit.py` checks both CPU and CUDA, float32 stability,
+float64 values and mixed first/second derivatives against an independent dense
+Schur formula, official unbatched prior/MLL/posterior parity, batched rho layouts,
+observation-noise matching, fixed-noise/Normalize/Standardize graphs, actual
+support-search fits and model selection, registered external Torch noise priors,
+parameter bounds, and injected-failure rollback. The existing native relevance
+suite remains unchanged and passes alongside it.

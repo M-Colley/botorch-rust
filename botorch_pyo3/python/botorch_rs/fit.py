@@ -67,6 +67,18 @@ def fit_gpytorch_mll(
     from botorch_rs.models.empirical_gps.shared_gp import _SharedSumMarginalLogLikelihood
     from botorch_rs.models.robust_relevance_pursuit_model import RobustRelevancePursuitMixin
 
+    if getattr(getattr(mll, "model", None), "_tensor_backend", None) == "torch" and isinstance(
+        mll.model, RobustRelevancePursuitMixin
+    ):
+        return mll.model.custom_fit(
+            mll,
+            closure=closure,
+            optimizer=optimizer,
+            closure_kwargs=closure_kwargs,
+            optimizer_kwargs=optimizer_kwargs,
+            **kwargs,
+        )
+
     if getattr(getattr(mll, "model", None), "_tensor_backend", None) == "torch":
         from botorch_rs.optim.fit import fit_gpytorch_mll_scipy, fit_gpytorch_mll_torch
 

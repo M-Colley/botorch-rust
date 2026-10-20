@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 from typing import Any, cast
 
 from botorch_rs._arrays import to_flat
@@ -153,6 +154,53 @@ class RobustRelevancePursuitMixin:
 class RobustRelevancePursuitSingleTaskGP(SingleTaskGP, RobustRelevancePursuitMixin):
     """Exact native GP whose observation noise includes selected outliers."""
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if backend not in ("auto", "native", "torch"):
+            raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+        torch = sys.modules.get("torch")
+        values = (train_X, train_Y, kwargs.get("train_Yvar"), *args[:1])
+        modules = (
+            *args[1:],
+            *(
+                kwargs.get(name)
+                for name in (
+                    "likelihood",
+                    "covar_module",
+                    "mean_module",
+                    "input_transform",
+                    "outcome_transform",
+                )
+            ),
+        )
+        if cls is RobustRelevancePursuitSingleTaskGP and (
+            backend == "torch"
+            or (
+                backend == "auto"
+                and (
+                    any(
+                        getattr(value, "requires_grad", False)
+                        or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
+                        for value in values
+                    )
+                    or (
+                        torch is not None
+                        and any(isinstance(module, torch.nn.Module) for module in modules)
+                    )
+                )
+            )
+        ):
+            from botorch_rs.models._torch_backend_relevance import TorchRobustRelevancePursuitGP
+
+            return object.__new__(TorchRobustRelevancePursuitGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -166,6 +214,8 @@ class RobustRelevancePursuitSingleTaskGP(SingleTaskGP, RobustRelevancePursuitMix
         convex_parameterization: bool = True,
         prior_mean_of_support: float | None = None,
         cache_model_trace: bool = False,
+        *,
+        backend: str = "auto",
     ) -> None:
         shape = to_flat(train_Y)[1]
         if len(shape) != 2 or shape[-1] != 1:

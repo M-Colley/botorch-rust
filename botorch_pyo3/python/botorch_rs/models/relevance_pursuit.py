@@ -234,6 +234,9 @@ def _pursuit(
     closure_kwargs: Any,
     optimizer_kwargs: Any,
 ) -> tuple[RelevancePursuitMixin, Any]:
+    guard = getattr(sparse_module, "_require_unbatched_ranking", None)
+    if guard is not None:
+        guard()
     if backwards and initial_support is None:
         sparse_module.full_support()
     else:
@@ -257,10 +260,18 @@ def _pursuit(
         )
     levels = sorted(set(levels), reverse=backwards)
     options = copy.deepcopy(optimizer_kwargs or {})
-    native_options = options.setdefault("options", {})
-    native_options.setdefault("maxiter", 10000)
-    native_options.setdefault("ftol", 1e-8)
-    native_options.setdefault("gtol", 1e-8)
+    from botorch_rs.optim.fit import fit_gpytorch_mll_torch
+
+    if (
+        getattr(mll.model, "_tensor_backend", None) == "torch"
+        and optimizer is fit_gpytorch_mll_torch
+    ):
+        options.setdefault("step_limit", 10000)
+    else:
+        native_options = options.setdefault("options", {})
+        native_options.setdefault("maxiter", 10000)
+        native_options.setdefault("ftol", 1e-8)
+        native_options.setdefault("gtol", 1e-8)
     trace: list[Any] | None = [] if record_model_trace else None
     kw = dict(
         model_trace=trace,
@@ -369,6 +380,12 @@ def get_posterior_over_support(
         raise ValueError(
             "A log_support_prior or a finite positive prior_mean_of_support is required."
         )
+    if getattr(model_trace[0], "_tensor_backend", None) == "torch":
+        from botorch_rs.models._torch_backend_relevance import tensor_support_posterior
+
+        return tensor_support_posterior(
+            rp_class, model_trace, log_support_prior, prior_mean_of_support
+        )
     kind = model_trace[0]._kind
     sizes = [float(len(rp_class._from_model(m).support)) for m in model_trace]
     values = []
@@ -398,6 +415,10 @@ def get_posterior_over_support(
 
 def initialize_dense_parameters(model: Any) -> tuple[Any, dict[str, Any]]:
     """Initialize constrained native parameters by BoTorch's bound-based rules."""
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.models._torch_backend_relevance import tensor_initialize_dense
+
+        return tensor_initialize_dense(model)
     values: dict[str, Any] = {}
     for name, value in model.named_parameters():
         parent = model
