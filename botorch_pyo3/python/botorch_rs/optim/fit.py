@@ -40,7 +40,11 @@ def _native_model(mll: Any) -> Any:
     from botorch_rs.mlls import ExactMarginalLogLikelihood
     from botorch_rs.models.gp_regression import SingleTaskGP
 
-    if isinstance(mll, ExactMarginalLogLikelihood) and isinstance(mll.model, SingleTaskGP):
+    if (
+        isinstance(mll, ExactMarginalLogLikelihood)
+        and isinstance(mll.model, SingleTaskGP)
+        and getattr(mll.model, "_tensor_backend", None) != "torch"
+    ):
         return mll.model
     return None
 
@@ -451,6 +455,22 @@ def fit_gpytorch_mll_torch(
     """
     if stopping_criterion is DEFAULT:
         stopping_criterion = ExpMAStoppingCriterion()
+    if getattr(getattr(mll, "model", None), "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_backend import fit_torch
+
+        return fit_torch(
+            mll,
+            parameters,
+            bounds,
+            closure,
+            closure_kwargs,
+            step_limit,
+            stopping_criterion,
+            optimizer,
+            scheduler,
+            callback,
+            timeout_sec,
+        )
     model = _native_model(mll)
     adam = _adam_kwargs(optimizer)
     if _is_higher_order(mll):

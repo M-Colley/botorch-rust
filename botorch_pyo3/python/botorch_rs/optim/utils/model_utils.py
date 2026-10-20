@@ -130,6 +130,21 @@ def _entries(module: Any) -> list[_Entry]:
 
 def _named_parameters(module: Any) -> Iterator[tuple[str, Any, tuple[float, float]]]:
     """``(name, value, raw bounds)`` with BoTorch's names and order."""
+    if getattr(getattr(module, "model", module), "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_backend import parameter_bounds
+
+        bounds = parameter_bounds(module)
+        for name, value in module.named_parameters():
+            lower, upper = bounds.get(name, (None, None))
+            yield (
+                name,
+                value,
+                (
+                    -math.inf if lower is None else lower,
+                    math.inf if upper is None else upper,
+                ),
+            )
+        return
     for e in _entries(module):
         yield e.name, e.value, e.bounds
 

@@ -191,6 +191,12 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """The MLL values (shape ``_aug_batch_shape``, of the model's array type)."""
+        if getattr(self.model, "_tensor_backend", None) == "torch":
+            if kwargs or len(args) > 2:
+                raise TypeError(
+                    "Call mll(), or mll(model(*model.train_inputs), model.train_targets)."
+                )
+            return self.model._exact_mll(*args)
         if args or kwargs:
             raise UnsupportedError(
                 "botorch_rs evaluates the MLL on the model's training data: call `mll()` "

@@ -140,6 +140,8 @@ def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
     if hasattr(mll, "compute_custom_loss"):
         return mll.compute_custom_loss
     model = getattr(mll, "model", None)
+    if getattr(model, "_tensor_backend", None) == "torch" and data_loader is None:
+        return lambda: -mll()
     if model is not None and hasattr(model, "compute_custom_loss"):
 
         def custom(**kwargs: Any) -> Any:

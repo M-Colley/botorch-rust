@@ -252,6 +252,32 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         >>> posterior = model.posterior(test_X)
     """
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if cls is SingleTaskGP:
+            if backend not in ("auto", "native", "torch"):
+                raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+            values = (train_X, train_Y, kwargs.get("train_Yvar"), *args[:1])
+            tensor_backend = backend == "torch" or (
+                backend == "auto"
+                and any(
+                    getattr(value, "requires_grad", False)
+                    or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
+                    for value in values
+                )
+            )
+            if tensor_backend:
+                from botorch_rs.models._torch_backend import TorchSingleTaskGP
+
+                return object.__new__(TorchSingleTaskGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -262,6 +288,8 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         mean_module: ConstantMean | None = None,
         outcome_transform: Any = DEFAULT,
         input_transform: InputTransform | None = None,
+        *,
+        backend: str = "auto",
     ) -> None:
         from botorch_rs.models.likelihoods.sparse_outlier_noise import (
             SparseOutlierGaussianLikelihood,

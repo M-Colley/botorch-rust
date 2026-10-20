@@ -608,6 +608,9 @@ def scalarize_posterior_gpytorch(
     """Mean and covariance of the affine scalarization of a Gaussian posterior."""
     if not isinstance(posterior, GPyTorchPosterior):
         raise UnsupportedError("scalarize_posterior_gpytorch requires a GPyTorchPosterior.")
+    if getattr(posterior, "_tensor_backend", None) == "torch":
+        transformed = posterior.scalarize(weights, offset)
+        return transformed.mean.squeeze(-1), transformed.distribution.covariance_matrix
     if posterior.__dict__.get("_distribution_adapter") is not None:
         from botorch_rs.posteriors._distribution import scalarize_distribution
 
@@ -622,6 +625,8 @@ def scalarize_posterior(posterior: Any, weights: Any, offset: float = 0.0) -> GP
     """Affine scalarization of Gaussian posteriors, or single-point PosteriorLists."""
     from botorch_rs.posteriors.posterior_list import PosteriorList
 
+    if getattr(posterior, "_tensor_backend", None) == "torch":
+        return posterior.scalarize(weights, offset)
     if isinstance(posterior, GPyTorchPosterior):
         if posterior.__dict__.get("_distribution_adapter") is not None:
             import torch

@@ -59,6 +59,46 @@ class NormalMCSampler(MCSampler):
     _rs: Any
     _base_shape: tuple[int, ...] | None
 
+    def _tensor_samples(self, posterior: Any) -> Any:
+        """Sample on the posterior device without flattening its graph."""
+        import torch
+
+        shape = self._get_collapsed_shape(posterior)
+        current = self.base_samples
+        explicit = getattr(self, "_base_samples_explicit", False)
+        if explicit and current is not None:
+            current = torch.as_tensor(current, dtype=posterior.dtype, device=posterior.device)
+        else:
+            key = (shape, posterior.dtype, posterior.device, self.seed)
+            if getattr(self, "_tensor_sampler_key", None) != key or current is None:
+                if isinstance(self, IIDNormalSampler):
+                    generator = torch.Generator(device=posterior.device).manual_seed(self.seed)
+                    current = torch.randn(
+                        shape, dtype=posterior.dtype, device=posterior.device, generator=generator
+                    )
+                else:
+                    # Torch's Sobol engine maintains its integer sequence on
+                    # CPU. Only newly generated uniforms are transferred;
+                    # normal transforms and all GP algebra run on device.
+                    dimension = math.prod(shape[len(self.sample_shape) :])
+                    engine = torch.quasirandom.SobolEngine(dimension, scramble=True, seed=self.seed)
+                    uniforms = engine.draw(self.num_samples, dtype=posterior.dtype).to(
+                        posterior.device
+                    )
+                    epsilon = torch.finfo(posterior.dtype).eps
+                    current = (
+                        uniforms.clamp(epsilon, 1 - epsilon).mul(2).sub(1).erfinv() * math.sqrt(2)
+                    ).reshape(shape)
+                self._tensor_sampler_key = key
+            elif isinstance(current, torch.Tensor):
+                current = current.to(dtype=posterior.dtype, device=posterior.device)
+        if isinstance(self, SobolQMCNormalSampler):
+            self._base_samples = current
+        else:
+            self.base_samples = current
+        self._base_shape = tuple(current.shape)
+        return posterior.rsample_from_base_samples(self.sample_shape, current)
+
     @property
     def num_samples(self) -> int:
         """The number of MC samples (``prod(sample_shape)``)."""
@@ -198,6 +238,14 @@ class SobolQMCNormalSampler(NormalMCSampler):
     def base_samples(self, value: Any) -> None:
         if value is None:
             raise UnsupportedError("Assigned base samples cannot be removed.")
+        if getattr(getattr(value, "device", None), "type", "cpu") != "cpu" or getattr(
+            value, "requires_grad", False
+        ):
+            if value.shape[: len(self.sample_shape)] != self.sample_shape:
+                raise BotorchTensorDimensionError("Base samples must begin with sample_shape.")
+            self._base_samples = value
+            self._base_samples_explicit = True
+            return
         data, shape = to_flat(value, "base_samples")
         n = self._rs.num_samples
         if not shape or shape[0] != n:
@@ -218,6 +266,8 @@ class SobolQMCNormalSampler(NormalMCSampler):
     def forward(self, posterior: GPyTorchPosterior) -> Any:
         """Posterior samples, shape ``sample_shape x batch_shape x q x m``; the
         same base samples are used for every batch."""
+        if getattr(posterior, "_tensor_backend", None) == "torch":
+            return self._tensor_samples(posterior)
         self._construct_base_samples(posterior)
         if not isinstance(posterior, GPyTorchPosterior) or getattr(
             posterior, "_uses_matheron", False
@@ -325,6 +375,8 @@ class IIDNormalSampler(NormalMCSampler):
 
     def forward(self, posterior: GPyTorchPosterior) -> Any:
         """Posterior samples, shape ``sample_shape x batch_shape x q x m``."""
+        if getattr(posterior, "_tensor_backend", None) == "torch":
+            return self._tensor_samples(posterior)
         self._construct_base_samples(posterior)
         if not isinstance(posterior, GPyTorchPosterior) or getattr(
             posterior, "_uses_matheron", False
