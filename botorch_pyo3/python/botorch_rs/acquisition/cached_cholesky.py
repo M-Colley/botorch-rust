@@ -8,7 +8,7 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs import _ops
-from botorch_rs._arrays import from_flat, to_flat
+from botorch_rs._arrays import FloatData, from_flat, to_flat
 from botorch_rs.acquisition.acquisition import MCSamplerMixin
 from botorch_rs.acquisition.monte_carlo import supports_cache_root
 from botorch_rs.exceptions.errors import NanError, NotPSDError, UnsupportedError
@@ -22,6 +22,7 @@ class CachedCholeskyMCSamplerMixin(MCSamplerMixin):
 
     q_in: int
     base_sampler: Any
+    model: Any
 
     def __init__(self, model: Any, cache_root: bool | None = None, sampler: Any = None) -> None:
         MCSamplerMixin.__init__(self, sampler)
@@ -42,6 +43,7 @@ class CachedCholeskyMCSamplerMixin(MCSamplerMixin):
     def _compute_root_decomposition(self, posterior: Any) -> Any:
         if not isinstance(posterior, GPyTorchPosterior):
             raise UnsupportedError("Cached roots require a botorch_rs Gaussian posterior.")
+        covariance: FloatData
         if posterior._is_mt:
             covariance, shape = _blocks(posterior)
         else:

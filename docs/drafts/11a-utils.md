@@ -416,6 +416,15 @@ empty dictionary because its traversal starts only from orphan roots. The
 port validates every component before traversal, including rootless cycles.
 All 20 hierarchy tests pass, including a depth-1200 forest handled iteratively.
 
+Heterogeneous-task feature partitions (`find_subsets` and `map_subsets`) match
+the official partition ordering and task membership maps. Invalid partitions
+(overlaps, missing features, nonexistent features and groups active in no task)
+raise explicit errors. `DeltaKernel` uses the native activation kernel to
+produce exact zero/one covariance for `x1 == x2 == 1`, with no trainable
+parameters. Its 16 helper/kernel tests cover batches, diagonal evaluation,
+active dimensions and use as a native GP covariance module against the official
+baseline. The remaining heterogeneous-task composite kernels are separate work.
+
 The initial committed branch passed all three phase 11a Python suites on
 2026-10-20 against the local BoTorch fork checkout at `c98dd9452`
 (`fix/audit-correctness-fixes`, not official upstream main), with
