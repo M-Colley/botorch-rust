@@ -299,6 +299,7 @@ enum NodeKind {
         offset: f64,
     },
     IntegratedWhiteNoise(IntegratedWhiteNoise),
+    Activation(Vec<(usize, f64)>),
     Bnn {
         w: f64,
         b: f64,
@@ -851,6 +852,7 @@ fn build_node(spec: &KernelNode, cur: &mut Cursor<'_>, parent_dim: usize) -> Res
         KernelType::IntegratedWhiteNoise { order } => {
             NodeKind::IntegratedWhiteNoise(IntegratedWhiteNoise::new(*order))
         }
+        KernelType::Activation { conditions } => NodeKind::Activation(conditions.clone()),
         KernelType::InfiniteWidthBnn { depth, acos_eps } => {
             let (_, w) = cur.take(&params[0]);
             let (_, b) = cur.take(&params[1]);
@@ -1279,7 +1281,8 @@ impl Node {
             }
             NodeKind::Polynomial { .. }
             | NodeKind::Categorical { .. }
-            | NodeKind::IntegratedWhiteNoise(_) => leaf(local, Vec::new()),
+            | NodeKind::IntegratedWhiteNoise(_)
+            | NodeKind::Activation(_) => leaf(local, Vec::new()),
             NodeKind::Ltf {
                 nonfid,
                 unbiased,
@@ -1378,6 +1381,16 @@ impl Node {
             }
             NodeKind::Downsampling { offset, .. } => offset + dot(a.row(i), b.row(j)),
             NodeKind::IntegratedWhiteNoise(kernel) => kernel.value(a.row(i)[0], b.row(j)[0]),
+            NodeKind::Activation(conditions) => {
+                if conditions.iter().all(|&(d, value)| {
+                    let tol = 1e-8 + 1e-5 * value.abs();
+                    (a.row(i)[d] - value).abs() <= tol && (b.row(j)[d] - value).abs() <= tol
+                }) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             NodeKind::ExpDecay { power, offset, .. } => {
                 let s: f64 = a
                     .row(i)
@@ -1778,6 +1791,11 @@ impl Node {
                     grad[(j, 0)] = g;
                 }
             }
+            NodeKind::Activation(_) => {
+                for j in 0..nb {
+                    val[j] = self.value(a, i, b, j, false);
+                }
+            }
             NodeKind::ExpDecay {
                 ls, power, offset, ..
             } => {
@@ -1896,7 +1914,7 @@ impl Node {
         let off = self.off;
         let n = a.n;
         match &self.kind {
-            NodeKind::IntegratedWhiteNoise(_) => {}
+            NodeKind::IntegratedWhiteNoise(_) | NodeKind::Activation(_) => {}
             NodeKind::Stationary { kind, ls, shared } => {
                 let mut gl = vec![0.0; k];
                 for_pairs(w, false, |i, j, wij| {

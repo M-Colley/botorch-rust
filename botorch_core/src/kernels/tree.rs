@@ -211,6 +211,11 @@ pub enum KernelType {
         /// Number of integrations; one is Brownian motion.
         order: usize,
     },
+    /// Deterministic feature activation: `1[path(x)] * 1[path(y)]`.
+    Activation {
+        /// Parent feature and target value along a root-to-feature path.
+        conditions: Vec<(usize, f64)>,
+    },
     /// BoTorch's `InfiniteWidthBNNKernel` (`raw_weight_var`, `raw_bias_var`).
     InfiniteWidthBnn {
         /// The depth of the network.
@@ -304,6 +309,20 @@ impl KernelNode {
         Ok(Self::leaf(
             KernelType::Stationary(kind),
             vec![lengthscale(ard_num_dims)],
+        ))
+    }
+
+    /// A PSD gate for a hierarchical feature block. Branch comparisons use
+    /// BoTorch's `isclose` tolerances; derivatives of the discrete gate vanish.
+    pub fn activation(conditions: Vec<(usize, f64)>) -> Result<Self> {
+        if conditions.iter().any(|(_, value)| !value.is_finite()) {
+            return Err(BotorchError::InvalidArgument(
+                "Activation values must be finite".into(),
+            ));
+        }
+        Ok(Self::leaf(
+            KernelType::Activation { conditions },
+            Vec::new(),
         ))
     }
 
@@ -1213,6 +1232,13 @@ impl KernelNode {
             Ok(())
         };
         match &self.kind {
+            KernelType::Activation { conditions } => {
+                if let Some((bad, _)) = conditions.iter().find(|(j, _)| *j >= k) {
+                    return Err(BotorchError::Runtime(format!(
+                        "Activation index {bad} is out of range for {k} inputs"
+                    )));
+                }
+            }
             KernelType::ContextualSac { contexts } => {
                 if let Some(&bad) = contexts.iter().flatten().find(|&&j| j >= k) {
                     return Err(BotorchError::Runtime(format!(

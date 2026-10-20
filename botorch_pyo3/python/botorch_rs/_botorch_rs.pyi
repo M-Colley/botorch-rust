@@ -209,6 +209,8 @@ class KernelSpec:
 
 class KernelNode:
     @staticmethod
+    def activation(conditions: Sequence[tuple[int, float]]) -> KernelNode: ...
+    @staticmethod
     def contextual_sac(
         decomposition: list[tuple[str, list[int]]], base: KernelNode
     ) -> KernelNode: ...

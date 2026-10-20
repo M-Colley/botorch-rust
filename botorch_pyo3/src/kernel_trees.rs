@@ -47,6 +47,13 @@ impl PyKernelNode {
             .map(Self::wrap)
     }
 
+    #[staticmethod]
+    fn activation(conditions: Vec<(usize, f64)>) -> PyResult<Self> {
+        KernelNode::activation(conditions)
+            .into_py_result()
+            .map(Self::wrap)
+    }
+
     /// `RQKernel`.
     #[staticmethod]
     #[pyo3(signature = (ard_num_dims=None))]
