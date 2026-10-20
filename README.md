@@ -537,6 +537,10 @@ The main remaining gaps are:
 Existing release benchmark results above apply to the measured exact-GP
 and acquisition workflows. They do not establish a speedup for every newly
 integrated model, sampler or configuration.
+The [latest release qLogNEI measurement](docs/correctness-findings.md#measured-release-performance)
+compares identical draws with one worker: cached evaluation is 7.02x faster
+for 180 baseline points, while full joint evaluation is slightly slower
+(0.97x). Raw timings, value checks and extension hashes are retained.
 [Correctness findings and proposed upstream solutions](docs/correctness-findings.md)
 record the reference bugs, deliberate corrections and a fresh release LOO benchmark.
 The coverage inventory describes this source checkout; these additions have not

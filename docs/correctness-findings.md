@@ -77,19 +77,25 @@ three warmups and 21 measured rounds produced:
 
 | qLogNEI evaluation | BoTorch pinned reference (ms) | Rust release (ms) | BoTorch/Rust |
 |---|---:|---:|---:|
-| Full joint sampling | 13.8765 | 14.4090 | 0.96x |
-| Cached sampling | 7.6639 | 1.3206 | 5.80x |
+| Full joint sampling | 21.7072 | 22.3657 | 0.97x |
+| Cached sampling | 11.7693 | 1.6768 | 7.02x |
 
 The cached native block computation improves this workload; uncached
 evaluation is slightly slower in this run. Maximum value differences are
 `8.55e-7` and `1.54e-7`, respectively, within the configured absolute and
 relative tolerances of `1e-6`. The test includes ill-conditioned latent
 baseline covariances. Timing excludes fitting, construction and imports;
-it evaluates forward values with Torch gradients disabled. Other work was
-active on the machine.
+it evaluates forward values with Torch gradients disabled. Heavy builds and
+test runs were stopped for this measurement. Timings varied across rounds;
+all raw measurements are retained.
 
-[Raw timings and artifact provenance](benchmarks/noisy-cache-release-2026-10-20.json)
+[Raw timings and artifact provenance](benchmarks/noisy-cache-final-release-2026-10-20.json)
 record the source checkouts, settings and exact loaded extension path and
-SHA256. The native build checkpoint was `1ec588a`; its extension hash is
-`55b7161267609ce3fccb381f70287ad337e3f29dae18276095bdf1e43e9339a0`.
+SHA256. The native build checkpoint was `4a8b8bd`; its extension hash is
+`543749d9f2df2aa1b89faa2985b9f706edd2e7eca5014d7bf49235e074f6def9`.
 The report's checkout revision includes subsequent Python-only changes.
+
+An [earlier release measurement](benchmarks/noisy-cache-release-2026-10-20.json)
+with other work active measured 5.80x for cached sampling and 0.96x for full
+joint sampling. These local results support a cache-specific improvement,
+not a general speedup across BoTorch workloads.
