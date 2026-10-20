@@ -1294,6 +1294,26 @@ class OptimizeAcqfInputs:
             not isinstance(self.acq_function, OneShotAcquisitionFunction)
         )
 
+    def get_ic_generator(self) -> Callable[..., Any]:
+        """Select the custom, KG, hypervolume-KG, or ordinary initializer."""
+        from botorch_rs.acquisition.knowledge_gradient import qKnowledgeGradient
+        from botorch_rs.acquisition.multi_objective.hypervolume_knowledge_gradient import (
+            qHypervolumeKnowledgeGradient,
+        )
+        from botorch_rs.optim.initializers import (
+            gen_batch_initial_conditions,
+            gen_one_shot_hvkg_initial_conditions,
+            gen_one_shot_kg_initial_conditions,
+        )
+
+        if self.ic_generator is not None:
+            return self.ic_generator
+        if isinstance(self.acq_function, qKnowledgeGradient):
+            return gen_one_shot_kg_initial_conditions
+        if isinstance(self.acq_function, qHypervolumeKnowledgeGradient):
+            return gen_one_shot_hvkg_initial_conditions
+        return gen_batch_initial_conditions
+
 
 __all__ = [
     "OptimizeAcqfInputs",

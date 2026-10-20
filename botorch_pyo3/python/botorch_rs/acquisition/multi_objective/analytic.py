@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
+from botorch_rs import _ops
 from botorch_rs._arrays import first_kind, from_flat, to_flat
 from botorch_rs.acquisition.multi_objective.base import (
     MultiObjectiveAnalyticAcquisitionFunction,
@@ -74,6 +75,22 @@ class ExpectedHypervolumeImprovement(MultiObjectiveAnalyticAcquisitionFunction):
     def cell_upper_bounds(self) -> Any:
         """The upper vertices of the hypercells (``num_cells x m``)."""
         return self._cell_bounds(1)
+
+    def psi(self, lower: Any, upper: Any, mu: Any, sigma: Any) -> Any:
+        """Gaussian tail integral for broadcast cell bounds and marginal moments."""
+        standardized = _ops.apply("div", _ops.apply("sub", upper, mu), sigma)
+        tail = _ops.apply("sub", 1.0, _ops.apply("ndtr", standardized))
+        return _ops.apply(
+            "add",
+            _ops.apply("mul", sigma, _ops.apply("phi", standardized)),
+            _ops.apply("mul", _ops.apply("sub", mu, lower), tail),
+        )
+
+    def nu(self, lower: Any, upper: Any, mu: Any, sigma: Any) -> Any:
+        """Gaussian tail probability times the broadcast hypercell width."""
+        standardized = _ops.apply("div", _ops.apply("sub", upper, mu), sigma)
+        tail = _ops.apply("sub", 1.0, _ops.apply("ndtr", standardized))
+        return _ops.apply("mul", _ops.apply("sub", upper, lower), tail)
 
 
 __all__ = ["ExpectedHypervolumeImprovement"]
