@@ -425,6 +425,22 @@ parameters. Its 16 helper/kernel tests cover batches, diagonal evaluation,
 active dimensions and use as a native GP covariance module against the official
 baseline. The remaining heterogeneous-task composite kernels are separate work.
 
+Optional JAX conversions preserve explicit copies in both directions and
+import their libraries only when called. LCBench loading likewise imports
+pandas, pyarrow and torch lazily; it validates downloaded Parquet before an
+atomic cache replacement and removes temporary files on publication errors.
+Hyperparameter log scaling runs through Rust elementwise operations. Its
+12 adapter tests use local synthetic Parquet files and in-memory responses,
+cover copy semantics and optional-dependency errors, and match official
+`b0dd01be6` outputs. No benchmark dataset is downloaded in the tests.
+
+The LCBench metrics output deliberately copies its data. Official BoTorch
+uses `torch.from_numpy(metric_df.values).to(...)`; with recent pandas, the
+NumPy view is read-only, and matching-dtype CPU output aliases it and emits
+PyTorch's undefined-write warning. `torch.tensor(..., dtype=..., device=...)`
+is the corresponding upstream solution: it returns safe writable tensor
+storage without changing the values.
+
 The initial committed branch passed all three phase 11a Python suites on
 2026-10-20 against the local BoTorch fork checkout at `c98dd9452`
 (`fix/audit-correctness-fixes`, not official upstream main), with
