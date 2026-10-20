@@ -139,6 +139,20 @@ def test_construct_inputs_factorizes_observed_rows(kind: str) -> None:
     assert LatentKroneckerGP(**values)._rs.num_observed == 3
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_torch_observation_mask_preserves_training_device(device: str) -> None:
+    import torch
+
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    X, T, Y = (torch.tensor(v, dtype=torch.float64, device=device) for v in data(True))
+    model = LatentKroneckerGP(X, T, Y)
+    mask = model.mask_valid
+    assert mask.dtype == torch.bool
+    assert mask.device == X.device
+    assert mask.sum().item() == 10
+
+
 REFERENCE_SCRIPT = r"""
 import json, torch
 from botorch.models.latent_kronecker_gp import LatentKroneckerGP

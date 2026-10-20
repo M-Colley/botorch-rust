@@ -288,7 +288,9 @@ class LatentKroneckerGP(GPyTorchModel):
         if self._kind.lib == "torch":
             import torch
 
-            return torch.tensor([i in observed for i in range(n)], dtype=torch.bool)
+            return torch.tensor(
+                [i in observed for i in range(n)], dtype=torch.bool, device=self._kind.device
+            )
         if self._kind.lib == "numpy":
             import numpy as np
 
