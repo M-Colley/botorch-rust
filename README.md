@@ -510,6 +510,9 @@ The main remaining gaps are:
   ([scope](docs/joint-model-list-autograd.md)). Acquisition parameter graphs
   remain configuration work. Exact GPs also expose explicit native
   [posterior parameter pullbacks](docs/posterior-parameter-gradients.md).
+  Variational GPs support persistent Torch parameters and native ELBO
+  backward for full data and minibatches
+  ([scope](docs/approximate-models.md)).
   Models compute on the CPU in float64
   and restore the caller's array dtype and device. Acquisition functions
   expose native input derivatives.
