@@ -149,6 +149,11 @@ def gen_candidates_scipy(
         The generated candidates (the shape of ``initial_conditions``) and
         the acquisition value of each t-batch.
     """
+    if getattr(acquisition_function, "_tensor_backend", None) == "torch":
+        arguments = locals().copy()
+        from botorch_rs.optim._torch_acq_optim import gen_scipy
+
+        return gen_scipy(**arguments)
     from botorch_rs.optim.optimize import _as_native, _parse_options
 
     kind = first_kind(initial_conditions)
@@ -252,6 +257,11 @@ def gen_candidates_torch(
         The generated candidates (the shape of ``initial_conditions``) and
         the acquisition value of each t-batch.
     """
+    if getattr(acquisition_function, "_tensor_backend", None) == "torch":
+        arguments = locals().copy()
+        from botorch_rs.optim._torch_acq_optim import gen_torch
+
+        return gen_torch(**arguments)
     from botorch_rs.optim.optimize import _as_native, _torch_options
 
     kind = first_kind(initial_conditions)

@@ -441,6 +441,14 @@ class AcquisitionFunction:
     def value_and_grad(self, X: Any) -> tuple[Any, Any]:
         """Acquisition values (shape ``batch_shape``) and their gradients with
         respect to ``X`` (shape of ``X``) -- a botorch_rs extension."""
+        if getattr(self, "_tensor_backend", None) == "torch":
+            import torch
+
+            with torch.enable_grad():
+                variable = X if X.requires_grad else X.detach().requires_grad_(True)
+                value = self(variable)
+                gradient = torch.autograd.grad(value.sum(), variable, create_graph=True)[0]
+            return value, gradient
         snapshot = self.__dict__.get("_parameter_snapshot")
         if snapshot is not None and not self.__dict__.get("_ensemble_acqfs"):
             snapshot.validate(self.model)
