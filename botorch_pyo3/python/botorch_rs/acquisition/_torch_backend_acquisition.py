@@ -44,7 +44,12 @@ _MC = frozenset(
 )
 _NOISY = frozenset({"qNoisyExpectedImprovement", "qLogNoisyExpectedImprovement"})
 _MULTI_OBJECTIVE = frozenset(
-    {"qExpectedHypervolumeImprovement", "qLogExpectedHypervolumeImprovement"}
+    {
+        "qExpectedHypervolumeImprovement",
+        "qLogExpectedHypervolumeImprovement",
+        "qNoisyExpectedHypervolumeImprovement",
+        "qLogNoisyExpectedHypervolumeImprovement",
+    }
 )
 _TYPES: dict[type, type] = {}
 _LOG_2PI = math.log(2 * math.pi)
@@ -63,9 +68,14 @@ def tensor_acquisition(public_class: type) -> Any:
         if public_class.__name__ in _MULTI_OBJECTIVE:
             from botorch_rs.acquisition._torch_backend_multi_objective import (
                 TensorMultiObjectiveAcquisition,
+                TensorNoisyMultiObjectiveAcquisition,
             )
 
-            mixin = TensorMultiObjectiveAcquisition
+            mixin = (
+                TensorNoisyMultiObjectiveAcquisition
+                if "Noisy" in public_class.__name__
+                else TensorMultiObjectiveAcquisition
+            )
         name = f"Torch{public_class.__name__}"
         subtype = type(
             name,

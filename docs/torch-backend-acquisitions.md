@@ -76,7 +76,26 @@ staircase cells from retained caller-owned outcomes with device-side comparisons
 sorting and gathering. Native CPU box decomposition methods retain their
 original numerical behavior. Observed-front and reference-point derivatives pass
 `gradcheck` and `gradgradcheck`. Differentiable observed-front rebuilding above
-two objectives and noisy hypervolume acquisitions remain outside this checkpoint;
-they raise explicit errors on this backend. Static native partition construction
+two objectives remains outside this checkpoint and raises an explicit error.
+Static native partition construction
 may still run on CPU; the acquisition's posterior inference and HVI calculations
 remain on the model device.
+
+qNEHVI and qLogNEHVI additionally support exact two-objective Pareto cells
+computed on device from joint posterior samples. They support constraints,
+weighted or generic multi-output objectives, model/t-batches, pruning, empty
+fronts, and incremental or nonincremental pending points. `cache_root=True`
+warns and uses full-joint sampling. The pending-point policy and `max_iep` are
+honored while cell geometry is recomputed on each evaluation. Baseline normals
+remain shared across pending additions, replacements and removal; no posterior
+data is copied to the CPU for partitioning. Initial Sobol sampling follows the
+reference's different initialization paths with and without cached pending points.
+
+By default baseline latent samples are detached, matching the reference's
+`no_grad` baseline posterior. Objective-weight and reference-point graphs remain
+available. `detach_baseline=False` retains the baseline latent graph as well;
+the complete training-data/reference/query function passes `gradcheck` and
+`gradgradcheck` on CPU and CUDA. The combined acquisition/sampler suite now has
+171 passing tests, including 61 hypervolume tests. Above-two-objective noisy
+partitioning, approximate `alpha>0` partitioning, and ensemble marginalization
+remain explicit boundaries in this checkpoint.

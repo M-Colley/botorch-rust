@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 import itertools
 import math
+import warnings
 from typing import Any
 
 import torch
@@ -15,7 +17,7 @@ from botorch_rs.acquisition._torch_reductions import fatmax, logsumexp, smooth_a
 from botorch_rs.acquisition.multi_objective.objective import IdentityMCMultiOutputObjective
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import legacy_ei_numerics_warning
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
 
 def nondominated_mask(Y: Tensor, ref: Tensor, feasible: Tensor | None = None) -> Tensor:
@@ -85,6 +87,11 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
         )
         bound.apply_defaults()
         values = dict(bound.arguments)
+        self._init_common(values)
+        self.set_X_pending(values["X_pending"])
+        self._init_partition(values["partitioning"])
+
+    def _init_common(self, values: dict[str, Any]) -> None:
         self._name = self._public_class.__name__
         self._tensor_backend = "torch"
         self._is_analytic = False
@@ -97,7 +104,6 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
         self.register_buffer("_eta", torch.as_tensor(values["eta"]))
         self.fat = self._fat = values["fat"]
         self.register_buffer("_X_pending", None)
-        self.set_X_pending(values["X_pending"])
         like = next(self.model.parameters())
         ref = torch.as_tensor(values["ref_point"], dtype=like.dtype, device=like.device)
         if ref.ndim != 1 or ref.numel() < 2:
@@ -113,7 +119,11 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
                 self.register_buffer(field, value)
         else:
             legacy_ei_numerics_warning(legacy_name=self._name)
-        partitioning = values["partitioning"]
+        self._subset_cache: dict[tuple[int, torch.device], dict[str, Tensor]] = {}
+
+    def _init_partition(self, partitioning: Any) -> None:
+        ref = self.ref_point
+        like = ref
         if partitioning.num_outcomes != ref.numel():
             raise ValueError("The reference point must match the number of partitioning outcomes.")
         bounds = torch.as_tensor(
@@ -142,7 +152,6 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
             self.register_buffer("_observed_source", None)
         old_ref = torch.as_tensor(partitioning.ref_point, dtype=like.dtype, device=like.device)
         self.register_buffer("_reference_cells", self.cell_lower_bounds == old_ref)
-        self._subset_cache: dict[tuple[int, torch.device], dict[str, Tensor]] = {}
 
     @property
     def cell_lower_bounds(self) -> Tensor:
@@ -193,8 +202,10 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
         tau = self.tau_max.to(X)
         return -(fatmax if self.fat else smooth_amax)(-X, dim=dim, tau=tau)
 
-    def _hypervolume(self, samples: Tensor, obj: Tensor) -> Tensor:
-        lower, upper, mask = self._cells(obj)
+    def _hypervolume(
+        self, samples: Tensor, obj: Tensor, cells: tuple[Tensor, Tensor, Tensor] | None = None
+    ) -> Tensor:
+        lower, upper, mask = self._cells(obj) if cells is None else cells
         batch = obj.shape[:-2]
         leading = (1,) * (len(batch) - len(lower.shape[:-2]))
         lower = lower.reshape(*leading, *lower.shape[:-2], lower.shape[-2], 1, obj.shape[-1])
@@ -258,3 +269,266 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
         X = self._candidates_tensor(X)
         samples, objective = self._draw_mo(X)
         return self._hypervolume(samples, objective)
+
+
+def _dominated_volume_2d(Y: Tensor, ref: Tensor, feasible: Tensor | None = None) -> Tensor:
+    lower, upper, active = partition_2d(Y, ref, feasible)
+    finite = torch.isfinite(upper[..., 0]) & active
+    widths = torch.where(finite, upper[..., 0], lower[..., 0]) - lower[..., 0]
+    return (widths * (lower[..., 1] - ref[..., 1])).sum(-1)
+
+
+class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
+    """Exact 2-D joint noisy hypervolume sampling, with device-only Pareto cells."""
+
+    _X_baseline: Tensor
+    base_sampler: Any
+    _observed_sampler: Any
+    _last_baseline_objective: Tensor | None
+    _last_cell_mask: Tensor | None
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        nn.Module.__init__(self)
+        kwargs = dict(kwargs)
+        self.detach_baseline = bool(kwargs.pop("detach_baseline", True))
+        bound = inspect.signature(inspect.getattr_static(self._public_class, "__init__")).bind(
+            self, *args, **kwargs
+        )
+        bound.apply_defaults()
+        values = dict(bound.arguments)
+        self._init_common(values)
+        if self.ref_point.numel() != 2:
+            raise UnsupportedError(
+                "Device-side noisy hypervolume partitioning currently requires two objectives."
+            )
+        if values["alpha"] != 0 or values["marginalize_dim"] is not None:
+            raise UnsupportedError(
+                "Torch noisy hypervolume currently requires exact alpha=0 partitioning without ensemble marginalization."
+            )
+        baseline = values["X_baseline"]
+        if not isinstance(baseline, Tensor) or baseline.ndim != 2:
+            raise ValueError("X_baseline must be an n x d Torch tensor.")
+        if not callable(getattr(self.sampler, "_update_base_samples", None)):
+            raise UnsupportedError(
+                "Noisy hypervolume requires a normal sampler supporting baseline base-sample updates."
+            )
+        self.register_buffer("_X_baseline", baseline)
+        self.cache_root = self._cache_root = False
+        if values["cache_root"]:
+            warnings.warn(
+                "backend='torch' uses full-joint noisy hypervolume sampling; setting cache_root=False.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+        self.cache_pending = bool(values["cache_pending"])
+        self._max_iep = int(values["max_iep"])
+        if self._max_iep < 0:
+            raise ValueError("max_iep must be non-negative.")
+        self.incremental_nehvi = bool(values["incremental_nehvi"])
+        self._cached_pending_count = 0
+        self._prefix_can_extend = False
+        self._last_prefix_count = -1
+        pending = values["X_pending"]
+        self._initial_pending_seed_full = bool(
+            self.cache_pending and pending is not None and pending.shape[-2] > self._max_iep
+        )
+        self.base_sampler = None
+        self._observed_sampler = self._new_sampler()
+        self.prune_baseline = bool(values["prune_baseline"])
+        if self.prune_baseline:
+            self._prune_front()
+        self.register_buffer("_cell_lower_tensor", None)
+        self.register_buffer("_cell_upper_tensor", None)
+        self._last_baseline_objective = None
+        self._last_cell_mask = None
+        self.set_X_pending(values["X_pending"])
+
+    def _ensure_baseline_geometry(self) -> None:
+        if self._last_baseline_objective is not None:
+            return
+        baseline = self.X_baseline
+        if baseline.shape[-2]:
+            posterior = self.model.posterior(baseline)
+            samples = self._joint_samples(posterior, baseline.shape[-2])
+            if self.detach_baseline:
+                samples = samples.detach()
+        else:
+            samples = self.ref_point.new_empty(
+                (*self.sample_shape, *self.model.batch_shape, 0, self.model.num_outputs)
+            )
+        objective = self.objective(samples, X=baseline)
+        cells = partition_2d(objective, self.ref_point, self._feasible(samples))
+        self._cell_lower_tensor, self._cell_upper_tensor, self._last_cell_mask = cells
+        self._last_baseline_objective = objective
+
+    @property
+    def cell_lower_bounds(self) -> Tensor:
+        self._ensure_baseline_geometry()
+        return self._cell_lower_tensor
+
+    @property
+    def cell_upper_bounds(self) -> Tensor:
+        self._ensure_baseline_geometry()
+        return self._cell_upper_tensor
+
+    def _cells(self, obj: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        self._ensure_baseline_geometry()
+        assert self._last_cell_mask is not None
+        return self._cell_lower_tensor, self._cell_upper_tensor, self._last_cell_mask
+
+    def _new_sampler(self) -> Any:
+        if isinstance(self.sampler, NormalMCSampler):
+            sampler_type: Any = type(self.sampler)
+            return sampler_type(sample_shape=self.sample_shape, seed=self.sampler.seed)
+        return copy.deepcopy(self.sampler)
+
+    @property
+    def X_baseline(self) -> Tensor:
+        if self._cached_pending_count and self._X_pending is not None:
+            return torch.cat(
+                (self._X_baseline, self._X_pending[: self._cached_pending_count]), dim=-2
+            )
+        return self._X_baseline
+
+    def set_X_pending(self, X_pending: Any = None) -> None:
+        previous = self._X_pending
+        old_count = self._cached_pending_count
+        if X_pending is not None and (not isinstance(X_pending, Tensor) or X_pending.ndim != 2):
+            raise ValueError("Noisy hypervolume pending points must be an n x d tensor.")
+        _TensorAcquisition.set_X_pending(self, X_pending)
+        current = self._X_pending
+        append = (
+            previous is not None
+            and current is not None
+            and current.shape[-2] >= previous.shape[-2]
+            and torch.equal(current[: previous.shape[-2]], previous)
+        )
+        if not self.cache_pending or current is None:
+            new_count = 0
+        elif append and current.shape[-2] - old_count <= self._max_iep:
+            new_count = old_count
+        else:
+            new_count = current.shape[-2] if current.shape[-2] > self._max_iep else 0
+        self._cached_pending_count = new_count
+        self._prefix_can_extend = append and new_count >= old_count
+        if not append or new_count != old_count:
+            self._last_prefix_count = -1
+        self._last_baseline_objective = None
+        self._last_cell_mask = None
+
+    def _prune_front(self) -> None:
+        if not self._X_baseline.shape[-2]:
+            return
+        with torch.no_grad():
+            samples = SobolQMCNormalSampler((2048,), seed=self.sampler.seed)(
+                self.model.posterior(self._X_baseline)
+            )
+            obj = self.objective(samples, X=self._X_baseline)
+            feasible = self._feasible(samples)
+            possible = nondominated_mask(obj, self.ref_point, feasible)
+            possible = possible.any(dim=tuple(range(possible.ndim - 1)))
+            indices = possible.nonzero().flatten()
+            self._X_baseline = self._X_baseline.index_select(-2, indices)
+
+    @staticmethod
+    def _prefix_posterior(posterior: Any, count: int) -> Any:
+        from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+
+        underlying = posterior
+        while hasattr(underlying, "_posterior"):
+            underlying = underlying._posterior
+        mean = underlying.mean[..., :count, :]
+        q, m = underlying.mean.shape[-2:]
+        indices = (
+            torch.arange(m, device=mean.device).unsqueeze(-1) * q
+            + torch.arange(count, device=mean.device)
+        ).flatten()
+        covariance = underlying.distribution.covariance_matrix.index_select(
+            -2, indices
+        ).index_select(-1, indices)
+        return TorchGPyTorchPosterior(mean, covariance)
+
+    def _joint_samples(self, posterior: Any, baseline_count: int) -> Tensor:
+        original = self._X_baseline.shape[-2]
+        if self._initial_pending_seed_full and self.base_sampler is None:
+            # Reference incremental NEHVI initializes directly on B+P, so
+            # Sobol's dimension is that complete prefix on the first draw.
+            prefix = self._prefix_posterior(posterior, baseline_count)
+            self.base_sampler = self._new_sampler()
+            self.base_sampler._construct_base_samples(prefix)
+            if original:
+                self._observed_sampler._construct_base_samples(
+                    self._prefix_posterior(posterior, original)
+                )
+                if self.incremental_nehvi:
+                    normals = self.base_sampler.base_samples
+                    point_axis = -2 if prefix._is_mt else -1
+                    normals = normals.narrow(point_axis, 0, original)
+                    if isinstance(self._observed_sampler, SobolQMCNormalSampler):
+                        self._observed_sampler._base_samples = normals
+                    else:
+                        self._observed_sampler.base_samples = normals
+                    self._observed_sampler._base_shape = tuple(normals.shape)
+            self._last_prefix_count = baseline_count
+            self._initial_pending_seed_full = False
+        if original and self._observed_sampler.base_samples is None:
+            self._observed_sampler._construct_base_samples(
+                self._prefix_posterior(posterior, original)
+            )
+        if baseline_count and self._last_prefix_count != baseline_count:
+            source = (
+                self.base_sampler
+                if self._prefix_can_extend and self.base_sampler is not None
+                else self._observed_sampler
+            )
+            sampler = self._new_sampler()
+            sampler._update_base_samples(self._prefix_posterior(posterior, baseline_count), source)
+            self.base_sampler = sampler
+            self._last_prefix_count = baseline_count
+        if baseline_count:
+            self.sampler._update_base_samples(posterior, self.base_sampler)
+        return self.sampler(posterior)
+
+    def forward(self, X: Any) -> Tensor:
+        if not isinstance(X, Tensor) or X.ndim < 2:
+            raise ValueError("X must be a Torch tensor with shape batch_shape x q x d.")
+        X = X.unsqueeze(0) if X.ndim == 2 else X
+        if self._X_pending is not None:
+            pending = self._X_pending[self._cached_pending_count :].to(X)
+            if pending.shape[-2]:
+                X = torch.cat((X, pending.expand(*X.shape[:-2], *pending.shape[-2:])), dim=-2)
+        baseline = self.X_baseline.to(X)
+        joint = torch.cat((baseline.expand(*X.shape[:-2], *baseline.shape[-2:]), X), dim=-2)
+        count = baseline.shape[-2]
+        posterior = self.model.posterior(joint)
+        samples = self._joint_samples(posterior, count)
+        baseline_samples = samples[..., :count, :]
+        if self.detach_baseline:
+            baseline_samples = baseline_samples.detach()
+        processed = torch.cat((baseline_samples, samples[..., count:, :]), dim=-2)
+        objective = self.objective(processed, X=joint)
+        baseline_obj, candidate_obj = objective[..., :count, :], objective[..., count:, :]
+        self.baseline_samples, self.baseline_obj = baseline_samples, baseline_obj
+        self._last_baseline_objective = baseline_obj
+        feasible = self._feasible(baseline_samples)
+        cells = partition_2d(baseline_obj, self.ref_point.to(objective), feasible)
+        self._cell_lower_tensor, self._cell_upper_tensor, self._last_cell_mask = cells
+        value = self._hypervolume(samples[..., count:, :], candidate_obj, cells)
+        if not self.incremental_nehvi and self._cached_pending_count:
+            n = self._X_baseline.shape[-2]
+            pending_hv = _dominated_volume_2d(baseline_obj, self.ref_point, feasible)
+            if n:
+                observed_samples = self._observed_sampler(self._prefix_posterior(posterior, n))
+                if self.detach_baseline:
+                    observed_samples = observed_samples.detach()
+                observed_obj = self.objective(observed_samples, X=self._X_baseline)
+                observed_hv = _dominated_volume_2d(
+                    observed_obj, self.ref_point, self._feasible(observed_samples)
+                )
+                if self.detach_baseline:
+                    observed_hv = observed_hv.detach()
+            else:
+                observed_hv = pending_hv * 0
+            previous = (pending_hv - observed_hv).clamp_min(0).mean()
+            value = torch.logaddexp(value, previous.log()) if self._log else value + previous
+        return value
