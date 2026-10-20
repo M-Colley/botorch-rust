@@ -27,9 +27,8 @@ from botorch_rs.likelihoods import (
     Likelihood,
 )
 from botorch_rs.means import ConstantMean, MultitaskMean
-from botorch_rs.models.gpytorch import GPyTorchModel
+from botorch_rs.models.gpytorch import GPyTorchModel, MultiTaskGPyTorchModel
 from botorch_rs.models.transforms.outcome import Standardize, is_plain_standardize
-from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 from botorch_rs.utils.types import DEFAULT
 
 
@@ -46,7 +45,7 @@ def _int_list(values: Any, name: str) -> list[int] | None:
     return [int(v) for v in data]
 
 
-class MultiTaskGP(GPyTorchModel):
+class MultiTaskGP(MultiTaskGPyTorchModel):
     r"""Multi-task exact GP with an ICM (intrinsic coregionalization model)
     kernel (BoTorch's ``MultiTaskGP``), see Bonilla et al. (2007) and Swersky
     et al. (2013).
@@ -426,65 +425,14 @@ class MultiTaskGP(GPyTorchModel):
                 tf.train(mode)
         return self
 
-    # -- posterior ---------------------------------------------------------
-
-    def posterior(
-        self,
-        X: Any,
-        output_indices: list[int] | None = None,
-        observation_noise: Any = False,
-        posterior_transform: Any = None,
-        **kwargs: Any,
-    ) -> GPyTorchPosterior:
-        r"""The posterior at ``X`` in the original outcome space.
-
-        ``X`` (``batch_shape x q x d``) without the task column gives the
-        posterior over the output tasks (``output_indices``: other task
-        values), a ``MultitaskMultivariateNormal`` in BoTorch's output-major
-        layout for several tasks. With the task column (``... x (d + 1)``),
-        the posterior is single-output over the given tasks.
-        ``observation_noise=True`` adds the noise level of each point's task
-        (for fixed noise, the mean training noise of the task).
-        """
-        from botorch_rs.acquisition.objective import transform_arg
-
-        if not isinstance(observation_noise, bool):
-            raise NotImplementedError(
-                "Passing a tensor of observations is not supported by MultiTaskGP."
-            )
-        kind = kind_of(X)
-        flat = to_flat(X, "X")
-        d = self.num_non_task_features
-        if len(flat[1]) < 2 or flat[1][-1] not in (d, d + 1):
-            raise BotorchTensorDimensionError(
-                f"Expected X to be `batch_shape x q x d` with d = {d} (or d + 1 with the task "
-                f"feature), got shape {tuple(flat[1])}."
-            )
-        if flat[1][-1] == d + 1:
-            if output_indices is not None:
-                raise ValueError("`output_indices` must be None when `X` includes task features.")
-            cols = d + 1
-            self._check_task_values(
-                sorted({flat[0][i + self._task_feature] for i in range(0, len(flat[0]), cols)})
-            )
-            self.eval()
-            source = _rs.multitask_task_inputs_model(self._rs)
-            num_outputs = 1
-        else:
-            tasks = None if output_indices is None else [int(t) for t in output_indices]
-            self._check_task_values([float(t) for t in (tasks or self._output_tasks)])
-            self.eval()
-            source = _rs.multitask_model(self._rs, tasks)
-            num_outputs = len(tasks) if tasks is not None else self._num_outputs
-        return GPyTorchPosterior(
-            source,
-            flat,
-            kind,
-            observation_noise,
-            num_outputs=num_outputs,
-            model_batch_shape=self.batch_shape,
-            transform=transform_arg(posterior_transform),
+    def _native_task_source(self, tasks: list[int] | None, includes_task_feature: bool) -> Any:
+        return (
+            _rs.multitask_task_inputs_model(self._rs)
+            if includes_task_feature
+            else _rs.multitask_model(self._rs, tasks)
         )
+
+    # -- posterior ---------------------------------------------------------
 
     def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:
         """The model handle that acquisition functions are built on (over the
@@ -495,9 +443,6 @@ class MultiTaskGP(GPyTorchModel):
         return _rs.multitask_model(
             self._rs, None, transform_arg(posterior_transform, self.num_outputs)
         )
-
-    def subset_output(self, idcs: list[int]) -> Any:
-        raise UnsupportedError("Subsetting outputs is not supported by `MultiTaskGPyTorchModel`.")
 
     # -- conditioning and fantasies ------------------------------------------
 

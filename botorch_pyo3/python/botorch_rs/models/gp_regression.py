@@ -15,7 +15,7 @@ from botorch_rs.exceptions.warnings import InputDataWarning
 from botorch_rs.kernels import Kernel
 from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood, Likelihood
 from botorch_rs.means import ConstantMean
-from botorch_rs.models.gpytorch import GPyTorchModel
+from botorch_rs.models.gpytorch import BatchedMultiOutputGPyTorchModel
 from botorch_rs.models.transforms.input import (
     InputTransform,
     Normalize,
@@ -223,7 +223,7 @@ def _modules_of(model: Any) -> list[Any]:
     return out
 
 
-class SingleTaskGP(GPyTorchModel):
+class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
     r"""A single-task exact GP with BoTorch's defaults.
 
     Without ``train_Yvar`` the noise level is inferred (``GaussianLikelihood``
@@ -271,7 +271,7 @@ class SingleTaskGP(GPyTorchModel):
         if yvar is not None and yvar[1] != y[1]:  # broadcast trailing dimensions
             reps = len(y[0]) // max(len(yvar[0]), 1)
             yvar = (yvar[0] * reps, y[1])
-        batch = tuple(x[1][:-2])
+        batch, aug = self.get_batch_dimensions(train_X, train_Y)
         if tuple(y[1][:-2]) != batch:
             raise BotorchTensorDimensionError(
                 f"Expected train_X and train_Y to have the same batch shape, got "
@@ -279,7 +279,6 @@ class SingleTaskGP(GPyTorchModel):
             )
         d = x[1][-1]
         m = y[1][-1]
-        aug = batch + ((m,) if m > 1 else ())
         if likelihood is not None:
             if not isinstance(likelihood, GaussianLikelihood):
                 raise UnsupportedError(
@@ -471,27 +470,6 @@ class SingleTaskGP(GPyTorchModel):
                 self._subset_batch_dict["likelihood.noise_covar.raw_noise"] = -2
         self.training = True
 
-    @staticmethod
-    def get_batch_dimensions(train_X: Any, train_Y: Any) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        r"""Get the raw batch shape and output-augmented batch shape of the inputs.
-
-        Args:
-            train_X: A ``n x d`` or ``batch_shape x n x d`` (batch mode) tensor of
-                training features.
-            train_Y: A ``n x m`` or ``batch_shape x n x m`` (batch mode) tensor of
-                training observations.
-
-        Returns:
-            2-element tuple containing
-
-            - The ``input_batch_shape``
-            - The output-augmented batch shape: ``input_batch_shape x (m)``
-        """
-        input_batch_shape = tuple(to_flat(train_X, "train_X")[1][:-2])
-        num_outputs = to_flat(train_Y, "train_Y")[1][-1]
-        aug_batch_shape = input_batch_shape + ((num_outputs,) if num_outputs > 1 else ())
-        return input_batch_shape, aug_batch_shape
-
     # -- data --------------------------------------------------------------
 
     @property
@@ -548,71 +526,6 @@ class SingleTaskGP(GPyTorchModel):
         return self
 
     # -- posterior ---------------------------------------------------------
-
-    def _posterior_args(
-        self, output_indices: Any, posterior_transform: Any
-    ) -> tuple[list[int] | None, tuple[list[float], float] | None]:
-        from botorch_rs.acquisition.objective import transform_arg
-
-        m = self.num_outputs
-        oi = None
-        if output_indices is not None:
-            oi = [int(t) for t in output_indices]
-            if not oi or any(not -m <= t < m for t in oi):
-                raise BotorchTensorDimensionError(
-                    f"output_indices {list(output_indices)} are invalid for a model with "
-                    f"{m} outputs."
-                )
-            oi = [t % m for t in oi]
-            if oi == list(range(m)):
-                oi = None
-        return oi, transform_arg(posterior_transform)
-
-    def posterior(
-        self,
-        X: Any,
-        output_indices: list[int] | None = None,
-        observation_noise: bool = False,
-        posterior_transform: Any = None,
-        **kwargs: Any,
-    ) -> GPyTorchPosterior:
-        """The posterior at ``X`` (``batch_shape x q x d``), in the original
-        outcome space, over the outputs ``output_indices`` (all by default),
-        scalarized by ``posterior_transform`` if given; with
-        ``observation_noise=True`` the likelihood noise is added (the mean
-        training noise for fixed-noise models)."""
-        if not isinstance(observation_noise, bool):
-            raise UnsupportedError("`observation_noise` must be a bool in botorch_rs.")
-        from botorch_rs.acquisition.objective import ExpectationPosteriorTransform
-
-        if isinstance(posterior_transform, ExpectationPosteriorTransform):
-            posterior = self.posterior(X, output_indices, observation_noise, **kwargs)
-            return posterior_transform(posterior, X=X)
-        oi, transform = self._posterior_args(output_indices, posterior_transform)
-        kind = kind_of(X)
-        flat = to_flat(X, "X")
-        if len(flat[1]) < 2:
-            raise BotorchTensorDimensionError(
-                f"Expected X to be `batch_shape x q x d`, got shape {flat[1]}."
-            )
-        if flat[1][-1] != self._rs.dim:
-            raise BotorchTensorDimensionError(
-                f"Expected X with {self._rs.dim} columns (d), got {flat[1][-1]}."
-            )
-        self.eval()
-        return _model_posterior(
-            self._rs,
-            flat,
-            kind,
-            observation_noise,
-            num_outputs=self.num_outputs,
-            model_batch_shape=self.batch_shape,
-            output_indices=oi,
-            transform=transform,
-            points_per_input=self._rs.points_per_input,
-            transformed=list(self._rs.transformed_outputs),
-            is_list=False,
-        )
 
     def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:
         """The model handle that acquisition functions are built on."""
