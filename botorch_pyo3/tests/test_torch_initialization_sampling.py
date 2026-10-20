@@ -106,6 +106,19 @@ def test_constraint_transforms_match_reference_without_host_conversion(device):
 
 
 @pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dimension", [3, 5])
+@pytest.mark.parametrize("inter_point", [False, True])
+def test_constraint_invalid_feature_error_includes_actual_dimension(device, dimension, inter_point):
+    indices = torch.tensor([[0, dimension]] if inter_point else [0, dimension], device=device)
+    coefficients = torch.ones(indices.shape[0], dtype=torch.double, device=device)
+    with pytest.raises(ValueError) as error:
+        transform_constraints([(indices, coefficients, 0.0)], q=2, d=dimension)
+    assert str(error.value) == (
+        f"Constraint indices cannot exceed the problem dimension d={dimension}."
+    )
+
+
+@pytest.mark.parametrize("device", DEVICES)
 def test_constrained_initialization_and_real_slsqp_search(device):
     pytest.importorskip("scipy")
     bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double, device=device)

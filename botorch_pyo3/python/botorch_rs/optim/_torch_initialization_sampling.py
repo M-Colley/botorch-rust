@@ -26,12 +26,12 @@ def transform_constraint(constraint: Any, d: int, q: int | None = None) -> list[
         if q is None:
             raise ValueError("Inter-point constraints must have shape n x 2.")
         if bool(((index < 0) | (index >= d)).any()):
-            raise ValueError("Constraint indices cannot exceed the problem dimension.")
+            raise ValueError(f"Constraint indices cannot exceed the problem dimension {d=}.")
         return [(index + i * d, coefficients, rhs) for i in range(q)]
     if index.ndim != 2 or index.shape[-1] != 2:
         raise ValueError("Inter-point constraints must have shape n x 2.")
     if bool((index < 0).any()) or bool((index[:, 1] >= d).any()):
-        raise ValueError("Constraint indices are out of range.")
+        raise ValueError(f"Constraint indices cannot exceed the problem dimension {d=}.")
     if q is not None and bool((index[:, 0] >= q).any()):
         raise ValueError("Constraint point indices are out of range.")
     return [(index[:, 0] * d + index[:, 1], coefficients, rhs)]
