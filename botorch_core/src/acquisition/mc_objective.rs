@@ -178,13 +178,30 @@ impl McSamples {
 /// (`n × d`).
 pub type SamplePullback = Box<dyn FnOnce(&Matrix) -> Result<(Matrix, Option<Matrix>)> + Send>;
 
-/// Per-point values computed from posterior samples (`n × S`, one column per
-/// MC sample), with a pullback if derivatives were requested.
+/// Per-point values computed from posterior samples (`n × S'`, one column per
+/// MC sample), with a pullback if derivatives were requested. A learned
+/// preference objective may augment `S` outcome samples into `S' = P · S`
+/// utility samples; its pullback maps these back to the original `S` columns.
 pub struct SampleValues {
-    /// The values (`n × S`).
+    /// The values (`n × S'`).
     pub values: Matrix,
     /// The reverse-mode derivative (if requested).
     pub pullback: Option<SamplePullback>,
+}
+
+/// Validate a scalar objective, allowing repeated preference samples on the
+/// leading MC axis. Its pullback still returns the original posterior shape.
+pub(crate) fn check_objective_shape(values: &Matrix, n: usize, s: usize) -> Result<()> {
+    if values.nrows() != n {
+        return Err(q_batch_mismatch(values.nrows(), n));
+    }
+    if s == 0 || values.ncols() == 0 || !values.ncols().is_multiple_of(s) {
+        return Err(BotorchError::DimensionMismatch(format!(
+            "objective sample count {} must be a positive multiple of {s}",
+            values.ncols()
+        )));
+    }
+    Ok(())
 }
 
 impl Debug for SampleValues {
@@ -200,7 +217,8 @@ impl Debug for SampleValues {
 /// samples of `n` points to one value per point and MC sample, to be
 /// maximized.
 pub trait McObjective: Send + Sync + Debug {
-    /// Objective values (`n × S`) of `samples` of the points `x` (`n × d`;
+    /// Objective values (`n × S'`, `S'` a positive multiple of the input MC
+    /// sample count `S`) of `samples` of the points `x` (`n × d`;
     /// `None` where BoTorch passes `X=None`); with `with_grad`, also the
     /// pullback.
     ///
@@ -515,9 +533,7 @@ impl McObjective for ConstrainedMcObjective {
     ) -> Result<SampleValues> {
         let obj = self.objective.evaluate(samples, None, with_grad)?;
         let n = samples.num_points();
-        if obj.values.nrows() != n {
-            return Err(q_batch_mismatch(obj.values.nrows(), n));
-        }
+        check_objective_shape(&obj.values, n, samples.num_samples())?;
         let fat = vec![Some(false); self.constraints.len()];
         let ind = compute_smoothed_feasibility_indicator(
             &self.constraints,
@@ -530,10 +546,12 @@ impl McObjective for ConstrainedMcObjective {
         // obj.add(M).clamp_min(0).mul(w).add(-M)
         let shifted = obj.values.map(|v| v + m_cost);
         let clamped = shifted.map(|v| v.max(0.0));
-        let values = clamped.component_mul(&ind.values).map(|v| v + -m_cost);
+        let w = Matrix::from_fn(n, obj.values.ncols(), |p, c| {
+            ind.values[(p, c % ind.values.ncols())]
+        });
+        let values = clamped.component_mul(&w).map(|v| v + -m_cost);
         let pullback: Option<SamplePullback> = if with_grad {
             let obj_pullback = obj.pullback.expect("pullback requested");
-            let w = ind.values.clone();
             Some(Box::new(move |bar: &Matrix| {
                 // d/d obj: w where obj + M > 0 (clamp_min's derivative; zero
                 // at the scalar bound itself, torch ≥ 2.14).

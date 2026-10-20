@@ -262,28 +262,30 @@ impl PyCallback {
         };
         let d = x_arg.as_ref().map(|(_, d)| *d);
         let x_rows = x.map_or(0, |x| x.nrows());
-        let (values, handle) = Python::attach(|py| -> PyResult<(Vec<f64>, Py<PyAny>)> {
-            let bridge = py.import(BRIDGE)?;
-            let x_arg = match &x_arg {
-                Some((data, d)) => Some((float_values(py, data)?, *d)),
-                None => None,
-            };
-            let res = bridge.call_method1(
-                "forward",
-                (
-                    self.callable.bind(py),
-                    self.kind,
-                    float_values(py, &samples.to_row_major())?,
-                    (s, n, m),
-                    x_arg,
-                    with_grad,
-                ),
-            )?;
-            let (values, handle): (Bound<'_, PyAny>, Py<PyAny>) = res.extract()?;
-            Ok((float_data(&values)?, handle))
-        })
-        .map_err(callback_error)?;
-        let values = values_matrix(&values, s, n)?;
+        let (values, count, handle) =
+            Python::attach(|py| -> PyResult<(Vec<f64>, usize, Py<PyAny>)> {
+                let bridge = py.import(BRIDGE)?;
+                let x_arg = match &x_arg {
+                    Some((data, d)) => Some((float_values(py, data)?, *d)),
+                    None => None,
+                };
+                let res = bridge.call_method1(
+                    "forward",
+                    (
+                        self.callable.bind(py),
+                        self.kind,
+                        float_values(py, &samples.to_row_major())?,
+                        (s, n, m),
+                        x_arg,
+                        with_grad,
+                    ),
+                )?;
+                let (values, count, handle): (Bound<'_, PyAny>, usize, Py<PyAny>) =
+                    res.extract()?;
+                Ok((float_data(&values)?, count, handle))
+            })
+            .map_err(callback_error)?;
+        let values = values_matrix(&values, count, n)?;
         let pullback: Option<SamplePullback> = if with_grad {
             Some(Box::new(move |bar: &Matrix| {
                 let (sbar, xbar) = Python::attach(|py| -> PyResult<(Vec<f64>, Option<Vec<f64>>)> {

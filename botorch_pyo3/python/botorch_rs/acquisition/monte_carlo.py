@@ -28,6 +28,7 @@ from botorch_rs.acquisition.acquisition import (
 )
 from botorch_rs.acquisition.objective import (
     IdentityMCObjective,
+    _requires_joint_sampling,
     constraints_arg,
     is_constrained_objective,
     objective_arg,
@@ -610,6 +611,11 @@ _CACHE_ROOT_MESSAGE = (
     "don't produce a TransformedPosterior. Got a model of type {}. Setting `cache_root = False`."
 )
 
+_LEARNED_CACHE_ROOT_MESSAGE = (
+    "A stochastic LearnedObjective requires joint baseline and candidate preference samples. "
+    "Setting cache_root=False to preserve their joint distribution."
+)
+
 
 def supports_cache_root(model: Any) -> bool:
     r"""Checks if a model supports the cache_root functionality (BoTorch's
@@ -642,6 +648,14 @@ def _compute_noisy_best_f(acqf: Any, obj: Any) -> Any:
     _, obj_shape = to_flat(obj, "obj")
     sample_shape = tuple(acqf.sample_shape)
     n_sample = len(sample_shape)
+    if (
+        obj_shape
+        and obj_shape[:n_sample] != sample_shape
+        and obj_shape[0] > 0
+        and obj_shape[0] % math.prod(sample_shape) == 0
+    ):
+        sample_shape = (obj_shape[0],)
+        n_sample = 1
     if len(obj_shape) < n_sample + 1 or obj_shape[:n_sample] != sample_shape:
         raise BotorchTensorDimensionError(
             f"obj must have sample shape {sample_shape} followed by batch dimensions and q; "
@@ -673,6 +687,8 @@ def _compute_noisy_best_f(acqf: Any, obj: Any) -> Any:
             if shape[0] != math.prod(sample_shape):
                 raise BotorchTensorDimensionError("The stored incumbent sample shape has changed.")
             batch_shape = tuple(shape[1:])
+    if len(data) != math.prod(sample_shape) * math.prod(batch_shape):
+        raise BotorchTensorDimensionError("The stored incumbent sample shape has changed.")
     padding = len(obj_shape) - n_sample - len(batch_shape) - 1
     if padding < 0 or broadcast_shapes(batch_shape, obj_shape[n_sample:-1]) is None:
         raise BotorchTensorDimensionError(
@@ -734,10 +750,15 @@ class qNoisyExpectedImprovement(SampleReducingMCAcquisitionFunction):
         check_unsupported(marginalize_dim=marginalize_dim)
         check_constrained_objective(objective, constraints)
         super().__init__(model, sampler, objective, posterior_transform, X_pending)
+        requested_cache_root = cache_root
         if cache_root is None:
             cache_root = supports_cache_root(model)
         elif cache_root and not supports_cache_root(model):
             warnings.warn(_CACHE_ROOT_MESSAGE.format(type(model)), RuntimeWarning, stacklevel=2)
+            cache_root = False
+        if cache_root and _requires_joint_sampling(objective):
+            if requested_cache_root:
+                warnings.warn(_LEARNED_CACHE_ROOT_MESSAGE, RuntimeWarning, stacklevel=2)
             cache_root = False
         self._cache_root = bool(cache_root)
         baseline = to_flat(X_baseline, "X_baseline")

@@ -49,6 +49,9 @@ use crate::utils::objective::{compute_smoothed_feasibility_indicator, OutcomeCon
 use crate::utils::safe_math::{sigmoid, sigmoid_grad};
 use crate::{Matrix, Vector};
 
+#[cfg(test)]
+mod expanded_sample_tests;
+
 /// BoTorch's error for multi-output models without an objective or a
 /// scalarizing posterior transform.
 pub(crate) const MULTI_OUTPUT_MESSAGE: &str =
@@ -559,12 +562,11 @@ impl SampledObjective {
         let (obj, pullback) = match objective {
             Some(o) => {
                 let v = o.evaluate(&samples, Some(&js.x), with_grad)?;
-                if v.values.shape() != (n_in, samples.num_samples()) {
-                    return Err(crate::acquisition::mc_objective::q_batch_mismatch(
-                        v.values.nrows(),
-                        n_in,
-                    ));
-                }
+                crate::acquisition::mc_objective::check_objective_shape(
+                    &v.values,
+                    n_in,
+                    samples.num_samples(),
+                )?;
                 (v.values, v.pullback)
             }
             None => {
@@ -612,12 +614,11 @@ impl SampledObjective {
         let (values, candidate_pullback) = match objective {
             Some(o) => {
                 let evaluated = o.evaluate(&new_samples, Some(&new_x), with_grad)?;
-                if evaluated.values.shape() != (n_new, s) {
-                    return Err(crate::acquisition::mc_objective::q_batch_mismatch(
-                        evaluated.values.nrows(),
-                        n_new,
-                    ));
-                }
+                crate::acquisition::mc_objective::check_objective_shape(
+                    &evaluated.values,
+                    n_new,
+                    s,
+                )?;
                 (evaluated.values, evaluated.pullback)
             }
             None => {
@@ -633,7 +634,7 @@ impl SampledObjective {
                 (new_samples.data().clone(), None)
             }
         };
-        let mut obj = Matrix::zeros(n_in, s);
+        let mut obj = Matrix::zeros(n_in, values.ncols());
         obj.rows_mut(n_baseline, n_new).copy_from(&values);
         let pullback: Option<SamplePullback> = with_grad.then(|| {
             Box::new(move |bar: &Matrix| {
@@ -961,13 +962,13 @@ pub(crate) fn weighted_indicator(
     s: usize,
 ) -> Option<Matrix> {
     match (weights, ind) {
-        (None, Some(i)) => Some(i.clone()),
+        (None, Some(i)) => Some(Matrix::from_fn(n, s, |r, c| i[(r, c % i.ncols())])),
         (None, None) => None,
         (Some(w), Some(i)) => Some(Matrix::from_fn(n, s, |r, c| {
             if log {
-                i[(r, c)] + w[r]
+                i[(r, c % i.ncols())] + w[r]
             } else {
-                i[(r, c)] * w[r]
+                i[(r, c % i.ncols())] * w[r]
             }
         })),
         (Some(w), None) => Some(Matrix::from_fn(n, s, |r, _| w[r])),
@@ -995,7 +996,7 @@ pub(crate) fn split_indicator_adjoint(
             *wb += if log {
                 ib[(row, c)]
             } else {
-                ib[(row, c)] * ind.map_or(1.0, |i| i[(row, c)])
+                ib[(row, c)] * ind.map_or(1.0, |i| i[(row, c % i.ncols())])
             };
         }
     }
@@ -2040,12 +2041,11 @@ impl QNoisyExpectedImprovement {
         let (obj, pullback) = match &self.core.objective {
             Some(o) => {
                 let v = o.evaluate(&samples, Some(x_new), with_grad)?;
-                if v.values.shape() != (x_new.nrows(), s) {
-                    return Err(crate::acquisition::mc_objective::q_batch_mismatch(
-                        v.values.nrows(),
-                        x_new.nrows(),
-                    ));
-                }
+                crate::acquisition::mc_objective::check_objective_shape(
+                    &v.values,
+                    x_new.nrows(),
+                    s,
+                )?;
                 (v.values, v.pullback)
             }
             None => {

@@ -45,7 +45,7 @@ constructors). Tests: `botorch_core/tests/preference_10b_parity.rs`
 | `botorch.acquisition.preference.qExpectedUtilityOfBestOption` | `botorch_rs.acquisition.preference.qExpectedUtilityOfBestOption` | `outcome_model`, `sampler`, `objective`, `posterior_transform`, `X_pending` |
 | `botorch.acquisition.preference.PairwiseBayesianActiveLearningByDisagreement` | `botorch_rs.acquisition.preference.PairwiseBayesianActiveLearningByDisagreement` | `outcome_model`, `num_samples`, `std_noise`; draws from the caller's array library (torch: BoTorch's draws for the same seed) |
 | `botorch.acquisition.active_learning.PairwiseMCPosteriorVariance` | `botorch_rs.acquisition.active_learning.PairwiseMCPosteriorVariance` | any MC objective as link function |
-| `botorch.acquisition.objective.LearnedObjective` | `botorch_rs.acquisition.objective.LearnedObjective` | `PairwiseGP` or deterministic `pref_model`, `sample_shape`, `seed` (torch's draws); values and exact torch autograd; not accepted by the MC acquisition functions (see below) |
+| `botorch.acquisition.objective.LearnedObjective` | `botorch_rs.acquisition.objective.LearnedObjective` | `PairwiseGP` or deterministic `pref_model`, `sample_shape`, `seed` (torch's draws); native preference samples and input adjoints; accepted by native MC acquisitions, including joint noisy improvement ([current audit](learned-objective-acquisitions.md)) |
 | `botorch.sampling.pairwise_samplers.PairwiseMCSampler`, `PairwiseIIDNormalSampler`, `PairwiseSobolQMCNormalSampler` | `botorch_rs.sampling.pairwise_samplers.*` | `max_num_comparisons`, `seed` (numpy's choice of pairs); the preferred item first (BoTorch bug 1) |
 | `botorch.sampling.normal.IIDNormalSampler` | `botorch_rs.sampling.IIDNormalSampler` | partial: sampling posteriors (torch's draws for `seed`), `batch_range_override`; not in MC acquisition functions |
 | `PairwiseGP` in `ModelListGP` / `ModelList` | same | posteriors and acquisition functions; fits and fantasies raise BoTorch's errors |
@@ -107,13 +107,10 @@ ComposedModel, compose, posterior_samples_vjp}` (qEUBO is `QSimpleRegret` on
   transforms (`InputPerturbation`) in `PairwiseGP`: `UnsupportedError`
   (learned transforms would need the transform's derivatives through the
   Laplace approximation; not in scope).
-- `LearnedObjective` in botorch_rs's Monte-Carlo acquisition functions
-  (`qNoisyExpectedImprovement(outcome_model, objective=LearnedObjective(...))`,
-  the BOPE workflow): its values have `sample_shape` times more samples than
-  the posterior samples, which the shared Monte-Carlo core (shape checks,
-  constraints, baseline caching of qNEI) does not support yet;
-  `UnsupportedError` with a pointer to `qExpectedUtilityOfBestOption`. A
-  follow-up for the acquisition core.
+- The initial learned-objective MC gap is resolved; see the current audit
+  linked above. Stochastic learned objectives use full-joint noisy improvement
+  sampling to preserve preference correlations, correcting the official
+  cached-root path. Pointwise deterministic preferences retain cached roots.
 - `IIDNormalSampler` in the Monte-Carlo acquisition functions (they use
   `SobolQMCNormalSampler`'s fixed base samples); the rest of phase 11's
   samplers.

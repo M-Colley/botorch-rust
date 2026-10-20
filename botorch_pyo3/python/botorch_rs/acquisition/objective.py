@@ -401,7 +401,10 @@ class ConstrainedMCObjective(GenericMCObjective):
     def forward(self, samples: Any, X: Any = None) -> Any:
         import torch
 
+        from botorch_rs.acquisition.utils import repeat_to_match_aug_dim
+
         obj = self.objective(samples, X=None)
+        samples = repeat_to_match_aug_dim(samples, obj)
         if len(self._eta) != len(self.constraints):
             raise ValueError(
                 "Number of provided constraints and number of provided etas do not match."
@@ -501,6 +504,16 @@ def is_constrained_objective(objective: Any) -> bool:
     )
 
 
+def _requires_joint_sampling(objective: Any) -> bool:
+    """Whether baseline and candidate utilities share a stochastic GP draw."""
+    names = [c.__name__ for c in type(objective).__mro__] if objective is not None else []
+    if "LearnedObjective" in names:
+        return getattr(objective, "sampler", None) is not None
+    if any(name in names for name in ("ConstrainedMCObjective", "PenalizedMCObjective")):
+        return _requires_joint_sampling(objective.objective)
+    return False
+
+
 def constraints_arg(
     constraints: Sequence[Callable[[Any], Any]] | None, eta: Any
 ) -> tuple[list[Any] | None, list[float] | None]:
@@ -557,7 +570,7 @@ def _learned_samples_autograd(handle: Any, Y: Any, z: Any, out_shape: tuple[int,
         def forward(ctx: Any, Yt: Any) -> Any:  # type: ignore[override]
             ctx.save_for_backward(Yt)
             (vals, _), _ = _rs.learned_objective_samples(handle, to_flat(Yt), z)
-            return torch.tensor(vals, dtype=Yt.dtype).reshape(out_shape)
+            return torch.tensor(vals, dtype=Yt.dtype, device=Yt.device).reshape(out_shape)
 
         @staticmethod
         def backward(ctx: Any, grad_out: Any) -> Any:  # type: ignore[override]
@@ -565,7 +578,7 @@ def _learned_samples_autograd(handle: Any, Y: Any, z: Any, out_shape: tuple[int,
             adj = to_flat(grad_out.reshape(out_shape))
             _, grads = _rs.learned_objective_samples(handle, to_flat(Yt), z, adj)
             assert grads is not None
-            return torch.tensor(list(grads[0]), dtype=Yt.dtype).reshape(Yt.shape)
+            return torch.tensor(list(grads[0]), dtype=Yt.dtype, device=Yt.device).reshape(Yt.shape)
 
     return _LearnedSamples.apply(Y)
 
@@ -580,8 +593,9 @@ class LearnedObjective(MCAcquisitionObjective):
     The preference posterior is sampled in Rust with the base samples of an
     ``IIDNormalSampler`` (torch's draws for ``seed``, as in BoTorch), and its
     exact vector-Jacobian product connects the result to torch's autograd.
-    botorch_rs's Monte-Carlo acquisition functions do not accept it (its
-    values have ``sample_shape`` times more samples than its input).
+    Monte-Carlo acquisition functions retain its additional preference-sample
+    axis in their native utility reductions and contract its exact native
+    preference-posterior adjoint through the outcome-model samples.
 
     Example:
         >>> train_X = torch.rand(2, 2)
@@ -654,7 +668,10 @@ class LearnedObjective(MCAcquisitionObjective):
         if is_torch_tensor(samples):
             import torch
 
-            if samples.dtype != torch.float64:
+            if (
+                samples.dtype != torch.float64
+                and torch.float64 in self.pref_model.dtypes_of_buffers
+            ):
                 warnings.warn(
                     LEARNED_OBJECTIVE_PREF_MODEL_MIXED_DTYPE_WARN,
                     InputDataWarning,
@@ -664,24 +681,36 @@ class LearnedObjective(MCAcquisitionObjective):
         shape = tuple(to_flat(samples, "samples")[1])
         if len(shape) < 3:
             raise ValueError("samples should have at least 3 dimensions.")
-        posterior = self.pref_model.posterior(samples)
         if self.sampler is None:
-            data, mshape = to_flat(posterior.mean, "mean")
-            return from_flat(data, mshape[:-1], kind_of(samples))
-        # The sampler's base samples (sample_shape x S x 1 ... x q, shared
-        # by the t-batches), broadcast to every set of outcome samples.
-        self.sampler(posterior)
-        z_col, _ = to_flat(self.sampler.base_samples, "base_samples")
-        n = math.prod(self.sampler.sample_shape)
+            from botorch_rs.models.deterministic import GenericDeterministicModel
+
+            if isinstance(self.pref_model, GenericDeterministicModel):
+                # Explicit caller-defined utilities retain their Torch graph
+                # and need no extra native input-dimension annotation.
+                mean = self.pref_model.posterior(samples).mean
+                if is_torch_tensor(mean):
+                    return mean.squeeze(-1)
+                data, mshape = to_flat(mean, "mean")
+                return from_flat(data, mshape[:-1], kind_of(samples))
         s0 = shape[0]
         nb = math.prod(shape[1:-2])
         q = shape[-2]
-        z: list[float] = []
-        for i in range(n):
-            for s in range(s0):
-                block = list(z_col[(i * s0 + s) * q : (i * s0 + s + 1) * q])
-                for _ in range(nb):
-                    z.extend(block)
+        if self.sampler is None:
+            n = 1
+            z = [0.0] * (s0 * nb * q)
+        else:
+            posterior = self.pref_model.posterior(samples)
+            # Preference draws retain the outcome MC axis, and are shared
+            # across t-batches, as in BoTorch's batch_range_override.
+            self.sampler._construct_base_samples(posterior)
+            z_col, _ = to_flat(self.sampler.base_samples, "base_samples")
+            n = math.prod(self.sampler.sample_shape)
+            z = []
+            for i in range(n):
+                for s in range(s0):
+                    block = list(z_col[(i * s0 + s) * q : (i * s0 + s + 1) * q])
+                    for _ in range(nb):
+                        z.extend(block)
         zpair = (z, (n, s0 * nb, q))
         handle = self.pref_model._acquisition_model(None)
         out_shape = (n * s0, *shape[1:-2], q)
@@ -697,12 +726,7 @@ class LearnedObjective(MCAcquisitionObjective):
         return from_flat(vals, out_shape, kind_of(samples))
 
     def _spec(self) -> tuple[Any, ...]:
-        raise UnsupportedError(
-            "LearnedObjective is not supported in botorch_rs's Monte-Carlo acquisition "
-            "functions: its values have sample_shape times more samples than the posterior "
-            "samples. Use it directly, or qExpectedUtilityOfBestOption with the preference "
-            "model."
-        )
+        return ("callable", self)
 
 
 __all__ = [

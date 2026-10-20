@@ -11,12 +11,18 @@ from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_pair, kind_of, to_flat
 from botorch_rs.acquisition.acquisition import check_unsupported, pending_arg, scalar_arg
 from botorch_rs.acquisition.monte_carlo import (
+    _LEARNED_CACHE_ROOT_MESSAGE,
     SampleReducingMCAcquisitionFunction,
     _compute_noisy_best_f,
     check_constrained_objective,
     supports_cache_root,
 )
-from botorch_rs.acquisition.objective import IdentityMCObjective, fat_arg, is_constrained_objective
+from botorch_rs.acquisition.objective import (
+    IdentityMCObjective,
+    _requires_joint_sampling,
+    fat_arg,
+    is_constrained_objective,
+)
 from botorch_rs.exceptions.errors import BotorchError, BotorchTensorDimensionError
 from botorch_rs.exceptions.warnings import BotorchWarning
 from botorch_rs.sampling.normal import SobolQMCNormalSampler
@@ -248,12 +254,17 @@ class qLogNoisyExpectedImprovement(LogImprovementMCAcquisitionFunction):
             self._pending_kind = kind_of(X_pending)
         self.fat = fat
         self.prune_baseline = prune_baseline
+        requested_cache_root = cache_root
         if cache_root is None:
             cache_root = supports_cache_root(model)
         elif cache_root and not supports_cache_root(model):
             from botorch_rs.acquisition.monte_carlo import _CACHE_ROOT_MESSAGE
 
             warnings.warn(_CACHE_ROOT_MESSAGE.format(type(model)), RuntimeWarning, stacklevel=2)
+            cache_root = False
+        if cache_root and _requires_joint_sampling(objective):
+            if requested_cache_root:
+                warnings.warn(_LEARNED_CACHE_ROOT_MESSAGE, RuntimeWarning, stacklevel=2)
             cache_root = False
         self.cache_root = self._cache_root = bool(cache_root)
         self.tau_max = tau_max

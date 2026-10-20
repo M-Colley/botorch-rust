@@ -54,7 +54,7 @@ def forward(
     shape: tuple[int, int, int],
     x: tuple[Sequence[float], int] | None,
     with_grad: bool,
-) -> tuple[FloatData, Any]:
+) -> tuple[FloatData, int, Any]:
     """Evaluates an objective (``fn(samples, X=X)``) or a constraint
     (``fn(samples)``) on posterior samples; returns the values (``S x n``,
     row-major) and a handle for :func:`backward`."""
@@ -72,14 +72,16 @@ def forward(
     with torch.enable_grad() if with_grad else torch.no_grad():
         out = fn(Y, X=X) if kind == "objective" else fn(Y)
         out = torch.as_tensor(out, dtype=torch.float64)
-    if out.numel() == 0 or out.numel() % s != 0 or out.numel() > s * n:
+    points = int(out.shape[-1]) if out.ndim else 0
+    count = out.numel() // points if points else 0
+    if not points or points > n or not count or count % s or (kind != "objective" and count != s):
         raise RuntimeError(
             f"The {kind} returned values of shape {tuple(out.shape)}, expected "
             f"{(s, 1, n)} (`sample_shape x batch_shape x q`)."
         )
     values = to_flat(out, kind)[0]
     handle = (out, Y, X) if with_grad else None
-    return values, handle
+    return values, count, handle
 
 
 def forward_mo(

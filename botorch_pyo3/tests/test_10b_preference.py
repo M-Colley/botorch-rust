@@ -274,8 +274,8 @@ def test_acquisition_functions_and_optimization() -> None:
     with pytest.raises(UnsupportedError, match="deterministic"):
         AnalyticExpectedUtilityOfBestOption(m, outcome_model=SingleTaskGP(X_LIST, [[0.1]] * 6))
     lo = LearnedObjective(m, sample_shape=(3,), seed=1)
-    with pytest.raises(UnsupportedError, match="LearnedObjective is not supported"):
-        qSimpleRegret(m, objective=lo)
+    outcome = SingleTaskGP(X_LIST, [[0.1, 0.3]] * 6)
+    assert math.isfinite(float(to_list(qSimpleRegret(outcome, objective=lo)([[[0.2, 0.4]]]))[0]))
 
 
 @pytest.mark.parametrize("kind", KINDS)
