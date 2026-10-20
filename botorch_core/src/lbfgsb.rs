@@ -37,6 +37,9 @@
 use std::fmt;
 use std::ops::{Index, IndexMut};
 
+mod reverse;
+pub use reverse::{LbfgsbState, LbfgsbTask};
+
 /// Options of [`minimize`], named after `scipy.optimize.minimize(method="L-BFGS-B")`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LbfgsbOptions {

@@ -15,6 +15,7 @@ use pyo3::prelude::*;
 mod acquisition;
 mod approximate;
 mod arrays;
+mod batched_lbfgsb;
 mod callbacks;
 mod composite;
 mod contextual;
@@ -60,6 +61,7 @@ mod transforms;
 #[pymodule]
 #[pyo3(name = "_botorch_rs")]
 fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    batched_lbfgsb::register(m)?;
     empirical::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // Models and their components.
