@@ -283,6 +283,24 @@ def test_gp_list_acquisition_snapshots_push_child_leaf_edits():
     assert first._rs.raw_parameters()[1] == pytest.approx(0.45)
 
 
+def test_model_trainability_and_gradient_clearing():
+    model, _ = model_pair()
+    assert model.requires_grad_(False) is model
+    parameters = tuple(model.parameters())
+    assert all(not parameter.requires_grad for parameter in parameters)
+    query = torch.tensor([[0.2, 0.6], [0.7, 0.3]], dtype=torch.double, requires_grad=True)
+    model.posterior(query).mean.sum().backward()
+    assert torch.isfinite(query.grad).all()
+    assert all(parameter.grad is None for parameter in parameters)
+    model.requires_grad_(True)
+    model.posterior(query.detach()).variance.sum().backward()
+    assert all(parameter.grad is not None for parameter in parameters)
+    model.zero_grad(set_to_none=False)
+    assert all(torch.count_nonzero(parameter.grad) == 0 for parameter in parameters)
+    model.zero_grad()
+    assert all(parameter.grad is None for parameter in parameters)
+
+
 def test_sample_query_and_parameter_gradients_are_both_available():
     model, _ = model_pair()
     query = torch.tensor([[0.2, 0.6], [0.7, 0.3]], dtype=torch.double, requires_grad=True)

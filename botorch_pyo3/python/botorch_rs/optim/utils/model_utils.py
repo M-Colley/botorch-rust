@@ -10,6 +10,7 @@ The native fitting routines use the names to select optimized parameters.
 from __future__ import annotations
 
 import math
+import sys
 from collections.abc import Callable, Iterator
 from re import Pattern
 from typing import Any, NamedTuple
@@ -23,6 +24,18 @@ class TorchAttr(NamedTuple):
     shape: Any
     dtype: Any
     device: Any
+
+
+def _requires_grad(value: Any) -> bool:
+    """Only persistent Parameter leaves carry native trainability flags.
+
+    Other native model families return detached array descriptors; those
+    still describe trainable Rust parameters, regardless of Tensor flags.
+    """
+    torch = sys.modules.get("torch")
+    if torch is not None and isinstance(value, torch.nn.Parameter):
+        return bool(value.requires_grad)
+    return True
 
 
 def get_data_loader(model: Any, batch_size: int = 1024, **kwargs: Any) -> Any:
@@ -141,10 +154,7 @@ def get_parameters(
     """
     out: dict[str, Any] = {}
     for name, value, _ in _named_parameters(module):
-        if (
-            requires_grad is not None
-            and bool(getattr(value, "requires_grad", True)) != requires_grad
-        ):
+        if requires_grad is not None and _requires_grad(value) != requires_grad:
             continue
         if name_filter and not name_filter(name):
             continue
@@ -168,10 +178,7 @@ def get_parameters_and_bounds(
     params: dict[str, Any] = {}
     bounds: dict[str, tuple[float | None, float | None]] = {}
     for name, value, (lo, hi) in _named_parameters(module):
-        if (
-            requires_grad is not None
-            and bool(getattr(value, "requires_grad", True)) != requires_grad
-        ):
+        if requires_grad is not None and _requires_grad(value) != requires_grad:
             continue
         if name_filter and not name_filter(name):
             continue

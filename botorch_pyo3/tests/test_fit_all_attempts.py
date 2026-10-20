@@ -164,3 +164,49 @@ def test_best_attempt_matches_official_with_identical_restart_values(monkeypatch
     ):
         assert name == other_name
         torch.testing.assert_close(av, bv, rtol=1e-6, atol=1e-7)
+
+
+@pytest.mark.parametrize("outputs", [1, 2])
+@pytest.mark.parametrize("pick_best", [False, True])
+@pytest.mark.parametrize("method", ["L-BFGS-B", "Adam"])
+def test_high_level_fitting_preserves_frozen_leaves(outputs, pick_best, method):
+    torch = pytest.importorskip("torch")
+    from botorch_rs.optim.fit import fit_gpytorch_mll_torch
+
+    x, y = make_data(n=9, d=2, seed=22)
+    y = [[row[0] * (j + 1) + j for j in range(outputs)] for row in y]
+    model = SingleTaskGP(torch.tensor(x, dtype=torch.double), torch.tensor(y, dtype=torch.double))
+    parameters = dict(model.named_parameters())
+    noise = parameters["likelihood.noise_covar.raw_noise"]
+    noise.requires_grad_(False)
+    before = noise.detach().clone()
+    free_before = model.mean_module.raw_constant.detach().clone()
+    mll = ExactMarginalLogLikelihood(model.likelihood, model)
+    options = {"options": {"maxiter": 5}} if method == "L-BFGS-B" else {"step_limit": 3}
+    fit_gpytorch_mll(
+        mll,
+        optimizer=None if method == "L-BFGS-B" else fit_gpytorch_mll_torch,
+        optimizer_kwargs=options,
+        max_attempts=3,
+        pick_best_of_all_attempts=pick_best,
+        seed=13,
+    )
+    assert dict(model.named_parameters())["likelihood.noise_covar.raw_noise"] is noise
+    torch.testing.assert_close(noise, before, rtol=0, atol=0)
+    assert not noise.requires_grad
+    assert not torch.equal(model.mean_module.raw_constant, free_before)
+    assert not mll.training and not model.training
+
+
+def test_fitting_a_fully_frozen_model_is_an_exact_noop():
+    torch = pytest.importorskip("torch")
+    x, y = make_data(n=7, d=2, seed=3)
+    model = SingleTaskGP(torch.tensor(x, dtype=torch.double), torch.tensor(y, dtype=torch.double))
+    model.requires_grad_(False)
+    original = list(model._rs.raw_parameters())
+    mll = ExactMarginalLogLikelihood(model.likelihood, model)
+    expected = -float(mll())
+    fit_gpytorch_mll(mll)
+    assert model._rs.raw_parameters() == original
+    assert mll._fit_result.step == 0
+    assert mll._fit_result.fval == expected

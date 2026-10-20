@@ -9,6 +9,30 @@ from typing import Any
 from botorch_rs.exceptions.errors import InvalidArgumentError, ModelFittingError, NotPSDError
 
 
+def frozen_raw_ranges(model: Any) -> list[tuple[int, int]]:
+    """Frozen persistent leaves; detached array descriptors are not flags."""
+    sync = getattr(model, "_sync_torch_parameters", None)
+    if sync is None or sync() is None:
+        return []
+    ranges = []
+    offset = 0
+    for (_, parameter), (_, count) in zip(
+        model.named_parameters(), model._rs.parameter_names(), strict=True
+    ):
+        if not parameter.requires_grad:
+            ranges.append((offset, offset + count))
+        offset += count
+    return ranges
+
+
+def restore_frozen(model: Any, original: list[float], ranges: list[tuple[int, int]]) -> None:
+    if ranges:
+        raw = model._rs.raw_parameters()
+        for start, end in ranges:
+            raw[start:end] = original[start:end]
+        model._rs.set_raw_parameters(raw)
+
+
 def fit_all_attempts(
     mll: Any,
     optimizer: Any,
@@ -22,6 +46,7 @@ def fit_all_attempts(
     if attempts < 1:
         raise InvalidArgumentError("max_attempts must be at least 1")
     seed = kwargs.pop("seed", None)
+    frozen = frozen_raw_ranges(mll.model)
     original = list(mll.model._rs.raw_parameters())
     best: tuple[float, list[float], Any, int] | None = None
     summaries: list[Any] = []
@@ -31,6 +56,7 @@ def fit_all_attempts(
             mll.train()
             if attempt > 1:
                 sample_all_priors(mll.model, seed=None if seed is None else int(seed) + attempt)
+                restore_frozen(mll.model, original, frozen)
             try:
                 fit_gpytorch_mll(
                     mll,

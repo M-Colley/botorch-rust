@@ -823,6 +823,32 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         for _, value in self.named_parameters():
             yield value
 
+    def requires_grad_(self, requires_grad: bool = True) -> SingleTaskGP:
+        """Set trainability of persistent CPU Torch parameters in place."""
+        state = self._sync_torch_parameters()
+        if state is None:
+            raise UnsupportedError(
+                "Persistent parameter trainability requires a CPU Torch SingleTaskGP."
+            )
+        for _, parameter in state.entries:
+            parameter.requires_grad_(requires_grad)
+        return self
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        """Clear accumulated gradients on the persistent Torch parameters."""
+        state = self._sync_torch_parameters()
+        if state is not None:
+            for _, parameter in state.entries:
+                if parameter.grad is not None:
+                    if set_to_none:
+                        parameter.grad = None
+                    else:
+                        if parameter.grad.grad_fn is not None:
+                            parameter.grad.detach_()
+                        else:
+                            parameter.grad.requires_grad_(False)
+                        parameter.grad.zero_()
+
     def posterior_parameter_vjp(
         self,
         X: Any,

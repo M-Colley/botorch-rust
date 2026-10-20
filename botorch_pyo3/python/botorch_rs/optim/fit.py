@@ -131,11 +131,11 @@ def _mask_and_bounds(
     bounds: dict[str, tuple[float | None, float | None]] | None,
 ) -> tuple[list[bool] | None, list[tuple[float, float]] | None]:
     """The flat mask of the optimized raw parameters and the flat bounds."""
-    from botorch_rs.optim.utils.model_utils import _entries
+    from botorch_rs.optim.utils.model_utils import _entries, _requires_grad
 
     entries = _entries(mll)
-    if parameters is None and any(not getattr(e.value, "requires_grad", True) for e in entries):
-        parameters = {e.name: e.value for e in entries if getattr(e.value, "requires_grad", True)}
+    if parameters is None and any(not _requires_grad(e.value) for e in entries):
+        parameters = {e.name: e.value for e in entries if _requires_grad(e.value)}
     known = {e.name for e in entries}
     if parameters is not None:
         unknown = [n for n in parameters if n not in known]

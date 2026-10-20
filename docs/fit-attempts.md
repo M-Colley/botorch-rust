@@ -30,3 +30,15 @@ Failure injection checks rollback after all unsuccessful attempts.
 
 Best-of-all fitting for specialized non-SingleTaskGP model families remains
 unsupported. The default first-success fitting behavior is unchanged.
+
+For ordinary CPU Torch `SingleTaskGP` models, both high-level optimizers
+honor persistent parameter leaves with `requires_grad=False`. Prior draws
+between retries also preserve those frozen raw values. A fully frozen
+model returns a successful zero-step result without changing parameters.
+`model.requires_grad_(flag)` sets all persistent leaf flags, and
+`model.zero_grad(set_to_none=True)` clears their gradients with Torch's
+usual semantics. Native model families that expose detached array
+descriptors remain trainable; a descriptor's Torch flag does not freeze its
+underlying Rust parameter. Regression tests cover both optimizers, scalar
+and multiple outputs, first-success and best-attempt fitting, and the
+fully frozen case.

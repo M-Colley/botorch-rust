@@ -144,6 +144,12 @@ def fit_gpytorch_mll(
     unknown = set(options) - _LBFGSB_OPTIONS - _IGNORED_OPTIONS
     if unknown:
         raise UnsupportedError(f"Unsupported L-BFGS-B options: {sorted(unknown)}.")
+    from botorch_rs._fit_attempts import frozen_raw_ranges
+
+    if frozen_raw_ranges(mll.model):
+        from botorch_rs.optim.fit import fit_gpytorch_mll_scipy
+
+        return _fit_with_optimizer(mll, fit_gpytorch_mll_scipy, optimizer_kwargs, kwargs)
     batched = math.prod(getattr(mll.model, "_aug_batch_shape", ())) > 1
     if batched and "maxfun" in options:
         warnings.warn(
@@ -191,29 +197,45 @@ def fit_gpytorch_mll(
 
 
 def _fit_with_optimizer(
-    mll: ExactMarginalLogLikelihood,
+    mll: Any,
     optimizer: Any,
     optimizer_kwargs: dict[str, Any] | None,
     kwargs: dict[str, Any],
 ) -> MarginalLogLikelihood:
-    """BoTorch's ``_fit_fallback`` with ``fit_gpytorch_mll_torch``: attempts
+    """BoTorch's ``_fit_fallback`` with a native optimizer: attempts
     that raise a numerical error are retried from hyperparameters sampled from
     their priors, up to ``max_attempts`` times."""
+    from botorch_rs._fit_attempts import frozen_raw_ranges, restore_frozen
     from botorch_rs.exceptions.errors import ModelFittingError, NotPSDError
-    from botorch_rs.optim.fit import fit_gpytorch_mll_torch
     from botorch_rs.optim.utils.model_utils import sample_all_priors
 
     max_attempts = int(kwargs.pop("max_attempts", 5))
+    if max_attempts < 1:
+        from botorch_rs.exceptions.errors import InvalidArgumentError
+
+        raise InvalidArgumentError("max_attempts must be at least 1")
     seed = kwargs.pop("seed", None)
+    frozen = frozen_raw_ranges(mll.model)
     raw = list(mll.model._rs.raw_parameters())
+    if frozen and sum(end - start for start, end in frozen) == len(raw):
+        from botorch_rs.optim.core import OptimizationResult, OptimizationStatus
+
+        mll._fit_result = OptimizationResult(
+            step=0,
+            fval=-sum(to_flat(mll())[0]),
+            status=OptimizationStatus.SUCCESS,
+            message="All model parameters are fixed.",
+        )
+        return mll.eval()
     for attempt in range(1, max_attempts + 1):
         if attempt > 1:
             sample_all_priors(mll.model, seed=None if seed is None else int(seed) + attempt)
+            restore_frozen(mll.model, raw, frozen)
         mll.train()
         try:
             with warnings.catch_warnings(record=True) as ws:
                 warnings.simplefilter("always", category=OptimizationWarning)
-                result = fit_gpytorch_mll_torch(mll, **(optimizer_kwargs or {}))
+                result = optimizer(mll, **(optimizer_kwargs or {}))
         except NotPSDError:
             mll.model._rs.set_raw_parameters(raw)
             continue
