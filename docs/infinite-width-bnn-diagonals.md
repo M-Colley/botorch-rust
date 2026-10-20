@@ -160,10 +160,30 @@ matrix. A complete upstream implementation must preserve active dimensions
 and batch broadcasting, and define paired `diag=True` semantics for
 different input sets. Duplicate off-diagonal inputs with zero epsilon and
 zero-variance parameter limits require their own stable treatment. No
-production port kernel source is changed by this audit. The upstream repair is
+production native kernel source is changed by this audit. The upstream repair is
 now submitted in [BoTorch #3492](https://github.com/meta-pytorch/botorch/pull/3492).
 Its production implementation handles coincident pairs using the preceding
 cross covariance, preserving mixed derivatives when equal values are supplied
 as separate input tensors. All 19 source tests and 31 subtests pass; 20 new
 subtests fail against unchanged upstream. Zero-variance limits remain outside
 that repair.
+
+## Tensor backend
+
+`InfiniteWidthBNNKernel(..., backend="torch")` and conversion of a native
+descriptor inside a Tensor GP now use the corrected coincident-entry law in
+the submitted repair. Raw weight/bias variances are actual constrained Torch
+leaves, and active dimensions, parameter batches, paired cross diagonals,
+scaled composition and exact model inference retain their device and graphs.
+The native compatibility backend retains the pinned source's clipping
+convention. The two routes therefore deliberately differ at coincident points
+when clipping changes the reference's full-matrix diagonal.
+
+Sixteen CPU/CUDA cases check ordinary official values and all first derivatives,
+the independent exact self recurrence and mixed partials for independently
+supplied equal inputs, duplicate rows, large finite values, numerical GP
+gradcheck and gradgradcheck, and full data/parameter likelihood backwards with
+host conversions forbidden. Combined with the integrated contextual and
+empirical curve suites, 108 Tensor cases pass. Zero marginal variances and
+higher derivatives at mathematically nonsmooth points retain their usual
+domain limitations.

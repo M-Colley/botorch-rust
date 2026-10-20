@@ -84,7 +84,9 @@ initial conditions or a custom generator. The automatic box initializer uses
 device-resident Boltzmann, nonnegative or top-n restart selection, including
 model batches and `init_batch_limit` raw scoring. Candidate `batch_limit`,
 low-level aggregation chunks and acquisition sequences now retain their device
-execution. Specialized mixed/discrete/cyclic optimization and remaining
+execution. Discrete enumeration, lattice local search, mixed combination search,
+acquisition lists and cyclic search now have device implementations. Constrained
+automatic initialization, mixed alternating search and remaining
 initial-condition heuristics are still being completed. See
 [optimization verification](torch-optimization.md).
 
@@ -103,8 +105,13 @@ support ordinary and batched preference models with full-joint noisy improvement
 and repeated backward through baseline pruning. Sparse and robust GPs use real
 device outlier noise and relevance-pursuit fits.
 
-Remaining GPU families and configurations include contextual and empirical
-multitask models, preference-ensemble integration, sparse conditioning and
+SAC and LCEA contextual models retain shared spatial covariance and live context
+embeddings. Independent and correlated empirical curve models retain historical
+interpolation and basis graphs. The neural kernel now has a genuine device
+backend with consistent coincident self-covariances and higher derivatives.
+
+Remaining GPU families and configurations include LCEM, orthogonal additive and
+empirical multitask/iterative EM models, preference-ensemble integration, sparse conditioning and
 relevance-pursuit search limits, and parts of the standalone kernel catalogue.
 Some are under active implementation. Device-resident NUTS fits scalar and
 latent-task multitask Matérn, SAAS and linear fully Bayesian models. Custom
