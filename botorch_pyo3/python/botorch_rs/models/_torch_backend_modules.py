@@ -8,6 +8,7 @@ Rust's ``tensor_kernel``. Import this module only when selecting that backend.
 
 from __future__ import annotations
 
+import copy
 import math
 import warnings
 from typing import Any
@@ -23,6 +24,17 @@ from botorch_rs.exceptions.warnings import NumericsWarning
 
 def _tensor(value: Any, like: Tensor) -> Tensor:
     return torch.as_tensor(value, dtype=like.dtype, device=like.device)
+
+
+def _subset_indices(indices: Any, m: int, like: Tensor | None = None) -> Tensor:
+    selected = torch.as_tensor(
+        indices, dtype=torch.long, device=None if like is None else like.device
+    )
+    if selected.ndim != 1 or not selected.numel():
+        raise ValueError("Output indices must be a nonempty one-dimensional sequence.")
+    if bool(((selected < -m) | (selected >= m)).any()):
+        raise IndexError("Output index out of range.")
+    return selected.remainder(m)
 
 
 def module_log_prior(module: nn.Module, batch_shape: Any) -> Any:
@@ -1040,6 +1052,21 @@ class TorchStandardize(nn.Module):
             variance_transform=lambda mean, variance: variance * stdvs.square(),
         )
 
+    def subset_output(self, idcs: Any) -> TorchStandardize:
+        indices = _subset_indices(idcs, self._m, self.means)
+        outputs = (
+            None
+            if self._outputs is None
+            else [j for j, i in enumerate(indices.tolist()) if i in self._outputs]
+        )
+        result = TorchStandardize(
+            indices.numel(), self._batch_shape, self.means, outputs, self._min_stdv
+        )
+        result.means = self.means.index_select(-1, indices).clone()
+        result.stdvs = self.stdvs.index_select(-1, indices).clone()
+        result._is_trained = self._is_trained
+        return result.train(self.training)
+
 
 def _elementwise_outcome(value: Tensor, kind: str, power: float, inverse: bool) -> Tensor:
     if kind == "Log":
@@ -1142,6 +1169,17 @@ class TorchElementwiseOutcome(nn.Module):
             posterior, samples, mean if kind == "Log" else None, variance if kind == "Log" else None
         )
 
+    def subset_output(self, idcs: Any) -> TorchElementwiseOutcome:
+        indices = _subset_indices(idcs, self._m)
+        result = copy.deepcopy(self)
+        result._m = indices.numel()
+        result._outputs = (
+            None
+            if self._outputs is None
+            else tuple(j for j, i in enumerate(indices.tolist()) if i in self._outputs)
+        )
+        return result
+
 
 class TorchOutcomeChain(nn.Module):
     _tensor_backend = "torch"
@@ -1190,6 +1228,12 @@ class TorchOutcomeChain(nn.Module):
         for name in reversed(self._transform_names):
             posterior = self[name].untransform_posterior(posterior, X=X)
         return posterior
+
+    def subset_output(self, idcs: Any) -> TorchOutcomeChain:
+        result = TorchOutcomeChain(
+            {name: self[name].subset_output(idcs) for name in self._transform_names}
+        )
+        return result.train(self.training)
 
 
 def build_input_transform(source: Any, d: int, train_X: Tensor) -> nn.Module | None:

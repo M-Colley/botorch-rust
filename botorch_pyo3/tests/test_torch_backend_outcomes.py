@@ -200,3 +200,30 @@ def test_bilog_origin_derivative_and_unselected_log_domain(device):
     grad = torch.autograd.grad(transformed.sum(), mixed, create_graph=True)[0]
     assert torch.isfinite(grad).all()
     torch.testing.assert_close(grad[..., 0], torch.ones_like(grad[..., 0]))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("family", ["Standardize", "Log", "Bilog", "Power", "Chain"])
+def test_outcome_subsets_preserve_fitted_statistics_and_selected_output_graphs(device, family):
+    y = torch.tensor(
+        [[0.2, 0.7], [0.9, 0.4], [0.6, 0.8]], dtype=torch.double, device=device, requires_grad=True
+    )
+    sources = {
+        "Standardize": Standardize(2, outputs=[1]),
+        "Log": Log(outputs=[1]),
+        "Bilog": Bilog(outputs=[1]),
+        "Power": Power(2.5, outputs=[1]),
+        "Chain": ChainedOutcomeTransform(
+            log=Log(outputs=[1]), standardize=Standardize(2, outputs=[1])
+        ),
+    }
+    module = build_outcome_transform(sources[family], 2, y)
+    module.train()
+    transformed, _ = module(y)
+    module.eval()
+    subset = module.subset_output([1, 0, 1])
+    actual, _ = subset(y[..., [1, 0, 1]])
+    expected = transformed[..., [1, 0, 1]]
+    torch.testing.assert_close(actual, expected)
+    _compare_gradients(actual.square(), expected.square(), (y,))
+    torch.testing.assert_close(subset.untransform(actual)[0], y[..., [1, 0, 1]])
