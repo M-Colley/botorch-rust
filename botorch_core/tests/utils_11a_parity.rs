@@ -11,7 +11,8 @@
 //!   `augment_cholesky`;
 //! * `lin_ess.json`: linear elliptical slice sampling chains with BoTorch's
 //!   random numbers (BoTorch's 2 pi wrapping constant in float64);
-//! * `rng_qmc.json`: torch's CPU generator (bitwise) and the normal QMC
+//! * `rng_qmc.json`: torch's CPU generator (uniforms bitwise, normal draws
+//!   within eight ULPs across platform math libraries) and the normal QMC
 //!   transforms;
 //! * `test_functions.json`: the single-objective test problems.
 //!
@@ -352,12 +353,22 @@ struct RngQmcFixture {
 fn torch_generator_and_qmc_match_torch() {
     let f: RngQmcFixture = load("rng_qmc.json");
     for c in &f.rng {
-        assert_eq!(
-            TorchGenerator::new(c.seed).randn(c.n),
-            c.randn,
-            "randn {}",
-            c.seed
-        );
+        let actual = TorchGenerator::new(c.seed).randn(c.n);
+        assert_eq!(actual.len(), c.n, "randn length, seed {}", c.seed);
+        assert_eq!(actual.len(), c.randn.len(), "randn fixture length");
+        // Box-Muller uses log/log1p, sqrt and sin/cos. Their accumulated
+        // rounding can differ by a few ULPs between platform math libraries
+        // even with identical uniform bits, draw order and cached pairs.
+        // Keep a strict per-value bound; the uniform streams below stay exact.
+        for (i, (&value, &expected)) in actual.iter().zip(&c.randn).enumerate() {
+            let ulps = value.to_bits().abs_diff(expected.to_bits());
+            assert!(
+                value.is_finite() && expected.is_finite() && ulps <= 8,
+                "randn seed={} n={} index={i}: {value:.17e} vs {expected:.17e}, {ulps} ULPs",
+                c.seed,
+                c.n
+            );
+        }
         assert_eq!(
             TorchGenerator::new(c.seed).rand(c.n),
             c.rand,
