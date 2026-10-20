@@ -9,9 +9,22 @@ use crate::arrays::{matrix_out, Array, ArrayBuf};
 use crate::errors::{value_error, IntoPyResult};
 use crate::threads;
 
+fn validate_data(array: &Array) -> Result<()> {
+    let size = array
+        .1
+        .iter()
+        .try_fold(1usize, |size, &dim| size.checked_mul(dim));
+    if size != Some(array.0.len()) {
+        return Err(BotorchError::DimensionMismatch(
+            "array values do not match the declared shape".into(),
+        ));
+    }
+    Ok(())
+}
 fn matrices(array: &Array) -> Result<(usize, usize, usize)> {
+    validate_data(array)?;
     let shape = &array.1;
-    if shape.len() < 2 || shape.iter().product::<usize>() != array.0.len() {
+    if shape.len() < 2 {
         return Err(BotorchError::DimensionMismatch(
             "expected batch x rows x cols matrix data".into(),
         ));
@@ -66,7 +79,10 @@ fn empirical_covariance(
     threads::run(py, || {
         let (batch, rows, n1) = matrices(&u1)?;
         let (b2, r2, n2) = matrices(&u2)?;
-        if (batch, rows) != (b2, r2) || (diag && n1 != n2) {
+        if (batch, rows) != (b2, r2)
+            || u1.1[..u1.1.len() - 2] != u2.1[..u2.1.len() - 2]
+            || (diag && n1 != n2)
+        {
             return Err(BotorchError::DimensionMismatch(
                 "basis dimensions differ".into(),
             ));
@@ -109,8 +125,21 @@ fn empirical_covariance_vjp(
     threads::run(py, || {
         let (batch, rows, n1) = matrices(&u1)?;
         let (b2, r2, n2) = matrices(&u2)?;
-        let width = if diag { n1 } else { n1 * n2 };
-        if (batch, rows) != (b2, r2) || gradient.0.len() != batch * width || (diag && n1 != n2) {
+        validate_data(&gradient)?;
+        let width = if diag { Some(n1) } else { n1.checked_mul(n2) }.ok_or_else(|| {
+            BotorchError::DimensionMismatch("covariance derivative shape is too large".into())
+        })?;
+        let mut expected = u1.1[..u1.1.len() - 2].to_vec();
+        expected.push(n1);
+        if !diag {
+            expected.push(n2);
+        }
+        if (batch, rows) != (b2, r2)
+            || u1.1[..u1.1.len() - 2] != u2.1[..u2.1.len() - 2]
+            || gradient.1 != expected
+            || gradient.0.len() != batch.saturating_mul(width)
+            || (diag && n1 != n2)
+        {
             return Err(BotorchError::DimensionMismatch(
                 "covariance derivative dimensions differ".into(),
             ));
@@ -165,6 +194,7 @@ fn empirical_project_psd_vjp(
 ) -> PyResult<ArrayBuf> {
     threads::run(py, || {
         let (batch, rows, cols) = matrices(&a)?;
+        validate_data(&gradient)?;
         if gradient.1 != a.1 {
             return Err(BotorchError::DimensionMismatch(
                 "PSD gradient shape differs".into(),
@@ -226,6 +256,7 @@ fn empirical_em_basis(
     correction: i64,
     eigenvalue_tol: f64,
 ) -> PyResult<ArrayBuf> {
+    validate_data(&mu).into_py_result()?;
     if mu.1.len() != 1 {
         return Err(value_error("expected mu of shape (n,)"));
     }
@@ -248,11 +279,9 @@ fn empirical_em_basis(
 }
 
 fn interpolant(x: Array, y: &Array) -> PyResult<core::LinearInterpolation> {
-    if x.1.len() != 1
-        || y.1.is_empty()
-        || y.1[y.1.len() - 1] != x.0.len()
-        || y.0.len() != y.1.iter().product::<usize>()
-    {
+    validate_data(&x).into_py_result()?;
+    validate_data(y).into_py_result()?;
+    if x.1.len() != 1 || y.1.is_empty() || y.1[y.1.len() - 1] != x.0.len() {
         return Err(value_error(
             "expected 1D knots and curve values with matching final dimension",
         ));
@@ -275,6 +304,7 @@ fn empirical_interp(
     bounds_error: bool,
     fill_value: f64,
 ) -> PyResult<ArrayBuf> {
+    validate_data(&x_new).into_py_result()?;
     let interp = interpolant(x, &y)?;
     let mut shape = y.1[..y.1.len() - 1].to_vec();
     shape.extend_from_slice(&x_new.1);
@@ -293,11 +323,15 @@ fn empirical_interp_vjp(
     gradient: Array,
     bounds_error: bool,
 ) -> PyResult<(ArrayBuf, ArrayBuf, ArrayBuf)> {
+    validate_data(&x_new).into_py_result()?;
+    validate_data(&gradient).into_py_result()?;
     let xs = x.1.clone();
     let interp = interpolant(x, &y)?;
     let rows = y.1[..y.1.len() - 1].iter().product();
     let cols = x_new.0.len();
-    if gradient.0.len() != rows * cols {
+    let mut expected = y.1[..y.1.len() - 1].to_vec();
+    expected.extend_from_slice(&x_new.1);
+    if gradient.1 != expected || gradient.0.len() != rows * cols {
         return Err(value_error("interpolation gradient dimensions differ"));
     }
     let g = Matrix::from_row_slice(rows, cols, &gradient.0);

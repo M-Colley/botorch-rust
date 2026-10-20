@@ -277,3 +277,35 @@ def test_interpolation_nan_propagates_even_with_finite_fill(official: object) ->
     actual = rs.LinearInterpolation1D(x, y, bounds_error=False, fill_value=8.0)(q)
     expected = official._interp1d_torch(x, y, q, bounds_error=False, fill_value=8.0)
     torch.testing.assert_close(actual, expected, equal_nan=True)
+
+
+@pytest.mark.parametrize(
+    "name,arguments",
+    [
+        ("empirical_project_psd_vjp", (([1.0, 0.0, 0.0, 1.0], [2, 2]), ([1.0], [2, 2]))),
+        ("empirical_interp", (([0.0, 1.0], [2]), ([1.0, 2.0], [2]), ([0.4], [99]))),
+        ("empirical_interp", (([0.0, 1.0], [99]), ([1.0, 2.0], [2]), ([0.4], [1]))),
+        ("empirical_interp", (([0.0, 1.0], [2]), ([1.0, 2.0], [99]), ([0.4], [1]))),
+        (
+            "empirical_interp_vjp",
+            (([0.0, 1.0], [2]), ([1.0, 2.0], [2]), ([0.4], [1]), ([1.0], [99])),
+        ),
+        (
+            "empirical_covariance_vjp",
+            (([1.0, 2.0], [1, 2]), ([1.0, 2.0], [1, 2]), ([1.0], [2, 2]), 1),
+        ),
+        (
+            "empirical_covariance_vjp",
+            (([1.0, 2.0], [1, 2]), ([1.0, 2.0], [1, 2]), ([1.0] * 4, [4]), 1),
+        ),
+        ("empirical_covariance", (([1.0, 2.0], [2, 1, 1, 1]), ([1.0, 2.0], [1, 2, 1, 1]), 1)),
+        ("empirical_em_basis", (([1.0], [99]), ([1.0], [1, 1]))),
+        ("empirical_orthogonal_basis", (([], [2**63, 2]),)),
+    ],
+)
+def test_low_level_array_shapes_are_validated(name: str, arguments: tuple) -> None:
+    from botorch_rs import _botorch_rs
+
+    # These used to panic in Rust or return data inconsistent with its shape.
+    with pytest.raises(Exception, match="shape|dimensions|dimension"):
+        getattr(_botorch_rs, name)(*arguments)
