@@ -100,7 +100,8 @@ iterates, standalone likelihoods, support-search snapshots, robust fixed-noise
 MAP selection, failed-fit restoration, and atomic target/noise replacement.
 BoTorch default prior factories are authored in their canonical float32 mode
 before constructing double-precision models in the parity tests.
-# Persistent parameter layout during pursuit
+
+## Persistent parameter layout during pursuit
 
 Changing sparse support changes the native raw-parameter layout. Torch
 synchronization refreshes the layout before pulling values, retaining
