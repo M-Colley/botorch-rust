@@ -26,6 +26,21 @@ class LinearTruncatedFidelityKernel(Kernel):
 
     _params = (("raw_power", "raw_power_constraint", "power_prior"),)
 
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        device = kwargs.get("device")
+        if cls is LinearTruncatedFidelityKernel and (
+            _use_torch_backend(backend, *args, *kwargs.values())
+            or (backend == "auto" and device is not None and str(device) != "cpu")
+        ):
+            from botorch_rs.models._torch_backend_kernel_catalogue import (
+                TorchLinearTruncatedFidelityKernel,
+            )
+
+            return object.__new__(TorchLinearTruncatedFidelityKernel)
+        return object.__new__(cls)
+
     def __init__(
         self,
         fidelity_dims: list[int],
@@ -39,6 +54,8 @@ class LinearTruncatedFidelityKernel(Kernel):
         lengthscale_constraint_biased: Interval | None = None,
         covar_module_unbiased: Kernel | None = None,
         covar_module_biased: Kernel | None = None,
+        *,
+        backend: str = "auto",
         **kwargs: Any,
     ) -> None:
         if dimension is None and kwargs.get("active_dims") is None:

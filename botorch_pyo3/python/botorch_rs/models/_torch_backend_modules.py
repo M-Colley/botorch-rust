@@ -281,11 +281,17 @@ class _TorchModule(nn.Module):
 
     def initialize(self, **kwargs: Any) -> _TorchModule:
         for name, value in kwargs.items():
-            current = getattr(self, name)
+            path, _, attribute = name.rpartition(".")
+            module = self.get_submodule(path) if path else self
+            current = getattr(module, attribute)
             if isinstance(current, nn.Parameter):
-                self._assign(name, value)
+                if isinstance(module, _TorchModule):
+                    module._assign(attribute, value)
+                else:
+                    with torch.no_grad():
+                        current.copy_(_tensor(value, current))
             else:
-                setattr(self, name, value)
+                setattr(module, attribute, value)
         return self
 
     def named_priors(self) -> Any:
@@ -853,12 +859,17 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
         ScaleKernel,
     )
     from botorch_rs.models.hierarchical.conditional_kernel_gp import HierarchicalConditionalKernel
+    from botorch_rs.models.kernels.categorical import CategoricalKernel
     from botorch_rs.models.kernels.contextual_lcea import LCEAKernel
     from botorch_rs.models.kernels.contextual_sac import SACKernel
+    from botorch_rs.models.kernels.downsampling import DownsamplingKernel
+    from botorch_rs.models.kernels.exponential_decay import ExponentialDecayKernel
     from botorch_rs.models.kernels.heterogeneous_multitask import MultiTaskConditionalKernel
     from botorch_rs.models.kernels.infinite_width_bnn import InfiniteWidthBNNKernel
     from botorch_rs.models.kernels.integrated_white_noise import IntegratedWhiteNoiseKernel
+    from botorch_rs.models.kernels.linear_truncated_fidelity import LinearTruncatedFidelityKernel
     from botorch_rs.models.kernels.orthogonal_additive_kernel import OrthogonalAdditiveKernel
+    from botorch_rs.models.kernels.positive_index import PositiveIndexKernel
     from botorch_rs.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
 
     if source is None:
@@ -876,6 +887,24 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
             from botorch_rs.models._torch_backend_wiener import TorchIntegratedWhiteNoiseKernel
 
             result = TorchIntegratedWhiteNoiseKernel(_source=kernel, _like=train_X)
+        elif type(kernel) in (
+            CategoricalKernel,
+            DownsamplingKernel,
+            ExponentialDecayKernel,
+            LinearTruncatedFidelityKernel,
+            PositiveIndexKernel,
+        ):
+            from botorch_rs.models import _torch_backend_kernel_catalogue as catalogue
+
+            factory = getattr(catalogue, f"Torch{type(kernel).__name__}")
+            options = {"_source": kernel, "_like": train_X}
+            if type(kernel) in (
+                DownsamplingKernel,
+                ExponentialDecayKernel,
+                LinearTruncatedFidelityKernel,
+            ):
+                options["_convert"] = convert
+            result = factory(**options)
         elif type(kernel) in (
             RQKernel,
             PeriodicKernel,
