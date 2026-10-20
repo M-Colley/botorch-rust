@@ -257,6 +257,13 @@ impl IntegratedWhiteNoise {
 
 #[derive(Clone, Debug)]
 enum NodeKind {
+    Heterogeneous {
+        task_feature: usize,
+        binary_map: Vec<Vec<bool>>,
+        spatial: Vec<Node>,
+        combinatorial: Box<Node>,
+        use_combinatorial: bool,
+    },
     Lcea(Box<LceaState>),
     Stationary {
         kind: KernelKind,
@@ -704,6 +711,30 @@ fn build_node(spec: &KernelNode, cur: &mut Cursor<'_>, parent_dim: usize) -> Res
     let off = cur.pos;
     let params = spec.params();
     let kind = match spec.kind() {
+        KernelType::Heterogeneous {
+            task_feature,
+            binary_map,
+            use_combinatorial,
+        } => {
+            let count = binary_map[0].len();
+            let spatial = spec.children()[..count]
+                .iter()
+                .map(|child| build_node(child, cur, k))
+                .collect::<Result<Vec<_>>>()?;
+            let combinatorial = Box::new(build_node(&spec.children()[count], cur, count)?);
+            let task_feature = if *task_feature < 0 {
+                k as isize + task_feature
+            } else {
+                *task_feature
+            } as usize;
+            NodeKind::Heterogeneous {
+                task_feature,
+                binary_map: binary_map.clone(),
+                spatial,
+                combinatorial,
+                use_combinatorial: *use_combinatorial,
+            }
+        }
         KernelType::ContextualLcea(spec) => {
             let values: Vec<f64> = params.iter().flat_map(|p| cur.take(p).1).collect();
             NodeKind::Lcea(Box::new(LceaState::new(spec, &values, off)?))
@@ -1242,6 +1273,45 @@ impl Node {
             kids: Vec::new(),
         };
         Ok(match &self.kind {
+            NodeKind::Heterogeneous {
+                task_feature,
+                binary_map,
+                spatial,
+                combinatorial,
+                ..
+            } => {
+                let count = spatial.len();
+                let mut binary = Vec::with_capacity(n * count);
+                let mut tasks = Vec::with_capacity(n);
+                for i in 0..n {
+                    let value = local[i * k + task_feature];
+                    if !value.is_finite()
+                        || value < 0.0
+                        || value.fract() != 0.0
+                        || value >= binary_map.len() as f64
+                    {
+                        return Err(BotorchError::InvalidArgument(format!(
+                            "Task index {value} must be an integer in [0, {})",
+                            binary_map.len()
+                        )));
+                    }
+                    let task = value as usize;
+                    tasks.push(value);
+                    binary.extend(binary_map[task].iter().map(|&v| f64::from(v)));
+                }
+                let mut kids = spatial
+                    .iter()
+                    .map(|child| child.prepare(&local, n, k))
+                    .collect::<Result<Vec<_>>>()?;
+                kids.push(combinatorial.prepare(&binary, n, count)?);
+                NodePrep {
+                    n,
+                    k,
+                    x: local,
+                    aux: tasks,
+                    kids,
+                }
+            }
             NodeKind::Stationary { ls, .. }
             | NodeKind::Rq { ls, .. }
             | NodeKind::ExpDecay { ls, .. } => leaf(scaled(ls), Vec::new()),
@@ -1340,6 +1410,27 @@ impl Node {
     /// same point of the same set, as on the diagonal of `K(A, A)`).
     fn value(&self, a: &NodePrep, i: usize, b: &NodePrep, j: usize, same: bool) -> f64 {
         match &self.kind {
+            NodeKind::Heterogeneous {
+                binary_map,
+                spatial,
+                combinatorial,
+                use_combinatorial,
+                ..
+            } => {
+                let left = &binary_map[a.aux[i] as usize];
+                let right = &binary_map[b.aux[j] as usize];
+                let mut value = if *use_combinatorial {
+                    combinatorial.value(&a.kids[spatial.len()], i, &b.kids[spatial.len()], j, same)
+                } else {
+                    0.0
+                };
+                for (c, child) in spatial.iter().enumerate() {
+                    // Keep IEEE multiplication semantics of BoTorch's K * gate.
+                    value += child.value(&a.kids[c], i, &b.kids[c], j, same)
+                        * f64::from(left[c] && right[c]);
+                }
+                value
+            }
             NodeKind::Lcea(state) => state.value(a.row(i), b.row(j)),
             NodeKind::Stationary { kind, .. } => {
                 if same {
@@ -1702,6 +1793,38 @@ impl Node {
         let mut val = Vector::zeros(nb);
         let mut grad = Matrix::zeros(nb, k);
         match &self.kind {
+            NodeKind::Heterogeneous {
+                binary_map,
+                spatial,
+                combinatorial,
+                use_combinatorial,
+                ..
+            } => {
+                if *use_combinatorial {
+                    for j in 0..nb {
+                        val[j] = combinatorial.value(
+                            &a.kids[spatial.len()],
+                            i,
+                            &b.kids[spatial.len()],
+                            j,
+                            false,
+                        );
+                    }
+                }
+                for (c, child) in spatial.iter().enumerate() {
+                    let (values, derivatives) = child.cross_grad(&a.kids[c], i, &b.kids[c]);
+                    let derivatives = scatter_rows(child, derivatives, k);
+                    for j in 0..nb {
+                        let gate = f64::from(
+                            binary_map[a.aux[i] as usize][c] && binary_map[b.aux[j] as usize][c],
+                        );
+                        val[j] += values[j] * gate;
+                        for m in 0..k {
+                            grad[(j, m)] += derivatives[(j, m)] * gate;
+                        }
+                    }
+                }
+            }
             NodeKind::Lcea(state) => {
                 for j in 0..nb {
                     let (v, g) = state.input_gradient(a.row(i), b.row(j));
@@ -1931,6 +2054,27 @@ impl Node {
         let off = self.off;
         let n = a.n;
         match &self.kind {
+            NodeKind::Heterogeneous {
+                binary_map,
+                spatial,
+                combinatorial,
+                use_combinatorial,
+                ..
+            } => {
+                for (c, child) in spatial.iter().enumerate() {
+                    let gated = Matrix::from_fn(n, n, |i, j| {
+                        w[(i, j)]
+                            * f64::from(
+                                binary_map[a.aux[i] as usize][c]
+                                    && binary_map[a.aux[j] as usize][c],
+                            )
+                    });
+                    child.contract(&a.kids[c], &gated, out);
+                }
+                if *use_combinatorial {
+                    combinatorial.contract(&a.kids[spatial.len()], w, out);
+                }
+            }
             NodeKind::Lcea(state) => {
                 for_pairs(w, true, |i, j, weight| {
                     state.accumulate_parameter_gradient(a.row(i), a.row(j), weight, out)
@@ -3148,6 +3292,72 @@ mod tests {
             .into();
         let rbf = rbf.with_constraint("raw_lengthscale", iv).unwrap();
         assert!(TreeKernel::build(&rbf, &[-0.1], 2).is_ok());
+    }
+
+    #[test]
+    fn heterogeneous_covariance_parameter_and_input_derivatives() {
+        let spatial = |dims: Vec<usize>| {
+            KernelNode::scale(
+                KernelNode::stationary(KernelKind::Matern52, Some(dims.len()))
+                    .unwrap()
+                    .with_active_dims(dims)
+                    .unwrap(),
+            )
+        };
+        for enabled in [false, true] {
+            let tree = KernelNode::heterogeneous(
+                -1,
+                vec![vec![true, true, false], vec![true, false, true]],
+                vec![spatial(vec![0]), spatial(vec![1]), spatial(vec![2])],
+                KernelNode::scale(KernelNode::stationary(KernelKind::Matern52, Some(3)).unwrap()),
+                enabled,
+            )
+            .unwrap();
+            let raw = rand_raw(&tree, 187);
+            let mut x = points(4, 4, 63);
+            for i in 0..4 {
+                x[(i, 3)] = (i % 2) as f64;
+            }
+            let kernel = TreeKernel::build(&tree, &raw, 4).unwrap();
+            let prepared = kernel.prepare(&x).unwrap();
+            let weights = Matrix::from_element(4, 4, 1.0);
+            let gradient = kernel.contract(&prepared, &weights);
+            let transforms = tree.transform_derivatives(&raw);
+            for p in 0..raw.len() {
+                let mut plus = raw.clone();
+                plus[p] += 1e-6;
+                let mut minus = raw.clone();
+                minus[p] -= 1e-6;
+                let value = |values: &[f64]| {
+                    TreeKernel::build(&tree, values, 4)
+                        .unwrap()
+                        .covariance_symmetric(&x)
+                        .unwrap()
+                        .sum()
+                };
+                let difference = (value(&plus) - value(&minus)) / 2e-6;
+                assert!((difference - gradient[p] * transforms[p]).abs() < 2e-7);
+            }
+            for row in 0..4 {
+                let (_, derivatives) = kernel.cross_with_grad(&prepared, row, &prepared);
+                assert!(derivatives.column(3).iter().all(|&v| v == 0.0));
+                for column in 0..3 {
+                    let mut plus = x.clone();
+                    plus[(row, column)] += 1e-6;
+                    let mut minus = x.clone();
+                    minus[(row, column)] -= 1e-6;
+                    let difference = (kernel.covariance(&plus, &x).unwrap().row(row).sum()
+                        - kernel.covariance(&minus, &x).unwrap().row(row).sum())
+                        / 2e-6;
+                    assert!((difference - derivatives.column(column).sum()).abs() < 2e-7);
+                }
+            }
+            let mut invalid = x.clone();
+            invalid[(0, 3)] = 0.5;
+            assert!(kernel.prepare(&invalid).is_err());
+            invalid[(0, 3)] = 2.0;
+            assert!(kernel.prepare(&invalid).is_err());
+        }
     }
 
     #[test]

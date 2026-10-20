@@ -62,6 +62,26 @@ impl PyKernelNode {
             .map(Self::wrap)
     }
 
+    /// Native heterogeneous multitask spatial gates and combinatorial child.
+    #[staticmethod]
+    fn heterogeneous(
+        task_feature: isize,
+        binary_map: Vec<Vec<bool>>,
+        spatial: Vec<PyRef<'_, PyKernelNode>>,
+        combinatorial: PyRef<'_, PyKernelNode>,
+        use_combinatorial: bool,
+    ) -> PyResult<Self> {
+        KernelNode::heterogeneous(
+            task_feature,
+            binary_map,
+            spatial.iter().map(|node| node.inner.clone()).collect(),
+            combinatorial.inner.clone(),
+            use_combinatorial,
+        )
+        .into_py_result()
+        .map(Self::wrap)
+    }
+
     /// Compose an enclosing feature selection with every leaf of a composite.
     fn with_parent_active_dims(&self, dims: Vec<usize>) -> PyResult<Self> {
         self.inner

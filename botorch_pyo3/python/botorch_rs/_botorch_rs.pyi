@@ -209,6 +209,14 @@ class KernelSpec:
 
 class KernelNode:
     @staticmethod
+    def heterogeneous(
+        task_feature: int,
+        binary_map: Sequence[Sequence[bool]],
+        spatial: Sequence[KernelNode],
+        combinatorial: KernelNode,
+        use_combinatorial: bool,
+    ) -> KernelNode: ...
+    @staticmethod
     def contextual_lcea(
         contexts: list[list[int]],
         categorical: list[list[int]],

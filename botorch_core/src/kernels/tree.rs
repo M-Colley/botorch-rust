@@ -155,6 +155,15 @@ pub const SAAS_EPS: f64 = 1e-8;
 /// The kernel classes of a [`KernelNode`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum KernelType {
+    /// Conditional spatial kernels plus a kernel of binary task memberships.
+    Heterogeneous {
+        /// Task column in the local full-feature inputs (negative: from end).
+        task_feature: isize,
+        /// Task-by-subkernel membership matrix.
+        binary_map: Vec<Vec<bool>>,
+        /// Whether to include the final combinatorial child in the covariance.
+        use_combinatorial: bool,
+    },
     /// Latent context embedding additive covariance with shared parameters.
     ContextualLcea(Box<LceaSpec>),
     /// `RBFKernel` or `MaternKernel(nu)` (parameter `raw_lengthscale`).
@@ -327,6 +336,36 @@ impl KernelNode {
             KernelType::Activation { conditions },
             Vec::new(),
         ))
+    }
+
+    /// Heterogeneous-task covariance, retaining the public subkernel paths.
+    /// The combinatorial child remains registered when disabled, as in BoTorch.
+    pub fn heterogeneous(
+        task_feature: isize,
+        binary_map: Vec<Vec<bool>>,
+        mut spatial: Vec<KernelNode>,
+        combinatorial: KernelNode,
+        use_combinatorial: bool,
+    ) -> Result<Self> {
+        let count = spatial.len();
+        if count == 0 || binary_map.is_empty() || binary_map.iter().any(|row| row.len() != count) {
+            return Err(BotorchError::InvalidArgument(
+                "Heterogeneous kernels need a nonempty rectangular task-membership map".into(),
+            ));
+        }
+        spatial.push(combinatorial);
+        Ok(Self {
+            kind: KernelType::Heterogeneous {
+                task_feature,
+                binary_map,
+                use_combinatorial,
+            },
+            active_dims: None,
+            params: Vec::new(),
+            task_prior: None,
+            saas: None,
+            children: spatial,
+        })
     }
 
     /// `RQKernel(ard_num_dims)`.
@@ -1113,6 +1152,10 @@ impl KernelNode {
     /// `"kernels.0"`, ...).
     pub fn child_names(&self) -> Vec<String> {
         match self.kind {
+            KernelType::Heterogeneous { .. } => (0..self.children.len() - 1)
+                .map(|i| format!("kernels.{i}"))
+                .chain(std::iter::once("combinatorial_kernel".into()))
+                .collect(),
             KernelType::Scale | KernelType::OrthogonalAdditive { .. } => {
                 vec!["base_kernel".to_string()]
             }
@@ -1274,6 +1317,28 @@ impl KernelNode {
             Ok(())
         };
         match &self.kind {
+            KernelType::Heterogeneous {
+                task_feature,
+                binary_map,
+                ..
+            } => {
+                let task = if *task_feature < 0 {
+                    k as isize + task_feature
+                } else {
+                    *task_feature
+                };
+                if task < 0 || task as usize >= k {
+                    return Err(BotorchError::InvalidArgument(format!(
+                        "Task feature {task_feature} is out of range for {k} inputs"
+                    )));
+                }
+                let count = binary_map[0].len();
+                for child in &self.children[..count] {
+                    child.validate(k)?;
+                }
+                self.children[count].validate(count)?;
+                return Ok(());
+            }
             KernelType::Activation { conditions } => {
                 if let Some((bad, _)) = conditions.iter().find(|(j, _)| *j >= k) {
                     return Err(BotorchError::Runtime(format!(
