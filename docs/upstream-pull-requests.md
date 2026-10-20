@@ -40,7 +40,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Learned-preference noisy-improvement cache law | Patch and upstream regressions pending |
 | Categorical feature axis | Existing [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387) |
 | Generic kernel diagonal ranks | New [GPyTorch #2815](https://github.com/cornellius-gp/gpytorch/pull/2815) |
-| Composite lazy feature counts | Patch and upstream regressions pending |
+| Composite lazy feature counts | New [GPyTorch #2818](https://github.com/cornellius-gp/gpytorch/pull/2818), including composite feature indexing |
 | Model-list joint covariance blocks | Existing [BoTorch #3409](https://github.com/meta-pytorch/botorch/pull/3409) and [#3412](https://github.com/meta-pytorch/botorch/pull/3412); exact workaround coverage under audit |
 | Variational unbatched zero-mean conversion | New [GPyTorch #2813](https://github.com/cornellius-gp/gpytorch/pull/2813) |
 | Neural-kernel self-diagonal clipping convention | Paired-input repair exists in [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387); self-covariance consistency pending |
@@ -53,9 +53,11 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | GIBBON pending covariance units | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) |
 | GIBBON multiple query batch axes | Upstream patch and regressions pending |
 | MES zero-variance control variate | Newly verified; upstream patch and regression pending |
-| Scalar JES conditional normal standardization | Native CPU and GPU repaired with independent Gaussian regression; upstream patch and regression pending |
-| PES damping accepts failed first-pivot Cholesky | Confirmed in upstream and native CPU port; repairs and regressions in progress |
-| Additive MAP SAAS factory dtype/device | Standalone factory leaves output scales on the default device/dtype; upstream repair in progress |
+| Scalar JES conditional normal standardization | New [BoTorch #3479](https://github.com/meta-pytorch/botorch/pull/3479); native CPU and GPU repaired with independent Gaussian regression |
+| PES damping accepts failed first-pivot Cholesky | New [BoTorch #3480](https://github.com/meta-pytorch/botorch/pull/3480); native CPU and GPU regressions cover the repair |
+| Additive MAP SAAS factory dtype/device | New [BoTorch #3478](https://github.com/meta-pytorch/botorch/pull/3478) |
+| ZeroLinearOperator device/dtype and batched logdet | New [linear_operator #151](https://github.com/cornellius-gp/linear_operator/pull/151) |
+| Multiobjective entropy at infinite integration bounds | GPU repaired with Gaussian-limit and derivative regressions; native and upstream repairs in progress |
 | Port cosine float32 large-phase accuracy | Fixed in `4f1ad62`; CPU/CUDA regressions fail against old frozen binary and all 132 focused tensor cases pass with repair |
 
 ## Retracted report

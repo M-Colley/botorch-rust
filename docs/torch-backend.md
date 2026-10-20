@@ -57,7 +57,8 @@ the standard scalar MC improvement, regret, confidence-bound and standard
 deviation families; noisy EI and noisy LogEI in their MC forms; EHVI, LogEHVI,
 NEHVI and LogNEHVI; one-shot KG and multi-fidelity KG; MES, GIBBON and their
 multi-fidelity forms; scalar JES with LB and MC estimation; and scalar and
-multi-objective PES with device EP. Hypervolume geometry
+multi-objective PES with device EP; and multi-objective lower-bound MES/JES
+with all four entropy estimators. Hypervolume geometry
 uses device-resident exact box decomposition, including more than two outputs.
 Ensemble acquisitions reduce their MCMC components using means or log means
 as appropriate. Feature-fixing and projection wrappers preserve live Tensor
@@ -90,8 +91,8 @@ shrinkage priors and fitting graphs on device. See [MAP SAAS verification](torch
 
 Remaining GPU families include latent Kronecker models,
 preference, contextual, hierarchical, heterogeneous and empirical multitask
-models, robust relevance pursuit, multi-objective MES/JES,
-hypervolume KG, multistep lookahead and pathwise acquisitions.
+models, robust relevance pursuit, hypervolume KG, multistep lookahead and
+pathwise acquisitions.
 Some are under active implementation. Device-resident NUTS fits scalar Matérn,
 SAAS and linear fully Bayesian models; custom probabilistic overrides and
 multitask Tensor NUTS remain unsupported. See
