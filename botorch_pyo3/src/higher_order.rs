@@ -26,6 +26,8 @@ use crate::models::PyModel;
 use crate::specs::PyLikelihoodSpec;
 use crate::threads;
 
+mod variance;
+
 type PriorInfo = (usize, f64, u8, Option<f64>, Option<String>);
 
 fn status_name(s: FitStatus) -> &'static str {
@@ -456,6 +458,7 @@ impl PyHigherOrderGP {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyHigherOrderGP>()?;
     m.add_function(wrap_pyfunction!(higher_order_latent_sample_py, m)?)?;
+    variance::register(m)?;
     Ok(())
 }
 

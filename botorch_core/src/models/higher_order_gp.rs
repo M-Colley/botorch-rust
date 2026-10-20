@@ -48,6 +48,8 @@ use crate::transforms::input::{ChainedInputTransform, TransformMode};
 use crate::{Matrix, Vector};
 
 mod matheron;
+mod variance;
+pub use variance::{posterior_variances_factors_vjp, posterior_variances_from_factors};
 
 /// `log(2π)`.
 const LN_2PI: f64 = 1.837_877_066_409_345_3;

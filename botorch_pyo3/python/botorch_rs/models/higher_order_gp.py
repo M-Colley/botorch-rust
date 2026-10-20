@@ -21,7 +21,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import broadcast_to, from_flat, kind_of, to_flat
+from botorch_rs._arrays import broadcast_shapes, broadcast_to, from_flat, kind_of, to_flat
 from botorch_rs.exceptions.errors import (
     BotorchTensorDimensionError,
     InputDataError,
@@ -523,12 +523,27 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
 
     @property
     def train_inputs(self) -> tuple[Any]:
+        if self._fantasy_batch is not None:
+            pairs = [m.train_inputs() for m in self._fantasy_batch]
+            return (
+                from_flat(
+                    [v for data, _ in pairs for v in data],
+                    (*self._fantasy_shape, *pairs[0][1]),
+                    self._kind,
+                ),
+            )
         data, shape = self._rs.train_inputs()
         return (from_flat(data, tuple(shape), self._kind),)
 
     @property
     def train_targets(self) -> Any:
         """The standardized training targets, flattened (``n·S``)."""
+        if self._fantasy_batch is not None:
+            pairs = [m.train_targets() for m in self._fantasy_batch]
+            size = len(pairs[0][0])
+            return from_flat(
+                [v for data, _ in pairs for v in data], (*self._fantasy_shape, size), self._kind
+            )
         data, _ = self._rs.train_targets()
         return from_flat(data, (len(data),), self._kind)
 
@@ -630,6 +645,21 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
             raise UnsupportedError("Acquisition functions on a batch of fantasy models.")
         return self._rs.model_handle()
 
+    def make_posterior_variances(self, joint_covariance_matrix: Any) -> Any:
+        """Conditional variance from the supplied joint Kronecker factors.
+
+        Returns flattened, point-major variances in transformed outcome
+        units; model observation noise is included in the training solve.
+        Individual explicit caller operators can expose ``to_dense``.
+        """
+        from botorch_rs.models._higher_order_variance import posterior_variances
+
+        if not isinstance(self.likelihood, GaussianLikelihood):
+            raise UnsupportedError("Supplied-factor variances require a GaussianLikelihood.")
+        return posterior_variances(
+            joint_covariance_matrix, self._rs.num_train, self.likelihood.noise
+        )
+
     # -- conditioning ----------------------------------------------------------
 
     def _with_rs(self, rs: Any) -> HigherOrderGP:
@@ -655,7 +685,7 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
     def condition_on_observations(
         self, X: Any, Y: Any, noise: Any = None, **kwargs: Any
     ) -> HigherOrderGP:
-        r"""Condition the model on new observations (``X``: transformed
+        r"""Condition the model on new observations (``X``: raw
         inputs ``n' x d``, ``Y``: ``n' x target_shape``, or ``batch x n' x
         target_shape`` for a batch of conditioned models with shared
         hyperparameters).
@@ -663,33 +693,69 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
         Returns:
             A ``HigherOrderGP`` with ``n + n'`` training examples.
         """
+        if kwargs:
+            raise UnsupportedError(f"Unsupported conditioning arguments: {sorted(kwargs)}.")
         if noise is not None:
             raise UnsupportedError(
                 "condition_on_observations with explicit noise is not supported by "
                 "HigherOrderGP (BoTorch: 'we don't support fixed noise here yet')."
             )
+        self.eval()
+        data, shape = self._standardized(Y)
+        return self._condition_transformed(self.transform_inputs(X), data, shape, flattened=False)
+
+    def get_fantasy_model(self, inputs: Any, targets: Any, **kwargs: Any) -> HigherOrderGP:
+        """Append already input/outcome-transformed fantasy data.
+
+        Structured targets or flattened ``q * prod(target_shape)`` targets
+        are accepted. Input and fantasy target batches broadcast.
+        """
+        noise = kwargs.pop("noise", None)
+        if noise is not None or kwargs:
+            raise UnsupportedError(
+                "HigherOrderGP fantasy updates do not support noise or extra kwargs."
+            )
+        data, shape = to_flat(targets, "targets")
+        return self._condition_transformed(inputs, list(data), tuple(shape), flattened=True)
+
+    def _condition_transformed(
+        self, X: Any, ydata: list[float], yshape: tuple[int, ...], *, flattened: bool
+    ) -> HigherOrderGP:
         if self._fantasy_batch is not None:
             raise UnsupportedError(
                 "Conditioning an existing batch of HigherOrderGP fantasy models."
             )
         S = math.prod(self.target_shape)
         x = to_flat(X, "X")
-        ydata, yshape = self._standardized(Y)
         k = len(self.target_shape)
-        ybatch = tuple(yshape[: len(yshape) - k - 1])
-        nprime = yshape[-k - 1]
         xshape = tuple(x[1])
-        if xshape[-2] != nprime:
-            raise BotorchTensorDimensionError(f"X has {xshape[-2]} points but Y has {nprime}.")
-        nb = math.prod(ybatch)
-        xb = math.prod(xshape[:-2])
-        if xb not in (1, nb):
+        if len(xshape) < 2:
+            raise BotorchTensorDimensionError("Fantasy inputs require shape batch x q x d.")
+        nprime = xshape[-2]
+        if len(yshape) >= k + 1 and yshape[-k:] == self.target_shape and yshape[-k - 1] == nprime:
+            ybatch = yshape[: -k - 1]
+        elif flattened and yshape and yshape[-1] == nprime * S:
+            ybatch = yshape[:-1]
+        elif flattened and len(yshape) >= 2 and yshape[-2:] == (nprime, S):
+            ybatch = yshape[:-2]
+        else:
+            raise BotorchTensorDimensionError(
+                f"Expected fantasy targets shaped q x {self.target_shape} or flattened q*S."
+            )
+        batch = broadcast_shapes(xshape[:-2], ybatch)
+        if batch is None:
             raise BotorchTensorDimensionError(
                 f"The batch shapes of X {xshape[:-2]} and Y {ybatch} do not match."
             )
+        if any(size == 0 for size in batch) or nprime == 0:
+            raise UnsupportedError("Empty HigherOrderGP fantasy batches are unsupported.")
+        nb = math.prod(batch)
+        xdata = broadcast_to(x[0], xshape, (*batch, nprime, xshape[-1]))
+        ydata = broadcast_to(ydata, (*ybatch, nprime, S), (*batch, nprime, S))
+        assert xdata is not None and ydata is not None
         models = []
         for b in range(nb):
-            xs = x[0][(b if xb > 1 else 0) * nprime * xshape[-1] :][: nprime * xshape[-1]]
+            xs = xdata[b * nprime * xshape[-1] : (b + 1) * nprime * xshape[-1]]
             ys = ydata[b * nprime * S : (b + 1) * nprime * S]
             models.append(
                 self._rs.condition_on_observations(
@@ -697,9 +763,9 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
                 )
             )
         new = self._with_rs(models[0])
-        if ybatch:
+        if batch:
             new._fantasy_batch = models
-            new._fantasy_shape = ybatch
+            new._fantasy_shape = batch
         return new
 
     def fantasize(
@@ -708,11 +774,13 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
         r"""A batch of fantasy models conditioned on posterior samples at ``X``
         (``q x d``) drawn by ``sampler`` (with ``num_fantasies`` samples):
         batch shape ``num_fantasies``."""
+        if kwargs:
+            raise UnsupportedError(f"Unsupported fantasy arguments: {sorted(kwargs)}.")
         if observation_noise is not None:
             raise UnsupportedError("fantasize with explicit observation noise is not supported.")
         post = self.posterior(X)
         samples = sampler(post)
-        return self.condition_on_observations(self.transform_inputs(X), samples)
+        return self.condition_on_observations(X, samples)
 
     def __deepcopy__(self, memo: dict[int, Any]) -> HigherOrderGP:
         new = self.__class__.__new__(self.__class__)
