@@ -66,7 +66,7 @@ class ScalarizedPosteriorTransform(PosteriorTransform):
 
     scalarize = True
 
-    def __init__(self, weights: Any, offset: float = 0.0) -> None:
+    def __init__(self, weights: Any, offset: Any = 0.0) -> None:
         data, shape = to_flat(weights, "weights")
         if len(shape) != 1:
             raise ValueError("weights must be a one-dimensional tensor.")
@@ -323,7 +323,7 @@ class LinearMCObjective(MCAcquisitionObjective):
         if is_torch_tensor(samples):
             import torch
 
-            w = torch.as_tensor(self._weights, dtype=samples.dtype, device=samples.device)
+            w = torch.as_tensor(self.weights, dtype=samples.dtype, device=samples.device)
             return torch.einsum("...m, m", [samples, w])
         import numpy as np
 
