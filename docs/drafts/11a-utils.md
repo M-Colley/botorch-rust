@@ -397,6 +397,25 @@ Projection also rejects a native SLSQP "success" whose returned point violates
 constraints or bounds. A conflicting bound/inequality regression covers this
 case, so a failed projection cannot quietly return infeasible candidates.
 
+The public cached-Cholesky sampler mixin now reuses the existing native root
+decomposition and low-rank sampling routines. Normal samplers expose their
+generated base samples and can extend ordinary Gaussian posteriors while
+preserving baseline normals. Baseline roots broadcast over candidate batches.
+Private base-sample updates for structured/Matheron posterior layouts are
+explicitly unsupported; those models can still use their normal sampling
+fallback, and their existing native acquisition implementations are unchanged.
+The 54 sampler/mixin tests pass, along with 18 existing IID acquisition parity
+tests (values and input gradients) against official `b0dd01be6`. IID base-sample
+updates match the reference exactly; Sobol retains its documented native
+scrambling stream.
+
+The hierarchical parsing helpers match official forest partitions and paths.
+They additionally reject cycles, duplicate children and out-of-range indices.
+Official `get_index_to_path(2, {0: {0: [1]}, 1: {0: [0]}})` silently returns an
+empty dictionary because its traversal starts only from orphan roots. The
+port validates every component before traversal, including rootless cycles.
+All 20 hierarchy tests pass, including a depth-1200 forest handled iteratively.
+
 The initial committed branch passed all three phase 11a Python suites on
 2026-10-20 against the local BoTorch fork checkout at `c98dd9452`
 (`fix/audit-correctness-fixes`, not official upstream main), with

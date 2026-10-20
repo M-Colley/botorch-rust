@@ -6,7 +6,7 @@ import math
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import Pair, from_flat, to_flat
+from botorch_rs._arrays import Pair, broadcast_to, from_flat, kind_of, to_flat
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior, Posterior
 
@@ -57,6 +57,7 @@ class NormalMCSampler(MCSampler):
     """
 
     _rs: Any
+    _base_shape: tuple[int, ...] | None
 
     @property
     def num_samples(self) -> int:
@@ -67,6 +68,90 @@ class NormalMCSampler(MCSampler):
     def seed(self) -> int:
         """The seed of the base samples."""
         return int(self._rs.seed)
+
+    def _get_collapsed_shape(self, posterior: Any) -> tuple[int, ...]:
+        shape = tuple(posterior.base_sample_shape)
+        start, end = _batch_range(posterior, getattr(self, "batch_range_override", None))
+        start, end, _ = slice(start, end).indices(len(shape))
+        return (*self.sample_shape, *shape[:start], *(1 for _ in shape[start:end]), *shape[end:])
+
+    def _store_base_samples(self, values: list[float], shape: tuple[int, ...], kind: Any) -> None:
+        array = from_flat(values, shape, kind)
+        if isinstance(self, SobolQMCNormalSampler):
+            self._base_samples = array
+            self._base_samples_explicit = False
+        else:
+            self.base_samples = array
+        self._base_shape = shape
+        self._rs.set_base_samples((values, (self.num_samples, len(values) // self.num_samples)))
+
+    def _construct_base_samples(self, posterior: Any) -> None:
+        kind = _posterior_kind(posterior)
+        if kind is None:
+            raise UnsupportedError("The sampler requires a botorch_rs posterior.")
+        target = self._get_collapsed_shape(posterior)
+        current = getattr(self, "base_samples", None)
+        if (
+            getattr(self, "_base_samples_explicit", False)
+            and current is not None
+            and len(to_flat(current)[0]) == math.prod(target)
+        ):
+            # Preserve the accepted public S x [1 x ...] q [x m] layout of
+            # explicitly assigned Sobol normals, including singleton axes.
+            return
+        if current is None or to_flat(current)[1] != target:
+            values, _ = self._rs.base_samples(math.prod(target[len(self.sample_shape) :]))
+            self._store_base_samples(list(values), target, kind)
+        elif kind_of(current) != kind:
+            self._store_base_samples(list(to_flat(current)[0]), target, kind)
+
+    def _update_base_samples(self, posterior: Any, base_sampler: Any) -> None:
+        """Reuse baseline normals when extending an ordinary Gaussian posterior."""
+        if not isinstance(base_sampler, self.__class__):
+            raise RuntimeError(
+                "Expected `base_sampler` to be an instance of "
+                f"{self.__class__.__name__}. Got {base_sampler}."
+            )
+        underlying = posterior
+        while hasattr(underlying, "_posterior"):
+            underlying = underlying._posterior
+        if not isinstance(underlying, GPyTorchPosterior):
+            raise UnsupportedError(
+                "Base-sample updates require an ordinary Gaussian posterior; "
+                "Matheron and structured posterior base layouts are unsupported."
+            )
+        if tuple(base_sampler.sample_shape) != tuple(self.sample_shape):
+            raise ValueError("Base samplers must have the same sample_shape.")
+        self._construct_base_samples(posterior)
+        if base_sampler.base_samples is None:
+            return
+        source, source_shape = to_flat(base_sampler.base_samples)
+        target, target_shape = to_flat(self.base_samples)
+        sample_dims = len(self.sample_shape)
+        if len(source_shape) > len(target_shape):
+            raise ValueError("Baseline base samples have more dimensions than the joint samples.")
+        single_output = len(posterior.base_sample_shape) - len(underlying.batch_shape) == 1
+        point_axis = len(target_shape) - (1 if single_output else 2)
+        source_points = source_shape[-1 if single_output else -2]
+        if source_points > target_shape[point_axis]:
+            raise ValueError("Baseline base samples contain more points than the joint posterior.")
+        view = (
+            *self.sample_shape,
+            *(1 for _ in range(len(target_shape) - len(source_shape))),
+            *source_shape[sample_dims:],
+        )
+        expanded_shape = list(target_shape)
+        expanded_shape[point_axis] = source_points
+        expanded = broadcast_to(source, view, expanded_shape)
+        data = list(target)
+        trailing = math.prod(target_shape[point_axis + 1 :])
+        width = source_points * trailing
+        target_width = target_shape[point_axis] * trailing
+        for row in range(math.prod(target_shape[:point_axis])):
+            data[row * target_width : row * target_width + width] = expanded[
+                row * width : (row + 1) * width
+            ]
+        self._store_base_samples(data, tuple(target_shape), _posterior_kind(posterior))
 
 
 class SobolQMCNormalSampler(NormalMCSampler):
@@ -104,7 +189,7 @@ class SobolQMCNormalSampler(NormalMCSampler):
 
     @property
     def base_samples(self) -> Any:
-        """The explicitly assigned base samples, or ``None``."""
+        """Cached standard-normal base samples, or ``None`` before drawing."""
         return self._base_samples
 
     @base_samples.setter
@@ -126,10 +211,12 @@ class SobolQMCNormalSampler(NormalMCSampler):
             )
         self._rs.set_base_samples((data, (n, math.prod(non_one))))
         self._base_samples = value
+        self._base_samples_explicit = True
 
     def forward(self, posterior: GPyTorchPosterior) -> Any:
         """Posterior samples, shape ``sample_shape x batch_shape x q x m``; the
         same base samples are used for every batch."""
+        self._construct_base_samples(posterior)
         if not isinstance(posterior, GPyTorchPosterior):
             kind = _posterior_kind(posterior)
             if not isinstance(posterior, Posterior) or kind is None:
@@ -236,6 +323,7 @@ class IIDNormalSampler(NormalMCSampler):
 
     def forward(self, posterior: GPyTorchPosterior) -> Any:
         """Posterior samples, shape ``sample_shape x batch_shape x q x m``."""
+        self._construct_base_samples(posterior)
         if not isinstance(posterior, GPyTorchPosterior):
             kind = _posterior_kind(posterior)
             if not isinstance(posterior, Posterior) or kind is None:

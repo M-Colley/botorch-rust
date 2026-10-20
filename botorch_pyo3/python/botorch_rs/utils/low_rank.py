@@ -14,7 +14,7 @@ import math
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import from_flat, to_flat
+from botorch_rs._arrays import broadcast_to, from_flat, to_flat
 from botorch_rs.exceptions.errors import BotorchError, NanError, UnsupportedError
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior, MultitaskMultivariateNormal
 
@@ -131,11 +131,14 @@ def sample_cached_cholesky(
             for r in range(n, Q):
                 mean_new.append(float(mean[(b * Q + r) * m + o]))
     L, lshape = to_flat(baseline_L, "baseline_L")
-    if math.prod(lshape) != nb * m * n * n:
+    target_L_shape = (*batch, m, n, n) if posterior._is_mt else (*batch, n, n)
+    try:
+        L = broadcast_to(L, lshape, target_L_shape)
+    except ValueError as error:
         raise BotorchError(
             f"baseline_L of shape {tuple(lshape)} does not match the posterior "
             f"(batch {batch}, {m} outputs, {n} baseline points)."
-        )
+        ) from error
     z, zshape = to_flat(base_samples, "base_samples")
     if len(z) != S * Q * m:
         raise RuntimeError(
