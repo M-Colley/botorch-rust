@@ -210,6 +210,7 @@ class KernelSpec:
 class KernelNode:
     @staticmethod
     def activation(conditions: Sequence[tuple[int, float]]) -> KernelNode: ...
+    def with_parent_active_dims(self, dims: Sequence[int]) -> KernelNode: ...
     @staticmethod
     def contextual_sac(
         decomposition: list[tuple[str, list[int]]], base: KernelNode

@@ -54,6 +54,15 @@ impl PyKernelNode {
             .map(Self::wrap)
     }
 
+    /// Compose an enclosing feature selection with every leaf of a composite.
+    fn with_parent_active_dims(&self, dims: Vec<usize>) -> PyResult<Self> {
+        self.inner
+            .clone()
+            .with_parent_active_dims(&dims)
+            .into_py_result()
+            .map(Self::wrap)
+    }
+
     /// `RQKernel`.
     #[staticmethod]
     #[pyo3(signature = (ard_num_dims=None))]
