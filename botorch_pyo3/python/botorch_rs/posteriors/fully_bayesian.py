@@ -99,6 +99,8 @@ class GaussianMixturePosterior(GPyTorchPosterior):
     @property
     def mixture_mean(self) -> Any:
         r"""The posterior mean for the mixture of models."""
+        if self.__dict__.get("_distribution_adapter") is not None:
+            return self.mean.mean(dim=MCMC_DIM)
         mean, _ = self._flat(self.mean)
         outer, k, qm = self._components()
         out = [
@@ -111,6 +113,13 @@ class GaussianMixturePosterior(GPyTorchPosterior):
     @property
     def mixture_variance(self) -> Any:
         r"""The posterior variance for the mixture of models."""
+        if self.__dict__.get("_distribution_adapter") is not None:
+            mean = self.mean
+            return (
+                self.variance.mean(MCMC_DIM)
+                + mean.square().mean(MCMC_DIM)
+                - mean.mean(MCMC_DIM).square()
+            )
         mean, _ = self._flat(self.mean)
         var, _ = self._flat(self.variance)
         outer, k, qm = self._components()
@@ -130,6 +139,14 @@ class GaussianMixturePosterior(GPyTorchPosterior):
         (``batch_shape x q x q``; ``batch_shape x (q m) x (q m)`` in the
         output-major order of the covariance for several outputs, where
         BoTorch fails: see the draft of phase 10a)."""
+        if self.__dict__.get("_distribution_adapter") is not None:
+            mean = self.mean
+            if not (self._is_mt and self._interleaved_mt):
+                mean = mean.transpose(-1, -2)
+            mean = mean.flatten(-2)
+            difference = mean - mean.mean(-2, keepdim=True)
+            between = difference.unsqueeze(-1) * difference.unsqueeze(-2)
+            return self.distribution.covariance_matrix.mean(-3) + between.mean(-3)
         cov, _ = self._flat(self.distribution.covariance_matrix)
         mean, _ = self._flat(self.mean)
         outer, k, qm = self._components()
@@ -160,6 +177,10 @@ class GaussianMixturePosterior(GPyTorchPosterior):
         r"""Compute the posterior quantiles for the mixture of models (shape
         ``value_shape x batch_shape x q x m`` without the component
         dimension)."""
+        if self.__dict__.get("_distribution_adapter") is not None:
+            from botorch_rs.posteriors._distribution import mixture_quantile
+
+            return mixture_quantile(self, value)
         values, vshape = self._flat(value)
         mean, _ = self._flat(self.mean)
         var, _ = self._flat(self.variance)

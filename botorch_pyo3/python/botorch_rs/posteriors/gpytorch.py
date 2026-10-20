@@ -123,10 +123,10 @@ class GPyTorchPosterior(Posterior):
 
     def __init__(
         self,
-        source: Any,
-        X: Flat,
-        kind: ArrayKind,
-        observation_noise: bool,
+        source: Any = None,
+        X: Flat | None = None,
+        kind: ArrayKind | None = None,
+        observation_noise: bool = False,
         num_outputs: int = 1,
         model_batch_shape: tuple[int, ...] = (),
         output_indices: list[int] | None = None,
@@ -135,7 +135,30 @@ class GPyTorchPosterior(Posterior):
         base: bool = False,
         interleaved: bool = False,
         query_inputs: Any = None,
+        *,
+        distribution: Any = None,
     ) -> None:
+        self._rs: Any
+        self._marginals: tuple[list[float], list[float]] | None = None
+        self._joint: tuple[Flat, Flat] | None = None
+        if distribution is not None or (source is not None and X is None and kind is None):
+            if distribution is not None and source is not None:
+                raise TypeError("Supply either distribution or a native model source.")
+            from botorch_rs.posteriors._distribution import GaussianDistributionAdapter
+
+            adapter = GaussianDistributionAdapter(source if distribution is None else distribution)
+            self._distribution_adapter = adapter
+            self._rs = None
+            self._query_inputs = None
+            self._kind = kind_of(adapter.mean)
+            self._batch = tuple(adapter.mean.shape[:-2])
+            self._q, self._m = adapter.mean.shape[-2:]
+            self._interleaved_mt = bool(getattr(adapter.distribution, "_interleaved", False))
+            self._base = False
+            self._transform = None
+            return
+        if X is None or kind is None:
+            raise TypeError("Provide distribution, or a native source, X, and kind.")
         snapshot = getattr(source, "copy", None)
         self._rs = snapshot() if callable(snapshot) else source
         self._interleaved_mt = interleaved
@@ -168,12 +191,12 @@ class GPyTorchPosterior(Posterior):
                 f"{selected} and weights are {len(transform[0])}"
             )
         self._m = 1 if transform is not None else selected
-        self._marginals: tuple[list[float], list[float]] | None = None
-        self._joint: tuple[Flat, Flat] | None = None
 
     @property
     def _is_mt(self) -> bool:
         """Whether the distribution is a ``MultitaskMultivariateNormal``."""
+        if (adapter := self.__dict__.get("_distribution_adapter")) is not None:
+            return bool(adapter.is_multitask)
         return self._m > 1
 
     def _kwargs(self) -> dict[str, Any]:
@@ -188,6 +211,8 @@ class GPyTorchPosterior(Posterior):
     # -- lazily computed quantities -------------------------------------
 
     def _get_marginals(self) -> tuple[list[float], list[float]]:
+        if (adapter := self.__dict__.get("_distribution_adapter")) is not None:
+            return list(to_flat(adapter.mean)[0]), list(to_flat(adapter.variance)[0])
         if self._marginals is None:
             (mean, _), (var, _) = self._rs.posterior_marginals(
                 self._x, self._observation_noise, **self._kwargs()
@@ -196,6 +221,14 @@ class GPyTorchPosterior(Posterior):
         return self._marginals
 
     def _get_joint(self) -> tuple[Flat, Flat]:
+        if (adapter := self.__dict__.get("_distribution_adapter")) is not None:
+            covariance = adapter.distribution.covariance_matrix
+            if adapter.is_multitask and adapter.distribution._interleaved:
+                k = len(self._batch)
+                covariance = covariance.reshape(*self._batch, self._q, self._m, self._q, self._m)
+                covariance = covariance.permute(*range(k), k + 1, k, k + 3, k + 2)
+                covariance = covariance.reshape(*self._batch, self._q * self._m, self._q * self._m)
+            return to_flat(adapter.mean), to_flat(covariance)
         if self._joint is None:
             self._joint = self._rs.posterior_joint(
                 self._x, self._observation_noise, **self._kwargs()
@@ -217,6 +250,12 @@ class GPyTorchPosterior(Posterior):
         return self._query_out(mode, self._get_marginals()[0 if mode == "mean" else 1], shape)
 
     def _samples_out(self, z: Pair, sample_shape: tuple[int, ...]) -> Any:
+        if (adapter := self.__dict__.get("_distribution_adapter")) is not None:
+            data, shape = z
+            batch = (1,) * len(self._batch) if len(shape) == 2 else self._batch
+            event = (self._q, self._m) if self._is_mt else (self._q,)
+            normals = from_flat(data, (*sample_shape, *batch, *event), self._kind)
+            return adapter.rsample(sample_shape, normals)
         return self._query_out(
             "samples", self._samples(z), (*sample_shape, *self._batch, self._q, self._m), z
         )
@@ -230,17 +269,23 @@ class GPyTorchPosterior(Posterior):
     @property
     def mean(self) -> Any:
         """The posterior mean, shape ``batch_shape x q x m``."""
+        if (adapter := self.__dict__.get("_distribution_adapter")) is not None:
+            return adapter.mean
         return self._moment_out("mean", (*self._batch, self._q, self._m))
 
     @property
     def variance(self) -> Any:
         """The posterior variance (clamped at 1e-10), shape ``batch_shape x q x m``."""
+        if (adapter := self.__dict__.get("_distribution_adapter")) is not None:
+            return adapter.variance
         return self._moment_out("variance", (*self._batch, self._q, self._m))
 
     @property
     def distribution(self) -> MultivariateNormal:
         """The joint normal distribution of each ``q``-batch (a
         ``MultitaskMultivariateNormal`` for several outputs)."""
+        if (adapter := self.__dict__.get("_distribution_adapter")) is not None:
+            return adapter.distribution
         if self._is_mt:
             mvn = MultitaskMultivariateNormal(self)
             if getattr(self, "_interleaved_mt", False):
@@ -280,6 +325,8 @@ class GPyTorchPosterior(Posterior):
     @property
     def base_sample_shape(self) -> tuple[int, ...]:
         """The shape of the base samples of one posterior sample."""
+        if (adapter := self.__dict__.get("_distribution_adapter")) is not None:
+            return adapter.base_sample_shape
         if self._is_mt:
             return (*self._batch, self._q, self._m)
         return (*self._batch, self._q)
@@ -292,6 +339,8 @@ class GPyTorchPosterior(Posterior):
 
         The base samples are drawn with the caller's array library (torch,
         NumPy or Python's ``random``)."""
+        if (adapter := self.__dict__.get("_distribution_adapter")) is not None:
+            return adapter.rsample(sample_shape)
         sample_shape = _as_shape(sample_shape)
         n = math.prod(sample_shape)
         nb = math.prod(self._batch)
@@ -305,6 +354,8 @@ class GPyTorchPosterior(Posterior):
         are broadcast; for a single output a trailing output dimension of size
         1 is allowed). For several outputs the base sample of point ``p`` and
         output ``t`` drives that point and output, as in BoTorch."""
+        if (adapter := self.__dict__.get("_distribution_adapter")) is not None:
+            return adapter.rsample(sample_shape, base_samples)
         sample_shape = _as_shape(sample_shape)
         data, zshape = to_flat(base_samples, "base_samples")
         k = len(sample_shape)
@@ -344,6 +395,8 @@ class GPyTorchPosterior(Posterior):
 
     def quantile(self, value: Any) -> Any:
         """Quantiles of the Gaussian marginals, computed natively in Rust."""
+        if (adapter := self.__dict__.get("_distribution_adapter")) is not None:
+            return adapter.marginal(value, density=False)
         from botorch_rs import _ops
 
         z = _ops.apply("ndtri", self._marginal_value(value))
@@ -352,6 +405,8 @@ class GPyTorchPosterior(Posterior):
 
     def density(self, value: Any) -> Any:
         """Probability density of each Gaussian marginal at ``value``."""
+        if (adapter := self.__dict__.get("_distribution_adapter")) is not None:
+            return adapter.marginal(value, density=True)
         from botorch_rs import _ops
 
         sd = _ops.apply("sqrt", self.variance)
@@ -361,6 +416,12 @@ class GPyTorchPosterior(Posterior):
 
     def __repr__(self) -> str:
         return f"GPyTorchPosterior(batch_shape={self._batch}, q={self._q}, m={self._m})"
+
+    def __getattr__(self, name: str) -> Any:
+        adapter = self.__dict__.get("_distribution_adapter")
+        if adapter is None:
+            raise AttributeError(name)
+        return getattr(adapter.distribution, name)
 
 
 class MultivariateNormal:
@@ -532,6 +593,10 @@ def scalarize_posterior_gpytorch(
     """Mean and covariance of the affine scalarization of a Gaussian posterior."""
     if not isinstance(posterior, GPyTorchPosterior):
         raise UnsupportedError("scalarize_posterior_gpytorch requires a GPyTorchPosterior.")
+    if posterior.__dict__.get("_distribution_adapter") is not None:
+        from botorch_rs.posteriors._distribution import scalarize_distribution
+
+        return scalarize_distribution(posterior, weights, offset)
     w = _validate_scalarize_inputs(weights, posterior._m)
     mean, covariance = posterior._get_joint()
     mu, cov = _rs.scalarize_posterior_moments(mean, covariance, w, float(offset))
@@ -543,6 +608,13 @@ def scalarize_posterior(posterior: Any, weights: Any, offset: float = 0.0) -> GP
     from botorch_rs.posteriors.posterior_list import PosteriorList
 
     if isinstance(posterior, GPyTorchPosterior):
+        if posterior.__dict__.get("_distribution_adapter") is not None:
+            import torch
+
+            mean, covariance = scalarize_posterior_gpytorch(posterior, weights, offset)
+            return GPyTorchPosterior(
+                distribution=torch.distributions.MultivariateNormal(mean, covariance)
+            )
         w = _validate_scalarize_inputs(weights, posterior._m)
         # Keep source-backed models lazy and use their native posterior sampler.
         if posterior._rs is not None and not posterior._base:
