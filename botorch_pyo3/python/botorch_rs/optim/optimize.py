@@ -575,7 +575,10 @@ def optimize_acqf(
         scalar; ``q`` values for ``sequential=True``; one per restart with
         ``return_best_only=False``), of the array type of ``bounds``.
     """
-    if getattr(acq_function, "_tensor_backend", None) == "torch":
+    if getattr(acq_function, "_tensor_backend", None) == "torch" or (
+        acq_function_sequence
+        and getattr(acq_function_sequence[0], "_tensor_backend", None) == "torch"
+    ):
         from botorch_rs.optim._torch_acq_optim import optimize
 
         return optimize(locals())

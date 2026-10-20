@@ -141,6 +141,26 @@ def gen_batch_initial_conditions(
     before it is evaluated (the fantasy designs of one-shot acquisition
     functions); the initial conditions are then ``(q + k) x d``.
     """
+    if getattr(acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_acq_initializers import gen_initial_conditions
+
+        if inequality_constraints or equality_constraints:
+            raise UnsupportedError("Device polytope initial conditions are not implemented yet.")
+        if options and options.get("sample_around_best"):
+            raise UnsupportedError(
+                "Device sample-around-best initial conditions are not implemented yet."
+            )
+        return gen_initial_conditions(
+            acq_function,
+            bounds,
+            q,
+            num_restarts,
+            raw_samples,
+            fixed_features,
+            options or {},
+            raw_generator=generator,
+            fixed_X_fantasies=fixed_X_fantasies,
+        )
     check_unsupported(generator=generator)
     if not isinstance(acq_function, AcquisitionFunction):
         raise UnsupportedError(
@@ -478,6 +498,10 @@ def initialize_q_batch(X: Any, acq_vals: Any, n: int, eta: float = 1.0) -> tuple
     Returns:
         The ``n x q x d`` initial conditions and their ``n`` values.
     """
+    if is_torch_tensor(X) and is_torch_tensor(acq_vals):
+        from botorch_rs.optim._torch_acq_initializers import initialize_q_batch as tensor_initialize
+
+        return tensor_initialize(X, acq_vals, n, eta)
     if len(_ops.shape_of(X)) > 3 or len(_ops.shape_of(acq_vals)) > 1:
         return _initialize_q_batch_batched(X, acq_vals, n=n, eta=eta)
     n_samples, values = _check_batch(X, acq_vals)
@@ -697,6 +721,12 @@ def initialize_q_batch_nonneg(
     Returns:
         The ``n x q x d`` initial conditions and their ``n`` values.
     """
+    if is_torch_tensor(X) and is_torch_tensor(acq_vals):
+        from botorch_rs.optim._torch_acq_initializers import (
+            initialize_q_batch_nonneg as tensor_initialize,
+        )
+
+        return tensor_initialize(X, acq_vals, n, eta, alpha)
     n_samples, values = _check_batch(X, acq_vals)
     if n > n_samples:
         raise RuntimeError("n cannot be larger than the number of provided samples")
@@ -741,6 +771,12 @@ def initialize_q_batch_topn(
     Returns:
         The ``n x q x d`` initial conditions and their ``n`` values.
     """
+    if is_torch_tensor(X) and is_torch_tensor(acq_vals):
+        from botorch_rs.optim._torch_acq_initializers import (
+            initialize_q_batch_topn as tensor_initialize,
+        )
+
+        return tensor_initialize(X, acq_vals, n, largest, sorted)
     n_samples, values = _check_batch(X, acq_vals)
     if n > n_samples:
         raise RuntimeError(

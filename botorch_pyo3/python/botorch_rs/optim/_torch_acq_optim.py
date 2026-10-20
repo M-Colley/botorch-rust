@@ -20,6 +20,66 @@ from botorch_rs.exceptions.errors import CandidateGenerationError, UnsupportedEr
 from botorch_rs.exceptions.warnings import OptimizationWarning
 
 
+def _limit(value: Any, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"{name} must be a positive integer.")
+    return value
+
+
+def _generate_chunks(
+    generator: Any, arguments: dict[str, Any], limit: int
+) -> tuple[Tensor, Tensor]:
+    """Independent groups of restarts, preserving fixed values and timeout budget."""
+    limit = _limit(limit, "Candidate batch/aggregation limit")
+    initial = arguments["initial_conditions"]
+    if initial.ndim < 3 or initial.shape[0] <= limit:
+        return generator(**arguments)
+    fixed = _fixed_values(
+        initial,
+        arguments.get("fixed_features"),
+        arguments.get("lower_bounds"),
+        arguments.get("upper_bounds"),
+    )
+    candidates, values = [], []
+    count = initial.shape[0]
+    started = time.monotonic()
+    timeout = arguments.get("timeout_sec")
+    for offset in range(0, count, limit):
+        part = dict(
+            arguments,
+            initial_conditions=initial[offset : offset + limit],
+            fixed_features={k: v[offset : offset + limit] for k, v in fixed.items()} or None,
+        )
+        if timeout is not None:
+            chunks_left = (count - offset + limit - 1) // limit
+            part["timeout_sec"] = max(0.0, timeout - (time.monotonic() - started)) / chunks_left
+        for key in ("lower_bounds", "upper_bounds"):
+            bound = part.get(key)
+            if isinstance(bound, Tensor) and bound.ndim >= initial.ndim - 1:
+                part[key] = bound.expand_as(initial)[offset : offset + limit]
+        candidate, value = generator(**part)
+        candidates.append(candidate)
+        values.append(value)
+    return torch.cat(candidates, 0), torch.cat(values, 0)
+
+
+def select_best(candidates: Tensor, values: Tensor) -> tuple[Tensor, Tensor]:
+    if values.shape != candidates.shape[:-2]:
+        raise ValueError("Candidate values must match their restart and model batch dimensions.")
+    if values.ndim == 0:
+        return candidates, values
+    best = values.argmax(dim=0, keepdim=True)
+    return candidates.gather(
+        0, best[..., None, None].expand(*best.shape, *candidates.shape[-2:])
+    ).squeeze(0), values.gather(0, best).squeeze(0)
+
+
+def _join_pending(original: Any, points: list[Tensor]) -> Tensor:
+    tensors = ([original] if original is not None else []) + points
+    batch = torch.broadcast_shapes(*(t.shape[:-2] for t in tensors))
+    return torch.cat([t.expand(*batch, *t.shape[-2:]) for t in tensors], -2)
+
+
 def fix_features(X: Tensor, fixed: Mapping[int, Any] | None, *, insert: bool = False) -> Tensor:
     if not fixed:
         return X
@@ -110,7 +170,23 @@ def gen_torch(
         )
         stopping.setdefault("maxiter", options.pop("maxiter"))
     if "max_optimization_problem_aggregation_size" in options:
-        raise UnsupportedError("Torch candidate aggregation limits are not implemented.")
+        limit = options.pop("max_optimization_problem_aggregation_size")
+        options.update(optimizer_options=optimizer_options, stopping_criterion_options=stopping)
+        return _generate_chunks(
+            gen_torch,
+            dict(
+                initial_conditions=initial_conditions,
+                acquisition_function=acquisition_function,
+                lower_bounds=lower_bounds,
+                upper_bounds=upper_bounds,
+                optimizer=optimizer,
+                options=options,
+                callback=callback,
+                fixed_features=fixed_features,
+                timeout_sec=timeout_sec,
+            ),
+            limit,
+        )
     if options:
         raise UnsupportedError(f"Unsupported Torch candidate options: {sorted(options)}.")
     criterion = ExpMAStoppingCriterion(**stopping)
@@ -254,7 +330,25 @@ def gen_scipy(
         raise UnsupportedError("Torch candidate generation requires with_grad=True.")
     callback = options.pop("callback", None)
     if "max_optimization_problem_aggregation_size" in options:
-        raise UnsupportedError("Torch candidate aggregation limits are not implemented.")
+        limit = options.pop("max_optimization_problem_aggregation_size")
+        options.update(method=method, callback=callback)
+        return _generate_chunks(
+            gen_scipy,
+            dict(
+                initial_conditions=initial_conditions,
+                acquisition_function=acquisition_function,
+                lower_bounds=lower_bounds,
+                upper_bounds=upper_bounds,
+                inequality_constraints=inequality_constraints,
+                equality_constraints=equality_constraints,
+                nonlinear_inequality_constraints=nonlinear_inequality_constraints,
+                options=options,
+                fixed_features=fixed_features,
+                timeout_sec=timeout_sec,
+                use_parallel_mode=use_parallel_mode,
+            ),
+            limit,
+        )
     options.pop("disp", None)
     options.pop("iprint", None)
     for source, target in (("max_cor", "maxcor"), ("pgtol", "gtol"), ("tol", "gtol")):
@@ -373,7 +467,10 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
     from botorch_rs.generation.gen import gen_candidates_scipy
 
     args = dict(arguments)
-    acquisition = args["acq_function"]
+    sequence = args["acq_function_sequence"]
+    acquisition = args["acq_function"] if sequence is None else sequence[0] if sequence else None
+    if acquisition is None:
+        raise ValueError("An acquisition function or nonempty sequence is required.")
     bounds = args["bounds"]
     if not isinstance(bounds, Tensor) or bounds.ndim != 2 or bounds.shape[0] != 2:
         raise ValueError("Torch acquisition bounds must be a 2 x d Tensor.")
@@ -382,8 +479,13 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
     q, restarts = args["q"], args["num_restarts"]
     if q < 1 or restarts < 1:
         raise ValueError("q and num_restarts must be positive.")
-    if args["acq_function_sequence"] is not None:
-        raise UnsupportedError("Torch acquisition sequences are not yet supported.")
+    if sequence is not None:
+        if not args["sequential"] or q < 2 or len(sequence) != q:
+            raise ValueError(
+                "An acquisition sequence requires sequential=True, q>1 and q acquisitions."
+            )
+        if any(getattr(acq, "_tensor_backend", None) != "torch" for acq in sequence):
+            raise UnsupportedError("All sequence acquisitions must use the Tensor backend.")
     if args["ic_generator"] is None and args["ic_gen_kwargs"]:
         raise UnsupportedError(
             "Additional initialization keywords require a custom ic_generator on the Torch backend."
@@ -407,19 +509,22 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
             raise UnsupportedError(
                 "Sequential optimization requires return_best_only and generated initial conditions."
             )
-        original = acquisition.X_pending
+        acquisitions = [acquisition] * q if sequence is None else sequence
+        if any(isinstance(acq, OneShotAcquisitionFunction) for acq in acquisitions):
+            raise UnsupportedError("One-shot acquisitions require joint optimization.")
+        originals = [getattr(acq, "X_pending", None) for acq in acquisitions]
         points: list[Tensor] = []
         sequential_values: list[Tensor] = []
         try:
-            for _ in range(q):
+            for i, acquisition in enumerate(acquisitions):
                 if points:
-                    acquisition.set_X_pending(
-                        torch.cat(([original] if original is not None else []) + points, dim=-2)
-                    )
+                    acquisition.set_X_pending(_join_pending(originals[i], points))
                 timeout = args["timeout_sec"]
                 candidate, value = optimize(
                     dict(
                         args,
+                        acq_function=acquisition,
+                        acq_function_sequence=None,
                         q=1,
                         sequential=False,
                         timeout_sec=None if timeout is None else timeout / q,
@@ -429,17 +534,17 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
                 if value is not None:
                     sequential_values.append(value)
         finally:
-            acquisition.set_X_pending(original)
+            for acquisition, original in zip(acquisitions, originals, strict=True):
+                acquisition.set_X_pending(original)
         return torch.cat(points, dim=-2), torch.stack(sequential_values) if args[
             "return_acq_values"
         ] else None
     one_shot = isinstance(acquisition, OneShotAcquisitionFunction)
     augmented = acquisition.get_augmented_q_batch_size(q) if one_shot else q
     options = dict(args["options"] or {})
-    if options.get("batch_limit") is not None:
-        raise UnsupportedError(
-            "Torch optimization batch_limit is not yet implemented; init_batch_limit controls raw scoring only."
-        )
+    batch_limit = options.get("batch_limit")
+    if batch_limit is not None:
+        _limit(batch_limit, "batch_limit")
     from botorch_rs.optim.optimize import _INIT_KEYS
 
     init_keys = {
@@ -493,6 +598,13 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
             acquisition, bounds, augmented, restarts, raw, args["fixed_features"], options
         )
     initial = initial.to(bounds)
+    from botorch_rs.optim._torch_acq_initializers import acquisition_batch_shape
+
+    model_batch = acquisition_batch_shape(acquisition)
+    if initial.ndim == 3 and model_batch:
+        initial = initial.reshape(
+            initial.shape[0], *((1,) * len(model_batch)), *initial.shape[-2:]
+        ).expand(initial.shape[0], *model_batch, *initial.shape[-2:])
     generator = args["gen_candidates"] or gen_candidates_scipy
     generator_base = generator.func if isinstance(generator, functools.partial) else generator
     torch_generator = getattr(generator_base, "__name__", "") == "gen_candidates_torch"
@@ -523,7 +635,9 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
     started = time.monotonic()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", OptimizationWarning)
-        candidates, values = generator(**generation_args)
+        candidates, values = _generate_chunks(
+            generator, generation_args, batch_limit or initial.shape[0]
+        )
     failed = any(issubclass(w.category, OptimizationWarning) for w in caught)
     remaining = (
         None if args["timeout_sec"] is None else args["timeout_sec"] - (time.monotonic() - started)
@@ -592,12 +706,7 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
         with torch.no_grad():
             values = acquisition(candidates)
     if args["return_best_only"]:
-        if values.ndim != 1:
-            raise UnsupportedError(
-                "Torch best-restart selection currently requires scalar acquisition batches."
-            )
-        best = values.argmax()
-        candidates, values = candidates[best], values[best]
+        candidates, values = select_best(candidates, values)
     if one_shot and not args["return_full_tree"]:
         candidates = acquisition.extract_candidates(candidates)
     return candidates, values if args["return_acq_values"] else None

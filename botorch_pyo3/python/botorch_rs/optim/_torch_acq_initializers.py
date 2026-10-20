@@ -15,11 +15,15 @@ from botorch_rs.exceptions.warnings import BadInitialCandidatesWarning, Sampling
 
 
 def _check(X: Tensor, acq_vals: Tensor, n: int) -> int:
-    if X.ndim != 3 or acq_vals.shape != X.shape[:1]:
+    if X.ndim < 3 or acq_vals.shape != X.shape[:-2]:
         raise UnsupportedError(
-            "Torch restart selection requires raw x q x d points and raw scalar values."
+            "Restart points and values must have shapes raw x batch_shape x q x d and raw x batch_shape."
         )
     count = X.shape[0]
+    if n > count:
+        raise RuntimeError(
+            f"n ({n}) cannot be larger than the number of provided samples ({count})."
+        )
     if not isinstance(n, int) or n < 1 or n > count:
         raise ValueError(
             "The restart count must be positive and no greater than the raw sample count."
@@ -38,10 +42,23 @@ def _random(X: Tensor, values: Tensor, n: int, generator: Any) -> tuple[Tensor, 
 
 
 def _ensure_max(indices: Tensor, values: Tensor) -> Tensor:
-    maximum = values.argmax()
-    if not bool((indices == maximum).any()):
-        indices[-1] = maximum
+    maximum = values.argmax(dim=0)
+    indices[-1] = torch.where((indices == maximum).any(dim=0), indices[-1], maximum)
     return indices
+
+
+def _gather(X: Tensor, values: Tensor, indices: Tensor) -> tuple[Tensor, Tensor]:
+    return X.gather(
+        0, indices[..., None, None].expand(*indices.shape, *X.shape[-2:])
+    ), values.gather(0, indices)
+
+
+def acquisition_batch_shape(acquisition: Any) -> tuple[int, ...]:
+    from botorch_rs.utils.transforms import is_ensemble
+
+    model = getattr(acquisition, "model", None)
+    shape = tuple(getattr(model, "batch_shape", ()))
+    return shape[:-1] if model is not None and is_ensemble(model) else shape
 
 
 def initialize_q_batch(
@@ -58,16 +75,20 @@ def initialize_q_batch(
         raise ValueError("eta must be finite.")
     if n == count:
         return X, acq_vals
-    std = acq_vals.std()
-    if bool((std == 0) | ~torch.isfinite(std)):
+    std = acq_vals.std(dim=0)
+    if bool(((std == 0) | ~torch.isfinite(std)).any()):
         return _random(X, acq_vals, n, generator)
-    standardized = (acq_vals - acq_vals.mean()) / std.where(std >= 1e-9, 1.0)
+    standardized = (acq_vals - acq_vals.mean(dim=0)) / std.where(std >= 1e-9, 1.0)
     weights = (eta * standardized).exp()
     while bool(torch.isinf(weights).any()):
         eta *= 0.5
         weights = (eta * standardized).exp()
-    indices = _ensure_max(torch.multinomial(weights, n, generator=generator), acq_vals)
-    return X[indices], acq_vals[indices]
+    indices = (
+        torch.multinomial(weights.movedim(0, -1).reshape(-1, count), n, generator=generator)
+        .reshape(*acq_vals.shape[1:], n)
+        .movedim(-1, 0)
+    )
+    return _gather(X, acq_vals, _ensure_max(indices, acq_vals))
 
 
 def initialize_q_batch_nonneg(
@@ -81,6 +102,18 @@ def initialize_q_batch_nonneg(
 ) -> tuple[Tensor, Tensor]:
     """Positive quota, adaptive alpha threshold and relative-value sampling."""
     count = _check(X, acq_vals, n)
+    if acq_vals.ndim > 1:
+        batch = acq_vals.shape[1:]
+        flat_X, flat_values = X.reshape(count, -1, *X.shape[-2:]), acq_vals.reshape(count, -1)
+        selected = [
+            initialize_q_batch_nonneg(
+                flat_X[:, i], flat_values[:, i], n, eta, alpha, generator=generator
+            )
+            for i in range(flat_values.shape[-1])
+        ]
+        return torch.stack([s[0] for s in selected], 1).reshape(
+            n, *batch, *X.shape[-2:]
+        ), torch.stack([s[1] for s in selected], 1).reshape(n, *batch)
     if not math.isfinite(eta) or not math.isfinite(alpha) or alpha < 0:
         raise ValueError("eta must be finite and alpha must be finite and nonnegative.")
     if n == count:
@@ -122,8 +155,8 @@ def initialize_q_batch_topn(
         return X, acq_vals
     if bool(acq_vals.std() == 0):
         return _random(X, acq_vals, n, generator)
-    values, indices = acq_vals.topk(n, largest=largest, sorted=sorted)
-    return X[indices], values
+    _, indices = acq_vals.topk(n, dim=0, largest=largest, sorted=sorted)
+    return _gather(X, acq_vals, indices)
 
 
 def _nonnegative(acquisition: Any) -> bool:
@@ -157,6 +190,8 @@ def gen_initial_conditions(
     raw_samples: int,
     fixed_features: Mapping[int, Any] | None,
     options: Mapping[str, Any],
+    raw_generator: Any = None,
+    fixed_X_fantasies: Any = None,
 ) -> Tensor:
     """Generate Sobol candidates and apply the reference scalar restart heuristic."""
     from botorch_rs.optim._torch_acq_optim import _fixed_values, fix_features
@@ -165,6 +200,17 @@ def gen_initial_conditions(
     if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 1):
         raise ValueError("init_batch_limit must be a positive integer.")
     seed = options.get("seed")
+    if q < 1 or raw_samples < restarts or restarts < 1:
+        raise ValueError(
+            "Initialization requires positive q/restarts and raw_samples >= num_restarts."
+        )
+    if (
+        bounds.ndim != 2
+        or bounds.shape[0] != 2
+        or not bool(torch.isfinite(bounds).all())
+        or bool((bounds[0] > bounds[1]).any())
+    ):
+        raise ValueError("Initial condition bounds must be finite ordered 2 x d Tensors.")
     for attempt in range(4):
         current_seed = None if seed is None else int(seed) + attempt
         count = raw_samples * (attempt + 1)
@@ -174,7 +220,13 @@ def gen_initial_conditions(
             if current_seed is None
             else torch.Generator(device=bounds.device).manual_seed(current_seed)
         )
-        if dimension <= torch.quasirandom.SobolEngine.MAXDIM:
+        if raw_generator is not None:
+            samples = raw_generator(count, q, current_seed)
+            if not isinstance(samples, Tensor) or samples.shape != (count, q, bounds.shape[-1]):
+                raise ValueError("A raw generator must return a raw_samples x q x d Tensor.")
+            samples = samples.to(bounds)
+            uniform = None
+        elif dimension <= torch.quasirandom.SobolEngine.MAXDIM:
             engine = torch.quasirandom.SobolEngine(dimension, scramble=True, seed=current_seed)
             uniform = engine.draw(count, dtype=bounds.dtype).to(bounds.device).reshape(count, q, -1)
         else:
@@ -189,17 +241,31 @@ def gen_initial_conditions(
                 device=bounds.device,
                 generator=generator,
             )
-        samples = bounds[0] + (bounds[1] - bounds[0]) * uniform
+        if raw_generator is None:
+            assert uniform is not None
+            samples = bounds[0] + (bounds[1] - bounds[0]) * uniform
+        batch = acquisition_batch_shape(acquisition)
+        if batch:
+            samples = samples.reshape(count, *((1,) * len(batch)), q, -1).expand(
+                count, *batch, q, bounds.shape[-1]
+            )
         samples = fix_features(
             samples, _fixed_values(samples, fixed_features, bounds[0], bounds[1])
         )
+        if fixed_X_fantasies is not None:
+            fantasies = torch.as_tensor(fixed_X_fantasies, dtype=bounds.dtype, device=bounds.device)
+            if fantasies.ndim != 2 or fantasies.shape[-1] != bounds.shape[-1]:
+                raise ValueError("fixed_X_fantasies must have shape k x d.")
+            samples = torch.cat(
+                (samples, fantasies.expand(*samples.shape[:-2], *fantasies.shape)), -2
+            )
         with torch.no_grad():
             values = torch.cat(
                 [acquisition(chunk) for chunk in samples.split(limit or count)], dim=0
             )
-            if values.shape != (count,):
+            if values.shape != samples.shape[:-2]:
                 raise UnsupportedError(
-                    "Torch automatic initialization requires one scalar per raw candidate batch."
+                    "Automatic initialization requires one scalar per raw and model batch."
                 )
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always", BadInitialCandidatesWarning)

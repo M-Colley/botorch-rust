@@ -148,7 +148,7 @@ def test_high_level_initializer_options_follow_reference_formula(device, options
 @pytest.mark.parametrize("device", DEVICES)
 def test_unimplemented_optimizer_options_are_rejected(device):
     bounds = torch.tensor([[0.0], [1.0]], dtype=torch.double, device=device)
-    for options in ({"batch_limit": 2}, {"sample_around_best": True}):
+    for options in ({"sample_around_best": True},):
         with pytest.raises(UnsupportedError):
             optimize_acqf(Quadratic(), bounds, 1, 2, 8, options=options)
     with pytest.raises(UnsupportedError, match="custom ic_generator"):
@@ -157,9 +157,9 @@ def test_unimplemented_optimizer_options_are_rejected(device):
     with pytest.raises(UnsupportedError, match="serial mode"):
         gen_candidates_scipy(initial, Quadratic(), use_parallel_mode=True)
     for generator in (gen_candidates_torch, gen_candidates_scipy):
-        with pytest.raises(UnsupportedError, match="aggregation"):
+        with pytest.raises(ValueError, match="positive integer"):
             generator(
-                initial, Quadratic(), options={"max_optimization_problem_aggregation_size": 2}
+                initial, Quadratic(), options={"max_optimization_problem_aggregation_size": 0}
             )
     with pytest.raises(UnsupportedError, match="inter-point linear"):
         optimize_acqf(
