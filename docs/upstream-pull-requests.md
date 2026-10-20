@@ -88,6 +88,8 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Port rank-zero Index/PositiveIndex rejection | Fixed in `9a74f3f`, included in port PR #1; all 18 focused native/Tensor cases pass with the rebuilt library |
 | Port CUDA MAP SAAS factory converts metadata twice | Fixed in `5b32fd2`, included in [port PR #1](https://github.com/M-Colley/botorch-rust/pull/1); 106 focused MAP SAAS / core-kernel cases pass, including CUDA active columns and coupled prior derivatives |
 | Port Tensor validation and constant-batch restart diagnostics | Fixed in `6963a5c`, `01845f1` and `5867b1c`, included in [port PR #1](https://github.com/M-Colley/botorch-rust/pull/1); source-compatible constraint/fantasy width errors and warning categories/messages retain the existing numerical behavior |
+| Port PyTorch 2.14 boundary derivatives | Fixed in the Tensor Bilog and shrinkage paths; CPU/CUDA Torch 2.13 and isolated CPU Torch 2.14 regressions pass. The PSD boundary oracle now explicitly selects its declared subgradient instead of inheriting version-dependent clamp semantics; included in [port PR #1](https://github.com/M-Colley/botorch-rust/pull/1) |
+| Port type checking without Torch and cross-platform normal fixtures | Fixed in `e48230e` and `1bf2990`, included in [port PR #1](https://github.com/M-Colley/botorch-rust/pull/1); Mypy 2.4 passes with and without optional packages, and normal fixtures allow eight ULPs of libm roundoff while uniform draws remain bit exact |
 
 ## Retracted report
 
