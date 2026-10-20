@@ -204,20 +204,86 @@ fn tensor_exact_gp_posterior<'py>(
     jitter: f64,
     observation_noise: Option<&Tensor<'py>>,
 ) -> PyResult<TensorPair<'py>> {
+    let (chol, alpha) =
+        tensor_exact_gp_factor(py, train_y, k_train, train_mean, train_noise, jitter)?;
+    tensor_exact_gp_predict(
+        py,
+        &chol,
+        &alpha,
+        k_train_query,
+        k_query,
+        query_mean,
+        observation_noise,
+    )
+}
+
+/// Factor the noisy training covariance and solve for its residual weights.
+#[pyfunction]
+#[pyo3(signature = (train_y, k_train, train_mean, train_noise, jitter=0.0))]
+fn tensor_exact_gp_factor<'py>(
+    py: Python<'py>,
+    train_y: &Tensor<'py>,
+    k_train: &Tensor<'py>,
+    train_mean: &Tensor<'py>,
+    train_noise: &Tensor<'py>,
+    jitter: f64,
+) -> PyResult<TensorPair<'py>> {
     validate_jitter(jitter)?;
     let torch = torch_module(py)?;
     for (name, tensor) in [
         ("train_y", train_y),
         ("k_train", k_train),
-        ("k_train_query", k_train_query),
-        ("k_query", k_query),
         ("train_mean", train_mean),
-        ("query_mean", query_mean),
         ("train_noise", train_noise),
     ] {
         require_tensor(&torch, tensor, name)?;
     }
-    let n = check_training_shapes(train_y, k_train)?;
+    check_training_shapes(train_y, k_train)?;
+    let covariance = add_diagonal(&torch, k_train, train_noise, jitter)?;
+    // No hidden retry/jitter policy: a failed Cholesky raises Torch's own error.
+    let lower = torch
+        .getattr("linalg")?
+        .call_method1("cholesky", (&covariance,))?;
+    let residual = train_y.sub(train_mean)?.call_method1("unsqueeze", (-1,))?;
+    let alpha = torch
+        .call_method1("cholesky_solve", (residual, &lower))?
+        .call_method1("squeeze", (-1,))?;
+    Ok((lower, alpha))
+}
+
+/// Predict from existing factors without rebuilding the training covariance.
+#[pyfunction]
+#[pyo3(signature = (chol, alpha, k_train_query, k_query, query_mean, observation_noise=None))]
+fn tensor_exact_gp_predict<'py>(
+    py: Python<'py>,
+    chol: &Tensor<'py>,
+    alpha: &Tensor<'py>,
+    k_train_query: &Tensor<'py>,
+    k_query: &Tensor<'py>,
+    query_mean: &Tensor<'py>,
+    observation_noise: Option<&Tensor<'py>>,
+) -> PyResult<TensorPair<'py>> {
+    let torch = torch_module(py)?;
+    for (name, tensor) in [
+        ("chol", chol),
+        ("alpha", alpha),
+        ("k_train_query", k_train_query),
+        ("k_query", k_query),
+        ("query_mean", query_mean),
+    ] {
+        require_tensor(&torch, tensor, name)?;
+    }
+    let factor_shape = shape(chol)?;
+    let alpha_shape = shape(alpha)?;
+    if factor_shape.len() < 2
+        || factor_shape[factor_shape.len() - 2] != factor_shape[factor_shape.len() - 1]
+        || alpha_shape.last() != factor_shape.last()
+    {
+        return Err(dimension_error(
+            "chol must end in n x n and alpha must end in n",
+        ));
+    }
+    let n = factor_shape[factor_shape.len() - 1];
     let (cross, query) = (shape(k_train_query)?, shape(k_query)?);
     if cross.len() < 2
         || query.len() < 2
@@ -229,19 +295,17 @@ fn tensor_exact_gp_posterior<'py>(
             "Covariance blocks must end in n x n, n x q, q x q",
         ));
     }
-    let covariance = add_diagonal(&torch, k_train, train_noise, jitter)?;
-    // No hidden retry/jitter policy: a failed Cholesky raises Torch's own error.
-    let linalg = torch.getattr("linalg")?;
-    let lower = linalg.call_method1("cholesky", (&covariance,))?;
-    let residual = train_y.sub(train_mean)?.call_method1("unsqueeze", (-1,))?;
-    let alpha = torch.call_method1("cholesky_solve", (residual, &lower))?;
     let mean = transpose(k_train_query)?
-        .matmul(alpha)?
+        .matmul(alpha.call_method1("unsqueeze", (-1,))?)?
         .call_method1("squeeze", (-1,))?
         .add(query_mean)?;
     let kwargs = PyDict::new(py);
     kwargs.set_item("upper", false)?;
-    let solved = linalg.call_method("solve_triangular", (&lower, k_train_query), Some(&kwargs))?;
+    let solved = torch.getattr("linalg")?.call_method(
+        "solve_triangular",
+        (chol, k_train_query),
+        Some(&kwargs),
+    )?;
     let mut covariance = k_query.sub(transpose(&solved)?.matmul(&solved)?)?;
     if let Some(noise) = observation_noise {
         require_tensor(&torch, noise, "observation_noise")?;
@@ -262,33 +326,15 @@ fn tensor_exact_mll<'py>(
     jitter: f64,
     normalize: bool,
 ) -> PyResult<Tensor<'py>> {
-    validate_jitter(jitter)?;
-    let torch = torch_module(py)?;
-    for (name, tensor) in [
-        ("train_y", train_y),
-        ("k_train", k_train),
-        ("train_mean", train_mean),
-        ("train_noise", train_noise),
-    ] {
-        require_tensor(&torch, tensor, name)?;
-    }
     let n = check_training_shapes(train_y, k_train)?;
     if normalize && n == 0 {
         return Err(value_error(
             "Cannot normalize a log likelihood with no training points",
         ));
     }
-    let covariance = add_diagonal(&torch, k_train, train_noise, jitter)?;
-    let lower = torch
-        .getattr("linalg")?
-        .call_method1("cholesky", (covariance,))?;
+    let (lower, alpha) =
+        tensor_exact_gp_factor(py, train_y, k_train, train_mean, train_noise, jitter)?;
     let residual = train_y.sub(train_mean)?;
-    let alpha = torch
-        .call_method1(
-            "cholesky_solve",
-            (residual.call_method1("unsqueeze", (-1,))?, &lower),
-        )?
-        .call_method1("squeeze", (-1,))?;
     let quadratic = residual.mul(alpha)?.call_method1("sum", (-1,))?;
     let logdet_half = diagonal(&lower)?
         .call_method0("log")?
@@ -378,6 +424,8 @@ fn tensor_psd_safe_cholesky<'py>(
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tensor_kernel, m)?)?;
     m.add_function(wrap_pyfunction!(tensor_exact_gp_posterior, m)?)?;
+    m.add_function(wrap_pyfunction!(tensor_exact_gp_factor, m)?)?;
+    m.add_function(wrap_pyfunction!(tensor_exact_gp_predict, m)?)?;
     m.add_function(wrap_pyfunction!(tensor_exact_mll, m)?)?;
     m.add_function(wrap_pyfunction!(tensor_psd_safe_cholesky, m)?)?;
     Ok(())

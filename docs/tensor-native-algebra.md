@@ -14,6 +14,15 @@ ordinary broadcast batch dimensions. The likelihood function returns the
 Gaussian data log probability; `normalize=True` divides by the number of
 training points. Model-prior terms belong in the model's likelihood wrapper.
 
+`tensor_exact_gp_factor` exposes the training Cholesky factor and residual
+weights. `tensor_exact_gp_predict` reuses those tensors and evaluates only the
+candidate covariance blocks and triangular solve. Neither function detaches its
+inputs or stores a hidden cache. Model wrappers decide when frozen training
+state permits caching; when the training graph is live, reuse still preserves
+all its gradients. Tests check both complete training graphs and second query
+derivatives with frozen factors, and count one training factorization across
+multiple predictions.
+
 Explicit jitter in these functions is fixed configuration. Sampling can use
 `tensor_psd_safe_cholesky`, which first attempts the original matrix and adds
 increasing diagonal jitter only to failed batch members. This decision reads

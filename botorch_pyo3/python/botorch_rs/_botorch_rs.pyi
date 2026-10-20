@@ -3457,6 +3457,17 @@ def tensor_exact_gp_posterior(
     jitter: float = 0.0,
     observation_noise: Any = None,
 ) -> tuple[Any, Any]: ...
+def tensor_exact_gp_factor(
+    train_y: Any, k_train: Any, train_mean: Any, train_noise: Any, jitter: float = 0.0
+) -> tuple[Any, Any]: ...
+def tensor_exact_gp_predict(
+    chol: Any,
+    alpha: Any,
+    k_train_query: Any,
+    k_query: Any,
+    query_mean: Any,
+    observation_noise: Any = None,
+) -> tuple[Any, Any]: ...
 def tensor_exact_mll(
     train_y: Any,
     k_train: Any,

@@ -275,3 +275,97 @@ def test_psd_safe_cholesky_exhaustion_and_invalid_options_are_explicit():
         native.tensor_psd_safe_cholesky(bad, jitter=-1.0)
     with pytest.raises(ValueError, match="n x n"):
         native.tensor_psd_safe_cholesky(torch.ones(2, 3))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_reused_training_factors_preserve_complete_training_and_query_graphs(device, dtype):
+    args = inputs(device, dtype)
+    x, y, query, noise, lengthscale, scale, mean, observation_noise = args
+    ktt = kernel(x, x, lengthscale, scale)
+    chol, alpha = native.tensor_exact_gp_factor(y, ktt, mean.expand_as(y), noise)
+    assert chol.shape == (3, 3) and alpha.shape == (3,)
+    assert chol.grad_fn is not None and alpha.grad_fn is not None
+    covariance = ktt + torch.diag_embed(noise)
+    actual_loss, expected_loss = 0.0, 0.0
+    for weight, offset in [(-0.3, 0.0), (0.7, 0.05)]:
+        current = query + offset
+        cross = kernel(x, current, lengthscale, scale)
+        prior = kernel(current, current, lengthscale, scale)
+        values, cov = native.tensor_exact_gp_predict(
+            chol, alpha, cross, prior, mean.expand(current.shape[:-1]), observation_noise
+        )
+        expected = mean + (
+            cross.T @ torch.linalg.solve(covariance, (y - mean).unsqueeze(-1))
+        ).squeeze(-1)
+        expected_cov = (
+            prior
+            - cross.T @ torch.linalg.solve(covariance, cross)
+            + torch.diag_embed(observation_noise)
+        )
+        actual_loss = actual_loss + weight * (values.square().sum() + cov.square().sum())
+        expected_loss = expected_loss + weight * (
+            expected.square().sum() + expected_cov.square().sum()
+        )
+    gradients = torch.autograd.grad(actual_loss, args, create_graph=True)
+    expected_gradients = torch.autograd.grad(expected_loss, args, create_graph=True)
+    tolerance = (
+        dict(rtol=2e-4, atol=2e-5) if dtype == torch.float32 else dict(rtol=2e-10, atol=2e-10)
+    )
+    for actual, expected in zip(gradients, expected_gradients, strict=True):
+        torch.testing.assert_close(actual, expected, **tolerance)
+    hvp = torch.autograd.grad(sum(g.square().sum() for g in gradients), args, retain_graph=True)
+    expected_hvp = torch.autograd.grad(sum(g.square().sum() for g in expected_gradients), args)
+    for actual, expected in zip(hvp, expected_hvp, strict=True):
+        torch.testing.assert_close(actual, expected, **tolerance)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_frozen_training_cache_retains_higher_order_query_graph(device):
+    x, y, query, noise, lengthscale, scale, mean, observation_noise = (
+        t.detach() for t in inputs(device)
+    )
+    query.requires_grad_()
+    with torch.no_grad():
+        chol, alpha = native.tensor_exact_gp_factor(
+            y, kernel(x, x, lengthscale, scale), mean.expand_as(y), noise
+        )
+    assert not chol.requires_grad and not alpha.requires_grad
+
+    def function(q):
+        return native.tensor_exact_gp_predict(
+            chol,
+            alpha,
+            kernel(x, q, lengthscale, scale),
+            kernel(q, q, lengthscale, scale),
+            mean.expand(q.shape[:-1]),
+            observation_noise,
+        )
+
+    assert torch.autograd.gradcheck(function, (query,), fast_mode=True)
+    assert torch.autograd.gradgradcheck(function, (query,), fast_mode=True)
+
+
+def test_predict_does_not_repeat_training_cholesky(monkeypatch):
+    x, y, query, noise, lengthscale, scale, mean, _ = inputs()
+    calls = []
+    original = torch.linalg.cholesky
+
+    def counted(matrix, *args, **kwargs):
+        calls.append(tuple(matrix.shape))
+        return original(matrix, *args, **kwargs)
+
+    monkeypatch.setattr(torch.linalg, "cholesky", counted)
+    chol, alpha = native.tensor_exact_gp_factor(
+        y, kernel(x, x, lengthscale, scale), mean.expand_as(y), noise
+    )
+    for offset in (0.0, 0.05, 0.1):
+        q = query + offset
+        native.tensor_exact_gp_predict(
+            chol,
+            alpha,
+            kernel(x, q, lengthscale, scale),
+            kernel(q, q, lengthscale, scale),
+            mean.expand(q.shape[:-1]),
+        )
+    assert calls == [(3, 3)]
