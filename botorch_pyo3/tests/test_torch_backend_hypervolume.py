@@ -48,6 +48,7 @@ def data(device, outcomes):
 @pytest.mark.parametrize("outcomes", [2, 3])
 @pytest.mark.parametrize("q", [1, 2])
 @pytest.mark.parametrize("log", [False, True])
+@pytest.mark.usefixtures("reference_python_logehvi")
 def test_hypervolume_reference_device_and_full_graph(device, outcomes, q, log):
     pytest.importorskip("botorch")
     from botorch.utils.multi_objective.box_decompositions.non_dominated import (
@@ -111,6 +112,7 @@ def test_observed_front_and_reference_gradcheck(device, log, outcomes):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("log", [False, True])
 @pytest.mark.parametrize("fat", [False, True])
+@pytest.mark.usefixtures("reference_python_logehvi")
 def test_constrained_objective_pending_hypervolume(device, log, fat):
     pytest.importorskip("botorch")
     from botorch.acquisition.multi_objective.objective import (
@@ -206,6 +208,7 @@ def test_hypervolume_default_sampler_no_host_conversion(device, log, monkeypatch
 @pytest.mark.parametrize("log", [False, True])
 @pytest.mark.parametrize("pending,incremental", [(False, True), (True, True), (True, False)])
 @pytest.mark.parametrize("outcomes", [2, 3])
+@pytest.mark.usefixtures("reference_python_logehvi")
 def test_noisy_hypervolume_joint_reference(device, log, pending, incremental, outcomes):
     pytest.importorskip("botorch")
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
@@ -278,6 +281,7 @@ def test_noisy_full_graph_extension_gradcheck(device, log, outcomes):
 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("log", [False, True])
+@pytest.mark.usefixtures("reference_python_logehvi")
 def test_noisy_batched_constraints_and_weight_graphs(device, log):
     pytest.importorskip("botorch")
     from botorch.acquisition.multi_objective.objective import (

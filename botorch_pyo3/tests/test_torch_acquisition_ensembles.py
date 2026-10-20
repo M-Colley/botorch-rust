@@ -153,6 +153,7 @@ def test_extra_analytic_ensemble_reductions(device, name):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("log", [False, True])
 @pytest.mark.parametrize("noisy", [False, True])
+@pytest.mark.usefixtures("reference_python_logehvi")
 def test_ensemble_hypervolume_averages_after_member_hvi(device, log, noisy):
     pytest.importorskip("botorch")
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler

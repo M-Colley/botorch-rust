@@ -186,11 +186,17 @@ def test_standardize_attribute_protocol_and_frozen_posterior_statistics(device):
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_bilog_origin_derivative_and_unselected_log_domain(device):
-    y = torch.zeros(3, 1, dtype=torch.double, device=device, requires_grad=True)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_bilog_origin_derivative_and_unselected_log_domain(device, dtype):
+    y = torch.zeros(3, 1, dtype=dtype, device=device, requires_grad=True)
     module = build_outcome_transform(Bilog(), 1, y)
-    derivative = torch.autograd.grad(module(y)[0].sum(), y)[0]
+    derivative = torch.autograd.grad(module(y)[0].sum(), y, create_graph=True)[0]
     torch.testing.assert_close(derivative, torch.ones_like(y))
+    # The function is C1 at zero. Repeated autograd follows its declared
+    # positive branch there; no scalar clamp tie rule enters either pass.
+    assert torch.isfinite(torch.autograd.grad(derivative.sum(), y)[0]).all()
+    inverse_derivative = torch.autograd.grad(module.untransform(y)[0].sum(), y)[0]
+    torch.testing.assert_close(inverse_derivative, torch.ones_like(y))
     h = 1e-6
     finite = (module(y + h)[0] - module(y - h)[0]) / (2 * h)
     torch.testing.assert_close(derivative, finite, rtol=1e-6, atol=1e-6)

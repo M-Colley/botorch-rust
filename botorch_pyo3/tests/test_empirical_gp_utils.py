@@ -201,7 +201,11 @@ def test_psd_clipping_boundary_gradients_are_symmetric(floor: float, gap: float)
     projected = rs.project_psd(value, floor)
     actual = torch.autograd.grad((projected * weights).sum(), value)[0]
     eigenvalues, eigenvectors = torch.linalg.eigh(value)
-    reference = (eigenvectors * eigenvalues.clamp_min(floor)) @ eigenvectors.T
+    # A projection is nonsmooth at the exact threshold. Retain the declared
+    # right-branch subgradient one rather than Torch's version-specific clamp
+    # convention (one in 2.13, zero in 2.14 for scalar bounds).
+    clipped = eigenvalues.masked_fill(eigenvalues < floor, floor)
+    reference = (eigenvectors * clipped) @ eigenvectors.T
     reference_gradient = torch.autograd.grad((reference * weights).sum(), value)[0]
     torch.testing.assert_close(actual, expected, rtol=1e-9, atol=1e-12)
     torch.testing.assert_close(actual, reference_gradient, rtol=1e-9, atol=1e-12)
@@ -214,7 +218,12 @@ def test_shrinkage_trace_clamp_boundary_gradient(official: object) -> None:
     covariance = torch.tensor([[2e-12]], dtype=torch.float64, requires_grad=True)
     target = torch.tensor([[1e-12]], dtype=torch.float64, requires_grad=True)
     actual = rs.trace_matched_shrinkage(covariance, target, 0.3)
-    reference = official.trace_matched_shrinkage(covariance, target, 0.3)
+    torch.testing.assert_close(actual, official.trace_matched_shrinkage(covariance, target, 0.3))
+    # At the nondifferentiable trace floor, use the same explicitly declared
+    # right-branch convention as the native Rust derivative and PSD oracle.
+    trace = target.trace()
+    denominator = trace.masked_fill(trace < 1e-12, 1e-12)
+    reference = 0.7 * covariance + 0.3 * (covariance.trace() / denominator) * target
     gradients = torch.autograd.grad(actual.sum(), (covariance, target))
     reference_gradients = torch.autograd.grad(reference.sum(), (covariance, target))
     for value, expected in zip(gradients, reference_gradients, strict=True):

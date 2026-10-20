@@ -21,6 +21,20 @@ def kind(request: pytest.FixtureRequest) -> str:
     return request.param
 
 
+@pytest.fixture
+def reference_python_logehvi(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Use the reference's complete graph, independent of compiler availability.
+
+    Pinned b0dd01be's fused CPU backward writes raw C++ buffers and returns
+    no cell-bound gradients. It cannot serve as a higher-order/reference-point
+    derivative oracle. Windows generally falls back already; Linux can JIT it.
+    This affects only marked comparison tests, never the port implementation.
+    """
+    reference = pytest.importorskip("botorch.acquisition.multi_objective.logei")
+    monkeypatch.setattr(reference, "_C", None)
+    monkeypatch.setattr(reference, "_load_attempted", True)
+
+
 def pytest_terminal_summary(terminalreporter: Any) -> None:
     if ParityLog.worst:
         terminalreporter.section("worst errors vs BoTorch (multi-output parity)")

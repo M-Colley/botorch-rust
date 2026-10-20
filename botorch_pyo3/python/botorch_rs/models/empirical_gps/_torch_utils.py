@@ -212,7 +212,11 @@ def shrinkage(cov: Any, target: Any, alpha: Any) -> Any:
         or bool(((value < 0) | (value > 1)).any())
     ):
         raise ValueError("Shrinkage alpha must be a finite scalar in [0, 1].")
-    return (1 - value) * cov + value * (cov.trace() / target.trace().clamp_min(1e-12)) * target
+    trace = target.trace()
+    # Keep the native backend's right-branch derivative at the floor.
+    # Torch 2.14's scalar clamp_min uses the opposite equality convention.
+    denominator = trace.masked_fill(trace < 1e-12, 1e-12)
+    return (1 - value) * cov + value * (cov.trace() / denominator) * target
 
 
 def basis_curves(

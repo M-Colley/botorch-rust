@@ -1340,9 +1340,13 @@ def _elementwise_outcome(value: Tensor, kind: str, power: float, inverse: bool) 
     if kind == "Power":
         return value.pow(1 / power if inverse else power)
     # Bilog is C1 with slope one at zero. sign(x)*log1p(abs(x)) has the
-    # incorrect Torch derivative zero there. Clamp each inactive branch to
+    # incorrect Torch derivative zero there. Mask each inactive branch to
     # keep all its operations in their domain, including repeated backward.
-    positive, negative = value.clamp_min(0), (-value).clamp_min(0)
+    # Scalar clamp_min changed its equality derivative from one to zero in
+    # Torch 2.14. Select the inactive branch explicitly, retaining the true
+    # derivative one at the origin on every supported Torch version.
+    positive = value.masked_fill(value < 0, 0)
+    negative = (-value).masked_fill(value > 0, 0)
     if inverse:
         return torch.where(value >= 0, positive.expm1(), -negative.expm1())
     return torch.where(value >= 0, positive.log1p(), -negative.log1p())
