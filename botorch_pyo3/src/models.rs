@@ -1399,6 +1399,93 @@ impl PySingleTaskGP {
     // Marginal log likelihood and fitting
     // ------------------------------------------------------------------
 
+    /// Replaces transformed training targets and optional fixed noise.
+    #[pyo3(signature = (targets, fixed_noise=None, strict=true))]
+    fn replace_transformed_train_data(
+        &self,
+        targets: Array,
+        fixed_noise: Option<Array>,
+        strict: bool,
+    ) -> PyResult<()> {
+        let model = self.snapshot();
+        let mut shape = model.aug_batch_shape();
+        shape.push(model.num_train());
+        let size = model.num_elements() * model.num_train();
+        if targets.0.len() != size
+            || (strict && targets.1 != shape)
+            || fixed_noise
+                .as_ref()
+                .is_some_and(|v| v.0.len() != size || (strict && v.1 != shape))
+        {
+            return Err(dimension_error(format!("replacement targets/noise must have shape {shape:?}; changing n requires new training inputs")));
+        }
+        let n = model.num_train();
+        let values = targets.0.chunks(n).map(Vector::from_column_slice).collect();
+        let noise = fixed_noise.map(|v| v.0.chunks(n).map(Vector::from_column_slice).collect());
+        self.update(|m| m.replace_transformed_train_data(values, noise))
+    }
+
+    /// Installs sparse outlier variances, invalidating cached training factors.
+    #[pyo3(signature = (support, raw, convex=true, lower=0.0, upper=0.999, prior=None))]
+    fn set_sparse_outlier_noise(
+        &self,
+        support: Vec<usize>,
+        raw: Vec<f64>,
+        convex: bool,
+        lower: f64,
+        upper: f64,
+        prior: Option<PyRef<'_, PyPrior>>,
+    ) -> PyResult<()> {
+        let state = botorch_core::models::relevance_pursuit::SparseOutlierState {
+            support,
+            raw,
+            convex,
+            bounds: (lower, upper),
+            prior: prior.map(|p| p.inner),
+        };
+        self.update(|m| m.set_sparse_outlier_noise(state))
+    }
+
+    /// Current outlier support and active raw variances.
+    fn sparse_outlier_state(&self) -> PyResult<(Vec<usize>, Vec<f64>)> {
+        let model = self.snapshot();
+        let state = model.models()[0]
+            .sparse_outlier_noise()
+            .ok_or_else(|| value_error("model has no sparse outlier noise"))?;
+        Ok((state.support.clone(), state.raw.clone()))
+    }
+
+    /// LOO expansion criterion (all observation indices).
+    fn sparse_outlier_expansion(&self, py: Python<'_>, loo: bool) -> PyResult<Vec<f64>> {
+        let model = self.snapshot();
+        threads::run(py, || {
+            let model = &model.models()[0];
+            if loo {
+                return model.relevance_expansion_objective();
+            }
+            let mut trial = model.clone();
+            let mut state = model
+                .sparse_outlier_noise()
+                .ok_or_else(|| {
+                    botorch_core::BotorchError::InvalidArgument(
+                        "model has no sparse outlier noise".into(),
+                    )
+                })?
+                .clone();
+            let mut dense = vec![0.0; model.num_train()];
+            for (&i, &r) in state.support.iter().zip(&state.raw) {
+                dense[i] = r;
+            }
+            state.support = (0..model.num_train()).collect();
+            state.raw = dense;
+            trial.set_sparse_outlier_noise(Some(state))?;
+            let (_, _, gradient) = botorch_core::mll::ExactMarginalLogLikelihood::new(&trial)
+                .value_and_rho_grad(trial.raw_parameters().as_slice())?;
+            Ok(gradient.as_slice().to_vec())
+        })
+        .into_py_result()
+    }
+
     /// The exact MLL of every element (divided by `n`, priors included, as in
     /// GPyTorch) at the current or the given flat raw hyperparameters, with
     /// shape `_aug_batch_shape`.

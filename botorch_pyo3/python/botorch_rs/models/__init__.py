@@ -34,8 +34,10 @@ from botorch_rs.models.model import Model, ModelList
 from botorch_rs.models.model_list_gp_regression import ModelListGP
 from botorch_rs.models.multitask import KroneckerMultiTaskGP, MultiTaskGP
 from botorch_rs.models.pairwise_gp import PairwiseGP, PairwiseLaplaceMarginalLogLikelihood
+from botorch_rs.models.robust_relevance_pursuit_model import RobustRelevancePursuitSingleTaskGP
 
 __all__ = [
+    "RobustRelevancePursuitSingleTaskGP",
     "LCEMGP",
     "AdditiveMapSaasSingleTaskGP",
     "AffineDeterministicModel",

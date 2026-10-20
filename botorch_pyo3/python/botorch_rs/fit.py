@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Any
+from typing import Any, cast
 
 from botorch_rs._arrays import to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
@@ -62,6 +62,20 @@ def fit_gpytorch_mll(
     Returns:
         ``mll``, in evaluation mode.
     """
+    from botorch_rs.models.robust_relevance_pursuit_model import RobustRelevancePursuitMixin
+
+    if isinstance(mll.model, RobustRelevancePursuitMixin):
+        return cast(
+            MarginalLogLikelihood,
+            mll.model.custom_fit(
+                mll,
+                closure=closure,
+                optimizer=optimizer,
+                closure_kwargs=closure_kwargs,
+                optimizer_kwargs=optimizer_kwargs,
+                **kwargs,
+            ),
+        )
     if isinstance(mll, SumMarginalLogLikelihood):
         mll.train()
         results = []

@@ -31,6 +31,12 @@ impl SingleTaskGP {
         ys: &Matrix,
         noise_tf: f64,
     ) -> Result<Vec<SingleTaskGP>> {
+        if self.sparse_outlier_noise().is_some() {
+            return Err(BotorchError::Unsupported(
+                "noiseless fantasies of sparse outlier GPs require explicit support remapping"
+                    .into(),
+            ));
+        }
         if !matches!(self.likelihood, Likelihood::FixedNoise { .. }) {
             return Err(BotorchError::Unsupported(
                 "noiseless fantasy models require a fixed-noise likelihood".into(),
@@ -86,6 +92,7 @@ impl SingleTaskGP {
                     },
                     mean_module: self.mean_module,
                     hyperparameters: self.hyperparameters.clone(),
+                    sparse_outlier_noise: None,
                     point_noise: None,
                     cache: OnceLock::from(Ok(cache)),
                 })

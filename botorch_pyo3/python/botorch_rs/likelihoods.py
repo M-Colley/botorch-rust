@@ -112,6 +112,10 @@ class FixedNoiseGaussianLikelihood(Likelihood):
         ``batch_shape x n``."""
         return self._param_out(self._rs_model.noise, (-1,))
 
+    @noise.setter
+    def noise(self, value: Any) -> None:
+        self._model._replace_transformed_train_data(self._model.train_targets, noise=value)
+
     def __repr__(self) -> str:
         return "FixedNoiseGaussianLikelihood()"
 

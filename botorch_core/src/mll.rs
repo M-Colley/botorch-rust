@@ -134,12 +134,33 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
         self.evaluate_with(raw_params, with_grad, true)
     }
 
+    /// MLL, dense gradient, and active outlier-rho gradient from one factorization.
+    pub fn value_and_rho_grad(&self, raw_params: &[f64]) -> Result<(f64, Vector, Vector)> {
+        self.evaluate_full(raw_params, true, true).map(|(v, g, r)| {
+            (
+                v,
+                g.expect("gradient requested"),
+                r.unwrap_or_else(|| Vector::zeros(0)),
+            )
+        })
+    }
+
     fn evaluate_with(
         &self,
         raw_params: &[f64],
         with_grad: bool,
         priors: bool,
     ) -> Result<(f64, Option<Vector>)> {
+        self.evaluate_full(raw_params, with_grad, priors)
+            .map(|(v, g, _)| (v, g))
+    }
+
+    fn evaluate_full(
+        &self,
+        raw_params: &[f64],
+        with_grad: bool,
+        priors: bool,
+    ) -> Result<(f64, Option<Vector>, Option<Vector>)> {
         let model = self.model;
         let layout = model.parameter_layout();
         let h = Hyperparameters::from_slice(layout, raw_params)?;
@@ -198,6 +219,9 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
             }
         }
 
+        let sparse_diagonal = model
+            .sparse_outlier_noise()
+            .map(|state| state.inflate(&mut k));
         let chol = psd_safe_cholesky(&k)?;
         let resid = model
             .transformed_train_targets()
@@ -207,9 +231,12 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
         let logdet = chol.logdet();
         let mut res = -0.5 * (inv_quad + logdet + nf * LN_2PI);
         if !priors {
-            return Ok((res, None));
+            return Ok((res, None, None));
         }
 
+        if let Some(state) = model.sparse_outlier_noise() {
+            res += state.log_prior(n);
+        }
         // Prior terms, in GPyTorch's `named_priors()` order.
         if let (Likelihood::Gaussian(lik), Some(noise)) = (model.likelihood(), noise_value) {
             if let Some(prior) = lik.noise_prior {
@@ -260,7 +287,7 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
         }
         let value = res / nf;
         if !with_grad {
-            return Ok((value, None));
+            return Ok((value, None, None));
         }
 
         // Gradient: dmll/dθ = [½ tr((ααᵀ - K⁻¹) ∂K/∂θ) + ∂ log p/∂θ] / n.
@@ -268,6 +295,10 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
         let mut w = chol.inverse();
         w.ger(1.0, &alpha, &alpha, -1.0); // W = ααᵀ - K⁻¹
 
+        let rho_grad = model
+            .sparse_outlier_noise()
+            .zip(sparse_diagonal.as_ref())
+            .map(|(state, diagonal)| state.gradients(&mut w, diagonal, nf));
         let mut grad = Vector::zeros(layout.len());
         let mut g_constant = alpha.sum();
         if let Some(prior) = mean_prior {
@@ -357,6 +388,6 @@ impl<'a> ExactMarginalLogLikelihood<'a> {
             };
             grad[idx] = f64::NAN;
         }
-        Ok((value, Some(grad)))
+        Ok((value, Some(grad), rho_grad))
     }
 }

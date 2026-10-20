@@ -38,6 +38,7 @@ pub mod model_list;
 pub mod model_list_dyn;
 pub mod multitask;
 pub mod pairwise_gp;
+pub mod relevance_pursuit;
 
 pub use approximate_gp::{
     SingleTaskVariationalGP, SingleTaskVariationalGPOptions, VariationalLikelihood, VariationalMean,

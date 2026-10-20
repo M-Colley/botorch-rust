@@ -263,6 +263,10 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         outcome_transform: Any = DEFAULT,
         input_transform: InputTransform | None = None,
     ) -> None:
+        from botorch_rs.models.likelihoods.sparse_outlier_noise import (
+            SparseOutlierGaussianLikelihood,
+        )
+
         kind = kind_of(train_X)
         x = to_flat(train_X, "train_X")
         y = to_flat(train_Y, "train_Y")
@@ -280,10 +284,16 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         d = x[1][-1]
         m = y[1][-1]
         if likelihood is not None:
-            if not isinstance(likelihood, GaussianLikelihood):
+            if not isinstance(likelihood, (GaussianLikelihood, SparseOutlierGaussianLikelihood)):
                 raise UnsupportedError(
                     "`likelihood` must be a botorch_rs GaussianLikelihood "
                     "(e.g. get_gaussian_likelihood_with_gamma_prior())."
+                )
+            if isinstance(likelihood, SparseOutlierGaussianLikelihood) and not isinstance(
+                likelihood.noise_covar.base_noise, GaussianLikelihood
+            ):
+                raise UnsupportedError(
+                    "A custom sparse likelihood requires native Gaussian base noise; for fixed noise use RobustRelevancePursuitSingleTaskGP(train_Yvar=...)."
                 )
             if yvar is not None:
                 raise UnsupportedError(
@@ -515,10 +525,32 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         ``_aug_batch_shape x n``."""
         return from_pair(self._rs.transformed_train_targets(), self._kind)
 
+    def _replace_transformed_train_data(
+        self, targets: Any, noise: Any = None, strict: bool = True
+    ) -> None:
+        """Atomically replace internal targets and optional fixed noise.
+
+        Fitted transforms and hyperparameters are preserved. The number of
+        observations must continue to match the stored training inputs.
+        """
+        self._rs.replace_transformed_train_data(
+            to_flat(targets, "targets"), None if noise is None else to_flat(noise, "noise"), strict
+        )
+
+    def set_train_data(self, inputs: Any = None, targets: Any = None, strict: bool = True) -> None:
+        """Replace transformed targets while keeping existing training inputs."""
+        if inputs is not None:
+            raise UnsupportedError(
+                "Replacing training inputs is not supported yet; construct a new model."
+            )
+        if targets is not None:
+            self._replace_transformed_train_data(targets, strict=strict)
+
     # -- modes -------------------------------------------------------------
 
     def train(self, mode: bool = True) -> SingleTaskGP:
         self.training = mode
+        self.likelihood.train(mode)
         for name in ("input_transform", "outcome_transform"):
             tf = getattr(self, name, None)
             if tf is not None:

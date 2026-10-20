@@ -296,6 +296,9 @@ impl SingleTaskGP {
         if k == 0 {
             return Ok(vec![self.clone(); ys.len()]);
         }
+        if self.sparse_outlier_noise().is_some() {
+            return Err(BotorchError::Unsupported("conditioning a sparse outlier GP requires an explicit support extension and is not supported yet".into()));
+        }
         let x_tf = self.check_new_inputs(x, mode)?;
         let noise_tf = self.new_noise(noise.map(|v| v.as_slice()), k)?;
         let enlarged = self.enlarged(&x_tf, &noise_tf)?;
@@ -369,6 +372,7 @@ impl SingleTaskGP {
                     mean_module: self.mean_module,
                     hyperparameters: self.hyperparameters.clone(),
                     point_noise: point_noise.clone(),
+                    sparse_outlier_noise: None,
                     cache: OnceLock::from(Ok(new_cache)),
                 })
             })
