@@ -24,10 +24,10 @@ mod fantasize;
 mod fully_bayesian;
 
 mod higher_order;
-mod latent_kronecker;
 mod hvkg;
 mod input_perturbation;
 mod kernel_trees;
+mod latent_kronecker;
 mod lookahead;
 mod mo_acquisition;
 mod mo_entropy;

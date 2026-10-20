@@ -83,7 +83,7 @@ def test_kernel_evaluation_map_values(kind, batch):
     )
     np.testing.assert_allclose(
         actual(as_kind(x, kind)),
-        ref_kernel(x, points).to_dense()[..., [2, 0, 2]],
+        ref_kernel(x, points).to_dense().detach()[..., [2, 0, 2]],
         rtol=2e-14,
         atol=2e-14,
     )

@@ -69,8 +69,9 @@ def _stationary(
 def _scale(
     kernel: Any, *, num_inputs: int, num_outputs: int, seed: int | None = None
 ) -> KernelFeatureMap:
+    base_inputs = len(kernel.active_dims) if kernel.active_dims is not None else num_inputs
     feature_map = gen_kernel_features(
-        kernel.base_kernel, num_inputs=num_inputs, num_outputs=num_outputs, seed=seed
+        kernel.base_kernel, num_inputs=base_inputs, num_outputs=num_outputs, seed=seed
     )
     if kernel.active_dims is not None and kernel.base_kernel.active_dims is None:
         feature_map.input_transform = ChainedTransform(
