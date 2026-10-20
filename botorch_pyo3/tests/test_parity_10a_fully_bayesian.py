@@ -946,9 +946,15 @@ def test_qlognparego_on_fully_bayesian_list(prune: bool) -> None:
     bt, rs, X = _fb_list_pair(230)
     q, n, m, num = 2, X.shape[0], 2, 16
     w = torch.tensor([0.3, 0.7], dtype=DT)
-    kw: dict[str, Any] = {"scalarization_weights": w, "prune_baseline": prune}
+    # The explicit normals below target the full joint posterior root.
+    # Use that same sampling path in both implementations.
+    kw: dict[str, Any] = {
+        "scalarization_weights": w,
+        "prune_baseline": prune,
+        "cache_root": False,
+    }
     with synced_draws(231):
-        a_bt = BtParEGO(bt, X, sampler=bt_sampler(num), cache_root=False, **kw)
+        a_bt = BtParEGO(bt, X, sampler=bt_sampler(num), **kw)
     orig = rs_mo_utils.SobolQMCNormalSampler
     # The pruning draws BoTorch's base samples too (2048 samples).
     rs_mo_utils.SobolQMCNormalSampler = lambda sample_shape: rs_sampler(  # type: ignore[assignment]
