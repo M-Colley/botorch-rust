@@ -23,6 +23,7 @@ class ParameterSnapshot:
     def __init__(self, model: Any, state: Any) -> None:
         self.model = model
         self.entries = tuple(state.entries)
+        self.registry = tuple((name, id(p), tuple(p.shape)) for name, p in self.entries)
         self.error = state.gradient_error
         self.versions = self._versions()
         self.values = self._values()
@@ -41,6 +42,7 @@ class ParameterSnapshot:
             model is not self.model
             or state is None
             or state.gradient_error != self.error
+            or tuple((name, id(p), tuple(p.shape)) for name, p in state.entries) != self.registry
             or self._versions() != self.versions
             or self._values() != self.values
         ):

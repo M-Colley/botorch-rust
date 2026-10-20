@@ -440,3 +440,54 @@ def test_changed_shared_binding_metadata_requires_new_acquisition_snapshot():
     assert torch.isfinite(torch.autograd.grad(value.sum(), query, retain_graph=True)[0]).all()
     with pytest.raises(UnsupportedError, match="shared mean/kernel bindings"):
         value.sum().backward()
+
+
+@pytest.mark.parametrize("container", [False, True])
+def test_equal_valued_leaf_rebinding_requires_reconstruction_and_preserves_old_backward(container):
+    from botorch_rs.models import ModelListGP
+
+    first, _ = model_pair()
+    second, _ = model_pair(fixed=True)
+    model = ModelListGP(first, second) if container else second
+    shared, discarded = first.mean_module.raw_constant, second.mean_module.raw_constant
+    transform = (
+        ScalarizedPosteriorTransform(torch.tensor([0.3, -0.6], dtype=torch.double))
+        if container
+        else None
+    )
+    acquisition = analytic.PosteriorMean(model, posterior_transform=transform)
+    query = torch.tensor([[[0.2, 0.6]]], dtype=torch.double)
+    original = acquisition(query)
+    original_parameters = tuple(model.parameters())
+    expected = torch.autograd.grad(original.sum(), original_parameters, retain_graph=True)
+    expected_shared = sum(
+        (
+            gradient
+            for parameter, gradient in zip(original_parameters, expected, strict=True)
+            if parameter is shared or parameter is discarded
+        ),
+        torch.zeros_like(shared),
+    )
+    assert torch.count_nonzero(expected_shared)
+    generation = second._rs.parameter_state_version
+    state = second._sync_torch_parameters()
+    state.entries = [
+        (name, shared if name == "mean_module.raw_constant" else parameter)
+        for name, parameter in state.entries
+    ]
+    assert second._rs.parameter_state_version == generation
+    assert second.mean_module.raw_constant is shared
+    with pytest.raises(RuntimeError, match="Reconstruct the acquisition"):
+        acquisition(query)
+    with pytest.raises(RuntimeError, match="Reconstruct the acquisition"):
+        acquisition.value_and_grad(query)
+    after = torch.autograd.grad(original.sum(), original_parameters)
+    for result, want in zip(after, expected, strict=True):
+        torch.testing.assert_close(result, want, rtol=0, atol=0)
+    rebuilt = analytic.PosteriorMean(model, posterior_transform=transform)(query)
+    torch.testing.assert_close(rebuilt, original)
+    shared_gradient, old_gradient = torch.autograd.grad(
+        rebuilt.sum(), (shared, discarded), allow_unused=True
+    )
+    torch.testing.assert_close(shared_gradient, expected_shared)
+    assert old_gradient is None
