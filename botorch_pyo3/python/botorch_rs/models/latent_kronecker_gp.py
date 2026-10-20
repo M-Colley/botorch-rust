@@ -376,7 +376,7 @@ class LatentKroneckerGP(GPyTorchModel):
         if kwargs:
             raise UnsupportedError(f"Unsupported arguments: {sorted(kwargs)}.")
         self.eval()
-        return LatentKroneckerGPPosterior(self, X, self.train_T if T is None else T)
+        return LatentKroneckerGPPosterior(self, X=X, T=self.train_T if T is None else T)
 
     def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
         raise NotImplementedError("Conditioning currently not supported for LatentKroneckerGP.")

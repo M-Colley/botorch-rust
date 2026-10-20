@@ -20,6 +20,8 @@ from typing import Any
 
 from botorch_rs.posteriors.ensemble import EnsemblePosterior
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior, MultivariateNormal, Posterior
+from botorch_rs.posteriors.higher_order import HigherOrderGPPosterior
+from botorch_rs.posteriors.latent_kronecker import LatentKroneckerGPPosterior
 from botorch_rs.posteriors.posterior_list import PosteriorList
 from botorch_rs.posteriors.torch import TorchPosterior
 from botorch_rs.posteriors.transformed import TransformedPosterior
@@ -86,8 +88,10 @@ def _collapsed_size(posterior: GPyTorchPosterior) -> int:
 
 
 @GetSampler.register(MultivariateNormal)
+@GetSampler.register(HigherOrderGPPosterior)
+@GetSampler.register(LatentKroneckerGPPosterior)
 def _get_sampler_mvn(
-    posterior: GPyTorchPosterior,
+    posterior: Any,
     sample_shape: Any,
     *,
     seed: int | None = None,

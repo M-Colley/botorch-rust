@@ -32,7 +32,7 @@ fully Bayesian tests are rerun separately.
 
 ## Current boundaries
 
-HigherOrderGP and LatentKroneckerGP use specialized structured/Matheron sampling
+HigherOrderGP, LatentKroneckerGP, and KroneckerMultiTaskGP use specialized structured/Matheron sampling
 paths. Their public posterior methods reject query tensors requiring gradients
 when autograd is enabled until those paths have dedicated native adjoints. Their
 ordinary values and native acquisition input gradients remain available.

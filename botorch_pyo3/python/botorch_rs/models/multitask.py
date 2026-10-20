@@ -960,7 +960,13 @@ class KroneckerMultiTaskGP(GPyTorchModel):
     ) -> Any:
         r"""The posterior over all tasks at ``X`` (``batch_shape x q x d``):
         a ``MultitaskGPPosterior`` (see the class documentation)."""
+        from botorch_rs.posteriors._query_autograd import requires_query_grad
         from botorch_rs.posteriors.multitask import MultitaskGPPosterior
+
+        if requires_query_grad(X):
+            raise UnsupportedError(
+                "Native structured Kronecker Matheron query adjoints are not yet implemented."
+            )
 
         self.eval()
         if posterior_transform is not None:
@@ -989,11 +995,11 @@ class KroneckerMultiTaskGP(GPyTorchModel):
         if ot is not None:
             scales = [float(v) for v in to_flat(ot.stdvs, "stdvs")[0]]
         return MultitaskGPPosterior(
-            _rs.kronecker_model(self._rs),
-            self._rs,
-            flat,
-            kind,
-            observation_noise,
+            source=_rs.kronecker_model(self._rs),
+            model_rs=self._rs,
+            X=flat,
+            kind=kind,
+            observation_noise=observation_noise,
             num_outputs=self.num_outputs,
             num_train=self._rs.num_train,
             scales=scales,

@@ -6,7 +6,7 @@ import math
 import random
 from typing import Any
 
-from botorch_rs._arrays import ArrayKind, from_flat, to_flat
+from botorch_rs._arrays import ArrayKind, from_flat, kind_of, to_flat
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError
 from botorch_rs.posteriors.gpytorch import Posterior
 
@@ -60,16 +60,55 @@ class HigherOrderGPPosterior(Posterior):
 
     def __init__(
         self,
-        source: Any,
-        X: tuple[list[float], tuple[int, ...]],
-        kind: ArrayKind,
-        target_shape: tuple[int, ...],
-        num_train: int,
+        distribution: Any = None,
+        joint_covariance_matrix: Any = None,
+        train_train_covar: Any = None,
+        test_train_covar: Any = None,
+        train_targets: Any = None,
+        output_shape: Any = None,
+        num_outputs: int = 1,
+        *,
+        source: Any = None,
+        X: Any = None,
+        kind: Any = None,
+        target_shape: Any = None,
+        num_train: Any = None,
         observation_noise: bool = False,
         original: bool = True,
         noise_scale: float = 1.0,
-        num_outputs: int = 1,
     ) -> None:
+        if distribution is not None:
+            from botorch_rs.posteriors._structured import SuppliedMatheron
+
+            if any(
+                value is None
+                for value in (
+                    joint_covariance_matrix,
+                    train_train_covar,
+                    test_train_covar,
+                    train_targets,
+                    output_shape,
+                )
+            ):
+                raise TypeError(
+                    "Supplied HOGP posteriors require all covariance operators, targets, and output_shape."
+                )
+            self._supplied = SuppliedMatheron(
+                distribution,
+                joint_covariance_matrix,
+                train_train_covar,
+                test_train_covar,
+                train_targets,
+                output_shape,
+            )
+            self._kind = kind_of(distribution.mean)
+            self._is_mt = True
+            self.num_outputs = num_outputs
+            return
+        if source is None or X is None or kind is None or target_shape is None or num_train is None:
+            raise TypeError(
+                "Provide a distribution and operators, or a native HOGP source and query."
+            )
         self._rs = source.copy()
         self._x = X
         self._kind = kind
@@ -90,6 +129,8 @@ class HigherOrderGPPosterior(Posterior):
     @property
     def output_shape(self) -> tuple[int, ...]:
         """``X.shape[:-1] + target_shape``."""
+        if (adapter := self.__dict__.get("_supplied")) is not None:
+            return adapter.output_shape
         return (*self._batch, self._q, *self._target_shape)
 
     def _batches(self) -> list[tuple[list[float], tuple[int, int]]]:
@@ -112,6 +153,8 @@ class HigherOrderGPPosterior(Posterior):
     @property
     def mean(self) -> Any:
         """The posterior mean, shape ``batch x q x target_shape``."""
+        if (adapter := self.__dict__.get("_supplied")) is not None:
+            return adapter.mean
         return from_flat(self._mean_variance()[0], self.output_shape, self._kind)
 
     @property
@@ -119,10 +162,14 @@ class HigherOrderGPPosterior(Posterior):
         """The marginal posterior variances (BoTorch's
         ``make_posterior_variances``; with ``observation_noise``, plus the
         noise), shape ``batch x q x target_shape``."""
+        if (adapter := self.__dict__.get("_supplied")) is not None:
+            return adapter.variance
         return from_flat(self._mean_variance()[1], self.output_shape, self._kind)
 
     @property
     def distribution(self) -> _DiagonalNormal:
+        if (adapter := self.__dict__.get("_supplied")) is not None:
+            return adapter.distribution
         return _DiagonalNormal(self)
 
     @property
@@ -139,6 +186,8 @@ class HigherOrderGPPosterior(Posterior):
 
     @property
     def batch_shape(self) -> tuple[int, ...]:
+        if (adapter := self.__dict__.get("_supplied")) is not None:
+            return adapter.batch_shape
         return self._batch
 
     @property
@@ -147,6 +196,8 @@ class HigherOrderGPPosterior(Posterior):
         ``(n + q)·S`` joint prior draws and ``n·S`` training noise draws
         (BoTorch's ``n + 2 n_train`` layout; with observation noise, ``q·S``
         draws of the test noise follow, a botorch_rs extension)."""
+        if (adapter := self.__dict__.get("_supplied")) is not None:
+            return adapter.base_sample_shape
         total = (self._n + self._q) * self._S + self._n * self._S
         if self._noise:
             total += self._q * self._S
@@ -168,6 +219,8 @@ class HigherOrderGPPosterior(Posterior):
         Returns:
             Samples of shape ``sample_shape x batch x q x target_shape``.
         """
+        if (adapter := self.__dict__.get("_supplied")) is not None:
+            return adapter.rsample(sample_shape, base_samples)
         sample_shape = tuple(int(s) for s in sample_shape)
         data, shape = to_flat(base_samples, "base_samples")
         k = len(sample_shape)
@@ -216,6 +269,8 @@ class HigherOrderGPPosterior(Posterior):
     def rsample(self, sample_shape: Any = None) -> Any:
         r"""Sample from the posterior (base samples from the caller's array
         library's generator)."""
+        if (adapter := self.__dict__.get("_supplied")) is not None:
+            return adapter.rsample(sample_shape)
         if sample_shape is None:
             sample_shape = (1,)
         sample_shape = tuple(int(s) for s in sample_shape)
@@ -225,6 +280,22 @@ class HigherOrderGPPosterior(Posterior):
 
     def __repr__(self) -> str:
         return f"HigherOrderGPPosterior(output_shape={self.output_shape})"
+
+    def quantile(self, value: Any) -> Any:
+        from botorch_rs.posteriors._structured import marginal
+
+        return marginal(self, value, density=False)
+
+    def density(self, value: Any) -> Any:
+        from botorch_rs.posteriors._structured import marginal
+
+        return marginal(self, value, density=True)
+
+    def __getattr__(self, name: str) -> Any:
+        adapter = self.__dict__.get("_supplied")
+        if adapter is None:
+            raise AttributeError(name)
+        return getattr(adapter, name)
 
 
 __all__ = ["HigherOrderGPPosterior"]

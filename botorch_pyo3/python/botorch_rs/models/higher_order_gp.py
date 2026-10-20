@@ -547,11 +547,11 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
     def _posterior_of(self, source: Any, flat: Any, kind: Any, noise: bool) -> Any:
         has_ot = getattr(self, "outcome_transform", None) is not None
         post = HigherOrderGPPosterior(
-            source,
-            flat,
-            kind,
-            self.target_shape,
-            int(source.num_train),
+            source=source,
+            X=flat,
+            kind=kind,
+            target_shape=self.target_shape,
+            num_train=int(source.num_train),
             observation_noise=noise,
             original=not has_ot,
             num_outputs=self._num_outputs,

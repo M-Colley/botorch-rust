@@ -115,7 +115,7 @@ class NormalMCSampler(MCSampler):
         underlying = posterior
         while hasattr(underlying, "_posterior"):
             underlying = underlying._posterior
-        if not isinstance(underlying, GPyTorchPosterior):
+        if not isinstance(underlying, GPyTorchPosterior) or getattr(underlying, "_uses_matheron", False):
             raise UnsupportedError(
                 "Base-sample updates require an ordinary Gaussian posterior; "
                 "Matheron and structured posterior base layouts are unsupported."
@@ -217,7 +217,7 @@ class SobolQMCNormalSampler(NormalMCSampler):
         """Posterior samples, shape ``sample_shape x batch_shape x q x m``; the
         same base samples are used for every batch."""
         self._construct_base_samples(posterior)
-        if not isinstance(posterior, GPyTorchPosterior):
+        if not isinstance(posterior, GPyTorchPosterior) or getattr(posterior, "_uses_matheron", False):
             kind = _posterior_kind(posterior)
             if not isinstance(posterior, Posterior) or kind is None:
                 raise UnsupportedError("The sampler requires a botorch_rs posterior.")
@@ -322,7 +322,7 @@ class IIDNormalSampler(NormalMCSampler):
     def forward(self, posterior: GPyTorchPosterior) -> Any:
         """Posterior samples, shape ``sample_shape x batch_shape x q x m``."""
         self._construct_base_samples(posterior)
-        if not isinstance(posterior, GPyTorchPosterior):
+        if not isinstance(posterior, GPyTorchPosterior) or getattr(posterior, "_uses_matheron", False):
             kind = _posterior_kind(posterior)
             if not isinstance(posterior, Posterior) or kind is None:
                 raise UnsupportedError("The sampler requires a botorch_rs posterior.")

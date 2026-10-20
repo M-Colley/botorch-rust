@@ -40,8 +40,54 @@ class LatentKroneckerGPPosterior(Posterior):
     training-grid prior, observed training noise and conditional test prior.
     """
 
-    def __init__(self, model: Any, X: Any, T: Any) -> None:
+    def __init__(self, model: Any, distribution: Any = None, X: Any = None, T: Any = None) -> None:
+        # Preserve the older native-only (model, X, T) call alongside the
+        # public BoTorch (model, distribution, X, T) constructor.
+        if T is None and X is not None and distribution is not None:
+            from botorch_rs import _botorch_rs as _rs
+
+            if isinstance(getattr(model, "_rs", None), _rs.LatentKroneckerGP):
+                distribution, X, T = None, distribution, X
+        if X is None or T is None:
+            raise TypeError("LatentKroneckerGPPosterior requires model, X, and T.")
+        self._external_distribution = distribution
+        if distribution is not None:
+            from botorch_rs.posteriors._distribution import GaussianDistributionAdapter
+
+            GaussianDistributionAdapter(distribution)
+            from botorch_rs import _botorch_rs as _rs
+
+            if not isinstance(getattr(model, "_rs", None), _rs.LatentKroneckerGP):
+                from botorch_rs.posteriors._structured import SuppliedLatent
+
+                adapter = SuppliedLatent(model, distribution, X, T)
+                self._supplied = adapter
+                self.model, self.X, self.T = model, X, T
+                self._kind = kind_of(X)
+                self._batch = adapter.output_batch_shape
+                self.batch_shape = adapter.batch_shape
+                self.output_batch_shape = self._batch
+                self._q, self._tasks = X.shape[-2], T.shape[-2]
+                self._is_mt = True
+                return
+            supplied_batch = broadcast_shapes(tuple(X.shape[:-2]), tuple(T.shape[:-2]))
+            if supplied_batch is None or tuple(distribution.mean.shape) != (
+                *supplied_batch,
+                X.shape[-2],
+                T.shape[-2],
+            ):
+                raise BotorchTensorDimensionError(
+                    "distribution.mean must have batch x q x t shape."
+                )
         self.model, self.X, self.T = model, X, T
+        from botorch_rs.posteriors._query_autograd import requires_query_grad
+
+        if requires_query_grad(X) or requires_query_grad(T):
+            from botorch_rs.exceptions.errors import UnsupportedError
+
+            raise UnsupportedError(
+                "Native structured Matheron query adjoints are not yet implemented."
+            )
         self._rs = model._rs.copy()
         self._kind = kind_of(X)
         self._is_mt = True
@@ -91,10 +137,14 @@ class LatentKroneckerGPPosterior(Posterior):
 
     @property
     def mean(self) -> Any:
+        if self._external_distribution is not None:
+            return self._external_distribution.mean
         return from_flat(self._moments()[0], (*self._batch, self._q, self._tasks), self._kind)
 
     @property
     def variance(self) -> Any:
+        if self._external_distribution is not None:
+            return self._external_distribution.variance
         return from_flat(self._diagonal(), (*self._batch, self._q, self._tasks), self._kind)
 
     @property
@@ -107,6 +157,8 @@ class LatentKroneckerGPPosterior(Posterior):
 
     @property
     def distribution(self) -> _GridDistribution:
+        if self._external_distribution is not None:
+            return self._external_distribution
         return _GridDistribution(self)
 
     @property
@@ -115,6 +167,8 @@ class LatentKroneckerGPPosterior(Posterior):
 
     @property
     def base_sample_shape(self) -> tuple[int, ...]:
+        if (adapter := self.__dict__.get("_supplied")) is not None:
+            return adapter.base_sample_shape
         full = self._rs.num_train * self.model.num_outputs
         return (full + self._rs.num_observed + self._q * self._tasks,)
 
@@ -126,6 +180,8 @@ class LatentKroneckerGPPosterior(Posterior):
         return (*tuple(sample_shape), *self._batch, self._q, self._tasks)
 
     def rsample_from_base_samples(self, sample_shape: Any, base_samples: Any) -> Any:
+        if (adapter := self.__dict__.get("_supplied")) is not None:
+            return adapter.rsample(sample_shape, base_samples)
         sample_shape = tuple(sample_shape)
         data, shape = to_flat(base_samples, "base_samples")
         k = len(sample_shape)
@@ -162,11 +218,23 @@ class LatentKroneckerGPPosterior(Posterior):
         return from_flat(values, self._extended_shape(sample_shape), self._kind)
 
     def rsample(self, sample_shape: Any = None) -> Any:
+        if (adapter := self.__dict__.get("_supplied")) is not None:
+            return adapter.rsample(sample_shape)
         sample_shape = (1,) if sample_shape is None else tuple(sample_shape)
         shape = (*sample_shape, *self.base_sample_shape)
         return self.rsample_from_base_samples(
             sample_shape, from_flat(_randn(math.prod(shape), self._kind), shape, self._kind)
         )
+
+    def quantile(self, value: Any) -> Any:
+        from botorch_rs.posteriors._structured import marginal
+
+        return marginal(self, value, density=False)
+
+    def density(self, value: Any) -> Any:
+        from botorch_rs.posteriors._structured import marginal
+
+        return marginal(self, value, density=True)
 
 
 __all__ = ["LatentKroneckerGPPosterior"]
