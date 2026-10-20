@@ -183,3 +183,54 @@ def test_backend_selection_and_invalid_output_indices():
         model.posterior(query, output_indices=[5])
     with pytest.raises(ValueError, match="backend"):
         SingleTaskGP(X, Y, backend="invalid")
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_model_list_joint_law_mll_and_all_training_gradients(device):
+    from botorch_rs.mlls import SumMarginalLogLikelihood
+    from botorch_rs.models import ModelListGP
+
+    X, Y, query = data(device)
+    X.requires_grad_()
+    Y.requires_grad_()
+    query.requires_grad_()
+    first = SingleTaskGP(X, Y, backend="torch")
+    other_X = (X.detach()[:6] * 0.9).requires_grad_()
+    other_Y = Y.detach()[:6].cos().requires_grad_()
+    second = SingleTaskGP(other_X, other_Y, backend="torch")
+    model = ModelListGP(first, second)
+    posterior = model.posterior(query)
+    parts = [child.posterior(query) for child in model.models]
+    assert posterior.mean.shape == (3, 2)
+    torch.testing.assert_close(posterior.mean, torch.cat([p.mean for p in parts], -1))
+    torch.testing.assert_close(
+        posterior.distribution.covariance_matrix,
+        torch.block_diag(*(p.distribution.covariance_matrix for p in parts)),
+    )
+    mll = SumMarginalLogLikelihood(model.likelihood, model)
+    value = mll()
+    torch.testing.assert_close(
+        value,
+        sum(ExactMarginalLogLikelihood(child.likelihood, child)() for child in model.models) / 2,
+    )
+    loss = value + posterior.mean.square().sum() + posterior.variance.sum()
+    leaves = (X, Y, other_X, other_Y, query, *model.parameters())
+    gradients = torch.autograd.grad(loss, leaves, create_graph=True)
+    second_derivatives = torch.autograd.grad(sum(g.square().sum() for g in gradients), leaves)
+    assert all(torch.isfinite(g).all() and g.device == X.device for g in second_derivatives)
+    selected = model.posterior(query, output_indices=[1, 0])
+    torch.testing.assert_close(selected.mean, posterior.mean.flip(-1))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_explicit_sampler_normals_broadcast_and_remain_differentiable(device):
+    X, Y, query = data(device, batch=(2,))
+    model = SingleTaskGP(X, Y, backend="torch")
+    posterior = model.posterior(query)
+    base = torch.ones(4, 3, dtype=X.dtype, device=X.device, requires_grad=True)
+    sampler = SobolQMCNormalSampler((4,), seed=3)
+    sampler.base_samples = base
+    samples = sampler(posterior)
+    assert samples.shape == (4, 2, 3, 1)
+    gradient = torch.autograd.grad(samples.square().sum(), base, create_graph=True)[0]
+    assert torch.isfinite(torch.autograd.grad(gradient.sum(), base)[0]).all()

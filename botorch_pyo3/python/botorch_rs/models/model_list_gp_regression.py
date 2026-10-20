@@ -36,6 +36,15 @@ class ModelListGP(ModelListGPyTorchModel):
         >>> fit_gpytorch_mll(mll)
     """
 
+    def __new__(cls, *gp_models: Any) -> Any:
+        if cls is ModelListGP and any(
+            getattr(model, "_tensor_backend", None) == "torch" for model in gp_models
+        ):
+            from botorch_rs.models._torch_backend_list import TorchModelListGP
+
+            return object.__new__(TorchModelListGP)
+        return object.__new__(cls)
+
     def __init__(self, *gp_models: SingleTaskGP | MultiTaskGP) -> None:
         if not gp_models:
             raise ValueError("ModelListGP requires at least one model.")

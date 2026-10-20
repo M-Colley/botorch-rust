@@ -58,6 +58,7 @@ class NormalMCSampler(MCSampler):
 
     _rs: Any
     _base_shape: tuple[int, ...] | None
+    base_samples: Any
 
     def _tensor_samples(self, posterior: Any) -> Any:
         """Sample on the posterior device without flattening its graph."""
@@ -66,6 +67,13 @@ class NormalMCSampler(MCSampler):
         shape = self._get_collapsed_shape(posterior)
         current = self.base_samples
         explicit = getattr(self, "_base_samples_explicit", False)
+        if (
+            isinstance(self, IIDNormalSampler)
+            and current is not None
+            and getattr(self, "_tensor_sampler_key", None) is None
+            and tuple(current.shape) == shape
+        ):
+            explicit = True
         if explicit and current is not None:
             current = torch.as_tensor(current, dtype=posterior.dtype, device=posterior.device)
         else:

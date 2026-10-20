@@ -6,6 +6,7 @@ from typing import Any
 
 import torch
 
+from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import kind_of
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 
@@ -78,10 +79,18 @@ class TorchGPyTorchPosterior(GPyTorchPosterior):
             base_samples = torch.as_tensor(base_samples, dtype=self.dtype, device=self.device)
         if base_samples.shape[: len(shape)] != shape:
             raise RuntimeError("sample_shape disagrees with base_samples.shape.")
+        event_dims = 2 if self._is_mt else 1
+        tail = base_samples.shape[len(shape) :]
+        if not self._is_mt and len(tail) >= 2 and tail[-2:] == (self._q, 1):
+            base_samples = base_samples.squeeze(-1)
+            tail = tail[:-1]
+        missing = len(self._batch) + event_dims - len(tail)
+        if missing > 0:
+            base_samples = base_samples.reshape(*shape, *(1 for _ in range(missing)), *tail)
         normals = base_samples.expand(shape + self.base_sample_shape)
         if self._is_mt:
             normals = normals.transpose(-1, -2).reshape(*shape, *self._batch, self._m * self._q)
-        root = torch.linalg.cholesky(self._covariance_tensor)
+        root = _rs.tensor_psd_safe_cholesky(self._covariance_tensor)
         centered = (root @ normals.unsqueeze(-1)).squeeze(-1)
         mean = self.mean.transpose(-1, -2).reshape(*self._batch, self._m * self._q)
         return (mean + centered).reshape(*shape, *self._batch, self._m, self._q).transpose(-1, -2)
@@ -112,6 +121,19 @@ class TorchGPyTorchPosterior(GPyTorchPosterior):
         covariance = torch.einsum("...tiuj,t,u->...ij", cov, weights, weights)
         mean = (self.mean @ weights + offset).unsqueeze(-1)
         return TorchGPyTorchPosterior(mean, covariance)
+
+    def subset_output(self, indices: Any) -> TorchGPyTorchPosterior:
+        indices = torch.as_tensor(indices, device=self.device, dtype=torch.long)
+        if indices.ndim != 1 or not indices.numel():
+            raise ValueError("Output indices must be a nonempty vector.")
+        if bool(((indices < -self._m) | (indices >= self._m)).any()):
+            raise IndexError("Output index out of range.")
+        indices = indices.remainder(self._m)
+        events = (
+            indices.unsqueeze(-1) * self._q + torch.arange(self._q, device=self.device)
+        ).flatten()
+        covariance = self._covariance_tensor.index_select(-1, events).index_select(-2, events)
+        return TorchGPyTorchPosterior(self.mean.index_select(-1, indices), covariance)
 
     def __repr__(self) -> str:
         return f"TorchGPyTorchPosterior(batch_shape={tuple(self._batch)}, q={self._q}, m={self._m})"
@@ -148,7 +170,7 @@ class TorchMultivariateNormal:
 
     @property
     def scale_tril(self) -> Any:
-        return torch.linalg.cholesky(self.covariance_matrix)
+        return _rs.tensor_psd_safe_cholesky(self.covariance_matrix)
 
     @property
     def batch_shape(self) -> Any:

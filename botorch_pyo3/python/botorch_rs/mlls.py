@@ -262,6 +262,18 @@ class SumMarginalLogLikelihood(MarginalLogLikelihood):
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """``sum_i mll_i() / k`` on the training data of the sub-models."""
+        if getattr(self.model, "_tensor_backend", None) == "torch":
+            if kwargs or len(args) not in (0, 2):
+                raise TypeError("Call mll(), or mll(outputs, targets).")
+            outputs = (
+                [mll() for mll in self.mlls]
+                if not args
+                else [
+                    mll(output, target)
+                    for mll, output, target in zip(self.mlls, *args, strict=True)
+                ]
+            )
+            return sum(outputs) / len(outputs)
         if args or kwargs:
             raise UnsupportedError(
                 "botorch_rs evaluates the MLL on the models' training data: call `mll()` "

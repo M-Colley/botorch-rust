@@ -24,6 +24,17 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
     """
 
     _tensor_backend = "torch"
+    _train_X: Any
+    _train_Y: Any
+    _train_Yvar: Any
+    _noise_override: Any
+    _transform_fit_X: Any
+    _transform_fit_Y: Any
+    input_transform: Any
+    outcome_transform: Any
+    likelihood: Any
+    covar_module: Any
+    mean_module: Any
 
     def __init__(
         self,
@@ -146,7 +157,8 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         self._fit_transform_graphs()
         X = self._train_X
         if self.input_transform is not None:
-            X = self.input_transform(X)
+            transform = getattr(self.input_transform, "preprocess_transform", self.input_transform)
+            X = transform(X)
         Y, noise = self._train_Y, self._train_Yvar
         if self.outcome_transform is not None:
             Y, noise = self.outcome_transform(Y, noise, X=self._train_X)
@@ -248,9 +260,9 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             return self.posterior(X).distribution
         # As in ExactGP, training __call__ returns the latent prior on the
         # already transformed, output-augmented inputs in train_inputs.
-        return torch.distributions.MultivariateNormal(
-            self.mean_module(X), covariance_matrix=self._covariance(X, X)
-        )
+        return TorchGPyTorchPosterior(
+            self.mean_module(X).unsqueeze(-1), self._covariance(X, X)
+        ).distribution
 
     def _log_prior(self) -> Any:
         result = self._train_X.new_zeros(())
@@ -362,6 +374,37 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         # Parameters already are the tensors consumed by the inference graph.
         return None
 
+    def posterior_parameter_vjp(
+        self,
+        X: Any,
+        mean_adjoint: Any,
+        covariance_adjoint: Any,
+        observation_noise: bool = False,
+    ) -> Any:
+        posterior = self.posterior(X, observation_noise=observation_noise)
+        loss = (posterior.mean * mean_adjoint).sum()
+        loss = loss + (posterior.distribution.covariance_matrix * covariance_adjoint).sum()
+        parameters = tuple(self.parameters())
+        active = [parameter for parameter in parameters if parameter.requires_grad]
+        if not active:
+            return torch.cat([torch.zeros_like(parameter).reshape(-1) for parameter in parameters])
+        gradients = torch.autograd.grad(
+            loss, active, create_graph=torch.is_grad_enabled(), allow_unused=True
+        )
+        by_identity = {
+            id(parameter): gradient for parameter, gradient in zip(active, gradients, strict=True)
+        }
+        return torch.cat(
+            [
+                (
+                    torch.zeros_like(parameter)
+                    if by_identity.get(id(parameter)) is None
+                    else by_identity[id(parameter)]
+                ).reshape(-1)
+                for parameter in parameters
+            ]
+        )
+
     def initialize(self, **kwargs: Any) -> Any:
         for name, value in kwargs.items():
             path, _, attribute = name.rpartition(".")
@@ -377,6 +420,10 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         return self
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Any:
+        for module in self.modules():
+            for buffer in module.buffers(recurse=False):
+                if not buffer.is_leaf and id(buffer) not in memo:
+                    memo[id(buffer)] = buffer.clone()
         new = object.__new__(type(self))
         memo[id(self)] = new
         for name, value in self.__dict__.items():
