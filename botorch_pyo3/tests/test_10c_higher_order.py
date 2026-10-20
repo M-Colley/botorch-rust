@@ -107,6 +107,38 @@ def test_reject_invalid_shapes_and_unsupported_options() -> None:
         HigherOrderGP([X, X], [Y, Y])
 
 
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("standardize", [False, True])
+def test_posterior_samples_snapshot_parameters(kind: str, standardize: bool) -> None:
+    X, Y = data()
+    options = {} if standardize else {"outcome_transform": None}
+    model = HigherOrderGP(as_kind(X, kind), as_kind(Y, kind), learn_latent_pars=False, **options)
+    query = as_kind([[0.4, 0.6], [0.7, 0.2]], kind)
+    posterior = model.posterior(query)
+    lazy_posterior = model.posterior(query)
+    if standardize:
+        from botorch_rs.posteriors.transformed import TransformedPosterior
+
+        def nested(post):
+            return TransformedPosterior(
+                post,
+                sample_transform=lambda samples: samples,
+                mean_transform=lambda mean, variance: mean,
+                variance_transform=lambda mean, variance: variance,
+            )
+
+        posterior, lazy_posterior = nested(posterior), nested(lazy_posterior)
+    original = to_list(posterior.mean)
+    width = posterior.base_sample_shape[-1]
+    base = as_kind([[0.0] * width], kind)
+    assert_close(to_list(posterior.rsample_from_base_samples((1,), base))[0], original)
+    model.likelihood.noise = 100.0
+    assert_close(posterior.mean, original)
+    assert_close(lazy_posterior.mean, original)
+    assert_close(to_list(posterior.rsample_from_base_samples((1,), base))[0], original)
+    assert to_list(model.posterior(query).mean) != original
+
+
 @pytest.mark.parametrize("seed", range(8))
 @pytest.mark.parametrize("latent_init", ["default", "gp"])
 def test_live_botorch_parity(seed: int, latent_init: str) -> None:

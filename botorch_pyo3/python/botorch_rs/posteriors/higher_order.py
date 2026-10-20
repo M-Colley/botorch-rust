@@ -70,7 +70,7 @@ class HigherOrderGPPosterior(Posterior):
         noise_scale: float = 1.0,
         num_outputs: int = 1,
     ) -> None:
-        self._rs = source
+        self._rs = source.copy()
         self._x = X
         self._kind = kind
         self._target_shape = tuple(target_shape)
