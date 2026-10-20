@@ -52,9 +52,23 @@ MLL argument. Conditioning/fantasizing these models is not implemented yet.
 Multi-output model component descriptors directly expose their empirical
 kernel/mean, rather than the upstream internal vectorization wrappers.
 
-The heterogeneous-domain multi-task model and EM prior/model/coordinate-ascent
-families are the next milestones. These seven exports do not establish full
-empirical-family completion.
+The heterogeneous-domain multi-task milestone adds
+`MultiTaskEmpiricalOneDimensionalMean`,
+`MultiTaskEmpiricalOneDimensionalKernel` and
+`MultiTaskEmpiricalOneDimensionalGP`. Historical task grids may have different
+lengths and domains; curve identities are paired across tasks. Models accept
+arbitrary observed task subsets and predict selected tasks, including tasks
+absent from training. Queries may specify their own task per row. Both task
+column positions, task-dependent fixed noise, prebuilt fixed-module reuse,
+wide-format and homogeneous historical-data constructors are supported.
+Task selection occurs before interpolation, so an unrequested task's domain
+does not constrain a selected task's query range. Analytic input derivatives
+include the interpolated mean and all posterior covariance blocks; task-label
+derivatives are zero. Historical task labels within `1e-6` of integers are
+rounded, matching the official validation.
+
+The EM prior/model/coordinate-ascent families are the next milestone. These
+ten exports do not establish full empirical-family completion.
 
 ## Upstream standalone kernel shape bug
 
@@ -84,3 +98,33 @@ kernel the output batch shape expected by GPyTorch and to implement
 output count). Preserve the model's existing vectorization behavior and add
 standalone `kernel(Q, Z).to_dense()` and diagonal regressions when applying
 the fix. Neither reference checkout was changed.
+
+## Upstream fixed-noise prediction of an unobserved task
+
+The empirical multi-task model explicitly permits a task absent from training.
+In official revision `b0dd01be6`, `MultiTaskGPyTorchModel._apply_noise` computes
+the task's predictive observation noise by averaging an empty selection of
+training noise values. `posterior(Q, observation_noise=True)` therefore has
+NaN variance for an unobserved historical task, although its latent posterior
+is finite. The regression in `test_empirical_multitask_gp.py` reproduces this
+with two historical tasks, observations only from task zero, and uniform
+fixed variance `0.023`; the task-one noisy variance becomes NaN upstream.
+
+The native model averages fixed noise separately for observed tasks and uses
+the global observed-noise average when a historical task has no training
+observations. An upstream fix with the same convention is:
+
+```python
+mask = train_task_features == task_feature
+noise_by_task[..., task_feature] = (
+    self.likelihood.noise[..., mask].mean(dim=-1)
+    if mask.any()
+    else self.likelihood.noise.mean(dim=-1)
+)
+```
+
+This preserves all observed-task estimates and follows the global averaging
+convention already used by single-output fixed-noise GPs. Callers needing a
+different noise assumption for unseen tasks can supply explicit predictive
+noise upstream; explicit tensor-valued predictive noise is a current port
+boundary. The reference source was not modified.

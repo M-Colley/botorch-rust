@@ -13,6 +13,9 @@ from botorch_rs.models.empirical_gps.empirical_1d_gp import EmpiricalOneDimensio
 from botorch_rs.models.empirical_gps.multioutput_empirical_1d_gp import (
     MultiOutputEmpiricalOneDimensionalGP,
 )
+from botorch_rs.models.empirical_gps.multitask_empirical_1d_gp import (
+    MultiTaskEmpiricalOneDimensionalGP,
+)
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.gp_regression_fidelity import SingleTaskMultiFidelityGP
 from botorch_rs.models.gp_regression_mixed import MixedSingleTaskGP
@@ -46,6 +49,7 @@ __all__ = [
     "EnsembleMapSaasSingleTaskGP",
     "EmpiricalOneDimensionalGP",
     "MultiOutputEmpiricalOneDimensionalGP",
+    "MultiTaskEmpiricalOneDimensionalGP",
     "GenericDeterministicModel",
     "GPyTorchModel",
     "BatchedMultiOutputGPyTorchModel",

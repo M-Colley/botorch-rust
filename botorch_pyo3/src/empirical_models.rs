@@ -7,7 +7,7 @@ use crate::specs::PyLikelihoodSpec;
 use crate::threads;
 use botorch_core::fit::{FitOptions, FitStatus, Fittable};
 use botorch_core::kernels::tree::KernelType;
-use botorch_core::models::empirical::{EmpiricalFit, EmpiricalGP};
+use botorch_core::models::empirical::{EmpiricalFit, EmpiricalGP, EmpiricalTaskView};
 use botorch_core::optim::fit::fit_gpytorch_mll_torch;
 use botorch_core::optim::minimize::TorchMinimizeOptions;
 use botorch_core::optim::{AdamOptions, ExpMaStoppingCriterion};
@@ -121,6 +121,18 @@ impl PyEmpiricalGP {
     }
     fn model_handle(&self) -> PyModel {
         PyModel { inner: self.get() }
+    }
+    #[pyo3(signature=(outputs,task_feature=None))]
+    fn task_model_handle(
+        &self,
+        outputs: Vec<usize>,
+        task_feature: Option<usize>,
+    ) -> PyResult<PyModel> {
+        EmpiricalTaskView::new(self.get(), outputs, task_feature)
+            .map(|view| PyModel {
+                inner: Arc::new(view),
+            })
+            .into_py_result()
     }
     #[pyo3(signature=(raw=None))]
     fn mll(&self, py: Python<'_>, raw: Option<Vec<f64>>) -> PyResult<ArrayOut> {

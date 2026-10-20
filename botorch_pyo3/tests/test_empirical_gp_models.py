@@ -54,7 +54,12 @@ def official() -> object:
         pkg.__path__ = [str(folder)]
         sys.modules[package] = pkg
     result = {}
-    for name in ("utils", "empirical_1d_gp", "multioutput_empirical_1d_gp"):
+    for name in (
+        "utils",
+        "empirical_1d_gp",
+        "multioutput_empirical_1d_gp",
+        "multitask_empirical_1d_gp",
+    ):
         spec = importlib.util.spec_from_file_location(f"{package}.{name}", folder / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module

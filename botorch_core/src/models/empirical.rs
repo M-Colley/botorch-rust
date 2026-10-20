@@ -11,6 +11,7 @@ use crate::optim::fit::MllModel;
 use crate::posterior::{JointPosteriorGrad, Posterior};
 use crate::transforms::OutcomeTransformChoice;
 use crate::{Matrix, Vector};
+use std::sync::Arc;
 
 /// Exact independent or correlated empirical outputs, sharing curve weights.
 #[derive(Clone, Debug)]
@@ -344,6 +345,180 @@ impl Model for EmpiricalGP {
     }
 }
 
+/// A correlated empirical GP viewed at selected tasks or at explicit long inputs.
+#[derive(Clone, Debug)]
+pub struct EmpiricalTaskView {
+    model: Arc<EmpiricalGP>,
+    outputs: Vec<usize>,
+    task_feature: Option<usize>,
+}
+impl EmpiricalTaskView {
+    /// Select historical tasks, or use a task column in every query row.
+    pub fn new(
+        model: Arc<EmpiricalGP>,
+        outputs: Vec<usize>,
+        task_feature: Option<usize>,
+    ) -> Result<Self> {
+        if !model.correlated
+            || outputs.is_empty()
+            || outputs.iter().any(|&s| s >= model.mean.tables.len())
+            || task_feature.is_some_and(|j| j > 1)
+        {
+            return Err(BotorchError::InvalidArgument(
+                "invalid correlated empirical task view".into(),
+            ));
+        }
+        Ok(Self {
+            model,
+            outputs,
+            task_feature,
+        })
+    }
+    fn inputs(&self, x: &Matrix) -> Result<Matrix> {
+        if x.ncols() != self.dim() || x.iter().any(|v| !v.is_finite()) {
+            return Err(BotorchError::DimensionMismatch(
+                "empirical task queries have invalid dimensions or nonfinite values".into(),
+            ));
+        }
+        let mut out = if let Some(task) = self.task_feature {
+            Matrix::from_fn(x.nrows(), 2, |i, j| {
+                x[(i, if j == 0 { 1 - task } else { task })]
+            })
+        } else {
+            let m = self.outputs.len();
+            Matrix::from_fn(x.nrows() * m, 2, |i, j| {
+                if j == 0 {
+                    x[(i / m, 0)]
+                } else {
+                    self.outputs[i % m] as f64
+                }
+            })
+        };
+        for i in 0..out.nrows() {
+            let task = out[(i, 1)].round();
+            if (out[(i, 1)] - task).abs() > 1e-6 {
+                return Err(BotorchError::InvalidArgument(
+                    "task labels must be integer-valued".into(),
+                ));
+            }
+            out[(i, 1)] = task;
+            self.model
+                .mean
+                .validate_point(&[out[(i, 0)], out[(i, 1)]])?;
+        }
+        Ok(out)
+    }
+    fn index(&self, i: usize, q: usize) -> usize {
+        if self.task_feature.is_some() {
+            i
+        } else {
+            (i % q) * self.outputs.len() + i / q
+        }
+    }
+}
+impl Model for EmpiricalTaskView {
+    fn dim(&self) -> usize {
+        if self.task_feature.is_some() {
+            2
+        } else {
+            1
+        }
+    }
+    fn num_outputs(&self) -> usize {
+        if self.task_feature.is_some() {
+            1
+        } else {
+            self.outputs.len()
+        }
+    }
+    fn posterior(&self, x: &Matrix, noise: bool) -> Result<Posterior> {
+        let inputs = self.inputs(x)?;
+        let q = x.nrows();
+        let m = self.num_outputs();
+        let gp = &self.model.gps[0];
+        let fixed = matches!(gp.likelihood(), Likelihood::FixedNoise { .. });
+        let mut p = gp.posterior(&inputs, noise && !fixed)?;
+        if noise && fixed {
+            let mut sums = vec![0.0; self.model.mean.tables.len()];
+            let mut counts = vec![0usize; sums.len()];
+            let variance = gp.likelihood_noise();
+            for i in 0..gp.num_train() {
+                let group = gp.train_inputs()[(i, 1)] as usize;
+                sums[group] += variance[i];
+                counts[group] += 1;
+            }
+            for i in 0..inputs.nrows() {
+                let group = inputs[(i, 1)] as usize;
+                p.covariance[(i, i)] += if counts[group] > 0 {
+                    sums[group] / counts[group] as f64
+                } else {
+                    // An unseen historical task has no task-specific estimate.
+                    // Match SingleTaskGP's observed-noise averaging convention.
+                    gp.observation_noise()
+                };
+            }
+        }
+        let mean = Vector::from_fn(q * m, |i, _| {
+            let j = self.index(i, q);
+            p.mean[j] + self.model.mean.basis(&[inputs[(j, 0)], inputs[(j, 1)]]).1[0]
+        });
+        let cov = Matrix::from_fn(q * m, q * m, |i, j| {
+            p.covariance[(self.index(i, q), self.index(j, q))]
+        });
+        Ok(Posterior::multi_output(mean, cov, m))
+    }
+    fn joint_posterior_with_grad(&self, x: &Matrix) -> Result<JointPosteriorGrad> {
+        let inputs = self.inputs(x)?;
+        let q = x.nrows();
+        let m = self.num_outputs();
+        let d = self.dim();
+        let source = self.model.gps[0].joint_posterior_with_grad(&inputs)?;
+        let p = self.posterior(x, false)?;
+        let mut dm = vec![Vector::zeros(q * m); q * d];
+        let mut dc = vec![Matrix::zeros(q * m, q * m); q * d];
+        let progression = self.task_feature.map_or(0, |j| 1 - j);
+        for r in 0..q {
+            let slot = r * d + progression;
+            let source_rows: Vec<usize> = if self.task_feature.is_some() {
+                vec![r]
+            } else {
+                (0..m).map(|s| r * m + s).collect()
+            };
+            for a in 0..q * m {
+                let ai = self.index(a, q);
+                dm[slot][a] = source_rows.iter().map(|&s| source.dmean[s * 2][ai]).sum();
+                for b in 0..q * m {
+                    let bi = self.index(b, q);
+                    dc[slot][(a, b)] = source_rows
+                        .iter()
+                        .map(|&s| source.dcov[s * 2][(ai, bi)])
+                        .sum();
+                }
+            }
+            for s in 0..m {
+                let row = if self.task_feature.is_some() {
+                    r
+                } else {
+                    r * m + s
+                };
+                let slope = self
+                    .model
+                    .mean
+                    .basis(&[inputs[(row, 0)], inputs[(row, 1)]])
+                    .2[0];
+                dm[slot][s * q + r] += slope;
+            }
+        }
+        Ok(JointPosteriorGrad {
+            mean: p.mean,
+            covariance: p.covariance,
+            dmean: dm,
+            dcov: dc,
+            num_outputs: m,
+        })
+    }
+}
+
 /// Native exact-MLL optimization, with curve weights shared between outputs.
 #[derive(Clone, Debug)]
 pub struct EmpiricalFit {
@@ -497,6 +672,32 @@ mod tests {
             .is_err());
         assert!(m
             .posterior(&Matrix::from_element(2, 1, f64::NAN), false)
+            .is_err());
+    }
+    #[test]
+    fn empirical_task_views_select_and_differentiate_long_inputs() {
+        let model = Arc::new(model(true));
+        let view = EmpiricalTaskView::new(model.clone(), vec![1], None).unwrap();
+        let x = Matrix::from_column_slice(2, 1, &[0.22, 0.56]);
+        let full = model.posterior(&x, false).unwrap();
+        let one = view.posterior(&x, false).unwrap();
+        assert!((full.mean.rows(2, 2) - one.mean).amax() < 1e-12);
+        let long = EmpiricalTaskView::new(model, vec![0, 1], Some(0)).unwrap();
+        let x = Matrix::from_row_slice(2, 2, &[0.0, 0.22, 1.0, 0.56]);
+        let g = long.joint_posterior_with_grad(&x).unwrap();
+        for i in 0..4 {
+            let mut p = x.clone();
+            let mut n = x.clone();
+            let h = 1e-7;
+            p[(i / 2, i % 2)] += h;
+            n[(i / 2, i % 2)] -= h;
+            let p = long.posterior(&p, false).unwrap();
+            let n = long.posterior(&n, false).unwrap();
+            assert!(((p.mean - n.mean) / (2.0 * h) - &g.dmean[i]).amax() < 2e-7);
+            assert!(((p.covariance - n.covariance) / (2.0 * h) - &g.dcov[i]).amax() < 2e-7);
+        }
+        assert!(long
+            .posterior(&Matrix::from_row_slice(1, 2, &[0.4, 0.3]), false)
             .is_err());
     }
 }

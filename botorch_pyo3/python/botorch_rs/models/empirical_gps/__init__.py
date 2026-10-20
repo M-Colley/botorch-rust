@@ -11,6 +11,11 @@ from botorch_rs.models.empirical_gps.multioutput_empirical_1d_gp import (
     MultiOutputEmpiricalOneDimensionalKernel,
     MultiOutputEmpiricalOneDimensionalMean,
 )
+from botorch_rs.models.empirical_gps.multitask_empirical_1d_gp import (
+    MultiTaskEmpiricalOneDimensionalGP,
+    MultiTaskEmpiricalOneDimensionalKernel,
+    MultiTaskEmpiricalOneDimensionalMean,
+)
 
 __all__ = [
     "BaseAugmentedEmpiricalKernel",
@@ -20,4 +25,7 @@ __all__ = [
     "MultiOutputEmpiricalOneDimensionalGP",
     "MultiOutputEmpiricalOneDimensionalKernel",
     "MultiOutputEmpiricalOneDimensionalMean",
+    "MultiTaskEmpiricalOneDimensionalGP",
+    "MultiTaskEmpiricalOneDimensionalKernel",
+    "MultiTaskEmpiricalOneDimensionalMean",
 ]

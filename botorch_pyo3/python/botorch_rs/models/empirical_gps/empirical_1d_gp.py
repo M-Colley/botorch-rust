@@ -265,6 +265,10 @@ class BaseAugmentedEmpiricalKernel(AdditiveKernel):
         return [("empirical_kernel", self.empirical_kernel), ("base_kernel", self.base_kernel)]
 
     def _base_node(self) -> Any:
+        if getattr(self.empirical_kernel, "_is_task_kernel", False):
+            return _rs.KernelNode.additive(
+                [self.empirical_kernel._node(), self.base_kernel._node()]
+            )
         return _rs.KernelNode.additive(
             [self.empirical_kernel._node(), self.base_kernel._node().with_parent_active_dims([0])]
         )
@@ -404,7 +408,9 @@ class EmpiricalOneDimensionalGP(GPyTorchModel):
             self._param_shapes["likelihood.noise_covar.raw_noise"] = (*self._aug_batch_shape, 1)
         else:
             likelihood = FixedNoiseGaussianLikelihood._create(self._aug_batch_shape)
-        self.likelihood, self.mean_module, self.covar_module = likelihood, mean_module, covar_module
+        self.likelihood: Any = likelihood
+        self.mean_module: Any = mean_module
+        self.covar_module: Any = covar_module
         likelihood._bind(self)
         mean_module._bind(self)
         self._shared_kernel_binding = _SharedKernelBinding(self)
