@@ -56,6 +56,18 @@ class NonTransformedInterval(Interval):
             upper_bound: The upper bound of the interval.
             initial_value: The initial value of the parameter.
         """
+        lower = as_float(lower_bound, "lower_bound")
+        upper = as_float(upper_bound, "upper_bound")
+        initial = None if initial_value is None else as_float(initial_value, "initial_value")
+        # GPyTorch permits infinite bounds on derived Interval classes.
+        # The native half-space constraints provide identical untransformed
+        # values and raw optimizer bounds without an infinite interval width.
+        if upper == math.inf and lower < upper:
+            self._rs = _rs.Constraint.greater_than(lower, None, initial, _float32())
+            return
+        if lower == -math.inf and upper > lower:
+            self._rs = _rs.Constraint.less_than(upper, None, initial, _float32())
+            return
         super().__init__(
             lower_bound=lower_bound,
             upper_bound=upper_bound,

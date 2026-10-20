@@ -5,6 +5,7 @@
 //! (`botorch.utils.multi_objective`) in [`multi_objective`].
 
 pub mod elementwise;
+pub mod empirical;
 pub mod lin_ess;
 pub mod multi_objective;
 pub mod mvnxpb;

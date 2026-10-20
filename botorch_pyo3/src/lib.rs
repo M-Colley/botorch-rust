@@ -19,6 +19,7 @@ mod callbacks;
 mod composite;
 mod contextual;
 mod deterministic;
+mod empirical;
 mod errors;
 mod fantasize;
 mod fully_bayesian;
@@ -59,6 +60,7 @@ mod transforms;
 #[pymodule]
 #[pyo3(name = "_botorch_rs")]
 fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    empirical::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // Models and their components.
     m.add_class::<models::PySingleTaskGP>()?;
