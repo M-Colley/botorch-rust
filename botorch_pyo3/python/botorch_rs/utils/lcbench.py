@@ -155,7 +155,7 @@ def load_lcbench_data(
         LCBENCH_PARAMETER_NAMES.index(name) for name in LCBENCH_LOG_SCALE_PARAMETER_NAMES
     ]
     raw_logs = [float(row[column]) for row in parameters for column in log_columns]
-    logs = _ops.apply("log", raw_logs)
+    logs = _ops.apply("log_raw", raw_logs)
     for row, values in enumerate(parameters):
         for index, column in enumerate(log_columns):
             values[column] = logs[row * len(log_columns) + index]

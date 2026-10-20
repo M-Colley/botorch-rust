@@ -441,6 +441,19 @@ PyTorch's undefined-write warning. `torch.tensor(..., dtype=..., device=...)`
 is the corresponding upstream solution: it returns safe writable tensor
 storage without changing the values.
 
+LCBench uses the native `log_raw` operation (ordinary logarithm), preserving
+NumPy/Pandas results of `-inf` at zero, `nan` at negative inputs and the full
+range of tiny positive inputs. The port's safe logarithm intentionally clamps
+these cases and is not appropriate for this dataset transformation.
+
+`mock_optimize_context_manager` and its decorator reduce real native optimizer
+work to two iterations and generated starts to two restarts/four raw samples.
+They also cover generic SciPy optimization and mixed-optimizer defaults, restore
+all patched entry points on exit, and reject unused contexts unless `force=True`.
+Six tests exercise actual optimization, initialization and fitting, nested
+contexts, exceptions and restoration. The module imports no optional numerical
+libraries until the context or decorated test is used.
+
 The initial committed branch passed all three phase 11a Python suites on
 2026-10-20 against the local BoTorch fork checkout at `c98dd9452`
 (`fix/audit-correctness-fixes`, not official upstream main), with

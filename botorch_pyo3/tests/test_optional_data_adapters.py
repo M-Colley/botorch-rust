@@ -19,6 +19,7 @@ def test_adapters_import_without_optional_libraries() -> None:
 import sys
 import botorch_rs.utils.jax_utils
 import botorch_rs.utils.lcbench
+import botorch_rs.test_utils.mock
 assert not {'torch', 'jax', 'jaxlib', 'numpy', 'pandas', 'pyarrow'}.intersection(sys.modules)
 """
     subprocess.run([sys.executable, "-c", source], check=True)
@@ -157,6 +158,29 @@ def test_cache_publish_failure_cleans_temporary(tmp_path: Path, monkeypatch) -> 
         lcbench._read_lcbench_parquet("Fashion-MNIST", "config", tmp_path)
     assert list(tmp_path.rglob("*.tmp")) == []
     assert list(tmp_path.rglob("*.gzip")) == []
+
+
+def test_lcbench_plain_log_preserves_nonpositive_and_tiny_values(monkeypatch) -> None:
+    torch = pytest.importorskip("torch")
+    bt = pytest.importorskip("botorch.utils.lcbench")
+    config, metrics = _frames()
+    config.loc[0, "batch_size"] = 0.0
+    config.loc[1, "max_units"] = -1.0
+    config.loc[2, "learning_rate"] = 1e-200
+
+    def read(dataset_name, stem, cache_dir):
+        return (config if stem == "config" else metrics).copy(deep=True)
+
+    monkeypatch.setattr(lcbench, "_read_lcbench_parquet", read)
+    monkeypatch.setattr(bt, "_read_lcbench_parquet", read)
+    actual = lcbench.load_lcbench_data("Fashion-MNIST")
+    expected = bt.load_lcbench_data("Fashion-MNIST")
+    torch.testing.assert_close(
+        actual.parameters, expected.parameters, atol=1e-14, rtol=1e-15, equal_nan=True
+    )
+    assert actual.parameters[0, 0].isneginf()
+    assert actual.parameters[1, 2].isnan()
+    assert actual.parameters[2, 4] < -400
 
 
 def test_optional_dependency_errors_and_invalid_name_precedence(monkeypatch) -> None:
