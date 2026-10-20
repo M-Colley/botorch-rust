@@ -52,6 +52,8 @@ references instead of BoTorch's result:
 * qJointEntropySearch "MC" for ``q > 1`` (and with pending points;
   meta-pytorch/botorch#3428) and the input transform of the optima
   (meta-pytorch/botorch#3399): compared where BoTorch is correct.
+  The conditional-CDF denominator is explicitly corrected to a standard
+  deviation; unmodified b0dd01be divides by variance even for ``q = 1``.
 * PathwiseThompsonSampling with a posterior transform and ``q = 1`` sums
   over the t-batch: compared for ``q = 2``.
 * qAnalyticProbabilityOfImprovement: BoTorch's MVNXPB gradients of a
@@ -107,6 +109,7 @@ from so_acquisition_helpers import (  # noqa: E402
     NEI_SAMPLES,
     Prior,
     botorch_has_kg_fix,
+    correct_jes_monte_carlo,
     f32,
     finite_differences,
     gumbel_reference,
@@ -774,6 +777,8 @@ def test_joint_entropy_search_matches_botorch(case: str, est: str) -> None:
             num_samples=16,
         )
         use_fantasy_mean_cache(a_bt.conditional_model)  # meta-pytorch/botorch#3396
+        if est == "MC":
+            correct_jes_monte_carlo(a_bt)  # conditional Gaussian standard deviation
         s = RsSampler(sample_shape=torch.Size([16]), seed=0)
         if est == "MC":
             a_bt(points_in(X, (1, q, d), 71))

@@ -20,7 +20,8 @@ Compared are the values and gradients of
   at a time: its batched MVNXPB gradients are wrong);
 * qMaxValueEntropy and qLowerBoundMaxValueEntropy (single output);
 * qJointEntropySearch ("LB", and "MC" for one point) on the optima of
-  ``get_optimal_samples`` (compared with BoTorch's on the same draws);
+  ``get_optimal_samples`` (same draws, with an explicitly corrected
+  conditional-CDF standard deviation in the MC reference);
 * PathwiseThompsonSampling and qNegIntegratedPosteriorVariance.
 
 Tolerances (the worst observed error of every quantity is printed in the
@@ -66,6 +67,7 @@ from mo_entropy_helpers import bt_path_draws, recorded_randn  # noqa: E402
 from so_acquisition_helpers import (  # noqa: E402
     botorch_has_kg_fix,
     check_against_twins,
+    correct_jes_monte_carlo,
     finite_differences,
     jes_has_3399,
     jes_optimal_inputs,
@@ -370,6 +372,8 @@ def test_joint_entropy_search(pair: tuple[Scenario, Any, Any, Any]) -> None:
         CHECK.record("qJointEntropySearch: errors (identical)", 0.0, 0.0)
         return
     use_fantasy_mean_cache(a_bt.conditional_model)  # meta-pytorch/botorch#3396
+    if est == "MC":
+        correct_jes_monte_carlo(a_bt)  # conditional Gaussian standard deviation
     s = RsSampler(sample_shape=torch.Size([16]), seed=0)
     Xt = points_in(X, (3, q, d), r.randrange(10**6))
     if est == "MC":

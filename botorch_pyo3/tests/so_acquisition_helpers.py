@@ -28,6 +28,7 @@ from botorch.acquisition import joint_entropy_search as bt_jes
 from botorch.acquisition import knowledge_gradient as bt_kg
 from botorch.acquisition import max_value_entropy_search as bt_mes
 from botorch.sampling.normal import SobolQMCNormalSampler as BtSampler
+from jes_reference import correct_jes_monte_carlo  # noqa: F401 (shared oracle export)
 from mo_entropy_helpers import bt_path_draws, recorded_randn
 
 from botorch_rs.acquisition import max_value_entropy_search as rs_mes

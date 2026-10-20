@@ -22,9 +22,13 @@ Differences to BoTorch main:
   conditional entropy of every point uses that point's marginal density, and
   the entropy of the observations includes the constant ``0.5 (1 + log 2 pi)``
   of every point; BoTorch pairs every point's truncation with the joint
-  density of the batch and adds the constant once. Both agree for ``q = 1``.
+  density of the batch and adds the constant once. These two corrections do
+  not affect ``q = 1``.
 * The noise of the noiseless conditioning also enters the conditioned
   models' posterior mean (meta-pytorch/botorch#3396).
+* The ``"MC"`` conditional Gaussian CDF divides by ``sqrt(1 - rho**2)``
+  (the conditional standard deviation), whereas pinned BoTorch b0dd01be
+  divides by the conditional variance.
 """
 
 from __future__ import annotations

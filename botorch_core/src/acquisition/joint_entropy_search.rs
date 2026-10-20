@@ -31,10 +31,13 @@
 //!   `0.5 (1 + log 2π)` of every point. BoTorch pairs every point's
 //!   truncation ratio with the *joint* density of the `q` samples and adds
 //!   the constant once, so its estimate is not the information gain of the
-//!   batch (e.g. it is not additive over independent points). For `q = 1`
-//!   both agree.
+//!   batch (e.g. it is not additive over independent points). These density
+//!   and entropy-constant corrections do not affect `q = 1`.
 //! * The explicit noise of the noiseless conditioning enters the conditioned
 //!   models' posterior mean as well (meta-pytorch/botorch#3396).
+//! * The `"MC"` conditional normal CDF is standardized by
+//!   `sqrt(1 - rho^2)`, the conditional standard deviation. BoTorch's
+//!   pinned b0dd01be implementation divides by the variance instead.
 
 use std::sync::{Arc, RwLock};
 
@@ -192,7 +195,8 @@ fn conditional_entropy<S: Scalar>(
                 sample = sample + l[j][i] * z[(k, i)];
             }
             let normalized_sample = (sample - mean[j]) / sd_m;
-            let rescaled = (normalized_mvs - rho * normalized_sample) / (-(rho * rho) + 1.0);
+            let rescaled = (normalized_mvs - rho * normalized_sample)
+                / (-(rho * rho) + 1.0).clamp_min(CLAMP_LB).sqrt();
             let cdf_rescaled = rescaled.ncdf().clamp_min(CLAMP_LB);
             let ratio = cdf_rescaled / cdf_mvs;
             let diff = sample - mean[j];
@@ -561,5 +565,24 @@ impl AcquisitionFunction for QJointEntropySearch {
         }
         *write_lock(&self.x_pending) = x_pending.cloned();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod conditional_normal_tests {
+    use super::*;
+
+    #[test]
+    fn mc_conditional_cdf_uses_standard_deviation() {
+        // F ~ N(0, .3), Y = F + E, E ~ N(0, .7). At Y=1,
+        // F|Y=1 ~ N(.3, .21), hence P(F <= 0|Y=1)
+        // = Phi(-sqrt(3/7)), rather than Phi(-sqrt(.3)/.7).
+        let conditional_cdf = 0.256_345_380_130_961_8_f64;
+        let ratio = conditional_cdf / 0.5;
+        let expected = -ratio * (ratio.ln() - 0.5 - LOG_SQRT_2PI);
+        let samples = Matrix::from_element(1, 1, 1.0);
+        let actual = conditional_entropy(&[0.0], &[vec![0.3]], &[0.7], 0.0, Some(&samples))
+            .expect("valid scalar Gaussian");
+        assert!((actual - expected).abs() < 2e-14, "{actual} != {expected}");
     }
 }

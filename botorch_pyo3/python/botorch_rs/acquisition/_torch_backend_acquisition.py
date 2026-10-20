@@ -68,6 +68,7 @@ _ENTROPY = frozenset(
         "qLowerBoundMaxValueEntropy",
         "qMultiFidelityMaxValueEntropy",
         "qMultiFidelityLowerBoundMaxValueEntropy",
+        "qJointEntropySearch",
     }
 )
 _TYPES: dict[type, type] = {}
@@ -124,9 +125,16 @@ def tensor_acquisition(public_class: type) -> Any:
                 else TensorProjected
             )
         elif public_class.__name__ in _ENTROPY:
-            from botorch_rs.acquisition._torch_backend_entropy import TensorMaxValueEntropy
+            if public_class.__name__ == "qJointEntropySearch":
+                from botorch_rs.acquisition._torch_backend_joint_entropy import (
+                    TensorJointEntropySearch,
+                )
 
-            mixin = TensorMaxValueEntropy
+                mixin = TensorJointEntropySearch
+            else:
+                from botorch_rs.acquisition._torch_backend_entropy import TensorMaxValueEntropy
+
+                mixin = TensorMaxValueEntropy
         name = f"Torch{public_class.__name__}"
         subtype = type(
             name,
