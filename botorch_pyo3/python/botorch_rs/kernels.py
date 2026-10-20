@@ -79,6 +79,7 @@ def _check_constraint(constraint: Any, name: str) -> None:
 
 def _check_kwargs(kwargs: dict[str, Any], cls: str) -> None:
     kwargs.pop("eps", None)  # GPyTorch's deprecated argument, ignored
+    kwargs.pop("backend", None)
     kwargs.pop("device", None)
     kwargs.pop("dtype", None)
     if kwargs:
@@ -168,6 +169,35 @@ class Kernel(GPModule):
     _params: tuple[tuple[str, str | None, str | None], ...] = ()
     #: A BoTorch preset building the kernel's ``KernelSpec`` for ``d`` inputs.
     _preset: Callable[[int], _rs.KernelSpec] | None = None
+
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        core = cls.__module__ == __name__ and cls.__name__ in {
+            "RBFKernel",
+            "MaternKernel",
+            "RQKernel",
+            "PeriodicKernel",
+            "LinearKernel",
+            "PolynomialKernel",
+            "CosineKernel",
+            "IndexKernel",
+            "ScaleKernel",
+            "AdditiveKernel",
+            "ProductKernel",
+            "MultitaskKernel",
+        }
+        if core:
+            use_torch = _use_torch_backend(backend, *args, *kwargs.values())
+            device = kwargs.get("device")
+            use_torch = use_torch or (
+                backend == "auto" and device is not None and str(device) != "cpu"
+            )
+            if use_torch:
+                from botorch_rs.models._torch_backend_core_kernels import tensor_kernel_class
+
+                return object.__new__(tensor_kernel_class(cls))
+        return object.__new__(cls)
 
     def __init__(
         self,
@@ -959,7 +989,7 @@ class ScaleKernel(Kernel):
 class _CompositeKernel(Kernel):
     """A combination of sub-kernels (``kernels``)."""
 
-    def __init__(self, *kernels: Kernel) -> None:
+    def __init__(self, *kernels: Kernel, backend: str = "auto") -> None:
         super().__init__()
         if not kernels:
             raise UnsupportedError(f"{type(self).__name__} needs at least one kernel.")

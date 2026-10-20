@@ -159,6 +159,8 @@ class _TorchLKJCovariancePrior(nn.Module):
     def log_prob(self, covariance: Tensor) -> Tensor:
         scales = covariance.diagonal(dim1=-2, dim2=-1).sqrt()
         correlation = covariance / (scales.unsqueeze(-1) * scales.unsqueeze(-2))
+        if self.n == 1:
+            return self.sd_prior.log_prob(scales).sum(-1)
         factor = torch.linalg.cholesky(correlation)
         return torch.distributions.LKJCholesky(self.n, self.concentration).log_prob(
             factor
@@ -167,7 +169,11 @@ class _TorchLKJCovariancePrior(nn.Module):
     def sample(self, shape: Any = ()) -> Tensor:
         shape = torch.Size(shape)
         with torch.no_grad():
-            factor = torch.distributions.LKJCholesky(self.n, self.concentration).sample(shape)
+            factor = (
+                self.concentration.new_ones(*shape, 1, 1)
+                if self.n == 1
+                else torch.distributions.LKJCholesky(self.n, self.concentration).sample(shape)
+            )
             scales = self.sd_prior.sample(shape + (self.n,))
             return (factor @ factor.transpose(-1, -2)) * scales.unsqueeze(-1) * scales.unsqueeze(-2)
 
@@ -300,7 +306,7 @@ class TorchPositiveIndexKernel(_BatchShape, TorchKernel, PositiveIndexKernel):  
         self, x1: Tensor, x2: Tensor, diag: bool, last_dim_is_batch: bool
     ) -> Tensor:
         if not last_dim_is_batch and (x1.shape[-1] != 1 or x2.shape[-1] != 1):
-            raise ValueError("PositiveIndexKernel expects one selected task column.")
+            raise ValueError("Task index kernels expect one selected task column.")
         if diag and x1.shape[-2] != x2.shape[-2]:
             raise ValueError("diag=True requires equal numbers of input points.")
         batch = torch.broadcast_shapes(self.batch_shape, x1.shape[:-2], x2.shape[:-2])

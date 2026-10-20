@@ -42,3 +42,33 @@ custom child priors. Matrix density is independently compared with the native
 Rust scalar law; no comparison relies on GPyTorch's previously reported
 vector-valued LKJ covariance-density defect. Source reference is official BoTorch
 `b0dd01be61d517c387e234903a6e2cc38c057ea2`.
+
+## Core covariance compatibility constructors
+
+The public RBF, Matérn, rational-quadratic, periodic, linear, polynomial, cosine,
+scale, additive, product, index and multitask constructors in `botorch_rs.kernels`
+also accept `backend="torch"`. A CUDA `device` or an existing Torch child selects
+that backend automatically. Legacy CPU construction keeps its native default.
+Explicit factories retain public class identity, persistent parameters, priors,
+constraints, active dimensions and dtype/device metadata. `+`, `*` and explicit
+composites preserve shared child identities, so priors and optimizer parameters
+are counted once. State dictionaries, deep copies, and module serialization
+preserve the device modules.
+
+Generic IndexKernel supports unconstrained factors, including rank zero's
+diagonal-only law, arbitrary task batches and safe discrete gathers. The native
+CPU KernelNode still requires positive rank; rank zero is implemented directly
+in the Tensor backend. A full-rank generic IndexKernel can initialize an LKJ
+covariance draw exactly by splitting a positive diagonal from its Cholesky
+factor. Lower-rank matrix draws use projected initialization. This differs
+from PositiveIndexKernel, whose positive-factor and optional unit-scale
+restrictions generally require projection even with full rank.
+
+MultitaskKernel returns the interleaved input-by-task Kronecker covariance,
+including a full aligned diagonal and model/input batch broadcasting. As in
+GPyTorch, it rejects `last_dim_is_batch=True`. This is a covariance module;
+correlated multi-output inference is provided by KroneckerMultiTaskGP rather
+than the independent-output SingleTaskGP. Native IndexKernel and MultitaskKernel
+descriptors are converted genuinely when a Torch model requests them. Tests
+compare official GPyTorch covariance/parameter/input derivatives, independent
+Kronecker indexing, actual GP fitting and higher derivatives on CPU and CUDA.

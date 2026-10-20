@@ -11,7 +11,7 @@ from __future__ import annotations
 import copy
 import math
 import warnings
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import Tensor, nn
@@ -377,10 +377,18 @@ class TorchKernel(_TorchModule):
         return x1, x2
 
     def __add__(self, other: TorchKernel) -> TorchCompositeKernel:
-        return TorchCompositeKernel([self, other], "add", self._anchor)
+        from botorch_rs.kernels import AdditiveKernel
+
+        return cast(
+            TorchCompositeKernel, AdditiveKernel(cast(Any, self), cast(Any, other), backend="torch")
+        )
 
     def __mul__(self, other: TorchKernel) -> TorchCompositeKernel:
-        return TorchCompositeKernel([self, other], "product", self._anchor)
+        from botorch_rs.kernels import ProductKernel
+
+        return cast(
+            TorchCompositeKernel, ProductKernel(cast(Any, self), cast(Any, other), backend="torch")
+        )
 
     def _forward_selected(
         self, x1: Tensor, x2: Tensor, diag: bool, last_dim_is_batch: bool
@@ -849,8 +857,10 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
     from botorch_rs.kernels import (
         AdditiveKernel,
         CosineKernel,
+        IndexKernel,
         LinearKernel,
         MaternKernel,
+        MultitaskKernel,
         PeriodicKernel,
         PolynomialKernel,
         ProductKernel,
@@ -881,8 +891,15 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
     def convert(kernel: Any) -> TorchKernel:
         if id(kernel) in memo:
             return memo[id(kernel)]
-        if type(kernel) in (RBFKernel, MaternKernel):
-            result: TorchKernel = TorchStationaryKernel(kernel, train_X)
+        if type(kernel) in (IndexKernel, MultitaskKernel):
+            from botorch_rs.models._torch_backend_core_kernels import tensor_kernel_class
+
+            options = {"_source": kernel, "_like": train_X}
+            if type(kernel) is MultitaskKernel:
+                options["_convert"] = convert
+            result = tensor_kernel_class(type(kernel))(**options)
+        elif type(kernel) in (RBFKernel, MaternKernel):
+            result = TorchStationaryKernel(kernel, train_X)
         elif type(kernel) is IntegratedWhiteNoiseKernel:
             from botorch_rs.models._torch_backend_wiener import TorchIntegratedWhiteNoiseKernel
 
