@@ -111,10 +111,10 @@ def test_one_constant_batch_uses_shared_random_subset() -> None:
     points = torch.arange(8 * 2 * 2, dtype=torch.double).reshape(8, 2, 1, 2)
     values = torch.stack([torch.zeros(8), torch.arange(8)], dim=-1).double()
     torch.manual_seed(8)
-    with pytest.warns(Warning, match="same or not finite"):
+    with pytest.warns(Warning, match="same.*at least one batch"):
         actual = rs.initialize_q_batch(points, values, n=3)
     torch.manual_seed(8)
-    with pytest.warns(Warning, match="same or not finite"):
+    with pytest.warns(Warning, match="same.*at least one batch"):
         expected = bt.initialize_q_batch(points, values, n=3)
     for a, e in zip(actual, expected, strict=True):
         torch.testing.assert_close(a, e, rtol=0, atol=0)

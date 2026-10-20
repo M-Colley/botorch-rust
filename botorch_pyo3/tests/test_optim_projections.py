@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from botorch_rs.optim import parameter_constraints as rs
@@ -81,8 +83,12 @@ def test_slsqp_linear_projection(kind: str, batched: bool) -> None:
     bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
     inequality = [(torch.tensor([0, 1]), torch.ones(2, dtype=torch.double), 1.2)]
     equality = [(torch.tensor([[0, 0], [1, 0]]), torch.ones(2, dtype=torch.double), 1.3)]
+
     def converted(constraints):
-        return [(as_kind(i.tolist(), kind), as_kind(c.tolist(), kind), r) for i, c, r in constraints]
+        return [
+            (as_kind(i.tolist(), kind), as_kind(c.tolist(), kind), r) for i, c, r in constraints
+        ]
+
     actual = rs.project_to_feasible_space_via_slsqp(
         as_kind(X.tolist(), kind),
         as_kind(bounds.tolist(), kind),
@@ -107,9 +113,23 @@ def test_slsqp_fixed_values_and_nonlinear(dtype_name: str) -> None:
     actual = rs.project_to_feasible_space_via_slsqp(
         X, bounds, nonlinear_inequality_constraints=nonlinear, fixed_features=fixed
     )
-    expected = bt.project_to_feasible_space_via_slsqp(
-        X, bounds, nonlinear_inequality_constraints=nonlinear, fixed_features=fixed
-    )
+    if (
+        "nonlinear_inequality_constraints"
+        in inspect.signature(bt.project_to_feasible_space_via_slsqp).parameters
+    ):
+        expected = bt.project_to_feasible_space_via_slsqp(
+            X, bounds, nonlinear_inequality_constraints=nonlinear, fixed_features=fixed
+        )
+    else:
+        # Released 0.18.1 lacks nonlinear projection. Here the first nonlinear
+        # constraint is exactly x0+x1>=1.2, while the second is inactive.
+        # Compare its released linear projection with the identical feasible set.
+        expected = bt.project_to_feasible_space_via_slsqp(
+            X,
+            bounds,
+            inequality_constraints=[(torch.tensor([0, 1]), torch.ones(2, dtype=dtype), 1.2)],
+            fixed_features=fixed,
+        )
     torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-6)
     torch.testing.assert_close(actual[:, 0], torch.tensor([[0.3, 0.9], [0.7, 0.5]], dtype=dtype))
     assert not actual.requires_grad
