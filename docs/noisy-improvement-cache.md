@@ -63,3 +63,20 @@ evaluates the same candidate-only objective and embeds its sample and direct
 input adjoints into the full joint posterior layout. The regression checks
 linear and log reduction values, unchanged baseline incumbents, matching
 analytic gradients, and central finite differences.
+
+Exact-GP block computation
+-------------------------
+
+For models exposing independent exact output GPs, the cached path also
+stores their fixed-point training solves and the baseline normal matrices.
+Each candidate set requests only its new posterior mean, its covariance
+with the baseline, and its own covariance through `cross_posterior`.
+Gradients use `cross_posterior_vjp` on these blocks; they allocate no full
+baseline covariance adjoint. Models without compatible GP caches retain
+the general joint-posterior route and its numerical fallback.
+
+A native regression counts model queries: after initialization, cached
+value-and-gradient evaluation calls neither the full-model posterior nor
+its joint posterior VJP. Disabling only the GP caches forces the general
+route and yields matching values and gradients. The contextual-objective
+fallback regression also compares against the optimized block path.

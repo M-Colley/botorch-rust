@@ -41,6 +41,7 @@ use crate::acquisition::mc_objective::{McObjective, McSamples, SamplePullback};
 use crate::acquisition::{check_candidates, check_pending, check_unbatched, AcquisitionFunction};
 use crate::error::{BotorchError, Result};
 use crate::linalg::CovarianceRoot;
+use crate::models::gp::BaselineCache;
 use crate::models::Model;
 use crate::sampling::{SobolQMCNormalSampler, DEFAULT_MC_SAMPLES};
 use crate::transforms::outcome::SampleTransform;
@@ -1648,12 +1649,16 @@ struct NeiBaseline {
     base: Arc<Matrix>,
     /// Best feasible baseline objective of every sample.
     best_f: Vec<f64>,
+    /// Fixed-point GP training solves, when outputs expose exact GPs.
+    caches: Option<Vec<BaselineCache>>,
+    /// Baseline normals in output-major matrix layout, reused by every set.
+    zbt: Vec<Arc<Matrix>>,
 }
 
 /// One output's part of the low-rank update: `L_XB`, the factor of the
 /// Schur complement, and the baseline and new base samples (`nb × S`,
 /// `nq × S`).
-type LowRankBlock = (Matrix, crate::linalg::CholeskyFactor, Matrix, Matrix);
+type LowRankBlock = (Matrix, crate::linalg::CholeskyFactor, Arc<Matrix>, Matrix);
 
 /// The samples of the new points and what their reverse pass needs.
 enum NeiSamples {
@@ -1670,6 +1675,7 @@ enum NeiSamples {
         nb: usize,
         n: usize,
         blocks: Vec<LowRankBlock>,
+        gp_cached: bool,
     },
 }
 
@@ -1880,10 +1886,34 @@ impl QNoisyExpectedImprovement {
             }
             _ => None,
         };
+        let m = model.num_outputs();
+        let caches = match (model.output_gps(), &roots) {
+            (Some(gps), Some(_)) if gps.len() == m => {
+                match gps
+                    .iter()
+                    .map(|g| g.baseline_cache(&self.x_baseline))
+                    .collect::<Result<Vec<_>>>()
+                {
+                    Ok(caches) => Some(caches),
+                    Err(BotorchError::Unsupported(_)) => None,
+                    Err(error) => return Err(error),
+                }
+            }
+            _ => None,
+        };
+        let zbt = (0..m)
+            .map(|t| {
+                Arc::new(Matrix::from_fn(nb, js.base.nrows(), |p, sample| {
+                    js.base[(sample, p * m + t)]
+                }))
+            })
+            .collect();
         Ok(NeiBaseline {
             roots,
             base: Arc::clone(&js.base),
             best_f,
+            caches,
+            zbt,
         })
     }
 
@@ -1918,19 +1948,59 @@ impl QNoisyExpectedImprovement {
         with_grad: bool,
     ) -> Result<Option<NeiSamples>> {
         let model = self.core.model.as_ref();
-        let post = model.posterior(&x_full, false)?;
-        let (n, m) = (post.num_points(), post.num_outputs());
-        if roots.len() != m {
+        let baseline = self.baseline.as_ref().ok_or_else(|| {
+            BotorchError::Runtime("low-rank sampling has no cached baseline".into())
+        })?;
+        let gps = model.output_gps();
+        let gp_cached = match (&gps, &baseline.caches) {
+            (Some(gps), Some(caches)) => {
+                gps.len() == model.num_outputs() && caches.len() == gps.len()
+            }
+            _ => false,
+        };
+        // General models retain joint-posterior sampling. Exact output GPs
+        // compute only the new mean/cross/covariance blocks from fixed solves.
+        let post = if gp_cached {
+            None
+        } else {
+            Some(model.posterior(&x_full, false)?)
+        };
+        let (n, m) = post.as_ref().map_or(
+            (
+                x_full.nrows() * model.points_per_input(),
+                model.num_outputs(),
+            ),
+            |p| (p.num_points(), p.num_outputs()),
+        );
+        if roots.len() != m || roots.is_empty() {
             return Ok(None);
         }
         let nb = roots[0].dim();
+        if n < nb {
+            return Ok(None);
+        }
         let nq = n - nb;
         let s = z.nrows();
         let mut data = Matrix::zeros(m * nq, s);
         let mut blocks = Vec::with_capacity(m);
         for (t, root) in roots.iter().enumerate() {
-            let cov = post.covariance.view((t * n, t * n), (n, n));
-            let bl = cov.view((nb, 0), (nq, nb)).into_owned();
+            let (mean, bl, mut e) = if gp_cached {
+                let gp = gps.as_ref().expect("cached GP outputs")[t];
+                let cache = &baseline.caches.as_ref().expect("cached GP solves")[t];
+                let cp = gp.cross_posterior(cache, x_new)?;
+                if cp.cross.shape() != (nq, nb) || cp.covariance.shape() != (nq, nq) {
+                    return Ok(None);
+                }
+                (cp.mean, cp.cross, cp.covariance)
+            } else {
+                let post = post.as_ref().expect("general joint posterior");
+                let cov = post.covariance.view((t * n, t * n), (n, n));
+                (
+                    post.mean.rows(t * n + nb, nq).into_owned(),
+                    cov.view((nb, 0), (nq, nb)).into_owned(),
+                    cov.view((nb, nb), (nq, nq)).into_owned(),
+                )
+            };
             let bl_chol = match root {
                 CovarianceRoot::Scalar { root, .. } => bl.map(|v| v / root),
                 CovarianceRoot::Cholesky(f) => {
@@ -1940,7 +2010,6 @@ impl QNoisyExpectedImprovement {
                 }
                 CovarianceRoot::Eigen(_) | CovarianceRoot::Zero(_) => return Ok(None),
             };
-            let mut e = cov.view((nb, nb), (nq, nq)).into_owned();
             e.gemm(-1.0, &bl_chol, &bl_chol.transpose(), 1.0);
             let br = match crate::linalg::psd_safe_cholesky_with(
                 &e,
@@ -1951,12 +2020,12 @@ impl QNoisyExpectedImprovement {
                 Err(BotorchError::NotPsd { .. } | BotorchError::Nan { .. }) => return Ok(None),
                 Err(err) => return Err(err),
             };
-            let zb = Matrix::from_fn(nb, s, |p, c| z[(c, p * m + t)]);
+            let zb = Arc::clone(&baseline.zbt[t]);
             let zx = Matrix::from_fn(nq, s, |p, c| z[(c, (nb + p) * m + t)]);
-            let mut y = &bl_chol * &zb;
+            let mut y = &bl_chol * zb.as_ref();
             y.gemm(1.0, br.l(), &zx, 1.0);
             for p in 0..nq {
-                let mu = post.mean[t * n + nb + p];
+                let mu = mean[p];
                 let mut dst = data.row_mut(t * nq + p);
                 for c in 0..s {
                     dst[c] = y[(p, c)] + mu;
@@ -1997,6 +2066,7 @@ impl QNoisyExpectedImprovement {
             nb,
             n,
             blocks,
+            gp_cached,
         }))
     }
 
@@ -2170,6 +2240,7 @@ impl QNoisyExpectedImprovement {
                 nb,
                 n,
                 blocks,
+                gp_cached,
                 ..
             } => {
                 let nq = n - nb;
@@ -2181,8 +2252,11 @@ impl QNoisyExpectedImprovement {
                     sbar += extra;
                 }
                 let m = blocks.len();
-                let mut mean_bar = Vector::zeros(n * m);
-                let mut cov_bar = Matrix::zeros(n * m, n * m);
+                let mut mean_bar = (!gp_cached).then(|| Vector::zeros(n * m));
+                let mut cov_bar = (!gp_cached).then(|| Matrix::zeros(n * m, n * m));
+                let mut fast_gradient = Matrix::zeros(x_new.nrows(), d);
+                let gps = if gp_cached { model.output_gps() } else { None };
+                let caches = self.baseline.as_ref().and_then(|b| b.caches.as_ref());
                 let roots = self
                     .baseline
                     .as_ref()
@@ -2192,9 +2266,7 @@ impl QNoisyExpectedImprovement {
                     })?;
                 for (t, ((bl, br, zb, zx), root)) in blocks.iter().zip(roots).enumerate() {
                     let yb = sbar.rows(t * nq, nq);
-                    for p in 0..nq {
-                        mean_bar[t * n + nb + p] = yb.row(p).sum();
-                    }
+                    let mbar = Vector::from_fn(nq, |p, _| yb.row(p).sum());
                     let mut blbar = yb * zb.transpose();
                     let brbar = yb * zx.transpose();
                     let ebar = crate::linalg::cholesky_backward(br.l(), &brbar);
@@ -2212,15 +2284,36 @@ impl QNoisyExpectedImprovement {
                             ))
                         }
                     };
-                    cov_bar
-                        .view_mut((t * n + nb, t * n), (nq, nb))
-                        .copy_from(&cbar);
-                    cov_bar
-                        .view_mut((t * n + nb, t * n + nb), (nq, nq))
-                        .copy_from(&ebar);
+                    if gp_cached {
+                        let gp = gps.as_ref().expect("cached GP outputs")[t];
+                        let cache = &caches.expect("cached GP solves")[t];
+                        fast_gradient +=
+                            gp.cross_posterior_vjp(cache, &x_new, &mbar, &cbar, &ebar)?;
+                    } else {
+                        mean_bar
+                            .as_mut()
+                            .expect("joint mean adjoint")
+                            .rows_mut(t * n + nb, nq)
+                            .copy_from(&mbar);
+                        let covariance_bar = cov_bar.as_mut().expect("joint covariance adjoint");
+                        covariance_bar
+                            .view_mut((t * n + nb, t * n), (nq, nb))
+                            .copy_from(&cbar);
+                        covariance_bar
+                            .view_mut((t * n + nb, t * n + nb), (nq, nq))
+                            .copy_from(&ebar);
+                    }
                 }
-                let mut grad =
-                    model.joint_posterior_vjp(&x_full, n_in..n_in + q, &mean_bar, &cov_bar)?;
+                let mut grad = if gp_cached {
+                    fast_gradient.rows(0, q).into_owned()
+                } else {
+                    model.joint_posterior_vjp(
+                        &x_full,
+                        n_in..n_in + q,
+                        &mean_bar.expect("joint mean adjoint"),
+                        &cov_bar.expect("joint covariance adjoint"),
+                    )?
+                };
                 if let Some(xb) = xbar {
                     grad += xb.rows(0, q);
                 }
@@ -2324,6 +2417,89 @@ mod cached_fallback_tests {
     use crate::acquisition::mc_objective::SampleValues;
     use crate::models::{SingleTaskGP, SingleTaskGPOptions};
     use crate::OutcomeTransformChoice;
+
+    #[derive(Debug)]
+    struct CountedGp {
+        gp: SingleTaskGP,
+        posteriors: std::sync::atomic::AtomicUsize,
+        joint_vjps: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Model for CountedGp {
+        fn dim(&self) -> usize {
+            self.gp.dim()
+        }
+        fn num_outputs(&self) -> usize {
+            1
+        }
+        fn output_gps(&self) -> Option<Vec<&SingleTaskGP>> {
+            Some(vec![&self.gp])
+        }
+        fn posterior(&self, x: &Matrix, noise: bool) -> Result<crate::posterior::Posterior> {
+            self.posteriors
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.gp.posterior(x, noise)
+        }
+        fn joint_posterior_with_grad(
+            &self,
+            x: &Matrix,
+        ) -> Result<crate::posterior::JointPosteriorGrad> {
+            self.gp.joint_posterior_with_grad(x)
+        }
+        fn joint_posterior_vjp(
+            &self,
+            x: &Matrix,
+            rows: Range<usize>,
+            mean: &Vector,
+            covariance: &Matrix,
+        ) -> Result<Matrix> {
+            self.joint_vjps
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.gp.joint_posterior_vjp(x, rows, mean, covariance)
+        }
+    }
+
+    #[test]
+    fn cached_gp_uses_only_new_posterior_blocks_and_matches_general_path() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let train_x = Matrix::from_fn(12, 1, |i, _| i as f64 / 11.0);
+        let model = Arc::new(CountedGp {
+            gp: SingleTaskGP::new(
+                train_x.clone(),
+                train_x.map(|v| (5.0 * v).sin()),
+                SingleTaskGPOptions::default(),
+            )
+            .unwrap(),
+            posteriors: AtomicUsize::new(0),
+            joint_vjps: AtomicUsize::new(0),
+        });
+        let baseline = Matrix::from_fn(24, 1, |i, _| i as f64 / 23.0);
+        let candidates = Matrix::from_column_slice(2, 1, &[0.23, 0.71]);
+        let mut acquisition = QNoisyExpectedImprovement::new(
+            model.clone(),
+            &baseline,
+            QNoisyExpectedImprovementOptions {
+                sampler: Some(Arc::new(SobolQMCNormalSampler::new(32, Some(7)).unwrap())),
+                prune_baseline: false,
+                cache_root: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(acquisition.baseline.as_ref().unwrap().caches.is_some());
+        model.posteriors.store(0, Ordering::Relaxed);
+        let fast = acquisition.forward_with_grad(&candidates).unwrap();
+        assert_eq!(model.posteriors.load(Ordering::Relaxed), 0);
+        assert_eq!(model.joint_vjps.load(Ordering::Relaxed), 0);
+        // A model without the independent-output GP cache retains the
+        // original, fully general joint posterior / VJP route.
+        acquisition.baseline.as_mut().unwrap().caches = None;
+        let general = acquisition.forward_with_grad(&candidates).unwrap();
+        assert_eq!(model.posteriors.load(Ordering::Relaxed), 1);
+        assert_eq!(model.joint_vjps.load(Ordering::Relaxed), 1);
+        assert!((fast.0 - general.0).abs() < 1e-10);
+        assert!((&fast.1 - &general.1).amax() < 1e-8);
+    }
 
     #[derive(Debug)]
     struct ContextualObjective;
