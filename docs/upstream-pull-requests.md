@@ -47,6 +47,8 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Empty data-loader closure hang | New [BoTorch #3466](https://github.com/meta-pytorch/botorch/pull/3466) |
 | Learned-preference noisy-improvement cache law | New [BoTorch #3497](https://github.com/meta-pytorch/botorch/pull/3497); seven source tests and ten subtests pass |
 | Constrained MC objectives drop `X` and fail with augmented preference samples | New [BoTorch #3498](https://github.com/meta-pytorch/botorch/pull/3498); 17 source tests and 18 subtests pass |
+| Fused CPU log-EHVI drops cell-bound gradients and detaches second derivatives | New [BoTorch #3510](https://github.com/meta-pytorch/botorch/pull/3510); actual compiled C++ kernel tests pass 14 methods and 33 subtests, including dependent arguments and numerical gradgradcheck; unchanged source fails 13 checks |
+| Bilog and inverse have zero origin gradients and lose tiny forward values | New [BoTorch #3509](https://github.com/meta-pytorch/botorch/pull/3509); 19 tests pass on Torch 2.13 CPU/CUDA and 2.14 CPU, with 63/35 subtests respectively |
 | Categorical feature axis | Existing [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387) |
 | Generic kernel diagonal ranks | New [GPyTorch #2815](https://github.com/cornellius-gp/gpytorch/pull/2815) |
 | Composite lazy feature counts | New [GPyTorch #2818](https://github.com/cornellius-gp/gpytorch/pull/2818), including composite feature indexing |

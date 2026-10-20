@@ -6,8 +6,8 @@ Torch backend computes on the supplied Tensor device, in float32 or float64,
 using the Rust extension's graph-preserving Torch operations. It does not call
 upstream BoTorch models or acquisition functions. Both first derivatives and
 higher derivatives retain the ordinary PyTorch graph for supported operations.
-This is an implementation checkpoint, not a claim of complete GPU parity for
-the main BoTorch package.
+The audited main-package API inventory and tested numerical configurations
+are reported separately. Family-specific configuration limits still apply.
 
 Construct supported models with `backend="torch"` to request these semantics
 explicitly. `backend="auto"` selects it for CUDA training data, training tensors
@@ -99,8 +99,9 @@ shrinkage priors and fitting graphs on device. See [MAP SAAS verification](torch
 Hierarchical scalar and multitask models now use device covariance gates,
 including batched transforms, independent scalar-model outputs, conditioning,
 fantasies and higher-order graphs. EUBO and pairwise BALD acquisitions retain
-their preference-model graphs. Device Fourier priors and exact Matheron paths
-support pathwise acquisitions; see [pathwise verification](pathwise-public-constructors.md).
+their preference-model graphs. Device Fourier priors and exact/whitened
+variational Matheron paths support pathwise acquisitions; see
+[pathwise verification](pathwise-public-constructors.md).
 
 Heterogeneous multitask models now retain their training-list, imputation,
 query, noise and parameter graphs on device. Learned preference objectives
@@ -130,7 +131,7 @@ through nonlinear acquisition reductions, constraints and baseline pruning.
 The [standalone kernel catalogue](torch-kernel-catalogue.md) now includes
 core, categorical, fidelity and task kernels with device prior graphs.
 Direct empirical utility entry points also retain device calculations and
-derivative graphs. Final installed-wheel verification is being completed.
+derivative graphs. The installed-wheel verification below includes these paths.
 Device-resident NUTS fits scalar and
 latent-task multitask Matérn, SAAS and linear fully Bayesian models. Custom
 probabilistic overrides remain unsupported. See
@@ -138,30 +139,40 @@ probabilistic overrides remain unsupported. See
 Noisy acquisition root caching currently falls back to exact joint sampling
 with an explicit warning. The 776-name API availability audit does not measure
 GPU or behavioral parity. New checkpoints receive focused CPU/CUDA and autograd
-tests; the older release certificate does not certify these later changes.
+tests; the current release certificate below records their integrated run.
 
 ## Measured prediction costs
 
-The synchronized release benchmarks use one Torch thread, matching
-hyperparameters, warmed cached training factors, 16 batches of two queried
-points, four input dimensions and 31 interleaved timing repetitions. They exclude
-construction, fitting and first-factor costs. The RTX 4050 results below are
-BoTorch time divided by port time; values above one favor the port.
+Synchronized release timings use one Torch thread, matching hyperparameters,
+warmed training factors, 16 batches of two queries, four input dimensions and
+31 shuffled interleaved repetitions. Construction, fitting and first-factor
+costs are excluded. Values below are BoTorch time divided by port time on the
+local RTX 4050 Laptop GPU and CPU; values above one favor the port.
 
-| Training observations | CPU float64 | CUDA float64 | CPU float32 | CUDA float32 |
-| --- | ---: | ---: | ---: | ---: |
-| 32 | 1.47x | 1.41x | 1.59x | 1.48x |
-| 256 | 1.26x | 1.70x | 1.25x | 1.60x |
-| 1024 | 1.53x | 0.97x | 1.02x | 1.39x |
+| Training observations | Torch CPU float64 | Torch CUDA float64 | Torch CPU float32 | Torch CUDA float32 | Native CPU float64 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 32 | 1.57x | 1.61x | 1.65x | 1.49x | 5.27x |
+| 256 | 1.20x | 1.46x | 1.23x | 1.65x | 1.33x |
+| 1024 | 1.34x | 1.07x | 1.01x | 1.46x | 0.09x |
 
-These are prediction workloads on this machine, not end-to-end BO or universal
-speed guarantees. The native CPU path is faster for the 32-observation float64
-case. The initial Tensor implementation was much slower at 1024 observations;
-packing query batches into a shared-factor multi-right-hand-side triangular
-solve removed redundant large factor copies. Full raw timings, numerical error
-checks and loaded native binary hashes are in
-[float64](benchmarks/tensor-packed-prediction-2026-10-20-float64.json) and
-[float32](benchmarks/tensor-packed-prediction-2026-10-20-float32.json).
+These timings describe these warmed prediction workloads. They do not establish
+an end-to-end or universal speedup. Packed multi-right-hand-side triangular
+solves avoid redundant factor copies for shared-factor query batches. Full
+samples, numerical checks, exact Python/native fingerprints and reference
+revisions are in [float64](benchmarks/tensor-main-prediction-2026-10-20-float64.json)
+and [float32](benchmarks/tensor-main-prediction-2026-10-20-float32.json).
+
+The native CPU backend takes 11.2 times as long as BoTorch in the 1,024-point
+cached prediction case. Its small-data BO-loop result below measures a different
+workload. The Torch CPU backend avoids this large cached-prediction cost on this
+machine.
+
+The separate native float64 Hartmann-6 benchmark takes 0.207 s versus 13.09 s
+for BoTorch (63.2x), measured over three seeded 30-iteration loops after warmup
+with one thread. Each iteration includes default GP fitting and LogEI
+optimization with ten restarts and 512 raw samples. Optimizer/RNG trajectories
+can differ; final objective values and all timings are retained in the
+[native BO report](benchmarks/native-main-bo-2026-10-20.json).
 
 Further details: [tensor algebra](tensor-native-algebra.md),
 [modules and transforms](torch-backend-modules.md),
@@ -179,42 +190,43 @@ Further details: [tensor algebra](tensor-native-algebra.md),
 
 ## Release verification
 
-The 2026-10-20 Windows wheel passed 8,683 Python cases, with 47 documented
-skips, against the pinned official reference. The two complementary test phases
-account for all 8,730 collected case IDs exactly once. Their execution phases,
-installed Python sources, native binary, helper and reference fingerprints
-remain consistent before and after both runs. The wheel contains 265 matching
-Python source files, no bytecode caches and no duplicate archive members.
-The Rust workspace passed 522 tests in 46 groups; strict Clippy, rustfmt,
-Ruff and mypy also passed. These results describe the frozen wheel recorded in
-that report. Subsequent specialized-model, entropy-search and NUTS changes
-have separate focused verification; a fresh combined release is pending.
+The frozen Windows release wheel passes **10,542 Python cases**,
+with 49 recorded skips, and **532 Rust tests and
+doctests** in 46 groups. The complementary broad and equivalence
+phases account for all 10,591 collected case IDs exactly
+once against official reference `b0dd01be61d5`.
+Execution phases and Python/native/helper/reference fingerprints remain stable
+across both runs, with clean tracked source/reference trees. The installed
+package and wheel match all 302 Python
+source/type-marker files; the wheel contains no bytecode caches or duplicate
+archive members.
 
-At source checkpoint `ac07139`, a combined run of all `test_torch*.py` files
-passed 2,337 cases with two skips, using the rebuilt release extension on CPU
-and the local CUDA GPU. The complete Rust workspace passed 528 tests and doc
-tests in 46 groups; its 300 Rust source files were unchanged by the later
-Python-only model additions through that checkpoint. The subsequent EM prior
-centering, duplicate equality coefficient and rank-zero task-kernel repairs
-are now included in a fresh native build whose full workspace passes 532
-tests and doctests in 46 groups, with strict Clippy and rustfmt passing. These
-checks are separate from an installed-wheel release certificate.
+The combined suite includes specialized/empirical/variational models,
+scalar/multitask device NUTS, entropy/search acquisitions, preference ensembles,
+pathwise sampling and candidate optimization. CPU/CUDA checks compare independent
+Gaussian formulas and reference behavior, complete data/query/parameter
+gradients, Hessian products and gradcheck/gradgradcheck. Sampler replay tests
+compare recorded NumPyro trajectories. Strict Clippy, rustfmt, Ruff and mypy pass.
 
-Earlier integrated checks passed 327 Rust core unit tests, 355 kernel/scalar
-acquisition cases (11 skips) with the rebuilt release binary, 99 multitask
-fully Bayesian CPU/CUDA cases, 48 latent Kronecker cases, 34 hypervolume KG
-cases, and 78 PairwiseGP/multistep cases. These focused suites overlap other
-checks and are not added to the older wheel's release totals. The source
-extension now uses the repaired release binary; the frozen wheel and its
-recorded binary remain preserved separately.
+The [current machine-readable verification report](verification-main-device-release-2026-10-20.json)
+records the wheel, exact hashes, complementary test ledgers, commands and
+performance evidence. Main-package public-symbol availability is **776/776**.
+This inventory and regression coverage do not certify every possible subclass,
+shape, strategy or backend combination. The report's `gpu_coverage_complete`
+and `behavioral_parity_complete` flags therefore remain false; configuration
+limits are explicit in the linked family notes. Structured Tensor models use
+dense exact algebra, and noisy root-cache requests use the documented exact
+joint-sampling performance fallback.
 
-The [machine-readable verification report](verification-torch-release-2026-10-20.json)
-records the exact local wheel, hashes, commands, test ledger, benchmarks and
-remaining limits. Its `gpu_coverage_complete` and `behavioral_parity_complete`
-flags remain false. Main-package public-symbol availability is 776/776;
-that inventory is separate from behavioral and GPU coverage.
+Separate focused checks at port commit `dac2a48` covered Torch 2.14 CPU
+compatibility with explicit reference-oracle controls. They are not part of
+this installed-wheel ledger and do not certify Torch 2.14 GPU coverage.
 
-The continuing implementation is reviewable in
+The [earlier release certificate](verification-torch-release-2026-10-20.json),
+its wheel and older measurements remain preserved as historical checkpoints.
+Their counts are not added to this release's totals.
+
+The implementation is reviewable in
 [port PR #1](https://github.com/M-Colley/botorch-rust/pull/1).
 [Upstream submissions](upstream-pull-requests.md) track verified defects and
-their proposed repairs separately from coverage work.
+proposed repairs, including reused PRs and the SciPy human submission step.
