@@ -310,8 +310,10 @@ def test_public_factory_copy_and_initialize(device):
     assert copied.likelihood.noise_covar.raw_rho is not noise.raw_rho
     initialize_dense_parameters(model)
     assert bool(torch.isfinite(model.covar_module.lengthscale).all())
-    with pytest.raises(UnsupportedError, match="support"):
-        model.condition_on_observations(X[:1], Y[:1])
+    conditioned = model.condition_on_observations(X[:1], Y[:1])
+    assert conditioned.likelihood.noise_covar.dim == len(X) + 1
+    assert conditioned.likelihood.noise_covar.support == [2]
+    assert conditioned.likelihood.noise_covar.raw_rho is noise.raw_rho
 
 
 @pytest.mark.parametrize("device", DEVICES)

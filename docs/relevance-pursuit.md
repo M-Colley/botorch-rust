@@ -192,10 +192,10 @@ Support selection and optimization are not advertised as differentiable mappings
 from training data to the chosen fitted parameters.
 
 Discrete support ranking requires an unbatched single-output model and rejects
-other layouts before changing support or parameters. Sparse conditioning/fantasies
-require an explicit support-extension policy and currently raise rather than
-silently discarding outlier noise. Whole-search timeouts remain unsupported;
-per-fit iteration, step, and timeout limits are available. Variational and
+other layouts before changing support or parameters. Upstream has one shared
+support and no specified aggregation of different batch ranking scores; the
+batched likelihood law does not establish a batched discrete search law.
+Variational and
 samplewise sparse likelihood evaluation remain unsupported. Recreate an external
 optimizer after support resizing because the rho leaf changes identity. The first
 Tensor implementation recomputes training factors rather than caching them.
@@ -207,3 +207,48 @@ observation-noise matching, fixed-noise/Normalize/Standardize graphs, actual
 support-search fits and model selection, registered external Torch noise priors,
 parameter bounds, and injected-failure rollback. The existing native relevance
 suite remains unchanged and passes alongside it.
+
+### Conditioning, fantasies, and timeout configuration
+
+Tensor sparse models now append observation rows with **zero added outlier
+variance**. Existing observation indices retain their rho values and their exact
+persistent parameter leaves. This is an observation-label policy: appending a
+second measurement at the same coordinates does not reuse the earlier row's
+outlier label. Supplied conditioning noise remains active, and known observation
+noise is extended with the existing Tensor GP convention. Original fitted input
+and outcome-transform statistics remain fixed. Model, output, fantasy, and
+noise-only leading batch axes broadcast without flattening through the CPU
+backend. The original model's data and support metadata remain unchanged;
+kernel, mean, learned base-noise, and existing rho leaves are shared, preserving
+the complete conditional graph. Deepcopy a model first when independent fitted
+parameter objects are desired.
+
+If the original rho parameter is in dense representation, every old row is an
+explicit parameter, including any currently zero values outside support metadata.
+The conditioned model represents those old rows as a sparse support covering
+the old observation range. This keeps the original dense leaf intact and adds
+no detached parameter copies; appended rows still have zero rho. A later support
+resize replaces the conditioned model's leaf as usual. Discrete ranking detects
+fantasy/model batch axes even when existing parameter leaves broadcast over them.
+Cached support-selection diagnostics are cleared on the conditioned model.
+
+Default fantasies sample new observations with **base noise**, including the
+per-output mean known noise for fixed-noise models. They exclude old observation
+outlier labels even at matching coordinates, then condition with exactly that
+sampling noise. Explicit predictive fantasy noise and `propagate_grads=True`
+retain their graphs. This avoids sampling a noisy law and conditioning with a
+different measurement variance.
+
+The Tensor robust fitter honors the pinned official `timeout_sec` contract:
+each numerical fit receives `timeout_sec / len(numbers_of_outliers)`. This is an
+apportioned per-fit timeout, not a strict deadline for Python support scoring,
+model comparison, or the whole search; the initial support fit can also be an
+additional fit. Optimizer kwargs are copied before the timeout is inserted.
+Finite nonnegative timeouts, optimizer step/iteration limits, and failure cleanup
+are supported without background workers. The native CPU robust fitter retains
+its separately documented timeout restriction.
+
+`test_torch_relevance_conditioning.py` verifies the exact Gaussian conditional
+mean/covariance and mixed Hessians, sparse and dense old layouts, shared leaves,
+multi-output/model/noise/fantasy batches, fixed noise and transforms, base-noise
+fantasy sampling, and timeout delivery to every actual numerical fit.

@@ -16,6 +16,7 @@ from botorch_rs.exceptions.warnings import InputDataWarning
 from botorch_rs.models._torch_backend import TorchSingleTaskGP
 from botorch_rs.models._torch_backend_modules import (
     TorchConstraint,
+    TorchFixedNoiseLikelihood,
     TorchPrior,
     _TorchModule,
     module_log_prior,
@@ -266,7 +267,7 @@ class TorchSparseOutlierNoise(_TorchModule, SparseOutlierNoise):
         return self
 
     def _require_unbatched_ranking(self) -> None:
-        if self.batch_shape:
+        if self.batch_shape or getattr(self, "_ranking_batch_shape", ()):
             raise UnsupportedError(
                 "Discrete relevance-pursuit ranking requires an unbatched single-output model; fixed-support batched likelihoods are supported."
             )
@@ -321,7 +322,7 @@ class TorchSparseOutlierNoise(_TorchModule, SparseOutlierNoise):
             X,
             shape=Y.shape,
             diag_K=covariance.diagonal(dim1=-2, dim2=-1) if self.convex_parameterization else None,
-            noise=fixed,
+            noise=mll.model._base_training_noise(X, Y, fixed),
         ).diagonal()
         chol, alpha = _rs.tensor_exact_gp_factor(Y, covariance, mean, noise)
         inverse_diag = torch.cholesky_inverse(chol).diagonal(dim1=-2, dim2=-1)
@@ -543,6 +544,14 @@ class TorchSparseSingleTaskGP(TorchSingleTaskGP):
     def _noise_for(self, count: int) -> Any:
         return self.likelihood.noise_covar.base_variance(count)
 
+    def _base_training_noise(self, X: Any, Y: Any, fixed: Any) -> Any:
+        base = self.likelihood.noise_covar.base_variance(Y.shape[-1], fixed, X, Y.shape)
+        return (
+            base
+            if self._noise_override is None
+            else torch.where(self._noise_override.isnan(), base, self._noise_override)
+        )
+
     def _sparse_noise(self, X: Any, Y: Any, covariance: Any, fixed: Any) -> Any:
         return self.likelihood.noise_covar(
             X,
@@ -560,7 +569,7 @@ class TorchSparseSingleTaskGP(TorchSingleTaskGP):
         else:
             mean, covariance = output.mean, output.covariance_matrix
             Y = Y if target is None else target
-        noise = self._sparse_noise(X, Y, covariance, fixed)
+        noise = self._sparse_noise(X, Y, covariance, self._base_training_noise(X, Y, fixed))
         return (
             _rs.tensor_exact_mll(Y, covariance, mean, noise, normalize=False) + self._log_prior()
         ) / Y.shape[-1]
@@ -576,7 +585,9 @@ class TorchSparseSingleTaskGP(TorchSingleTaskGP):
         covariance = self._covariance(train_X, train_X)
         # Training inputs always establish the match cache before query noise.
         self.likelihood.noise_covar._cached_train_inputs = train_X.detach().clone()
-        noise = self._sparse_noise(train_X, Y, covariance, fixed)
+        noise = self._sparse_noise(
+            train_X, Y, covariance, self._base_training_noise(train_X, Y, fixed)
+        )
         factor, alpha = _rs.tensor_exact_gp_factor(Y, covariance, self.mean_module(train_X), noise)
         kqq = self._covariance(query, query)
         mean, posterior_covariance = _rs.tensor_exact_gp_predict(
@@ -603,9 +614,102 @@ class TorchSparseSingleTaskGP(TorchSingleTaskGP):
         return mean, posterior_covariance
 
     def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
-        raise UnsupportedError(
-            "Sparse-noise conditioning requires an explicit outlier-support extension; reconstruct the model with concatenated data and the desired support."
+        if kwargs:
+            raise UnsupportedError(f"Unsupported conditioning arguments: {sorted(kwargs)}.")
+        if (
+            not isinstance(X, torch.Tensor)
+            or not isinstance(Y, torch.Tensor)
+            or X.dtype != self._train_X.dtype
+            or Y.dtype != self._train_Y.dtype
+            or X.device != self._train_X.device
+            or Y.device != self._train_Y.device
+        ):
+            raise ValueError("Conditioning data must share the model's dtype and device.")
+        if (
+            X.ndim < 2
+            or Y.ndim < 2
+            or X.shape[-1] != self._train_X.shape[-1]
+            or X.shape[-2] != Y.shape[-2]
+            or Y.shape[-1] != self.num_outputs
+        ):
+            raise ValueError("Conditioning input and target dimensions must match the model.")
+        if not bool(torch.isfinite(X).all()) or not bool(torch.isfinite(Y).all()):
+            raise ValueError("Conditioning inputs and targets must be finite.")
+        batch = torch.broadcast_shapes(
+            self.batch_shape,
+            X.shape[:-2],
+            Y.shape[:-2],
+            noise.shape[:-2] if isinstance(noise, torch.Tensor) and noise.ndim >= 2 else (),
         )
+        X = X.expand(*batch, *X.shape[-2:])
+        Y = Y.expand(*batch, *Y.shape[-2:])
+        if noise is not None:
+            if (
+                not isinstance(noise, torch.Tensor)
+                or noise.dtype != Y.dtype
+                or noise.device != Y.device
+            ):
+                raise ValueError("Conditioning noise must share the target dtype and device.")
+            if not bool((torch.isfinite(noise) & (noise >= 0)).all()):
+                raise ValueError("Conditioning noise must be finite and nonnegative.")
+            noise = noise.expand_as(Y)
+        model = TorchSingleTaskGP.condition_on_observations(self, X, Y, noise=noise)
+        old = self.likelihood.noise_covar
+        # A dense old parameter represents all old observations, including any
+        # currently inactive entries. Represent it as an explicit old-row support
+        # so its exact persistent leaf can remain shared with the original model.
+        support = old.support.copy() if old.is_sparse else list(range(old.dim))
+        base = old.base_noise
+        if model._train_Yvar is not None:
+            fixed = model._training_values()[2]
+            base = TorchFixedNoiseLikelihood(fixed, model._aug_batch_shape, model._train_X)
+        likelihood = TorchSparseOutlierGaussianLikelihood(
+            base,
+            model._train_X.shape[-2],
+            support,
+            getattr(old, "rho_prior", None),
+            old.raw_rho_constraint,
+            old.batch_shape,
+            old.convex_parameterization,
+            old.loo,
+        )
+        likelihood.noise_covar._parameters["raw_rho"] = old.raw_rho
+        likelihood.noise_covar._ranking_batch_shape = model._aug_batch_shape
+        model.likelihood = likelihood
+        model._prediction_cache = None
+        for name in ("bmc_support_sizes", "bmc_probabilities", "model_trace"):
+            if hasattr(model, name):
+                setattr(model, name, None)
+        return model.eval()
+
+    def fantasize(self, X: Any, sampler: Any, observation_noise: Any = None, **kwargs: Any) -> Any:
+        propagate = kwargs.pop("propagate_grads", False)
+        if kwargs:
+            raise UnsupportedError(f"Unsupported fantasy arguments: {sorted(kwargs)}.")
+        if isinstance(observation_noise, bool):
+            raise TypeError("fantasize observation_noise must be None or a Tensor.")
+        if observation_noise is None:
+            _, _, fixed = self._training_values()
+            query = self._augment_X(self.transform_inputs(X))
+            base = (
+                fixed.mean(-1, keepdim=True)
+                if fixed is not None
+                else self.likelihood.noise_covar.base_variance(
+                    query.shape[-2], X=query, shape=query.shape[:-1]
+                )
+            )
+            batch = torch.broadcast_shapes(self._aug_batch_shape, query.shape[:-2], base.shape[:-1])
+            base = base.expand(*batch, query.shape[-2])
+            # New observation labels have zero outlier variance, even if their
+            # coordinates happen to equal the existing training inputs.
+            observation_noise = (
+                base.transpose(-1, -2) if self.num_outputs > 1 else base.unsqueeze(-1)
+            )
+        posterior = self.posterior(X, observation_noise=observation_noise)
+        Y = sampler(posterior)
+        if not propagate:
+            Y = Y.detach()
+        return self.condition_on_observations(X, Y, noise=observation_noise)
 
     def set_train_data(self, inputs: Any = None, targets: Any = None, strict: bool = True) -> None:
         X = self._train_X if inputs is None else inputs[0] if isinstance(inputs, tuple) else inputs
@@ -614,6 +718,7 @@ class TorchSparseSingleTaskGP(TorchSingleTaskGP):
                 "Changing the training count requires reconstructing the sparse support."
             )
         super().set_train_data(inputs, targets, strict)
+        self.likelihood.noise_covar._ranking_batch_shape = self._aug_batch_shape
 
 
 class TorchRobustRelevancePursuitGP(TorchSparseSingleTaskGP, RobustRelevancePursuitSingleTaskGP):
@@ -711,10 +816,6 @@ class TorchRobustRelevancePursuitGP(TorchSparseSingleTaskGP, RobustRelevancePurs
         if not isinstance(mll, ExactMarginalLogLikelihood):
             raise UnsupportedError("Robust relevance pursuit requires an exact Gaussian MLL.")
         self.likelihood.noise_covar._require_unbatched_ranking()
-        if timeout_sec is not None:
-            raise UnsupportedError(
-                "A whole-search timeout is unsupported; use per-fit optimizer timeout/step limits."
-            )
         if numbers_of_outliers is None:
             fractions = (
                 FRACTIONS_OF_OUTLIERS
@@ -724,6 +825,17 @@ class TorchRobustRelevancePursuitGP(TorchSparseSingleTaskGP, RobustRelevancePurs
             if any(not math.isfinite(float(p)) or not 0 <= p <= 1 for p in fractions):
                 raise ValueError("fractions_of_outliers must lie in [0, 1].")
             numbers_of_outliers = [int(float(p) * self._train_X.shape[-2]) for p in fractions]
+        numbers_of_outliers = list(numbers_of_outliers)
+        if not numbers_of_outliers:
+            raise ValueError("numbers_of_outliers must not be empty.")
+        options = dict(optimizer_kwargs or {})
+        if timeout_sec is not None:
+            if not math.isfinite(float(timeout_sec)) or timeout_sec < 0:
+                raise ValueError("timeout_sec must be finite and nonnegative.")
+            # Match the official contract: apportioned timeout per numerical fit,
+            # not a background worker or a strict wall-clock interruption of EM/
+            # support scoring/model comparison outside those numerical fits.
+            options["timeout_sec"] = float(timeout_sec) / len(numbers_of_outliers)
         original_model, original_likelihood = mll.model, mll.likelihood
         try:
             mll.model = self.to_standard_model()
@@ -742,7 +854,7 @@ class TorchRobustRelevancePursuitGP(TorchSparseSingleTaskGP, RobustRelevancePurs
                 closure=closure,
                 optimizer=optimizer,
                 closure_kwargs=closure_kwargs,
-                optimizer_kwargs=optimizer_kwargs,
+                optimizer_kwargs=options,
             )
             sizes, probabilities = get_posterior_over_support(
                 SparseOutlierNoise, trace, prior_mean_of_support=self.prior_mean_of_support
