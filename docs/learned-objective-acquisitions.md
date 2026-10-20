@@ -35,14 +35,28 @@ An explicit `GenericDeterministicModel` utility executes its caller-supplied
 Torch function and preserves that graph, without requiring the native model
 input-dimension hint; this is the existing callable interoperability path.
 
-Preference GP training batches containing more than one model retain an
-explicit boundary: the learned-sampling binding currently requests a single
-preference model, and `BatchedPairwiseGP` rejects a whole-batch posterior
-request. Supporting this configuration requires broadcasting the outcome
-batch indices against the preference batch and dispatching to its existing
-native `batch_element` models. Candidate t-batches and outcome ensembles
-are supported by the tests above; they do not imply batched-preference
-training support.
+Standalone `LearnedObjective` now supports preference GP training batches.
+The native binding broadcasts the original outcome-sample batch against the
+preference batch and dispatches to each native `batch_element`. Each set of
+q points retains its joint covariance root and preference normals. Adjoint
+contributions from repeated query batches sum back to the original inputs.
+Tests cover preference shapes `(2)`, `(2, 1)`, and `(2, 3)`; matching and
+broadcast query batches; both one- and two-dimensional preference sample
+shapes; all array kinds; reference VJPs; and finite differences.
+
+Official `PairwiseGP` expands training data to the query's existing batch
+shape, so it rejects some otherwise compatible joint broadcasts (for example
+query batch `(4, 1)` with preference batch `(2)`). For those cases the reference
+tests explicitly expand queries to `(4, 2)` before calling official code;
+Torch then folds the expansion adjoint to the original query. The native
+binding performs that symmetric broadcast directly.
+
+MC acquisition construction with preference training batches still has an
+explicit boundary until per-candidate member dispatch is integrated. The
+scalar acquisition callback must not misinterpret a preference-model batch
+as extra MC samples and average across it. Candidate t-batches and outcome
+ensembles are supported by the earlier MC tests; those configurations use
+an unbatched preference model.
 
 ## Correcting the noisy-improvement cache law
 

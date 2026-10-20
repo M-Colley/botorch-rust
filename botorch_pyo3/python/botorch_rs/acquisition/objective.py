@@ -692,8 +692,16 @@ class LearnedObjective(MCAcquisitionObjective):
                     return mean.squeeze(-1)
                 data, mshape = to_flat(mean, "mean")
                 return from_flat(data, mshape[:-1], kind_of(samples))
-        s0 = shape[0]
-        nb = math.prod(shape[1:-2])
+        from botorch_rs._arrays import broadcast_shapes
+
+        batch = broadcast_shapes(shape[:-2], tuple(self.pref_model.batch_shape))
+        if batch is None:
+            raise BotorchTensorDimensionError(
+                f"Outcome sample batch {shape[:-2]} does not broadcast with preference model "
+                f"batch {tuple(self.pref_model.batch_shape)}."
+            )
+        s0 = batch[0]
+        nb = math.prod(batch[1:])
         q = shape[-2]
         if self.sampler is None:
             n = 1
@@ -711,21 +719,25 @@ class LearnedObjective(MCAcquisitionObjective):
                     block = list(z_col[(i * s0 + s) * q : (i * s0 + s + 1) * q])
                     for _ in range(nb):
                         z.extend(block)
-        zpair = (z, (n, s0 * nb, q))
+        zpair = (z, (n, *batch, q))
         handle = self.pref_model._acquisition_model(None)
-        out_shape = (n * s0, *shape[1:-2], q)
+        out_shape = (n * s0, *batch[1:], q)
         if is_torch_tensor(samples) and samples.requires_grad:
             import torch
 
             if torch.is_grad_enabled():
-                Y = samples.reshape(s0 * nb, q, shape[-1])
-                return _learned_samples_autograd(handle, Y, zpair, out_shape)
-        flat = to_flat(samples, "samples")
-        y = (flat[0], (s0 * nb, q, shape[-1]))
-        (vals, _), _ = _rs.learned_objective_samples(handle, y, zpair)
+                return _learned_samples_autograd(handle, samples, zpair, out_shape)
+        (vals, _), _ = _rs.learned_objective_samples(handle, to_flat(samples, "samples"), zpair)
         return from_flat(vals, out_shape, kind_of(samples))
 
     def _spec(self) -> tuple[Any, ...]:
+        import math
+
+        if math.prod(tuple(self.pref_model.batch_shape or ())) > 1:
+            raise UnsupportedError(
+                "Batched preference models currently require per-batch acquisition dispatch; "
+                "use LearnedObjective directly."
+            )
         return ("callable", self)
 
 

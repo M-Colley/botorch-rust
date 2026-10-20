@@ -23,7 +23,7 @@ use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use crate::acquisition::{objective_of, PyAcquisitionFunction};
-use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
+use crate::arrays::{broadcast_indices, broadcast_shapes, matrix_out, Array, ArrayBuf, ArrayOut};
 use crate::errors::{dimension_error, value_error, IntoPyResult};
 use crate::kernel_trees::PyKernelNode;
 use crate::models::PyModel;
@@ -1169,26 +1169,49 @@ pub fn learned_objective_samples(
     z: Array,
     adjoint: Option<Array>,
 ) -> PyResult<(ArrayBuf, Option<ArrayBuf>)> {
-    let (_, sets) = y.batches("samples")?;
-    let b = sets.len();
+    let (input_batch, sets) = y.batches("samples")?;
+    let model_batch = model.inner.batch_shape();
+    let batch = broadcast_shapes(&input_batch, model_batch).ok_or_else(|| {
+        dimension_error(format!(
+            "outcome sample batch {input_batch:?} does not broadcast with preference batch {model_batch:?}"
+        ))
+    })?;
+    let inputs = broadcast_indices(&input_batch, &batch);
+    let models = broadcast_indices(model_batch, &batch);
+    let b = inputs.len();
     let q = sets.first().map_or(0, Matrix::nrows);
     let n = z.1.first().copied().unwrap_or(0);
-    if z.0.len() != n * b * q {
+    if n == 0 || z.0.len() != n * b * q {
         return Err(dimension_error(format!(
             "base samples of shape {:?} do not match {b} sets of {q} points",
             z.1
         )));
     }
+    if adjoint.as_ref().is_some_and(|a| a.0.len() != n * b * q) {
+        return Err(dimension_error(
+            "preference sample adjoint has the wrong number of values",
+        ));
+    }
     let m = Arc::clone(&model.inner);
     let results = threads::run(py, || {
-        sets.par_iter()
+        inputs
+            .par_iter()
             .enumerate()
-            .map(|(e, x)| {
+            .map(|(e, &input)| {
+                let member = if m.batch_shape().is_empty() {
+                    m.as_ref()
+                } else {
+                    m.batch_element(models[e]).ok_or_else(|| {
+                        botorch_core::BotorchError::Unsupported(
+                            "the preference model does not expose native batch elements".into(),
+                        )
+                    })?
+                };
                 let base = Matrix::from_fn(n, q, |i, p| z.0[(i * b + e) * q + p]);
                 let ybar = adjoint
                     .as_ref()
                     .map(|a| Matrix::from_fn(n, q, |i, p| a.0[(i * b + e) * q + p]));
-                preference::posterior_samples_vjp(m.as_ref(), x, &base, ybar.as_ref())
+                preference::posterior_samples_vjp(member, &sets[input], &base, ybar.as_ref())
             })
             .collect::<botorch_core::Result<Vec<_>>>()
     })
@@ -1202,15 +1225,25 @@ pub fn learned_objective_samples(
         }
     }
     let grads = if adjoint.is_some() {
-        let mut g = Vec::with_capacity(y.0.len());
-        for (_, gm) in &results {
-            g.extend(matrix_out(gm.as_ref().expect("gradient")).0);
+        let mut g = vec![0.0; y.0.len()];
+        let size = q * y.1[y.1.len() - 1];
+        for (&input, (_, gm)) in inputs.iter().zip(&results) {
+            for (j, value) in matrix_out(gm.as_ref().expect("gradient"))
+                .0
+                .iter()
+                .enumerate()
+            {
+                g[input * size + j] += value;
+            }
         }
         Some(ArrayBuf(g, y.1.clone()))
     } else {
         None
     };
-    Ok((ArrayBuf(values, vec![n, b, q]), grads))
+    let mut shape = vec![n];
+    shape.extend(batch);
+    shape.push(q);
+    Ok((ArrayBuf(values, shape), grads))
 }
 
 /// Registers the classes and functions of this module.
