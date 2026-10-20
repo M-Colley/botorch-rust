@@ -360,6 +360,12 @@ class _ApproximateMarginalLogLikelihood(MarginalLogLikelihood):
                 )
             if approximate_dist_f._owner is not outer:
                 raise UnsupportedError("The output is not one of this model's.")
+            if approximate_dist_f._is_prior:
+                raise UnsupportedError(
+                    "VariationalELBO requires q(f) from `model.model(X)`. Prior outputs "
+                    "from `model.model.forward(X)` or `model.model(X, prior=True)` are "
+                    "not supported as ELBO inputs."
+                )
             x = approximate_dist_f._x
             if target is None:
                 raise TypeError("missing the target values")

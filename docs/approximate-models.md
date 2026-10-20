@@ -59,6 +59,33 @@ independent outputs, fixed inducing points, kernel and mean priors, transforms,
 separate terms and external Torch Adam steps. Rust finite differences also
 check separately weighted terms independently of the Python reference.
 
+The inner `model.model.forward(X)` evaluates the GP prior mean and kernel,
+with independent output tasks retained as a batch dimension. Calling
+`model.model(X, prior=True)` also bypasses variational initialization and
+converts the output-task batch into interleaved multitask events. Both paths
+use the supplied inputs directly, accept broadcastable query batches, and
+retain immutable native parameters and query values. The outer `model(X)`
+continues to apply its training input transform and evaluate `q(f)`.
+Prior moments currently expose values without automatic Torch parameter or
+input derivatives, like the variational output's direct moment properties.
+`VariationalELBO` explicitly rejects prior outputs: its native ELBO and
+derivatives require `q(f)` from `model.model(X)`. The port does not silently
+replace a supplied prior with the variational posterior inside the loss.
+
+One reference edge case needs a workaround: with several outputs and
+`ZeroMean(batch_shape=())`, BoTorch 0.18.1 / GPyTorch 1.15.2 raises
+`RuntimeError: mean should be a matrix or a batch matrix (batch mode)` for
+`model.model(X, prior=True)` at unbatched `X`. The zero mean has shape `(n,)`,
+while its covariance has batch shape `(m,)`; GPyTorch's
+`MultitaskMultivariateNormal.from_batch_mvn` permutes the unexpanded mean.
+The port returns the valid zero-mean multitask prior. Using
+`ZeroMean(batch_shape=torch.Size([m]))` fixes the reference configuration
+and provides the parity comparison. A general upstream solution is to expand
+`batch_mvn.mean` to `batch_mvn.batch_shape + batch_mvn.event_shape` before
+computing its dimensions and permuting it in `from_batch_mvn`. Official
+BoTorch b0dd01be's inner `forward` uses the same mean/kernel prior construction;
+the conversion defect is in the installed GPyTorch dependency.
+
 `HigherOrderGP` uses Kronecker factor eigendecompositions for its exact
 likelihood, analytic likelihood gradient, posterior means and variances,
 joint posterior derivatives and Matheron samples. Its Python API supports

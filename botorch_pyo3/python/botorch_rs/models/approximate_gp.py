@@ -38,14 +38,22 @@ from collections.abc import Iterator
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import LIST, ArrayKind, broadcast_to, from_flat, kind_of, to_flat
+from botorch_rs._arrays import (
+    LIST,
+    ArrayKind,
+    broadcast_shapes,
+    broadcast_to,
+    from_flat,
+    kind_of,
+    to_flat,
+)
 from botorch_rs.exceptions.errors import (
     BotorchTensorDimensionError,
     InputDataError,
     UnsupportedError,
 )
 from botorch_rs.exceptions.warnings import UserInputWarning
-from botorch_rs.kernels import Kernel
+from botorch_rs.kernels import Kernel, _batch_matrix, _indices
 from botorch_rs.likelihoods import GaussianLikelihood, Likelihood, MultitaskGaussianLikelihood
 from botorch_rs.means import ConstantMean, Mean, ZeroMean
 from botorch_rs.models.gpytorch import GPyTorchModel
@@ -90,6 +98,8 @@ class _ApproximateOutput:
     ``MultitaskMultivariateNormal`` for several outputs): ``mean``,
     ``variance``, ``covariance_matrix`` (in the transformed outcome space)."""
 
+    _is_prior = False
+
     def __init__(self, owner: SingleTaskVariationalGP, X: Any) -> None:
         self._owner = owner
         state = owner._sync_torch_parameters()
@@ -125,6 +135,10 @@ class _ApproximateOutput:
         m = self._owner.num_outputs
         n = self._x[1][0]
         return (n, m) if m > 1 else (n,)
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        return ()
 
     @property
     def mean(self) -> Any:
@@ -166,6 +180,115 @@ class _ApproximateOutput:
                 for j in range(q):
                     out[(i * m + t) * q * m + j * m + t] = cov[t * q * q + i * q + j]
         return from_flat(out, (q * m, q * m), self._kind)
+
+
+class _VariationalPriorOutput(_ApproximateOutput):
+    """An immutable prior law from the native mean and kernel, without q(u).
+
+    ``forward`` retains the independent output batch; the variational
+    strategy's ``prior=True`` call turns that batch into interleaved tasks.
+    """
+
+    _is_prior = True
+
+    def __init__(self, owner: SingleTaskVariationalGP, X: Any, multitask: bool) -> None:
+        self._owner = owner
+        owner._sync_torch_parameters()
+        self._native = owner._rs.copy()
+        self._kind = kind_of(X)
+        data, shape = to_flat(X, "X")
+        if len(shape) == 1:
+            shape = (shape[0], 1)
+        if len(shape) < 2:
+            raise BotorchTensorDimensionError("Expected prior inputs with shape `... x n x d`.")
+        self._x = (list(data), tuple(shape))
+        self._num_outputs = owner.num_outputs
+        self._multitask = multitask and self._num_outputs > 1
+        batch = broadcast_shapes(
+            shape[:-2],
+            owner.model._aug_batch_shape,
+            owner.model.mean_module.batch_shape,
+        )
+        if batch is None:
+            raise RuntimeError("The prior input, mean and kernel batch shapes do not broadcast.")
+        self._batch_shape = batch[:-1] if self._multitask else batch
+        # MVN.mean/loc retain the mean module's own broadcast shape, even
+        # when a ZeroMean lacks an output batch present in the covariance.
+        mean_batch = broadcast_shapes(shape[:-2], owner.model.mean_module.batch_shape)
+        assert mean_batch is not None  # Already checked by the joint broadcast.
+        self._mean_shape = (
+            (*self._batch_shape, *self.event_shape) if self._multitask else (*mean_batch, shape[-2])
+        )
+        self._prior_cache: tuple[list[float], list[float], list[float]] | None = None
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        return self._batch_shape
+
+    @property
+    def event_shape(self) -> tuple[int, ...]:
+        n = self._x[1][-2]
+        return (n, self._num_outputs) if self._multitask else (n,)
+
+    def _prior_parts(self) -> tuple[list[float], list[float], list[float]]:
+        if self._prior_cache is None:
+            means: list[float] = []
+            covariances: list[float] = []
+            variances: list[float] = []
+            constants = self._native.constant
+            n, m = self._x[1][-2], self._num_outputs
+            if not self._multitask:
+                for idx in _indices(self._mean_shape[:-1]):
+                    t = idx[-1] if m > 1 and constants else 0
+                    means.extend([constants[t] if constants else 0.0] * n)
+            for idx in _indices(self.batch_shape):
+                if self._multitask:
+                    mean, var = [0.0] * (n * m), [0.0] * (n * m)
+                    cov = [0.0] * (n * m * n * m)
+                    for t in range(m):
+                        x = _batch_matrix(self._x, (*idx, t))
+                        k, _ = self._native.kernel_matrix(x, t)
+                        for i in range(n):
+                            mean[i * m + t] = constants[t] if constants else 0.0
+                            var[i * m + t] = max(k[i * n + i], 1e-10)
+                            for j in range(n):
+                                cov[(i * m + t) * n * m + j * m + t] = k[i * n + j]
+                    means.extend(mean)
+                    variances.extend(var)
+                    covariances.extend(cov)
+                else:
+                    t = idx[-1] if m > 1 else 0
+                    k, _ = self._native.kernel_matrix(_batch_matrix(self._x, idx), t)
+                    variances.extend(max(k[i * n + i], 1e-10) for i in range(n))
+                    covariances.extend(k)
+            self._prior_cache = means, covariances, variances
+        return self._prior_cache
+
+    @property
+    def mean(self) -> Any:
+        data, _, _ = self._prior_parts()
+        return from_flat(data, self._mean_shape, self._kind)
+
+    @property
+    def loc(self) -> Any:
+        data, _, _ = self._prior_parts()
+        shape = (
+            (*self.batch_shape, math.prod(self.event_shape))
+            if self._multitask
+            else self._mean_shape
+        )
+        return from_flat(data, shape, self._kind)
+
+    @property
+    def variance(self) -> Any:
+        _, _, data = self._prior_parts()
+        return from_flat(data, (*self.batch_shape, *self.event_shape), self._kind)
+
+    @property
+    def covariance_matrix(self) -> Any:
+        _, data, _ = self._prior_parts()
+        n = math.prod(self.event_shape)
+        return from_flat(data, (*self.batch_shape, n, n), self._kind)
 
 
 class _SingleTaskVariationalGP:
@@ -360,13 +483,17 @@ class _SingleTaskVariationalGP:
 
     def __call__(self, X: Any, prior: bool = False) -> _ApproximateOutput:
         """``q(f)`` at the (already transformed) inputs ``X``; the variational
-        parameters are initialized at the first call (GPyTorch)."""
+        parameters are initialized at the first call (GPyTorch). ``prior=True``
+        bypasses q(u) and combines independent outputs into multitask events."""
         if prior:
-            raise UnsupportedError("prior=True is not supported by botorch_rs.")
+            return _VariationalPriorOutput(self._outer, X, multitask=True)
         self._outer._ensure_initialized()
         return _ApproximateOutput(self._outer, X)
 
-    forward = __call__
+    def forward(self, X: Any) -> _ApproximateOutput:
+        """The GP prior at already transformed ``X``, with independent outputs
+        in the batch dimensions, before the variational strategy is applied."""
+        return _VariationalPriorOutput(self._outer, X, multitask=False)
 
     def train(self, mode: bool = True) -> _SingleTaskVariationalGP:
         self.training = mode
