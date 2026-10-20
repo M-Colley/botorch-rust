@@ -59,6 +59,10 @@ references instead of BoTorch's result:
 * qAnalyticProbabilityOfImprovement: BoTorch's MVNXPB gradients of a
   t-batch whose members pivot differently are wrong: compared one candidate
   set at a time.
+* FixedFeatureAcquisitionFunction with unsorted columns: the pinned source
+  assigns values in physical-column order, losing the supplied column/value
+  pairs (meta-pytorch/botorch#3391). Compared with the source wrapper using
+  sorted column/value pairs and an independent full-dimensional input.
 
 Skipped unless BoTorch is importable (required in CI's parity job).
 """
@@ -1015,18 +1019,51 @@ def test_fixed_feature_acquisition_function_matches_botorch() -> None:
         ([2, 0], [torch.tensor(0.25, dtype=DT), 0.75]),
     ):
         s_bt, s_rs = sampler_pair(32, (1, 2), 97)
-        a_bt = bt_ff.FixedFeatureAcquisitionFunction(
-            bt_mc.qExpectedImprovement(bt, best, sampler=s_bt), d, cols, vals
+        # Pinned b0dd01be consumes fixed values in increasing physical-column
+        # order. Sort the pairs together to obtain the #3391 corrected oracle.
+        order = sorted(range(len(cols)), key=cols.__getitem__)
+        sorted_cols = [cols[i] for i in order]
+        sorted_vals = (
+            vals[..., order] if isinstance(vals, torch.Tensor) else [vals[i] for i in order]
         )
+        base_bt = bt_mc.qExpectedImprovement(bt, best, sampler=s_bt)
+        a_bt = bt_ff.FixedFeatureAcquisitionFunction(base_bt, d, sorted_cols, sorted_vals)
         a_rs = rs_ff.FixedFeatureAcquisitionFunction(
             rs_mc.qExpectedImprovement(rs, best, sampler=s_rs), d, cols, vals
         )
         Xs = points_in(X, (4, 2, d - len(cols)), 98)
+        fixed = (
+            vals.to(Xs)
+            if isinstance(vals, torch.Tensor)
+            else torch.stack([torch.as_tensor(v, dtype=Xs.dtype, device=Xs.device) for v in vals])
+        ).expand(*Xs.shape[:-1], len(cols))
+        free = iter(Xs.unbind(-1))
+        full = torch.stack(
+            [fixed[..., cols.index(i)] if i in cols else next(free) for i in range(d)], -1
+        )
+        if cols != sorted_cols:
+            # Source bug reproduction: [2, 0] with [0.25, 0.75] places 0.25
+            # in column 0 and 0.75 in column 2, reversing the declared pairs.
+            broken = bt_ff.FixedFeatureAcquisitionFunction(base_bt, d, cols, vals)
+            broken_full = broken._construct_X_full(Xs)
+            CHECK.check(
+                "Pinned source unsorted-column bug",
+                broken_full,
+                torch.stack((fixed[..., 0], Xs[..., 0], fixed[..., 1]), -1),
+                0.0,
+            )
+            assert not torch.equal(broken_full, full)
         _compare(f"FixedFeatureAcquisitionFunction {cols}", a_rs, a_bt, Xs)
         CHECK.check(
             "FixedFeature _construct_X_full",
             a_rs._construct_X_full(Xs),
+            full,
+            0.0,
+        )
+        CHECK.check(
+            "Corrected source _construct_X_full",
             a_bt._construct_X_full(Xs),
+            full,
             0.0,
         )
 
