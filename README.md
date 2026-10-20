@@ -78,11 +78,12 @@ balances compatibility and performance:
   [Equivalence with BoTorch](#equivalence-with-botorch)).
 - **Not a complete replacement yet.** botorch-rust covers exact GPs
   (single- and multi-output, batched, model lists, multi-task, multi-fidelity,
-  mixed, MAP SAAS and ensembles), fully Bayesian GPs with native NUTS,
+  mixed, MAP SAAS and ensembles), fully Bayesian GPs with native and GPU NUTS,
   variational and higher-order GPs, preference learning, the single- and
   multi-objective acquisition functions, and acquisition optimization.
   An optional Torch backend adds GPU execution and complete autograd graphs
-  for the implemented model/acquisition families; its
+  through specialized/empirical models, entropy search, lookahead and
+  candidate optimization. Its
   [coverage and remaining limits](docs/torch-backend.md) are tracked separately.
   Specialized configurations and remaining gradient configurations are listed below. Public-name
   coverage and numerical parity are tracked separately.
@@ -495,7 +496,7 @@ are integrated in this branch:
   factorizations with fixed hyperparameters. `batch_cross_validation`
   refits the model for each fold.
 
-The main remaining gaps are:
+Configuration limits are documented separately for each backend:
 
 - **Empirical fitting:** native derivatives through cold and warm EM reruns,
   learned explicit inducing locations and both fitters are integrated.
@@ -509,7 +510,10 @@ The main remaining gaps are:
 - **Tensor semantics:** the optional [Torch backend](docs/torch-backend.md)
   supports device-resident float32/float64 and higher-order graphs for its
   documented model and acquisition families, including training inputs,
-  targets, noise and actual model Parameters. GPU coverage is not complete.
+  targets, noise and actual model Parameters. Scalar/multitask NUTS, specialized
+  and empirical models, entropy/search acquisitions and device optimization
+  have independent CPU/CUDA validation. The availability inventory and tested
+  configurations are recorded separately from exhaustive behavioral parity.
   The following limits describe the default native CPU backend. Ordinary CPU
   Torch `SingleTaskGP` models have persistent parameters and first-order
   parameter gradients through posterior moments, samples and exact MLLs
@@ -542,7 +546,8 @@ The main remaining gaps are:
   and [optimization](docs/optimization.md).
 - **Supporting APIs:** batched or approximate path models, full model-state
   interoperability, remaining specialized-model methods, and
-  `botorch_community`. Atomic target/noise replacement and model
+  model-specific configuration limits. `botorch_community` is outside the
+  main-package audit requested for this port. Atomic target/noise replacement and model
   restoration helpers support the documented native model protocol.
 
 Existing release benchmark results above apply to the measured exact-GP
