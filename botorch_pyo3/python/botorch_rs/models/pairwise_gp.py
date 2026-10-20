@@ -51,6 +51,7 @@ from botorch_rs.models.likelihoods.pairwise import (
 )
 from botorch_rs.models.model import FantasizeMixin, Model
 from botorch_rs.models.transforms.input import (
+    ChainedInputTransform,
     InputTransform,
     apply_chain_states,
     chain_spec,
@@ -381,6 +382,8 @@ class PairwiseGP(Model, FantasizeMixin):
         self.covar_module._bind(self, "covar_module.")
         if self.mean_module._model is None:
             self.mean_module._bind(self)
+        if self.input_transform is not None:
+            self.input_transform._bind(self, "input_transform.")
         if not batch:
             self._update()
         self._sync_transform()
@@ -451,9 +454,20 @@ class PairwiseGP(Model, FantasizeMixin):
         out = []
         for name, value in self.covar_module.named_parameters():
             out.append((f"covar_module.{name}", tuple(_shape_of(value))))
-        return out
+        return out + self._input_param_shapes()
+
+    def _input_param_shapes(self) -> list[tuple[str, tuple[int, ...]]]:
+        if self._spec is None:
+            return []
+        return [
+            (step.prefix + name, tuple(shape))
+            for step in self._spec.chains[0]
+            for name, shape in getattr(step.rs, "param_shapes", [])
+        ]
 
     def _raw_param_shape(self, suffix: str) -> tuple[int, ...]:
+        if suffix.startswith("input_transform."):
+            return dict(self._input_param_shapes())[suffix]
         k, name = self._kernel_param(suffix)
         shape = k._element_shapes()[name]
         if self._batch and tuple(k._batch_shape) == self._batch:
@@ -477,6 +491,10 @@ class PairwiseGP(Model, FantasizeMixin):
                 size = math.prod(self._raw_param_shape(k._prefix + name))
                 out[k._prefix + name] = (off, size)
                 off += size
+        for name, shape in self._input_param_shapes():
+            size = math.prod(shape)
+            out[name] = (off, size)
+            off += size
         return out
 
     def _raw_param(self, suffix: str) -> list[float]:
@@ -505,7 +523,9 @@ class PairwiseGP(Model, FantasizeMixin):
 
     def named_parameters(self) -> Iterator[tuple[str, Any]]:
         """``(name, raw value)`` of every parameter (the mean module's constant,
-        which is not fitted, and the covariance module's)."""
+        which is not fitted, the input transform, and the covariance module)."""
+        if self.input_transform is not None:
+            yield from _input_named_parameters(self.input_transform, "input_transform.")
         yield (
             "mean_module.raw_constant",
             from_flat([self.mean_constant], (), self._kind if self._kind.lib != "list" else LIST),
@@ -981,6 +1001,15 @@ def _shape_of(value: Any) -> tuple[int, ...]:
     return tuple(to_flat(value)[1])
 
 
+def _input_named_parameters(transform: InputTransform, prefix: str) -> Iterator[tuple[str, Any]]:
+    if isinstance(transform, ChainedInputTransform):
+        for name, child in transform.items():
+            yield from _input_named_parameters(child, prefix + name + ".")
+    elif hasattr(transform, "named_parameters"):
+        for name, value in transform.named_parameters():
+            yield prefix + name, value
+
+
 def _unsqueeze_last(x: Any) -> Any:
     if is_torch_tensor(x):
         return x.unsqueeze(-1)
@@ -1045,7 +1074,8 @@ class PairwiseLaplaceMarginalLogLikelihood(MarginalLogLikelihood):
 
     def value_and_grad(self, raw_parameters: Any = None) -> tuple[float, list[float]]:
         """A training forward pass at the current or the given flat raw
-        hyperparameters (in the order of ``model.covar_module.named_parameters()``):
+        hyperparameters (kernel parameters followed by input-transform parameters,
+        in ``model._param_names()`` order; the fixed mean is excluded):
         the Laplace approximation is recomputed (warm-started) and installed,
         and the MLL and its gradient with respect to the raw hyperparameters
         are returned (a botorch_rs extension)."""

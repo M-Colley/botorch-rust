@@ -62,12 +62,46 @@ the MLL, and every raw-parameter gradient, in addition to Laplace state.
 
 ## Learned input transforms
 
-PairwiseGP currently rejects input chains with learned parameters, including
-Warp. Its native chain/tape machinery supports Warp application and its
-derivatives, but the PairwiseGP optimizer parameter layout and Laplace
-covariance-adjoint contraction do not yet include those parameters.
-Removing the rejection alone would be incorrect: transformed training inputs
-are currently prepared outside the optimizer closure and would not change
-with trial concentrations. End-to-end learned Warp support requires
-trial-dependent training transforms, concentration priors and bounds,
-updated fit state, and correct batched parameter ownership.
+Unbatched PairwiseGP now supports learned Warp, including feature subsets,
+nondefault epsilon, concentration priors, and supported native input chains
+such as Normalize followed by Warp. The warp, Laplace approximation,
+parameter derivatives, optimizer, prediction, and query derivatives execute
+in Rust; no BoTorch inference is called.
+
+Every optimizer trial transforms the training inputs using that trial's
+concentrations and records the native transform tape. The Laplace reverse
+pass supplies the training-covariance adjoint through the same two Newton
+updates as official BoTorch, holding the numerical fsolve solution fixed.
+Kernel input derivatives contract that symmetric adjoint into transformed
+training-input adjoints, which the tape propagates into the concentrations.
+Concentration priors and their derivatives are included once per parameter.
+The final fit installs both the concentrations and fitted transform state;
+Laplace cache identity includes the transform parameters.
+
+The public transform is bound to the native parameter state, so setters,
+`named_parameters`, state dictionaries, copies, and loading include learned
+concentrations. Public names follow BoTorch's module order. The extension
+`PairwiseLaplaceMarginalLogLikelihood.value_and_grad()` uses the native flat
+vector order returned by `model._param_names()`: kernel parameters followed
+by input-transform parameters. Warp parameters are `concentration0` then
+`concentration1` in the supplied feature-index order. The fixed mean is not
+part of this optimizer vector.
+
+Validation includes official Laplace values, every parameter gradient,
+posteriors and query VJPs, native fits, state restoration, training/evaluation
+conditioning, and fantasy predictions. It covers list/NumPy/Torch inputs,
+probit and logit likelihoods, both default and composite kernels, concentration
+priors, and changed trial concentrations. Native finite differences check
+the Laplace gradients with and without priors for both likelihoods and kernel
+paths. The fantasy comparison uses the previously audited official pairwise
+sampler orientation correction only inside the reference test.
+
+This checkpoint exposes explicit native MLL gradients and query autograd;
+persistent Torch parameter graphs through PairwiseGP inference are not
+claimed. Batched learned-transform construction and fitting still require
+shared/per-member parameter mapping. Fantasy batch predictions inherited
+from an unbatched warped model work; refitting their learned input parameters
+is explicitly rejected pending that mapping. One-to-many transforms,
+`Warp(reverse=True)`, and chains that learn new normalization coefficients
+after a learned transform retain explicit errors. A fixed transform after
+Warp does not have that coefficient-dependence restriction.
