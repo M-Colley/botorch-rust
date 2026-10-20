@@ -182,6 +182,9 @@ separately.
   [acquisition scope](acquisition-parameter-gradients.md)).
 - Faster dense linear algebra for larger n. At n = 300, fitting is only 1.4×
   faster than BoTorch, which uses multithreaded BLAS/LAPACK.
+- Training-data and fantasy-data autograd. Gradients to stored training inputs
+  and targets are unavailable; `propagate_grads(True)` currently does not
+  change that. Query and parameter gradients have the separate scopes above.
 
 Correctness deviations and reproductions are indexed in
 [correctness-findings.md](correctness-findings.md). Public symbol availability
