@@ -14,6 +14,13 @@ from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior, indepen
 from botorch_rs.utils.types import DEFAULT
 
 
+def _mutation_version(tensor: Any) -> Any:
+    try:
+        return tensor._version
+    except RuntimeError:
+        return None
+
+
 class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
     """An exact GP with ordinary Torch autograd through every Tensor operation.
 
@@ -58,6 +65,8 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         )
 
         torch.nn.Module.__init__(self)
+        self._prediction_cache: Any = None
+        self._transform_fit_versions: dict[int, Any] = {}
         self._validate_data(train_X, train_Y, train_Yvar)
         self._output_count = train_Y.shape[-1]
         self.register_buffer("_train_X", train_X)
@@ -73,7 +82,7 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         self.outcome_transform = build_outcome_transform(
             outcome_transform, self.num_outputs, train_Y
         )
-        _, _, noise = self._training_values()
+        _, _, noise = self._training_values(clamp_noise=False)
         self.covar_module = build_kernel(
             covar_module, train_X.shape[-1], self._aug_batch_shape, train_X
         )
@@ -145,15 +154,75 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         ):
             if transform is None:
                 continue
-            if torch.is_grad_enabled() and values.requires_grad:
-                # Only port-owned fitted transforms have this marker. An
-                # arbitrary user module controls its own fitting semantics.
-                if getattr(transform, "_tensor_backend", None) == "torch":
-                    transform.train()
-                    transform(values)
+            if getattr(transform, "_tensor_backend", None) == "torch":
+                parameters = tuple(transform.parameters())
+                versions = tuple(_mutation_version(tensor) for tensor in (values, *parameters))
+                key = (
+                    id(values),
+                    versions[0],
+                    values.shape,
+                    values.dtype,
+                    values.device,
+                    tuple((id(parameter), version) for parameter, version in zip(parameters, versions[1:], strict=True)),
+                )
+                needs_graph = torch.is_grad_enabled() and (
+                    values.requires_grad or any(parameter.requires_grad for parameter in parameters)
+                )
+                if needs_graph or None in versions or self._transform_fit_versions.get(id(transform)) != key:
+                    if getattr(transform, "transform_on_train", True):
+                        fit = getattr(transform, "fit", None)
+                        if fit is not None:
+                            fit(values)
+                    self._transform_fit_versions[id(transform)] = key
             transform.eval()
 
-    def _training_values(self) -> tuple[Any, Any, Any]:
+    def _prediction_key(self) -> Any:
+        tensors = (*self.parameters(), *self.buffers())
+        if torch.is_grad_enabled() and any(tensor.requires_grad for tensor in tensors):
+            return None
+        versions = []
+        for tensor in tensors:
+            try:
+                version = tensor._version
+            except RuntimeError:
+                # Inference-mode tensors do not expose mutation counters.
+                return None
+            versions.append(
+                (id(tensor), tensor.data_ptr(), version, tensor.shape, tensor.dtype, tensor.device)
+            )
+        configuration = []
+        for name, module in self.named_modules():
+            if (
+                module is not self
+                and not isinstance(module, (torch.nn.ModuleList, torch.nn.ModuleDict))
+                and type(module).__module__ != "botorch_rs.models._torch_backend_modules"
+            ):
+                # User modules may depend on unregistered tensors, Python
+                # containers, or external state. Recompute their training
+                # factor rather than assume parameter counters cover it.
+                return None
+            values = tuple(
+                (key, value)
+                for key, value in vars(module).items()
+                if (
+                    key != "_prediction_cache"
+                    and isinstance(value, (str, int, float, bool, type(None)))
+                )
+            )
+            configuration.append((name, id(module), values))
+        return torch.is_inference_mode_enabled(), tuple(versions), tuple(configuration)
+
+    def train(self, mode: bool = True) -> Any:
+        if mode:
+            self._prediction_cache = None
+        return torch.nn.Module.train(self, mode)
+
+    def _apply(self, fn: Any, recurse: bool = True) -> Any:
+        self._prediction_cache = None
+        self._transform_fit_versions = {}
+        return torch.nn.Module._apply(self, fn, recurse)
+
+    def _training_values(self, clamp_noise: bool = True) -> tuple[Any, Any, Any]:
         self._fit_transform_graphs()
         X = self._train_X
         if self.input_transform is not None:
@@ -162,6 +231,8 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         Y, noise = self._train_Y, self._train_Yvar
         if self.outcome_transform is not None:
             Y, noise = self.outcome_transform(Y, noise, X=self._train_X)
+        if noise is not None and clamp_noise:
+            noise = noise.clamp_min(1e-4 if noise.dtype == torch.float32 else 1e-6)
         return (
             self._augment_X(X),
             self._augment_Y(Y),
@@ -170,7 +241,7 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
 
     @property
     def train_inputs(self) -> tuple[Any]:
-        return (self._training_values()[0],)
+        return (self._augment_X(self._train_X),)
 
     @property
     def train_targets(self) -> Any:
@@ -199,16 +270,11 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         # objects. Densifying them retains their Torch graph and device.
         return value if isinstance(value, torch.Tensor) else value.to_dense()
 
-    def posterior(
+    def _posterior_tensors(
         self,
         X: Any,
-        output_indices: Any = None,
         observation_noise: Any = False,
-        posterior_transform: Any = None,
-        **kwargs: Any,
     ) -> Any:
-        if kwargs:
-            raise UnsupportedError(f"Unsupported posterior arguments: {sorted(kwargs)}.")
         if not isinstance(X, torch.Tensor) or X.ndim < 2 or X.shape[-1] != self._train_X.shape[-1]:
             raise ValueError("X must be a Tensor with shape (..., q, d).")
         if X.dtype != self._train_X.dtype or X.device != self._train_X.device:
@@ -228,22 +294,43 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             )
         elif observation_noise is not False:
             raise TypeError("observation_noise must be bool or a Tensor.")
-        mean, covariance = _rs.tensor_exact_gp_posterior(
-            Y,
-            self._covariance(train_X, train_X),
+        key = self._prediction_key()
+        cache = self._prediction_cache
+        if key is not None and cache is not None and cache[0] == key:
+            factor, alpha = cache[1:]
+        else:
+            factor, alpha = _rs.tensor_exact_gp_factor(
+                Y, self._covariance(train_X, train_X), self.mean_module(train_X), train_noise
+            )
+            if key is not None:
+                self._prediction_cache = (key, factor, alpha)
+        mean, covariance = _rs.tensor_exact_gp_predict(
+            factor,
+            alpha,
             self._covariance(train_X, query_X),
             self._covariance(query_X, query_X),
-            self.mean_module(train_X),
             self.mean_module(query_X),
-            train_noise,
             observation_noise=query_noise,
         )
+        return mean, covariance
+
+    def posterior(
+        self,
+        X: Any,
+        output_indices: Any = None,
+        observation_noise: Any = False,
+        posterior_transform: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        if kwargs:
+            raise UnsupportedError(f"Unsupported posterior arguments: {sorted(kwargs)}.")
+        mean, covariance = self._posterior_tensors(X, observation_noise)
         if self.num_outputs == 1:
             mean, blocks = mean.unsqueeze(-1), covariance.unsqueeze(-3)
         else:
             mean, blocks = mean.transpose(-1, -2), covariance
-        if self.outcome_transform is not None:
-            mean, blocks = self.outcome_transform.untransform_moments(mean, blocks)
+        posterior = TorchGPyTorchPosterior(mean, independent_covariance(blocks))
+        outcome = self.outcome_transform
         if output_indices is not None:
             indices = torch.as_tensor(output_indices, device=mean.device, dtype=torch.long)
             if indices.ndim != 1 or not indices.numel():
@@ -251,28 +338,58 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             if bool(((indices < -self.num_outputs) | (indices >= self.num_outputs)).any()):
                 raise IndexError("output_indices contains an out-of-range output.")
             indices = indices.remainder(self.num_outputs)
-            mean, blocks = mean.index_select(-1, indices), blocks.index_select(-3, indices)
-        posterior = TorchGPyTorchPosterior(mean, independent_covariance(blocks))
+            if outcome is not None:
+                subset = getattr(outcome, "subset_output", None)
+                if subset is None:
+                    method = getattr(outcome, "untransform_posterior", None)
+                    if method is not None:
+                        posterior = method(posterior, X=X)
+                    else:
+                        mean, blocks = outcome.untransform_moments(mean, blocks)
+                        posterior = TorchGPyTorchPosterior(mean, independent_covariance(blocks))
+                    if not isinstance(posterior, TorchGPyTorchPosterior):
+                        raise UnsupportedError(
+                            "This outcome transform must implement subset_output for selecting nonlinear outputs."
+                        )
+                    outcome = None
+                else:
+                    outcome = subset(indices)
+            posterior = posterior.subset_output(indices)
+        if outcome is not None:
+            method = getattr(outcome, "untransform_posterior", None)
+            if method is not None:
+                posterior = method(posterior, X=X)
+            else:
+                mean, blocks = outcome.untransform_moments(mean, blocks)
+                posterior = TorchGPyTorchPosterior(mean, independent_covariance(blocks))
         return posterior if posterior_transform is None else posterior_transform(posterior, X=X)
 
     def forward(self, X: Any) -> Any:
         if not self.training:
-            return self.posterior(X).distribution
-        # As in ExactGP, training __call__ returns the latent prior on the
-        # already transformed, output-augmented inputs in train_inputs.
+            mean, covariance = self._posterior_tensors(X)
+            return TorchGPyTorchPosterior(mean.unsqueeze(-1), covariance).distribution
+        self._fit_transform_graphs()
+        if self.input_transform is not None:
+            transform = getattr(self.input_transform, "preprocess_transform", self.input_transform)
+            original = (
+                X.select(-3, 0) if self.num_outputs > 1 and X.ndim > self._train_X.ndim else X
+            )
+            X = self._augment_X(transform(original))
+        # The latent training law is not factored until noise is added by
+        # the MLL or likelihood. Noiseless RBF matrices can be singular.
         return TorchGPyTorchPosterior(
             self.mean_module(X).unsqueeze(-1), self._covariance(X, X)
         ).distribution
 
     def _log_prior(self) -> Any:
+        from botorch_rs.models._torch_backend_modules import module_log_prior
+
         result = self._train_X.new_zeros(())
         seen: set[int] = set()
         for module in (self.likelihood, self.mean_module, self.covar_module, self.input_transform):
             if module is not None and id(module) not in seen:
                 seen.add(id(module))
-                method = getattr(module, "log_prior", None)
-                if method is not None:
-                    result = result + method()
+                result = result + module_log_prior(module, self._aug_batch_shape)
         return result
 
     def _exact_mll(self, output: Any = None, target: Any = None) -> Any:
@@ -373,6 +490,57 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
     def _sync_torch_parameters(self) -> Any:
         # Parameters already are the tensors consumed by the inference graph.
         return None
+
+    def subset_output(self, idcs: Any) -> Any:
+        indices = torch.as_tensor(idcs, dtype=torch.long, device=self._train_Y.device)
+        if indices.ndim != 1 or not indices.numel():
+            raise ValueError("Output indices must be a nonempty vector.")
+        if bool(((indices < -self.num_outputs) | (indices >= self.num_outputs)).any()):
+            raise IndexError("Output index out of range.")
+        indices = indices.remainder(self.num_outputs)
+        new = copy.deepcopy(self)
+        if self.num_outputs == 1:
+            if indices.numel() != 1:
+                raise UnsupportedError("Repeating a single output requires a model list.")
+            return new
+        old_aug = self._aug_batch_shape
+        axis = len(self.batch_shape)
+        count = indices.numel()
+        new_aug = self.batch_shape + ((count,) if count > 1 else ())
+        replacements: dict[int, Any] = {}
+        module: Any
+        for module in new.modules():
+            if module is new or tuple(getattr(module, "batch_shape", ())) != tuple(old_aug):
+                continue
+            for name, parameter in list(module.named_parameters(recurse=False)):
+                if tuple(parameter.shape[: axis + 1]) == tuple(old_aug):
+                    if id(parameter) not in replacements:
+                        selected = parameter.index_select(axis, indices)
+                        if count == 1:
+                            selected = selected.squeeze(axis)
+                        replacements[id(parameter)] = torch.nn.Parameter(
+                            selected.detach().clone(), requires_grad=parameter.requires_grad
+                        )
+                    setattr(module, name, replacements[id(parameter)])
+            if type(module).__name__ == "TorchFixedNoiseLikelihood":
+                selected = module.noise.index_select(axis, indices)
+                module.noise = selected.squeeze(axis) if count == 1 else selected
+            module.batch_shape = torch.Size(new_aug)
+        new._output_count = count
+        new._train_Y = self._train_Y.index_select(-1, indices)
+        new._transform_fit_Y = self._transform_fit_Y.index_select(-1, indices)
+        if self._train_Yvar is not None:
+            new._train_Yvar = self._train_Yvar.expand_as(self._train_Y).index_select(-1, indices)
+        if self._noise_override is not None:
+            selected = self._noise_override.index_select(axis, indices)
+            new._noise_override = selected.squeeze(axis) if count == 1 else selected
+        outcome = new.outcome_transform
+        if outcome is not None:
+            subset = getattr(outcome, "subset_output", None)
+            if subset is None:
+                raise UnsupportedError("This outcome transform does not implement subset_output.")
+            new.outcome_transform = subset(indices)
+        return new
 
     def posterior_parameter_vjp(
         self,

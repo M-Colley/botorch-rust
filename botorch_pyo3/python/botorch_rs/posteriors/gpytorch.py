@@ -626,7 +626,10 @@ def scalarize_posterior(posterior: Any, weights: Any, offset: float = 0.0) -> GP
     from botorch_rs.posteriors.posterior_list import PosteriorList
 
     if getattr(posterior, "_tensor_backend", None) == "torch":
-        return posterior.scalarize(weights, offset)
+        scalarize = getattr(posterior, "scalarize", None)
+        if scalarize is None:
+            raise NotImplementedError("This non-Gaussian posterior does not support scalarization.")
+        return scalarize(weights, offset)
     if isinstance(posterior, GPyTorchPosterior):
         if posterior.__dict__.get("_distribution_adapter") is not None:
             import torch

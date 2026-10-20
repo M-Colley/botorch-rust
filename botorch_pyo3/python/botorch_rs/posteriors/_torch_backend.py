@@ -9,6 +9,8 @@ import torch
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import kind_of
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
+from botorch_rs.posteriors.posterior_list import PosteriorList
+from botorch_rs.posteriors.transformed import TransformedPosterior
 
 
 def independent_covariance(blocks: Any) -> Any:
@@ -206,3 +208,93 @@ class TorchMultivariateNormal:
         return torch.distributions.MultivariateNormal(
             self.loc, covariance_matrix=self.covariance_matrix
         ).log_prob(value)
+
+
+class TorchPosteriorList(PosteriorList):
+    """Independent Gaussian or transformed laws sampled on the same device."""
+
+    _tensor_backend = "torch"
+
+    def __init__(self, *posteriors: Any) -> None:
+        super().__init__(*posteriors)
+        shapes = [torch.Size(p._extended_shape(())) for p in posteriors]
+        if any(shape[:-1] != shapes[0][:-1] for shape in shapes):
+            raise ValueError("Component posterior batch and point shapes must agree.")
+        self._batch = shapes[0][:-2]
+        self._q = shapes[0][-2]
+        self._widths = [shape[-1] for shape in shapes]
+        self._m = sum(self._widths)
+        self._kind = posteriors[0]._kind
+
+    @property
+    def batch_shape(self) -> Any:
+        return self._batch
+
+    @property
+    def mean(self) -> Any:
+        return torch.cat([posterior.mean for posterior in self.posteriors], dim=-1)
+
+    @property
+    def variance(self) -> Any:
+        return torch.cat([posterior.variance for posterior in self.posteriors], dim=-1)
+
+    @property
+    def base_sample_shape(self) -> Any:
+        return self._batch + (self._q, self._m)
+
+    @property
+    def batch_range(self) -> tuple[int, int]:
+        return (0, -2)
+
+    def rsample(self, sample_shape: Any = None) -> Any:
+        shape = torch.Size([1] if sample_shape is None else sample_shape)
+        base = torch.randn(shape + self.base_sample_shape, dtype=self.dtype, device=self.device)
+        return self.rsample_from_base_samples(shape, base)
+
+    def rsample_from_base_samples(self, sample_shape: Any, base_samples: Any) -> Any:
+        shape = torch.Size(sample_shape)
+        base_samples = base_samples.expand(shape + self.base_sample_shape)
+        samples = []
+        start = 0
+        for posterior, width in zip(self.posteriors, self._widths, strict=True):
+            base = base_samples[..., start : start + width]
+            if len(posterior.base_sample_shape) == len(self._batch) + 1:
+                base = base.squeeze(-1)
+            samples.append(posterior.rsample_from_base_samples(shape, base))
+            start += width
+        return torch.cat(samples, dim=-1)
+
+    def scalarize(self, weights: Any, offset: Any = 0.0) -> Any:
+        if self._q != 1:
+            raise NotImplementedError("Scalarizing non-Gaussian posterior lists requires q=1.")
+        weights = torch.as_tensor(weights, device=self.device, dtype=self.dtype)
+        if weights.shape != (self._m,):
+            raise ValueError("Weights must have one entry per output.")
+        mean = (self.mean @ weights + offset).unsqueeze(-1)
+        variance = (self.variance * weights.square()).sum(-1).unsqueeze(-1)
+        return TorchGPyTorchPosterior(mean, variance)
+
+    def subset_output(self, indices: Any) -> Any:
+        indices = torch.as_tensor(indices, dtype=torch.long, device=self.device)
+        if indices.ndim != 1 or not indices.numel():
+            raise ValueError("Output indices must be a nonempty vector.")
+        if bool(((indices < -self._m) | (indices >= self._m)).any()):
+            raise IndexError("Output index out of range.")
+        return TorchOutputSubsetPosterior(self, indices.remainder(self._m))
+
+
+class TorchOutputSubsetPosterior(TransformedPosterior):
+    """Select samples without resampling repeated outputs independently."""
+
+    def __init__(self, posterior: Any, indices: Any) -> None:
+        self._indices = indices
+        super().__init__(
+            posterior,
+            sample_transform=lambda samples: samples.index_select(-1, indices),
+            mean_transform=lambda mean, variance: mean.index_select(-1, indices),
+            variance_transform=lambda mean, variance: variance.index_select(-1, indices),
+        )
+
+    def _extended_shape(self, sample_shape: Any = ()) -> Any:
+        shape = self._posterior._extended_shape(sample_shape)
+        return (*shape[:-1], self._indices.numel())

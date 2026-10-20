@@ -234,3 +234,183 @@ def test_explicit_sampler_normals_broadcast_and_remain_differentiable(device):
     assert samples.shape == (4, 2, 3, 1)
     gradient = torch.autograd.grad(samples.square().sum(), base, create_graph=True)[0]
     assert torch.isfinite(torch.autograd.grad(gradient.sum(), base)[0]).all()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("fixed", [False, True])
+@pytest.mark.parametrize("indices", [[1], [1, 0]])
+def test_output_subsets_preserve_moments_parameters_and_training_graph(device, fixed, indices):
+    X, Y, query = data(device, batch=(2,), outputs=2)
+    Y.requires_grad_()
+    variance = torch.full_like(Y, 0.01) if fixed else None
+    model = SingleTaskGP(X, Y, variance, backend="torch")
+    expected = model.posterior(query, output_indices=indices)
+    subset = model.subset_output(indices)
+    actual = subset.posterior(query)
+    torch.testing.assert_close(actual.mean, expected.mean)
+    torch.testing.assert_close(
+        actual.distribution.covariance_matrix, expected.distribution.covariance_matrix
+    )
+    assert subset.num_outputs == len(indices)
+    assert subset.covar_module.raw_lengthscale.shape == (
+        (2, 1, 2) if len(indices) == 1 else (2, 2, 1, 2)
+    )
+    assert subset.covar_module.raw_lengthscale is not model.covar_module.raw_lengthscale
+    gradient = torch.autograd.grad(actual.mean.square().sum(), Y, create_graph=True)[0]
+    assert torch.isfinite(torch.autograd.grad(gradient.sum(), Y)[0]).all()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_custom_torch_module_selects_backend_and_keeps_network_parameter_graph(device):
+    class NetworkKernel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.network = torch.nn.Linear(2, 3, dtype=torch.double, device=device)
+
+        def forward(self, a, b):
+            distance = (
+                (self.network(a).unsqueeze(-2) - self.network(b).unsqueeze(-3)).square().sum(-1)
+            )
+            return (-distance / 2).exp()
+
+    X, Y, query = data(device)
+    model = SingleTaskGP(X, Y, covar_module=NetworkKernel())
+    assert model._tensor_backend == "torch"
+    loss = model.posterior(query).mean.square().sum()
+    parameters = tuple(model.covar_module.parameters())
+    gradients = torch.autograd.grad(loss, parameters, create_graph=True)
+    second = torch.autograd.grad(sum(g.square().sum() for g in gradients), parameters)
+    assert all(torch.isfinite(g).all() for g in second)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_training_forward_does_not_factor_noiseless_covariance(device):
+    X = torch.linspace(0, 1, 80, dtype=torch.double, device=device).unsqueeze(-1)
+    model = SingleTaskGP(X, (X * 6).sin(), backend="torch")
+    mll = ExactMarginalLogLikelihood(model.likelihood, model)
+    with patch.object(torch.linalg, "cholesky", side_effect=AssertionError("eager latent factor")):
+        output = model(*model.train_inputs)
+    assert torch.isfinite(mll(output, model.train_targets)).all()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_prediction_factor_cache_reuses_and_invalidates_actual_state(device):
+    from botorch_rs import _botorch_rs as native
+
+    X, Y, query = data(device)
+    model = SingleTaskGP(X, Y, backend="torch")
+    with patch.object(
+        native, "tensor_exact_gp_factor", wraps=native.tensor_exact_gp_factor
+    ) as factor:
+        with torch.no_grad():
+            model.posterior(query)
+            model.posterior(query + 0.01)
+            model.posterior(query + 0.02)
+            assert factor.call_count == 1
+            model.covar_module.raw_lengthscale.add_(0.01)
+            actual = model.posterior(query).mean
+            assert factor.call_count == 2
+            model._prediction_cache = None
+            torch.testing.assert_close(actual, model.posterior(query).mean)
+            assert factor.call_count == 3
+            Y.add_(0.01)
+            model.posterior(query)
+            assert factor.call_count == 4
+            model.train()
+            model.posterior(query)
+            assert factor.call_count == 5
+        # A full parameter graph must be fresh on each independent backward.
+        for _ in range(2):
+            model.posterior(query).mean.sum().backward()
+        assert factor.call_count == 7
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_frozen_training_factor_preserves_query_double_backward(device):
+    from botorch_rs import _botorch_rs as native
+
+    X, Y, query = data(device)
+    query.requires_grad_()
+    model = SingleTaskGP(X, Y, backend="torch").requires_grad_(False)
+    with patch.object(
+        native, "tensor_exact_gp_factor", wraps=native.tensor_exact_gp_factor
+    ) as factor:
+        for _ in range(2):
+            loss = model.posterior(query).mean.square().sum()
+            gradient = torch.autograd.grad(loss, query, create_graph=True)[0]
+            assert torch.isfinite(torch.autograd.grad(gradient.sum(), query)[0]).all()
+        assert factor.call_count == 1
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("on_train,on_eval", [(True, True), (False, True), (True, False)])
+def test_public_input_transform_flags_and_training_call_protocol(device, on_train, on_eval):
+    from botorch.models import SingleTaskGP as ReferenceGP
+    from botorch.models.transforms.input import Normalize as ReferenceNormalize
+
+    from botorch_rs.models.transforms.input import Normalize
+
+    X, Y, query = data(device)
+    bounds = torch.tensor([[0.0, 0.0], [2.0, 2.0]], dtype=X.dtype, device=X.device)
+    flags = {"transform_on_train": on_train, "transform_on_eval": on_eval}
+    model = SingleTaskGP(
+        X, Y, backend="torch", input_transform=Normalize(2, bounds=bounds, **flags)
+    )
+    reference = ReferenceGP(X, Y, input_transform=ReferenceNormalize(2, bounds=bounds, **flags))
+    torch.testing.assert_close(model.train_inputs[0], X)
+    mll = ExactMarginalLogLikelihood(model.likelihood, model)
+    torch.testing.assert_close(mll(model(*model.train_inputs), model.train_targets), mll())
+    actual = model.posterior(query)
+    expected = reference.posterior(query)
+    torch.testing.assert_close(actual.mean, expected.mean, atol=2e-9, rtol=2e-9)
+    torch.testing.assert_close(actual.variance, expected.variance, atol=2e-9, rtol=2e-9)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("kind", ["log", "power", "bilog", "chain"])
+def test_nonlinear_posterior_sampling_and_training_graphs(device, kind):
+    from botorch_rs.models.transforms.outcome import (
+        Bilog,
+        ChainedOutcomeTransform,
+        Log,
+        Power,
+        Standardize,
+    )
+
+    X, Y, query = data(device, outputs=2)
+    X.requires_grad_()
+    Y = Y.exp().detach().requires_grad_()
+    query.requires_grad_()
+    transforms = {"log": Log(), "power": Power(0.5), "bilog": Bilog(), "chain": ChainedOutcomeTransform(log=Log(), standardize=Standardize(2))}
+    model = SingleTaskGP(X, Y, outcome_transform=transforms[kind], backend="torch")
+    posterior = model.posterior(query, output_indices=[1])
+    sampler = IIDNormalSampler((4,), seed=13)
+    samples = sampler(posterior)
+    assert samples.shape == (4, 3, 1)
+    assert samples.device == X.device
+    loss = samples.square().sum() + ExactMarginalLogLikelihood(model.likelihood, model)().sum()
+    leaves = (X, Y, query, *model.parameters())
+    gradients = torch.autograd.grad(loss, leaves, create_graph=True)
+    second = torch.autograd.grad(sum(g.square().sum() for g in gradients), leaves)
+    assert all(torch.isfinite(g).all() for g in second)
+    subset = model.subset_output([1])
+    expected = model.posterior(query, output_indices=[1])
+    normals = torch.ones((2,) + expected.base_sample_shape, dtype=X.dtype, device=X.device)
+    torch.testing.assert_close(subset.posterior(query).rsample_from_base_samples((2,), normals), expected.rsample_from_base_samples((2,), normals))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_nonlinear_model_list_samples_keep_duplicate_outputs_identical(device):
+    from botorch_rs.models import ModelListGP
+    from botorch_rs.models.transforms.outcome import Log, Power
+
+    X, Y, query = data(device)
+    Y = Y.exp().detach().requires_grad_()
+    first = SingleTaskGP(X, Y, backend="torch", outcome_transform=Log())
+    second = SingleTaskGP(X[:6], Y[:6], backend="torch", outcome_transform=Power(0.5))
+    posterior = ModelListGP(first, second).posterior(query, output_indices=[1, 0, 1])
+    samples = IIDNormalSampler((3,), seed=31)(posterior)
+    assert samples.shape == (3, 3, 3)
+    torch.testing.assert_close(samples[..., 0], samples[..., 2], atol=0, rtol=0)
+    gradients = torch.autograd.grad(samples.square().sum(), (Y, *first.parameters(), *second.parameters()), create_graph=True)
+    assert all(torch.isfinite(g).all() for g in gradients)

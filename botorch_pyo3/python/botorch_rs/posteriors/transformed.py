@@ -59,6 +59,18 @@ class TransformedPosterior(Posterior):
         self._variance_transform = variance_transform
 
     @property
+    def _tensor_backend(self) -> Any:
+        return getattr(self._posterior, "_tensor_backend", None)
+
+    @property
+    def _kind(self) -> Any:
+        return getattr(self._posterior, "_kind", None)
+
+    @property
+    def batch_shape(self) -> Any:
+        return self._posterior.batch_shape
+
+    @property
     def base_sample_shape(self) -> Any:
         r"""The shape of a base sample used for constructing posterior samples."""
         return self._posterior.base_sample_shape

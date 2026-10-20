@@ -83,8 +83,8 @@ class ScalarizedPosteriorTransform(PosteriorTransform):
             import torch
 
             # BoTorch's ``offset + Y @ weights`` (the same rounding).
-            w = torch.as_tensor(self._weights, dtype=Y.dtype, device=Y.device)
-            return self._offset + Y @ w
+            w = torch.as_tensor(self.weights, dtype=Y.dtype, device=Y.device)
+            return self.offset + Y @ w
         data, shape = to_flat(Y, "Y")
         if not shape or shape[-1] != m:
             raise BotorchTensorDimensionError(
@@ -100,7 +100,8 @@ class ScalarizedPosteriorTransform(PosteriorTransform):
         """The scalarized (single-output) posterior of a botorch_rs posterior."""
         from botorch_rs.posteriors.gpytorch import scalarize_posterior
 
-        return scalarize_posterior(posterior, self.weights, self._offset)
+        offset = self.offset if getattr(posterior, "_tensor_backend", None) == "torch" else self._offset
+        return scalarize_posterior(posterior, self.weights, offset)
 
     def __repr__(self) -> str:
         return f"ScalarizedPosteriorTransform(weights={self._weights}, offset={self._offset})"

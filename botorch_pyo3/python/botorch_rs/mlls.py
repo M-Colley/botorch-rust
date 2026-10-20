@@ -216,6 +216,44 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
         ``model.named_parameters()``), at the current or the given flat raw
         hyperparameters. The value is a float for a single-output model and a
         list of values (one per element) otherwise."""
+        if getattr(self.model, "_tensor_backend", None) == "torch":
+            import copy
+
+            import torch
+
+            model = copy.deepcopy(self.model)
+            parameters = tuple(model.parameters())
+            if not parameters:
+                if raw_parameters is not None and len(raw_parameters):
+                    raise ValueError("This model has no raw parameters.")
+                value = model._exact_mll()
+                return value.detach().cpu().tolist(), []
+            with torch.enable_grad():
+                for parameter in parameters:
+                    parameter.requires_grad_(True)
+                if raw_parameters is not None:
+                    vector = torch.as_tensor(
+                        raw_parameters, dtype=parameters[0].dtype, device=parameters[0].device
+                    ).reshape(-1)
+                    if vector.numel() != sum(parameter.numel() for parameter in parameters):
+                        raise ValueError("raw_parameters has the wrong number of elements.")
+                    offset = 0
+                    with torch.no_grad():
+                        for parameter in parameters:
+                            parameter.copy_(
+                                vector[offset : offset + parameter.numel()].reshape_as(parameter)
+                            )
+                            offset += parameter.numel()
+                value = model._exact_mll()
+                gradients = torch.autograd.grad(value.sum(), parameters, allow_unused=True)
+            flat = torch.cat(
+                [
+                    (torch.zeros_like(parameter) if gradient is None else gradient).reshape(-1)
+                    for parameter, gradient in zip(parameters, gradients, strict=True)
+                ]
+            )
+            result = value.detach().cpu().tolist()
+            return (result if value.ndim else float(result)), flat.detach().cpu().tolist()
         params = None if raw_parameters is None else to_flat(raw_parameters)[0]
         if params is None:
             _forward_pass(self.model)

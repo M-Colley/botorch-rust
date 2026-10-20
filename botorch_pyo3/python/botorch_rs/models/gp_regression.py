@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 import warnings
 from collections.abc import Iterator
 from typing import Any
@@ -264,12 +265,32 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
             if backend not in ("auto", "native", "torch"):
                 raise ValueError("backend must be 'auto', 'native', or 'torch'.")
             values = (train_X, train_Y, kwargs.get("train_Yvar"), *args[:1])
+            torch = sys.modules.get("torch")
+            modules = (
+                *args[1:],
+                *(
+                    kwargs.get(name)
+                    for name in (
+                        "likelihood",
+                        "covar_module",
+                        "mean_module",
+                        "input_transform",
+                        "outcome_transform",
+                    )
+                ),
+            )
             tensor_backend = backend == "torch" or (
                 backend == "auto"
-                and any(
-                    getattr(value, "requires_grad", False)
-                    or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
-                    for value in values
+                and (
+                    any(
+                        getattr(value, "requires_grad", False)
+                        or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
+                        for value in values
+                    )
+                    or (
+                        torch is not None
+                        and any(isinstance(module, torch.nn.Module) for module in modules)
+                    )
                 )
             )
             if tensor_backend:

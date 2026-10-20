@@ -9,7 +9,7 @@ from torch.nn.functional import pad
 
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.model_list_gp_regression import ModelListGP
-from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior, TorchPosteriorList
 
 
 class TorchLikelihoodList(torch.nn.Module):
@@ -63,6 +63,8 @@ class TorchModelListGP(torch.nn.Module, ModelListGP):
         posterior_transform: Any = None,
         **kwargs: Any,
     ) -> Any:
+        batch = torch.broadcast_shapes(self.batch_shape, X.shape[:-2])
+        X = X.expand(*batch, *X.shape[-2:])
         parts = []
         start = 0
         for model in self.models:
@@ -71,6 +73,11 @@ class TorchModelListGP(torch.nn.Module, ModelListGP):
                 noise = noise[..., start : start + model.num_outputs]
             parts.append(model.posterior(X, observation_noise=noise, **kwargs))
             start += model.num_outputs
+        if any(not isinstance(posterior, TorchGPyTorchPosterior) for posterior in parts):
+            result = TorchPosteriorList(*parts)
+            if output_indices is not None:
+                result = result.subset_output(output_indices)
+            return result if posterior_transform is None else posterior_transform(result, X=X)
         batch = torch.broadcast_shapes(*(p.batch_shape for p in parts))
         q = parts[0]._q
         mean = torch.cat([p.mean.expand(*batch, q, p._m) for p in parts], dim=-1)
