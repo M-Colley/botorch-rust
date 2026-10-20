@@ -7,8 +7,6 @@ from unittest.mock import patch
 import pytest
 
 torch = pytest.importorskip("torch")
-pytest.importorskip("gpytorch")
-pytest.importorskip("botorch")
 
 from botorch_rs.models.approximate_gp import SingleTaskVariationalGP
 from botorch_rs.sampling.pathwise import (
@@ -35,6 +33,8 @@ def data(device, batch=False):
 
 def make_model(X, Y, transformed=False, reference=False, kernel="rbf", learn=True):
     if reference:
+        pytest.importorskip("gpytorch")
+        pytest.importorskip("botorch")
         from botorch.models import SingleTaskVariationalGP as GP
         from botorch.models.transforms.input import Normalize
         from botorch.models.transforms.outcome import Standardize
@@ -97,6 +97,7 @@ def paths(model, shape=(2,), draws=None, seed=23):
 def test_variational_paths_match_reference_current_q_draws_and_query_gradients(
     device, transformed, batch, kernel
 ):
+    pytest.importorskip("botorch")
     from botorch.sampling.pathwise import draw_kernel_feature_paths as ReferencePrior
     from botorch.sampling.pathwise import draw_matheron_paths as ReferencePaths
 
@@ -137,6 +138,7 @@ def test_variational_paths_match_reference_current_q_draws_and_query_gradients(
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_source_multioutput_prior_supported_but_matheron_update_is_not_registered(device):
+    pytest.importorskip("botorch")
     from botorch.models import SingleTaskVariationalGP as ReferenceGP
     from botorch.sampling.pathwise import draw_kernel_feature_paths as ReferencePrior
     from botorch.sampling.pathwise import draw_matheron_paths as ReferencePaths
