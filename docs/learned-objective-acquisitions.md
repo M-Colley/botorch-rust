@@ -51,19 +51,46 @@ tests explicitly expand queries to `(4, 2)` before calling official code;
 Torch then folds the expansion adjoint to the original query. The native
 binding performs that symmetric broadcast directly.
 
-MC acquisition construction with preference training batches still has an
-explicit boundary until per-candidate member dispatch is integrated. The
-scalar acquisition callback must not misinterpret a preference-model batch
-as extra MC samples and average across it. Candidate t-batches and outcome
-ensembles are supported by the earlier MC tests; those configurations use
-an unbatched preference model.
+Native MC acquisitions also support native `PairwiseGP` preference training
+batches. Each
+candidate worker selects the corresponding native preference-model member
+using standard batch broadcasting. Its preference draws retain the joint
+covariance across q points and the expanded preference/outcome sample axes;
+preference members are never averaged as extra MC samples. The candidate
+batch must already include the preference batch: for example `(2)` or
+`(3, 2)` for preference batch `(2)`, and `(2, 3)` for preference batch
+`(2, 1)`. Explicitly expand candidate inputs when necessary. Torch autograd
+sums gradients through such expansions to the original input.
+
+Baseline pruning evaluates every preference member and retains the union of
+their empirical maximizers (subject to the existing `max_frac` limit).
+It preserves the original outcome-sample axis when repeating feasibility
+constraints. Official constructor pruning with batched `PairwiseGP` fails
+at revision `b0dd01be6`: its `S x q x d` outcome samples collide with the
+preference batch axis. An upstream fix is to insert singleton preference
+batch axes before evaluating the learned objective, then aggregate the
+member maximizers. The tests compare the native result to this explicit
+official-sample calculation.
+
+The native and Python member-selection scopes restore the previous context
+after nested calls, errors, and native panic unwinding. Standalone learned
+objectives outside acquisition callbacks keep their full broadcast result.
+Native acquisition optimization with a batched preference objective remains
+explicitly unsupported: its scalar optimizer has no selected preference
+member. Evaluate explicit compatible candidate batches, or optimize an
+explicitly selected preference model. Batched deterministic wrappers whose
+native handle does not expose independent `batch_element` models remain
+unsupported, as do batched caller-defined deterministic utilities. Ordinary
+unbatched deterministic and caller-defined utilities remain supported.
 
 ## Correcting the noisy-improvement cache law
 
-With a stochastic learned preference, NEI and LogNEI use full-joint sampling
+With a stochastic or batched learned preference, NEI and LogNEI use full-joint sampling
 even if `cache_root=True` was requested. An explicit request emits a warning;
 the default selects the correct path quietly. Pointwise deterministic
-preferences retain native baseline-root caching.
+preferences without preference training batches retain native baseline-root
+caching. Batched preferences require separate member baseline caches before
+they can use the cached path.
 
 The pinned official cached path applies `LearnedObjective` separately to
 baseline outcomes and candidate outcomes. Those separate preference GP

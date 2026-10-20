@@ -28,6 +28,8 @@ use pyo3::prelude::*;
 
 use crate::arrays::{float_data, float_values, Array};
 
+pub(crate) mod context;
+
 /// The first Python exception raised by a callable during the current
 /// computation.
 ///
@@ -278,6 +280,7 @@ impl PyCallback {
                         (s, n, m),
                         x_arg,
                         with_grad,
+                        context::current(),
                     ),
                 )?;
                 let (values, count, handle): (Bound<'_, PyAny>, usize, Py<PyAny>) =

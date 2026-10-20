@@ -293,6 +293,7 @@ class qLogNoisyExpectedImprovement(LogImprovementMCAcquisitionFunction):
             tau_relu=scalar_arg(tau_relu, "tau_relu"),
             incremental=bool(incremental),
             objective=self._objective,
+            objective_batch_shape=self._objective_batch_shape,
             fat_list=fat_list,
             lower_bound_points=lb,
             **kwargs,

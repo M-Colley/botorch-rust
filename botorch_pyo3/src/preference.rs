@@ -1161,23 +1161,35 @@ impl PyPairwiseBald {
 /// (`N x B x q`) and, with the adjoint `adjoint` of them, the adjoint of
 /// `y`.
 #[pyfunction]
-#[pyo3(signature = (model, y, z, adjoint=None))]
+#[pyo3(signature = (model, y, z, adjoint=None, model_index=None))]
 pub fn learned_objective_samples(
     py: Python<'_>,
     model: PyRef<'_, PyModel>,
     y: Array,
     z: Array,
     adjoint: Option<Array>,
+    model_index: Option<usize>,
 ) -> PyResult<(ArrayBuf, Option<ArrayBuf>)> {
     let (input_batch, sets) = y.batches("samples")?;
-    let model_batch = model.inner.batch_shape();
+    let full_model_batch = model.inner.batch_shape();
+    if model_index.is_some_and(|i| i >= full_model_batch.iter().product()) {
+        return Err(value_error("preference model batch index is out of range"));
+    }
+    let model_batch = if model_index.is_some() {
+        &[]
+    } else {
+        full_model_batch
+    };
     let batch = broadcast_shapes(&input_batch, model_batch).ok_or_else(|| {
         dimension_error(format!(
             "outcome sample batch {input_batch:?} does not broadcast with preference batch {model_batch:?}"
         ))
     })?;
     let inputs = broadcast_indices(&input_batch, &batch);
-    let models = broadcast_indices(model_batch, &batch);
+    let models = model_index.map_or_else(
+        || broadcast_indices(model_batch, &batch),
+        |i| vec![i; inputs.len()],
+    );
     let b = inputs.len();
     let q = sets.first().map_or(0, Matrix::nrows);
     let n = z.1.first().copied().unwrap_or(0);

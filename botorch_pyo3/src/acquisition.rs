@@ -34,9 +34,9 @@ use botorch_core::{Matrix, Model, Vector};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
-use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
+use crate::arrays::{broadcast_shapes, matrix_out, Array, ArrayBuf, ArrayOut};
 use crate::callbacks::PyCallback;
-use crate::errors::{unsupported, value_error, IntoPyResult};
+use crate::errors::{dimension_error, unsupported, value_error, IntoPyResult};
 use crate::models::PyModel;
 use crate::sampling::PySobolQMCNormalSampler;
 use crate::threads;
@@ -55,6 +55,7 @@ pub struct PyAcquisitionFunction {
     linear_nei: Option<Arc<QNoisyExpectedImprovement>>,
     last_incumbents: Mutex<Option<ArrayBuf>>,
     name: &'static str,
+    objective_batch: Vec<usize>,
 }
 
 impl PyAcquisitionFunction {
@@ -65,6 +66,7 @@ impl PyAcquisitionFunction {
             linear_nei: None,
             last_incumbents: Mutex::new(None),
             name,
+            objective_batch: Vec::new(),
         }
     }
 
@@ -81,6 +83,7 @@ impl PyAcquisitionFunction {
             linear_nei: None,
             last_incumbents: Mutex::new(None),
             name,
+            objective_batch: Vec::new(),
         }
     }
 
@@ -91,6 +94,32 @@ impl PyAcquisitionFunction {
             linear_nei: Some(nei),
             last_incumbents: Mutex::new(None),
             name: "qNoisyExpectedImprovement",
+            objective_batch: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_objective_batch(mut self, shape: Option<Vec<usize>>) -> Self {
+        self.objective_batch = shape.unwrap_or_default();
+        self
+    }
+
+    fn check_objective_batch(&self, batch: &[usize]) -> PyResult<()> {
+        if !self.objective_batch.is_empty()
+            && broadcast_shapes(batch, &self.objective_batch).as_deref() != Some(batch)
+        {
+            return Err(dimension_error(format!(
+                "candidate batch {batch:?} must include the learned preference batch {:?}; expand X explicitly",
+                self.objective_batch
+            )));
+        }
+        Ok(())
+    }
+
+    fn in_objective_batch<T>(&self, batch: &[usize], index: usize, f: impl FnOnce() -> T) -> T {
+        if self.objective_batch.is_empty() {
+            f()
+        } else {
+            crate::callbacks::context::with_context(batch, Some(index), f)
         }
     }
 
@@ -322,6 +351,7 @@ impl PyAcquisitionFunction {
         constraints=None,
         eta=None,
         fat_list=None,
+        objective_batch_shape=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn monte_carlo(
@@ -339,6 +369,7 @@ impl PyAcquisitionFunction {
         constraints: Option<Vec<Py<PyAny>>>,
         eta: Option<Vec<f64>>,
         fat_list: Option<Vec<Option<bool>>>,
+        objective_batch_shape: Option<Vec<usize>>,
     ) -> PyResult<Self> {
         let name = static_name(name, &MONTE_CARLO)?;
         let m = model_of(&model);
@@ -390,7 +421,7 @@ impl PyAcquisitionFunction {
             }
             _ => Arc::new(QSimpleRegret::new(m, options).into_py_result()?),
         };
-        Ok(Self::new_plain(inner, name))
+        Ok(Self::new_plain(inner, name).with_objective_batch(objective_batch_shape))
     }
 
     /// `qLogProbabilityOfFeasibility(model, constraints, ...)` with outcome
@@ -513,6 +544,7 @@ impl PyAcquisitionFunction {
         eta=None,
         fat_list=None,
         lower_bound_points=None,
+        objective_batch_shape=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn q_log_noisy_expected_improvement(
@@ -535,6 +567,7 @@ impl PyAcquisitionFunction {
         eta: Option<Vec<f64>>,
         fat_list: Option<Vec<Option<bool>>>,
         lower_bound_points: Option<Array>,
+        objective_batch_shape: Option<Vec<usize>>,
     ) -> PyResult<Self> {
         let m = model_of(&model);
         let x_baseline = x_baseline.matrix("X_baseline")?;
@@ -561,17 +594,16 @@ impl PyAcquisitionFunction {
                 .transpose()?,
         };
         let acqf = threads::run(py, || {
-            QLogNoisyExpectedImprovement::new(m, &x_baseline, options)
+            crate::callbacks::context::with_context(&[], None, || {
+                QLogNoisyExpectedImprovement::new(m, &x_baseline, options)
+            })
         })
         .into_py_result()?;
         let acqf = Arc::new(acqf);
-        Ok(Self {
-            inner: acqf.clone(),
-            nei: Some(acqf),
-            linear_nei: None,
-            last_incumbents: Mutex::new(None),
-            name: "qLogNoisyExpectedImprovement",
-        })
+        Ok(
+            Self::with_nei(acqf.clone(), acqf, "qLogNoisyExpectedImprovement")
+                .with_objective_batch(objective_batch_shape),
+        )
     }
 
     /// The BoTorch class name.
@@ -607,10 +639,14 @@ impl PyAcquisitionFunction {
     /// Values at the candidate sets `X` (`... x q x d`); shape `...`.
     fn forward(&self, py: Python<'_>, x: Array) -> PyResult<ArrayBuf> {
         let (batch, sets) = candidate_sets(&x)?;
+        self.check_objective_batch(&batch)?;
         if self.nei.is_some() || self.linear_nei.is_some() {
             let results = threads::run(py, || {
                 sets.par_iter()
-                    .map(|s| self.captured_evaluation(s, false))
+                    .enumerate()
+                    .map(|(i, s)| {
+                        self.in_objective_batch(&batch, i, || self.captured_evaluation(s, false))
+                    })
                     .collect::<botorch_core::Result<Vec<_>>>()
             })
             .into_py_result()?;
@@ -620,7 +656,17 @@ impl PyAcquisitionFunction {
             );
             return Ok(ArrayBuf(results.into_iter().map(|r| r.0).collect(), batch));
         }
-        let values = threads::run(py, || self.inner.forward_many(&sets)).into_py_result()?;
+        let values = threads::run(py, || {
+            if self.objective_batch.is_empty() {
+                self.inner.forward_many(&sets)
+            } else {
+                sets.par_iter()
+                    .enumerate()
+                    .map(|(i, s)| self.in_objective_batch(&batch, i, || self.inner.forward(s)))
+                    .collect()
+            }
+        })
+        .into_py_result()?;
         Ok(ArrayBuf(values, batch))
     }
 
@@ -628,17 +674,21 @@ impl PyAcquisitionFunction {
     /// candidate order after parallel evaluation, never in a shared worker slot.
     fn forward_with_grad(&self, py: Python<'_>, x: Array) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let (batch, sets) = candidate_sets(&x)?;
+        self.check_objective_batch(&batch)?;
         let capture = self.nei.is_some() || self.linear_nei.is_some();
         let results = threads::run(py, || {
             sets.par_iter()
-                .map(|s| {
-                    if capture {
-                        self.captured_evaluation(s, true)
-                    } else {
-                        self.inner
-                            .forward_with_grad(s)
-                            .map(|(v, g)| (v, Some(g), Vec::new()))
-                    }
+                .enumerate()
+                .map(|(i, s)| {
+                    self.in_objective_batch(&batch, i, || {
+                        if capture {
+                            self.captured_evaluation(s, true)
+                        } else {
+                            self.inner
+                                .forward_with_grad(s)
+                                .map(|(v, g)| (v, Some(g), Vec::new()))
+                        }
+                    })
                 })
                 .collect::<botorch_core::Result<Vec<_>>>()
         })
@@ -768,7 +818,11 @@ pub fn prune_inferior_points_py(
         objective: objective_of(objective.as_ref())?,
         constraints: constraints.map(constraint_callbacks),
     };
-    let pruned =
-        threads::run(py, || prune_inferior_points(m.as_ref(), &x, &options)).into_py_result()?;
+    let pruned = threads::run(py, || {
+        crate::callbacks::context::with_context(&[], None, || {
+            prune_inferior_points(m.as_ref(), &x, &options)
+        })
+    })
+    .into_py_result()?;
     Ok(matrix_out(&pruned))
 }

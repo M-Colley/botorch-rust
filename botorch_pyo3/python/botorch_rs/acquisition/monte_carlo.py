@@ -28,6 +28,7 @@ from botorch_rs.acquisition.acquisition import (
 )
 from botorch_rs.acquisition.objective import (
     IdentityMCObjective,
+    _objective_batch_shape,
     _requires_joint_sampling,
     constraints_arg,
     is_constrained_objective,
@@ -76,6 +77,7 @@ class MCAcquisitionFunction(AcquisitionFunction, MCSamplerMixin):
                     "posterior_transform must scalarize the output."
                 )
         self._objective = objective_arg(objective)
+        self._objective_batch_shape = _objective_batch_shape(objective)
         self.objective = IdentityMCObjective() if objective is None else objective
         self.posterior_transform = posterior_transform
         self._rs_model = self._model_handle(posterior_transform)
@@ -109,6 +111,7 @@ class MCAcquisitionFunction(AcquisitionFunction, MCSamplerMixin):
             self.sampler._rs,
             self._pending,
             objective=self._objective,
+            objective_batch_shape=self._objective_batch_shape,
             **kwargs,
         )
 
@@ -612,7 +615,7 @@ _CACHE_ROOT_MESSAGE = (
 )
 
 _LEARNED_CACHE_ROOT_MESSAGE = (
-    "A stochastic LearnedObjective requires joint baseline and candidate preference samples. "
+    "A stochastic or batched LearnedObjective requires joint baseline and candidate preference samples. "
     "Setting cache_root=False to preserve their joint distribution."
 )
 
@@ -782,6 +785,7 @@ class qNoisyExpectedImprovement(SampleReducingMCAcquisitionFunction):
             self._pending,
             objective=self._objective,
             prune_baseline=bool(prune_baseline),
+            objective_batch_shape=self._objective_batch_shape,
             prune_num_samples=_PRUNE_SAMPLES,
             prune_max_frac=1.0,
             prune_seed=(self.sampler.seed ^ _PRUNE_SEED_SALT) & 0xFFFFFFFFFFFFFFFF,

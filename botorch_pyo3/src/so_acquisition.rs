@@ -591,6 +591,7 @@ impl PyQNei {
     prune_seed=None,
     cache_root=true,
     lower_bound_points=None,
+    objective_batch_shape=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn q_noisy_expected_improvement(
@@ -608,6 +609,7 @@ pub fn q_noisy_expected_improvement(
     prune_seed: Option<u64>,
     cache_root: bool,
     lower_bound_points: Option<Array>,
+    objective_batch_shape: Option<Vec<usize>>,
 ) -> PyResult<(PyAcquisitionFunction, PyQNei)> {
     let m = model_of(&model);
     let x_baseline = x_baseline.matrix("X_baseline")?;
@@ -629,12 +631,15 @@ pub fn q_noisy_expected_improvement(
             .transpose()?,
     };
     let acqf = threads::run(py, || {
-        QNoisyExpectedImprovement::new(m, &x_baseline, options)
+        crate::callbacks::context::with_context(&[], None, || {
+            QNoisyExpectedImprovement::new(m, &x_baseline, options)
+        })
     })
     .into_py_result()?;
     let acqf = Arc::new(acqf);
     Ok((
-        PyAcquisitionFunction::with_linear_nei(acqf.clone()),
+        PyAcquisitionFunction::with_linear_nei(acqf.clone())
+            .with_objective_batch(objective_batch_shape),
         PyQNei { inner: acqf },
     ))
 }

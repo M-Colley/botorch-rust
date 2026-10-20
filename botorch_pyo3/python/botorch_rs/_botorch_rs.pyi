@@ -987,6 +987,7 @@ class AcquisitionFunction:
         constraints: Sequence[Callable[[Any], Any]] | None = None,
         eta: Sequence[float] | None = None,
         fat_list: Sequence[bool | None] | None = None,
+        objective_batch_shape: Sequence[int] | None = None,
     ) -> AcquisitionFunction: ...
     @staticmethod
     def q_log_probability_of_feasibility(
@@ -1028,6 +1029,7 @@ class AcquisitionFunction:
         eta: Sequence[float] | None = None,
         fat_list: Sequence[bool | None] | None = None,
         lower_bound_points: Array | None = None,
+        objective_batch_shape: Sequence[int] | None = None,
     ) -> AcquisitionFunction: ...
     @property
     def name(self) -> str: ...
@@ -2000,6 +2002,7 @@ def q_noisy_expected_improvement(
     prune_seed: int | None = None,
     cache_root: bool = True,
     lower_bound_points: Array | None = None,
+    objective_batch_shape: Sequence[int] | None = None,
 ) -> tuple[AcquisitionFunction, NoisyExpectedImprovementState]: ...
 def log_probability_of_feasibility(
     model: Model, constraints: Sequence[tuple[int, float | None, float | None]]
@@ -2680,7 +2683,7 @@ def pairwise_mc_posterior_variance(
     model: Model, objective: ObjectiveSpec | None, sampler: SobolQMCNormalSampler
 ) -> AcquisitionFunction: ...
 def learned_objective_samples(
-    model: Model, y: Array, z: Array, adjoint: Array | None = None
+    model: Model, y: Array, z: Array, adjoint: Array | None = None, model_index: int | None = None
 ) -> tuple[ArrayBuf, ArrayBuf | None]: ...
 
 class PairwiseBALD:

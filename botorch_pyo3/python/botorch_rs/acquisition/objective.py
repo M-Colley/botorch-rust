@@ -508,10 +508,21 @@ def _requires_joint_sampling(objective: Any) -> bool:
     """Whether baseline and candidate utilities share a stochastic GP draw."""
     names = [c.__name__ for c in type(objective).__mro__] if objective is not None else []
     if "LearnedObjective" in names:
-        return getattr(objective, "sampler", None) is not None
+        return getattr(objective, "sampler", None) is not None or bool(
+            _objective_batch_shape(objective)
+        )
     if any(name in names for name in ("ConstrainedMCObjective", "PenalizedMCObjective")):
         return _requires_joint_sampling(objective.objective)
     return False
+
+
+def _objective_batch_shape(objective: Any) -> tuple[int, ...]:
+    names = [c.__name__ for c in type(objective).__mro__] if objective is not None else []
+    if "LearnedObjective" in names:
+        return tuple(objective.pref_model.batch_shape or ())
+    if any(name in names for name in ("ConstrainedMCObjective", "PenalizedMCObjective")):
+        return _objective_batch_shape(objective.objective)
+    return ()
 
 
 def constraints_arg(
@@ -557,7 +568,9 @@ def _is_deterministic_model(model: Any) -> bool:
     return isinstance(model, DeterministicModel)
 
 
-def _learned_samples_autograd(handle: Any, Y: Any, z: Any, out_shape: tuple[int, ...]) -> Any:
+def _learned_samples_autograd(
+    handle: Any, Y: Any, z: Any, out_shape: tuple[int, ...], model_index: int | None = None
+) -> Any:
     """``LearnedObjective``'s samples connected to torch's autograd (the
     exact vector-Jacobian product of the preference posterior's samples
     with respect to the outcome samples, from Rust)."""
@@ -569,14 +582,16 @@ def _learned_samples_autograd(handle: Any, Y: Any, z: Any, out_shape: tuple[int,
         @staticmethod
         def forward(ctx: Any, Yt: Any) -> Any:  # type: ignore[override]
             ctx.save_for_backward(Yt)
-            (vals, _), _ = _rs.learned_objective_samples(handle, to_flat(Yt), z)
+            (vals, _), _ = _rs.learned_objective_samples(
+                handle, to_flat(Yt), z, model_index=model_index
+            )
             return torch.tensor(vals, dtype=Yt.dtype, device=Yt.device).reshape(out_shape)
 
         @staticmethod
         def backward(ctx: Any, grad_out: Any) -> Any:  # type: ignore[override]
             (Yt,) = ctx.saved_tensors
             adj = to_flat(grad_out.reshape(out_shape))
-            _, grads = _rs.learned_objective_samples(handle, to_flat(Yt), z, adj)
+            _, grads = _rs.learned_objective_samples(handle, to_flat(Yt), z, adj, model_index)
             assert grads is not None
             return torch.tensor(list(grads[0]), dtype=Yt.dtype, device=Yt.device).reshape(Yt.shape)
 
@@ -659,10 +674,8 @@ class LearnedObjective(MCAcquisitionObjective):
             A ``(sample_size * num_samples) x batch_shape x q``-dim Tensor of
             objective values sampled from utility posterior using ``pref_model``.
         """
-        import math
         import warnings
 
-        from botorch_rs import _botorch_rs as _rs
         from botorch_rs.exceptions.warnings import InputDataWarning
 
         if is_torch_tensor(samples):
@@ -678,6 +691,44 @@ class LearnedObjective(MCAcquisitionObjective):
                     stacklevel=2,
                 )
                 samples = samples.to(torch.float64)
+        from botorch_rs._torch_bridge import objective_context
+
+        context = objective_context()
+        pref_batch = tuple(self.pref_model.batch_shape or ())
+        if pref_batch and context is not None:
+            if context[0] is None:
+                raise UnsupportedError(
+                    "Batched learned objectives require explicit per-candidate member dispatch; "
+                    "native optimization without a selected preference member is unsupported."
+                )
+            import math
+
+            from botorch_rs._arrays import broadcast_to
+
+            candidate_batch, index = context[0]
+            shape = tuple(samples.shape)
+            axes = len(pref_batch) if index is None else len(candidate_batch)
+            inputs = samples.reshape(shape[0], *((1,) * axes), *shape[-2:])
+            selected = None
+            if index is not None:
+                indices = broadcast_to(
+                    list(range(math.prod(pref_batch))), pref_batch, candidate_batch
+                )
+                selected = int(indices[index])
+            values = self._native_samples(inputs, selected)
+            if index is not None:
+                return values.reshape(-1, 1, shape[-2])
+            p = 1 if self.sampler is None else math.prod(self.sampler.sample_shape)
+            values = values.reshape(p, shape[0], *pref_batch, shape[-2])
+            order = (0, *range(2, 2 + len(pref_batch)), 1, 2 + len(pref_batch))
+            return values.permute(order).reshape(-1, 1, shape[-2])
+        return self._native_samples(samples)
+
+    def _native_samples(self, samples: Any, model_index: int | None = None) -> Any:
+        import math
+
+        from botorch_rs import _botorch_rs as _rs
+
         shape = tuple(to_flat(samples, "samples")[1])
         if len(shape) < 3:
             raise ValueError("samples should have at least 3 dimensions.")
@@ -685,6 +736,10 @@ class LearnedObjective(MCAcquisitionObjective):
             from botorch_rs.models.deterministic import GenericDeterministicModel
 
             if isinstance(self.pref_model, GenericDeterministicModel):
+                if model_index is not None:
+                    raise UnsupportedError(
+                        "Batched caller-defined deterministic preferences require explicit utility selection."
+                    )
                 # Explicit caller-defined utilities retain their Torch graph
                 # and need no extra native input-dimension annotation.
                 mean = self.pref_model.posterior(samples).mean
@@ -694,7 +749,9 @@ class LearnedObjective(MCAcquisitionObjective):
                 return from_flat(data, mshape[:-1], kind_of(samples))
         from botorch_rs._arrays import broadcast_shapes
 
-        batch = broadcast_shapes(shape[:-2], tuple(self.pref_model.batch_shape))
+        batch = broadcast_shapes(
+            shape[:-2], () if model_index is not None else tuple(self.pref_model.batch_shape)
+        )
         if batch is None:
             raise BotorchTensorDimensionError(
                 f"Outcome sample batch {shape[:-2]} does not broadcast with preference model "
@@ -726,18 +783,13 @@ class LearnedObjective(MCAcquisitionObjective):
             import torch
 
             if torch.is_grad_enabled():
-                return _learned_samples_autograd(handle, samples, zpair, out_shape)
-        (vals, _), _ = _rs.learned_objective_samples(handle, to_flat(samples, "samples"), zpair)
+                return _learned_samples_autograd(handle, samples, zpair, out_shape, model_index)
+        (vals, _), _ = _rs.learned_objective_samples(
+            handle, to_flat(samples, "samples"), zpair, model_index=model_index
+        )
         return from_flat(vals, out_shape, kind_of(samples))
 
     def _spec(self) -> tuple[Any, ...]:
-        import math
-
-        if math.prod(tuple(self.pref_model.batch_shape or ())) > 1:
-            raise UnsupportedError(
-                "Batched preference models currently require per-batch acquisition dispatch; "
-                "use LearnedObjective directly."
-            )
         return ("callable", self)
 
 
