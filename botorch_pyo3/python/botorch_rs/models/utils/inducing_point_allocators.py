@@ -283,9 +283,7 @@ def _pivoted_cholesky_init(
     x_data, x_shape = to_flat(train_inputs, "train_inputs")
     q_data, q_shape = to_flat(quality_scores, "quality_scores")
     if (q_shape[0] if q_shape else 1) != x_shape[0]:
-        raise ValueError(
-            "_pivoted_cholesky_init requires a quality score for each of train_inputs"
-        )
+        raise ValueError("_pivoted_cholesky_init requires a quality score for each of train_inputs")
     if getattr(kernel_matrix, "requires_grad", False):
         raise UnsupportedError(
             "`_pivoted_cholesky_init` does not support using a `kernel_matrix` "

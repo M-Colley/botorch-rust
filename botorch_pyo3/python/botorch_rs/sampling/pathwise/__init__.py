@@ -15,7 +15,10 @@ paths equal BoTorch's to rounding.
 """
 
 from botorch_rs.sampling.pathwise.features import (
-    FeatureMap, KernelEvaluationMap, KernelFeatureMap, gen_kernel_features,
+    FeatureMap,
+    KernelEvaluationMap,
+    KernelFeatureMap,
+    gen_kernel_features,
 )
 from botorch_rs.sampling.pathwise.paths import (
     GeneralizedLinearPath,

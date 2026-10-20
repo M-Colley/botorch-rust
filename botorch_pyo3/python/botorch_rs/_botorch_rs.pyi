@@ -210,9 +210,13 @@ class KernelSpec:
 class KernelNode:
     @staticmethod
     def contextual_lcea(
-        contexts: list[list[int]], categorical: list[list[int]],
-        embedding_shapes: list[tuple[int,int]], fixed_embeddings: Array,
-        context_weights: list[float] | None, task: KernelNode, base: KernelNode,
+        contexts: list[list[int]],
+        categorical: list[list[int]],
+        embedding_shapes: list[tuple[int, int]],
+        fixed_embeddings: Array,
+        context_weights: list[float] | None,
+        task: KernelNode,
+        base: KernelNode,
     ) -> KernelNode: ...
     def contextual_lcea_normalize(self, raw: list[float]) -> list[float]: ...
     def contextual_lcea_embeddings(self, raw: list[float]) -> ArrayOut: ...

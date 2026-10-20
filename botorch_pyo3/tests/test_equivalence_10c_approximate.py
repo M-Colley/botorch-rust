@@ -50,14 +50,14 @@ from kernel_tree_helpers import (  # noqa: E402
     random_spec,
     zero_diagonal_distances,
 )
-from parity_helpers import Checker, sampler_pair  # noqa: E402
 
 import botorch_rs.acquisition.analytic as rs_an  # noqa: E402
-from botorch_rs.exceptions.errors import NumericalError  # noqa: E402
 import botorch_rs.acquisition.monte_carlo as rs_mc  # noqa: E402
 from botorch_rs.acquisition.objective import (  # noqa: E402
     ScalarizedPosteriorTransform as RsScalarized,
 )
+from botorch_rs.exceptions.errors import NumericalError  # noqa: E402
+from parity_helpers import Checker, sampler_pair  # noqa: E402
 
 pytestmark = [pytest.mark.equivalence, pytest.mark.filterwarnings("ignore")]
 
@@ -160,14 +160,18 @@ def test_sweep(seed: int) -> None:
             check.check("ELBO", vr, vb, VALUE_TOL)
             check.check("ELBO gradient", gr, gb, GRAD_TOL)
         g = torch.Generator().manual_seed(seed)
-        Xt = case.scale * torch.rand(4, case.d, generator=g, dtype=DT) + (1.0 if case.input_tf else 0.0)
+        Xt = case.scale * torch.rand(4, case.d, generator=g, dtype=DT) + (
+            1.0 if case.input_tf else 0.0
+        )
         bt.eval()
         rs.eval()
         Xm = Xt if not case.input_tf else bt.input_transform(Xt)
         ob, orr = bt.model(Xm), rs.model(Xm)
         check.check("q(f) mean", orr.mean, ob.mean.detach(), VALUE_TOL)
         check.check("q(f) variance", orr.variance, ob.variance.detach(), VALUE_TOL)
-        check.check("q(f) covariance", orr.covariance_matrix, ob.covariance_matrix.detach(), VALUE_TOL)
+        check.check(
+            "q(f) covariance", orr.covariance_matrix, ob.covariance_matrix.detach(), VALUE_TOL
+        )
         for noise in (False, True):
             pb = bt.posterior(Xt, observation_noise=noise)
             pr = rs.posterior(Xt, observation_noise=noise)
@@ -184,8 +188,12 @@ def test_sweep(seed: int) -> None:
         tr = RsScalarized(w) if case.m > 1 else None
         best = torch.tensor(float((Y * w).sum(-1).mean()), dtype=DT)
         Xq = Xt.unsqueeze(1)
-        vb, gb = values_and_grads(bt_an.LogExpectedImprovement(bt, best_f=best, posterior_transform=tb), Xq)
-        vr, gr = rs_an.LogExpectedImprovement(rs, best_f=best, posterior_transform=tr).value_and_grad(Xq)
+        vb, gb = values_and_grads(
+            bt_an.LogExpectedImprovement(bt, best_f=best, posterior_transform=tb), Xq
+        )
+        vr, gr = rs_an.LogExpectedImprovement(
+            rs, best_f=best, posterior_transform=tr
+        ).value_and_grad(Xq)
         check.check("LogEI values", vr, vb, VALUE_TOL)
         check.check("LogEI input gradients", gr, gb, GRAD_TOL)
         sb, sr, _ = sampler_pair(32, 2, 1, seed)

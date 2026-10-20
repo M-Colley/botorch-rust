@@ -227,9 +227,7 @@ class _SingleTaskVariationalGP:
         from botorch_rs.models.gp_regression import _check_module_batch_shape
 
         if covar_module is None:
-            covar_module = get_covar_module_with_dim_scaled_prior(
-                ard_num_dims=d, batch_shape=aug
-            )
+            covar_module = get_covar_module_with_dim_scaled_prior(ard_num_dims=d, batch_shape=aug)
         elif not isinstance(covar_module, Kernel):
             raise UnsupportedError(
                 "`covar_module` must be a botorch_rs kernel (from botorch_rs.kernels, "
@@ -268,8 +266,7 @@ class _SingleTaskVariationalGP:
             )
         elif not isinstance(variational_distribution, CholeskyVariationalDistribution):
             raise UnsupportedError(
-                "botorch_rs supports the CholeskyVariationalDistribution of "
-                "botorch_rs.variational."
+                "botorch_rs supports the CholeskyVariationalDistribution of botorch_rs.variational."
             )
         elif variational_distribution._owner is not None:
             raise UnsupportedError(
@@ -341,7 +338,9 @@ class _SingleTaskVariationalGP:
     def train_inputs(self) -> tuple[Any]:
         """``[transformed train_X]`` (set by ``SingleTaskVariationalGP``)."""
         if self._outer is None or not self._outer._has_train_inputs:
-            raise AttributeError("'_SingleTaskVariationalGP' object has no attribute 'train_inputs'")
+            raise AttributeError(
+                "'_SingleTaskVariationalGP' object has no attribute 'train_inputs'"
+            )
         data, shape = self._rs.train_inputs()
         return (from_flat(data, tuple(shape), self._kind),)
 
@@ -425,8 +424,7 @@ class ApproximateGPyTorchModel(GPyTorchModel):
             model = _SingleTaskVariationalGP(*args, **options)
         elif not isinstance(model, _SingleTaskVariationalGP):
             raise UnsupportedError(
-                "botorch_rs's ApproximateGPyTorchModel wraps a botorch_rs "
-                "_SingleTaskVariationalGP."
+                "botorch_rs's ApproximateGPyTorchModel wraps a botorch_rs _SingleTaskVariationalGP."
             )
         if likelihood is None:
             likelihood = (
@@ -482,8 +480,7 @@ class ApproximateGPyTorchModel(GPyTorchModel):
             lik_kind = "multitask"
         if lik._model is not None:
             raise UnsupportedError(
-                "This likelihood is already part of another model; create a new one for each "
-                "model."
+                "This likelihood is already part of another model; create a new one for each model."
             )
         x = to_flat(transformed_X, "train_X")
         y = None
@@ -773,8 +770,10 @@ class ApproximateGPyTorchModel(GPyTorchModel):
 
     def transform_inputs(self, X: Any, input_transform: Any = None) -> Any:
         """``X`` transformed by ``input_transform`` (default: the model's)."""
-        tf = input_transform if input_transform is not None else getattr(
-            self, "input_transform", None
+        tf = (
+            input_transform
+            if input_transform is not None
+            else getattr(self, "input_transform", None)
         )
         return X if tf is None else tf(X)
 

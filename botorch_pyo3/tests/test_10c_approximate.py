@@ -67,14 +67,25 @@ def test_array_kinds_posterior_and_elbo(kind: str) -> None:
     check_kind(post.mean, kind)
     assert all(v > 0 for v in to_list(post.variance)[0])
     noisy = model.posterior(as_kind([[0.2, 0.3]], kind), observation_noise=True)
-    assert to_list(noisy.variance)[0][0] > to_list(model.posterior(as_kind([[0.2, 0.3]], kind)).variance)[0][0]
+    assert (
+        to_list(noisy.variance)[0][0]
+        > to_list(model.posterior(as_kind([[0.2, 0.3]], kind)).variance)[0][0]
+    )
     mll = VariationalELBO(model.likelihood, model.model, num_data=12)
     value = mll()
     check_kind(value, kind)
     assert shape(value) == ()
     terms = VariationalELBO(model.likelihood, model.model, num_data=12, combine_terms=False)()
     assert len(terms) == 3
-    assert abs(float(to_list(terms[0])) - float(to_list(terms[1])) + float(to_list(terms[2])) - float(to_list(value))) < 1e-12
+    assert (
+        abs(
+            float(to_list(terms[0]))
+            - float(to_list(terms[1]))
+            + float(to_list(terms[2]))
+            - float(to_list(value))
+        )
+        < 1e-12
+    )
     v, g = mll.value_and_grad()
     assert len(g) == sum(size for _, size in model._rs.parameter_names())
     out = model.model(model.model.train_inputs[0])
@@ -109,12 +120,18 @@ def test_multi_output_and_transforms(kind: str) -> None:
     Ys = as_kind([[3 * v - 1 for v in row] for row in to_list(Y)], kind)
     with pytest.warns(UserInputWarning, match="Using an outcome transform"):
         model = SingleTaskVariationalGP(
-            Xs, Ys, inducing_points=5, input_transform=Normalize(d=2), outcome_transform=Standardize(m=2)
+            Xs,
+            Ys,
+            inducing_points=5,
+            input_transform=Normalize(d=2),
+            outcome_transform=Standardize(m=2),
         )
     assert model.num_outputs == 2
     assert isinstance(model.model.variational_strategy, IndependentMultitaskVariationalStrategy)
     assert isinstance(model.likelihood, MultitaskGaussianLikelihood)
-    names = [n for n, _ in VariationalELBO(model.likelihood, model.model, num_data=12).named_parameters()]
+    names = [
+        n for n, _ in VariationalELBO(model.likelihood, model.model, num_data=12).named_parameters()
+    ]
     assert names[:2] == ["likelihood.raw_task_noises", "likelihood.raw_noise"]
     assert names[2] == "model.variational_strategy.base_variational_strategy.inducing_points"
     post = model.posterior(as_kind([[1.2, 2.1], [2.5, 1.5]], kind))
@@ -125,7 +142,11 @@ def test_multi_output_and_transforms(kind: str) -> None:
     assert all(-1e-12 <= v <= 1 + 1e-12 for row in z for v in row)
     params, bounds = get_parameters_and_bounds(VariationalELBO(model.likelihood, model.model, 12))
     assert "model.covar_module.raw_lengthscale" in bounds
-    assert shape(params["model.variational_strategy.base_variational_strategy._variational_distribution.chol_variational_covar"]) == (2, 5, 5)
+    assert shape(
+        params[
+            "model.variational_strategy.base_variational_strategy._variational_distribution.chol_variational_covar"
+        ]
+    ) == (2, 5, 5)
 
 
 def test_inducing_point_options() -> None:
@@ -164,7 +185,10 @@ def test_custom_modules() -> None:
     assert "model.covar_module.raw_outputscale" in names
     assert not any("mean_module" in n for n in names)
     model.posterior([[0.2, 0.2]])
-    assert to_list(model.model.variational_strategy._variational_distribution.variational_mean) == [0.0] * 3
+    assert (
+        to_list(model.model.variational_strategy._variational_distribution.variational_mean)
+        == [0.0] * 3
+    )
     model.model.covar_module.outputscale = 2.0
     assert abs(to_list(model.model.covar_module.outputscale) - 2.0) < 1e-12
     model.likelihood.noise = 0.05

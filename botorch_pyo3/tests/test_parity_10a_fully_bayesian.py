@@ -808,7 +808,9 @@ def test_mixture_covariance_of_several_outputs() -> None:
         if upstream_cov is not None:
             if hasattr(upstream_cov, "to_dense"):
                 upstream_cov = upstream_cov.to_dense()
-            CHECK.check("BoTorch mixture covariance of several outputs", upstream_cov, ref, VALUE_TOL)
+            CHECK.check(
+                "BoTorch mixture covariance of several outputs", upstream_cov, ref, VALUE_TOL
+            )
     CHECK.check(
         "mixture covariance of several outputs",
         rs.posterior(Xt).mixture_covariance_matrix,

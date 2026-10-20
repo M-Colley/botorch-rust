@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
-
 from kernel_tree_helpers import build_kernel, with_batch
 
 DT = torch.float64
@@ -268,7 +267,9 @@ def fixed_allocator() -> Iterator[None]:
 
     def patched(train_inputs: Any, kernel_matrix: Any, *args: Any, **kwargs: Any) -> Any:
         with torch.no_grad():
-            dense = kernel_matrix.to_dense() if hasattr(kernel_matrix, "to_dense") else kernel_matrix
+            dense = (
+                kernel_matrix.to_dense() if hasattr(kernel_matrix, "to_dense") else kernel_matrix
+            )
         return orig(train_inputs, dense.detach(), *args, **kwargs)
 
     ipa._pivoted_cholesky_init = patched
