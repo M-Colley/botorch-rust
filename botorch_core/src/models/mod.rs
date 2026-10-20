@@ -27,6 +27,7 @@ pub mod deterministic;
 pub mod em_gp;
 pub mod em_kl;
 pub mod em_model;
+pub mod em_shared;
 pub mod empirical;
 pub mod ensemble;
 pub mod fantasize;

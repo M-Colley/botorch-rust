@@ -23,6 +23,7 @@ from botorch_rs.models.empirical_gps import (
     EMEmpiricalGaussianProcess,
     EMEmpiricalMarginalLogLikelihood,
     EMPriorContainer,
+    build_shared_gp_model_list,
     pretrain_em_prior,
 )
 from botorch_rs.models.empirical_gps.utils import ExperimentDataset
@@ -48,7 +49,7 @@ def official() -> Any:
         pkg.__path__ = [str(folder)]
         sys.modules[package] = pkg
     modules = {}
-    for name in ("utils", "em_empirical_gp"):
+    for name in ("utils", "em_empirical_gp", "em_coordinate_ascent"):
         spec = importlib.util.spec_from_file_location(f"{package}.{name}", folder / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
@@ -428,3 +429,158 @@ def test_em_model_zero_mean_index_queries_and_explicit_boundaries() -> None:
     assert math.isfinite(fresh.posterior([[0.4]]).mean[0][0])
     with pytest.raises(UnsupportedError, match="EM iterations"):
         EMEmpiricalMarginalLogLikelihood(fresh.likelihood, fresh)()
+
+
+@pytest.mark.parametrize("zero_mean", [False, True])
+@pytest.mark.parametrize("fixed_noise", [False, True])
+def test_shared_gp_list_matches_official(official: Any, zero_mean: bool, fixed_noise: bool) -> None:
+    torch = pytest.importorskip("torch")
+    gpytorch = pytest.importorskip("gpytorch")
+    data = datasets("torch")
+    mean = ZeroMean() if zero_mean else ConstantMean().initialize(constant=0.3)
+    ref_mean = (
+        gpytorch.means.ZeroMean()
+        if zero_mean
+        else gpytorch.means.ConstantMean()
+        .double()
+        .initialize(constant=torch.tensor(0.3, dtype=torch.double))
+    )
+    kernel = RBFKernel()
+    kernel.lengthscale = 0.42
+    ref_kernel = gpytorch.kernels.RBFKernel().double()
+    ref_kernel.lengthscale = torch.tensor(0.42, dtype=torch.double)
+    noise = 0.025 if fixed_noise else None
+    actual, mll = build_shared_gp_model_list(data, mean, kernel, observation_noise=noise)
+    expected, ref_mll = official.em_empirical_gp.build_shared_gp_model_list(
+        [official.utils.ExperimentDataset(X=d.X, Y=d.Y) for d in data],
+        ref_mean,
+        ref_kernel,
+        observation_noise=noise,
+    )
+    assert all(m.mean_module is mean and m.covar_module is kernel for m in actual.models)
+    value, gradient = mll.value_and_grad()
+    ref_value = ref_mll(expected(*expected.train_inputs), expected.train_targets)
+    assert_close(value, ref_value, rtol=3e-7, atol=1e-8)
+    ref_value.backward()
+    ref_params = dict(ref_mll.named_parameters())
+    offset = 0
+    for name, shape in mll._rs.parameter_shapes():
+        count = math.prod(shape)
+        if ref_params[name].grad is not None:
+            assert_close(
+                gradient[offset : offset + count],
+                ref_params[name].grad.reshape(-1),
+                rtol=8e-7,
+                atol=2e-8,
+            )
+        offset += count
+    query = torch.tensor([[0.15], [0.65]], dtype=torch.double)
+    assert_close(actual.posterior(query).mean, expected.posterior(query).mean, rtol=3e-7, atol=2e-8)
+    kernel.lengthscale = 0.55
+    assert all(
+        abs(m._rs.raw_parameters()[-1] - actual.models[0]._rs.raw_parameters()[-1]) < 1e-14
+        for m in actual.models
+    )
+
+
+def test_shared_gp_joint_fit_and_array_kinds(kind: str) -> None:
+    kernel = ScaleKernel(RBFKernel())
+    models, mll = build_shared_gp_model_list(
+        datasets(kind), ZeroMean(), kernel, observation_noise=0.025
+    )
+    before = float(mll())
+    noise = [float(m._raw_param("raw_noise")[0]) for m in models.models]
+    fit_gpytorch_mll(mll, optimizer_kwargs={"options": {"maxiter": 12}}, max_attempts=1)
+    assert float(mll()) >= before - 1e-10
+    assert [float(m._raw_param("raw_noise")[0]) for m in models.models] == noise
+    fit_gpytorch_mll_scipy(mll, options={"maxiter": 3})
+    fit_gpytorch_mll_torch(mll, step_limit=3, stopping_criterion=None)
+    assert [float(m._raw_param("raw_noise")[0]) for m in models.models] == noise
+    posterior = models.posterior(as_kind([[0.12], [0.6]], kind))
+    check_kind(posterior.mean, kind)
+    assert len(posterior.mean) == 2
+
+
+@pytest.mark.parametrize("adam", [False, True])
+def test_coordinate_ascent_updates_kernel_and_keeps_history(adam: bool) -> None:
+    from botorch_rs.models.empirical_gps.em_coordinate_ascent import coordinate_ascent_em
+
+    mean, kernel = modules()
+    original = kernel._raw_flat()
+    history: list[Any] = []
+    prior = coordinate_ascent_em(
+        datasets("list"),
+        mean,
+        kernel,
+        likelihood_noise=0.035,
+        inducing_points=[[0.05], [0.4], [0.85]],
+        num_em_iterations=3,
+        n_coord_ascent_iterations=2,
+        mll_use_adam=adam,
+        mll_max_iter=5,
+        mll_adam_steps=4,
+        container_history=history,
+    )
+    assert len(history) == 3
+    assert history[0].covar_module._raw_flat() == original
+    assert kernel._raw_flat() != original
+    assert prior.covar_module is kernel
+    assert_close(history[-1].Sigma_inducing, prior.Sigma_inducing)
+    assert history[-1].covar_module is not kernel
+    snapshot = history[0].covar_module._raw_flat()
+    kernel.outputscale = 1.8
+    assert history[0].covar_module._raw_flat() == snapshot
+
+
+def test_subsampled_historical_likelihood_uses_correct_indices(official: Any) -> None:
+    """Official coordinate subsampling retains stale per-dataset index arrays."""
+    torch = pytest.importorskip("torch")
+    actual, expected = model_pair(official, False, False)
+    actual.datasets = [actual.datasets[2]]
+    expected.datasets = [expected.datasets[2]]
+    data = expected.datasets[0]
+    indices = expected._find_indices_in_historical(data.X)
+    mean = expected._mu_inducing[indices]
+    covariance = (
+        expected._Sigma_inducing[indices][:, indices]
+        + torch.eye(len(indices), dtype=torch.double) * expected.likelihood.noise
+    )
+    correct = torch.distributions.MultivariateNormal(mean, covariance).log_prob(
+        data.Y.squeeze(-1)
+    ) / len(indices)
+    value = EMEmpiricalMarginalLogLikelihood(actual.likelihood, actual)()
+    assert_close(value, correct, rtol=2e-8, atol=2e-10)
+    wrong = official.em_empirical_gp.EMEmpiricalMarginalLogLikelihood(
+        expected.likelihood, expected
+    )(None, None)
+    assert abs(float((wrong - correct).detach())) > 1e-3
+
+
+def test_coordinate_default_without_phi_dependence_is_a_valid_noop(official: Any) -> None:
+    """An indexed detached prior has zero kernel gradient unless priors add one."""
+    torch = pytest.importorskip("torch")
+    gpytorch = pytest.importorskip("gpytorch")
+    from botorch_rs.models.empirical_gps.em_coordinate_ascent import coordinate_ascent_em
+
+    ref_data = [official.utils.ExperimentDataset(X=d.X, Y=d.Y) for d in datasets("torch")]
+    with pytest.raises(RuntimeError, match="does not require grad"):
+        official.em_coordinate_ascent.coordinate_ascent_em(
+            ref_data,
+            gpytorch.means.ZeroMean(),
+            gpytorch.kernels.RBFKernel().double(),
+            likelihood_noise=0.035,
+            num_em_iterations=3,
+            mll_max_iter=1,
+        )
+    kernel = RBFKernel()
+    before = kernel._raw_flat()
+    prior = coordinate_ascent_em(
+        datasets("torch"),
+        ZeroMean(),
+        kernel,
+        likelihood_noise=torch.tensor(0.035, dtype=torch.double),
+        num_em_iterations=3,
+        mll_max_iter=1,
+    )
+    assert kernel._raw_flat() == before
+    assert prior.Sigma_inducing.isfinite().all()

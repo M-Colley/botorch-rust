@@ -382,6 +382,7 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
         base = self._additive_base
         base_raw: list[float]
         base_node, base_raw = (None, []) if base is None else _kernel_state(base)
+        self._freeze_pretrained = freeze
         constraint = getattr(mean, "raw_constant_constraint", None)
         prior = getattr(mean, "mean_prior", None)
         self._rs = _rs.EMGaussianProcess(
@@ -441,6 +442,19 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
 
     def freeze_pretrained_parameters(self) -> None:
         self._rs.freeze_pretrained(True)
+        self._freeze_pretrained = True
+
+    @property
+    def datasets(self) -> list[ExperimentDataset]:
+        return self._datasets
+
+    @datasets.setter
+    def datasets(self, value: list[ExperimentDataset]) -> None:
+        if not value:
+            raise ValueError("At least one historical dataset is required.")
+        self._datasets = list(value)
+        if hasattr(self, "_rs"):
+            self._construct_native(self._rs.raw_parameters()[0], self._freeze_pretrained)
 
     @property
     def batch_shape(self) -> tuple[()]:
@@ -647,9 +661,12 @@ class EMEmpiricalMarginalLogLikelihood(MarginalLogLikelihood):
         return self
 
 
+from botorch_rs.models.empirical_gps.shared_gp import build_shared_gp_model_list  # noqa: E402
+
 __all__ = [
     "EMEmpiricalGaussianProcess",
     "EMEmpiricalMarginalLogLikelihood",
     "EMPriorContainer",
     "pretrain_em_prior",
+    "build_shared_gp_model_list",
 ]

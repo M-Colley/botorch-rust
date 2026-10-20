@@ -56,15 +56,20 @@ def _is_higher_order(mll: Any) -> bool:
     from botorch_rs.mlls import ExactMarginalLogLikelihood
     from botorch_rs.models.empirical_gps.em_empirical_gp import EMEmpiricalMarginalLogLikelihood
     from botorch_rs.models.empirical_gps.empirical_1d_gp import EmpiricalOneDimensionalGP
+    from botorch_rs.models.empirical_gps.shared_gp import _SharedSumMarginalLogLikelihood
     from botorch_rs.models.higher_order_gp import HigherOrderGP
     from botorch_rs.models.latent_kronecker_gp import LatentKroneckerGP
 
-    if isinstance(mll, EMEmpiricalMarginalLogLikelihood):
+    if isinstance(mll, (EMEmpiricalMarginalLogLikelihood, _SharedSumMarginalLogLikelihood)):
         mll._validate_fit()
         return True
     return isinstance(mll, ExactMarginalLogLikelihood) and isinstance(
         mll.model, (HigherOrderGP, LatentKroneckerGP, EmpiricalOneDimensionalGP)
     )
+
+
+def _native_fit_backend(mll: Any) -> Any:
+    return mll._rs if getattr(mll, "_rs_shared_fit", False) else mll.model._rs
 
 
 def _fit_scipy_approximate(
@@ -196,10 +201,20 @@ def fit_gpytorch_mll_scipy(
         return _fit_scipy_approximate(
             mll, parameters, bounds, closure, closure_kwargs, method, options, callback, timeout_sec
         )
+    if getattr(mll, "_rs_shared_fit", False) and (
+        parameters is not None or bounds is not None or closure is not None
+        or closure_kwargs is not None or method != "L-BFGS-B"
+        or callback is not None or timeout_sec is not None
+    ):
+        raise UnsupportedError("Shared GP lists require the native L-BFGS-B closure over all parameters.")
+    if getattr(mll, "_rs_em_fit", False) and (
+        closure is not None or closure_kwargs is not None or method != "L-BFGS-B"
+        or callback is not None or timeout_sec is not None
+    ):
+        raise UnsupportedError("EM likelihoods require the native L-BFGS-B closure.")
     if (
         _is_higher_order(mll)
-        and parameters is None
-        and bounds is None
+        and ((parameters is None and bounds is None) or getattr(mll, "_rs_em_fit", False))
         and closure is None
         and closure_kwargs is None
         and method == "L-BFGS-B"
@@ -217,7 +232,10 @@ def fit_gpytorch_mll_scipy(
             opts.pop(key, None)
         if opts:
             raise UnsupportedError(f"Unsupported L-BFGS-B options: {sorted(opts)}.")
-        loss, nit, _, status, message, _ = mll.model._rs.fit(max_attempts=1, **hogp_kwargs)
+        if getattr(mll, "_rs_em_fit", False):
+            mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
+            hogp_kwargs.update(mask=mask, bounds=flat_bounds)
+        loss, nit, _, status, message, _ = _native_fit_backend(mll).fit(max_attempts=1, **hogp_kwargs)
         return OptimizationResult(
             step=int(nit), fval=float(loss), status=OptimizationStatus[status], message=message
         )
@@ -437,7 +455,7 @@ def fit_gpytorch_mll_torch(
                         mask[off : off + size] = [False] * size
             stopping = None if stopping_criterion is None else stopping_criterion._native_args()
             return _result(
-                mll.model._rs.fit_torch(
+                _native_fit_backend(mll).fit_torch(
                     mask=mask,
                     bounds=flat_bounds,
                     step_limit=step_limit,
@@ -446,6 +464,8 @@ def fit_gpytorch_mll_torch(
                     **adam,
                 )
             )
+        if getattr(mll, "_rs_shared_fit", False) or getattr(mll, "_rs_em_fit", False):
+            raise UnsupportedError("EM and shared-GP Adam fitting require the native closure and stopping criterion, with no scheduler or callback.")
     if _is_approximate(mll):
         native = (
             closure is None

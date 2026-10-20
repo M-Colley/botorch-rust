@@ -697,9 +697,34 @@ impl MllModel for EMEmpiricalGP {
 impl Fittable for EMEmpiricalGP {
     type Output = FitResult;
     fn fit_mll(&mut self, options: FitOptions) -> Result<FitResult> {
+        self.fit_mll_with_mask(options, None, None)
+    }
+}
+
+impl EMEmpiricalGP {
+    /// Fit selected raw entries, preserving excluded parameters exactly.
+    pub fn fit_mll_with_mask(
+        &mut self,
+        options: FitOptions,
+        mask: Option<&[bool]>,
+        bounds: Option<&[(f64, f64)]>,
+    ) -> Result<FitResult> {
+        let mut limits = bounds.map_or_else(|| self.raw_parameter_bounds(), <[_]>::to_vec);
+        if limits.len() != self.raw.len() || mask.is_some_and(|m| m.len() != self.raw.len()) {
+            return Err(BotorchError::DimensionMismatch(
+                "EM parameter mask/bounds length differs".into(),
+            ));
+        }
+        if let Some(mask) = mask {
+            for (i, free) in mask.iter().enumerate() {
+                if !free {
+                    limits[i] = (self.raw[i], self.raw[i]);
+                }
+            }
+        }
         let (result, raw) = minimize_with_retries(
             &self.raw,
-            &self.raw_parameter_bounds(),
+            &limits,
             options,
             |raw| self.mll_value_and_grad(raw),
             |rng| self.sample_all_priors(rng),

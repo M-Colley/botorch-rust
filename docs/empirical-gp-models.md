@@ -83,7 +83,63 @@ cached evaluation. Differentiating through subsequent EM iterations, warm
 starts and learnable inducing locations are explicit current boundaries.
 Use a pretrained prior for analytic fixed-prior fitting. Arbitrary Python
 mean/likelihood objects and tensor-valued predictive noise are rejected.
-Shared-kernel model-list fitting and coordinate ascent are separate milestones.
+`build_shared_gp_model_list` returns exact scalar `SingleTaskGP` components
+sharing the caller's actual native mean/kernel descriptors. Its returned
+`SumMarginalLogLikelihood` aggregates the per-dataset normalized likelihoods
+and gradients of shared parameters in one native optimization. Gaussian
+noises are learned independently or pinned exactly when supplied. List,
+NumPy and Torch array interfaces and native L-BFGS-B/Adam are supported;
+custom Python modules and batched historical datasets are explicit boundaries.
+
+`coordinate_ascent_em` alternates native EM with native fixed-moment kernel
+fitting, pins observation noise, updates caller-owned parametric modules, and
+reruns EM on the complete historical data. It supports L-BFGS-B or Adam,
+historical-dataset subsampling and immutable container histories. Inducing
+locations are currently fixed. Recorded histories snapshot descriptors and
+moments so later kernel mutations do not change earlier trajectory states.
+
+## Upstream EM subsampling index mismatch
+
+In official revision `b0dd01be6`, `coordinate_ascent_em` replaces
+`model.datasets` with a random subset but leaves
+`model._unique_inputs_obs.experiment_indices` in the original dataset order.
+For a prior fitted without explicit inducing points, the MLL loop then pairs
+the selected outcomes with another historical dataset's mean/covariance
+indices. Equal-sized datasets silently produce the wrong likelihood;
+different sizes can fail with a dimension error.
+
+For example, fit a prior to datasets observed at `[0, 1]` and `[1, 2]`, then
+assign `model.datasets = [datasets[1]]`. The MLL evaluates the second dataset
+at indices `[0, 1]`, while the correct indices in the original union input
+set are `[1, 2]`. The regression
+`test_subsampled_historical_likelihood_uses_correct_indices` reproduces a
+nonzero likelihood error against an explicit Gaussian calculation.
+
+A proposed upstream fix is to look up each selected dataset against the
+unchanged full historical input set inside the non-inducing MLL path:
+
+```python
+indices = self.model._find_indices_in_historical(dataset.X)
+mu_S, Sigma_SS = self.model._get_prior_at_indices(indices)
+```
+
+Alternatively retain the selected original dataset indices and use those to
+select the original `experiment_indices` entries. Rebuilding the union input
+set from the subset would lose the correspondence with the learned inducing
+moments. The port derives indices from the actual dataset inputs and refreshes
+the native likelihood state when `model.datasets` is replaced. The reference
+source was not modified.
+
+The default non-inducing coordinate step also has no data dependence on the
+parametric kernel once EM moments are detached. With a `ZeroMean`, an RBF
+kernel without hyperpriors and fixed noise, upstream calls backward on a
+constant likelihood and raises `RuntimeError: element 0 of tensors does not
+require grad`. The port returns the mathematically correct zero kernel
+gradient and completes that coordinate step without changing the kernel.
+`test_coordinate_default_without_phi_dependence_is_a_valid_noop` reproduces
+both behaviors. An upstream solution is to skip optimization when the MLL has
+no trainable parameter dependence, or to request explicit inducing points
+when observed-data kernel refinement is desired.
 
 ## Current boundaries
 

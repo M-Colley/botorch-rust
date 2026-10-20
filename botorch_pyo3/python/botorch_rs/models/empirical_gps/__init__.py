@@ -4,6 +4,7 @@ from botorch_rs.models.empirical_gps.em_empirical_gp import (
     EMEmpiricalGaussianProcess,
     EMEmpiricalMarginalLogLikelihood,
     EMPriorContainer,
+    build_shared_gp_model_list,
     pretrain_em_prior,
 )
 from botorch_rs.models.empirical_gps.empirical_1d_gp import (
@@ -22,8 +23,10 @@ from botorch_rs.models.empirical_gps.multitask_empirical_1d_gp import (
     MultiTaskEmpiricalOneDimensionalKernel,
     MultiTaskEmpiricalOneDimensionalMean,
 )
+from botorch_rs.models.empirical_gps.utils import trace_matched_shrinkage
 
 __all__ = [
+    "build_shared_gp_model_list",
     "EMEmpiricalGaussianProcess",
     "EMEmpiricalMarginalLogLikelihood",
     "EMPriorContainer",
@@ -38,4 +41,5 @@ __all__ = [
     "MultiTaskEmpiricalOneDimensionalKernel",
     "MultiTaskEmpiricalOneDimensionalMean",
     "pretrain_em_prior",
+    "trace_matched_shrinkage",
 ]

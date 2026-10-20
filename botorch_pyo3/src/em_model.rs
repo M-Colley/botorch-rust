@@ -7,7 +7,7 @@ use crate::kernel_trees::PyKernelNode;
 use crate::models::PyModel;
 use crate::specs::{PyConstraint, PyLikelihoodSpec, PyPrior};
 use crate::threads;
-use botorch_core::fit::{FitOptions, FitStatus, Fittable};
+use botorch_core::fit::{FitOptions, FitStatus};
 use botorch_core::models::em_gp::EMDataset;
 use botorch_core::models::em_model::{EMEmpiricalGP, EMGPPrior, EMModelOptions, EMPrior};
 use botorch_core::models::{ConstantMeanSpec, Model};
@@ -216,7 +216,7 @@ impl PyEMGaussianProcess {
         );
         self.set_raw_parameters(py, m.sample_all_priors(&mut rng))
     }
-    #[pyo3(signature=(maxcor=None,pgtol=None,ftol=None,maxiter=None,maxfun=None,maxls=None,max_attempts=None,seed=None))]
+    #[pyo3(signature=(maxcor=None,pgtol=None,ftol=None,maxiter=None,maxfun=None,maxls=None,max_attempts=None,seed=None,mask=None,bounds=None))]
     #[allow(clippy::too_many_arguments)]
     fn fit(
         &self,
@@ -229,6 +229,8 @@ impl PyEMGaussianProcess {
         maxls: Option<usize>,
         max_attempts: Option<usize>,
         seed: Option<u64>,
+        mask: Option<Vec<bool>>,
+        bounds: Option<Vec<(f64, f64)>>,
     ) -> PyResult<FitSummary> {
         let d = FitOptions::default();
         let options = FitOptions {
@@ -242,7 +244,10 @@ impl PyEMGaussianProcess {
             seed: seed.unwrap_or(d.seed),
         };
         let mut m = (*self.get()).clone();
-        let r = threads::run(py, || m.fit_mll(options)).into_py_result()?;
+        let r = threads::run(py, || {
+            m.fit_mll_with_mask(options, mask.as_deref(), bounds.as_deref())
+        })
+        .into_py_result()?;
         self.set(m);
         let status = match r.status {
             FitStatus::Success => "SUCCESS",

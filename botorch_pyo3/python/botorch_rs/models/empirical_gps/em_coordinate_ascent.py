@@ -238,4 +238,111 @@ def fit_kernel_to_em_prior(
     _KernelFit(mean_module, covar_module, X_ref, mu_em, Sigma_em).fit()
 
 
-__all__ = ["KLPriorFitMLL", "fit_kernel_to_em_prior", "kl_divergence_mvn"]
+def coordinate_ascent_em(
+    datasets: list[Any],
+    mean_module: Any,
+    covar_module: Kernel,
+    likelihood_noise: Any = None,
+    num_em_iterations: int = 16,
+    n_coord_ascent_iterations: int = 1,
+    inducing_points: Any = None,
+    optimize_inducing_points: bool = False,
+    use_mean_prior: bool = False,
+    use_covar_prior: bool = False,
+    iw_nu: float | None = None,
+    em_convergence_tol: float | None = 1e-6,
+    enable_interpolation: bool = True,
+    init_mode: str = "kernel",
+    mll_max_iter: int = 50,
+    mll_dataset_subsample: int | None = None,
+    mll_use_adam: bool | None = None,
+    mll_adam_lr: float = 0.01,
+    mll_adam_steps: int = 200,
+    container_history: list[Any] | None = None,
+) -> Any:
+    """Alternate exact native EM with native fixed-moment kernel fitting."""
+    import random
+    from dataclasses import replace
+
+    from botorch_rs.constraints import GreaterThan
+    from botorch_rs.likelihoods import GaussianLikelihood
+    from botorch_rs.models.empirical_gps.em_empirical_gp import (
+        EMEmpiricalGaussianProcess,
+        _copy_modules,
+        pretrain_em_prior,
+    )
+
+    if optimize_inducing_points:
+        raise UnsupportedError("Coordinate ascent currently requires fixed inducing locations.")
+    if not isinstance(n_coord_ascent_iterations, int) or n_coord_ascent_iterations < 0:
+        raise ValueError("n_coord_ascent_iterations must be a nonnegative integer.")
+    if mll_dataset_subsample is not None and (
+        not isinstance(mll_dataset_subsample, int) or mll_dataset_subsample <= 0
+    ):
+        raise ValueError("mll_dataset_subsample must be a positive integer.")
+    if (
+        not isinstance(mll_max_iter, int)
+        or mll_max_iter < 0
+        or not isinstance(mll_adam_steps, int)
+        or mll_adam_steps < 1
+        or not math.isfinite(mll_adam_lr)
+        or mll_adam_lr <= 0
+    ):
+        raise ValueError("Coordinate fit iteration counts and learning rate are invalid.")
+    options = dict(
+        likelihood_noise=likelihood_noise,
+        inducing_points=inducing_points,
+        num_em_iterations=num_em_iterations,
+        use_mean_prior=use_mean_prior,
+        use_covar_prior=use_covar_prior,
+        iw_nu=iw_nu,
+        em_convergence_tol=em_convergence_tol,
+        enable_interpolation=enable_interpolation,
+        init_mode=init_mode,
+    )
+    prior = pretrain_em_prior(datasets, mean_module, covar_module, **options)
+    if container_history is not None:
+        container_history.append(_copy_modules(prior)[0])
+    for _ in range(n_coord_ascent_iterations):
+        kind = kind_of(prior.X_inducing)
+        noise = (
+            None if likelihood_noise is None else from_flat(to_flat(likelihood_noise)[0], (), kind)
+        )
+        likelihood = GaussianLikelihood(
+            noise_constraint=GreaterThan(1e-16, transform=None, initial_value=noise)
+        )
+        selected = datasets
+        if mll_dataset_subsample is not None and mll_dataset_subsample < len(datasets):
+            try:
+                import torch
+            except ImportError:
+                indices = random.sample(range(len(datasets)), mll_dataset_subsample)
+            else:
+                indices = torch.randperm(len(datasets))[:mll_dataset_subsample].tolist()
+            selected = [datasets[i] for i in indices]
+        fitting_prior = replace(prior, datasets=selected)
+        X = _ops.getitem(prior.X_inducing, slice(0, 1))
+        Y = from_flat([0.0], (1, 1), kind)
+        model = EMEmpiricalGaussianProcess.from_pretrained(
+            fitting_prior, X, Y, likelihood=likelihood, freeze_pretrained=False
+        )
+        mask = [False] + [True] * (len(model._rs.raw_parameters()) - 1)
+        if mll_use_adam:
+            model._rs.fit_torch(mask=mask, step_limit=mll_adam_steps, stopping=None, lr=mll_adam_lr)
+        else:
+            model._rs.fit(mask=mask, maxiter=mll_max_iter)
+        if isinstance(mean_module, ConstantMean):
+            mean_module.raw_constant = model.initial_mean_module.raw_constant
+        for name, value in model.initial_covar_module.named_parameters():
+            target: Any = covar_module
+            *parents, attribute = name.split(".")
+            for parent in parents:
+                target = getattr(target, parent)
+            setattr(target, attribute, value)
+        prior = pretrain_em_prior(datasets, mean_module, covar_module, **options)
+        if container_history is not None:
+            container_history.append(_copy_modules(prior)[0])
+    return prior
+
+
+__all__ = ["KLPriorFitMLL", "coordinate_ascent_em", "fit_kernel_to_em_prior", "kl_divergence_mvn"]
