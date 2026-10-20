@@ -35,6 +35,15 @@ An explicit `GenericDeterministicModel` utility executes its caller-supplied
 Torch function and preserves that graph, without requiring the native model
 input-dimension hint; this is the existing callable interoperability path.
 
+Preference GP training batches containing more than one model retain an
+explicit boundary: the learned-sampling binding currently requests a single
+preference model, and `BatchedPairwiseGP` rejects a whole-batch posterior
+request. Supporting this configuration requires broadcasting the outcome
+batch indices against the preference batch and dispatching to its existing
+native `batch_element` models. Candidate t-batches and outcome ensembles
+are supported by the tests above; they do not imply batched-preference
+training support.
+
 ## Correcting the noisy-improvement cache law
 
 With a stochastic learned preference, NEI and LogNEI use full-joint sampling
