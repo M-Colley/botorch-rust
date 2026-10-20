@@ -53,6 +53,7 @@ from botorch_rs.models.model import FantasizeMixin, Model
 from botorch_rs.models.transforms.input import (
     ChainedInputTransform,
     InputTransform,
+    Normalize,
     apply_chain_states,
     chain_spec,
 )
@@ -284,6 +285,7 @@ class PairwiseGP(Model, FantasizeMixin):
                 shape = x[1]
             self._dim = int(shape[-1])
             self._batch = tuple(shape[:-2])
+        self._parameter_batch = self._batch
         covar: Kernel = (
             covar_module
             if covar_module is not None
@@ -338,8 +340,29 @@ class PairwiseGP(Model, FantasizeMixin):
                     f"A PairwiseGP Warp must have batch_shape=() or {batch}, got {parameter_batch}."
                 )
         steps = self._spec.chains[0]
+        native_steps = []
+        for step in steps:
+            owner = step.owner
+            native = step.rs
+            if isinstance(owner, Normalize) and owner._plain and not step.training:
+                # The legacy Normalize.for_model creates fresh learnable
+                # bounds. An eval-mode replacement must retain its fitted
+                # coefficients, together with the ability to learn on train().
+                native = _rs.InputStep.affine(
+                    owner._d,
+                    None,
+                    list(owner._rs.offset[0]),
+                    list(owner._rs.coefficient[0]),
+                    "normalize",
+                    owner.learn_bounds,
+                    False,
+                    owner._flags(),
+                    min_range=owner.min_range,
+                    center=owner.center,
+                )
+            native_steps.append(native)
         return {
-            "input_chain": [st.rs for st in steps],
+            "input_chain": native_steps,
             "input_chain_training": [st.training for st in steps],
             "input_chain_prefixes": [st.prefix for st in steps],
         }
@@ -354,17 +377,30 @@ class PairwiseGP(Model, FantasizeMixin):
             "float32": _float32_default(),
         }
 
-    def _build(self, datapoints: Any, comparisons: Any) -> None:
+    def _build(
+        self,
+        datapoints: Any,
+        comparisons: Any,
+        parameter_batch: tuple[int, ...] | None = None,
+    ) -> None:
         x = to_flat(datapoints, "datapoints")
         if len(x[1]) == 1:
             x = (x[0], (x[1][0], 1))
         c = _check_comparisons(to_flat(comparisons, "comparisons"))
         d = int(x[1][-1])
         batch = tuple(x[1][:-2])
-        transform_args = self._transform_args(d, batch)
+        parameter_batch = batch if parameter_batch is None else parameter_batch
+        if parameter_batch and (
+            len(batch) < len(parameter_batch) or batch[-len(parameter_batch) :] != parameter_batch
+        ):
+            raise UnsupportedError(
+                f"Replacement data batch {batch} must retain the parameter batch "
+                f"{parameter_batch} in its trailing dimensions."
+            )
+        transform_args = self._transform_args(d, parameter_batch)
         param_map = None
         if batch:
-            raw, param_map = self._batched_params(d, batch)
+            raw, param_map = self._batched_params(d, batch, parameter_batch)
         else:
             raw = self.covar_module._raw_flat()
         # The values are passed to the extension; the kernel then reads them
@@ -389,33 +425,33 @@ class PairwiseGP(Model, FantasizeMixin):
         )
         self._dim = d
         self._batch = batch
+        self._parameter_batch = parameter_batch
+        if not self.training:
+            self._rs.training = False
         self._has_data = True
         self._train_inputs = (datapoints,)
         self._train_targets = comparisons
-        self.covar_module._bind(self, "covar_module.")
-        if self.mean_module._model is None:
-            self.mean_module._bind(self)
-        if self.input_transform is not None:
-            self.input_transform._bind(self, "input_transform.")
+        self._bind_modules()
         if not batch:
             self._update()
         self._sync_transform()
 
     def _batched_params(
-        self, d: int, batch: tuple[int, ...]
+        self, d: int, batch: tuple[int, ...], parameter_batch: tuple[int, ...]
     ) -> tuple[list[float], list[list[int]]]:
         """The global raw parameters of a batched model and every element's
         indices into them (the parameters of kernels with the model's batch
         shape are per element; others are shared)."""
         nb = math.prod(batch)
+        parameter_members = math.prod(parameter_batch)
         layout: list[tuple[int, bool]] = []  # (size per element, batched)
         values: list[list[float]] = []
         kernels = [k for k in self.covar_module._all_kernels() if k._own_params()]
         for k in kernels:
-            batched = tuple(k._batch_shape) == batch
+            batched = bool(k._batch_shape) and tuple(k._batch_shape) == parameter_batch
             if k._batch_shape and not batched:
                 raise UnsupportedError(
-                    f"A kernel of a batched PairwiseGP must have batch_shape=() or {batch}, "
+                    f"A kernel of a batched PairwiseGP must have batch_shape=() or {parameter_batch}, "
                     f"got {tuple(k._batch_shape)}."
                 )
             for name, _, _ in k._own_params():
@@ -455,16 +491,39 @@ class PairwiseGP(Model, FantasizeMixin):
         for e in range(nb):
             m: list[int] = []
             for (size, batched), off in zip(layout, offsets, strict=True):
-                start = off + (e * size if batched else 0)
+                start = off + ((e % parameter_members) * size if batched else 0)
                 m.extend(range(start, start + size))
             maps.append(m)
         self._param_layout = [(size, batched) for size, batched in layout]
         return raw, maps
 
+    def _bind_modules(self) -> None:
+        self.covar_module._bind(self, "covar_module.")
+        self.mean_module._bind(self)
+        if self.input_transform is not None:
+            self.input_transform._bind(self, "input_transform.")
+
     def _sync_transform(self) -> None:
         if self._spec is not None and self._rs is not None:
             states = self._rs.input_chain_states()
             if states is not None:
+                for i, (step, state) in enumerate(zip(self._spec.chains[0], states, strict=True)):
+                    owner = step.owner
+                    if (
+                        isinstance(owner, Normalize)
+                        and owner._plain
+                        and hasattr(state, "affine_state")
+                    ):
+                        offset, coefficient = state.affine_state
+                        bounds = list(offset) + [
+                            o + c for o, c in zip(offset, coefficient, strict=True)
+                        ]
+                        states[i] = _rs.Normalize(
+                            owner._d,
+                            (bounds, (2, owner._d)),
+                            learn_bounds=owner.learn_bounds,
+                            min_range=owner.min_range,
+                        )
                 apply_chain_states(self._spec, [states], self._kind, ())
 
     def _update(self) -> None:
@@ -834,32 +893,46 @@ class PairwiseGP(Model, FantasizeMixin):
                         raise RuntimeError(
                             f"Cannot modify {attr} of {name} (expected {expected}, found {found})."
                         )
-        if self._rs is None or self._batch or len(to_flat(datapoints)[1]) > 2:
-            self._kind = kind_of(datapoints)
-            if self._rs is not None:
+        # Build and validate on a separate owner so a failed replacement does
+        # not invalidate the original native model or its bound module views.
+        candidate = copy.deepcopy(self)
+        if candidate._rs is None or candidate._batch or len(to_flat(datapoints)[1]) > 2:
+            candidate._kind = kind_of(datapoints)
+            if candidate._rs is not None:
                 # Preserve all member parameters before replacing the native
                 # model that owns their bound module views.
-                for kernel in self.covar_module._all_kernels():
+                for kernel in candidate.covar_module._all_kernels():
                     local = {name: kernel._raw_values(name) for name, _, _ in kernel._own_params()}
                     kernel._model = None
                     kernel._local = local
-                if self._spec is not None:
-                    for step in self._spec.chains[0]:
+                if candidate._spec is not None:
+                    for step in candidate._spec.chains[0]:
                         if hasattr(step.owner, "_current_steps"):
                             step.owner._steps = step.owner._current_steps()
                             step.owner._model = None
-            self._rs = None
-            self._build(datapoints, comparisons)
-            return
-        self._rs.set_train_data(
-            to_flat(datapoints, "datapoints"),
-            _check_comparisons(to_flat(comparisons, "comparisons")),
-            False,
+            candidate._rs = None
+            candidate._build(datapoints, comparisons, candidate._parameter_batch)
+        else:
+            candidate._rs.set_train_data(
+                to_flat(datapoints, "datapoints"),
+                _check_comparisons(to_flat(comparisons, "comparisons")),
+                False,
+            )
+            candidate._train_inputs = (datapoints,)
+            candidate._train_targets = comparisons
+            if update_model:
+                candidate._update()
+        covar, mean, transform = self.covar_module, self.mean_module, self.input_transform
+        self.__dict__.update(candidate.__dict__)
+        # Keep caller-held module objects live, as torch Module data
+        # replacement does. Their views now point at the validated snapshot.
+        self.covar_module, self.mean_module, self.input_transform = covar, mean, transform
+        self._bind_modules()
+        assert self._dim is not None
+        self._spec = (
+            None if transform is None else chain_spec(transform, self._dim, self._parameter_batch)
         )
-        self._train_inputs = (datapoints,)
-        self._train_targets = comparisons
-        if update_model:
-            self._update()
+        self._sync_transform()
 
     # -- modes ---------------------------------------------------------------
 
@@ -986,9 +1059,9 @@ class PairwiseGP(Model, FantasizeMixin):
         new._has_data = True
         new._batch = tuple(rs.batch_shape)
         new._dim = rs.dim
-        new._train_inputs = (X,)
-        new._train_targets = Y
         new._kind = self._kind if self._has_data else kind_of(X)
+        new._train_inputs = (new._out(rs.unconsolidated_datapoints()),)
+        new._train_targets = new._comparisons_out(rs.comparisons(True))
         return new
 
     def condition_on_observations(self, X: Any, Y: Any, **kwargs: Any) -> PairwiseGP:

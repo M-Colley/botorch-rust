@@ -142,3 +142,35 @@ reference. They include list/NumPy/Torch inputs, probit/logit likelihoods,
 one- and two-dimensional model batches, shared/per-member concentrations,
 and shared composite kernels. Native finite differences independently
 check all four shared/per-member kernel and Warp ownership combinations.
+
+## Conditioned data and atomic replacement
+
+Python training metadata now contains the full augmented inputs and shifted
+comparisons after conditioning, including nested fantasy dimensions. For a
+two-member model with six initial points and two new points per fantasy,
+three fantasies expose `train_inputs[0].shape == (3, 2, 8, 2)` and
+`train_targets.shape == (3, 2, 6, 2)`, matching the native data and official
+model. Previously Python exposed only the newly supplied observations.
+
+Replacing those data retains the original parameter batch `(2,)` and repeats
+its native member maps over fantasy axes. It does not create independent
+parameters for each fantasy. Eval-mode replacement preserves fitted shared
+normalization bounds; switching to training and evaluating the MLL learns
+bounds over the augmented batch. The PairwiseGP wrapper uses the existing
+native affine-normalization step to transfer fitted eval-mode coefficients,
+avoiding the legacy normalizer factory's reset to identity bounds while
+retaining its coefficient-learning flag. This adaptation is confined to
+PairwiseGP.
+
+Replacement is built and validated using an isolated native snapshot and
+copied module views. Successful installation retains the original public
+kernel and input-transform objects. A validation failure preserves the
+original native handle, parameters, transform bounds, training metadata,
+caller-held module ownership, and posterior predictions. This covers
+invalid comparison indices and incompatible replacement batches, both with
+and without nested fantasies.
+
+The nested official comparison conditions under `torch.no_grad()`: the
+pinned source otherwise attempts to deep-copy a cached non-leaf utility
+tensor on its second conditioning call, which current Torch rejects. The
+native model can condition repeatedly without this Torch cache limitation.
