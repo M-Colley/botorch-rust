@@ -819,6 +819,42 @@ class KroneckerMultiTaskGP(GPyTorchModel):
 
     _supports_cache_root = False
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if cls is KroneckerMultiTaskGP:
+            if backend not in {"auto", "native", "torch"}:
+                raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+            torch = sys.modules.get("torch")
+            requested = any(
+                getattr(v, "requires_grad", False)
+                or getattr(getattr(v, "device", None), "type", "cpu") != "cpu"
+                for v in (train_X, train_Y)
+            )
+            modules = (
+                any(
+                    isinstance(kwargs.get(k), torch.nn.Module)
+                    for k in (
+                        "likelihood",
+                        "data_covar_module",
+                        "input_transform",
+                        "outcome_transform",
+                    )
+                )
+                if torch
+                else False
+            )
+            if backend == "torch" or (backend == "auto" and (requested or modules)):
+                from botorch_rs.models._torch_backend_kronecker import TorchKroneckerMultiTaskGP
+
+                return object.__new__(TorchKroneckerMultiTaskGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -832,6 +868,8 @@ class KroneckerMultiTaskGP(GPyTorchModel):
         **kwargs: Any,
     ) -> None:
         import math as _math
+
+        kwargs.pop("backend", None)
 
         from botorch_rs.kernels import MultitaskKernel
         from botorch_rs.likelihoods import MultitaskGaussianLikelihood
