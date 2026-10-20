@@ -143,6 +143,8 @@ pub struct QLogNParEGOOptions {
     /// Prune the baseline with `prune_inferior_points` under the composite
     /// objective (default `false`).
     pub prune_baseline: bool,
+    /// Cache the baseline root for conditional candidate sampling (default true).
+    pub cache_root: bool,
     /// Settings of the pruning.
     pub prune_options: PruneOptions,
     /// Temperature of the smooth ReLU (default `1e-6`).
@@ -169,6 +171,7 @@ impl Default for QLogNParEGOOptions {
             x_pending: None,
             fat: true,
             prune_baseline: false,
+            cache_root: true,
             prune_options: PruneOptions::default(),
             tau_relu: TAU_RELU,
             tau_max: TAU_MAX,
@@ -244,6 +247,7 @@ impl QLogNParEGO {
                 x_pending: options.x_pending,
                 fat: options.fat,
                 prune_baseline: options.prune_baseline,
+                cache_root: options.cache_root,
                 prune_options: options.prune_options,
                 tau_max: options.tau_max,
                 tau_relu: options.tau_relu,

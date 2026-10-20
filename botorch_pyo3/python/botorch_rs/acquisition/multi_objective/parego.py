@@ -35,8 +35,8 @@ class qLogNParEGO(qLogNoisyExpectedImprovement, MultiObjectiveMCAcquisitionFunct
     Explicit ``scalarization_weights`` reproduce BoTorch exactly. Without
     them, the weights are drawn uniformly from the simplex with botorch_rs's
     generator, seeded from the sampler's seed (BoTorch uses torch's global
-    generator). Like qLogNEI, the computation is BoTorch's
-    ``cache_root=False``; ``cache_root`` is accepted and ignored.
+    generator). Like qLogNEI, ``cache_root`` selects native cached-root or
+    full joint posterior sampling.
 
     This implementation assumes maximization of all objectives; use an
     ``objective`` or negative ``scalarization_weights`` to minimize outputs.
@@ -82,7 +82,16 @@ class qLogNParEGO(qLogNoisyExpectedImprovement, MultiObjectiveMCAcquisitionFunct
             weights = [float(w) for w in to_flat(scalarization_weights, "weights")[0]]
         self.fat = fat
         self.prune_baseline = prune_baseline
-        self.cache_root = cache_root
+        from botorch_rs.acquisition.monte_carlo import _CACHE_ROOT_MESSAGE, supports_cache_root
+
+        if cache_root is None:
+            cache_root = supports_cache_root(model)
+        elif cache_root and not supports_cache_root(model):
+            import warnings
+
+            warnings.warn(_CACHE_ROOT_MESSAGE.format(type(model)), RuntimeWarning, stacklevel=2)
+            cache_root = False
+        self.cache_root = self._cache_root = bool(cache_root)
         self.tau_max = tau_max
         self.tau_relu = tau_relu
         self.incremental = incremental
@@ -98,6 +107,7 @@ class qLogNParEGO(qLogNoisyExpectedImprovement, MultiObjectiveMCAcquisitionFunct
             x_pending=pending,
             fat=fat_bool(fat),
             prune_baseline=bool(prune_baseline),
+            cache_root=self._cache_root,
             prune_num_samples=_PRUNE_SAMPLES,
             prune_seed=(seed ^ _PRUNE_SEED_SALT) & 0xFFFFFFFFFFFFFFFF,
             tau_relu=float(tau_relu),

@@ -166,19 +166,6 @@ impl SampleRoots {
             Ok(Self::Full(CovarianceRoot::new(cov)?))
         }
     }
-
-    /// The jitter of every root (for cache keys).
-    pub fn jitter_bits(&self) -> Option<Vec<u64>> {
-        let bits = |r: &CovarianceRoot| match r {
-            CovarianceRoot::Eigen(_) => None,
-            r => Some(r.jitter().to_bits()),
-        };
-        match self {
-            Self::Blocks(rs) => rs.iter().map(bits).collect(),
-            Self::Full(r) => bits(r).map(|b| vec![b]),
-            Self::Zero => Some(Vec::new()),
-        }
-    }
 }
 
 impl crate::posterior::Posterior {
@@ -1593,6 +1580,9 @@ enum NeiSamples {
     },
 }
 
+/// The original sampler matrix and its baseline-adjusted cached copy.
+type JointBaseEntry = (Arc<Matrix>, Arc<Matrix>);
+
 /// MC-based batch Noisy Expected Improvement (BoTorch's
 /// `qNoisyExpectedImprovement`):
 /// `qNEI(X) = E[max_j (max(obj_j - max_i obj_i^baseline, 0) · ind_j)]` over
@@ -1623,7 +1613,7 @@ pub struct QNoisyExpectedImprovement {
     baseline: Option<NeiBaseline>,
     /// The base samples of `N + q'` points with the baseline's rows (cache
     /// root), per number of posterior points.
-    joint_base: Mutex<HashMap<usize, Arc<Matrix>>>,
+    joint_base: Mutex<HashMap<usize, JointBaseEntry>>,
     lower_bound: Mutex<Option<f64>>,
     lower_bound_points: Option<Matrix>,
 }
@@ -1808,17 +1798,19 @@ impl QNoisyExpectedImprovement {
     /// points' replaced by the baseline's own (BoTorch's
     /// `_update_base_samples`).
     fn effective_base(&self, baseline: &NeiBaseline, n: usize) -> Result<Arc<Matrix>> {
-        let mut cache = self.joint_base.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(z) = cache.get(&n) {
-            return Ok(Arc::clone(z));
-        }
         let m = self.core.model.num_outputs();
         let all = self.core.sampler.base_samples(n * m)?;
+        let mut cache = self.joint_base.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((source, z)) = cache.get(&n) {
+            if Arc::ptr_eq(source, &all) {
+                return Ok(Arc::clone(z));
+            }
+        }
         let mut z = (*all).clone();
         let k = baseline.base.ncols();
         z.columns_mut(0, k).copy_from(baseline.base.as_ref());
         let z = Arc::new(z);
-        cache.insert(n, Arc::clone(&z));
+        cache.insert(n, (all, Arc::clone(&z)));
         Ok(z)
     }
 
@@ -1920,12 +1912,33 @@ impl QNoisyExpectedImprovement {
         Ok((v, g.map(|(g, _)| g)))
     }
 
+    /// Evaluate and return the exact per-sample incumbent used for this set.
+    /// Keeping this state in the return value permits parallel t-batches.
+    pub fn forward_with_incumbents(
+        &self,
+        x: &Matrix,
+        with_grad: bool,
+    ) -> Result<(f64, Option<Matrix>, Vec<f64>)> {
+        let ((value, gradient), best) = self.evaluate_captured(x, None, with_grad, None)?;
+        Ok((value, gradient.map(|(g, _)| g), best))
+    }
+
     fn evaluate_weighted(
         &self,
         x: &Matrix,
         weights: Option<&[f64]>,
         with_grad: bool,
     ) -> Result<crate::acquisition::WeightedEvaluation> {
+        Ok(self.evaluate_captured(x, weights, with_grad, None)?.0)
+    }
+
+    pub(crate) fn evaluate_captured(
+        &self,
+        x: &Matrix,
+        weights: Option<&[f64]>,
+        with_grad: bool,
+        log: Option<&crate::acquisition::logei::LogImprovementReduction>,
+    ) -> Result<(crate::acquisition::WeightedEvaluation, Vec<f64>)> {
         let model = self.core.model.as_ref();
         let d = model.dim();
         check_candidates(x, d, None)?;
@@ -1989,9 +2002,9 @@ impl QNoisyExpectedImprovement {
         let ind = match &self.core.constraints {
             Some(c) => Some(compute_smoothed_feasibility_indicator(
                 c,
-                &self.core.fat,
+                log.map_or(self.core.fat.as_slice(), |l| l.constraint_fat.as_slice()),
                 &new_samples,
-                false,
+                log.is_some(),
                 with_grad,
             )?),
             None => None,
@@ -2008,25 +2021,38 @@ impl QNoisyExpectedImprovement {
         let combined = weighted_indicator(
             ind.as_ref().map(|i| &i.values),
             weights,
-            false,
+            log.is_some(),
             obj.nrows(),
             obj.ncols(),
         );
         if has_nan(&obj) || best_f.iter().any(|b| b.is_nan()) {
-            return Ok(nan_evaluation(
-                q,
-                d,
-                weights.map_or(0, <[f64]>::len),
-                with_grad,
+            return Ok((
+                nan_evaluation(q, d, weights.map_or(0, <[f64]>::len), with_grad),
+                best_f,
             ));
         }
-        let r = noisy_improvement_reduce(&obj, &best_f, combined.as_ref(), with_grad);
+        let r = match log {
+            Some(l) => crate::acquisition::logei::log_improvement_reduce(
+                &obj,
+                |s| best_f[s],
+                combined.as_ref(),
+                l.fat,
+                l.tau_relu,
+                l.tau_max,
+                with_grad,
+            ),
+            None => noisy_improvement_reduce(&obj, &best_f, combined.as_ref(), with_grad),
+        };
         if !with_grad {
-            return Ok((r.value, None));
+            return Ok(((r.value, None), best_f));
         }
         let obj_bar_new = r.obj_bar.expect("gradient requested");
-        let (ind_bar, w_bar) =
-            split_indicator_adjoint(ind.as_ref().map(|i| &i.values), weights, false, r.ind_bar);
+        let (ind_bar, w_bar) = split_indicator_adjoint(
+            ind.as_ref().map(|i| &i.values),
+            weights,
+            log.is_some(),
+            r.ind_bar,
+        );
         let samples_bar_new = match (ind, ind_bar) {
             (Some(ind), Some(ib)) => Some(ind.backward(&ib)?),
             _ => None,
@@ -2107,7 +2133,7 @@ impl QNoisyExpectedImprovement {
                 grad
             }
         };
-        Ok((r.value, Some((grad, w_bar))))
+        Ok(((r.value, Some((grad, w_bar))), best_f))
     }
 }
 

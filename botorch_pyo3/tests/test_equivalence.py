@@ -755,6 +755,7 @@ def test_qlognei(acqf_pair: tuple) -> None:
         _, s_rs, _ = sampler_pair(64, D, v.m, seed=seed)
         a_rs = rs_logei.qLogNoisyExpectedImprovement(
             rs,
+            cache_root=False,
             sampler=s_rs,
             objective=v.o_rs,
             posterior_transform=v.t_rs,

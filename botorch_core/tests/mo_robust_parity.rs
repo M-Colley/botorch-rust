@@ -926,6 +926,7 @@ fn parity_acquisition_with_risk_measures() {
             Arc::clone(&model),
             &xb,
             QLogNoisyExpectedImprovementOptions {
+                cache_root: false,
                 sampler: Some(s),
                 objective: Some(Arc::new(mars)),
                 prune_baseline: false,

@@ -486,6 +486,7 @@ fn parity_qlognei_with_objectives_and_constraints() {
         let xb = matrix(&f.baseline_x);
         for (k, c) in f.nei.cases.iter().enumerate() {
             let options = QLogNoisyExpectedImprovementOptions {
+                cache_root: false,
                 sampler: sampler_from(&c.base_samples),
                 x_pending: c.x_pending.as_ref().map(|p| matrix(p)),
                 prune_baseline: false,

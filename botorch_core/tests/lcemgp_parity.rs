@@ -631,6 +631,7 @@ fn lcemgp_matches_botorch() {
                 Arc::clone(&model),
                 &xb,
                 QLogNoisyExpectedImprovementOptions {
+                    cache_root: false,
                     sampler: Some(sampler(&e.draws)),
                     prune_baseline: false,
                     ..Default::default()

@@ -349,6 +349,7 @@ def test_qlognei_objectives_and_constraints(
                 warnings.simplefilter("always")
                 a_rs = rs_logei.qLogNoisyExpectedImprovement(
                     rs,
+                    cache_root=False,
                     sampler=s_rs,
                     objective=o_rs,
                     lower_bound_points=lb_points,

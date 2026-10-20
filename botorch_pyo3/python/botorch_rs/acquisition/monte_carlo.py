@@ -629,6 +629,59 @@ def supports_cache_root(model: Any) -> bool:
     return transform is None or bool(transform._is_linear)
 
 
+def _compute_noisy_best_f(acqf: Any, obj: Any) -> Any:
+    """Shape actual native incumbents like BoTorch's compute_best_f.
+
+    A cached baseline is available at construction. An uncached baseline
+    comes from the exact last completed evaluation, with parallel t-batches
+    captured together by the native bridge.
+    """
+    from botorch_rs._arrays import broadcast_shapes, from_flat, to_flat
+    from botorch_rs.exceptions.errors import BotorchTensorDimensionError
+
+    _, obj_shape = to_flat(obj, "obj")
+    sample_shape = tuple(acqf.sample_shape)
+    n_sample = len(sample_shape)
+    if len(obj_shape) < n_sample + 1 or obj_shape[:n_sample] != sample_shape:
+        raise BotorchTensorDimensionError(
+            f"obj must have sample shape {sample_shape} followed by batch dimensions and q; "
+            f"got {obj_shape}."
+        )
+    batch_shape: tuple[int, ...]
+    members = acqf.__dict__.get("_ensemble_acqfs")
+    if members:
+        cached = [member._rs.baseline_best_f() for member in members]
+        if any(value is None for value in cached):
+            raise UnsupportedError(
+                "compute_best_f for an uncached ensemble requires per-member forward state; "
+                "use cache_root=True on a supported GP ensemble."
+            )
+        count = math.prod(sample_shape)
+        data = [cached[member][sample] for sample in range(count) for member in range(len(cached))]
+        batch_shape = (len(members),)
+    else:
+        cached_best = acqf._rs.baseline_best_f()
+        if cached_best is not None:
+            data, batch_shape = cached_best, ()
+        else:
+            state = acqf._rs.last_baseline_best_f()
+            if state is None:
+                raise RuntimeError(
+                    "compute_best_f requires a completed forward when cache_root=False."
+                )
+            data, shape = state
+            if shape[0] != math.prod(sample_shape):
+                raise BotorchTensorDimensionError("The stored incumbent sample shape has changed.")
+            batch_shape = tuple(shape[1:])
+    padding = len(obj_shape) - n_sample - len(batch_shape) - 1
+    if padding < 0 or broadcast_shapes(batch_shape, obj_shape[n_sample:-1]) is None:
+        raise BotorchTensorDimensionError(
+            f"Stored incumbent batch shape {batch_shape} is incompatible with obj shape {obj_shape}."
+        )
+    view_shape = (*sample_shape, *((1,) * padding), *batch_shape)
+    return from_flat(data, view_shape, kind_of(obj))
+
+
 class qNoisyExpectedImprovement(SampleReducingMCAcquisitionFunction):
     r"""MC-based batch Noisy Expected Improvement.
 
@@ -715,6 +768,10 @@ class qNoisyExpectedImprovement(SampleReducingMCAcquisitionFunction):
             lower_bound_points=lb,
             **kwargs,
         )
+
+    def compute_best_f(self, obj: Any) -> Any:
+        """Return the actual best feasible noisy value for every MC sample."""
+        return _compute_noisy_best_f(self, obj)
 
     def _after_evaluation(self) -> None:
         # BoTorch warns when some sample has no feasible baseline point.

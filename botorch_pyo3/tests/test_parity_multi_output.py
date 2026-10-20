@@ -776,7 +776,7 @@ def test_scalarized_qlognei(acqf_pair: tuple, q: int, n_pending: int, incrementa
         Xt = _in_range(X, 1, q, seed=9)
         v_bt, g_bt = values_and_grads(a_bt, Xt)
     a_rs = rs_logei.qLogNoisyExpectedImprovement(
-        rs, sampler=s_rs, posterior_transform=RsTransform(w, 0.2), **common
+        rs, cache_root=False, sampler=s_rs, posterior_transform=RsTransform(w, 0.2), **common
     )
     v_rs, g_rs = values_and_grads(a_rs, Xt)
     assert torch.equal(s_bt.base_samples.view(S, D), Z)

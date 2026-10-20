@@ -634,10 +634,7 @@ pub fn q_noisy_expected_improvement(
     .into_py_result()?;
     let acqf = Arc::new(acqf);
     Ok((
-        PyAcquisitionFunction::new_plain(
-            acqf.clone() as Arc<dyn AcquisitionFunction>,
-            "qNoisyExpectedImprovement",
-        ),
+        PyAcquisitionFunction::with_linear_nei(acqf.clone()),
         PyQNei { inner: acqf },
     ))
 }

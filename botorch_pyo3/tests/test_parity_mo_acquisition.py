@@ -529,6 +529,7 @@ def test_qlognparego(pair: tuple, variant: str) -> None:
         )
     a_rs = rs_parego.qLogNParEGO(
         rs,
+        cache_root=False,
         X_baseline=X,
         scalarization_weights=weights,
         sampler=rs_sampler(NUM_SAMPLES, 43, D),
@@ -729,7 +730,11 @@ def test_optimize_acqf_list(pair: tuple) -> None:
             )
         acqfs_rs.append(
             rs_parego.qLogNParEGO(
-                rs, X_baseline=X, scalarization_weights=w, sampler=rs_sampler(NUM_SAMPLES, 80, D)
+                rs,
+                cache_root=False,
+                X_baseline=X,
+                scalarization_weights=w,
+                sampler=rs_sampler(NUM_SAMPLES, 80, D),
             )
         )
     calls = {"n": 0}

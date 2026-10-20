@@ -493,6 +493,7 @@ pub fn expected_hypervolume_improvement(
     x_pending=None,
     fat=true,
     prune_baseline=false,
+    cache_root=true,
     prune_num_samples=2048,
     prune_seed=None,
     tau_relu=1e-6,
@@ -514,6 +515,7 @@ pub fn q_log_nparego(
     x_pending: Option<Array>,
     fat: bool,
     prune_baseline: bool,
+    cache_root: bool,
     prune_num_samples: usize,
     prune_seed: Option<u64>,
     tau_relu: f64,
@@ -533,6 +535,7 @@ pub fn q_log_nparego(
         x_pending: x_pending.map(|p| p.matrix("X_pending")).transpose()?,
         fat,
         prune_baseline,
+        cache_root,
         prune_options: PruneOptions {
             num_samples: prune_num_samples,
             seed: prune_seed,

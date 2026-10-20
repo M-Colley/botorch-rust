@@ -16,8 +16,7 @@
 //! (pruned) baseline points. [`QLogProbabilityOfFeasibility`] reduces the log
 //! feasibility indicator alone.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
@@ -25,12 +24,10 @@ use rand::{RngExt, SeedableRng};
 use crate::acquisition::mc_objective::{McObjective, McSamples};
 use crate::acquisition::monte_carlo::{
     check_constraints_one_to_one, check_mc_model, read_lock, sampler_or_default, vstack,
-    write_lock, JointSamples, McAcquisitionOptions, McCore, Reduced, SampledObjective,
+    write_lock, JointSamples, McAcquisitionOptions, McCore, QNoisyExpectedImprovement,
+    QNoisyExpectedImprovementOptions, Reduced,
 };
-use crate::acquisition::utils::{
-    compute_best_feasible_objective, estimate_objective_lower_bound, prune_inferior_points,
-    PruneOptions,
-};
+use crate::acquisition::utils::{prune_inferior_points, PruneOptions};
 use crate::acquisition::{check_candidates, check_pending, check_unbatched, AcquisitionFunction};
 use crate::error::{BotorchError, Result};
 use crate::models::Model;
@@ -189,7 +186,7 @@ fn log_reduce(l: &Matrix, fat: bool, tau_max: f64, with_grad: bool) -> (f64, Opt
 /// [`QLogNoisyExpectedImprovement`] for objective values `obj` (`n × S`),
 /// per-sample incumbents `best_f(s)` and an optional log feasibility
 /// indicator.
-fn log_improvement_reduce<B>(
+pub(crate) fn log_improvement_reduce<B>(
     obj: &Matrix,
     best_f: B,
     log_ind: Option<&Matrix>,
@@ -396,6 +393,15 @@ impl AcquisitionFunction for QLogExpectedImprovement {
     }
 }
 
+/// Shared reduction settings over native joint or cached-root NEI samples.
+#[derive(Clone, Debug)]
+pub(crate) struct LogImprovementReduction {
+    pub fat: bool,
+    pub tau_max: f64,
+    pub tau_relu: f64,
+    pub constraint_fat: Vec<Option<bool>>,
+}
+
 /// Options of [`QLogNoisyExpectedImprovement`] (BoTorch's keyword arguments).
 #[derive(Clone, Debug)]
 pub struct QLogNoisyExpectedImprovementOptions {
@@ -410,6 +416,8 @@ pub struct QLogNoisyExpectedImprovementOptions {
     /// (`prune_inferior_points`, default `true`). The objective and the
     /// constraints are passed on to the pruning.
     pub prune_baseline: bool,
+    /// Cache the baseline covariance root and update candidate samples (default true).
+    pub cache_root: bool,
     /// Settings of the pruning (2048 samples by default).
     pub prune_options: PruneOptions,
     /// Temperature of the smooth maximum over the `q` points (default `1e-2`).
@@ -444,6 +452,7 @@ impl Default for QLogNoisyExpectedImprovementOptions {
             x_pending: None,
             fat: true,
             prune_baseline: true,
+            cache_root: true,
             prune_options: PruneOptions::default(),
             tau_max: TAU_MAX,
             tau_relu: TAU_RELU,
@@ -456,10 +465,6 @@ impl Default for QLogNoisyExpectedImprovementOptions {
     }
 }
 
-/// Per-sample incumbents keyed by (number of jointly sampled points, jitter
-/// bits of the covariance roots).
-type IncumbentCache = Mutex<HashMap<(usize, Vec<u64>), Arc<Vec<f64>>>>;
-
 /// Baseline-dependent state of [`QLogNoisyExpectedImprovement`].
 #[derive(Clone, Debug)]
 struct NeiState {
@@ -470,6 +475,8 @@ struct NeiState {
     /// The incumbent points: baseline and, if incremental, pending points
     /// (BoTorch's `X_baseline` property).
     full_baseline: Matrix,
+    /// Initialized atomically with the baseline before construction returns.
+    backend: Option<Arc<QNoisyExpectedImprovement>>,
 }
 
 /// MC-based batch Log Noisy Expected Improvement (BoTorch's
@@ -478,41 +485,22 @@ struct NeiState {
 /// posterior samples of the candidates and the previously evaluated
 /// (baseline) points.
 ///
-/// This is the plain computation of BoTorch's `cache_root=False`: the joint
-/// posterior over `[X_baseline; X_pending; X]` (incremental) or
-/// `[X_baseline; X; X_pending]` is sampled with base samples for all points,
-/// the objective is evaluated on all of them, and the incumbent of each
-/// sample is the best feasible objective value at the baseline points
-/// (without gradient, as in BoTorch). If a sample has no feasible baseline
-/// point, BoTorch replaces the values of infeasible points by a lower bound
-/// of the objective estimated at 32 uniformly random points around the
-/// baseline; here these points come from a generator seeded by the sampler's
-/// seed and the bound is computed once. For pointwise objectives and
-/// constraints, the baseline block of the joint Cholesky factor (and hence
-/// the incumbents) does not depend on `X`, so the incumbents are cached per
-/// jitter level. BoTorch's default `cache_root=True` computes the same
-/// quantity with a low-rank update of a cached baseline factor; it differs
-/// only in which base samples are used for the baseline points (an
-/// independent Sobol draw for the baseline alone) and in where jitter is
-/// added when the joint covariance is singular.
+/// The baseline root is cached when requested and supported by the model.
+/// Joint and low-rank sampling share the same stable log-improvement
+/// reduction and analytic adjoints. Pending points join the baseline in
+/// incremental mode and join candidate sets otherwise.
 #[derive(Debug)]
 pub struct QLogNoisyExpectedImprovement {
     model: Arc<dyn Model>,
     sampler: Arc<SobolQMCNormalSampler>,
     objective: Option<Arc<dyn McObjective>>,
     constraints: Option<OutcomeConstraints>,
-    constraint_fat: Vec<Option<bool>>,
-    fat: bool,
-    tau_max: f64,
-    tau_relu: f64,
+    reduction: LogImprovementReduction,
+    cache_root: bool,
     prune_baseline: bool,
     prune_options: PruneOptions,
     incremental: bool,
     state: RwLock<NeiState>,
-    /// Incumbent samples per (number of joint points, jitter bits).
-    best_f_cache: IncumbentCache,
-    /// The lower bound used for infeasible baseline points (once computed).
-    lower_bound: Mutex<Option<f64>>,
     /// Explicit points of the lower-bound estimate.
     lower_bound_points: Option<Matrix>,
 }
@@ -579,10 +567,13 @@ impl QLogNoisyExpectedImprovement {
             sampler,
             objective: options.objective,
             constraints: options.constraints,
-            constraint_fat: cfat,
-            fat: options.fat,
-            tau_max,
-            tau_relu,
+            reduction: LogImprovementReduction {
+                constraint_fat: cfat,
+                fat: options.fat,
+                tau_max,
+                tau_relu,
+            },
+            cache_root: options.cache_root,
             prune_baseline: options.prune_baseline,
             prune_options,
             incremental: options.incremental,
@@ -590,20 +581,24 @@ impl QLogNoisyExpectedImprovement {
                 x_baseline: x_baseline.clone(),
                 x_pending: None,
                 full_baseline: x_baseline.clone(),
+                backend: None,
             }),
-            best_f_cache: Mutex::new(HashMap::new()),
-            lower_bound: Mutex::new(None),
             lower_bound_points: options.lower_bound_points,
         };
-        let state = acqf.init_baseline(x_baseline, options.x_pending)?;
+        let state = acqf.init_baseline(x_baseline, options.x_pending, true)?;
         *write_lock(&acqf.state) = state;
         Ok(acqf)
     }
 
     /// BoTorch's `_init_baseline`: prunes the baseline (if enabled) and
     /// assembles the incumbent set.
-    fn init_baseline(&self, x_baseline: &Matrix, x_pending: Option<Matrix>) -> Result<NeiState> {
-        let pruned = if self.prune_baseline {
+    fn init_baseline(
+        &self,
+        x_baseline: &Matrix,
+        x_pending: Option<Matrix>,
+        prune: bool,
+    ) -> Result<NeiState> {
+        let pruned = if self.prune_baseline && prune {
             prune_inferior_points(self.model.as_ref(), x_baseline, &self.prune_options)?
         } else {
             x_baseline.clone()
@@ -612,10 +607,30 @@ impl QLogNoisyExpectedImprovement {
             (Some(p), true) => vstack(&[&pruned, p], self.model.dim()),
             _ => pruned.clone(),
         };
+        let lower_bound_points = self.lower_bound_points_for(&full_baseline);
+        let backend = QNoisyExpectedImprovement::new(
+            Arc::clone(&self.model),
+            &full_baseline,
+            QNoisyExpectedImprovementOptions {
+                sampler: Some(Arc::clone(&self.sampler)),
+                x_pending: if self.incremental {
+                    None
+                } else {
+                    x_pending.clone()
+                },
+                objective: self.objective.clone(),
+                constraints: self.constraints.clone(),
+                prune_baseline: false,
+                cache_root: self.cache_root,
+                lower_bound_points: Some(lower_bound_points),
+                ..Default::default()
+            },
+        )?;
         Ok(NeiState {
             x_baseline: pruned,
             x_pending,
             full_baseline,
+            backend: Some(Arc::new(backend)),
         })
     }
 
@@ -642,10 +657,13 @@ impl QLogNoisyExpectedImprovement {
     /// (BoTorch's `_estimate_objective_lower_bound`), with uniform numbers
     /// from a generator seeded by the sampler's seed.
     pub fn lower_bound_points(&self) -> Matrix {
+        self.lower_bound_points_for(&self.full_x_baseline())
+    }
+
+    fn lower_bound_points_for(&self, xb: &Matrix) -> Matrix {
         if let Some(p) = &self.lower_bound_points {
             return p.clone();
         }
-        let xb = self.full_x_baseline();
         let d = xb.ncols();
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(self.sampler.seed() ^ LOWER_BOUND_SALT);
         let u = Matrix::from_fn(LOWER_BOUND_POINTS, d, |_, _| rng.random::<f64>());
@@ -664,165 +682,64 @@ impl QLogNoisyExpectedImprovement {
     /// point; BoTorch then warns that qLogProbabilityOfFeasibility is the
     /// better choice).
     pub fn infeasible_lower_bound(&self) -> Option<f64> {
-        *self.lower_bound.lock().unwrap_or_else(|e| e.into_inner())
+        read_lock(&self.state)
+            .backend
+            .as_ref()
+            .and_then(|b| b.infeasible_lower_bound())
     }
 
-    /// The lower bound of the objective for infeasible baseline points
-    /// (computed once).
-    fn infeasible_value(&self) -> Result<f64> {
-        let mut lb = self.lower_bound.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(v) = *lb {
-            return Ok(v);
-        }
-        let v = estimate_objective_lower_bound(
-            self.model.as_ref(),
-            self.objective.as_deref(),
-            &self.lower_bound_points(),
-        )?;
-        *lb = Some(v);
-        Ok(v)
+    /// Whether a supported baseline root is actually cached.
+    pub fn cache_root(&self) -> bool {
+        read_lock(&self.state)
+            .backend
+            .as_ref()
+            .is_some_and(|b| b.cache_root())
     }
 
-    /// Per-sample incumbents: the best feasible objective value at the
-    /// baseline points (no gradient).
-    fn incumbents(&self, so: &SampledObjective, n_baseline: usize) -> Result<Arc<Vec<f64>>> {
-        let pointwise = self.objective.as_ref().is_none_or(|o| o.is_pointwise())
-            && self.constraints.as_ref().is_none_or(|c| c.is_pointwise());
-        let key = if pointwise {
-            so.js
-                .roots
-                .jitter_bits()
-                .map(|bits| (so.js.num_points(), bits))
-        } else {
-            None
-        };
-        if let Some(k) = &key {
-            let cache = self.best_f_cache.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(v) = cache.get(k) {
-                return Ok(Arc::clone(v));
-            }
-        }
-        let k = so.js.points_per_input();
-        let bl_samples = so.samples.points(0..n_baseline * k);
-        let bl_obj = so.obj.rows(0, n_baseline).into_owned();
-        let best = compute_best_feasible_objective(
-            &bl_samples,
-            &bl_obj,
-            self.constraints.as_ref().map(|c| c.constraints()),
-            || self.infeasible_value(),
-        )?;
-        let best = Arc::new(best);
-        if let Some(k) = key {
-            self.best_f_cache
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(k, Arc::clone(&best));
-        }
-        Ok(best)
+    /// Incumbents from the independently sampled cached baseline.
+    pub fn baseline_best_f(&self) -> Option<Vec<f64>> {
+        read_lock(&self.state)
+            .backend
+            .as_ref()
+            .and_then(|b| b.baseline_best_f().map(<[f64]>::to_vec))
+    }
+
+    /// Values and the exact incumbents from this candidate set, without a
+    /// shared last-evaluation cache that could race parallel t-batches.
+    pub fn forward_with_incumbents(
+        &self,
+        x: &Matrix,
+        with_grad: bool,
+    ) -> Result<(f64, Option<Matrix>, Vec<f64>)> {
+        let ((value, gradient), best) = self.evaluate_captured(x, None, with_grad)?;
+        Ok((value, gradient.map(|(g, _)| g), best))
+    }
+
+    fn evaluate_captured(
+        &self,
+        x: &Matrix,
+        weights: Option<&[f64]>,
+        with_grad: bool,
+    ) -> Result<(crate::acquisition::WeightedEvaluation, Vec<f64>)> {
+        let backend = read_lock(&self.state)
+            .backend
+            .clone()
+            .ok_or_else(|| BotorchError::Runtime("qLogNEI baseline is not initialized".into()))?;
+        backend.evaluate_captured(x, weights, with_grad, Some(&self.reduction))
     }
 
     fn evaluate(&self, x: &Matrix, with_grad: bool) -> Result<(f64, Option<Matrix>)> {
-        let (v, g) = self.evaluate_weighted(x, None, with_grad)?;
+        let ((v, g), _) = self.evaluate_captured(x, None, with_grad)?;
         Ok((v, g.map(|(g, _)| g)))
     }
 
-    /// The value with the log utilities of the candidate points (and
-    /// non-incremental pending points) shifted by `weights` (BoTorch's
-    /// prior-guided weighting) and the gradients with respect to `x` and the
-    /// weights.
     fn evaluate_weighted(
         &self,
         x: &Matrix,
         weights: Option<&[f64]>,
         with_grad: bool,
     ) -> Result<crate::acquisition::WeightedEvaluation> {
-        let d = self.model.dim();
-        check_candidates(x, d, None)?;
-        let state = read_lock(&self.state);
-        let q = x.nrows();
-        let n_bl = state.full_baseline.nrows();
-        let x_full = match (&state.x_pending, self.incremental) {
-            (Some(p), false) => vstack(&[&state.full_baseline, x, p], d),
-            _ => vstack(&[&state.full_baseline, x], d),
-        };
-        drop(state);
-        let n = x_full.nrows();
-        let so = SampledObjective::new(
-            self.model.as_ref(),
-            x_full,
-            &self.sampler,
-            self.objective.as_deref(),
-            with_grad,
-        )?;
-        let best_f = self.incumbents(&so, n_bl)?;
-        let k = so.js.points_per_input();
-        let cand = n_bl * k..n * k;
-        let ind = match &self.constraints {
-            Some(c) => Some(compute_smoothed_feasibility_indicator(
-                c,
-                &self.constraint_fat,
-                &so.samples.points(cand.clone()),
-                true,
-                with_grad,
-            )?),
-            None => None,
-        };
-        let obj = so.obj.rows(n_bl, n - n_bl).into_owned();
-        if let Some(w) = weights {
-            if w.len() != obj.nrows() {
-                return Err(BotorchError::DimensionMismatch(format!(
-                    "expected {} point weights, got {}",
-                    obj.nrows(),
-                    w.len()
-                )));
-            }
-        }
-        let combined = crate::acquisition::monte_carlo::weighted_indicator(
-            ind.as_ref().map(|i| &i.values),
-            weights,
-            true,
-            obj.nrows(),
-            obj.ncols(),
-        );
-        if crate::acquisition::monte_carlo::has_nan(&so.obj) || best_f.iter().any(|b| b.is_nan()) {
-            return Ok(crate::acquisition::monte_carlo::nan_evaluation(
-                q,
-                d,
-                weights.map_or(0, <[f64]>::len),
-                with_grad,
-            ));
-        }
-        let r = log_improvement_reduce(
-            &obj,
-            |s| best_f[s],
-            combined.as_ref(),
-            self.fat,
-            self.tau_relu,
-            self.tau_max,
-            with_grad,
-        );
-        if !with_grad {
-            return Ok((r.value, None));
-        }
-        let mut obj_bar = Matrix::zeros(n, obj.ncols());
-        obj_bar
-            .rows_mut(n_bl, n - n_bl)
-            .copy_from(&r.obj_bar.expect("gradient requested"));
-        let (ind_bar, w_bar) = crate::acquisition::monte_carlo::split_indicator_adjoint(
-            ind.as_ref().map(|i| &i.values),
-            weights,
-            true,
-            r.ind_bar,
-        );
-        let samples_bar = match (ind, ind_bar) {
-            (Some(ind), Some(ib)) => {
-                let cand_bar = ind.backward(&ib)?;
-                Some(so.samples.embed_points_adjoint(cand, &cand_bar))
-            }
-            _ => None,
-        };
-        let grad = so.backward(self.model.as_ref(), &obj_bar, samples_bar, n_bl..n_bl + q)?;
-        Ok((r.value, Some((grad, w_bar))))
+        Ok(self.evaluate_captured(x, weights, with_grad)?.0)
     }
 }
 
@@ -872,20 +789,19 @@ impl AcquisitionFunction for QLogNoisyExpectedImprovement {
         }
         let mut state = write_lock(&self.state);
         let new_state = if self.incremental {
-            let base = state.x_baseline.clone();
-            self.init_baseline(&base, x_pending.cloned())?
+            self.init_baseline(&state.x_baseline, x_pending.cloned(), true)?
         } else {
+            // Non-incremental pending points join candidates, so preserve
+            // the baseline's original samples and root after sampler edits.
+            if let Some(backend) = &state.backend {
+                backend.set_x_pending(x_pending)?;
+            }
             NeiState {
                 x_pending: x_pending.cloned(),
                 ..state.clone()
             }
         };
         *state = new_state;
-        self.best_f_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-        *self.lower_bound.lock().unwrap_or_else(|e| e.into_inner()) = None;
         Ok(())
     }
 

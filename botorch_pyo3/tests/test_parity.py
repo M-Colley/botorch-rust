@@ -422,7 +422,7 @@ def test_qlognei_parity(models: tuple, q: int, n_pending: int, incremental: bool
     pending = X[:n_pending] + 0.1 if n_pending else None
     common = dict(X_baseline=X, X_pending=pending, prune_baseline=False, incremental=incremental)
     a_bt = bt_logei.qLogNoisyExpectedImprovement(bt, sampler=s_bt, cache_root=False, **common)
-    a_rs = rs_logei.qLogNoisyExpectedImprovement(rs, sampler=s_rs, **common)
+    a_rs = rs_logei.qLogNoisyExpectedImprovement(rs, cache_root=False, sampler=s_rs, **common)
     Xt = -1.0 + 3.0 * torch.rand(1, q, 3, generator=torch.Generator().manual_seed(9), dtype=DT)
     v_bt, g_bt = values_and_grads(a_bt, Xt)
     assert torch.equal(s_bt.base_samples.view(S, D), Z)

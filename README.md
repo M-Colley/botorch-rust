@@ -1723,11 +1723,12 @@ The model fits alone are 140–550× faster.
 - **Model snapshots.** An acquisition function uses the model as it is when
   the acquisition function is created; after refitting a model, create a new
   acquisition function (the usual BO-loop pattern).
-- **qLogNEI** always uses the plain joint computation (BoTorch's
-  `cache_root=False`); `cache_root` is accepted and ignored. Both agree in
-  distribution; objectives and constraints are evaluated on the joint samples
-  of the baseline and the candidates, as with `cache_root=False` (this only
-  matters for callables that couple the points of a batch). When some sample
+- **qLogNEI and qLogNParEGO** use a cached baseline covariance root and a
+  native low-rank candidate update when `cache_root=True` on a supported GP.
+  With `cache_root=False`, objectives and constraints use full joint samples
+  of the baseline and candidates. `compute_best_f` returns the actual cached
+  incumbents or those captured by the last completed uncached forward,
+  preserving parallel candidate-batch order. When some sample
   has no feasible baseline point, the objective's lower bound is estimated at
   32 points drawn from a generator seeded by the sampler (BoTorch:
   `torch.rand`); pass them explicitly with the keyword-only

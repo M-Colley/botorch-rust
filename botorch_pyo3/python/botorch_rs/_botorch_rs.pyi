@@ -928,6 +928,7 @@ class AcquisitionFunction:
         x_pending: Array | None = None,
         fat: bool = True,
         prune_baseline: bool = True,
+        cache_root: bool = True,
         prune_num_samples: int = 2048,
         prune_max_frac: float = 1.0,
         prune_seed: int | None = None,
@@ -950,6 +951,10 @@ class AcquisitionFunction:
     def is_nonnegative(self) -> bool: ...
     @property
     def is_log(self) -> bool: ...
+    @property
+    def cache_root(self) -> bool: ...
+    def baseline_best_f(self) -> list[float] | None: ...
+    def last_baseline_best_f(self) -> ArrayBuf | None: ...
     def forward(self, x: Array) -> ArrayBuf: ...
     def forward_with_grad(self, x: Array) -> tuple[ArrayBuf, ArrayBuf]: ...
     def x_pending(self) -> ArrayOut | None: ...
@@ -1371,6 +1376,7 @@ def q_log_nparego(
     x_pending: Array | None = None,
     fat: bool = True,
     prune_baseline: bool = False,
+    cache_root: bool = True,
     prune_num_samples: int = 2048,
     prune_seed: int | None = None,
     tau_relu: float = 1e-6,
