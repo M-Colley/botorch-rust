@@ -511,7 +511,7 @@ The main remaining gaps are:
 - **Acquisition and optimization configurations:** remaining posterior
   transforms and learned MC objectives, specialized-model combinations in
   lookahead and entropy search, some ensemble and batched multi-objective
-  configurations, batched box decompositions, `acq_function_sequence`,
+  configurations, batched box decompositions,
   data-loader closures and low-level optimizer interfaces. See
   [acquisition construction](docs/acquisition-construction.md),
   [model limitations](docs/models.md), [transforms](docs/transforms.md)

@@ -20,7 +20,7 @@ from botorch_rs._arrays import (
     kind_of,
     to_flat,
 )
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, check_unsupported
+from botorch_rs.acquisition.acquisition import AcquisitionFunction
 from botorch_rs.exceptions.errors import (
     BotorchTensorDimensionError,
     InputDataError,
@@ -306,7 +306,7 @@ def _custom_generator(
 
 def _wrap_ic_generator(
     ic_generator: Any,
-    acq_function: AcquisitionFunction,
+    acq_function: Any,
     bounds: Any,
     fixed_features: dict[int, float] | None,
     options: dict[str, Any] | None,
@@ -476,7 +476,7 @@ def _optimize_kwargs(
 
 
 def optimize_acqf(
-    acq_function: AcquisitionFunction,
+    acq_function: Any,
     bounds: Any,
     q: int,
     num_restarts: int,
@@ -491,7 +491,7 @@ def optimize_acqf(
     return_best_only: bool = True,
     gen_candidates: Any = None,
     sequential: bool = False,
-    acq_function_sequence: Any = None,
+    acq_function_sequence: list[Any] | None = None,
     *,
     ic_generator: Any = None,
     timeout_sec: float | None = None,
@@ -562,13 +562,48 @@ def optimize_acqf(
     ``gen_one_shot_hvkg_initial_conditions``; the candidates are extracted
     (``extract_candidates``) unless ``return_full_tree=True``.
 
+    ``acq_function_sequence`` selects a separate acquisition for each of the
+    ``q`` sequential steps (requires ``sequential=True`` and ``q > 1``).
+    Each retains its own base pending points, adds earlier candidates during
+    its step, and has its original pending state restored, including errors.
+    Supply per-step initial conditions with ``ic_generator``; a single
+    ``batch_initial_conditions`` array is unsupported in sequential mode.
+
     Returns:
         ``(candidates, acq_value)``: a ``q x d`` candidate set (``num_restarts x
         q x d`` with ``return_best_only=False``) and its acquisition value (a
         scalar; ``q`` values for ``sequential=True``; one per restart with
         ``return_best_only=False``), of the array type of ``bounds``.
     """
-    check_unsupported(acq_function_sequence=acq_function_sequence)
+    if acq_function_sequence is not None:
+        return _optimize_acqf_sequence(
+            OptimizeAcqfInputs(
+                acq_function=acq_function,
+                bounds=bounds,
+                q=q,
+                num_restarts=num_restarts,
+                raw_samples=raw_samples,
+                options=options,
+                inequality_constraints=inequality_constraints,
+                equality_constraints=equality_constraints,
+                nonlinear_inequality_constraints=nonlinear_inequality_constraints,
+                fixed_features=fixed_features,
+                post_processing_func=post_processing_func,
+                batch_initial_conditions=batch_initial_conditions,
+                return_best_only=return_best_only,
+                gen_candidates=gen_candidates,
+                sequential=sequential,
+                acq_function_sequence=acq_function_sequence,
+                ic_generator=ic_generator,
+                timeout_sec=timeout_sec,
+                return_acq_values=return_acq_values,
+                return_full_tree=return_full_tree,
+                retry_on_optimization_warning=retry_on_optimization_warning,
+                ic_gen_kwargs=ic_gen_kwargs,
+            )
+        )
+    if acq_function is None:
+        raise ValueError("Either `acq_function` or `acq_function_sequence` must be specified.")
     if sequential and not return_best_only:
         raise UnsupportedError("`return_best_only=False` only supported for joint optimization.")
     kind = first_kind(bounds, batch_initial_conditions)
@@ -671,6 +706,90 @@ def optimize_acqf(
                 X = native_acqf.extract_candidates(X)  # type: ignore[attr-defined]
             values = from_flat(restart_values, (len(restart_values),), kind)
     return X, (values if return_acq_values else None)
+
+
+def _optimize_acqf_sequence(inputs: OptimizeAcqfInputs) -> tuple[Any, Any]:
+    """Optimize one real acquisition per step with independent pending state."""
+    from botorch_rs.acquisition.acquisition import OneShotAcquisitionFunction
+
+    for name, constraints in (
+        ("linear inequality", inputs.inequality_constraints),
+        ("linear equality", inputs.equality_constraints),
+    ):
+        for i, (indices, _, _) in enumerate(constraints or []):
+            if len(to_flat(indices)[1]) > 1:
+                raise UnsupportedError(
+                    f"Inter-point constraints are not supported for sequential optimization. But the {i}th {name} constraint is defined as inter-point."
+                )
+    for i, (_, intra_point) in enumerate(inputs.nonlinear_inequality_constraints or []):
+        if not intra_point:
+            raise UnsupportedError(
+                f"Inter-point constraints are not supported for sequential optimization. But the {i}th non-linear inequality constraint is defined as inter-point."
+            )
+    if inputs.batch_initial_conditions is not None:
+        raise UnsupportedError(
+            "`batch_initial_conditions` is not supported for sequential optimization. Use `ic_generator` to supply initial conditions for each q=1 step."
+        )
+    if not inputs.return_best_only:
+        raise NotImplementedError("`return_best_only=False` only supported for joint optimization.")
+    assert inputs.acq_function_sequence is not None
+    sequence = inputs.acq_function_sequence
+    if any(isinstance(acq, OneShotAcquisitionFunction) for acq in sequence):
+        raise NotImplementedError(
+            "sequential optimization currently not supported for one-shot acquisition functions. Must have `sequential=False`."
+        )
+    if any(not callable(getattr(acq, "set_X_pending", None)) for acq in sequence):
+        raise UnsupportedError(
+            "Every acquisition in acq_function_sequence must support set_X_pending."
+        )
+    pending = [getattr(acq, "X_pending", None) for acq in sequence]
+    kind = first_kind(inputs.bounds)
+    d = _check_bounds(inputs.bounds)[1][1]
+    pending_kinds = [
+        kind if isinstance(acq, AcquisitionFunction) else _as_native(acq, d)._pending_kind
+        for acq in sequence
+    ]
+    candidates: list[Any] = []
+    values: list[float] = []
+    step_kwargs = {field.name: getattr(inputs, field.name) for field in dataclasses.fields(inputs)}
+    step_kwargs.update(step_kwargs.pop("ic_gen_kwargs"))
+    step_kwargs.update(
+        q=1,
+        sequential=False,
+        acq_function_sequence=None,
+        batch_initial_conditions=None,
+        return_best_only=True,
+        timeout_sec=None if inputs.timeout_sec is None else inputs.timeout_sec / inputs.q,
+    )
+    failed = False
+    try:
+        for i, acq in enumerate(sequence):
+            if candidates:
+                parts = ([pending[i]] if pending[i] is not None else []) + candidates
+                acq.set_X_pending(_concat_rows(parts, pending_kinds[i]))
+            step_kwargs["acq_function"] = acq
+            candidate, value = optimize_acqf(**step_kwargs)
+            candidates.append(candidate)
+            if inputs.return_acq_values:
+                values.append(float(to_flat(value)[0][0]))
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        # Official currently only restores after successful completion. Always
+        # restore here, including exceptions in initialization or evaluation.
+        restore_error = None
+        for acq, original in zip(sequence, pending, strict=True):
+            try:
+                acq.set_X_pending(original)
+            except Exception as error:
+                if restore_error is None:
+                    restore_error = error
+        if restore_error is not None and not failed:
+            raise restore_error
+    return _concat_rows(candidates, kind), (
+        from_flat(values, (len(values),), kind) if inputs.return_acq_values else None
+    )
 
 
 def _best_full_tree(
@@ -1273,6 +1392,13 @@ class OptimizeAcqfInputs:
     def __post_init__(self) -> None:
         if self.acq_function is None and self.acq_function_sequence is None:
             raise ValueError("Either `acq_function` or `acq_function_sequence` must be specified.")
+        if self.acq_function_sequence is not None:
+            if not self.sequential:
+                raise ValueError("acq_function_sequence requires sequential optimization.")
+            if len(self.acq_function_sequence) != self.q:
+                raise ValueError("acq_function_sequence must have length q.")
+            if self.q < 2:
+                raise ValueError("acq_function_sequence requires q > 1.")
         shape = to_flat(self.bounds, "bounds")[1]
         if self.inequality_constraints is None and not (len(shape) == 2 and shape[0] == 2):
             raise ValueError(f"bounds should be a `2 x d` tensor, current shape: {list(shape)}.")
