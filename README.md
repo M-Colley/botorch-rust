@@ -502,8 +502,8 @@ The main remaining gaps are:
   custom torch modules throughout models remain unsupported. Ordinary CPU
   Torch `SingleTaskGP` models have persistent parameters and first-order
   parameter gradients through posterior moments, samples and exact MLLs
-  ([scope](docs/posterior-parameter-gradients.md)). Other native Gaussian
-  posteriors retain first-order Torch query autograd
+  ([scope](docs/posterior-parameter-gradients.md)). Supported native Gaussian
+  posterior families also expose first-order Torch query autograd
   ([scope](docs/posterior-query-autograd.md)); native structured Matheron
   posteriors also expose query adjoints, with documented fantasy-batch limits.
   Joint Gaussian model lists also carry child parameter graphs
@@ -538,9 +538,9 @@ Existing release benchmark results above apply to the measured exact-GP
 and acquisition workflows. They do not establish a speedup for every newly
 integrated model, sampler or configuration.
 The [latest release qLogNEI measurement](docs/correctness-findings.md#measured-release-performance)
-compares identical draws with one worker: cached evaluation is 7.02x faster
-for 180 baseline points, while full joint evaluation is slightly slower
-(0.97x). Raw timings, value checks and extension hashes are retained.
+compares identical draws with one worker: cached evaluation is 5.97x faster
+for 180 baseline points, while full joint evaluation is roughly equal
+(0.995x). Raw timings, value checks and extension hashes are retained.
 [Correctness findings and proposed upstream solutions](docs/correctness-findings.md)
 record the reference bugs, deliberate corrections and a fresh release LOO benchmark.
 The coverage inventory describes this source checkout; these additions have not

@@ -42,6 +42,13 @@ or automatic parameter derivatives of the variational posterior distribution.
 Non-Torch arrays retain the native explicit-gradient API. Native numerical
 calculation remains CPU float64, with results converted to the caller's dtype.
 
+Acquisition values and query derivatives remain available with persistent
+variational leaves, including via `torch.autograd.grad(value, X)`. Acquisition
+parameter backward is explicitly unsupported for these models; persistent
+ELBO leaves do not imply posterior or acquisition parameter pullbacks.
+Analytic acquisitions use the model's marginal variance, preserving the
+BNN kernel's [lazy diagonal convention](infinite-width-bnn-diagonals.md).
+
 ```python
 optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
 mll = VariationalELBO(model.likelihood, model.model, num_data=len(train_X))

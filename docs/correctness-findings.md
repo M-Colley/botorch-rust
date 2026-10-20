@@ -78,11 +78,11 @@ three warmups and 21 measured rounds produced:
 
 | qLogNEI evaluation | BoTorch pinned reference (ms) | Rust release (ms) | BoTorch/Rust |
 |---|---:|---:|---:|
-| Full joint sampling | 21.7072 | 22.3657 | 0.97x |
-| Cached sampling | 11.7693 | 1.6768 | 7.02x |
+| Full joint sampling | 15.7400 | 15.8125 | 0.995x |
+| Cached sampling | 8.3588 | 1.3996 | 5.97x |
 
-The cached native block computation improves this workload; uncached
-evaluation is slightly slower in this run. Maximum value differences are
+The cached native block computation improves this workload; full joint
+evaluation is roughly equal in this run. Maximum value differences are
 `8.55e-7` and `1.54e-7`, respectively, within the configured absolute and
 relative tolerances of `1e-6`. The test includes ill-conditioned latent
 baseline covariances. Timing excludes fitting, construction and imports;
@@ -90,7 +90,7 @@ it evaluates forward values with Torch gradients disabled. Heavy builds and
 test runs were stopped for this measurement. Timings varied across rounds;
 all raw measurements are retained.
 
-[Raw timings and artifact provenance](benchmarks/noisy-cache-final-release-2026-10-20.json)
+[Raw timings and artifact provenance](benchmarks/noisy-cache-complete-release-2026-10-20.json)
 record the source checkouts, settings and exact loaded extension path and
 SHA256. The native build checkpoint was `4a8b8bd`; its extension hash is
 `543749d9f2df2aa1b89faa2985b9f706edd2e7eca5014d7bf49235e074f6def9`.
@@ -98,5 +98,7 @@ The report's checkout revision includes subsequent Python-only changes.
 
 An [earlier release measurement](benchmarks/noisy-cache-release-2026-10-20.json)
 with other work active measured 5.80x for cached sampling and 0.96x for full
-joint sampling. These local results support a cache-specific improvement,
-not a general speedup across BoTorch workloads.
+joint sampling. A [measurement before the final Python dispatch correction](benchmarks/noisy-cache-final-release-2026-10-20.json)
+using the same native binary measured 7.02x and 0.97x. These local results
+support an improvement for cached sampling; they do not establish a general
+speedup across BoTorch workloads.
