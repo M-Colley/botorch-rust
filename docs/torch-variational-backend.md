@@ -22,13 +22,25 @@ diagonal-only covariance update when N exceeds the number of inducing points;
 evaluation and independent multitask prediction use the full update.
 
 `VariationalELBO(model.likelihood, model.model, num_data=...)` dispatches to a
-Torch module with ordinary `.parameters()`, `.backward()`, `.zero_grad()` and
+Torch module that is also an instance of the public `VariationalELBO`, with
+ordinary `.parameters()`, `.backward()`, `.zero_grad()` and
 Torch optimizer behavior. It computes the analytic Gaussian expected log
 likelihood, whitened Gaussian KL and registered hyperparameter priors. Explicit
 minibatch inputs and targets are supported. `combine_terms=False` returns the
 same likelihood, scaled KL and prior terms as the reference. A saved q(f) output
 retains its noise, KL, prior terms and lazy kernel parameter snapshot; passing a
 prior output to this ELBO raises an explicit error.
+
+Both `fit_gpytorch_mll` and the low-level SciPy/Torch fitters optimize the
+actual Parameters. The default SciPy path filters frozen leaves and uses the
+Tensor ELBO graph rather than the CPU native variational fitter. External
+`DataLoader` closures evaluate each supplied minibatch and restart their
+iterator at the end of an epoch; an empty loader raises `ValueError`. The
+gradient closure works with both optimizer adapters, including actual Adam
+updates from full or smaller minibatches on CPU and CUDA. As with the reference,
+external inputs and targets should already be in the inner model's transformed
+space. `combine_terms=False` is evaluated directly, rather than by the fitting
+closure.
 
 Single and independent multiple outputs are supported, including batched
 training with explicit inducing points. Default multioutput observations use
@@ -44,12 +56,20 @@ Reinitialization preserves the inducing leaf's identity and resets lazy
 variational initialization. Cloning the model rewires strategy ownership to
 the clone. A prior-only call does not initialize q(v) or consume random draws.
 
-The focused suite currently passes 35 CPU/CUDA cases. It compares q(f), full
+The model suite passes 35 CPU/CUDA cases. It compares q(f), full
 covariance and all ELBO terms against the pinned official reference, compares
 all first data/parameter derivatives, checks every data/parameter Hessian-vector
 product against finite differences of independent reference gradients, exercises
 float32/float64 batched graphs, and trains real minibatch Adam optimizers with
 learned and fixed inducing locations.
+
+An additional 31 fitting integration cases check public ELBO identity, parameter
+freezing and clearing, default SciPy fitting, DataLoader validation and cycling,
+and full/minibatch Adam values, gradients and actual parameter updates against
+the independent pinned reference. The optional detached `value_and_grad()`
+extension evaluates current Parameters and returns a flat gradient in their
+registered order; explicit alternate raw vectors are unsupported on this
+backend, so assign the Parameters before calling it.
 
 This checkpoint does not implement other variational distributions or
 strategies, non-Gaussian observations, rank-positive multitask noise, or custom

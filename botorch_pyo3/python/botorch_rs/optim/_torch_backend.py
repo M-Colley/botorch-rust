@@ -67,8 +67,17 @@ def fit_torch(
                 parameter.grad = torch.zeros_like(parameter) if gradient is None else gradient
             return loss, grads
 
-    elif closure_kwargs:
-        closure = functools.partial(closure, **closure_kwargs)
+    else:
+        supplied_closure = (
+            functools.partial(closure, **closure_kwargs) if closure_kwargs else closure
+        )
+
+        def closure() -> Any:
+            loss, gradients = supplied_closure()
+            for parameter, gradient in zip(parameters.values(), gradients, strict=True):
+                parameter.grad = gradient
+            return loss, gradients
+
     limits = parameter_bounds(mll)
     if bounds is not None:
         limits.update(bounds)

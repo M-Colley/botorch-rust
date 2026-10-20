@@ -208,6 +208,10 @@ def fit_gpytorch_mll_scipy(
     Returns:
         The final OptimizationResult.
     """
+    if getattr(getattr(mll, "model", None), "_tensor_backend", None) == "torch":
+        return _fit_generic_scipy(
+            mll, parameters, bounds, closure, closure_kwargs, method, options, callback, timeout_sec
+        )
     if _is_approximate(mll):
         return _fit_scipy_approximate(
             mll, parameters, bounds, closure, closure_kwargs, method, options, callback, timeout_sec
@@ -365,7 +369,7 @@ def _fit_generic_scipy(
     from botorch_rs.optim.closures import get_loss_closure_with_grads
     from botorch_rs.optim.utils.model_utils import get_parameters_and_bounds
 
-    _parameters, _bounds = get_parameters_and_bounds(mll)
+    _parameters, _bounds = get_parameters_and_bounds(mll, requires_grad=True)
     bounds = _bounds if bounds is None else {**_bounds, **bounds}
     if parameters is None:
         parameters = dict(_parameters)

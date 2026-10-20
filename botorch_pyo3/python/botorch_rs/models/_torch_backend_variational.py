@@ -12,6 +12,7 @@ from torch import Tensor, nn
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs.exceptions.errors import UnsupportedError
+from botorch_rs.mlls import VariationalELBO
 from botorch_rs.models._torch_backend_modules import (
     TorchConstraint,
     _TorchModule,
@@ -686,7 +687,7 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         return posterior if posterior_transform is None else posterior_transform(posterior, X=X)
 
 
-class TorchVariationalELBO(nn.Module):
+class TorchVariationalELBO(nn.Module, VariationalELBO):
     _tensor_backend = "torch"
 
     def __init__(
@@ -751,3 +752,35 @@ class TorchVariationalELBO(nn.Module):
         kl = output._kl * (self.beta / self.num_data)
         prior = torch.zeros_like(log_likelihood) + output._log_prior / self.num_data
         return log_likelihood - kl + prior if self.combine_terms else (log_likelihood, kl, prior)
+
+    def value_and_grad(self, raw_parameters: Any = None) -> tuple[float, list[float]]:
+        """Summed ELBO and current trainable parameter derivatives.
+
+        The returned flat gradient follows ``named_parameters()``; frozen
+        parameters contribute zeros. Optimizers should use actual Parameters
+        rather than this detached diagnostic extension.
+        """
+        if raw_parameters is not None:
+            raise UnsupportedError(
+                "The Torch ELBO value_and_grad evaluates current Parameters; "
+                "assign parameter values explicitly before evaluating."
+            )
+        if not self.combine_terms:
+            raise UnsupportedError("value_and_grad requires combine_terms=True.")
+        parameters = tuple(self.parameters())
+        trainable = tuple(parameter for parameter in parameters if parameter.requires_grad)
+        value = self().sum()
+        gradients = (
+            torch.autograd.grad(value, trainable, allow_unused=True)
+            if trainable and value.requires_grad
+            else (None,) * len(trainable)
+        )
+        by_identity = dict(zip(map(id, trainable), gradients, strict=True))
+        parts = []
+        for parameter in parameters:
+            gradient = by_identity.get(id(parameter))
+            parts.append(
+                (torch.zeros_like(parameter) if gradient is None else gradient).reshape(-1)
+            )
+        flat = torch.cat(parts).detach().cpu().tolist() if parts else []
+        return float(value.detach()), flat

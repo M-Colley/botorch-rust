@@ -1,8 +1,8 @@
 """Model-based closures (``botorch.optim.closures.model_closures``).
 
-The loss closure of a botorch_rs marginal log likelihood evaluates the
-negative MLL (and its gradient) in Rust; the closures with gradients return
-the gradients of the selected parameters, computed analytically.
+Native model closures evaluate the negative MLL and its analytical gradients
+in Rust. Tensor-backend closures retain the device-resident Torch loss graph;
+closures with gradients return derivatives of the selected Parameters.
 """
 
 from __future__ import annotations
@@ -69,15 +69,15 @@ class MllLossClosure:
         return total, grads
 
 
-class _ExternalVariationalLossClosure(MllLossClosure):
-    """Cycle actual minibatches and evaluate their ELBO/gradient in Rust."""
+class _ExternalVariationalData:
+    """A checked minibatch iterator that restarts after each epoch."""
 
     def __init__(self, mll: Any, data_loader: Any) -> None:
-        super().__init__(mll)
+        self.mll = mll
         self.data_loader = data_loader
         self._batches = iter(data_loader)
 
-    def _data(self) -> tuple[Any, Any]:
+    def _batch(self) -> Sequence[Any]:
         try:
             batch = next(self._batches)
         except StopIteration:
@@ -93,6 +93,18 @@ class _ExternalVariationalLossClosure(MllLossClosure):
         num_inputs = len(self.mll.model.train_inputs)
         if len(batch) != num_inputs + 1:
             raise ValueError("Each variational minibatch must contain the inputs and targets.")
+        return batch
+
+
+class _ExternalVariationalLossClosure(MllLossClosure, _ExternalVariationalData):
+    """Cycle actual minibatches and evaluate their ELBO/gradient in Rust."""
+
+    def __init__(self, mll: Any, data_loader: Any) -> None:
+        _ExternalVariationalData.__init__(self, mll, data_loader)
+
+    def _data(self) -> tuple[Any, Any]:
+        batch = self._batch()
+        num_inputs = len(self.mll.model.train_inputs)
         output = self.mll.model(*batch[:num_inputs])
         return self.mll._elbo_data(output, batch[-1])
 
@@ -122,6 +134,16 @@ class _ExternalVariationalLossClosure(MllLossClosure):
         return -float(value), grads
 
 
+class _ExternalTorchVariationalLossClosure(_ExternalVariationalData):
+    """Return the actual differentiable loss of each Tensor minibatch."""
+
+    def __call__(self, **kwargs: Any) -> Any:
+        if kwargs:
+            raise UnsupportedError(f"Unsupported closure keyword arguments: {sorted(kwargs)}.")
+        batch = self._batch()
+        return -self.mll(self.mll.model(*batch[:-1]), batch[-1])
+
+
 def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
     r"""Factory function for creating loss closures from marginal log
     likelihoods (BoTorch's ``get_loss_closure``).
@@ -129,7 +151,7 @@ def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
     Args:
         mll: A botorch_rs ``MarginalLogLikelihood`` whose negative defines
             the loss (an MLL or model with ``compute_custom_loss`` uses that).
-        data_loader: Optional iterable of minibatches for a native variational
+        data_loader: Optional iterable of minibatches for a variational
             ELBO. Batches contain the model inputs followed by targets; the
             iterator restarts after each epoch. Exact MLLs use stored data.
 
@@ -153,11 +175,13 @@ def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
 
         if not isinstance(mll, _ApproximateMarginalLogLikelihood):
             raise UnsupportedError(
-                "External-data loss closures currently require a native variational ELBO; "
+                "External-data loss closures currently require a variational ELBO; "
                 "exact GP MLLs evaluate their stored training data."
             )
         if not mll.combine_terms:
             raise UnsupportedError("External-data ELBO closures require combine_terms=True.")
+        if getattr(model, "_tensor_backend", None) == "torch":
+            return _ExternalTorchVariationalLossClosure(mll, data_loader)
         return _ExternalVariationalLossClosure(mll, data_loader)
     return MllLossClosure(mll)
 

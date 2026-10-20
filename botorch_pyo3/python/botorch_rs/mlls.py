@@ -533,7 +533,7 @@ class VariationalELBO(_ApproximateMarginalLogLikelihood):
         if cls is VariationalELBO and getattr(model, "_tensor_backend", None) == "torch":
             from botorch_rs.models._torch_backend_variational import TorchVariationalELBO
 
-            return TorchVariationalELBO(likelihood, model, num_data, beta, combine_terms)
+            return object.__new__(TorchVariationalELBO)
         return object.__new__(cls)
 
 
