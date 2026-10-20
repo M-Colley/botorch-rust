@@ -136,7 +136,27 @@ the input dtype's storage precision using native projection; it continues to
 reject materially indefinite covariances. Regression tests exercise the
 rank-deficient Float32 case and rejection of a negative identity matrix.
 
-## Upstream EM subsampling index mismatch
+## Verified upstream EM issues
+
+### Freezing computed EM state
+
+Official revision `b0dd01be6` also raises a leaf-variable `RuntimeError` when
+`freeze_pretrained_parameters()` follows an observed-data MLL evaluation with
+trainable mean, kernel or inducing locations. The MLL refresh creates computed
+mean/covariance and interpolation-cache tensors. Calling
+`requires_grad_(False)` on those non-leaf tensors fails. The regression
+`test_freezing_after_mll_evaluation_handles_computed_em_caches` reproduces this
+with a learned inducing set; the native model freezes its parametric modules
+successfully and keeps inducing coordinates available for fitting.
+
+An upstream fix should freeze the actual module parameters, replace learned
+moment tensors with their detached values, and rebuild the interpolation cache
+from the current frozen modules. Rebuilding retains the correct coordinate
+derivatives when `_X_inducing` is still learnable. Cached factors are computed
+values rather than optimizer parameters and should not have their gradient
+flags mutated in place. No reference source was modified.
+
+### Historical dataset subsampling
 
 In official revision `b0dd01be6`, `coordinate_ascent_em` replaces
 `model.datasets` with a random subset but leaves

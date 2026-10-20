@@ -887,3 +887,23 @@ def test_inducing_locations_are_real_native_optimizer_parameters(kind: str, adam
     assert model._rs.raw_parameters()[-3:] != before
     assert_close(model._X_inducing, [[x] for x in model._rs.raw_parameters()[-3:]])
     check_kind(model.posterior(as_kind([[0.2], [0.7]], kind)).mean, kind)
+
+
+def test_freezing_after_mll_evaluation_handles_computed_em_caches(official: Any) -> None:
+    actual, expected = model_pair(official, True, False, learnable=True)
+    ref_mll = official.em_empirical_gp.EMEmpiricalMarginalLogLikelihood(expected.likelihood, expected)
+    ref_mll(None, None)
+    assert not expected._cached_L_kernel_inducing.is_leaf
+    with pytest.raises(RuntimeError, match="leaf"):
+        expected.freeze_pretrained_parameters()
+    mll = EMEmpiricalMarginalLogLikelihood(actual.likelihood, actual)
+    mll.value_and_grad()
+    actual.freeze_pretrained_parameters()
+    _, gradient = mll.value_and_grad()
+    raw, bounds = actual._rs.raw_parameters(), actual._rs.raw_parameter_bounds()
+    for name, (offset, count) in actual._offsets().items():
+        if name.startswith("initial_"):
+            assert bounds[offset:offset+count] == [(v, v) for v in raw[offset:offset+count]]
+        if name == "_X_inducing":
+            assert all(math.isinf(lo) and lo < 0 and math.isinf(hi) and hi > 0 for lo, hi in bounds[offset:offset+count])
+            assert any(abs(v) > 1e-5 for v in gradient[offset:offset+count])
