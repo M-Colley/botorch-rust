@@ -42,6 +42,9 @@ The audited reference is official BoTorch **b0dd01be6**.
   actual decomposition. An upstream fix is to use the flattened listed
   indices as the permutation and skip permutation only when that exact
   sequence equals the original column order.
+  With spatial lengthscales `[0.3, 0.7]`, fixed embeddings `[0.25, 0.75]`
+  and three deterministic four-dimensional points, the official covariance
+  differed from the declared ordering by `0.028071335697010924` at worst.
 * Official categorical tables are sized by the number of unique values but
   indexed by the original values. Labels such as 10 and 20 then index outside
   a two-row table. This implementation maps each feature's unique labels to
@@ -56,3 +59,16 @@ The audited reference is official BoTorch **b0dd01be6**.
 The public diagonal kernel call is correct in the reference: GPyTorch
 extracts the vector from LCEA's diagonal operator. Native diagonal values
 are the diagonal of the full native covariance.
+
+## Validation
+
+Native finite differences cover every amplitude, learned table entry,
+embedding/spatial lengthscale and input coordinate, including known context
+weights. Python parity tests compare full/cross/diagonal kernel matrices,
+context covariance, base covariance context axes, MLL and hyperparameter
+gradients, posterior means/full covariance, and analytic acquisition input
+gradients against official b0dd01be6. Learned and fixed embeddings, multiple
+categorical tables, known context weights, and inferred/fixed observation
+noise are covered. Lifecycle tests exercise list/NumPy/torch fitting,
+cloning, max-norm state updates, dataset construction, and fixed-feature
+kernel batches. A fixed-feature list model runs without importing torch.
