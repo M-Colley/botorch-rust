@@ -101,6 +101,10 @@ def draw_kernel_feature_paths(
             f"Unsupported arguments of draw_kernel_feature_paths: {sorted(kwargs)}."
         )
     shape = sample_shape_arg(sample_shape)
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.sampling.pathwise._torch_backend import tensor_prior_paths
+
+        return tensor_prior_paths(model, shape, int(num_features), seed, draws)
     rs_model, sizes = model_outputs(model)
     handle = _rs.draw_kernel_feature_paths(
         rs_model,

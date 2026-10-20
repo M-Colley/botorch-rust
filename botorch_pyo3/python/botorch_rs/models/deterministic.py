@@ -479,6 +479,13 @@ class MatheronPathModel(DeterministicModel):
     ``draw_matheron_paths``).
     """
 
+    def __new__(cls, model: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if cls is MatheronPathModel and getattr(model, "_tensor_backend", None) == "torch":
+            from botorch_rs.sampling.pathwise._torch_backend import TorchMatheronPathModel
+
+            return object.__new__(TorchMatheronPathModel)
+        return object.__new__(cls)
+
     def __init__(
         self,
         model: Any,

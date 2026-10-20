@@ -27,6 +27,10 @@ def gen_kernel_features(
     kernel: Any, num_inputs: int, num_outputs: int, **kwargs: Any
 ) -> KernelFeatureMap:
     """Generate RBF or Matérn sine/cosine features (optional native ``seed``)."""
+    if type(kernel).__module__ == "botorch_rs.models._torch_backend_modules":
+        from botorch_rs.sampling.pathwise._torch_backend import tensor_kernel_features
+
+        return tensor_kernel_features(kernel, num_inputs, num_outputs, **kwargs)
     return GenKernelFeatures(kernel, num_inputs=num_inputs, num_outputs=num_outputs, **kwargs)
 
 

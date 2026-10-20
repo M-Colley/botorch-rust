@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import ArrayKind, from_flat
+from botorch_rs._arrays import ArrayKind, from_flat, is_torch_tensor
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.sampling.pathwise.paths import GeneralizedLinearPath, PathDict, PathList, _RsPaths
 from botorch_rs.sampling.pathwise.prior_samplers import (
@@ -143,7 +143,7 @@ def _sum_paths(paths: Any) -> Any:
         return 0
     total = paths[0]
     for path in paths[1:]:
-        total = apply("add_raw", total, path)
+        total = total + path if is_torch_tensor(total) else apply("add_raw", total, path)
     return total
 
 
@@ -198,6 +198,10 @@ def draw_matheron_paths(
     if getattr(update_strategy, "__name__", None) != "gaussian_update":
         raise UnsupportedError("botorch_rs only supports gaussian_update as update_strategy.")
     shape = sample_shape_arg(sample_shape)
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.sampling.pathwise._torch_backend import tensor_matheron_paths
+
+        return tensor_matheron_paths(model, shape, num_features, seed, draws)
     rs_model, sizes = model_outputs(model)
     handle = _rs.draw_matheron_paths(
         rs_model,

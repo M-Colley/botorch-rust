@@ -303,3 +303,55 @@ axis instead. A regression checks the independent scalar streams' complete
 shape. This is a deliberate correction, not a claim of identical draws for
 that noncollapsed reference configuration. Tree partitioning also preserves
 the existing native port's per-query fantasy grouping for `q_i>1`.
+
+Both independence fixes are also already proposed in
+[PR 3452](https://github.com/meta-pytorch/botorch/pull/3452). A minimal scalar
+base-layout reproduction uses `batch_sizes=[2,1]`, fantasy counts `[2,3]`,
+`collapse_fantasy_base_samples=False` and a `2 x 11 x d` tree. The pinned
+source produces second-stage normals of shape `3 x 1 x 2 x 2`, sharing the
+earlier fantasy axis and retaining the query axis. The correct shape is
+`3 x 2 x 1 x 2`: each earlier fantasy has its own stream and every query
+batch shares the stream. The PR independently verifies that adding other
+query batches does not change an existing query's value. The upstream
+multioutput fantasy reshape failure is already tracked as
+[GPyTorch issue 2804](https://github.com/cornellius-gp/gpytorch/issues/2804).
+
+## Device pathwise sampling
+
+`draw_kernel_feature_paths`, `draw_matheron_paths`, `gaussian_update` and
+`gen_kernel_features` now support device exact SingleTaskGP models with
+RBF/Matérn kernels, optional ScaleKernel/active dimensions, model/output
+batches and ModelLists. Fourier frequencies, Gaussian weights and update
+noise can be supplied explicitly, preserving their gradients. The exact
+Gaussian update uses the port's native Tensor covariance and PSD factor
+bindings; feature algebra, linear solves and outcome transformations retain
+the full Torch graph. Scalar/multioutput path layouts match the reference's
+sample/model batch broadcasting. Explicit Tensor feature maps, generalized
+linear paths and Matheron compositions also preserve higher derivatives.
+
+`get_matheron_path_model` and the public `MatheronPathModel` factory expose
+the device paths as deterministic models with exact point-mass posteriors.
+They can be used directly by device MC acquisitions. Explicit device/dtype
+conversion rebuilds the exact Gaussian correction for the same stored
+random draw. A path remains a draw with its construction-time update;
+redraw it after fitting/changing the source model, as with the reference.
+
+The 48-case CPU/CUDA suite checks synchronized pinned-reference path values,
+query derivatives and update weights for one/two outputs, RBF/Matérn/scaled
+kernels and Normalize/Standardize. It verifies fixed noise, model/list
+batches, multidimensional or empty sample shapes, reproducible/explicit
+draws, active dimensions, float32/float64, all train/query/parameter/draw
+Hessian products, complete data/query/frequency/weight/noise `gradcheck`
+and `gradgradcheck`, public model conversion and an end-to-end scalar MC
+acquisition. No inference data is converted to host arrays. Together with
+the existing feature, path-constructor and utility regressions, 142 cases
+pass; the no-Torch/no-NumPy subprocess import check also passes.
+
+Device updates currently require exact SingleTaskGP models or ModelLists
+thereof. Structured/variational/fully Bayesian device path updates and
+arbitrary custom prior/update strategies remain explicit unsupported
+configurations. As with the existing native path model and reference,
+MatheronPathModel requires single-output components in a ModelList.
+Random Sobol uniforms originate from Torch's CPU Sobol generator; only new
+random numbers are transferred, and all normal transforms/inference run
+on the model device. This checkpoint does not claim a pathwise speedup.

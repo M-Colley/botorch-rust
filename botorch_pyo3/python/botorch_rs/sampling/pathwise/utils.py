@@ -95,6 +95,15 @@ class SineCosineTransform(TensorTransform):
         self.scale = scale
 
     def forward(self, values: Any, **kwargs: Any) -> Any:
+        if is_torch_tensor(values):
+            import torch
+
+            sincos = torch.cat((values.sin(), values.cos()), dim=-1)
+            return (
+                sincos
+                if self.scale is None
+                else sincos * torch.as_tensor(self.scale, dtype=values.dtype, device=values.device)
+            )
         sincos = concat([apply("sin", values), apply("cos", values)], dim=-1)
         return sincos if self.scale is None else apply("mul_raw", sincos, self.scale)
 
@@ -103,11 +112,17 @@ class InverseLengthscaleTransform(TensorTransform):
     """Divide features by a kernel's current lengthscales."""
 
     def __init__(self, kernel: Any) -> None:
-        if not kernel.has_lengthscale:
+        if not getattr(kernel, "has_lengthscale", hasattr(kernel, "lengthscale")):
             raise RuntimeError(f"{type(kernel)} does not implement `lengthscale`.")
         self.kernel = kernel
 
     def forward(self, values: Any, **kwargs: Any) -> Any:
+        if is_torch_tensor(values):
+            import torch
+
+            return values / torch.as_tensor(
+                self.kernel.lengthscale, dtype=values.dtype, device=values.device
+            )
         return apply("div_raw", values, self.kernel.lengthscale)
 
 
@@ -121,6 +136,12 @@ class OutputscaleTransform(TensorTransform):
         outputscale = self.kernel.outputscale
         if self.kernel.batch_shape:
             outputscale = getitem(outputscale, (..., None, None))
+        if is_torch_tensor(values):
+            if not is_torch_tensor(outputscale):
+                import torch
+
+                outputscale = torch.as_tensor(outputscale, dtype=values.dtype, device=values.device)
+            return values * outputscale.sqrt()
         return apply("mul_raw", values, apply("sqrt", outputscale))
 
 

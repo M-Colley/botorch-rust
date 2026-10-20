@@ -71,6 +71,10 @@ def gaussian_update(
     """
     from botorch_rs.models.gp_regression import SingleTaskGP
 
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.sampling.pathwise._torch_backend import tensor_gaussian_update
+
+        return tensor_gaussian_update(model, sample_values, likelihood, target_values, noise, seed)
     if not isinstance(model, SingleTaskGP):
         raise UnsupportedError("botorch_rs gaussian_update requires a botorch_rs SingleTaskGP.")
     if likelihood not in (DEFAULT, None) and likelihood is not getattr(model, "likelihood", None):

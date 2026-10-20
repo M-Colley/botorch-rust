@@ -1,17 +1,23 @@
-"""Callable feature maps with native matrix products and first derivatives."""
+"""Callable feature maps with native arrays and graph-preserving Tensor algebra."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import broadcast_shapes, first_kind, from_flat, kind_of, to_flat
+from botorch_rs._arrays import (
+    broadcast_shapes,
+    first_kind,
+    from_flat,
+    is_torch_tensor,
+    kind_of,
+    to_flat,
+)
 from botorch_rs._ops import _as_array, _requires_grad, apply, expand, full, shape_of, transpose
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.kernels import _batch_matrix, _flat_index, _indices
 from botorch_rs.sampling.pathwise.utils import TensorTransform, TransformedModuleMixin
 
-_MATMUL_FUNCTION: Any = None
 _KERNEL_FUNCTION: Any = None
 
 
@@ -21,9 +27,12 @@ def _native_matmul(a: Any, b: Any) -> Any:
 
 
 def _matmul(a: Any, b: Any) -> Any:
-    global _MATMUL_FUNCTION
+    if is_torch_tensor(a) and is_torch_tensor(b):
+        return a @ b
     kind = first_kind(a, b)
     a, b = _as_array(a, kind), _as_array(b, kind)
+    if kind.lib == "torch":
+        return a @ b
     sa, sb = shape_of(a), shape_of(b)
     if len(sa) < 2 or len(sb) < 2 or sa[-1] != sb[-2]:
         raise RuntimeError(f"Feature matrix shapes cannot be multiplied: {sa}, {sb}.")
@@ -31,23 +40,6 @@ def _matmul(a: Any, b: Any) -> Any:
     if batch is None:
         raise RuntimeError(f"Feature matrix batches do not broadcast: {sa}, {sb}.")
     a, b = expand(a, (*batch, *sa[-2:])), expand(b, (*batch, *sb[-2:]))
-    if kind.lib == "torch" and _requires_grad([a, b]):
-        if _MATMUL_FUNCTION is None:
-            import torch
-
-            class _Matmul(torch.autograd.Function):
-                @staticmethod
-                def forward(ctx: Any, a: Any, b: Any) -> Any:
-                    ctx.save_for_backward(a, b)
-                    return _native_matmul(a, b)
-
-                @staticmethod
-                def backward(ctx: Any, grad: Any) -> Any:
-                    a, b = ctx.saved_tensors
-                    return _native_matmul(grad, transpose(b)), _native_matmul(transpose(a), grad)
-
-            _MATMUL_FUNCTION = _Matmul
-        return _MATMUL_FUNCTION.apply(a, b)
     return _native_matmul(a, b)
 
 
@@ -120,6 +112,8 @@ class KernelFeatureMap(FeatureMap):
                 "A path handle's feature_map exposes frequency metadata; evaluate its path, or construct a standalone map with its kernel."
             )
         values = _matmul(x, transpose(self.weight))
+        if is_torch_tensor(values):
+            return values if self.bias is None else values + _as_array(self.bias, kind_of(values))
         return values if self.bias is None else apply("add_raw", values, self.bias)
 
     @property
@@ -145,6 +139,8 @@ class KernelFeatureMap(FeatureMap):
 
 def _kernel_values(kernel: Any, x: Any, points: Any) -> Any:
     global _KERNEL_FUNCTION
+    if type(kernel).__module__ == "botorch_rs.models._torch_backend_modules":
+        return kernel(x, points)
     kind = first_kind(x, points)
     if kind.lib != "torch" or not _requires_grad([x, points]):
         return kernel(x, points)

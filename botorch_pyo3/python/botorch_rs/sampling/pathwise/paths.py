@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import ArrayKind, from_flat
+from botorch_rs._arrays import ArrayKind, from_flat, is_torch_tensor
 from botorch_rs._ops import apply, getitem, shape_of
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.sampling.pathwise.features.maps import KernelFeatureMap, _matmul
@@ -229,6 +229,13 @@ class GeneralizedLinearPath(_RsPaths, SamplePath):
 
     is_ensemble = False
     ensemble_as_batch = False
+
+    def __new__(cls, feature_map: Any = None, weight: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if cls is GeneralizedLinearPath and is_torch_tensor(weight):
+            from botorch_rs.sampling.pathwise._torch_backend import TorchGeneralizedLinearPath
+
+            return object.__new__(TorchGeneralizedLinearPath)
+        return object.__new__(cls)
 
     def __init__(
         self,
