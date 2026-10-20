@@ -76,14 +76,9 @@ def concentrations(model: Any) -> tuple[Any, Any]:
 
 def warp(model: Any, X: Any, c0: Any, c1: Any) -> Any:
     jnp, _, _ = backend()
-    if model.indices is not None:
-        indices = list(model.indices)
-    elif hasattr(model, "task_feature"):
-        # The task identifier is categorical and must not replace a real
-        # feature in the default input-warping selection.
-        indices = [i for i in range(X.shape[-1]) if i != model.task_feature]
-    else:
-        indices = list(range(model.ard_num_dims))
+    indices = model._warp_indices()
+    if indices is None:
+        return X
     sub = jnp.clip(X[..., indices] * (1 - 2 * model._eps) + model._eps, model._eps, 1 - model._eps)
     # Match the native Warp transform, correcting the historical Pyro
     # program's reversed concentrations and missing unit-interval scaling.

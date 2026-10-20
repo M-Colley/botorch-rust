@@ -159,8 +159,6 @@ def test_multitask_trace_rejects_unmapped_identifiers_instead_of_jax_index_clamp
 @pytest.mark.parametrize("fixed", [False, True])
 @pytest.mark.parametrize("warped", [False, True])
 def test_trace_unconstrained_potential_and_gradients_match_native_nuts(name, fixed, warped):
-    if name.startswith("Multitask") and warped:
-        pytest.skip("Native fully Bayesian multitask model fitting rejects warping.")
     with jax_x64():
         model, _ = pair(name, fixed, warped)
         potential = model._potential()

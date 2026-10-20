@@ -200,7 +200,18 @@ impl PyroModel {
         };
         let d = features.len();
         if let Some(idx) = &spec.warp_indices {
-            if idx.iter().any(|&i| i >= cols) {
+            let mut unique = idx.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            if idx.is_empty()
+                || unique.len() != idx.len()
+                || idx
+                    .iter()
+                    .any(|&i| i >= cols || spec.task.as_ref().is_some_and(|t| i == t.task_feature))
+                || !spec.warp_eps.is_finite()
+                || spec.warp_eps <= 0.0
+                || spec.warp_eps >= 0.5
+            {
                 return Err(BotorchError::InvalidArgument(format!(
                     "warped columns {idx:?} out of range for {cols} columns"
                 )));
@@ -879,7 +890,7 @@ mod tests {
             train_x: x,
             train_y: y,
             train_yvar: yvar.then(|| (0..n).map(|i| 0.01 + 0.002 * i as f64).collect()),
-            warp_indices: warp.then(|| (0..cols - usize::from(task)).collect()),
+            warp_indices: warp.then(|| (0..cols).filter(|&c| !task || c != 1).collect()),
             warp_eps: 1e-7,
             task: task.then_some(TaskStructure {
                 task_feature: 1,

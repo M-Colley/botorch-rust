@@ -9,7 +9,9 @@ This is the historical phase-10 audit, rather than the current full-port
 inventory. Optional public NumPyro tracing was subsequently implemented and
 audited against official revision `b0dd01be6`; see
 [`../numpyro-trace-interoperability.md`](../numpyro-trace-interoperability.md).
-Native NUTS remains the default fitter.
+Native NUTS remains the default fitter. Native fully Bayesian multitask
+warping was subsequently implemented and audited against the same pinned
+revision; see [the current warping audit](../fully-bayesian-multitask-warping.md).
 
 ## Supported API (rows for README)
 
@@ -80,9 +82,11 @@ Native NUTS remains the default fitter.
    (the noise of the potential); BoTorch loads `max(s, 1e-4)` (bug 2).
 5. **Fixed-noise conditioning** repeats the observation noise over the
    samples (BoTorch fails, bug 3).
-6. **Multi-task warping.** `SaasFullyBayesianMultiTaskGP` with a warping
-   `MultitaskSaasPyroModel` raises `UnsupportedError` (BoTorch samples with
-   warped inputs and predicts without warping, bug 5).
+6. **Multi-task warping.** The initial rejection recorded in this phase is
+   superseded: `SaasFullyBayesianMultiTaskGP` now fits and predicts with
+   sampled non-task warps natively. The current audit linked above covers
+   physical feature selection, transforms, derivatives, and the corrections
+   to the official loader (bug 5).
 7. **Monte Carlo sampling of linear-kernel GPs.** GPyTorch evaluates the
    posterior covariance of a `LinearKernel` lazily as a low-rank root, so
    BoTorch's base samples have the rank of the kernel as dimension;
@@ -354,6 +358,11 @@ when available. This does not claim that the fix has landed upstream.
    m.load_mcmc_samples(s)
    print(getattr(m, "input_transform", None))  # None
    ```
+
+   Reconfirmed on official revision `b0dd01be6`. The native port now keeps
+   each sampled warp in training and prediction, with analytic query
+   derivatives. The current warping audit above also documents the official
+   loader's full-input dimension and feature-index errors.
 
 6. **NUTS runs in single precision for double-precision models**
    (possibly intended): JAX's `jax_enable_x64` is never set, so

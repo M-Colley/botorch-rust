@@ -33,7 +33,7 @@ from botorch_rs.models.fully_bayesian import (
 )
 from botorch_rs.models.gp_regression import _validate_input_scaling
 from botorch_rs.models.multitask import MultiTaskGP
-from botorch_rs.models.transforms.input import InputTransform
+from botorch_rs.models.transforms.input import ChainedInputTransform, InputTransform, Warp
 from botorch_rs.models.transforms.outcome import OutcomeTransform, Standardize
 from botorch_rs.posteriors.fully_bayesian import _StackedMixturePosterior
 
@@ -88,6 +88,24 @@ class MultiTaskPyroMixin:
 
     def _task_structure(self) -> tuple[int, int, int] | None:
         return (self.task_feature, self.num_tasks, self.task_rank)
+
+    def _warp_indices(self) -> list[int] | None:
+        if not self.use_input_warping:  # type: ignore[attr-defined]
+            return None
+        cols = self.ard_num_dims + 1  # type: ignore[attr-defined]
+        selected = self.indices  # type: ignore[attr-defined]
+        indices = (
+            [i for i in range(cols) if i != self.task_feature]
+            if selected is None
+            else [int(i) % cols if -cols <= int(i) < 0 else int(i) for i in selected]
+        )
+        if (
+            not indices
+            or len(set(indices)) != len(indices)
+            or any(i < 0 or i >= cols or i == self.task_feature for i in indices)
+        ):
+            raise InputDataError("Warp indices must be unique non-task input columns.")
+        return indices
 
     def sample_mean(self) -> Any:
         return _numpyro.mean(self, self.num_tasks)
@@ -207,6 +225,30 @@ class _SampleMultiTaskGP(MultiTaskGP):
         return kernel
 
 
+class _MCMCInputWarp(Warp):
+    """Fixed sampled concentrations with synchronized native member state."""
+
+    def _set(self, i: int, value: Any) -> None:
+        previous = self._steps
+        super()._set(i, value)
+        member = self.__dict__.get("_member")
+        if member is not None:
+            try:
+                self._install(member)
+            except Exception:
+                self._steps = previous
+                raise
+
+    def _install(self, member: Any) -> None:
+        member._rs.set_input_warp(
+            list(self.indices),
+            list(to_flat(self.concentration0)[0]),
+            list(to_flat(self.concentration1)[0]),
+            self._eps,
+        )
+        self._member = member
+
+
 class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
     r"""A fully Bayesian multi-task GP model with the SAAS prior.
     This model assumes that the inputs have been normalized to [0, 1]^d and that the
@@ -284,8 +326,9 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
                 will be mapped to the first output_task if supplied.
 
         botorch_rs supports ``Standardize`` as the outcome transform and
-        ``Normalize`` as the input transform (those of ``MultiTaskGP``), and
-        no input warping.
+        ``Normalize`` as the common input transform (those of ``MultiTaskGP``).
+        With input warping each MCMC member additionally applies its sampled
+        Kumaraswamy transform on selected non-task columns.
         """
         x = to_flat(train_X, "train_X")
         y = to_flat(train_Y, "train_Y")
@@ -347,12 +390,6 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
         self._fb_input_transform = input_transform
         if pyro_model is None:
             pyro_model = MultitaskSaasPyroModel()
-        if getattr(pyro_model, "use_input_warping", False):
-            raise UnsupportedError(
-                "Input warping is not supported by fully Bayesian multi-task models in "
-                "botorch_rs (BoTorch samples warping parameters but does not use them, see "
-                "the draft)."
-            )
         # The task values mapped to task indices (BoTorch's `_map_tasks`).
         tx = to_flat(transformed_X, "train_X")
         cols = tx[1][-1]
@@ -369,6 +406,10 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
             all_tasks=all_tasks,
         )
         self.pyro_model: MultitaskSaasPyroModel = pyro_model
+        if pyro_model.use_input_warping:
+            pyro_model._warp_indices()
+            if not math.isfinite(pyro_model._eps) or not 0 < pyro_model._eps < 0.5:
+                raise ValueError("Warp eps must be finite and in (0, 0.5).")
         if outcome_transform is not None:
             self.outcome_transform = outcome_transform
         if input_transform is not None:
@@ -518,6 +559,30 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
                 input_transform=copy.deepcopy(self._fb_input_transform),
                 validate_task_values=args["validate_task_values"],
             )
+            if pm.use_input_warping:
+                indices = pm._warp_indices()
+                assert indices is not None
+                k = len(indices)
+                c0, cshape = _values(mcmc_samples, "c0")
+                c1, c1shape = _values(mcmc_samples, "c1")
+                if cshape != (num, k) or c1shape != (num, k):
+                    raise ValueError(f"Expected sampled concentrations shaped {(num, k)}.")
+                cols = d + 1
+                warp = _MCMCInputWarp(
+                    d=cols,
+                    indices=indices,
+                    eps=pm._eps,
+                    bounds=from_flat([0.0] * cols + [1.0] * cols, (2, cols), self._kind),
+                )
+                warp.concentration0 = from_flat(c0[s * k : (s + 1) * k], (k,), self._kind)
+                warp.concentration1 = from_flat(c1[s * k : (s + 1) * k], (k,), self._kind)
+                warp._install(member)
+                normalize = getattr(member, "input_transform", None)
+                member.input_transform = (
+                    warp
+                    if normalize is None
+                    else ChainedInputTransform(normalize=normalize, warp=warp)
+                )
             for k in range(t):
                 member.mean_module.base_means[k].constant = mod["mean"][k]
             if noise is not None:

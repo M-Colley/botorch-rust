@@ -689,6 +689,7 @@ class LCEMGP:
     ) -> tuple[float, int, int, str, str, int, list[ElementFit]]: ...
 
 class MultiTaskGP:
+    def set_input_warp(self, indices: Sequence[int], c0: Sequence[float], c1: Sequence[float], eps: float) -> None: ...
     def __init__(
         self,
         train_x: Array,

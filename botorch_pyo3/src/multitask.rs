@@ -322,6 +322,17 @@ impl PyMultiTaskGP {
         Self::from_batch((*self.state()).clone())
     }
 
+    /// Fixed sampled Kumaraswamy concentrations on non-task columns.
+    fn set_input_warp(
+        &self,
+        indices: Vec<usize>,
+        c0: Vec<f64>,
+        c1: Vec<f64>,
+        eps: f64,
+    ) -> PyResult<()> {
+        self.update(|model| model.set_input_warp(indices.clone(), c0.clone(), c1.clone(), eps))
+    }
+
     // ------------------------------------------------------------------
     // Data and configuration
     // ------------------------------------------------------------------

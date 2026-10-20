@@ -44,8 +44,8 @@ the rescaling in its NumPyro program. For multitask traces with default
 warp indices, the adapter selects all non-task columns; the official
 `range(ard_num_dims)` selection can warp the task column and omit a real
 feature when the task column is not last. Native fully Bayesian multitask
-GP fitting/prediction still explicitly rejects input warping, so this
-trace capability is not a claim of native multitask-warp support.
+fitting and prediction now use the same per-sample transforms; see
+[the native multitask warping audit](fully-bayesian-multitask-warping.md).
 Direct multitask Pyro inputs require task indices in `[0, num_tasks)`;
 the fully Bayesian GP wrapper maps external task labels automatically.
 Invalid direct identifiers raise clearly rather than allowing JAX's

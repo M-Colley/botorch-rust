@@ -358,10 +358,10 @@ def test_multitask_model(kind: str) -> None:
     assert shape(model.median_lengthscale) == (2,)
     with pytest.raises(ValueError, match="Expected train_X to have shape n x d"):
         SaasFullyBayesianMultiTaskGP([X], [Y], task_feature=-1)
-    with pytest.raises(UnsupportedError, match="warping"):
-        SaasFullyBayesianMultiTaskGP(
-            X, Y, task_feature=-1, pyro_model=MultitaskSaasPyroModel(use_input_warping=True)
-        )
+    warped = SaasFullyBayesianMultiTaskGP(
+        X, Y, task_feature=-1, pyro_model=MultitaskSaasPyroModel(use_input_warping=True)
+    )
+    assert warped.pyro_model._warp_indices() == [0, 1]
 
 
 # ---------------------------------------------------------------------------
