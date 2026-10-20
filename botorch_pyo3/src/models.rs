@@ -1711,6 +1711,21 @@ fn with_transform(
 
 #[pymethods]
 impl PyModel {
+    /// Independent native snapshots sharing model batch dimensions.
+    #[staticmethod]
+    fn from_batch_models(
+        models: Vec<PyRef<'_, PyModel>>,
+        batch_shape: Vec<usize>,
+    ) -> PyResult<Self> {
+        let batch = botorch_core::models::model_batch::ModelBatch::new(
+            models.iter().map(|m| Arc::clone(&m.inner)).collect(),
+            batch_shape,
+        )
+        .into_py_result()?;
+        Ok(Self {
+            inner: Arc::new(batch),
+        })
+    }
     /// The current snapshot of a `SingleTaskGP`, seen through the posterior
     /// transform `(weights, offset)` if given.
     #[staticmethod]

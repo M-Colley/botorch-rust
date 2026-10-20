@@ -31,7 +31,8 @@ from botorch_rs.models.empirical_gps.utils import (
     extract_slice_for_interp,
     validate_no_transforms,
 )
-from botorch_rs.models.gpytorch import GPyTorchModel
+from botorch_rs.models.gpytorch import BatchedMultiOutputGPyTorchModel, GPyTorchModel
+from botorch_rs.models.model import FantasizeMixin
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 
 
@@ -307,12 +308,14 @@ class BaseAugmentedEmpiricalKernel(AdditiveKernel):
     forward = __call__
 
 
-class EmpiricalOneDimensionalGP(GPyTorchModel):
+class EmpiricalOneDimensionalGP(GPyTorchModel, FantasizeMixin):
     """Exact native empirical GP with independent outputs and shared curve weights."""
 
     _mean_class = EmpiricalOneDimensionalMean
     _kernel_class = EmpiricalOneDimensionalKernel
     _correlated = False
+
+    get_batch_dimensions = staticmethod(BatchedMultiOutputGPyTorchModel.get_batch_dimensions)
 
     def __init__(
         self,
@@ -476,22 +479,39 @@ class EmpiricalOneDimensionalGP(GPyTorchModel):
         return [(name, value, *self._offsets()[name]) for name, value in self.named_parameters()]
 
     @property
-    def batch_shape(self) -> tuple[()]:
-        return ()
+    def batch_shape(self) -> tuple[int, ...]:
+        return tuple(getattr(self, "_condition_batch_shape", ()))
 
     @property
     def train_inputs(self) -> tuple[Any]:
+        if self.num_outputs > 1 and not self._correlated:
+            n = _ops.shape_of(self._train_X)[-2]
+            return (
+                _ops.expand(
+                    _ops.getitem(self._train_X, (Ellipsis, None, slice(None), slice(None))),
+                    (*self.batch_shape, self.num_outputs, n, 1),
+                ),
+            )
         return (self._train_X,)
 
     @property
     def train_targets(self) -> Any:
+        n = _ops.shape_of(self._train_Y)[-2]
         return (
-            _reshape(
-                _moveaxis(self._train_Y, -1, 0), (self.num_outputs, _ops.shape_of(self._train_X)[0])
-            )
+            _reshape(_moveaxis(self._train_Y, -1, -2), (*self.batch_shape, self.num_outputs, n))
             if self.num_outputs > 1 and not self._correlated
-            else _reshape(self._train_Y, (_ops.shape_of(self._train_X)[0] * self.num_outputs,))
+            else _reshape(self._train_Y, (*self.batch_shape, n * self.num_outputs))
         )
+
+    def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
+        from botorch_rs.models.empirical_gps._conditioning import condition
+
+        return condition(self, X, Y, noise=noise, **kwargs)
+
+    def fantasize(self, X: Any, sampler: Any, observation_noise: Any = None, **kwargs: Any) -> Any:
+        from botorch_rs.models.empirical_gps._conditioning import fantasize
+
+        return fantasize(self, X, sampler, observation_noise=observation_noise, **kwargs)
 
     def posterior(
         self,
@@ -518,6 +538,7 @@ class EmpiricalOneDimensionalGP(GPyTorchModel):
             kind_of(X),
             observation_noise,
             num_outputs=self.num_outputs,
+            model_batch_shape=self.batch_shape,
             output_indices=output_indices,
             transform=transform_arg(posterior_transform),
             interleaved=self._correlated,

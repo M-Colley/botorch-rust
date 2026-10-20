@@ -39,6 +39,7 @@ pub mod latent_kronecker_gp;
 pub mod likelihoods;
 mod matheron;
 pub mod model;
+pub mod model_batch;
 pub mod model_list;
 pub mod model_list_dyn;
 pub mod multitask;

@@ -163,6 +163,46 @@ impl EmpiricalGP {
             .flat_map(|gp| gp.likelihood_noise().as_slice().to_vec())
             .collect()
     }
+    /// Condition on full-output observations at progression inputs, preserving
+    /// the historical mean and shared covariance parameters.
+    ///
+    /// # Errors
+    /// Shape and fixed-noise requirements follow the underlying exact GPs.
+    pub fn condition_on_observations(
+        &self,
+        x: &Matrix,
+        y: &Matrix,
+        noise: Option<&Matrix>,
+    ) -> Result<Self> {
+        let m = self.num_outputs();
+        if y.shape() != (x.nrows(), m) || noise.is_some_and(|v| v.shape() != y.shape()) {
+            return Err(BotorchError::DimensionMismatch(
+                "empirical conditioning targets and noise must be n x num_outputs".into(),
+            ));
+        }
+        let mut out = self.clone();
+        let mut gps = Vec::with_capacity(self.gps.len());
+        for (group, gp) in self.gps.iter().enumerate() {
+            let inputs = self.query(x, group)?;
+            let count = if self.correlated { m } else { 1 };
+            let mut target = Matrix::zeros(x.nrows() * count, 1);
+            for i in 0..x.nrows() {
+                for output in 0..count {
+                    let task = if self.correlated { output } else { group };
+                    target[(i * count + output, 0)] =
+                        y[(i, task)] - self.mean_at(task, x[(i, 0)])?.0;
+                }
+            }
+            let noise = noise.map(|values| {
+                Matrix::from_fn(x.nrows() * count, 1, |i, _| {
+                    values[(i / count, if self.correlated { i % count } else { group })]
+                })
+            });
+            gps.push(gp.condition_on_observations(&inputs, &target, noise.as_ref())?);
+        }
+        out.gps = gps;
+        Ok(out)
+    }
     /// Set constrained homoskedastic noise values, broadcasting a scalar.
     pub fn set_noise(&mut self, noise: &[f64]) -> Result<()> {
         if self.noise_count == 0
@@ -673,6 +713,50 @@ mod tests {
         assert!(m
             .posterior(&Matrix::from_element(2, 1, f64::NAN), false)
             .is_err());
+    }
+    #[test]
+    fn empirical_conditioning_matches_dense_gaussian_conditioning() {
+        let x = Matrix::from_column_slice(2, 1, &[0.25, 0.65]);
+        let query = Matrix::from_column_slice(2, 1, &[0.32, 0.76]);
+        let observed = Matrix::from_row_slice(2, 2, &[0.9, 0.2, 0.4, 1.1]);
+        let joint_x = Matrix::from_column_slice(4, 1, &[0.25, 0.65, 0.32, 0.76]);
+        for correlated in [false, true] {
+            let model = model(correlated);
+            for explicit in [false, true] {
+                let noise = Matrix::from_fn(2, 2, |i, j| {
+                    if explicit {
+                        0.02 + (i + j) as f64 * 0.01
+                    } else {
+                        0.04
+                    }
+                });
+                let conditioned = model
+                    .condition_on_observations(&x, &observed, explicit.then_some(&noise))
+                    .unwrap();
+                let post = model.posterior(&joint_x, false).unwrap();
+                let obs_index = [0, 1, 4, 5];
+                let query_index = [2, 3, 6, 7];
+                let cross =
+                    Matrix::from_fn(4, 4, |i, j| post.covariance[(query_index[i], obs_index[j])]);
+                let covariance = Matrix::from_fn(4, 4, |i, j| {
+                    post.covariance[(obs_index[i], obs_index[j])]
+                        + if i == j { noise[(i % 2, i / 2)] } else { 0.0 }
+                });
+                let factor = crate::linalg::psd_safe_cholesky(&covariance).unwrap();
+                let residual =
+                    Vector::from_fn(4, |i, _| observed[(i % 2, i / 2)] - post.mean[obs_index[i]]);
+                let mean = Vector::from_fn(4, |i, _| post.mean[query_index[i]])
+                    + &cross * factor.solve_vec(&residual);
+                let covariance = Matrix::from_fn(4, 4, |i, j| {
+                    post.covariance[(query_index[i], query_index[j])]
+                }) - &cross * factor.solve(&cross.transpose());
+                let actual = conditioned.posterior(&query, false).unwrap();
+                assert!((actual.mean - mean).amax() < 2e-12);
+                assert!((actual.covariance - covariance).amax() < 2e-12);
+                assert_eq!(conditioned.raw_parameters(), model.raw_parameters());
+                assert_eq!(model.gps[0].num_train(), if correlated { 6 } else { 3 });
+            }
+        }
     }
     #[test]
     fn empirical_task_views_select_and_differentiate_long_inputs() {

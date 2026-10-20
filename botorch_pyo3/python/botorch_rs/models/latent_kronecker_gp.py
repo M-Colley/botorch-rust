@@ -16,6 +16,7 @@ from botorch_rs.likelihoods import GaussianLikelihood
 from botorch_rs.means import ConstantMean, ZeroMean
 from botorch_rs.models.gpytorch import GPyTorchModel
 from botorch_rs.models.higher_order_gp import _initial_raw_noise
+from botorch_rs.models.model import FantasizeMixin
 from botorch_rs.models.transforms.input import InputTransform, chain_spec
 from botorch_rs.models.transforms.outcome import Standardize
 from botorch_rs.posteriors.latent_kronecker import LatentKroneckerGPPosterior
@@ -48,7 +49,7 @@ class _MeanBinding:
         self.owner._set_raw_param(self.name, from_flat(value[0], tuple(value[1]), LIST))
 
 
-class LatentKroneckerGP(GPyTorchModel):
+class LatentKroneckerGP(GPyTorchModel, FantasizeMixin):
     """GP on X x T, with arbitrary missing finite observations in train_Y.
 
     Complete grids use native Kronecker eigensolves. Missing-data inference

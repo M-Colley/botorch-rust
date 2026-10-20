@@ -122,6 +122,24 @@ impl PyEmpiricalGP {
     fn model_handle(&self) -> PyModel {
         PyModel { inner: self.get() }
     }
+    #[pyo3(signature=(x,y,noise=None))]
+    fn condition_on_observations(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        y: Array,
+        noise: Option<Array>,
+    ) -> PyResult<Self> {
+        let x = x.matrix("X")?;
+        let y = y.matrix("Y")?;
+        let noise = noise.map(|v| v.matrix("noise")).transpose()?;
+        let model = self.get();
+        threads::run(py, || {
+            model.condition_on_observations(&x, &y, noise.as_ref())
+        })
+        .map(Self::wrap)
+        .into_py_result()
+    }
     #[pyo3(signature=(outputs,task_feature=None))]
     fn task_model_handle(
         &self,
