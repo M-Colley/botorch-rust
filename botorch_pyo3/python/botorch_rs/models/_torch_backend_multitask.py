@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any, cast
 
 import torch
@@ -184,8 +185,9 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
     Training data are unbatched, as in the pinned upstream MultiTaskGP. Query
     batches broadcast freely. Task labels are categorical: their gradients are
     zero, while continuous inputs, targets, noise and raw parameters retain
-    higher-order autograd graphs. Tensor-valued posterior noise and conditioning
-    are explicitly unsupported in this initial backend.
+    higher-order autograd graphs. Conditioning and fantasies append long-format
+    observations to the correlated law. Tensor-valued posterior noise remains
+    explicitly unsupported, as in the pinned reference.
     """
 
     _tensor_backend = "torch"
@@ -194,6 +196,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
     _train_X: Any
     _train_Y: Any
     _train_Yvar: Any
+    _noise_override: Any
     _transform_fit_X: Any
     _transform_fit_Y: Any
     _base_idxr: Any
@@ -461,11 +464,27 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         return self.mean_module(X)
 
     def _training_noise(self, Y: Any, fixed_noise: Any) -> Any:
-        return (
+        result = (
             fixed_noise
             if fixed_noise is not None
             else self._noise_at(self._mapped_inputs(self._train_X))
         )
+        if self._noise_override is not None:
+            result = torch.where(torch.isnan(self._noise_override), result, self._noise_override)
+        return result
+
+    def _fixed_noise_at(self, mapped_X: Any, fixed: Any) -> Any:
+        train_tasks = self._mapped_inputs(self._train_X)[..., self._task_feature].long()
+        mask = train_tasks.unsqueeze(-1) == torch.arange(self.num_tasks, device=mapped_X.device)
+        counts = mask.sum(-2)
+        noise_by_task = (fixed.unsqueeze(-1) * mask).sum(-2) / counts.clamp_min(1)
+        query_tasks = mapped_X[..., self._task_feature].long()
+        batch = torch.broadcast_shapes(noise_by_task.shape[:-1], query_tasks.shape[:-1])
+        tasks = query_tasks.expand(*batch, query_tasks.shape[-1])
+        available = counts.expand(*batch, self.num_tasks).gather(-1, tasks)
+        if bool((available == 0).any()):
+            raise UnsupportedError("Cannot infer fixed observation noise for an unobserved task.")
+        return noise_by_task.expand(*batch, self.num_tasks).gather(-1, tasks)
 
     def _noise_at(self, mapped_X: Any) -> Any:
         noise = self.likelihood.noise
@@ -573,16 +592,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             if fixed is None:
                 query_noise = self._noise_at(query_X)
             else:
-                train_tasks = train_X[..., self._task_feature].long()
-                mask = train_tasks.unsqueeze(-1) == torch.arange(self.num_tasks, device=X.device)
-                counts = mask.sum(-2)
-                query_tasks = query_X[..., self._task_feature].long()
-                if bool((counts[query_tasks] == 0).any()):
-                    raise UnsupportedError(
-                        "Cannot infer fixed observation noise for an unobserved task."
-                    )
-                noise_by_task = (fixed.unsqueeze(-1) * mask).sum(-2) / counts.clamp_min(1)
-                query_noise = noise_by_task[query_tasks]
+                query_noise = self._fixed_noise_at(query_X, fixed)
         mean, covariance = _rs.tensor_exact_gp_predict(
             chol,
             alpha,
@@ -652,7 +662,116 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         self._transform_fit_X, self._transform_fit_Y = X, Y
 
     def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
-        raise UnsupportedError("Conditioning Torch MultiTaskGP is not yet supported.")
+        if kwargs:
+            raise UnsupportedError(f"Unsupported conditioning arguments: {sorted(kwargs)}.")
+        if (
+            not isinstance(X, torch.Tensor)
+            or X.ndim < 2
+            or X.shape[-1] != self.num_non_task_features + 1
+        ):
+            raise ValueError("Multitask conditioning requires inputs including the task feature.")
+        if not isinstance(Y, torch.Tensor):
+            raise TypeError("Conditioning targets must be a Tensor.")
+        if Y.ndim == X.ndim - 1:
+            Y = Y.unsqueeze(-1)
+        if Y.ndim < 2 or Y.shape[-1] != 1 or Y.shape[-2] != X.shape[-2]:
+            raise ValueError("Multitask targets must have shape (...,q,1).")
+        if any(t.dtype != self._train_X.dtype or t.device != self._train_X.device for t in (X, Y)):
+            raise ValueError("Conditioning data must have the model dtype and device.")
+        if not bool(torch.isfinite(X).all() & torch.isfinite(Y).all()):
+            raise ValueError("Conditioning data must be finite.")
+        self._map_tasks(X[..., self._task_feature])
+        if noise is not None:
+            if (
+                not isinstance(noise, torch.Tensor)
+                or noise.dtype != Y.dtype
+                or noise.device != Y.device
+            ):
+                raise ValueError("Conditioning noise must be a Tensor with the model dtype/device.")
+            if noise.shape == Y.shape[:-1]:
+                noise = noise.unsqueeze(-1)
+            if not bool(torch.isfinite(noise).all() & (noise >= 0).all()):
+                raise ValueError("Conditioning noise must be finite and nonnegative.")
+        elif self._train_Yvar is not None:
+            raise ValueError("Fixed-noise multitask conditioning requires noise.")
+        batch = torch.broadcast_shapes(
+            self.batch_shape, X.shape[:-2], Y.shape[:-2], () if noise is None else noise.shape[:-2]
+        )
+        model = copy.copy(self)
+        model._buffers = self._buffers.copy()
+        model._modules = self._modules.copy()
+        model._transform_fit_versions = self._transform_fit_versions.copy()
+        model._prediction_cache = None
+        model._train_X = torch.cat(
+            (
+                self._train_X.expand(*batch, *self._train_X.shape[-2:]),
+                X.expand(*batch, *X.shape[-2:]),
+            ),
+            dim=-2,
+        )
+        model._train_Y = torch.cat(
+            (
+                self._train_Y.expand(*batch, *self._train_Y.shape[-2:]),
+                Y.expand(*batch, *Y.shape[-2:]),
+            ),
+            dim=-2,
+        )
+        if self._train_Yvar is not None:
+            # As in BoTorch, supplied conditioning noise is already transformed.
+            self._fit_transform_graphs()
+            raw_noise = noise
+            if self.outcome_transform is not None:
+                raw_noise = self.outcome_transform.untransform(torch.zeros_like(Y), noise)[1]
+            model._train_Yvar = torch.cat(
+                (
+                    self._train_Yvar.expand(*batch, *self._train_Y.shape[-2:]),
+                    raw_noise.expand(*batch, *Y.shape[-2:]),
+                ),
+                dim=-2,
+            )
+        elif noise is not None or self._noise_override is not None:
+            previous = self._noise_override
+            if previous is None:
+                previous = torch.full_like(self._train_Y.squeeze(-1), torch.nan)
+            extra = (
+                torch.full_like(Y.squeeze(-1), torch.nan) if noise is None else noise.squeeze(-1)
+            )
+            model._noise_override = torch.cat(
+                (previous.expand(*batch, previous.shape[-1]), extra.expand(*batch, Y.shape[-2])),
+                dim=-1,
+            )
+        tasks = model._map_tasks(model._train_X[..., self._task_feature]).long()
+        observed = (tasks.reshape(-1, 1) == torch.arange(self.num_tasks, device=X.device)).any(0)
+        model._observed_task_indices = observed.nonzero().squeeze(-1)
+        model._unobserved_task_indices = (~observed).nonzero().squeeze(-1)
+        if self._train_Yvar is not None:
+            model.likelihood = copy.copy(self.likelihood)
+            model.likelihood._buffers = self.likelihood._buffers.copy()
+            model.likelihood.noise = model._training_values()[2].detach().clone()
+        return model.eval()
 
     def fantasize(self, X: Any, sampler: Any, observation_noise: Any = None, **kwargs: Any) -> Any:
-        raise UnsupportedError("Fantasizing Torch MultiTaskGP is not yet supported.")
+        propagate = kwargs.pop("propagate_grads", False)
+        if kwargs:
+            raise UnsupportedError(f"Unsupported fantasy arguments: {sorted(kwargs)}.")
+        if isinstance(observation_noise, bool):
+            raise TypeError("fantasize observation_noise must be None or a Tensor.")
+        if observation_noise is not None:
+            raise NotImplementedError("Tensor fantasy noise is not supported by MultiTaskGP.")
+        if (
+            not isinstance(X, torch.Tensor)
+            or X.ndim < 2
+            or X.shape[-1] != self.num_non_task_features + 1
+        ):
+            raise ValueError("Multitask fantasies require inputs including the task feature.")
+        posterior = self.posterior(X, observation_noise=True)
+        targets = sampler(posterior)
+        if not propagate:
+            targets = targets.detach()
+        noise = None
+        if self._train_Yvar is not None:
+            _, _, fixed = self._training_values()
+            noise = self._fixed_noise_at(
+                self._mapped_inputs(self.transform_inputs(X)), fixed
+            ).unsqueeze(-1)
+        return self.condition_on_observations(X, targets, noise=noise)

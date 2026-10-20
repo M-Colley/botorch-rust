@@ -270,7 +270,7 @@ def test_backend_validation_and_no_training_tensor_host_roundtrip(device):
         model.posterior(X, output_indices=[0])
     with pytest.raises(NotImplementedError, match="Tensor observation_noise"):
         model.posterior(query, observation_noise=Y)
-    with pytest.raises(UnsupportedError, match="Conditioning"):
+    with pytest.raises(ValueError, match="task feature"):
         model.condition_on_observations(query, Y)
 
 
