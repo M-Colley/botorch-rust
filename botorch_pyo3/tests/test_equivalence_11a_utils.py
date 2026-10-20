@@ -42,6 +42,7 @@ import botorch.utils.probability.utils as bt_pu  # noqa: E402
 import botorch.utils.safe_math as bt_sm  # noqa: E402
 import test_parity_11a_utils as p11a  # noqa: E402
 from so_acquisition_helpers import check_against_twins, twin  # noqa: E402
+from trajectory_reference import portable_trajectory_grid  # noqa: E402
 
 import botorch_rs.utils.probability.utils as rs_pu  # noqa: E402
 import botorch_rs.utils.safe_math as rs_sm  # noqa: E402
@@ -298,7 +299,10 @@ def test_qmc_and_test_function_sweep(seed: int) -> None:
     for mod, name, kw in p11a.PROBLEMS:
         pa, pe = p11a._problem_pair(mod, name, kw)
         X = p11a._problem_points(pe, 6, seed + 1000)
-        CHECK.check(f"{name} evaluate_true", pa.evaluate_true(X), pe.evaluate_true(X), TOL)
+        trajectory = name == "TrajectoryPlanning" and kw.get("use_smooth_interp", True)
+        with portable_trajectory_grid(trajectory):
+            reference = pe.evaluate_true(X)
+        CHECK.check(f"{name} evaluate_true", pa.evaluate_true(X), reference, TOL)
         if hasattr(pe, "evaluate_slack_true"):
             CHECK.check(
                 f"{name} evaluate_slack_true",

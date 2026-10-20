@@ -147,7 +147,8 @@ remain the original reference code. Other `linspace` calls and explicit
 dtypes delegate unchanged. The native portable grid and the existing
 `1e-9` value tolerance are unchanged. A regression preserves the fused-grid
 reproduction and verifies controlled-grid values, batching and forward
-evaluation.
+evaluation. Both the fixed-case parity tests and all twelve seeded
+QMC/test-function equivalence sweeps use this same reference-only context.
 
 ## Unported
 
