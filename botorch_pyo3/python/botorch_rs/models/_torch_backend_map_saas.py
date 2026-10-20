@@ -30,10 +30,16 @@ from botorch_rs.utils.types import DEFAULT
 
 
 def _scale(base: TorchStationaryKernel, like: Tensor) -> TorchScaleKernel:
+    # These descriptors initialize only the scale's metadata. In particular,
+    # CUDA active_dims must not auto-convert them into a second Tensor tree;
+    # the configured SAAS base below retains its own priors and parameter leaves.
     source = ScaleKernel(
-        MaternKernel(ard_num_dims=base.ard_num_dims, active_dims=base.active_dims),
+        MaternKernel(
+            ard_num_dims=base.ard_num_dims, active_dims=base.active_dims, backend="native"
+        ),
         outputscale_constraint=LogTransformedInterval(0.01, 1e4, initial_value=10),
         batch_shape=base.batch_shape,
+        backend="native",
     )
     return TorchScaleKernel(source, base, like)
 
@@ -41,7 +47,9 @@ def _scale(base: TorchStationaryKernel, like: Tensor) -> TorchScaleKernel:
 def _base(
     d: int, batch: Any, like: Tensor, tau: Any = None, active_dims: Any = None
 ) -> TorchStationaryKernel:
-    source = MaternKernel(nu=2.5, ard_num_dims=d, batch_shape=batch, active_dims=active_dims)
+    source = MaternKernel(
+        nu=2.5, ard_num_dims=d, batch_shape=batch, active_dims=active_dims, backend="native"
+    )
     return TorchStationaryKernel(source, like).configure_saas_prior(tau)
 
 

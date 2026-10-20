@@ -340,9 +340,13 @@ def test_fixed_tau_external_tensor_retains_prior_derivatives(device):
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_additive_covariance_factory_respects_dtype_device_and_active_columns(device):
+@pytest.mark.parametrize("tensor_indices", [False, True])
+def test_additive_covariance_factory_respects_dtype_device_and_active_columns(
+    device, tensor_indices
+):
+    active_dims = torch.tensor([0, 2], device=device) if tensor_indices else (0, 2)
     actual = port.get_additive_map_saas_covar_module(
-        2, num_taus=2, active_dims=(0, 2), dtype=torch.double, device=torch.device(device)
+        2, num_taus=2, active_dims=active_dims, dtype=torch.double, device=torch.device(device)
     )
     expected = reference.get_additive_map_saas_covar_module(
         2, num_taus=2, active_dims=(0, 2), dtype=torch.double, device=torch.device(device)
@@ -363,3 +367,41 @@ def test_additive_covariance_factory_respects_dtype_device_and_active_columns(de
     (gradient,) = torch.autograd.grad(value.sum(), x, create_graph=True)
     assert bool((gradient[:, 1] == 0).all())
     assert bool(torch.isfinite(torch.autograd.grad(gradient.sum(), x)[0]).all())
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("learned_tau", [False, True])
+def test_saas_scale_preserves_configured_base_parameters_and_coupled_prior(device, learned_tau):
+    from botorch_rs.models._torch_backend_map_saas import _base, _scale
+
+    x, _, _ = _data(device)
+    base = _base(
+        2, (), x, None if learned_tau else x.new_tensor(0.2), torch.tensor([2, 0], device=device)
+    )
+    leaves = dict(base.named_parameters())
+    prior = base.inv_lengthscale_prior
+    scaled = _scale(base, x)
+    assert scaled.base_kernel is base
+    assert scaled.base_kernel.inv_lengthscale_prior is prior
+    assert all(dict(base.named_parameters())[name] is value for name, value in leaves.items())
+    assert all(
+        dict(scaled.named_parameters())["base_kernel." + name] is value
+        for name, value in leaves.items()
+    )
+    expected = (
+        torch.distributions.HalfCauchy(x.new_tensor(1.0))
+        .log_prob(base.tau / base.lengthscale.square())
+        .sum()
+    )
+    if learned_tau:
+        expected = expected + torch.distributions.HalfCauchy(x.new_tensor(0.1)).log_prob(base.tau)
+    actual = scaled.log_prior()
+    torch.testing.assert_close(actual, expected, atol=2e-14, rtol=2e-14)
+    parameters = tuple(leaves.values())
+    first = torch.autograd.grad(actual, parameters, create_graph=True)
+    oracle = torch.autograd.grad(expected, parameters, create_graph=True)
+    second = torch.autograd.grad(sum(value.sum() for value in first), parameters)
+    oracle_second = torch.autograd.grad(sum(value.sum() for value in oracle), parameters)
+    for gradients in ((first, oracle), (second, oracle_second)):
+        for a, b in zip(*gradients, strict=True):
+            torch.testing.assert_close(a, b, atol=3e-12, rtol=3e-12)
