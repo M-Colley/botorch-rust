@@ -81,11 +81,12 @@ supports joint optimization, best/all restarts, fixed features, postprocessing,
 one-shot candidate extraction and sequential pending-point restoration.
 Constrained automatic initialization currently requires feasible supplied
 initial conditions or a custom generator. The automatic box initializer uses
-device-resident Boltzmann, nonnegative or top-n restart selection and supports
-`init_batch_limit` for raw scoring. Candidate `batch_limit`, forced parallel
-SciPy mode and aggregation limits raise explicit errors. Batched model restart selection, acquisition sequences,
-specialized mixed/discrete/cyclic optimization and remaining initial-condition
-heuristics still need the Torch path. Unsupported configurations raise errors.
+device-resident Boltzmann, nonnegative or top-n restart selection, including
+model batches and `init_batch_limit` raw scoring. Candidate `batch_limit`,
+low-level aggregation chunks and acquisition sequences now retain their device
+execution. Specialized mixed/discrete/cyclic optimization and remaining
+initial-condition heuristics are still being completed. See
+[optimization verification](torch-optimization.md).
 
 MAP SAAS, additive MAP SAAS and MAP SAAS ensembles now retain their coupled
 shrinkage priors and fitting graphs on device. See [MAP SAAS verification](torch-map-saas.md).
@@ -96,9 +97,15 @@ fantasies and higher-order graphs. EUBO and pairwise BALD acquisitions retain
 their preference-model graphs. Device Fourier priors and exact Matheron paths
 support pathwise acquisitions; see [pathwise verification](pathwise-public-constructors.md).
 
-Remaining GPU families and configurations include learned-preference objective
-integration, contextual, heterogeneous and empirical multitask models, and
-robust relevance pursuit.
+Heterogeneous multitask models now retain their training-list, imputation,
+query, noise and parameter graphs on device. Learned preference objectives
+support ordinary and batched preference models with full-joint noisy improvement
+and repeated backward through baseline pruning. Sparse and robust GPs use real
+device outlier noise and relevance-pursuit fits.
+
+Remaining GPU families and configurations include contextual and empirical
+multitask models, preference-ensemble integration, sparse conditioning and
+relevance-pursuit search limits, and parts of the standalone kernel catalogue.
 Some are under active implementation. Device-resident NUTS fits scalar and
 latent-task multitask Matérn, SAAS and linear fully Bayesian models. Custom
 probabilistic overrides remain unsupported. See

@@ -9,6 +9,7 @@ from botorch_rs import _botorch_rs as _rs
 from botorch_rs import _ops
 from botorch_rs._arrays import kind_of, to_flat
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
+from botorch_rs.models.hierarchical.conditional_kernel_gp import _torch_requested
 from botorch_rs.models.kernels.heterogeneous_multitask import MultiTaskConditionalKernel, _features
 from botorch_rs.models.multitask import MultiTaskGP
 
@@ -19,6 +20,17 @@ class HeterogeneousMTGP(MultiTaskGP):
     Spatial and task-membership covariances, exact GP inference, priors,
     derivatives, and fitting use the Rust kernels and multitask model.
     """
+
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        values = [*args, *kwargs.values()]
+        flattened = [
+            item for value in values for item in (value if isinstance(value, list) else [value])
+        ]
+        if cls is HeterogeneousMTGP and _torch_requested(backend, *flattened):
+            from botorch_rs.models._torch_backend_heterogeneous import TorchHeterogeneousMTGP
+
+            return object.__new__(TorchHeterogeneousMTGP)
+        return object.__new__(cls)
 
     def __init__(
         self,
@@ -34,6 +46,8 @@ class HeterogeneousMTGP(MultiTaskGP):
         input_transform: Any = None,
         outcome_transform: Any = None,
         validate_task_values: bool = True,
+        *,
+        backend: str = "auto",
     ) -> None:
         features = _features(feature_indices)
         count = len(features)

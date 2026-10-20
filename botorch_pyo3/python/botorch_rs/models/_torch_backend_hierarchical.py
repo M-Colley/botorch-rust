@@ -42,7 +42,7 @@ class TorchHierarchicalConditionalKernel(TorchKernel, HierarchicalConditionalKer
         kwargs.pop("backend", None)
         source = HierarchicalConditionalKernel(*args, **kwargs) if _source is None else _source
         like = torch.empty((), dtype=torch.get_default_dtype()) if _like is None else _like
-        TorchKernel.__init__(self, like)
+        TorchKernel.__init__(self, like, source.active_dims)
         self.batch_shape = torch.Size()
         self.dim = source.dim
         self.hierarchical_dependencies = source.hierarchical_dependencies
@@ -102,9 +102,14 @@ class TorchHierarchicalConditionalKernel(TorchKernel, HierarchicalConditionalKer
         last_dim_is_batch: bool = False,
         **params: Any,
     ) -> Tensor:
+        x1, x2 = self._inputs(x1, x2)
+        return self._forward_selected(x1, x2, diag, last_dim_is_batch)
+
+    def _forward_selected(
+        self, x1: Tensor, x2: Tensor, diag: bool, last_dim_is_batch: bool
+    ) -> Tensor:
         if last_dim_is_batch:
             raise UnsupportedError("Hierarchical kernels do not define feature batches.")
-        x1, x2 = self._inputs(x1, x2)
         result: Tensor | None = None
         for kernel, indices, path in zip(
             self.kernels, self.ancestor_indices, self.paths, strict=True
@@ -117,7 +122,7 @@ class TorchHierarchicalConditionalKernel(TorchKernel, HierarchicalConditionalKer
                 x2[..., indices], targets.unsqueeze(-2), rtol=RTOL, atol=ATOL
             ).all(-1)
             gate = (left & right) if diag else (left.unsqueeze(-1) & right.unsqueeze(-2))
-            value = kernel(x1, x2, diag=diag, **params) * gate
+            value = kernel(x1, x2, diag=diag) * gate
             result = value if result is None else result + value
         if result is None:
             shape = torch.broadcast_shapes(x1.shape[:-2], x2.shape[:-2])

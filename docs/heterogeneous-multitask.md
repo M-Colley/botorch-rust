@@ -40,6 +40,36 @@ values must be `0..len(feature_indices)-1`. Fractional task indicators are
 rejected, rather than silently truncated. Other outcome transforms and
 tensor-valued prediction noise retain the explicit native multitask limits.
 
+## GPU and higher-order autograd
+
+`backend="torch"` selects real Tensor implementations of `HeterogeneousMTGP`,
+`MultiTaskConditionalKernel`, `CombinatorialCovarModule` and `DeltaKernel`.
+CUDA or gradient-bearing training lists automatically select the Tensor GP.
+Covariance gates, empirical imputation, coupled SAAS priors, means, noise and
+Gaussian inference stay on device. Native conditional kernel descriptors can
+also be converted inside exact Tensor models and scaled kernel trees.
+
+The GP retains the original task observations as device buffers and rebuilds
+their embedding graph for each evaluation. Repeated independent backwards
+therefore reach original training inputs, outcomes and fixed variances without
+reusing a freed constructor-time graph. Target conditioning, transformed noise,
+multidimensional fantasies and their higher-order graphs use that same target
+embedding. Explicit full-space `set_train_data` replaces the constructor's
+source lists. Empty source or target tasks are supported when the joint data
+is nonempty. Fixed predictive noise for an unobserved task uses the global
+observed mean, following the repair proposed in
+[BoTorch #3389](https://github.com/meta-pytorch/botorch/pull/3389).
+
+Forty focused CPU/CUDA cases check official kernel/posterior/likelihood and
+first-gradient parity, numerical data/query gradcheck and gradgradcheck,
+all-parameter higher derivatives and repeated backwards, independent Gaussian
+conditioning, empty tasks, source migration and forbidden host-array conversions.
+The integrated heterogeneous, hierarchical and multitask Tensor suites passed
+125 cases. The existing heterogeneous native and helper suites also passed.
+Training data are unbatched per task; query and fantasy batches are supported.
+Categorical task labels remain discrete, and Tensor prediction-noise values
+retain the underlying MultiTaskGP restriction.
+
 ## Verified upstream conditioning bug and solution
 
 At official revision `b0dd01be6`, create a `HeterogeneousMTGP` with feature maps

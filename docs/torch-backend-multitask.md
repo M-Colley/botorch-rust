@@ -42,7 +42,9 @@ single long-format statistics across selected tasks, including nonlinear chains.
 factor rows from the observed-task average, following upstream's explicit
 parameter mutation. No mathematical gradient tie to the observed rows is
 introduced by that initialization. Fixed predictive noise for an unobserved
-task is rejected because no per-task empirical average exists.
+task uses the global observed mean when no task-specific average exists,
+following the corrected native/empirical rule proposed in
+[BoTorch #3389](https://github.com/meta-pytorch/botorch/pull/3389).
 
 Conditioning appends observations in the original long-format input layout,
 including the task column, with a single target column. Observation and model

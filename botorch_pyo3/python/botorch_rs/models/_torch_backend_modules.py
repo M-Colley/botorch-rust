@@ -853,6 +853,7 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
         ScaleKernel,
     )
     from botorch_rs.models.hierarchical.conditional_kernel_gp import HierarchicalConditionalKernel
+    from botorch_rs.models.kernels.heterogeneous_multitask import MultiTaskConditionalKernel
     from botorch_rs.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
 
     if source is None:
@@ -888,6 +889,12 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
             )
 
             result = TorchHierarchicalConditionalKernel(_source=kernel, _like=train_X)
+        elif type(kernel) is MultiTaskConditionalKernel:
+            from botorch_rs.models._torch_backend_heterogeneous import (
+                TorchMultiTaskConditionalKernel,
+            )
+
+            result = TorchMultiTaskConditionalKernel(_source=kernel, _like=train_X)
         else:
             raise UnsupportedError(
                 "Torch backend kernels currently support RBF, Matérn, RQ, Periodic, Cosine, Linear, Polynomial, Scale, Additive and Product; a custom torch.nn.Module kernel is also accepted."

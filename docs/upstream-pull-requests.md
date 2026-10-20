@@ -43,7 +43,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Composite lazy feature counts | New [GPyTorch #2818](https://github.com/cornellius-gp/gpytorch/pull/2818), including composite feature indexing |
 | Model-list joint covariance blocks | Existing [BoTorch #3409](https://github.com/meta-pytorch/botorch/pull/3409) and [#3412](https://github.com/meta-pytorch/botorch/pull/3412); exact workaround coverage under audit |
 | Variational unbatched zero-mean conversion | New [GPyTorch #2813](https://github.com/cornellius-gp/gpytorch/pull/2813) |
-| Neural-kernel self-diagonal clipping convention | Paired-input repair exists in [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387); self-covariance consistency pending |
+| Neural-kernel self-diagonal consistency, zero-clipping derivatives and large-variance overflow | New [BoTorch #3492](https://github.com/meta-pytorch/botorch/pull/3492); 19 tests and 31 subtests pass. Separate paired-input repair remains in [#3387](https://github.com/meta-pytorch/botorch/pull/3387) |
 | Constant-target transform first/second derivatives | New [BoTorch #3468](https://github.com/meta-pytorch/botorch/pull/3468) |
 | Periodic/cosine second derivatives | New [GPyTorch #2816](https://github.com/cornellius-gp/gpytorch/pull/2816) |
 | Polynomial feature-batched offset | New [GPyTorch #2814](https://github.com/cornellius-gp/gpytorch/pull/2814) |
@@ -63,7 +63,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Pairwise self-comparisons after duplicate consolidation | Native and GPU cancel the comparison; upstream scatter-add repair and regression in progress |
 | Multistep incumbent units and batched analytic thresholds | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) and [#3453](https://github.com/meta-pytorch/botorch/pull/3453) |
 | Multistep fantasy base ranges and query-batch tree layout | Existing [BoTorch #3452](https://github.com/meta-pytorch/botorch/pull/3452) |
-| TriangularLinearOperator second derivatives through matrix parameters | Confirmed first-order-only VJP; narrow analytic-VJP enhancement and regression in preparation |
+| TriangularLinearOperator second derivatives through matrix parameters | Narrow analytic-VJP enhancement in new [linear_operator #152](https://github.com/cornellius-gp/linear_operator/pull/152); 130 tests and 12 subtests pass |
 | Port cosine float32 large-phase accuracy | Fixed in `4f1ad62`; CPU/CUDA regressions fail against old frozen binary and all 132 focused tensor cases pass with repair |
 
 ## Retracted report

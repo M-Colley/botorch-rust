@@ -160,4 +160,10 @@ matrix. A complete upstream implementation must preserve active dimensions
 and batch broadcasting, and define paired `diag=True` semantics for
 different input sets. Duplicate off-diagonal inputs with zero epsilon and
 zero-variance parameter limits require their own stable treatment. No
-production kernel source is changed by this audit.
+production port kernel source is changed by this audit. The upstream repair is
+now submitted in [BoTorch #3492](https://github.com/meta-pytorch/botorch/pull/3492).
+Its production implementation handles coincident pairs using the preceding
+cross covariance, preserving mixed derivatives when equal values are supplied
+as separate input tensors. All 19 source tests and 31 subtests pass; 20 new
+subtests fail against unchanged upstream. Zero-variance limits remain outside
+that repair.

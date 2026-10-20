@@ -8,6 +8,7 @@ from typing import Any
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_flat, kind_of, to_flat
 from botorch_rs.kernels import Kernel, MaternKernel, ScaleKernel, _KernelList
+from botorch_rs.models.hierarchical.conditional_kernel_gp import _torch_requested
 from botorch_rs.models.map_saas import add_saas_prior
 from botorch_rs.utils.constraints import LogTransformedInterval
 
@@ -83,6 +84,16 @@ def map_subsets(
 class DeltaKernel(Kernel):
     """Exact zero/one covariance ``1[x1 == 1] * 1[x2 == 1]`` for one feature."""
 
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        if cls is DeltaKernel and _torch_requested(backend):
+            from botorch_rs.models._torch_backend_heterogeneous import TorchDeltaKernel
+
+            return object.__new__(TorchDeltaKernel)
+        return object.__new__(cls)
+
+    def __init__(self, *args: Any, backend: str = "auto", **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+
     def _base_node(self) -> _rs.KernelNode:
         node_type: Any = _rs.KernelNode
         return node_type.activation([(0, 1.0)])
@@ -120,7 +131,14 @@ class DeltaKernel(Kernel):
 class CombinatorialCovarModule(ScaleKernel):
     """Native scaled Matérn-5/2 covariance on binary feature memberships."""
 
-    def __init__(self, ard_num_dims: int | None = None) -> None:
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        if cls is CombinatorialCovarModule and _torch_requested(backend):
+            from botorch_rs.models._torch_backend_heterogeneous import TorchCombinatorialCovarModule
+
+            return object.__new__(TorchCombinatorialCovarModule)
+        return object.__new__(cls)
+
+    def __init__(self, ard_num_dims: int | None = None, *, backend: str = "auto") -> None:
         base = MaternKernel(nu=2.5, ard_num_dims=ard_num_dims)
         if ard_num_dims is not None and ard_num_dims > 1:
             add_saas_prior(base)
@@ -134,12 +152,23 @@ class MultiTaskConditionalKernel(Kernel):
     binary subset memberships. Task indicators are discrete integer indices.
     """
 
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        if cls is MultiTaskConditionalKernel and _torch_requested(backend):
+            from botorch_rs.models._torch_backend_heterogeneous import (
+                TorchMultiTaskConditionalKernel,
+            )
+
+            return object.__new__(TorchMultiTaskConditionalKernel)
+        return object.__new__(cls)
+
     def __init__(
         self,
         feature_indices: list[list[int]],
         task_feature_index: int = -1,
         use_saas_prior: bool = True,
         use_combinatorial_kernel: bool = True,
+        *,
+        backend: str = "auto",
     ) -> None:
         super().__init__()
         features = _features(feature_indices)

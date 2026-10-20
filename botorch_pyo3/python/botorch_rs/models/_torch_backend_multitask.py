@@ -478,12 +478,12 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         mask = train_tasks.unsqueeze(-1) == torch.arange(self.num_tasks, device=mapped_X.device)
         counts = mask.sum(-2)
         noise_by_task = (fixed.unsqueeze(-1) * mask).sum(-2) / counts.clamp_min(1)
+        # An unobserved task has no task-specific noise estimate. Use the
+        # observed global mean, matching the repaired native/empirical law.
+        noise_by_task = torch.where(counts > 0, noise_by_task, fixed.mean(-1, keepdim=True))
         query_tasks = mapped_X[..., self._task_feature].long()
         batch = torch.broadcast_shapes(noise_by_task.shape[:-1], query_tasks.shape[:-1])
         tasks = query_tasks.expand(*batch, query_tasks.shape[-1])
-        available = counts.expand(*batch, self.num_tasks).gather(-1, tasks)
-        if bool((available == 0).any()):
-            raise UnsupportedError("Cannot infer fixed observation noise for an unobserved task.")
         return noise_by_task.expand(*batch, self.num_tasks).gather(-1, tasks)
 
     def _noise_at(self, mapped_X: Any) -> Any:
