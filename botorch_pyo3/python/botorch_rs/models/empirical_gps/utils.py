@@ -1,8 +1,7 @@
-"""Empirical GP matrix and interpolation helpers implemented in Rust.
+"""Empirical GP matrix and interpolation helpers.
 
-Python handles array layout and module metadata. Interpolation, covariance,
-PSD projection and shrinkage have native first-order vector-Jacobian products.
-Decomposition of historical basis data is presently a fixed-data operation.
+List and NumPy numerics use Rust. Tensor inputs use device-local Torch algebra
+with complete autograd; native fixed-data decomposition remains selectable.
 """
 
 from __future__ import annotations
@@ -91,6 +90,8 @@ def _constraint_container(constraint: Any, like: Any) -> Any:
             inverse_transform = transform
 
             def check(self, value: Any) -> bool:
+                if isinstance(value, torch.Tensor):
+                    return bool(((value >= self.lower_bound) & (value <= self.upper_bound)).all())
                 return all(self._native.check(v) for v in to_flat(value)[0])
 
             check_raw = check
@@ -164,13 +165,24 @@ def _native(operation: str, options: tuple[Any, ...], *inputs: Any) -> Any:
     return _evaluate(operation, options, inputs)
 
 
-def compute_orthogonal_basis(A: Any, method: str = "svd") -> Any:
+def compute_orthogonal_basis(A: Any, method: str = "svd", *, backend: str = "auto") -> Any:
     """Economy basis B satisfying B.T @ B = A.T @ A, for arbitrary batches."""
+    if backend not in ("auto", "native", "torch"):
+        raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+    if is_torch_tensor(A) and backend != "native":
+        from botorch_rs.models.empirical_gps._torch_utils import orthogonal_basis
+
+        return orthogonal_basis(A, method)
+    if backend == "torch":
+        raise TypeError("The Tensor basis backend requires Tensor input.")
     _reject_decomposition_grad(A)
     return _pair_output(_rs.empirical_orthogonal_basis(to_flat(A), method), kind_of(A))
 
 
 def center_curves(Y: Any, curve_dim: int = -2) -> tuple[Any, Any]:
+    if is_torch_tensor(Y):
+        mean = Y.mean(dim=curve_dim, keepdim=True)
+        return mean.squeeze(curve_dim), Y - mean
     shape = _ops.shape_of(Y)
     if not shape or not -len(shape) <= curve_dim < len(shape):
         raise IndexError("curve_dim is outside the historical curve dimensions.")
@@ -182,6 +194,10 @@ def center_curves(Y: Any, curve_dim: int = -2) -> tuple[Any, Any]:
 def compute_sample_covariance(
     U1: Any, U2: Any | None, num_curves: int, diag: bool = False, correction: int = 0
 ) -> Any:
+    if is_torch_tensor(U1):
+        from botorch_rs.models.empirical_gps._torch_utils import covariance
+
+        return covariance(U1, U2, num_curves, diag, correction)
     U2 = U1 if U2 is None else U2
     left, right = _ops.shape_of(U1), _ops.shape_of(U2)
     if len(left) < 2 or len(right) < 2 or left[-2] != right[-2]:
@@ -209,6 +225,12 @@ def compute_basis_matrix(
 ) -> Any:
     basis = _moveaxis(f(x), 1, -2)
     if curve_weights is not None:
+        if is_torch_tensor(basis):
+            import torch
+
+            return basis * torch.as_tensor(
+                curve_weights, device=basis.device, dtype=basis.dtype
+            ).unsqueeze(-1)
         weights = _reshape(curve_weights, (*_ops.shape_of(curve_weights), 1))
         basis = _ops.apply("mul", basis, weights)
     return basis
@@ -232,8 +254,11 @@ def instantiate_ard(
         raise ValueError("num_curves must be positive.")
     generated = curve_weights is None
     if generated:
-        kind = ArrayKind("torch", dtype or torch.float32, device) if torch is not None else LIST
-        curve_weights = from_flat([1.0] * num_curves, (num_curves,), kind)
+        curve_weights = (
+            torch.ones(num_curves, dtype=dtype or torch.float32, device=device)
+            if torch is not None
+            else [1.0] * num_curves
+        )
     if (
         torch is not None
         and isinstance(obj, torch.nn.Module)
@@ -279,6 +304,13 @@ def _gather_final(y: Any, indices: list[int]) -> Any:
 
 class LinearInterpolation1D:
     """Native piecewise-linear interpolation with outer query batching."""
+
+    def __new__(cls, x: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if cls is LinearInterpolation1D and is_torch_tensor(x):
+            from botorch_rs.models.empirical_gps._torch_utils import TensorInterpolation
+
+            return object.__new__(TensorInterpolation)
+        return object.__new__(cls)
 
     def __init__(
         self,
@@ -326,10 +358,19 @@ class LinearInterpolation1D:
 def _interp1d_torch(
     x: Any, y: Any, x_new: Any, bounds_error: bool | None = None, fill_value: float = math.nan
 ) -> Any:
+    if is_torch_tensor(x):
+        from botorch_rs.models.empirical_gps._torch_utils import interpolate
+
+        return interpolate(x, y, x_new, bounds_error, fill_value)
     return _native("interp", (bounds_error is not False, fill_value), x, y, x_new)
 
 
 def _interp1d_raise_out_of_bounds_error(x_new: Any, x: Any) -> None:
+    if is_torch_tensor(x):
+        if x_new.numel() and x.numel() and bool(((x_new < x.min()) | (x_new > x.max())).any()):
+            side = "below" if bool((x_new < x.min()).any()) else "above"
+            raise ValueError(f"A value in x_new is {side} the interpolation range.")
+        return
     queries, knots = to_flat(x_new)[0], to_flat(x)[0]
     if not queries or not knots:
         return
@@ -412,6 +453,10 @@ class UniqueInputs:
 
 def build_unique_inputs(datasets: list[ExperimentDataset], X_forward: Any = None) -> UniqueInputs:
     arrays = [d.X for d in datasets] + ([] if X_forward is None else [X_forward])
+    if arrays and is_torch_tensor(arrays[0]):
+        from botorch_rs.models.empirical_gps._torch_utils import unique_inputs
+
+        return unique_inputs(datasets, X_forward)
     if not arrays:
         raise ValueError("Cannot build unique inputs: datasets is empty and X_forward is None.")
     flats = [to_flat(x) for x in arrays]
@@ -432,10 +477,20 @@ def build_unique_inputs(datasets: list[ExperimentDataset], X_forward: Any = None
 
 
 def project_psd(A: Any, min_eigval: float = 0.0) -> Any:
+    if is_torch_tensor(A):
+        if A.ndim < 2 or A.shape[-1] != A.shape[-2] or not math.isfinite(min_eigval):
+            raise ValueError("PSD projection requires square matrices and a finite min_eigval.")
+        from botorch_rs.models.empirical_gps._torch_em import psd_projection
+
+        return psd_projection(A, min_eigval)
     return _native("psd", (float(min_eigval),), A)
 
 
 def trace_matched_shrinkage(cov: Any, target: Any, alpha: Any) -> Any:
+    if is_torch_tensor(cov):
+        from botorch_rs.models.empirical_gps._torch_utils import shrinkage
+
+        return shrinkage(cov, target, alpha)
     if len(to_flat(alpha)[0]) != 1:
         raise ValueError("Shrinkage intensity alpha must be scalar.")
     return _native("shrinkage", (), cov, target, alpha)
@@ -448,6 +503,10 @@ def em_prior_to_basis_curves(
     correction: int = 0,
     eigenvalue_tol: float = 0.0,
 ) -> Any:
+    if is_torch_tensor(Sigma):
+        from botorch_rs.models.empirical_gps._torch_utils import basis_curves
+
+        return basis_curves(mu, Sigma, num_modes, correction, eigenvalue_tol)
     _reject_decomposition_grad(Sigma)
     if num_modes is not None and num_modes < 1:
         raise ValueError(f"num_modes must be >= 1 if specified; got {num_modes}.")

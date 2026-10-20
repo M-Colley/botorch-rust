@@ -488,3 +488,48 @@ identity and descriptor updates, raw-target joint likelihood and shared Hessians
 both coordinate optimizers with fixed/learned locations and selected datasets,
 full-data EM refreshes, default no-op/zero-cycle behavior, and independent history
 snapshots. The helper, Tensor EM and legacy KL suites passed 76 tests together.
+
+
+### Public numerical utilities on Tensor inputs
+
+The public functions in `models.empirical_gps.utils` now keep Tensor numerical
+work and graphs on their device: curve centering, sample covariance, orthogonal
+bases, mean/basis interpolants and weighted basis evaluation, PSD projection,
+trace-matched shrinkage, and EM-prior synthesis. Unique-row grids and integer
+membership maps also stay on device, with explicit detached/discrete membership
+semantics. The native fixed-data basis implementation remains available with
+`compute_orthogonal_basis(..., backend="native")`. Lists and NumPy keep their
+native numerical paths. ARD initialization allocates Tensor weights on the
+requested device and constraint checks compare actual Tensor bounds there.
+
+`LinearInterpolation1D` becomes an actual Torch module for Tensor data, retaining
+its four persistent state keys and the source's logical default fill dtype.
+Raw source buffers retain data graphs; sorting and gathering are rebuilt during
+each forward so independent backward calls work. Device/dtype moves preserve
+these live sources. Loading state or explicitly replacing public table buffers
+installs the supplied tables as interpolation data; it does not recreate the
+external constructor tensors' former graphs. Queries retain gradients through
+loaded tables. Out-of-range filling and NaN query propagation match the source.
+Mean/basis builders retain their ordinary construction graphs; rebuilding a
+builder reconstructs its statistics or decomposition for a new training graph.
+Spectral basis orientation and rank selection retain their usual nonsmooth
+boundaries at repeated singular/eigenvalues and threshold crossings.
+
+Two pinned-source defects are isolated in `test_torch_empirical_utils.py`:
+
+- For a wide `3 x 8` matrix with `diag(1,2,3)` in the first three columns,
+  `compute_orthogonal_basis(A, "eigh")` forms an `8 x 8` column Gram with five
+  repeated artificial zero eigenvalues. Even the first derivative of
+  `||(B.T @ B)||²` is NaN. The port uses the smaller row Gram when rows are fewer
+  than columns and returns `U.T @ A`; rows retain their singular scaling and
+  `B.T @ B == A.T @ A`. No artificial nullspace enters the derivative.
+- `LinearInterpolation1D` sorts differentiable knots/values once in its
+  constructor. A second independent backward through the interpolant then
+  raises a consumed-graph error. Rebuilding the sort/gather from raw sources
+  during forward fixes this without retaining an old graph.
+
+CPU/CUDA tests compare complete covariance and basis Gram derivatives and mixed
+Hessians, compressed and uncompressed interpolation pipelines, repeated module
+backward calls, state round trips, fill behavior, synthetic moment recovery,
+PSD gradients in mixed repeated eigenspaces, shrinkage, metadata and constraints.
+The new device utility and legacy utility suites passed 73 tests together.

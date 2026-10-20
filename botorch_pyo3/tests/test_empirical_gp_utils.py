@@ -91,7 +91,7 @@ def test_official_orthogonal_basis_gram_invariant(
         a.transpose(-1, -2) @ a, b.transpose(-1, -2) @ b, rtol=1e-10, atol=1e-10
     )
     with pytest.raises(UnsupportedError, match="decomposition gradients"):
-        rs.compute_orthogonal_basis(A.requires_grad_(), method)
+        rs.compute_orthogonal_basis(A.requires_grad_(), method, backend="native")
 
 
 def test_official_covariance_and_interpolation_values_and_gradients(official: object) -> None:
