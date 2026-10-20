@@ -17,6 +17,10 @@ Laplace marginal log likelihood and its gradient, and the fit are computed
 in Rust. The random perturbation of the initial utility for new data is
 drawn from numpy's global generator (``np.random.standard_normal``), as in
 BoTorch, so that ``np.random.seed`` gives BoTorch's starting points.
+
+``backend="torch"`` uses device-resident Laplace inference with an implicit
+autograd mode solve instead. It is selected automatically for CUDA inputs
+or inputs requiring gradients. See ``docs/torch-pairwise-gp.md``.
 """
 
 from __future__ import annotations
@@ -206,6 +210,30 @@ class PairwiseGP(Model, FantasizeMixin):
         "consolidated_indices",
     ]
 
+    def __new__(
+        cls,
+        datapoints: Any = None,
+        comparisons: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        if cls is PairwiseGP and _use_torch_backend(
+            backend,
+            datapoints,
+            comparisons,
+            *args,
+            kwargs.get("likelihood"),
+            kwargs.get("covar_module"),
+            kwargs.get("input_transform"),
+        ):
+            from botorch_rs.models._torch_backend_pairwise import TorchPairwiseGP
+
+            return object.__new__(TorchPairwiseGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         datapoints: Any,
@@ -219,6 +247,7 @@ class PairwiseGP(Model, FantasizeMixin):
         consolidate_rtol: float = 0.0,
         consolidate_atol: float = 1e-4,
         maxfev: int | None = None,
+        backend: str = "auto",
     ) -> None:
         r"""
         Args:
@@ -1151,6 +1180,18 @@ class PairwiseLaplaceMarginalLogLikelihood(MarginalLogLikelihood):
 
     #: ``fit_gpytorch_mll`` fits this MLL natively.
     _rs_fit = True
+
+    def __new__(cls, likelihood: Any, model: Any) -> Any:
+        if (
+            cls is PairwiseLaplaceMarginalLogLikelihood
+            and getattr(model, "_tensor_backend", None) == "torch"
+        ):
+            from botorch_rs.models._torch_backend_pairwise import (
+                TorchPairwiseLaplaceMarginalLogLikelihood,
+            )
+
+            return object.__new__(TorchPairwiseLaplaceMarginalLogLikelihood)
+        return object.__new__(cls)
 
     def __init__(self, likelihood: Any, model: PairwiseGP) -> None:
         """
