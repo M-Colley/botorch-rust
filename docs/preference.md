@@ -11,6 +11,12 @@ pairwise and IID samplers, and the input constructors of EUBO and qEUBO.
 Reference: BoTorch main at da00e0401 and BoTorch 0.18.1 (identical in all
 files of this phase), torch 2.13 and 2.14.1, scipy 1.18.
 
+The current [PairwiseGP input-transform audit](pairwise-input-transforms.md)
+supersedes the original phase's learned-transform restriction. Native Warp
+fitting, full Laplace gradients, shared/per-member batch ownership, nested
+conditioning, and atomic data replacement are validated against official
+BoTorch revision `b0dd01be6`.
+
 The branch is merged with main at 41b2ae3 (phase 8b): the EUBO constructors
 are registered in phase 8b's input-constructor registry,
 `LearnedObjective`'s vector-Jacobian product uses phase 8b's
@@ -37,7 +43,7 @@ constructors). Tests: `botorch_core/tests/preference_10b_parity.rs`
 
 | BoTorch name | botorch_rs name | notes |
 | --- | --- | --- |
-| `botorch.models.PairwiseGP` | `botorch_rs.models.PairwiseGP` | `likelihood`, `covar_module` (any `ScaleKernel` tree), `input_transform` (without learned parameters), `jitter`, `xtol`, `consolidate_rtol` / `consolidate_atol`, `maxfev`; batched data; prior-only models; `posterior`, `condition_on_observations`, `fantasize` (pairwise samplers), `set_train_data`, `load_state_dict`, `construct_inputs` (BoTorch's `RankingDataset`), BoTorch's buffers (`utility`, `covar`, `covar_chol`, `covar_inv`, `likelihood_hess`, `hlcov_eye`, `D`, `DT`, `_x0`, ...) |
+| `botorch.models.PairwiseGP` | `botorch_rs.models.PairwiseGP` | `likelihood`, `covar_module` (`ScaleKernel` trees), `input_transform` (native Warp with shared or per-member concentrations; [scope](pairwise-input-transforms.md)), `jitter`, `xtol`, `consolidate_rtol` / `consolidate_atol`, `maxfev`; batched data; prior-only models; `posterior`, `condition_on_observations`, `fantasize` (pairwise samplers), `set_train_data`, `load_state_dict`, `construct_inputs` (BoTorch's `RankingDataset`), BoTorch's buffers (`utility`, `covar`, `covar_chol`, `covar_inv`, `likelihood_hess`, `hlcov_eye`, `D`, `DT`, `_x0`, ...) |
 | `botorch.models.pairwise_gp.PairwiseLaplaceMarginalLogLikelihood` | `botorch_rs.models.PairwiseLaplaceMarginalLogLikelihood` | `mll(model(datapoints), comparisons)` or `mll()`; `value_and_grad(raw)` (botorch_rs extension: BoTorch's autograd gradient, computed natively) |
 | `botorch.fit.fit_gpytorch_mll` (Laplace MLL) | `botorch_rs.fit.fit_gpytorch_mll` | L-BFGS-B with retries from prior samples, every evaluation warm-started like BoTorch's training forward pass |
 | `botorch.models.likelihoods.pairwise.PairwiseLikelihood`, `PairwiseProbitLikelihood`, `PairwiseLogitLikelihood` | `botorch_rs.models.likelihoods.pairwise.*` | `p`, `log_p`, `negative_log_gradient_sum`, `negative_log_hessian_sum` (evaluated in Rust, not differentiable with torch), `forward` (a torch `Bernoulli`) |
@@ -103,10 +109,11 @@ ComposedModel, compose, posterior_samples_vjp}` (qEUBO is `QSimpleRegret` on
 
 ## What remains unported (in this area)
 
-- Input transforms with learned parameters (e.g. `Warp`) and one-to-many
-  transforms (`InputPerturbation`) in `PairwiseGP`: `UnsupportedError`
-  (learned transforms would need the transform's derivatives through the
-  Laplace approximation; not in scope).
+- Learned Warp transforms are implemented natively, including their full
+  Laplace-evidence derivatives; see the current audit linked above for
+  supported chains and parameter batch shapes. One-to-many transforms
+  (`InputPerturbation`), reverse warping, and coefficient-learning steps
+  after a learned transform retain explicit errors.
 - The initial learned-objective MC gap is resolved; see the current audit
   linked above. Stochastic learned objectives use full-joint noisy improvement
   sampling to preserve preference correlations, correcting the official
