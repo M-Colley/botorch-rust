@@ -341,6 +341,8 @@ class AcquisitionFunction:
     def __new__(cls, *args: Any, **kwargs: Any) -> Any:
         model = args[0] if args else kwargs.get("model")
         if model is None:
+            model = kwargs.get("pref_model")
+        if model is None:
             model = kwargs.get("acq_function", kwargs.get("base_value_function"))
         if getattr(model, "_tensor_backend", None) == "torch":
             from botorch_rs.acquisition._torch_backend_acquisition import tensor_acquisition

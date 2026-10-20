@@ -83,6 +83,13 @@ _ENTROPY = frozenset(
         "qLowerBoundMultiObjectiveMaxValueEntropySearch",
     }
 )
+_PREFERENCE = frozenset(
+    {
+        "AnalyticExpectedUtilityOfBestOption",
+        "qExpectedUtilityOfBestOption",
+        "PairwiseBayesianActiveLearningByDisagreement",
+    }
+)
 _TYPES: dict[type, type] = {}
 _LOG_2PI = math.log(2 * math.pi)
 
@@ -98,13 +105,18 @@ def tensor_acquisition(public_class: type) -> Any:
         | _EXTRA_ANALYTIC
         | _WRAPPERS
         | _ENTROPY
+        | _PREFERENCE
         or not public_class.__module__.startswith("botorch_rs.acquisition.")
     ):
         raise UnsupportedError(f"{public_class.__name__} does not yet support backend='torch'.")
     subtype = _TYPES.get(public_class)
     if subtype is None:
         mixin: type = _TensorAcquisition
-        if public_class.__name__ in _MULTI_OBJECTIVE:
+        if public_class.__name__ in _PREFERENCE:
+            from botorch_rs.acquisition._torch_backend_preference import TensorPreferenceAcquisition
+
+            mixin = TensorPreferenceAcquisition
+        elif public_class.__name__ in _MULTI_OBJECTIVE:
             from botorch_rs.acquisition._torch_backend_multi_objective import (
                 TensorMultiObjectiveAcquisition,
                 TensorNoisyMultiObjectiveAcquisition,

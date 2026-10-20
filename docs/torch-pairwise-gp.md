@@ -82,3 +82,33 @@ gradients, and all evidence data/parameter gradients with the independent
 reference. Complete mixed evidence Hessian-vector products are compared with
 differences of reference first gradients; prediction products are checked
 against independent finite perturbations of complete functional gradients.
+
+## Preference acquisitions
+
+Analytic EUBO, qEUBO, and pairwise BALD dispatch to device-preserving Tensor
+implementations for Torch utility models. They support deterministic outcome
+maps, analytic previous winners, MC objectives/posterior transforms, qEUBO
+pending points, candidate optimization, and first/second derivatives through
+training data, queries, utility-model parameters, and outcome-map parameters.
+Keyword `pref_model=...` and positional construction select the same backend.
+BALD draws device-local normal samples on each evaluation; qEUBO uses its
+supplied sampler or the default Sobol sampler. Ensemble components use the
+reference's final-axis average.
+
+The 26-case CPU/CUDA acquisition suite compares values and query gradients
+against independent official PairwiseGP models. It also compares complete
+first and mixed second derivatives against the unmodified official acquisition
+formulas fed the same port Gaussian law, so model-law and acquisition-formula
+checks remain separate. Candidate optimization and `value_and_grad` are covered.
+
+For qEUBO, the installed reference sampling dependency drops a higher-order
+graph: `TriangularLinearOperator._bilinear_derivative` inherits a generic
+fallback that calls `autograd.grad` without `create_graph`. For example,
+`grad((TriangularLinearOperator(L) @ z).square().sum(), L,
+create_graph=True)` returns a gradient without a graph for a leaf dense
+triangular `L`, while ordinary Tensor multiplication retains it. The first
+derivative values agree. Consequently qEUBO mixed-Hessian validation uses
+differences of independent reference first derivatives. Delegating the
+triangular wrapper's bilinear derivative to its wrapped operator preserves
+the dense analytic VJP and its graph. This is a demonstrated mathematical
+limitation of that path, not a claim of a library-wide higher-order contract.
