@@ -83,8 +83,9 @@ specialized mixed/discrete/cyclic optimization and remaining initial-condition
 heuristics still need the Torch path. Unsupported configurations raise errors.
 
 Specialized model and entropy/search acquisition families remain outside this
-backend. Tensor-backend NUTS is explicitly unsupported; native CPU NUTS remains
-available. Noisy acquisition root caching currently falls back to exact joint
+backend. Device-resident NUTS now fits scalar Matérn, SAAS and linear fully
+Bayesian models; custom probabilistic overrides and multitask Tensor NUTS remain
+unsupported. [Sampler semantics and verification](torch-fully-bayesian.md). Noisy acquisition root caching currently falls back to exact joint
 sampling with an explicit warning. The 776-name API availability audit does not
 measure GPU or behavioral parity. The old CPU release certificate remains a
 separate artifact and must not be read as a GPU certificate.

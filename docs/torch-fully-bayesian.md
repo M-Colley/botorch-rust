@@ -1,4 +1,4 @@
-# Device-resident loaded-MCMC fully Bayesian models
+# Device-resident fully Bayesian models
 
 `FullyBayesianSingleTaskGP`, `SaasFullyBayesianSingleTaskGP` and
 `FullyBayesianLinearSingleTaskGP` support `backend="torch"`. CUDA training
@@ -64,45 +64,52 @@ reference training-data gradients, `propagate_grads(True)` is enabled; the
 linear model's identical transformed training values are attached to their
 functional graph, because evaluation otherwise detaches that graph.
 
-This checkpoint implements loaded-sample inference. NUTS fitting on this
-backend raises `UnsupportedError` before resetting a fitted model; the existing
-native CPU NUTS implementation remains available. MAP MLL fitting is likewise
-explicitly rejected for these fully Bayesian models. Training inputs remain
-`n x d` with single-output `n x 1` observations, matching the official family;
-this does not add GPU support for fully Bayesian multitask models or arbitrary
-custom Pyro model loaders. A Gaussian mixture requires linear outcome
-transforms. Ensemble acquisition reductions are implemented by the separate
-Torch acquisition adapter.
+`fit_fully_bayesian_model_nuts` now fits these three scalar families directly
+on their training device. The Tensor potential evaluates sorted unconstrained
+latent sites, their prior densities and Jacobians, and the GP likelihood using
+port-owned Torch-dispatched Rust primitives. Multinomial NUTS implements
+leapfrog integration, generalized U-turn checks, progressive proposal selection,
+dual-averaging step adaptation and Welford/Stan-window dense mass adaptation.
+Continuous states, momenta, mass matrices and random draws stay on device;
+Python synchronizes scalar values for tree decisions and diagnostics. This is
+GPU execution with scalar control overhead, rather than a fully compiled GPU
+sampler. Float32 and float64 are supported. Each fit uses a private device-local
+Torch generator and preserves global RNG state. A fixed seed repeats a chain
+on the same device; CPU/CUDA/JAX generators produce different chains.
 
-## Overcomplete linear covariance roots in GPyTorch
+Draw replay can use recorded NumPyro momenta, uniforms and initial sites. Tests
+compare every warmup and sampling state and adapted step size against a pinned
+NumPyro run on both CPU and CUDA, including dense mass adaptation. Potential
+values and gradients are independently compared against JAX and the existing
+native implementation; Hessian-vector products are compared against differences
+of native gradients. Known correlated Gaussian targets test the sampler law.
+Public fitting tests cover thinning, refitting, fixed/inferred noise, sampled
+warps, and prediction/data/parameter first and second derivatives after fitting.
 
-With GPyTorch 1.15.2, a loaded fully Bayesian linear model with input dimension
-`d=3` and `q=2` queried points can retain a `2 x 3` covariance root. The public
-posterior advertises two base-normal coordinates, but
-`MultivariateNormal.rsample` reshapes them using the root's three columns and
-raises. This also occurs without BoTorch:
+Markov transitions, random/discrete tree choices and fitted MCMC draws are
+intentionally detached, as in standard MCMC. The potential itself and loaded
+component predictions support full Torch graphs. Invalid fitting requests leave
+previously loaded components intact. `jit_compile=True` explicitly raises on
+the eager Tensor sampler; the native sampler remains compiled. Progress bars
+are currently omitted by both backends. MAP MLL fitting is explicitly rejected
+for fully Bayesian classes; ordinary MAP SAAS models are a separate family.
+Training inputs remain `n x d` with single-output `n x 1` observations, matching
+the official family. This checkpoint does not add Tensor NUTS for multitask
+models or arbitrary custom Pyro-model overrides. A Gaussian mixture requires
+linear outcome transforms. Ensemble acquisitions use the Torch adapter.
 
-```python
-import torch
-from gpytorch.distributions import MultivariateNormal
-from linear_operator.operators import RootLinearOperator
-from botorch.posteriors.gpytorch import GPyTorchPosterior
+## Canonical sampling and rectangular roots
 
-root = torch.tensor([[1., .2, .3], [.5, 1.1, .7]], dtype=torch.double)
-posterior = GPyTorchPosterior(MultivariateNormal(
-    torch.zeros(2, dtype=torch.double), RootLinearOperator(root)
-))
-assert posterior.base_sample_shape == torch.Size([2])
-posterior.rsample_from_base_samples(torch.Size([4]), torch.zeros(4, 2))
-# RuntimeError: shape ... is invalid for input of size ...
-```
+A loaded reference LinearKernel can retain a `q x d` covariance root when
+`d > q`. GPyTorch correctly advertises `d` base-normal coordinates for that
+root, and accepts samples with its advertised shape. An earlier version of
+these notes incorrectly supplied `q` coordinates and described the resulting
+shape error as an upstream bug. That finding is retracted; no upstream repair
+is warranted by this example.
 
-A conservative workaround constructs a dense GPyTorch MVN from the official
-posterior's existing mean and covariance. This preserves exactly the same
-Gaussian law and uses a canonical square Cholesky root for positive-definite
-covariances. The parity tests use that independent dense reference law for
-shared-normal sampling; original official models supply all compared moments.
-An upstream repair can compress an overcomplete `q x r` root (`r > q`) before
-reshaping the advertised base samples. A reduced QR of its transpose gives
-`R.T`, a `q x q` root with the same covariance and no added jitter. This keeps
-the root dimensions consistent with the public event/base-sample shape.
+The device-resident port uses a square Cholesky root. This is the same Gaussian
+law, with a different valid base-normal representation. To compare samples
+using common `q`-dimensional normals, the parity tests construct an independent
+dense GPyTorch MVN from the official posterior's existing mean and covariance.
+Original reference models supply all compared moments. This oracle selects the
+same canonical square root; it is not a workaround for a reference defect.

@@ -142,10 +142,9 @@ def test_loaded_mcmc_posterior_mixture_moments_and_shared_samples(
             rtol=2e-9,
         )
         z = torch.linspace(-1, 1, 12, dtype=query.dtype, device=device).reshape(6, 1, 1, 2)
-        # LinearKernel can retain a q x d root with d > q; the official
-        # sampler then fails with its advertised q-dimensional base samples.
-        # Densifying the official covariance retains exactly the same law
-        # and selects the canonical Cholesky root for this comparison.
+        # LinearKernel can retain a q x d root with d > q and legitimately
+        # advertises d base normals. Use an independent dense covariance
+        # oracle to compare canonical q-dimensional Cholesky samples.
         dense_reference = ReferencePosterior(
             gpytorch.distributions.MultivariateNormal(
                 expected.distribution.mean, expected.distribution.covariance_matrix
@@ -256,8 +255,8 @@ def test_loaded_mcmc_reset_reload_state_and_immutable_laws(device):
     torch.testing.assert_close(model.posterior(query).mean, old_mean, atol=1e-12, rtol=1e-12)
     model.load_mcmc_samples({name: value[:2] for name, value in draws.items()})
     assert model.posterior(query).mean.shape == (2, 2, 1)
-    with pytest.raises(UnsupportedError, match="NUTS"):
-        fit_fully_bayesian_model_nuts(model, warmup_steps=1, num_samples=1)
+    with pytest.raises(UnsupportedError, match="jit_compile"):
+        fit_fully_bayesian_model_nuts(model, warmup_steps=1, num_samples=1, jit_compile=True)
     assert model.num_mcmc_samples == 2
     with pytest.raises(UnsupportedError, match="not MAP fitting"):
         fit_gpytorch_mll(ExactMarginalLogLikelihood(model.likelihood, model))

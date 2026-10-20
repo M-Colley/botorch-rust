@@ -292,7 +292,8 @@ def fit_fully_bayesian_model_nuts(
     Runs botorch_rs's port of NumPyro's NUTS (as BoTorch: a dense mass
     matrix, step-size and mass-matrix adaptation during the warmup, initial
     values ``init_to_uniform(radius=2)``) on the model's potential energy,
-    evaluated in Rust in double precision.
+    evaluated in Rust in double precision on the native backend, or using
+    device-resident Tensor algebra and autograd on the Torch backend.
 
     Args:
         model: Fully Bayesian GP to be fitted.
@@ -303,10 +304,12 @@ def fit_fully_bayesian_model_nuts(
         thinning: The amount of thinning. Every nth sample is retained.
         disable_progbar: A boolean indicating whether to print the progress
             bar and diagnostics during MCMC (ignored: botorch_rs prints none).
-        jit_compile: Whether to use jit (ignored: the sampler is compiled).
+        jit_compile: Whether to use jit (ignored on the compiled native backend;
+            True is explicitly unsupported on the eager Torch backend).
         seed: Random seed. botorch_rs draws its random numbers from a seeded
             xoshiro256++ generator, not from JAX's PRNG, so the samples
-            differ from BoTorch's for the same seed.
+            differ from BoTorch's for the same seed. The Torch backend uses a
+            private, device-local Torch generator, preserving global RNG state.
         draws: (botorch_rs extension) the random draws of a NumPyro run to
             replay, ``("n", values)`` (standard-normal momenta) and
             ``("u", u, p)`` (the uniform draws of NumPyro's Bernoulli trials),
@@ -322,9 +325,18 @@ def fit_fully_bayesian_model_nuts(
     from botorch_rs._arrays import from_flat
 
     if getattr(model, "_tensor_backend", None) == "torch":
-        raise UnsupportedError(
-            "Tensor-backend fully Bayesian inference requires load_mcmc_samples; "
-            "NUTS sampling is currently available on backend='native'."
+        from botorch_rs.models._torch_backend_mcmc import fit_torch_fully_bayesian_nuts
+
+        return fit_torch_fully_bayesian_nuts(
+            model,
+            max_tree_depth,
+            warmup_steps,
+            num_samples,
+            thinning,
+            jit_compile,
+            seed,
+            draws,
+            init_params,
         )
     model.train()
     potential = model.pyro_model._potential()
