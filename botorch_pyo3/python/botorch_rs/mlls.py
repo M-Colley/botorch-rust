@@ -173,6 +173,18 @@ class SumMarginalLogLikelihood(MarginalLogLikelihood):
                 "The MLLs of the sub-models have shapes that cannot be broadcast: "
                 f"{[tuple(s) for _, s in parts]}."
             )
+        if self.model._kind.lib == "torch":
+            from botorch_rs import _ops
+            from botorch_rs.models._mll_autograd import mll_output
+
+            outputs = [
+                mll_output(mll.model, data, tuple(s))
+                for mll, (data, s) in zip(self.mlls, parts, strict=True)
+            ]
+            total = outputs[0]
+            for output in outputs[1:]:
+                total = _ops.apply("add", total, output, kind=self.model._kind)
+            return _ops.apply("div", total, len(outputs), kind=self.model._kind)
         total = [0.0] * math.prod(shape)
         for data, s in parts:
             for i, v in enumerate(broadcast_to(data, tuple(s), shape)):
