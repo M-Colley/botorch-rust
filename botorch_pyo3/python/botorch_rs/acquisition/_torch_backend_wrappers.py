@@ -58,7 +58,7 @@ class TensorFixedFeature(nn.Module):
         joined = torch.cat((X, values), dim=-1)
         fixed = {
             index: self.d - len(self.columns) + position
-            for position, index in enumerate(sorted(self.columns))
+            for position, index in enumerate(self.columns)
         }
         selector, free = [], 0
         for index in range(self.d):

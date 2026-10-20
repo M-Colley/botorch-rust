@@ -85,9 +85,10 @@ device-resident Boltzmann, nonnegative or top-n restart selection, including
 model batches and `init_batch_limit` raw scoring. Candidate `batch_limit`,
 low-level aggregation chunks and acquisition sequences now retain their device
 execution. Discrete enumeration, lattice local search, mixed combination search,
-acquisition lists and cyclic search now have device implementations. Constrained
-automatic initialization, mixed alternating search and remaining
-initial-condition heuristics are still being completed. See
+acquisition lists and cyclic search now have device implementations. Linear
+constrained automatic initialization, around-best sampling and KG/hypervolume
+initialization heuristics retain their device calculations. Mixed alternating
+search and remaining public initialization helpers are still being completed. See
 [optimization verification](torch-optimization.md).
 
 MAP SAAS, additive MAP SAAS and MAP SAAS ensembles now retain their coupled
@@ -110,9 +111,14 @@ embeddings. Independent and correlated empirical curve models retain historical
 interpolation and basis graphs. The neural kernel now has a genuine device
 backend with consistent coincident self-covariances and higher derivatives.
 
-Remaining GPU families and configurations include LCEM, orthogonal additive and
-empirical multitask/iterative EM models, preference-ensemble integration, sparse conditioning and
-relevance-pursuit search limits, and parts of the standalone kernel catalogue.
+LCEM and orthogonal additive models now retain their full covariance/component
+graphs. Sparse conditioning and fantasies retain the original outlier leaves
+and assign zero outlier noise to appended observation labels; search timeouts
+follow the source's per-fit allocation.
+
+Remaining GPU families and configurations include empirical multitask/iterative
+EM models, preference-ensemble integration, and parts of the standalone kernel
+and public optimization helper catalogues.
 Some are under active implementation. Device-resident NUTS fits scalar and
 latent-task multitask Matérn, SAAS and linear fully Bayesian models. Custom
 probabilistic overrides remain unsupported. See

@@ -12,6 +12,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | --- | --- |
 | Batched LOO and fully Bayesian target layout | Existing [BoTorch #3386](https://github.com/meta-pytorch/botorch/pull/3386) |
 | Shared SAC prior counted repeatedly | New [GPyTorch #2812](https://github.com/cornellius-gp/gpytorch/pull/2812) |
+| SAC structural indices and device metadata after module migration | New [BoTorch #3493](https://github.com/meta-pytorch/botorch/pull/3493); 10 source tests and two migration subtests pass |
 | SAC/LCEA dataset constructors omit optional noise | New [BoTorch #3472](https://github.com/meta-pytorch/botorch/pull/3472) |
 | Latent Kronecker sample covariance, outcome-space moments, time batches and composite factors | New [BoTorch #3488](https://github.com/meta-pytorch/botorch/pull/3488) |
 | Batched Boltzmann normalization | Existing [BoTorch #3435](https://github.com/meta-pytorch/botorch/pull/3435) |
@@ -34,6 +35,8 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Fully Bayesian default multitask warp columns | Existing [BoTorch #3465](https://github.com/meta-pytorch/botorch/pull/3465) |
 | Higher-order fantasy covariance wrappers and sample axes | New [BoTorch #3491](https://github.com/meta-pytorch/botorch/pull/3491); 19 tests and 12 subtests pass |
 | Sequential acquisition dispatch and leaked pending state | New [BoTorch #3469](https://github.com/meta-pytorch/botorch/pull/3469) |
+| Acquisition-list own pending baseline and exception cleanup | Existing [BoTorch #3395](https://github.com/meta-pytorch/botorch/pull/3395) extended with `finally` rollback; seven list tests and four new exception subtests pass |
+| Fixed-feature values follow unsorted caller columns | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391); both port backends corrected and 14 wrapper tests pass |
 | All-fixed candidate feasibility | New [BoTorch #3470](https://github.com/meta-pytorch/botorch/pull/3470) |
 | Correlated empirical fantasies | Existing [BoTorch #3388](https://github.com/meta-pytorch/botorch/pull/3388) |
 | Empty data-loader closure hang | New [BoTorch #3466](https://github.com/meta-pytorch/botorch/pull/3466) |
@@ -58,9 +61,10 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Additive MAP SAAS factory dtype/device | New [BoTorch #3478](https://github.com/meta-pytorch/botorch/pull/3478) |
 | ZeroLinearOperator device/dtype and batched logdet | New [linear_operator #151](https://github.com/cornellius-gp/linear_operator/pull/151) |
 | Multiobjective entropy at infinite integration bounds | New [BoTorch #3485](https://github.com/meta-pytorch/botorch/pull/3485); GPU and native Gaussian-limit and derivative regressions pass |
-| Linear latent-task MCMC loader bypasses mixin dispatch | Newly confirmed; upstream repair and regressions pending |
+| Linear latent-task MCMC loader bypasses mixin dispatch | Existing [BoTorch #3465](https://github.com/meta-pytorch/botorch/pull/3465) extended with mean/covariance hooks and continuous-only centering; 16 source tests and 30 subtests pass |
 | Pairwise model broadcasting to singleton query batches | New [BoTorch #3489](https://github.com/meta-pytorch/botorch/pull/3489); 17 model tests and 32 subtests pass |
 | Pairwise self-comparisons after duplicate consolidation | Native and GPU cancel the comparison; upstream scatter-add repair and regression in progress |
+| Correlated empirical kernel lazy output-count metadata | Confirmed and documented; upstream regression and submission pending |
 | Multistep incumbent units and batched analytic thresholds | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) and [#3453](https://github.com/meta-pytorch/botorch/pull/3453) |
 | Multistep fantasy base ranges and query-batch tree layout | Existing [BoTorch #3452](https://github.com/meta-pytorch/botorch/pull/3452) |
 | TriangularLinearOperator second derivatives through matrix parameters | Narrow analytic-VJP enhancement in new [linear_operator #152](https://github.com/cornellius-gp/linear_operator/pull/152); 130 tests and 12 subtests pass |

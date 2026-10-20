@@ -76,8 +76,9 @@ A separate exception defect remains beyond PR 3395's success-only cleanup:
 if the second list optimization raises, `optimize_acqf_list` leaves its
 augmented pending points installed. A regression against unmodified pinned
 BoTorch fails in all four ordinary/mixed and None/Tensor-pending cases.
-A focused upstream `try/finally` repair and regression are prepared in
-`D:/botorch-pr-list-pending`; publication is tracked centrally. PR 3469
+A focused upstream `try/finally` repair and regression now extend
+[PR #3395](https://github.com/meta-pytorch/botorch/pull/3395). The complete list
+test class passes seven tests and four new exception subtests. PR 3469
 repairs the separate `optimize_acqf` sequential dispatcher, so it does not
 cover this list API failure path.
 

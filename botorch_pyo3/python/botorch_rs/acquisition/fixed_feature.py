@@ -121,8 +121,8 @@ class FixedFeatureAcquisitionFunction(AcquisitionFunction):
         >>> qEI_FF = FixedFeatureAcquisitionFunction(qEI, 5, columns, values)
         >>> qei = qEI_FF(test_X)  # d' = 3
 
-    The values are those of the fixed columns in increasing order of the
-    columns (as in BoTorch): one value per fixed column (shared by all
+    The values follow the supplied order of ``columns``, using the repair
+    proposed in BoTorch PR #3391: one value per fixed column (shared by all
     points), one row per point of the candidate sets (``q x d_f``), or
     values that differ between the t-batches (``batch_shape x q x d_f``,
     broadcast against the batch shape of ``X`` as in BoTorch). Shared and
@@ -154,11 +154,22 @@ class FixedFeatureAcquisitionFunction(AcquisitionFunction):
             if shape[-1] >= self.d:
                 raise ValueError(f"Expected fewer than d = {self.d} fixed values per point.")
             return
+        native_values, native_shape = _values_arg(values)
+        # The Rust helper's explicit contract uses increasing physical columns.
+        # Adapt the public columns/value pairs without changing that contract.
+        order = sorted(range(len(self.columns)), key=self.columns.__getitem__)
+        width = len(self.columns)
+        if width:
+            native_values = [
+                native_values[row + index]
+                for row in range(0, len(native_values), width)
+                for index in order
+            ]
         self._rs = _rs.fixed_feature_acquisition_function(
             acq_function._rs,
             self.d,
             [int(c) for c in self.columns],
-            _values_arg(values),
+            (native_values, native_shape),
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -206,18 +217,17 @@ class FixedFeatureAcquisitionFunction(AcquisitionFunction):
 
     def _construct_X_full(self, X: Any) -> Any:
         r"""The full inputs (``batch_shape x q x d``) of ``X`` (``batch_shape x
-        q x d'``): ``X_full[..., i] = values[..., i]`` for the fixed columns
-        (in increasing order), the columns of ``X`` otherwise; the values are
+        q x d'``): ``X_full[..., columns[k]] = values[..., k]`` for fixed columns,
+        the columns of ``X`` otherwise; the values are
         broadcast to the batch shape of ``X`` (BoTorch's ``expand``)."""
         vals, vshape = _values_flat(self.values)
         d_f = vshape[-1]
-        cols = sorted(self.columns)
+        cols = {column: position for position, column in enumerate(self.columns)}
         selector = []
-        idx_x, idx_f = 0, self.d - d_f
+        idx_x = 0
         for i in range(self.d):
             if i in cols:
-                selector.append(idx_f)
-                idx_f += 1
+                selector.append(self.d - d_f + cols[i])
             else:
                 selector.append(idx_x)
                 idx_x += 1

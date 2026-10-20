@@ -61,8 +61,8 @@ def test_fixed_feature_sequences_and_pending_points(device):
     wrapped = FixedFeatureAcquisitionFunction(base, 3, [2, 0], [value, 0.6])
     query = X.new_tensor([[0.21], [0.64]], requires_grad=True)
     full = wrapped._construct_X_full(query)
-    torch.testing.assert_close(full[:, 0], value.expand(2))
-    torch.testing.assert_close(full[:, 2], full.new_full((2,), 0.6))
+    torch.testing.assert_close(full[:, 0], full.new_full((2,), 0.6))
+    torch.testing.assert_close(full[:, 2], value.expand(2))
     wrapped.set_X_pending(query[:1])
     torch.testing.assert_close(base.X_pending, full[:1])
     assert not base.X_pending.requires_grad
@@ -70,6 +70,21 @@ def test_fixed_feature_sequences_and_pending_points(device):
     assert base.X_pending is None
     loss = wrapped(query).square().sum()
     assert torch.isfinite(torch.autograd.grad(loss, value)[0])
+
+
+@pytest.mark.parametrize("backend", ["native", "torch"])
+@pytest.mark.parametrize("batched", [False, True])
+def test_unsorted_fixed_columns_follow_declared_pairing(backend, batched):
+    X = torch.tensor([[0.1, 0.2, 0.4], [0.3, 0.5, 0.7], [0.7, 0.9, 0.8]], dtype=torch.double)
+    model = SingleTaskGP(X, X.sum(-1, keepdim=True).sin(), backend=backend)
+    base = PosteriorMean(model)
+    values = X.new_tensor([[[0.2, 0.7]], [[0.3, 0.6]]]) if batched else X.new_tensor([0.2, 0.7])
+    wrapper = FixedFeatureAcquisitionFunction(base, 3, [2, 0], values)
+    free = X.new_tensor([[[0.4]], [[0.5]]])
+    fixed = values.expand(2, 1, 2)
+    expected = torch.cat((fixed[..., 1:], free, fixed[..., :1]), -1)
+    torch.testing.assert_close(wrapper._construct_X_full(free), expected)
+    torch.testing.assert_close(wrapper(free), base(expected))
 
 
 @pytest.mark.parametrize("device", DEVICES)
