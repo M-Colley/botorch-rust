@@ -52,11 +52,17 @@ def as_paths(
 
     kind = model._kind
     if not isinstance(model, ModelListGP):
-        return make(handle, sample_shape, range(sizes[0]), kind)
+        path = make._from_native(handle, sample_shape, range(sizes[0]), kind)
+        if hasattr(path, "_set_model_transform"):
+            path._set_model_transform(model)
+        return path
     paths: list[SamplePath] = []
     offset = 0
-    for m in sizes:
-        paths.append(make(handle, sample_shape, range(offset, offset + m), kind))
+    for submodel, m in zip(model.models, sizes, strict=True):
+        path = make._from_native(handle, sample_shape, range(offset, offset + m), kind)
+        if hasattr(path, "_set_model_transform"):
+            path._set_model_transform(submodel)
+        paths.append(path)
         offset += m
     return PathList(paths)
 

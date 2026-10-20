@@ -163,10 +163,19 @@ class OutcomeUntransformer(TensorTransform):
         self.num_outputs = operator.index(num_outputs)
 
     def forward(self, values: Any, **kwargs: Any) -> Any:
+        from botorch_rs.models.transforms.outcome import Standardize
+        from botorch_rs.posteriors.transformed import _affine
+
+        def untransform(values: Any) -> Any:
+            if type(self.transform) is Standardize:
+                if not self.transform._is_trained:
+                    raise RuntimeError("Standardize must be fitted before untransforming paths.")
+                return _affine(values, self.transform._rs.means, self.transform._rs.stdvs, 1)
+            return self.transform.untransform(values)[0]
+
         if self.num_outputs == 1:
-            untransformed = self.transform.untransform(getitem(values, (..., None)))[0]
-            return getitem(untransformed, (..., 0))
-        return transpose(self.transform.untransform(transpose(values))[0])
+            return getitem(untransform(getitem(values, (..., None))), (..., 0))
+        return transpose(untransform(transpose(values)))
 
 
 def get_input_transform(model: Any) -> InputTransform | None:

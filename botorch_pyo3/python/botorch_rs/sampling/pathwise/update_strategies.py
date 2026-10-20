@@ -85,7 +85,7 @@ def gaussian_update(
     values, sample_shape = _per_output(sample_values, m, n, "sample_values")
     noises = None if noise is None else _per_output(noise, m, n, "noise")[0]
     handle = _rs.gaussian_update(rs_model, values, noises, seed_arg(seed))
-    return GeneralizedLinearPath(handle, sample_shape, range(m), model._kind)
+    return GeneralizedLinearPath._from_native(handle, sample_shape, range(m), model._kind)
 
 
 __all__ = ["gaussian_update"]

@@ -20,6 +20,7 @@ References:
 
 from __future__ import annotations
 
+import copy
 import functools
 import math
 from collections.abc import Sequence
@@ -53,25 +54,64 @@ class MatheronPath(_RsPaths, PathDict):
     space, like BoTorch's.
     """
 
+    _native_components: dict[str, Any]
+
     def __init__(
         self,
+        prior_paths: Any,
+        update_paths: Any,
+        input_transform: Any = None,
+        output_transform: Any = None,
+    ) -> None:
+        PathDict.__init__(
+            self,
+            paths={"prior_paths": prior_paths, "update_paths": update_paths},
+            join=_sum_paths,
+            input_transform=input_transform,
+            output_transform=output_transform,
+        )
+
+    @classmethod
+    def _from_native(
+        cls,
         handle: _rs.SamplePaths,
         sample_shape: tuple[int, ...],
         outputs: Sequence[int],
         kind: ArrayKind,
-    ) -> None:
+    ) -> MatheronPath:
+        self = cls.__new__(cls)
         _RsPaths.__init__(self, handle, sample_shape, outputs, kind)
         paths = {}
         if handle.has_components:
             for name in ("prior_paths", "update_paths"):
-                paths[name] = GeneralizedLinearPath(handle, sample_shape, outputs, kind, name)
-        PathDict.__init__(self, paths=paths, join=sum)
+                paths[name] = GeneralizedLinearPath._from_native(
+                    handle, sample_shape, outputs, kind, name
+                )
+        PathDict.__init__(self, paths=paths, join=_sum_paths)
+        self._native_components = dict(paths)
+        self._native_output_transform = None
+        return self
+
+    def _set_model_transform(self, model: Any) -> None:
+        from botorch_rs.sampling.pathwise.utils import get_output_transform
+
+        self.output_transform = copy.deepcopy(get_output_transform(model))
+        self._native_output_transform = self.output_transform
 
     def __call__(self, x: Any, **kwargs: Any) -> Any:
-        return self.forward(x, **kwargs)
+        if (
+            "_handle" in self.__dict__
+            and self.input_transform is None
+            and self.output_transform is self._native_output_transform
+            and self.join is _sum_paths
+            and self.paths.keys() == self._native_components.keys()
+            and all(path is self._native_components[name] for name, path in self.paths.items())
+        ):
+            return self._values(x)
+        return super().__call__(x, **kwargs)
 
     def forward(self, x: Any, **kwargs: Any) -> Any:
-        return self._values(x)
+        return PathDict.forward(self, x, **kwargs)
 
     @property
     def draws(self) -> list[tuple[Any, Any, Any]]:
@@ -80,6 +120,10 @@ class MatheronPath(_RsPaths, PathDict):
         ``num_features / 2 x d``, ``prod(sample_shape) x num_features`` and
         ``prod(sample_shape) x n``; passing them as ``draws`` to
         ``draw_matheron_paths`` reproduces the paths."""
+        if "_handle" not in self.__dict__:
+            raise UnsupportedError(
+                "Explicitly composed paths do not have a joint native draw record."
+            )
         draws = self._handle.draws()
         return [
             tuple(from_flat(a[0], a[1], self._kind) for a in draws[t])  # type: ignore[misc]
@@ -87,7 +131,20 @@ class MatheronPath(_RsPaths, PathDict):
         ]
 
     def __repr__(self) -> str:
+        if "_handle" not in self.__dict__:
+            return "MatheronPath(prior_paths, update_paths)"
         return f"MatheronPath(sample_shape={self._sample_shape}, num_outputs={len(self._outputs)})"
+
+
+def _sum_paths(paths: Any) -> Any:
+    from botorch_rs._ops import apply
+
+    if not paths:
+        return 0
+    total = paths[0]
+    for path in paths[1:]:
+        total = apply("add_raw", total, path)
+    return total
 
 
 def _num_features(prior_sampler: Any) -> int:
