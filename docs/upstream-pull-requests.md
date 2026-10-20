@@ -79,6 +79,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Repeated equality coefficients overwrite terms and get incorrect derivatives | New [BoTorch #3505](https://github.com/meta-pytorch/botorch/pull/3505); 26 source tests and four subtests pass |
 | PSD projection derivatives at repeated eigenspaces and tiny floors | New [BoTorch #3506](https://github.com/meta-pytorch/botorch/pull/3506); 57 source tests and 14 subtests pass, including independent near-floor first/second derivative checks |
 | Wide empirical orthogonal bases introduce repeated zero eigenspaces and NaN derivatives | New [BoTorch #3507](https://github.com/meta-pytorch/botorch/pull/3507); 19 source tests and 24 subtests pass |
+| Empirical interpolation reuses constructor sort/gather graphs across backward calls | New [BoTorch #3508](https://github.com/meta-pytorch/botorch/pull/3508); 20 source tests and 12 subtests pass |
 | Multistep incumbent units and batched analytic thresholds | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) and [#3453](https://github.com/meta-pytorch/botorch/pull/3453) |
 | Multistep fantasy base ranges and query-batch tree layout | Existing [BoTorch #3452](https://github.com/meta-pytorch/botorch/pull/3452) |
 | TriangularLinearOperator second derivatives through matrix parameters | Narrow analytic-VJP enhancement in new [linear_operator #152](https://github.com/cornellius-gp/linear_operator/pull/152); 130 tests and 12 subtests pass |

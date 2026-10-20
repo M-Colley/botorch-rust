@@ -529,7 +529,8 @@ Two pinned-source defects are isolated in `test_torch_empirical_utils.py`:
 - `LinearInterpolation1D` sorts differentiable knots/values once in its
   constructor. A second independent backward through the interpolant then
   raises a consumed-graph error. Rebuilding the sort/gather from raw sources
-  during forward fixes this without retaining an old graph.
+  during forward fixes this without retaining an old graph. The source repair
+  is [BoTorch #3508](https://github.com/meta-pytorch/botorch/pull/3508).
 
 CPU/CUDA tests compare complete covariance and basis Gram derivatives and mixed
 Hessians, compressed and uncompressed interpolation pipelines, repeated module
