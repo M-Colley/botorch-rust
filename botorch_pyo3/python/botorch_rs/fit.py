@@ -70,6 +70,10 @@ def fit_gpytorch_mll(
     if getattr(getattr(mll, "model", None), "_tensor_backend", None) == "torch":
         from botorch_rs.optim.fit import fit_gpytorch_mll_scipy, fit_gpytorch_mll_torch
 
+        if getattr(mll.model, "_is_fully_bayesian", False):
+            raise UnsupportedError(
+                "Fully Bayesian Torch models use loaded MCMC samples, not MAP fitting."
+            )
         selected = fit_gpytorch_mll_scipy if optimizer is None else optimizer
         if selected not in (fit_gpytorch_mll_scipy, fit_gpytorch_mll_torch):
             raise UnsupportedError(
@@ -317,6 +321,11 @@ def fit_fully_bayesian_model_nuts(
     """
     from botorch_rs._arrays import from_flat
 
+    if getattr(model, "_tensor_backend", None) == "torch":
+        raise UnsupportedError(
+            "Tensor-backend fully Bayesian inference requires load_mcmc_samples; "
+            "NUTS sampling is currently available on backend='native'."
+        )
     model.train()
     potential = model.pyro_model._potential()
     if (draws is None) != (init_params is None):

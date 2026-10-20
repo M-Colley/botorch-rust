@@ -661,6 +661,50 @@ class AbstractFullyBayesianSingleTaskGP(SingleTaskGP):
     _supports_batched_models = False
     _pyro_model_class: type[PyroModel] = PyroModel
 
+    def __new__(cls, train_X: Any = None, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        if backend not in ("auto", "native", "torch"):
+            raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+        families = (
+            FullyBayesianSingleTaskGP,
+            SaasFullyBayesianSingleTaskGP,
+            FullyBayesianLinearSingleTaskGP,
+        )
+        if cls in families:
+            import sys
+
+            torch = sys.modules.get("torch")
+            values = (train_X, *args[:2], kwargs.get("train_Y"), kwargs.get("train_Yvar"))
+            use_torch = backend == "torch" or (
+                backend == "auto"
+                and torch is not None
+                and any(
+                    isinstance(value, torch.Tensor)
+                    and (value.device.type != "cpu" or value.requires_grad)
+                    for value in values
+                )
+            )
+            if use_torch:
+                from botorch_rs.models._torch_backend_fully_bayesian import (
+                    TorchFullyBayesianLinearSingleTaskGP,
+                    TorchFullyBayesianSingleTaskGP,
+                    TorchSaasFullyBayesianSingleTaskGP,
+                )
+
+                return object.__new__(
+                    dict(
+                        zip(
+                            families,
+                            (
+                                TorchFullyBayesianSingleTaskGP,
+                                TorchSaasFullyBayesianSingleTaskGP,
+                                TorchFullyBayesianLinearSingleTaskGP,
+                            ),
+                            strict=True,
+                        )
+                    )[cls]
+                )
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -670,6 +714,8 @@ class AbstractFullyBayesianSingleTaskGP(SingleTaskGP):
         input_transform: InputTransform | None = None,
         use_input_warping: bool = False,
         indices_to_warp: list[int] | None = None,
+        *,
+        backend: str = "auto",
     ) -> None:
         r"""Initialize the fully Bayesian single-task GP model.
 
