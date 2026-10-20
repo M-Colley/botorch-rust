@@ -13,7 +13,19 @@ gpytorch = pytest.importorskip("gpytorch")
 
 from botorch_rs import _botorch_rs as native
 from botorch_rs.constraints import GreaterThan, Interval, LessThan, Positive
-from botorch_rs.kernels import AdditiveKernel, MaternKernel, RBFKernel, ScaleKernel
+from botorch_rs.exceptions.errors import UnsupportedError
+from botorch_rs.exceptions.warnings import NumericsWarning
+from botorch_rs.kernels import (
+    AdditiveKernel,
+    CosineKernel,
+    LinearKernel,
+    MaternKernel,
+    PeriodicKernel,
+    PolynomialKernel,
+    RBFKernel,
+    RQKernel,
+    ScaleKernel,
+)
 from botorch_rs.likelihoods import GaussianLikelihood
 from botorch_rs.means import ConstantMean, ZeroMean
 from botorch_rs.models._torch_backend_modules import (
@@ -137,6 +149,7 @@ def test_mean_and_noise_parameters_are_persistent_real_modules(device, batch_sha
     )
     held_mean, held_noise = mean.raw_constant, likelihood.raw_noise
     assert list(dict(likelihood.named_parameters())) == ["noise_covar.raw_noise"]
+    assert "noise_covar.raw_noise_constraint.lower_bound" in likelihood.state_dict()
     mean.constant = 0.3
     likelihood.noise = 0.2
     assert mean.raw_constant is held_mean and likelihood.raw_noise is held_noise
@@ -163,6 +176,43 @@ def test_mean_and_noise_parameters_are_persistent_real_modules(device, batch_sha
     zero = build_mean(ZeroMean(batch_shape=batch_shape), batch_shape, x)
     assert list(zero.parameters()) == []
     assert not zero(x).any()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("fixed", [False, True])
+def test_likelihood_conditional_and_lazy_singular_latent_marginal(device, fixed):
+    from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+
+    x = torch.zeros(3, 2, dtype=torch.double, device=device)
+    observed_noise = x.new_full((3,), 0.2) if fixed else None
+    module = build_likelihood(None, observed_noise, (), x)
+    if not fixed:
+        module.noise = 0.2
+    mean = x.new_tensor([0.2, -0.1, 0.4]).requires_grad_()
+    # This PSD latent law is singular: constructing the likelihood must not
+    # attempt a Cholesky before observation noise makes it positive definite.
+    covariance = x.new_ones(3, 3).requires_grad_()
+    latent = TorchGPyTorchPosterior(mean.unsqueeze(-1), covariance).distribution
+    marginal = module(latent)
+    expected = torch.distributions.MultivariateNormal(
+        mean, covariance_matrix=covariance + torch.eye(3, dtype=x.dtype, device=device) * 0.2
+    )
+    target = x.new_tensor([0.1, 0.5, -0.2])
+    torch.testing.assert_close(marginal.log_prob(target), expected.log_prob(target))
+    actual_grad = torch.autograd.grad(
+        marginal.log_prob(target), (mean, covariance), create_graph=True
+    )
+    reference_grad = torch.autograd.grad(
+        expected.log_prob(target), (mean, covariance), create_graph=True
+    )
+    for a, b in zip(actual_grad, reference_grad, strict=True):
+        torch.testing.assert_close(a, b)
+    conditional = module(mean)
+    assert isinstance(conditional, torch.distributions.Normal)
+    torch.testing.assert_close(conditional.mean, mean)
+    torch.testing.assert_close(conditional.variance, x.new_full((3,), 0.2))
+    with pytest.raises(UnsupportedError, match="Unsupported.*likelihood"):
+        module(mean, invented=True)
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -208,6 +258,53 @@ def test_default_modules_and_fixed_noise_layout(device, m):
     assert not fixed.noise.requires_grad
     with pytest.raises(ValueError, match="explicit observation noise"):
         fixed.noise_for(3)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype,minimum", [(torch.float32, 1e-4), (torch.float64, 1e-6)])
+def test_fixed_noise_inspection_floor_and_construction_warning(device, dtype, minimum):
+    x = torch.zeros(3, 2, dtype=dtype, device=device)
+    noise = x.new_tensor([0.0, minimum * 0.5, 0.1])
+    with pytest.warns(NumericsWarning, match="Rounding small noise") as recorded:
+        module = build_likelihood(None, noise, (), x)
+    assert len(recorded) == 1
+    torch.testing.assert_close(module.noise, noise.clamp_min(minimum))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_kernel_shared_aliases_prior_reduction_bounds_and_leaf_updates(device):
+    x = torch.randn(4, 2, dtype=torch.double, device=device)
+    source = RBFKernel(ard_num_dims=2, lengthscale_prior=LogNormalPrior(0, 1))
+    module = build_kernel(source + source, 2, (), x)
+    left, right = module.kernels
+    assert left is right
+    assert list(dict(module.named_parameters())) == ["kernels.0.raw_lengthscale"]
+    torch.testing.assert_close(
+        module.log_prior(), left.lengthscale_prior.log_prob(left.lengthscale).sum()
+    )
+    held = left.raw_lengthscale
+    left.lengthscale = 0.7
+    assert left.raw_lengthscale is right.raw_lengthscale is held
+    torch.testing.assert_close(right.lengthscale, x.new_full((1, 2), 0.7))
+    bounds = module.raw_parameter_bounds()
+    assert bounds["kernels.0.raw_lengthscale"] == (-math.inf, math.inf)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("train_flag,eval_flag", [(False, True), (True, False), (False, False)])
+def test_transform_flags_distinguish_stored_training_from_queries(device, train_flag, eval_flag):
+    x = torch.tensor([[0.2, 2.0], [0.7, 3.0]], dtype=torch.double, device=device)
+    source = Normalize(
+        2,
+        bounds=[[0.0, 1.0], [1.0, 5.0]],
+        transform_on_train=train_flag,
+        transform_on_eval=eval_flag,
+    )
+    module = build_input_transform(source, 2, x)
+    expected = (x - x.new_tensor([0.0, 1.0])) / x.new_tensor([1.0, 4.0])
+    module.eval()
+    torch.testing.assert_close(module(x), expected if eval_flag else x)
+    torch.testing.assert_close(module.preprocess_transform(x), expected if train_flag else x)
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -342,7 +439,23 @@ def test_warp_and_chain_full_training_parameter_graphs(device, batch_shape, chai
 
 
 @pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("kind", ["rbf", "matern12", "matern32", "matern52", "tree"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "rbf",
+        "matern12",
+        "matern32",
+        "matern52",
+        "tree",
+        "product",
+        "rq",
+        "periodic",
+        "cosine",
+        "linear",
+        "polynomial",
+        "polynomial_fractional",
+    ],
+)
 @pytest.mark.parametrize("batch_shape", [(), (2,)])
 @pytest.mark.parametrize("feature_batch", [False, True])
 def test_native_kernel_graph_reference_first_and_second_derivatives(
@@ -351,20 +464,40 @@ def test_native_kernel_graph_reference_first_and_second_derivatives(
     if not hasattr(native, "tensor_kernel"):
         pytest.skip("native Tensor dispatcher not built in this artifact")
     kwargs = {"ard_num_dims": 2, "active_dims": [0, 2], "batch_shape": batch_shape}
-    if kind == "tree":
+    if kind in ("tree", "product"):
+        left, right = RBFKernel(**kwargs), MaternKernel(nu=2.5, **kwargs)
         source = ScaleKernel(
-            AdditiveKernel(RBFKernel(**kwargs), MaternKernel(nu=2.5, **kwargs)),
+            AdditiveKernel(left, right) if kind == "tree" else left * right,
             batch_shape=batch_shape,
         )
+        ref_left, ref_right = (
+            gpytorch.kernels.RBFKernel(**kwargs),
+            gpytorch.kernels.MaternKernel(nu=2.5, **kwargs),
+        )
         ref = gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.AdditiveKernel(
-                gpytorch.kernels.RBFKernel(**kwargs),
-                gpytorch.kernels.MaternKernel(nu=2.5, **kwargs),
-            ),
+            gpytorch.kernels.AdditiveKernel(ref_left, ref_right)
+            if kind == "tree"
+            else ref_left * ref_right,
             batch_shape=torch.Size(batch_shape),
         )
     elif kind == "rbf":
         source, ref = RBFKernel(**kwargs), gpytorch.kernels.RBFKernel(**kwargs)
+    elif kind in ("rq", "periodic", "cosine", "linear", "polynomial", "polynomial_fractional"):
+        classes = {
+            "rq": RQKernel,
+            "periodic": PeriodicKernel,
+            "cosine": CosineKernel,
+            "linear": LinearKernel,
+            "polynomial": PolynomialKernel,
+            "polynomial_fractional": PolynomialKernel,
+        }
+        extra = (
+            {"power": 2.5 if kind == "polynomial_fractional" else 3}
+            if kind.startswith("polynomial")
+            else {}
+        )
+        source = classes[kind](**extra, **kwargs)
+        ref = getattr(gpytorch.kernels, classes[kind].__name__)(**extra, **kwargs)
     else:
         nu = {"matern12": 0.5, "matern32": 1.5, "matern52": 2.5}[kind]
         source, ref = MaternKernel(nu=nu, **kwargs), gpytorch.kernels.MaternKernel(nu=nu, **kwargs)
@@ -373,10 +506,42 @@ def test_native_kernel_graph_reference_first_and_second_derivatives(
     module = build_kernel(source, 3, batch_shape, x)
     ref = ref.to(x)
     actual = module(x, z, last_dim_is_batch=feature_batch)
+
     # Eager covariance avoids GPyTorch's known composite feature-batch lazy
     # shape bug, without changing the reference kernel calculation.
-    with gpytorch.settings.lazily_evaluate_kernels(False):
-        expected = ref(x, z, last_dim_is_batch=feature_batch).to_dense()
+    def reference_covariance(left, right, parameters=None):
+        # PolynomialKernel's model-batch offset misses its extra feature axis
+        # in GPyTorch. Evaluate each individual feature through its unchanged
+        # forward formula, then stack according to feature-batch semantics.
+        if kind.startswith("polynomial") and feature_batch:
+
+            class PerFeature(torch.nn.Module):
+                def __init__(self, kernel):
+                    super().__init__()
+                    self.kernel = kernel
+
+                def forward(self, a, b):
+                    return torch.stack(
+                        [self.kernel.forward(a[..., j : j + 1], b[..., j : j + 1]) for j in [0, 2]],
+                        dim=-3,
+                    )
+
+            wrapper = PerFeature(ref)
+            if parameters is None:
+                return wrapper(left, right)
+            return torch.func.functional_call(
+                wrapper,
+                {f"kernel.{name}": value for name, value in parameters.items()},
+                (left, right),
+            )
+        with gpytorch.settings.lazily_evaluate_kernels(False):
+            if parameters is None:
+                return ref(left, right, last_dim_is_batch=feature_batch).to_dense()
+            return torch.func.functional_call(
+                ref, parameters, (left, right), {"last_dim_is_batch": feature_batch}
+            ).to_dense()
+
+    expected = reference_covariance(x, z)
     torch.testing.assert_close(actual, expected)
     weight = torch.linspace(-0.7, 0.9, actual.numel(), dtype=x.dtype, device=device).reshape_as(
         actual
@@ -408,10 +573,61 @@ def test_native_kernel_graph_reference_first_and_second_derivatives(
             for value, direction in zip(expected_inputs, directions, strict=True)
         ]
         parameters = dict(zip(dict(ref.named_parameters()), shifted[2:], strict=True))
-        with gpytorch.settings.lazily_evaluate_kernels(False):
-            shifted_output = torch.func.functional_call(
-                ref, parameters, (shifted[0], shifted[1]), {"last_dim_is_batch": feature_batch}
-            ).to_dense()
+        shifted_output = reference_covariance(shifted[0], shifted[1], parameters)
         finite.append(torch.autograd.grad((shifted_output * weight).sum(), shifted))
     for actual_hvp, low, high in zip(second, *finite, strict=True):
         torch.testing.assert_close(actual_hvp, (high - low) / (2 * epsilon), atol=2e-6, rtol=2e-5)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize(
+    "family", ["rbf", "matern", "rq", "periodic", "cosine", "linear", "polynomial"]
+)
+@pytest.mark.parametrize("feature_batch", [False, True])
+def test_kernel_diagonal_matches_full_cross_covariance_and_self_gradients(
+    device, dtype, family, feature_batch
+):
+    classes = {
+        "rbf": RBFKernel,
+        "matern": MaternKernel,
+        "rq": RQKernel,
+        "periodic": PeriodicKernel,
+        "cosine": CosineKernel,
+        "linear": LinearKernel,
+        "polynomial": PolynomialKernel,
+    }
+    kwargs = {"ard_num_dims": 2, "active_dims": [0, 2], "batch_shape": (2,)}
+    if family == "polynomial":
+        kwargs["power"] = 3
+    x = torch.rand(2, 4, 3, dtype=dtype, device=device, requires_grad=True)
+    z = torch.rand_like(x).requires_grad_()
+    module = build_kernel(classes[family](**kwargs), 3, (2,), x)
+    with torch.no_grad():
+        # Different per-batch values expose accidental alignment of a model
+        # batch axis with an equal-sized feature axis.
+        for parameter in module.parameters():
+            parameter.copy_(
+                torch.linspace(-0.2, 0.5, parameter.numel(), dtype=dtype, device=device).reshape_as(
+                    parameter
+                )
+            )
+    actual = module(x, z, diag=True, last_dim_is_batch=feature_batch)
+    expected = module(x, z, last_dim_is_batch=feature_batch).diagonal(dim1=-2, dim2=-1)
+    torch.testing.assert_close(actual, expected)
+    inputs = [x, z, *module.parameters()]
+    first = [
+        torch.autograd.grad(value.sum(), inputs, create_graph=True) for value in (actual, expected)
+    ]
+    for a, b in zip(*first, strict=True):
+        torch.testing.assert_close(a, b)
+    self_covariance = module(x, last_dim_is_batch=feature_batch)
+    self_diagonal = module(x, diag=True, last_dim_is_batch=feature_batch)
+    torch.testing.assert_close(self_diagonal, self_covariance.diagonal(dim1=-2, dim2=-1))
+    gradient = torch.autograd.grad(
+        self_covariance.sum() + self_diagonal.sum(), x, create_graph=True
+    )[0]
+    hessian = torch.autograd.grad(gradient.sum(), x)[0]
+    assert torch.isfinite(gradient).all() and torch.isfinite(hessian).all()
+    with pytest.raises(ValueError, match="diag|same|equal"):
+        module(x, z[..., :3, :], diag=True, last_dim_is_batch=feature_batch)

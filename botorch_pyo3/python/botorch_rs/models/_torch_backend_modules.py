@@ -9,6 +9,7 @@ Rust's ``tensor_kernel``. Import this module only when selecting that backend.
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Any
 
 import torch
@@ -17,6 +18,7 @@ from torch.nn import functional as F
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs.exceptions.errors import UnsupportedError
+from botorch_rs.exceptions.warnings import NumericsWarning
 
 
 def _tensor(value: Any, like: Tensor) -> Tensor:
@@ -376,6 +378,81 @@ class TorchCompositeKernel(TorchKernel):
         return result
 
 
+class TorchAlgebraKernel(TorchKernel):
+    """Parameter plumbing for the remaining elementary native Torch kernels."""
+
+    def __init__(self, source: Any, like: Tensor) -> None:
+        super().__init__(like, source.active_dims)
+        self.batch_shape = torch.Size(source.batch_shape)
+        self.ard_num_dims = source.ard_num_dims
+        self.kind = type(source).__name__.removesuffix("Kernel").lower()
+        self.power = float(getattr(source, "power", 2))
+        self._logical_parameters: dict[str, str] = {}
+        event_shapes = source._element_shapes()
+        for raw_name, constraint, prior in source._own_params():
+            logical = raw_name.removeprefix("raw_")
+            original = getattr(source, raw_name)
+            raw = _tensor(original, like).reshape(source._param_shape(raw_name)).clone()
+            self.register_parameter(
+                raw_name,
+                nn.Parameter(
+                    raw,
+                    requires_grad=not isinstance(original, nn.Parameter) or original.requires_grad,
+                ),
+            )
+            self.add_module(f"{raw_name}_constraint", TorchConstraint(constraint, like))
+            self._logical_parameters[logical] = raw_name
+            self._register_prior(f"{logical}_prior", prior, logical, len(event_shapes[raw_name]))
+
+    def __getattr__(self, name: str) -> Any:
+        logical = self.__dict__.get("_logical_parameters", {})
+        if name in logical:
+            raw_name = logical[name]
+            return getattr(self, f"{raw_name}_constraint").transform(getattr(self, raw_name))
+        return super().__getattr__(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        logical = self.__dict__.get("_logical_parameters", {})
+        if name in logical:
+            raw_name = logical[name]
+            self._assign(raw_name, value, getattr(self, f"{raw_name}_constraint"))
+        else:
+            super().__setattr__(name, value)
+
+    def forward(
+        self,
+        x1: Tensor,
+        x2: Tensor | None = None,
+        diag: bool = False,
+        last_dim_is_batch: bool = False,
+    ) -> Tensor:
+        x1, x2 = self._inputs(x1, x2)
+        return self._forward_selected(x1, x2, diag, last_dim_is_batch)
+
+    def _forward_selected(
+        self, x1: Tensor, x2: Tensor, diag: bool, last_dim_is_batch: bool
+    ) -> Tensor:
+        if self.ard_num_dims is not None and x1.shape[-1] != self.ard_num_dims:
+            raise ValueError(
+                f"Expected {self.ard_num_dims} selected input dimensions, got {x1.shape[-1]}."
+            )
+        parameters = {
+            name: getattr(self, name) for name in self._logical_parameters if name != "lengthscale"
+        }
+        if self.kind == "polynomial":
+            parameters["power"] = self.power
+        return _rs.tensor_kernel(
+            self.kind,
+            x1,
+            x2,
+            getattr(self, "lengthscale", None),
+            2.5,
+            diag,
+            last_dim_is_batch,
+            parameters=parameters,
+        )
+
+
 class TorchConstantMean(_TorchModule):
     def __init__(self, source: Any, like: Tensor) -> None:
         super().__init__(like)
@@ -416,7 +493,7 @@ class _TorchGaussianNoise(_TorchModule):
     def __init__(self, source: Any, like: Tensor) -> None:
         super().__init__(like)
         self.batch_shape = torch.Size(source.batch_shape)
-        self.noise_constraint = TorchConstraint(source.noise_constraint, like)
+        self.raw_noise_constraint = TorchConstraint(source.noise_constraint, like)
         initial = self.noise_constraint.initial_value
         self.raw_noise = nn.Parameter(
             like.new_full((*self.batch_shape, 1), 0 if initial is None else initial)
@@ -429,8 +506,8 @@ class _TorchGaussianNoise(_TorchModule):
         self._register_prior("noise_prior", source.noise_prior, "noise", 1)
 
     @property
-    def raw_noise_constraint(self) -> TorchConstraint:
-        return self.noise_constraint
+    def noise_constraint(self) -> TorchConstraint:
+        return self.raw_noise_constraint
 
     @property
     def noise(self) -> Tensor:
@@ -474,12 +551,19 @@ class TorchGaussianLikelihood(_TorchModule):
     def noise_for(self, n: int, noise: Tensor | None = None) -> Tensor:
         return self.noise.expand(*self.batch_shape, n) if noise is None else noise
 
-    def forward(self, distribution: Any, noise: Tensor | None = None) -> Any:
+    def forward(self, distribution: Any, noise: Tensor | None = None, **kwargs: Any) -> Any:
+        if kwargs:
+            raise UnsupportedError(f"Unsupported Gaussian likelihood arguments: {sorted(kwargs)}.")
+        if isinstance(distribution, Tensor):
+            return torch.distributions.Normal(
+                distribution, self.noise_for(distribution.shape[-1], noise).sqrt()
+            )
+        from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+
         mean, covariance = distribution.mean, distribution.covariance_matrix
-        return torch.distributions.MultivariateNormal(
-            mean,
-            covariance_matrix=covariance + torch.diag_embed(self.noise_for(mean.shape[-1], noise)),
-        )
+        return TorchGPyTorchPosterior(
+            mean.unsqueeze(-1), covariance + torch.diag_embed(self.noise_for(mean.shape[-1], noise))
+        ).distribution
 
 
 class TorchFixedNoiseLikelihood(_TorchModule):
@@ -491,7 +575,14 @@ class TorchFixedNoiseLikelihood(_TorchModule):
         # The model recomputes transformed training noise from its original
         # Tensor on each evaluation. This inspection buffer is an initial
         # snapshot, avoiding a consumed construction-time autograd graph.
-        self.register_buffer("noise", noise.detach().clamp_min(1e-6).clone())
+        minimum = 1e-4 if noise.dtype == torch.float32 else 1e-6
+        if bool((noise < minimum).any()):
+            warnings.warn(
+                f"Very small noise values detected. Rounding small noise values up to {minimum}.",
+                NumericsWarning,
+                stacklevel=3,
+            )
+        self.register_buffer("noise", noise.detach().clamp_min(minimum).clone())
 
     @property
     def noise_covar(self) -> TorchFixedNoiseLikelihood:
@@ -506,21 +597,35 @@ class TorchFixedNoiseLikelihood(_TorchModule):
             )
         return self.noise
 
-    def forward(self, distribution: Any, noise: Tensor | None = None) -> Any:
+    def forward(self, distribution: Any, noise: Tensor | None = None, **kwargs: Any) -> Any:
+        if kwargs:
+            raise UnsupportedError(
+                f"Unsupported fixed-noise likelihood arguments: {sorted(kwargs)}."
+            )
+        if isinstance(distribution, Tensor):
+            return torch.distributions.Normal(
+                distribution, self.noise_for(distribution.shape[-1], noise).sqrt()
+            )
+        from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+
         mean, covariance = distribution.mean, distribution.covariance_matrix
-        return torch.distributions.MultivariateNormal(
-            mean,
-            covariance_matrix=covariance + torch.diag_embed(self.noise_for(mean.shape[-1], noise)),
-        )
+        return TorchGPyTorchPosterior(
+            mean.unsqueeze(-1), covariance + torch.diag_embed(self.noise_for(mean.shape[-1], noise))
+        ).distribution
 
 
 def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> nn.Module:
     """Convert supported port kernels, retaining parameter aliases in trees."""
     from botorch_rs.kernels import (
         AdditiveKernel,
+        CosineKernel,
+        LinearKernel,
         MaternKernel,
+        PeriodicKernel,
+        PolynomialKernel,
         ProductKernel,
         RBFKernel,
+        RQKernel,
         ScaleKernel,
     )
     from botorch_rs.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
@@ -536,6 +641,14 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
             return memo[id(kernel)]
         if type(kernel) in (RBFKernel, MaternKernel):
             result: TorchKernel = TorchStationaryKernel(kernel, train_X)
+        elif type(kernel) in (
+            RQKernel,
+            PeriodicKernel,
+            CosineKernel,
+            LinearKernel,
+            PolynomialKernel,
+        ):
+            result = TorchAlgebraKernel(kernel, train_X)
         elif type(kernel) is ScaleKernel:
             result = TorchScaleKernel(kernel, convert(kernel.base_kernel), train_X)
         elif type(kernel) in (AdditiveKernel, ProductKernel):
