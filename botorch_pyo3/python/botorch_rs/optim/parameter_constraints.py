@@ -314,14 +314,19 @@ def _equality_autograd() -> Any:
 
 
 def project_to_equality_constraints(X: Any, equality_constraints: Any) -> Any:
-    """Native least-squares projection onto intra-point linear equalities.
+    """Least-squares projection onto intra-point linear equalities.
 
     Inter-point equalities are ignored, as in BoTorch. Torch inputs support
-    exact first derivatives with respect to points, coefficients and right-hand
-    sides. The dense solve and its reverse derivative both run in Rust.
+    full derivatives with respect to points, coefficients and right-hand sides
+    on their device. Array inputs use the Rust dense solve.
     """
     if not equality_constraints:
         return X
+    if is_torch_tensor(X):
+        from botorch_rs.optim._torch_optim_utils import project_equalities
+
+        _ops.check_float_dtype(X, "X")
+        return project_equalities(X, equality_constraints)
     indices, arguments = [], []
     for index, coefficient, rhs in equality_constraints:
         values, shape = to_flat(index, "indices")

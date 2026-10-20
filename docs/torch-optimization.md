@@ -236,7 +236,30 @@ cases fail on the pinned source. The prepared finally-based repair in
 homotopy tests and four regression subcases. These are source patches prepared
 for publication; they are not claims that official main already contains them.
 
-Further public optimization helpers are being audited. Local lattice search
+`project_to_equality_constraints` now constructs the constraint matrix and
+solves the actual least-squares projection on the Tensor's device. Points,
+coefficients and right-hand sides retain their complete Torch graphs; array
+inputs retain the existing Rust solve. Scalar coefficients, multiple
+equalities, model/query batches, empty batches, ignored inter-point rows and
+singular systems are covered. The 75-case projection/public-helper regression
+suite passes on CPU/CUDA, including reference values and all first derivatives,
+complete `gradcheck`/`gradgradcheck`, and no-host-transfer guards. Targeted
+mypy and Ruff pass. The Tensor feasibility helper also follows the reference's
+strict equality tolerance at the exact boundary.
+
+For repeated feature indices, projection retains the existing source/native
+matrix's last-write values. Successive scatter operations give its actual
+derivative: an overwritten coefficient has zero sensitivity. The pinned
+source's indexed-assignment backward instead propagates the same adjoint to
+every occurrence. With indices `[0,0,2]`, coefficients `[1.2,-0.7,0.8]`,
+`X=[[0.2,0.3,0.8]]` and RHS `0.4`, the source squared-projection loss reports
+coefficient-0 derivative `-0.2757`, although its central finite difference is
+zero. The device implementation passes first/second numerical derivative
+checks for this repeated-index case. This is a verified gradient discrepancy;
+the upstream repair must choose between deterministic overwrite semantics and
+combining repeated terms according to the declared linear-constraint sum.
+
+Local lattice search
 retains the reference's unbatched, non-one-shot restriction. Sequential mixed
 search retains the reference's inter-point-constraint restriction. Forced
 parallel SciPy mode remains unsupported; this driver uses serial SciPy calls

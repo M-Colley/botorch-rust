@@ -59,7 +59,7 @@ def evaluate_feasibility(
                 ) - rhs
             else:
                 raise ValueError("Constraint indices must have shape k or k x 2.")
-            satisfied = residual.abs() <= tolerance if is_equality else residual >= -tolerance
+            satisfied = residual.abs() < tolerance if is_equality else residual >= -tolerance
             feasible &= satisfied.all(-1) if indices.ndim == 1 else satisfied
     for function, intrapoint in nonlinear or []:
         feasible &= nonlinear_is_feasible(function, intrapoint, X, tolerance)
@@ -86,3 +86,44 @@ def nonlinear_is_feasible(
     if intrapoint:
         return (values >= -tolerance).reshape(*X.shape[:-2], X.shape[-2]).all(-1)
     return (values >= -tolerance).reshape(X.shape[:-2])
+
+
+def project_equalities(X: Tensor, constraints: Any) -> Tensor:
+    """Actual least-squares projection with point/coefficient/RHS Torch graphs."""
+    rows, right_hand_sides = [], []
+    d = X.shape[-1]
+    for indices, coefficients, rhs in constraints:
+        index = torch.as_tensor(indices, device=X.device)
+        if index.ndim > 1:
+            continue  # Inter-point constraints are ignored by the public API.
+        if (
+            index.dtype == torch.bool
+            or index.is_complex()
+            or index.ndim != 1
+            or bool((index < 0).any())
+            or (
+                index.is_floating_point()
+                and not bool(torch.isfinite(index).all() & (index == index.trunc()).all())
+            )
+        ):
+            raise ValueError("Constraint indices must be nonnegative integers.")
+        index = index.long()
+        if bool((index >= d).any()):
+            raise ValueError("Constraint indices exceed the input dimension.")
+        coefficient = torch.as_tensor(coefficients, dtype=X.dtype, device=X.device)
+        coefficient = coefficient.expand(index.shape)
+        row = X.new_zeros(d)
+        # Indexed assignment uses the last occurrence of a duplicate feature.
+        # Sequential scatters also give its actual derivative: overwritten
+        # coefficients have zero sensitivity, rather than scatter's duplicate
+        # gradient which incorrectly gathers every occurrence.
+        for j in range(index.numel()):
+            row = row.scatter(0, index[j : j + 1], coefficient[j : j + 1])
+        rows.append(row)
+        right_hand_sides.append(torch.as_tensor(rhs, dtype=X.dtype, device=X.device).reshape(()))
+    if not rows:
+        return X
+    matrix, rhs_vector = torch.stack(rows), torch.stack(right_hand_sides)
+    residual = rhs_vector - X @ matrix.transpose(-1, -2)
+    multiplier = torch.linalg.solve(matrix @ matrix.transpose(-1, -2), residual.unsqueeze(-1))
+    return X + (multiplier.squeeze(-1) @ matrix)
