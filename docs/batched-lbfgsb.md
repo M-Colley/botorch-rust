@@ -50,5 +50,5 @@ It has not been submitted upstream.
 
 Source inspection:
 [BoTorch driver](https://github.com/meta-pytorch/botorch/blob/b0dd01be61d517c387e234903a6e2cc38c057ea2/botorch/optim/batched_lbfgs_b.py),
-[SciPy C interface](https://github.com/scipy/scipy/blob/v1.18.0/scipy/optimize/__lbfgsb.h),
+[SciPy C interface](https://github.com/scipy/scipy/blob/v1.18.0/scipy/optimize/_lbfgsbmodule.c),
 [SciPy Python driver](https://github.com/scipy/scipy/blob/v1.18.0/scipy/optimize/_lbfgsb_py.py).
