@@ -436,9 +436,10 @@ class TorchFixedNoiseLikelihood(_TorchModule):
     def __init__(self, noise: Tensor, batch_shape: Any, like: Tensor) -> None:
         super().__init__(like)
         self.batch_shape = torch.Size(batch_shape)
-        # clone keeps the source noise's gradient graph; do not detach observed
-        # variances when the caller asks to differentiate through training data.
-        self.register_buffer("noise", noise.clamp_min(1e-6).clone())
+        # The model recomputes transformed training noise from its original
+        # Tensor on each evaluation. This inspection buffer is an initial
+        # snapshot, avoiding a consumed construction-time autograd graph.
+        self.register_buffer("noise", noise.detach().clamp_min(1e-6).clone())
 
     @property
     def noise_covar(self) -> TorchFixedNoiseLikelihood:
@@ -530,11 +531,9 @@ def build_likelihood(
             "Specify either a learned likelihood or train_Yvar for the Torch backend."
         )
     if train_Yvar_transformed is not None:
+        # The model already moves the output axis into augmented batch shape:
+        # (..., n) for one output; (..., m, n) for multiple outputs.
         noise = train_Yvar_transformed
-        if noise.shape[-1] == 1:
-            noise = noise.squeeze(-1)
-        else:
-            noise = noise.movedim(-1, -2)
         return TorchFixedNoiseLikelihood(
             noise.expand(*aug_batch_shape, noise.shape[-1]), aug_batch_shape, train_X
         )

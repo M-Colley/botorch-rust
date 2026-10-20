@@ -182,10 +182,10 @@ def test_default_modules_and_fixed_noise_layout(device, m):
     )
     assert likelihood.log_prior().shape == aug
     noise = torch.full((2, 5, m), 0.03, dtype=torch.double, device=device, requires_grad=True)
-    fixed = build_likelihood(None, noise, aug, x)
     expected = noise.squeeze(-1) if m == 1 else noise.movedim(-1, -2)
+    fixed = build_likelihood(None, expected, aug, x)
     torch.testing.assert_close(fixed.noise, expected)
-    torch.autograd.grad(fixed.noise.square().sum(), noise, create_graph=True)
+    assert not fixed.noise.requires_grad
     with pytest.raises(ValueError, match="explicit observation noise"):
         fixed.noise_for(3)
 
