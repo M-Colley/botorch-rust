@@ -357,14 +357,6 @@ class LatentKroneckerGP(GPyTorchModel):
         posterior_transform: Any = None,
         **kwargs: Any,
     ) -> LatentKroneckerGPPosterior:
-        from botorch_rs.posteriors._query_autograd import requires_query_grad
-
-        if requires_query_grad(X) or requires_query_grad(T):
-            raise UnsupportedError(
-                "Direct LatentKroneckerGP posterior query gradients require a structured "
-                "grid and Matheron adjoint path, which is not implemented; native "
-                "acquisition functions provide query gradients through the model handle."
-            )
         if observation_noise is not False:
             raise NotImplementedError(
                 "Observation noise currently not supported for LatentKroneckerGP."

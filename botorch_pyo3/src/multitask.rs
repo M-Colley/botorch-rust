@@ -1179,6 +1179,46 @@ impl PyKroneckerMultiTaskGP {
     /// Matheron samples (`S x batch x (q m)`, interleaved) at `x` (`batch x
     /// q x d`) from base samples `z` (`S x total` shared by the batches, or
     /// `S x batch x total`).
+    #[pyo3(signature=(x, mean_adjoint, variance_adjoint, observation_noise=false))]
+    fn marginal_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        mean_adjoint: Array,
+        variance_adjoint: Array,
+        observation_noise: bool,
+    ) -> PyResult<ArrayBuf> {
+        let x = x.matrix("X")?;
+        let mean = mean_adjoint.matrix("mean_adjoint")?;
+        let variance = variance_adjoint.matrix("variance_adjoint")?;
+        let model = self.snapshot();
+        threads::run(py, || {
+            model.marginal_vjp(&x, &mean, &variance, observation_noise)
+        })
+        .map(|g| matrix_out(&g).into())
+        .into_py_result()
+    }
+
+    #[pyo3(signature=(x, z, adjoint, observation_noise=false))]
+    fn matheron_samples_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        z: Array,
+        adjoint: Array,
+        observation_noise: bool,
+    ) -> PyResult<ArrayBuf> {
+        let x = x.matrix("X")?;
+        let z = z.matrix("base_samples")?;
+        let adjoint = adjoint.matrix("adjoint")?;
+        let model = self.snapshot();
+        threads::run(py, || {
+            model.matheron_samples_vjp(&x, &z, &adjoint, observation_noise)
+        })
+        .map(|g| matrix_out(&g).into())
+        .into_py_result()
+    }
+
     #[pyo3(signature = (x, z, observation_noise=false))]
     fn matheron_samples(
         &self,

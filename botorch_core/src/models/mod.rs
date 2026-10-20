@@ -35,6 +35,7 @@ pub mod higher_order_gp;
 pub mod inducing_point_allocators;
 pub mod latent_kronecker_gp;
 pub mod likelihoods;
+mod matheron;
 pub mod model;
 pub mod model_list;
 pub mod model_list_dyn;

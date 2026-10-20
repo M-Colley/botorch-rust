@@ -62,6 +62,8 @@ use crate::priors::Prior;
 use crate::transforms::{Normalize, Standardize};
 use crate::{Matrix, Vector};
 
+mod matheron;
+
 /// `log(2π)`.
 const LN_2PI: f64 = 1.837_877_066_409_345_3;
 
@@ -1095,7 +1097,7 @@ impl Model for KroneckerMultiTaskGP {
 mod tests {
     use super::*;
 
-    fn model(lr: usize, standardize: bool) -> KroneckerMultiTaskGP {
+    pub(super) fn model(lr: usize, standardize: bool) -> KroneckerMultiTaskGP {
         let n = 7;
         let x = Matrix::from_fn(n, 2, |i, j| ((i * 5 + j * 3) % 11) as f64 / 11.0);
         let y = Matrix::from_fn(n, 3, |i, t| {

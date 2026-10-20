@@ -113,6 +113,10 @@ class FlattenedStandardize(Standardize):
         mu, sd = self._scalar_stats()
 
         def affine(t: Any, scale: float, offset: float) -> Any:
+            if kind_of(t).lib == "torch":
+                from botorch_rs import _ops
+
+                return _ops.apply("add_raw", _ops.apply("mul_raw", t, scale), offset)
             data, shape = to_flat(t, "t")
             return from_flat([offset + scale * v for v in data], tuple(shape), kind_of(t))
 
@@ -544,7 +548,9 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
         )
         return X if tf is None else tf(X)
 
-    def _posterior_of(self, source: Any, flat: Any, kind: Any, noise: bool) -> Any:
+    def _posterior_of(
+        self, source: Any, flat: Any, kind: Any, noise: bool, query_inputs: Any = None
+    ) -> Any:
         has_ot = getattr(self, "outcome_transform", None) is not None
         post = HigherOrderGPPosterior(
             source=source,
@@ -555,6 +561,7 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
             observation_noise=noise,
             original=not has_ot,
             num_outputs=self._num_outputs,
+            query_inputs=query_inputs,
         )
         if has_ot:
             return self.outcome_transform.untransform_posterior(post)
@@ -587,11 +594,9 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
         kind = kind_of(X)
         from botorch_rs.posteriors._query_autograd import requires_query_grad
 
-        if requires_query_grad(X):
+        if requires_query_grad(X) and self._fantasy_batch is not None:
             raise UnsupportedError(
-                "Direct HigherOrderGP posterior query gradients require a structured "
-                "Matheron adjoint path, which is not implemented; native acquisition "
-                "functions provide query gradients through the model handle."
+                "Query gradients through batches of HigherOrderGP fantasy posteriors are unsupported."
             )
         flat = to_flat(X, "X")
         if len(flat[1]) < 2:
@@ -613,7 +618,7 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
                 self._fantasy_shape,
             )
         return self._posterior_of(
-            self._rs, (list(flat[0]), tuple(flat[1])), kind, observation_noise
+            self._rs, (list(flat[0]), tuple(flat[1])), kind, observation_noise, query_inputs=X
         )
 
     def _acquisition_model(self, posterior_transform: Any = None) -> Any:

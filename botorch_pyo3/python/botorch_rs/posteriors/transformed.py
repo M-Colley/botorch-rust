@@ -23,6 +23,15 @@ def _affine(x: Any, offset: Any, scale: Any, power: int) -> Any:
     """``offset + scale^power * x`` with ``offset`` and ``scale`` given as
     ``(data, shape)`` pairs of shape ``batch_shape x 1 x m`` (broadcast over
     the trailing output dimension of ``x``)."""
+    kind = first_kind(x)
+    if kind.lib == "torch":
+        from botorch_rs import _ops
+
+        coefficient = from_flat([v**power for v in scale[0]], tuple(scale[1]), kind)
+        result = _ops.apply("mul_raw", x, coefficient)
+        if offset is not None:
+            result = _ops.apply("add_raw", result, from_flat(offset[0], tuple(offset[1]), kind))
+        return result
     data, shape = to_flat(x, "x")
     sdata = broadcast_to(scale[0], scale[1], shape)
     odata = broadcast_to(offset[0], offset[1], shape) if offset is not None else None

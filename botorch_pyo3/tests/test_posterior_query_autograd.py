@@ -262,8 +262,7 @@ def test_raw_query_gradient_chain_through_native_input_transform(transform):
     )
 
 
-def test_structured_posterior_query_gradients_fail_explicitly():
-    from botorch_rs.exceptions.errors import UnsupportedError
+def test_structured_posterior_query_gradients_are_connected():
     from botorch_rs.models import HigherOrderGP, LatentKroneckerGP
 
     x = torch.tensor([[0.1], [0.4], [0.8]], dtype=torch.float64)
@@ -273,8 +272,7 @@ def test_structured_posterior_query_gradients_fail_explicitly():
         HigherOrderGP(x, y),
         LatentKroneckerGP(x, torch.tensor([[0.0], [1.0]], dtype=torch.float64), y),
     ):
-        with pytest.raises(UnsupportedError, match="structured"):
-            model.posterior(query)
+        assert model.posterior(query).mean.requires_grad
         with torch.no_grad():
             assert torch.isfinite(model.posterior(query).mean).all()
 

@@ -236,6 +236,40 @@ impl PyLatentKroneckerGP {
             .map(|s| matrix_out(&s).into())
             .into_py_result()
     }
+    fn posterior_grid_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        t: Array,
+        mean_adjoint: Array,
+        covariance_adjoint: Array,
+    ) -> PyResult<(ArrayBuf, ArrayBuf)> {
+        let x = x.matrix("X")?;
+        let t = t.matrix("T")?;
+        let mean = botorch_core::Vector::from_vec(mean_adjoint.0);
+        let covariance = covariance_adjoint.matrix("covariance_adjoint")?;
+        let model = self.get();
+        threads::run(py, || model.posterior_grid_vjp(&x, &t, &mean, &covariance))
+            .map(|(x, t)| (matrix_out(&x).into(), matrix_out(&t).into()))
+            .into_py_result()
+    }
+    fn samples_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        t: Array,
+        base: Array,
+        adjoint: Array,
+    ) -> PyResult<(ArrayBuf, ArrayBuf)> {
+        let x = x.matrix("X")?;
+        let t = t.matrix("T")?;
+        let base = base.matrix("base_samples")?;
+        let adjoint = adjoint.matrix("adjoint")?;
+        let model = self.get();
+        threads::run(py, || model.samples_vjp(&x, &t, &base, &adjoint))
+            .map(|(x, t)| (matrix_out(&x).into(), matrix_out(&t).into()))
+            .into_py_result()
+    }
     #[pyo3(signature=(maxcor=None,pgtol=None,ftol=None,maxiter=None,maxfun=None,maxls=None,max_attempts=None,seed=None))]
     #[allow(clippy::too_many_arguments)]
     fn fit(

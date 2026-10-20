@@ -25,6 +25,8 @@ use crate::transforms::input::{ChainedInputTransform, TransformMode};
 use crate::transforms::OutcomeTransformChoice;
 use crate::{Matrix, Vector};
 
+mod matheron;
+
 /// Modules and fitted transforms of a latent Kronecker GP.
 #[derive(Clone, Debug)]
 pub struct LatentKroneckerGPOptions {
@@ -721,7 +723,7 @@ mod tests {
     use rand::SeedableRng;
     use rand_distr::{Distribution, StandardNormal};
 
-    fn model(missing: bool) -> LatentKroneckerGP {
+    pub(super) fn model(missing: bool) -> LatentKroneckerGP {
         let x = Matrix::from_column_slice(4, 1, &[0.1, 0.4, 0.8, 1.2]);
         let t = Matrix::from_column_slice(3, 1, &[0.1, 0.5, 1.0]);
         let mut y = Matrix::from_fn(4, 3, |i, j| (x[(i, 0)] * 2.0 + t[(j, 0)]).sin());

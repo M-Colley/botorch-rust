@@ -41,7 +41,7 @@ class _InterleavedMarginalMTMVN(MultitaskMultivariateNormal):
                         out.append(noise[(i % p._m) * p._m + (j % p._m)])
                     else:
                         out.append(0.0)
-        return p._out(out, (*p._batch, qm, qm))
+        return p._query_out("covariance_diagonal", out, (*p._batch, qm, qm))
 
 
 class MultitaskGPPosterior(GPyTorchPosterior):
@@ -80,6 +80,7 @@ class MultitaskGPPosterior(GPyTorchPosterior):
         num_outputs: int = 1,
         num_train: int = 0,
         scales: list[float] | None = None,
+        query_inputs: Any = None,
     ) -> None:
         if distribution is not None:
             from botorch_rs._arrays import kind_of
@@ -118,8 +119,10 @@ class MultitaskGPPosterior(GPyTorchPosterior):
             raise TypeError(
                 "Provide a distribution and operators, or a native multitask source and query."
             )
-        super().__init__(source, X, kind, observation_noise, num_outputs=num_outputs)
-        self._model_rs = model_rs
+        super().__init__(
+            source, X, kind, observation_noise, num_outputs=num_outputs, query_inputs=query_inputs
+        )
+        self._model_rs = model_rs.copy()
         self._num_train = num_train
         self._scales = scales
 
@@ -154,6 +157,11 @@ class MultitaskGPPosterior(GPyTorchPosterior):
             return None
         s = self._scales or [1.0] * m
         return [data[i * m + j] * s[i] * s[j] for i in range(m) for j in range(m)]
+
+    def _query_out(self, mode: str, values: Any, shape: Any, base: Any = None) -> Any:
+        from botorch_rs.posteriors._structured_query_autograd import output
+
+        return output(self, mode, values, shape, base)
 
     @property
     def batch_range(self) -> tuple[int, int]:
@@ -227,7 +235,9 @@ class MultitaskGPPosterior(GPyTorchPosterior):
                 f"Received base samples of shape {tuple(zshape)}, expected "
                 f"{(*sample_shape, *self.base_sample_shape)}."
             )
-        return self._out(self._matheron(z), (*sample_shape, *self._batch, self._q, self._m))
+        return self._query_out(
+            "samples", self._matheron(z), (*sample_shape, *self._batch, self._q, self._m), z
+        )
 
     def rsample(self, sample_shape: Any = None) -> Any:
         """Samples (``sample_shape x batch_shape x q x m``) from base samples
@@ -250,7 +260,9 @@ class MultitaskGPPosterior(GPyTorchPosterior):
             if test:
                 vals.extend(test[i * q * m : (i + 1) * q * m])
         z = (vals, [n, nb, total] if nb > 1 else [n, total])
-        return self._out(self._matheron(z), (*sample_shape, *self._batch, self._q, self._m))
+        return self._query_out(
+            "samples", self._matheron(z), (*sample_shape, *self._batch, self._q, self._m), z
+        )
 
     def __repr__(self) -> str:
         return f"MultitaskGPPosterior(batch_shape={self._batch}, q={self._q}, m={self._m})"

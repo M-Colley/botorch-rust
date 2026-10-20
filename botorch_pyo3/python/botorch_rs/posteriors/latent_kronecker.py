@@ -19,17 +19,19 @@ class _GridDistribution:
     @property
     def mean(self) -> Any:
         p = self.posterior
-        return from_flat(p._moments()[0], (*p._batch, p._q * p._tasks), p._kind)
+        return p._query_out("mean", p._moments()[0], (*p._batch, p._q * p._tasks))
 
     @property
     def variance(self) -> Any:
         p = self.posterior
-        return from_flat(p._diagonal(), (*p._batch, p._q * p._tasks), p._kind)
+        return p._query_out("variance", p._diagonal(), (*p._batch, p._q * p._tasks))
 
     @property
     def covariance_matrix(self) -> Any:
         p = self.posterior
-        return from_flat(p._moments()[1], (*p._batch, p._q * p._tasks, p._q * p._tasks), p._kind)
+        return p._query_out(
+            "covariance", p._moments()[1], (*p._batch, p._q * p._tasks, p._q * p._tasks)
+        )
 
 
 class LatentKroneckerGPPosterior(Posterior):
@@ -80,16 +82,10 @@ class LatentKroneckerGPPosterior(Posterior):
                     "distribution.mean must have batch x q x t shape."
                 )
         self.model, self.X, self.T = model, X, T
-        from botorch_rs.posteriors._query_autograd import requires_query_grad
-
-        if requires_query_grad(X) or requires_query_grad(T):
-            from botorch_rs.exceptions.errors import UnsupportedError
-
-            raise UnsupportedError(
-                "Native structured Matheron query adjoints are not yet implemented."
-            )
         self._rs = model._rs.copy()
         self._kind = kind_of(X)
+        self._query_inputs = X.clone() if self._kind.lib == "torch" else None
+        self._query_times = T.clone() if self._kind.lib == "torch" and hasattr(T, "clone") else None
         self._is_mt = True
         self._x, self._t = to_flat(X, "X"), to_flat(T, "T")
         if (
@@ -139,13 +135,18 @@ class LatentKroneckerGPPosterior(Posterior):
     def mean(self) -> Any:
         if self._external_distribution is not None:
             return self._external_distribution.mean
-        return from_flat(self._moments()[0], (*self._batch, self._q, self._tasks), self._kind)
+        return self._query_out("mean", self._moments()[0], (*self._batch, self._q, self._tasks))
 
     @property
     def variance(self) -> Any:
         if self._external_distribution is not None:
             return self._external_distribution.variance
-        return from_flat(self._diagonal(), (*self._batch, self._q, self._tasks), self._kind)
+        return self._query_out("variance", self._diagonal(), (*self._batch, self._q, self._tasks))
+
+    def _query_out(self, mode: str, values: Any, shape: Any, normals: Any = None) -> Any:
+        from botorch_rs.posteriors._structured_query_autograd import output
+
+        return output(self, mode, values, shape, normals)
 
     @property
     def dtype(self) -> Any:
@@ -215,7 +216,12 @@ class LatentKroneckerGPPosterior(Posterior):
             for result in results
             for v in result[sample * width : (sample + 1) * width]
         ]
-        return from_flat(values, self._extended_shape(sample_shape), self._kind)
+        return self._query_out(
+            "samples",
+            values,
+            self._extended_shape(sample_shape),
+            (list(data), (ns, per_batch, total)),
+        )
 
     def rsample(self, sample_shape: Any = None) -> Any:
         if (adapter := self.__dict__.get("_supplied")) is not None:

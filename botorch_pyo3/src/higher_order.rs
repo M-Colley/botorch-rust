@@ -372,6 +372,44 @@ impl PyHigherOrderGP {
         Ok(matrix_out(&s).into())
     }
 
+    #[pyo3(signature=(x, mean_adjoint, variance_adjoint, original=true))]
+    fn moment_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        mean_adjoint: Array,
+        variance_adjoint: Array,
+        original: bool,
+    ) -> PyResult<ArrayBuf> {
+        let x = x.matrix("X")?;
+        let mean = mean_adjoint.matrix("mean_adjoint")?;
+        let variance = variance_adjoint.matrix("variance_adjoint")?;
+        let model = self.get();
+        threads::run(py, || {
+            model.mean_variance_vjp_in(&x, &mean, &variance, original)
+        })
+        .map(|g| matrix_out(&g).into())
+        .into_py_result()
+    }
+
+    #[pyo3(signature=(x, base_samples, adjoint, original=true))]
+    fn samples_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        base_samples: Array,
+        adjoint: Array,
+        original: bool,
+    ) -> PyResult<ArrayBuf> {
+        let x = x.matrix("X")?;
+        let base = base_samples.matrix("base_samples")?;
+        let adjoint = adjoint.matrix("adjoint")?;
+        let model = self.get();
+        threads::run(py, || model.rsample_vjp_in(&x, &base, &adjoint, original))
+            .map(|g| matrix_out(&g).into())
+            .into_py_result()
+    }
+
     /// The model conditioned on transformed inputs `x_tf` (`n' x d'`) and
     /// standardized targets `y_tf` (`n' x S`).
     fn condition_on_observations(&self, x_tf: Array, y_tf: Array) -> PyResult<Self> {

@@ -47,6 +47,8 @@ use crate::posterior::{JointPosteriorGrad, Posterior};
 use crate::transforms::input::{ChainedInputTransform, TransformMode};
 use crate::{Matrix, Vector};
 
+mod matheron;
+
 /// `log(2π)`.
 const LN_2PI: f64 = 1.837_877_066_409_345_3;
 
@@ -1327,7 +1329,7 @@ mod tests {
     use crate::kernels::KernelKind;
     use crate::models::gp::get_gaussian_likelihood_with_lognormal_prior;
 
-    fn model(prior: bool, k3: bool) -> HigherOrderGP {
+    pub(super) fn model(prior: bool, k3: bool) -> HigherOrderGP {
         let n = 5;
         let shape = if k3 { vec![2, 3] } else { vec![3] };
         let s: usize = shape.iter().product();

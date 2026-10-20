@@ -40,8 +40,37 @@ class _DiagonalNormal:
 
     @property
     def stddev(self) -> Any:
-        data, shape = to_flat(self._p.variance, "variance")
-        return from_flat([math.sqrt(v) for v in data], tuple(shape), self._p._kind)
+        from botorch_rs import _ops
+
+        return _ops.apply("sqrt", self._p.variance)
+
+    @property
+    def covariance_matrix(self) -> Any:
+        variance = self._p.variance
+        if self._p._kind.lib == "torch":
+            import torch
+
+            return torch.diag_embed(variance)
+        data, shape = to_flat(variance)
+        width = shape[-1]
+        return from_flat(
+            [
+                data[b * width + i] if i == j else 0.0
+                for b in range(math.prod(shape[:-1]))
+                for i in range(width)
+                for j in range(width)
+            ],
+            (*shape, width),
+            self._p._kind,
+        )
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        return self._p.output_shape[:-1]
+
+    @property
+    def event_shape(self) -> tuple[int, ...]:
+        return self._p.output_shape[-1:]
 
 
 class HigherOrderGPPosterior(Posterior):
@@ -76,6 +105,7 @@ class HigherOrderGPPosterior(Posterior):
         observation_noise: bool = False,
         original: bool = True,
         noise_scale: float = 1.0,
+        query_inputs: Any = None,
     ) -> None:
         if distribution is not None:
             from botorch_rs.posteriors._structured import SuppliedMatheron
@@ -110,6 +140,9 @@ class HigherOrderGPPosterior(Posterior):
                 "Provide a distribution and operators, or a native HOGP source and query."
             )
         self._rs = source.copy()
+        self._query_inputs = (
+            query_inputs.clone() if kind.lib == "torch" and query_inputs is not None else None
+        )
         self._x = X
         self._kind = kind
         self._target_shape = tuple(target_shape)
@@ -155,7 +188,7 @@ class HigherOrderGPPosterior(Posterior):
         """The posterior mean, shape ``batch x q x target_shape``."""
         if (adapter := self.__dict__.get("_supplied")) is not None:
             return adapter.mean
-        return from_flat(self._mean_variance()[0], self.output_shape, self._kind)
+        return self._query_out("mean", self._mean_variance()[0], self.output_shape)
 
     @property
     def variance(self) -> Any:
@@ -164,7 +197,12 @@ class HigherOrderGPPosterior(Posterior):
         noise), shape ``batch x q x target_shape``."""
         if (adapter := self.__dict__.get("_supplied")) is not None:
             return adapter.variance
-        return from_flat(self._mean_variance()[1], self.output_shape, self._kind)
+        return self._query_out("variance", self._mean_variance()[1], self.output_shape)
+
+    def _query_out(self, mode: str, values: Any, shape: Any, normals: Any = None) -> Any:
+        from botorch_rs.posteriors._structured_query_autograd import output
+
+        return output(self, mode, values, shape, normals)
 
     @property
     def distribution(self) -> _DiagonalNormal:
@@ -264,7 +302,12 @@ class HigherOrderGPPosterior(Posterior):
         for s in range(ns):
             for b in range(nb):
                 out.extend(results[b][s * qs : (s + 1) * qs])
-        return from_flat(out, (*sample_shape, *self.output_shape), self._kind)
+        return self._query_out(
+            "samples",
+            out,
+            (*sample_shape, *self.output_shape),
+            (list(data), (ns, per_batch, total)),
+        )
 
     def rsample(self, sample_shape: Any = None) -> Any:
         r"""Sample from the posterior (base samples from the caller's array

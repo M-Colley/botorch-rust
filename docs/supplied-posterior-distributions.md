@@ -49,8 +49,8 @@ LatentKroneckerGP keeps its native Matheron sampler. An explicitly supplied
 external model must expose its training-grid metadata and implement
 `_rsample_from_base_samples(X, T, base_samples)`; that caller owns sampling.
 The adapter validates base/sample layouts and preserves the returned graph.
-Native structured Matheron query adjoints remain unsupported and are rejected
-explicitly when gradient tracking is requested.
+Native structured Matheron query adjoints are implemented separately in Rust;
+the supplied-operator/model paths retain their caller-owned interoperability.
 
 Normal samplers now recognize structured base layouts, including the additional
 training-prior/noise draws. This fixes a preexisting path that passed only
