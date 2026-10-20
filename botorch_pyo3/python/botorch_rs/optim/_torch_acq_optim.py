@@ -53,6 +53,39 @@ def clamp(X: Tensor, lower: Any, upper: Any) -> Tensor:
     return X.clamp(lo, hi) if lo is not None or hi is not None else X
 
 
+def _fixed_values(
+    X: Tensor, fixed: Mapping[int, Any] | None, lower: Any, upper: Any
+) -> dict[int, Tensor]:
+    """Resolve per-restart fixed values before reducing optimization variables."""
+    result: dict[int, Tensor] = {}
+    d = X.shape[-1]
+    for index, value in (fixed or {}).items():
+        if not isinstance(index, int) or not -d <= index < d:
+            raise ValueError("Fixed feature indices must lie within the input dimension.")
+        index %= d
+        if index in result:
+            raise ValueError("Fixed feature indices must be unique.")
+        column = (
+            X[..., index].detach()
+            if value is None
+            else torch.as_tensor(value, dtype=X.dtype, device=X.device)
+        )
+        if column.ndim == X.ndim - 2:
+            column = column.unsqueeze(-1)
+        column = column.expand(X.shape[:-1])
+        if not bool(torch.isfinite(column).all()):
+            raise ValueError("Fixed feature values must be finite.")
+        for bound, is_lower in ((lower, True), (upper, False)):
+            if bound is not None:
+                limit = torch.as_tensor(bound, dtype=X.dtype, device=X.device).expand_as(X)[
+                    ..., index
+                ]
+                if bool((column < limit if is_lower else column > limit).any()):
+                    raise ValueError("Fixed feature values must lie inside their bounds.")
+        result[index] = column
+    return result
+
+
 def gen_torch(
     initial_conditions: Tensor,
     acquisition_function: Any,
@@ -85,9 +118,9 @@ def gen_torch(
     )
     history: list[Tensor] = []
     d = initial_conditions.shape[-1]
-    fixed = {} if not fixed_features else {int(i) % d: v for i, v in fixed_features.items()}
-    free = [i for i in range(d) if i not in fixed]
     start = clamp(initial_conditions.detach(), lower_bounds, upper_bounds)
+    fixed = _fixed_values(start, fixed_features, lower_bounds, upper_bounds)
+    free = [i for i in range(d) if i not in fixed]
     if not free:
         final = fix_features(start, fixed)
         with torch.no_grad():
@@ -171,7 +204,8 @@ def gen_scipy(
     if len(shape) < 2:
         raise ValueError("initial_conditions must have at least two dimensions.")
     initial = clamp(initial_conditions.detach(), lower_bounds, upper_bounds)
-    initial = fix_features(initial, fixed_features)
+    fixed = _fixed_values(initial, fixed_features, lower_bounds, upper_bounds)
+    initial = fix_features(initial, fixed)
     lo = (
         torch.full_like(initial, -torch.inf)
         if lower_bounds is None
@@ -187,11 +221,8 @@ def gen_scipy(
         )
     )
     lo, hi = lo.clone(), hi.clone()
-    for index, value in (fixed_features or {}).items():
-        if value is not None:
-            lo[..., index] = hi[..., index] = torch.as_tensor(
-                value, dtype=initial.dtype, device=initial.device
-            )
+    for index, value in fixed.items():
+        lo[..., index] = hi[..., index] = value
     options = dict(options or {})
     constrained = bool(
         inequality_constraints or equality_constraints or nonlinear_inequality_constraints
@@ -304,7 +335,7 @@ def gen_scipy(
             )
     except Timeout:
         final = last
-    final = clamp(fix_features(final, fixed_features), lower_bounds, upper_bounds)
+    final = clamp(fix_features(final, fixed), lower_bounds, upper_bounds)
     if constrained:
         inequalities, equalities = _constraints(
             final, inequality_constraints, equality_constraints, nonlinear_inequality_constraints
@@ -345,7 +376,15 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
                     acquisition.set_X_pending(
                         torch.cat(([original] if original is not None else []) + points, dim=-2)
                     )
-                candidate, value = optimize(dict(args, q=1, sequential=False))
+                timeout = args["timeout_sec"]
+                candidate, value = optimize(
+                    dict(
+                        args,
+                        q=1,
+                        sequential=False,
+                        timeout_sec=None if timeout is None else timeout / q,
+                    )
+                )
                 points.append(candidate)
                 if value is not None:
                     sequential_values.append(value)

@@ -179,3 +179,29 @@ def test_logei_torch_search_no_host_value_roundtrip(device):
         )
     assert torch.isfinite(values).all()
     assert candidates.device == X.device
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("generator", [gen_candidates_scipy, gen_candidates_torch])
+def test_none_fixed_features_retain_each_restart_values_and_invalid_fixed_bounds_raise(
+    device, generator
+):
+    initial = torch.tensor([[[0.1, 0.2]], [[0.4, 0.8]]], dtype=torch.double, device=device)
+    options = (
+        {"maxiter": 30}
+        if generator is gen_candidates_scipy
+        else {"stopping_criterion_options": {"maxiter": 30}}
+    )
+    candidates, _ = generator(
+        initial, Quadratic(), 0.0, 1.0, fixed_features={1: None}, options=options
+    )
+    torch.testing.assert_close(candidates[..., 1], initial[..., 1])
+    assert (candidates[..., 0] - 0.73).abs().sum() < (initial[..., 0] - 0.73).abs().sum()
+    for fixed in ({1: 1.2}, {3: 0.5}):
+        with pytest.raises(ValueError, match="Fixed feature"):
+            generator(initial, Quadratic(), 0.0, 1.0, fixed_features=fixed, options=options)
+    per_restart = initial.new_tensor([0.3, 0.6])
+    candidates, _ = generator(
+        initial, Quadratic(), 0.0, 1.0, fixed_features={1: per_restart}, options=options
+    )
+    torch.testing.assert_close(candidates[..., 1], per_restart[:, None])
