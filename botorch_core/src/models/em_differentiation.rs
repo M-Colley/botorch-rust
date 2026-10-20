@@ -4,6 +4,7 @@ use crate::error::{BotorchError, Result};
 use crate::kernels::TreeKernel;
 use crate::linalg::psd_safe_cholesky;
 use crate::models::em_gp::{EMDataset, EMOptions};
+use crate::models::em_inducing::kernel_input_direction;
 use crate::{Matrix, Vector};
 
 /// Estimated moments and one directional derivative of each.
@@ -111,6 +112,8 @@ fn kernel_direction(
     x: &Matrix,
     y: &Matrix,
     parameter: Option<(usize, f64)>,
+    left_input: Option<(usize, usize)>,
+    right_input: Option<(usize, usize)>,
 ) -> Result<Dual> {
     let value = kernel.covariance(x, y)?;
     let mut tangent = Matrix::zeros(x.nrows(), y.nrows());
@@ -135,6 +138,9 @@ fn kernel_direction(
             }
         }
     }
+    if left_input.is_some() || right_input.is_some() {
+        tangent += kernel_input_direction(kernel, x, y, left_input, right_input)?;
+    }
     Ok(Dual { value, tangent })
 }
 
@@ -143,7 +149,7 @@ enum Observation {
     Interpolated { weights: Dual, residual: Dual },
 }
 
-/// Differentiate exact EM with fixed historical inputs and inducing locations.
+/// Differentiate exact EM with fixed historical inputs and optional moving inducing locations.
 ///
 /// `parameter` selects an actual kernel coordinate and its raw transform
 /// derivative. Mean/noise tangents are already with respect to the selected
@@ -159,6 +165,7 @@ pub fn em_directional(
     parameter: Option<(usize, f64)>,
     constant_tangent: f64,
     noise_tangent: f64,
+    inducing_direction: Option<(usize, usize)>,
     initial: Option<(&Vector, &Matrix)>,
 ) -> Result<EMDirectional> {
     let n = inducing.nrows();
@@ -190,7 +197,14 @@ pub fn em_directional(
             "EM derivatives require data and inducing points".into(),
         ));
     }
-    let kernel_covariance = kernel_direction(kernel, inducing, inducing, parameter)?;
+    let kernel_covariance = kernel_direction(
+        kernel,
+        inducing,
+        inducing,
+        parameter,
+        inducing_direction,
+        inducing_direction,
+    )?;
     let inverse = kernel_covariance.inverse()?;
     let initial_covariance = if options.naive_init {
         Dual::fixed(Matrix::identity(n, n))
@@ -235,9 +249,16 @@ pub fn em_directional(
     let mut observations = Vec::with_capacity(count);
     for data in datasets {
         observations.push(if inducing_observations {
-            let cross = kernel_direction(kernel, &data.x, inducing, parameter)?;
+            let cross = kernel_direction(
+                kernel,
+                &data.x,
+                inducing,
+                parameter,
+                None,
+                inducing_direction,
+            )?;
             let weights = cross.mul(&inverse);
-            let residual = kernel_direction(kernel, &data.x, &data.x, parameter)?
+            let residual = kernel_direction(kernel, &data.x, &data.x, parameter, None, None)?
                 .sub(&weights.mul(&cross.transpose()));
             Observation::Interpolated { weights, residual }
         } else {
@@ -409,6 +430,7 @@ mod tests {
             0.0,
             0.0,
             None,
+            None,
         )
         .unwrap();
         let run = |scale: f64| {
@@ -493,6 +515,7 @@ mod tests {
                         },
                         if parameter == 1 { 1.0 } else { 0.0 },
                         if parameter == 0 { 1.0 } else { 0.0 },
+                        None,
                         None,
                     )
                     .unwrap();

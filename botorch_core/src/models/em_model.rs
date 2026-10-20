@@ -6,6 +6,7 @@ use crate::kernels::{KernelNode, TreeKernel};
 use crate::linalg::{psd_safe_cholesky, CholeskyFactor};
 use crate::models::em_differentiation::em_directional;
 use crate::models::em_gp::{run_em_prior, EMDataset, EMInterpolation, EMOptions};
+use crate::models::em_inducing::inducing_input_vjp;
 use crate::models::{ConstantMeanSpec, GaussianLikelihoodSpec, Model};
 use crate::optim::fit::MllModel;
 use crate::optim::minimize::{OptimizationResult, TorchMinimizeOptions};
@@ -51,6 +52,8 @@ pub struct EMModelOptions {
     pub em: Option<EMOptions>,
     /// Start each EM rerun from the previous detached learned moments.
     pub warm_start_em: bool,
+    /// Optimize explicit inducing coordinates jointly with the GP parameters.
+    pub learnable_inducing: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -107,6 +110,11 @@ impl EMEmpiricalGP {
     ) -> Result<Self> {
         let n = prior.x.nrows();
         let d = prior.x.ncols();
+        if options.learnable_inducing && !options.inducing_observations {
+            return Err(BotorchError::InvalidArgument(
+                "learnable EM locations require explicit inducing-point interpolation".into(),
+            ));
+        }
         if options.em.as_ref().is_some_and(|em| {
             !(0.0..=1.0).contains(&em.shrinkage)
                 || em.tolerance.is_some_and(|v| !v.is_finite() || v < 0.0)
@@ -174,6 +182,13 @@ impl EMEmpiricalGP {
         if let Some((_, values)) = &options.base {
             raw.extend_from_slice(values);
         }
+        if options.learnable_inducing {
+            for i in 0..n {
+                for j in 0..d {
+                    raw.push(prior.x[(i, j)]);
+                }
+            }
+        }
         let cache = Self::build_cache(&train_x, &train_y, &prior, &options, &raw)?;
         Ok(Self {
             train_x,
@@ -188,6 +203,28 @@ impl EMEmpiricalGP {
     fn kernel_offset(options: &EMModelOptions) -> usize {
         1 + usize::from(options.mean.is_some())
     }
+    fn inducing_offset(options: &EMModelOptions) -> usize {
+        Self::kernel_offset(options)
+            + options.kernel.num_raw()
+            + options.base.as_ref().map_or(0, |(node, _)| node.num_raw())
+    }
+    fn inducing_at(prior: &EMPrior, options: &EMModelOptions, raw: &[f64]) -> Result<Matrix> {
+        if options.learnable_inducing {
+            let start = Self::inducing_offset(options);
+            if raw.len() != start + prior.x.len() {
+                return Err(BotorchError::DimensionMismatch(
+                    "EM inducing raw parameter count differs".into(),
+                ));
+            }
+            Ok(Matrix::from_row_slice(
+                prior.x.nrows(),
+                prior.x.ncols(),
+                &raw[start..],
+            ))
+        } else {
+            Ok(prior.x.clone())
+        }
+    }
     fn components(
         prior: &EMPrior,
         options: &EMModelOptions,
@@ -195,7 +232,13 @@ impl EMEmpiricalGP {
     ) -> Result<(EMInterpolation, Option<TreeKernel>)> {
         let start = Self::kernel_offset(options);
         let end = start + options.kernel.num_raw();
-        let size = end + options.base.as_ref().map_or(0, |(n, _)| n.num_raw());
+        let base_end = Self::inducing_offset(options);
+        let size = base_end
+            + if options.learnable_inducing {
+                prior.x.len()
+            } else {
+                0
+            };
         if raw.len() != size || raw.iter().any(|v| !v.is_finite()) {
             return Err(BotorchError::InvalidArgument(
                 "invalid EM raw parameters".into(),
@@ -205,7 +248,7 @@ impl EMEmpiricalGP {
         let constant = if options.mean.is_some() { raw[1] } else { 0.0 };
         let interpolation = EMInterpolation::new(
             kernel,
-            prior.x.clone(),
+            Self::inducing_at(prior, options, raw)?,
             constant,
             prior.mean.clone(),
             prior.covariance.clone(),
@@ -213,7 +256,7 @@ impl EMEmpiricalGP {
         let base = options
             .base
             .as_ref()
-            .map(|(node, _)| TreeKernel::build(node, &raw[end..], prior.x.ncols()))
+            .map(|(node, _)| TreeKernel::build(node, &raw[end..base_end], prior.x.ncols()))
             .transpose()?;
         Ok((interpolation, base))
     }
@@ -285,7 +328,8 @@ impl EMEmpiricalGP {
         }
         self.install_state(raw, self.prior.clone())
     }
-    fn install_state(&mut self, raw: &[f64], prior: EMPrior) -> Result<()> {
+    fn install_state(&mut self, raw: &[f64], mut prior: EMPrior) -> Result<()> {
+        prior.x = Self::inducing_at(&prior, &self.options, raw)?;
         let cache = Self::build_cache(&self.train_x, &self.train_y, &prior, &self.options, raw)?;
         self.raw = raw.to_vec();
         self.prior = prior;
@@ -312,7 +356,7 @@ impl EMEmpiricalGP {
             let result = run_em_prior(
                 &self.datasets,
                 interpolation.kernel,
-                self.prior.x.clone(),
+                interpolation.inducing.clone(),
                 interpolation.constant,
                 indices.as_deref(),
                 &options,
@@ -321,7 +365,7 @@ impl EMEmpiricalGP {
                     .then_some((&self.prior.mean, &self.prior.covariance)),
             )?;
             EMPrior {
-                x: self.prior.x.clone(),
+                x: interpolation.inducing,
                 mean: result.mean,
                 covariance: result.covariance,
             }
@@ -418,7 +462,11 @@ impl EMEmpiricalGP {
             );
         }
         if let Some((base, _)) = &self.options.base {
-            crate::kernels::tree::sample_tree_priors(base, &mut raw[end..], rng);
+            crate::kernels::tree::sample_tree_priors(
+                base,
+                &mut raw[end..Self::inducing_offset(&self.options)],
+                rng,
+            );
         }
         raw
     }
@@ -432,6 +480,12 @@ impl EMEmpiricalGP {
         if let Some((base, _)) = &self.options.base {
             shapes.extend(base.param_shapes("_additive_base."));
         }
+        if self.options.learnable_inducing {
+            shapes.push((
+                "_X_inducing".into(),
+                vec![self.prior.x.nrows(), self.prior.x.ncols()],
+            ));
+        }
         shapes
     }
     /// Raw bounds, pinning frozen interpolation parameters at their current values.
@@ -444,6 +498,12 @@ impl EMEmpiricalGP {
         let stop = bounds.len();
         if let Some((base, _)) = &self.options.base {
             bounds.extend(base.raw_bounds());
+        }
+        if self.options.learnable_inducing {
+            bounds.extend(std::iter::repeat_n(
+                (f64::NEG_INFINITY, f64::INFINITY),
+                self.prior.x.len(),
+            ));
         }
         if self.options.freeze_pretrained {
             for (i, bound) in bounds.iter_mut().enumerate().take(stop).skip(1) {
@@ -467,6 +527,7 @@ impl EMEmpiricalGP {
         }
         let offset = Self::kernel_offset(&self.options);
         let end = offset + self.options.kernel.num_raw();
+        let inducing_offset = Self::inducing_offset(&self.options);
         let mut value = 0.0;
         let mut grad = vec![0.0; raw.len()];
         let mut observations = 0;
@@ -491,7 +552,7 @@ impl EMEmpiricalGP {
             let covariance_grad = (&alpha * alpha.transpose() - factor.inverse()) * 0.5;
             grad[0] += covariance_grad.trace();
             if self.options.inducing_observations {
-                let cross = kernel.covariance(&data.x, &self.prior.x)?;
+                let cross = kernel.covariance(&data.x, &interpolation.inducing)?;
                 let inverse = interpolation.cholesky.inverse();
                 let weights = &cross * &inverse;
                 let delta = &self.prior.mean - Vector::from_element(m, interpolation.constant);
@@ -507,7 +568,7 @@ impl EMEmpiricalGP {
                     if i < n {
                         data.x[(i, j)]
                     } else {
-                        self.prior.x[(i - n, j)]
+                        interpolation.inducing[(i - n, j)]
                     }
                 });
                 let mut adjoint = Matrix::zeros(n + m, n + m);
@@ -525,13 +586,21 @@ impl EMEmpiricalGP {
                 for (dest, g) in grad[offset..end].iter_mut().zip(kg) {
                     *dest += g;
                 }
+                if self.options.learnable_inducing {
+                    let derivative = inducing_input_vjp(kernel, &joint, &adjoint, n, m)?;
+                    for r in 0..m {
+                        for c in 0..data.x.ncols() {
+                            grad[inducing_offset + r * data.x.ncols() + c] += derivative[(r, c)];
+                        }
+                    }
+                }
                 if self.options.mean.is_some() {
                     grad[1] += alpha.sum() - alpha.dot(&(weights * Vector::from_element(m, 1.0)));
                 }
             }
             if let Some(base) = &base {
                 let bg = base.contract(&base.prepare(&data.x)?, &covariance_grad);
-                for (dest, g) in grad[end..].iter_mut().zip(bg) {
+                for (dest, g) in grad[end..inducing_offset].iter_mut().zip(bg) {
                     *dest += g;
                 }
             }
@@ -548,8 +617,11 @@ impl EMEmpiricalGP {
         if let (Some(base), Some((node, _))) = (&base, &self.options.base) {
             let (lp, prior_grad) = base.log_prior_and_grad()?;
             value += lp;
-            let transforms = node.transform_derivatives(&raw[end..]);
-            for ((dest, prior), transform) in grad[end..].iter_mut().zip(prior_grad).zip(transforms)
+            let transforms = node.transform_derivatives(&raw[end..inducing_offset]);
+            for ((dest, prior), transform) in grad[end..inducing_offset]
+                .iter_mut()
+                .zip(prior_grad)
+                .zip(transforms)
             {
                 *dest = (*dest + prior) * transform;
             }
@@ -593,43 +665,59 @@ impl EMEmpiricalGP {
         }
         let offset = Self::kernel_offset(&self.options);
         let end = offset + self.options.kernel.num_raw();
+        let inducing_offset = Self::inducing_offset(&self.options);
         let transforms = self.options.kernel.transform_derivatives(&raw[offset..end]);
         let mut directions = Vec::with_capacity(end);
-        for p in 0..end {
-            directions.push(em_directional(
-                &self.datasets,
-                &interpolation.kernel,
-                &self.prior.x,
-                interpolation.constant,
-                self.options.inducing_observations,
-                &options,
-                if p >= offset {
-                    Some((p - offset, transforms[p - offset]))
-                } else {
-                    None
-                },
-                if self.options.mean.is_some() && p == 1 {
-                    1.0
-                } else {
-                    0.0
-                },
-                if p == 0 {
+        for p in 0..raw.len() {
+            if p >= end && p < inducing_offset {
+                continue;
+            }
+            directions.push((
+                p,
+                em_directional(
+                    &self.datasets,
+                    &interpolation.kernel,
+                    &interpolation.inducing,
+                    interpolation.constant,
+                    self.options.inducing_observations,
+                    &options,
+                    if p >= offset && p < end {
+                        Some((p - offset, transforms[p - offset]))
+                    } else {
+                        None
+                    },
+                    if self.options.mean.is_some() && p == 1 {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    if p == 0 {
+                        self.options
+                            .likelihood
+                            .noise_constraint
+                            .transform_derivative(raw[0])
+                    } else {
+                        0.0
+                    },
+                    if self.options.learnable_inducing && p >= inducing_offset {
+                        Some((
+                            (p - inducing_offset) / self.dim(),
+                            (p - inducing_offset) % self.dim(),
+                        ))
+                    } else {
+                        None
+                    },
                     self.options
-                        .likelihood
-                        .noise_constraint
-                        .transform_derivative(raw[0])
-                } else {
-                    0.0
-                },
-                self.options
-                    .warm_start_em
-                    .then_some((&self.prior.mean, &self.prior.covariance)),
-            )?);
+                        .warm_start_em
+                        .then_some((&self.prior.mean, &self.prior.covariance)),
+                )?,
+            ));
         }
         let mut fixed = self.clone();
         fixed.options.em = None;
-        fixed.prior.mean = directions[0].mean.clone();
-        fixed.prior.covariance = directions[0].covariance.clone();
+        fixed.prior.x = interpolation.inducing;
+        fixed.prior.mean = directions[0].1.mean.clone();
+        fixed.prior.covariance = directions[0].1.covariance.clone();
         let (value, mut gradient) = fixed.mll_value_and_grad(raw)?;
         let (interpolation, base) = Self::components(&fixed.prior, &fixed.options, raw)?;
         let m = self.prior.x.nrows();
@@ -639,7 +727,9 @@ impl EMEmpiricalGP {
         for data in &self.datasets {
             let n = data.x.nrows();
             let weights = if self.options.inducing_observations {
-                let cross = interpolation.kernel.covariance(&data.x, &self.prior.x)?;
+                let cross = interpolation
+                    .kernel
+                    .covariance(&data.x, &interpolation.inducing)?;
                 interpolation.cholesky.solve(&cross.transpose()).transpose()
             } else {
                 let indices = index_rows(&data.x, &self.prior.x)?;
@@ -662,8 +752,8 @@ impl EMEmpiricalGP {
             covariance_adjoint += weights.transpose() * adjoint * &weights;
             total += n;
         }
-        for (p, direction) in directions.iter().enumerate() {
-            gradient[p] += (mean_adjoint.dot(&direction.mean_tangent)
+        for (p, direction) in &directions {
+            gradient[*p] += (mean_adjoint.dot(&direction.mean_tangent)
                 + covariance_adjoint
                     .component_mul(&direction.covariance_tangent)
                     .sum())
@@ -679,6 +769,10 @@ impl EMEmpiricalGP {
             self.cache.interpolation.cholesky.l().clone(),
             &self.prior.mean - Vector::from_element(self.prior.mean.len(), self.constant()),
         )
+    }
+    /// Current explicit inducing locations, in their optimizer parameter order.
+    pub fn inducing_points(&self) -> &Matrix {
+        &self.prior.x
     }
     fn combined(&self, x: &Matrix) -> Result<(Vector, Matrix, Matrix)> {
         let n = self.train_x.nrows();
@@ -1026,6 +1120,7 @@ mod tests {
             freeze_pretrained: false,
             em: None,
             warm_start_em: false,
+            learnable_inducing: false,
         };
         EMEmpiricalGP::new(
             x,
@@ -1168,6 +1263,59 @@ mod tests {
                 model.set_raw_parameters(&raw).unwrap();
                 assert_eq!(model.prior.mean, moments.mean);
                 assert_eq!(model.prior.covariance, moments.covariance);
+            }
+        }
+    }
+
+    #[test]
+    fn inducing_location_mll_gradients_match_finite_differences() {
+        for base in [false, true] {
+            for mode in 0..3 {
+                let original = model(true, base);
+                let mut options = original.options.clone();
+                options.learnable_inducing = true;
+                options.warm_start_em = mode == 2;
+                options.em = (mode > 0).then(|| EMOptions {
+                    iterations: 2,
+                    mean_prior: true,
+                    covariance_prior: true,
+                    tolerance: None,
+                    shrinkage: 0.13,
+                    ..Default::default()
+                });
+                let mut model = EMEmpiricalGP::new(
+                    original.train_x,
+                    original.train_y,
+                    original.datasets,
+                    original.prior,
+                    options,
+                )
+                .unwrap();
+                let raw = model.raw.clone();
+                let (value, gradient) = model.mll_value_and_grad(&raw).unwrap();
+                for p in 0..raw.len() {
+                    let mut plus = raw.clone();
+                    let mut minus = raw.clone();
+                    plus[p] += 1e-6;
+                    minus[p] -= 1e-6;
+                    let numerical = (model.mll_value_and_grad(&plus).unwrap().0
+                        - model.mll_value_and_grad(&minus).unwrap().0)
+                        / 2e-6;
+                    assert!(
+                        (numerical - gradient[p]).abs() < 3e-5,
+                        "base={base} mode={mode} p={p}: {numerical} != {}",
+                        gradient[p]
+                    );
+                }
+                let offset = EMEmpiricalGP::inducing_offset(&model.options);
+                assert!(gradient[offset..].iter().any(|v| v.abs() > 1e-4));
+                let mut moved = raw.clone();
+                moved[offset] += 0.012;
+                model.set_raw_parameters(&moved).unwrap();
+                assert_eq!(model.prior.x[(0, 0)], moved[offset]);
+                let posterior = model.posterior(&model.train_x, false).unwrap();
+                assert!(posterior.mean.iter().all(|v| v.is_finite()));
+                assert!(value.is_finite());
             }
         }
     }

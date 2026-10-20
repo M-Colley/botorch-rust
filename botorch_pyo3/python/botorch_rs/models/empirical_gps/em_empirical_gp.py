@@ -320,8 +320,6 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
     ) -> None:
         from botorch_rs.models.higher_order_gp import _initial_raw_noise
 
-        if learnable_inducing_points:
-            raise UnsupportedError("Learnable inducing locations are not implemented.")
         if likelihood is None:
             likelihood = GaussianLikelihood()
         if not isinstance(likelihood, GaussianLikelihood) or likelihood.batch_shape:
@@ -348,7 +346,11 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
                 mean_module,
                 covar_module,
                 likelihood_noise=likelihood.noise_constraint._rs.transform(raw_noise),
-                inducing_points=inducing_points,
+                inducing_points=(
+                    _ops.detach(inducing_points)
+                    if learnable_inducing_points and inducing_points is not None
+                    else inducing_points
+                ),
                 num_em_iterations=num_em_iterations,
                 use_mean_prior=use_mean_prior,
                 use_covar_prior=use_covar_prior,
@@ -360,6 +362,8 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
             )
         if not isinstance(em_prior, EMPriorContainer):
             raise TypeError("em_prior must be an EMPriorContainer.")
+        if learnable_inducing_points and not em_prior.use_inducing_points:
+            raise UnsupportedError("Learnable EM locations require explicit inducing points and interpolation.")
         if _ops.shape_of(em_prior.X_inducing)[-1] != xs[-1]:
             raise ValueError("The EM prior and train_X feature dimensions differ.")
         if using_pretrained:
@@ -393,6 +397,7 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
         )
         self.iw_nu, self.em_convergence_tol = em_prior.iw_nu, em_prior.em_convergence_tol
         self.warm_start_em = warm_start_em
+        self._learnable_inducing_points = learnable_inducing_points
         self._covariance_shrinkage = covariance_shrinkage
         self._num_outputs = 1
         self._additive_base = None
@@ -436,6 +441,7 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
             em_tolerance=self.em_convergence_tol if not self._using_pretrained_prior else 1e-6,
             em_shrinkage=self._covariance_shrinkage if not self._using_pretrained_prior else 0.0,
             warm_start_em=self.warm_start_em,
+            learnable_inducing=self._learnable_inducing_points,
         )
         self._last_em_sync_raw: tuple[float, ...] | None = None
         self._param_shapes = {name: tuple(shape) for name, shape in self._rs.parameter_shapes()}
@@ -499,6 +505,9 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
             return
         mean, covariance, factor, delta = self._rs.em_state()
         kind = kind_of(self._X_inducing)
+        if self._learnable_inducing_points:
+            points = self._rs.inducing_points()
+            self._inducing_locations = from_flat(points[0], tuple(points[1]), kind)
         (
             self._mu_inducing,
             self._Sigma_inducing,
@@ -515,6 +524,19 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
         if not self._using_pretrained_prior:
             self._rs.refresh_em()
         self._sync_em_state(force=True)
+
+    @property
+    def _X_inducing(self) -> Any:
+        return self._inducing_locations
+
+    @_X_inducing.setter
+    def _X_inducing(self, value: Any) -> None:
+        if hasattr(self, "_rs"):
+            if not self._learnable_inducing_points:
+                raise UnsupportedError("Inducing locations were configured as fixed.")
+            self._set_raw_param("_X_inducing", value)
+        else:
+            self._inducing_locations = _ops.clone(value)
 
     @property
     def batch_shape(self) -> tuple[()]:
@@ -563,6 +585,22 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
         raw = self._rs.raw_parameters()
         raw[offset : offset + size] = broadcast_to(data, shape, self._param_shapes[name])
         self._rs.set_raw_parameters(raw)
+        if self._learnable_inducing_points:
+            self._sync_em_state(force=True)
+
+    def initialize(self, **kwargs: Any) -> EMEmpiricalGaussianProcess:
+        for name, value in kwargs.items():
+            if name in self._offsets():
+                self._set_raw_param(name, value)
+                continue
+            obj: Any = self
+            *path, attribute = name.split(".")
+            for component in path:
+                obj = getattr(obj, component)
+            if not isinstance(getattr(type(obj), attribute, None), property):
+                raise AttributeError(f"Unknown EM hyperparameter {name!r}.")
+            setattr(obj, attribute, value)
+        return self
 
     def named_parameters(self) -> Any:
         raw = self._rs.raw_parameters()

@@ -221,7 +221,7 @@ def test_prior_roundtrip_preserves_native_prior_precision(tmp_path: Path) -> Non
     assert_close(loaded.mean_module.mean_prior.log_prob(0.8), mean.mean_prior.log_prob(0.8))
 
 
-def model_pair(official: Any, inducing: bool, base: bool) -> tuple[Any, Any]:
+def model_pair(official: Any, inducing: bool, base: bool, learnable: bool = False) -> tuple[Any, Any]:
     import gpytorch
     import torch
 
@@ -272,6 +272,7 @@ def model_pair(official: Any, inducing: bool, base: bool) -> tuple[Any, Any]:
         likelihood=likelihood,
         freeze_pretrained=False,
         base_covar_module=native_base,
+        learnable_inducing_points=learnable,
     )
     actual.likelihood.noise = torch.tensor(0.035, dtype=torch.double)
     expected = official.em_empirical_gp.EMEmpiricalGaussianProcess.from_pretrained(
@@ -281,6 +282,7 @@ def model_pair(official: Any, inducing: bool, base: bool) -> tuple[Any, Any]:
         likelihood=ref_likelihood,
         freeze_pretrained=False,
         base_covar_module=ref_base,
+        learnable_inducing_points=learnable,
     )
     return actual, expected
 
@@ -784,3 +786,104 @@ def test_warm_em_native_fit_updates_moments_and_preserves_posterior(adam: bool) 
     assert model._mu_inducing != initial
     assert_close(posterior.mean, before)
     assert math.isfinite(float(mll()))
+
+
+@pytest.mark.parametrize("base", [False, True])
+def test_learnable_pretrained_inducing_gradients_and_posteriors(official: Any, base: bool) -> None:
+    torch = pytest.importorskip("torch")
+    actual, expected = model_pair(official, True, base, learnable=True)
+    mll = EMEmpiricalMarginalLogLikelihood(actual.likelihood, actual)
+    ref_mll = official.em_empirical_gp.EMEmpiricalMarginalLogLikelihood(expected.likelihood, expected)
+    value, gradient = mll.value_and_grad()
+    reference = ref_mll(None, None)
+    reference.backward()
+    assert_close(value, reference, rtol=2e-8, atol=2e-10)
+    parameters = dict(expected.named_parameters())
+    offset = 0
+    for name, shape in actual._rs.parameter_shapes():
+        count = math.prod(shape)
+        assert_close(gradient[offset:offset+count], parameters[name].grad.reshape(-1), rtol=3e-6, atol=3e-8)
+        offset += count
+    query = torch.tensor([[0.15], [0.62]], dtype=torch.double)
+    snapshot = actual.posterior(query)
+    before = snapshot.mean.clone()
+    moved = expected._X_inducing.detach().clone()
+    moved[1, 0] += 0.013
+    actual.initialize(_X_inducing=moved)
+    expected.initialize(_X_inducing=moved)
+    expected.train()
+    ref_mll(None, None)
+    torch.testing.assert_close(actual._X_inducing, moved)
+    assert_close(actual.posterior(query).mean, expected.posterior(query).mean, rtol=3e-7, atol=3e-9)
+    torch.testing.assert_close(snapshot.mean, before)
+
+
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("priors", [False, True])
+def test_learnable_inducing_full_em_gradients_match_official(
+    official: Any, warm: bool, priors: bool
+) -> None:
+    torch = pytest.importorskip("torch")
+    gpytorch = pytest.importorskip("gpytorch")
+    mean, kernel = modules()
+    ref_mean = gpytorch.means.ConstantMean().double()
+    ref_mean.constant = torch.tensor(0.35, dtype=torch.double)
+    ref_kernel = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel()).double()
+    ref_kernel.base_kernel.lengthscale = torch.tensor(0.42, dtype=torch.double)
+    ref_kernel.outputscale = torch.tensor(1.3, dtype=torch.double)
+    X = torch.tensor([[0.1], [0.5]], dtype=torch.double)
+    Y = torch.tensor([[0.7], [0.6]], dtype=torch.double)
+    points = torch.tensor([[0.05], [0.4], [0.85]], dtype=torch.double, requires_grad=True)
+    options = dict(
+        warm_start_em=warm, learnable_inducing_points=True, inducing_points=points,
+        num_em_iterations=2, em_convergence_tol=None, covariance_shrinkage=0.13,
+        use_mean_prior=priors, use_covar_prior=priors,
+    )
+    actual = EMEmpiricalGaussianProcess(
+        X, Y, datasets=datasets("torch"), mean_module=mean, covar_module=kernel, **options
+    )
+    expected = official.em_empirical_gp.EMEmpiricalGaussianProcess(
+        X, Y,
+        datasets=[official.utils.ExperimentDataset(X=d.X, Y=d.Y) for d in datasets("torch")],
+        mean_module=ref_mean, covar_module=ref_kernel,
+        likelihood=gpytorch.likelihoods.GaussianLikelihood().double(), **options,
+    )
+    mll = EMEmpiricalMarginalLogLikelihood(actual.likelihood, actual)
+    ref_mll = official.em_empirical_gp.EMEmpiricalMarginalLogLikelihood(expected.likelihood, expected)
+    for _ in range(2):
+        value, gradient = mll.value_and_grad()
+        reference = ref_mll(None, None)
+        reference.backward()
+        assert_close(value, reference, rtol=4e-7, atol=4e-9)
+        parameters = dict(expected.named_parameters())
+        offset = 0
+        for name, shape in actual._rs.parameter_shapes():
+            count = math.prod(shape)
+            assert_close(gradient[offset:offset+count], parameters[name].grad.reshape(-1), rtol=5e-5, atol=5e-7)
+            offset += count
+        expected.zero_grad(set_to_none=True)
+        assert points.grad is None
+
+
+@pytest.mark.parametrize("kind", ["list", "numpy", "torch"])
+@pytest.mark.parametrize("adam", [False, True])
+def test_inducing_locations_are_real_native_optimizer_parameters(kind: str, adam: bool) -> None:
+    mean, kernel = modules()
+    prior = pretrain_em_prior(
+        datasets(kind), mean, kernel, inducing_points=as_kind([[0.05], [0.4], [0.85]], kind),
+        num_em_iterations=2, likelihood_noise=0.035,
+    )
+    model = EMEmpiricalGaussianProcess.from_pretrained(
+        prior, as_kind([[0.1], [0.5]], kind), as_kind([[0.7], [0.6]], kind),
+        learnable_inducing_points=True,
+    )
+    mll = EMEmpiricalMarginalLogLikelihood(model.likelihood, model)
+    before = copy.deepcopy(model._rs.raw_parameters()[-3:])
+    parameters = {"model._X_inducing": dict(model.named_parameters())["_X_inducing"]}
+    if adam:
+        fit_gpytorch_mll_torch(mll, parameters=parameters, step_limit=3, stopping_criterion=None)
+    else:
+        fit_gpytorch_mll_scipy(mll, parameters=parameters, options={"maxiter": 3})
+    assert model._rs.raw_parameters()[-3:] != before
+    assert_close(model._X_inducing, [[x] for x in model._rs.raw_parameters()[-3:]])
+    check_kind(model.posterior(as_kind([[0.2], [0.7]], kind)).mean, kind)

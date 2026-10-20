@@ -26,6 +26,7 @@ pub mod cost;
 pub mod deterministic;
 pub mod em_differentiation;
 pub mod em_gp;
+mod em_inducing;
 pub mod em_kl;
 pub mod em_model;
 pub mod em_shared;

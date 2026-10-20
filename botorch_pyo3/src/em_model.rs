@@ -36,7 +36,7 @@ impl PyEMGaussianProcess {
 #[pymethods]
 impl PyEMGaussianProcess {
     #[new]
-    #[pyo3(signature=(x,y,history_x,history_y,inducing,mean,covariance,kernel,kernel_raw,likelihood,noise_raw,constant=0.0,learn_mean=false,mean_prior=None,mean_constraint=None,base=None,base_raw=Vec::new(),interpolate=true,inducing_observations=false,freeze_pretrained=false,em_iterations=None,em_mean_prior=false,em_covar_prior=false,em_iw_nu=None,em_tolerance=Some(1e-6),em_shrinkage=0.0,warm_start_em=false))]
+    #[pyo3(signature=(x,y,history_x,history_y,inducing,mean,covariance,kernel,kernel_raw,likelihood,noise_raw,constant=0.0,learn_mean=false,mean_prior=None,mean_constraint=None,base=None,base_raw=Vec::new(),interpolate=true,inducing_observations=false,freeze_pretrained=false,em_iterations=None,em_mean_prior=false,em_covar_prior=false,em_iw_nu=None,em_tolerance=Some(1e-6),em_shrinkage=0.0,warm_start_em=false,learnable_inducing=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -67,6 +67,7 @@ impl PyEMGaussianProcess {
         em_tolerance: Option<f64>,
         em_shrinkage: f64,
         warm_start_em: bool,
+        learnable_inducing: bool,
     ) -> PyResult<Self> {
         if !learn_mean && (mean_prior.is_some() || mean_constraint.is_some() || constant != 0.0) {
             return Err(value_error(
@@ -131,6 +132,7 @@ impl PyEMGaussianProcess {
                 ..Default::default()
             }),
             warm_start_em,
+            learnable_inducing,
         };
         let model =
             threads::run(py, || EMEmpiricalGP::new(x, y, data, prior, options)).into_py_result()?;
@@ -217,6 +219,9 @@ impl PyEMGaussianProcess {
             matrix_out(&factor).into(),
             (delta.as_slice().to_vec(), vec![n]),
         )
+    }
+    fn inducing_points(&self) -> ArrayBuf {
+        matrix_out(self.get().inducing_points()).into()
     }
     fn refresh_em(&self, py: Python<'_>) -> PyResult<()> {
         let mut model = (*self.get()).clone();

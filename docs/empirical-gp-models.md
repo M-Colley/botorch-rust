@@ -96,7 +96,14 @@ Parameter assignment preserves warm moments until a training forward or MLL
 call refines them. Explicit-parameter `value_and_grad(raw_parameters)` evaluates
 against the current seed without changing model state, allowing reproducible
 finite-difference diagnostics. Existing posterior snapshots remain immutable.
-Learnable inducing locations remain an explicit boundary.
+With explicit `inducing_points`, `learnable_inducing_points=True` exposes
+`_X_inducing` as a native optimizer parameter. Analytic kernel input adjoints
+differentiate the inducing Gram matrix, interpolation weights, Nyström residual
+and complete cold or warm EM updates. Both fitters can optimize coordinates
+alone or jointly with the mean, covariance and observation noise; callers may
+set locations using `model.initialize(_X_inducing=...)`. Pretrained models can
+also learn locations while their inducing moments stay fixed. Moving the
+historical input grid without explicit inducing points remains unsupported.
 Arbitrary Python mean/likelihood objects and tensor-valued predictive noise
 are rejected.
 
