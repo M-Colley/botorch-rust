@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from typing import Any, NamedTuple
 
 from botorch_rs._arrays import from_flat, is_torch_tensor, kind_of, to_flat
+from botorch_rs.exceptions.errors import UnsupportedError
 
 
 class TensorCheckpoint(NamedTuple):
@@ -105,11 +106,30 @@ def parameter_rollback_ctx(
 
 def _is_rs_model(module: Any) -> bool:
     rs = getattr(module, "_rs", None)
-    return rs is not None and hasattr(rs, "raw_parameters") and hasattr(rs, "parameter_shapes")
+    return (
+        rs is not None
+        and hasattr(rs, "raw_parameters")
+        and (hasattr(rs, "parameter_shapes") or hasattr(module, "_param_shapes"))
+    )
 
 
 def _rs_layout(module: Any) -> list[tuple[str, tuple[int, ...]]]:
-    return [(name, tuple(shape)) for name, shape in module._rs.parameter_shapes()]
+    if hasattr(module._rs, "parameter_shapes"):
+        return [(name, tuple(shape)) for name, shape in module._rs.parameter_shapes()]
+    # SVGP's Python shape metadata follows the native likelihood-first layout.
+    layout = []
+    for name, count in module._rs.parameter_names():
+        shape = tuple(module._param_shapes[name])
+        if math.prod(shape) != count:
+            raise UnsupportedError("Native rollback requires an unchanged parameter layout.")
+        layout.append((name, shape))
+    return layout
+
+
+def _sync_native_parameters(module: Any) -> None:
+    sync = getattr(module, "_sync_torch_parameters", None)
+    if sync is not None:
+        sync()
 
 
 @contextmanager
@@ -137,10 +157,12 @@ def module_rollback_ctx(
 
     For a botorch_rs model the checkpoint holds its raw hyperparameters
     (``model.named_parameters()``: arrays of the model's array type), which
-    are restored on exit.
+    are restored on exit. Persistent leaves synchronize before the checkpoint
+    and after restoration. Native support requires a fixed parameter layout;
+    it does not restore structural model changes or training datasets.
     """
     if _is_rs_model(module):
-        yield from _rs_rollback(module, name_filter, checkpoint)
+        yield from _rs_rollback(module, name_filter, checkpoint, **tkwargs)
         return
     # Create copies of the original values
     if checkpoint is None:
@@ -173,7 +195,9 @@ def _rs_rollback(
     module: Any,
     name_filter: Callable[[str], bool] | None,
     checkpoint: dict[str, TensorCheckpoint] | None,
+    **tkwargs: Any,
 ) -> Generator[dict[str, TensorCheckpoint], None, None]:
+    _sync_native_parameters(module)
     layout = _rs_layout(module)
     kind = getattr(module, "_kind", None) or kind_of([])
     if checkpoint is None:
@@ -183,7 +207,7 @@ def _rs_rollback(
         for name, shape in layout:
             size = math.prod(shape)
             if name_filter is None or name_filter(name):
-                arr = from_flat(values[offset : offset + size], shape, kind)
+                arr = _copy(from_flat(values[offset : offset + size], shape, kind), **tkwargs)
                 checkpoint[name] = TensorCheckpoint(
                     values=arr,
                     device=getattr(arr, "device", None),
@@ -193,6 +217,14 @@ def _rs_rollback(
     try:
         yield checkpoint
     finally:
+        if checkpoint and _rs_layout(module) != layout:
+            raise UnsupportedError(
+                "Native rollback requires an unchanged parameter layout; "
+                "support/shape-changing model updates cannot be restored from raw parameters."
+            )
+        # A body may only have edited held Torch leaves. Push those edits first
+        # so that restoring the entry vector is an unambiguous native update.
+        _sync_native_parameters(module)
         if checkpoint:
             values = list(module._rs.raw_parameters())
             offset = 0
@@ -200,9 +232,14 @@ def _rs_rollback(
                 size = math.prod(shape)
                 if name in checkpoint:
                     data, _ = to_flat(checkpoint[name].values, name)
+                    if len(data) != size:
+                        raise ValueError(
+                            f"Checkpoint {name!r} requires {size} values, got {len(data)}."
+                        )
                     values[offset : offset + size] = [float(v) for v in data]
                 offset += size
             module._rs.set_raw_parameters(values)
+            _sync_native_parameters(module)
 
 
 @contextmanager
