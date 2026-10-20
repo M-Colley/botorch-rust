@@ -88,8 +88,11 @@ class FixedSampler(nn.Module):
         )
 
     def forward(self, posterior):
-        singleton_batch = (1,) * (len(posterior.base_sample_shape) - 1)
-        base_samples = self.base_samples.reshape(*self.sample_shape, *singleton_batch, -1)
+        event_dimensions = 2 if posterior._is_mt else 1
+        singleton_batch = (1,) * (len(posterior.base_sample_shape) - event_dimensions)
+        event_shape = posterior.base_sample_shape[-event_dimensions:]
+        base_samples = self.base_samples.reshape(*self.sample_shape, *singleton_batch, *event_shape)
+        base_samples = base_samples.expand(self.sample_shape + posterior.base_sample_shape)
         return posterior.rsample_from_base_samples(self.sample_shape, base_samples)
 
 
@@ -507,3 +510,72 @@ def test_real_native_default_sampler_acquisition_has_no_host_conversion(device, 
     )
     assert all(g is None or (g.device == query.device and torch.isfinite(g).all()) for g in second)
     assert value.device == query.device
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize(
+    "name", ["LogExpectedImprovement", "qLogExpectedImprovement", "qLogNoisyExpectedImprovement"]
+)
+def test_real_batched_multi_output_acquisition_and_scalarization_graph(device, name):
+    from botorch.acquisition.objective import GenericMCObjective as ReferenceObjective
+    from botorch.acquisition.objective import ScalarizedPosteriorTransform as ReferenceTransform
+    from botorch.models import SingleTaskGP as ReferenceGP
+
+    from botorch_rs.acquisition.objective import GenericMCObjective
+    from botorch_rs.models import SingleTaskGP
+
+    X, Y = native_data(device)
+    X = X.repeat(2, 1, 1).requires_grad_()
+    Y = torch.cat((Y, 0.2 + Y.square()), -1).repeat(2, 1, 1).requires_grad_()
+    model = SingleTaskGP(X, Y, backend="torch")
+    reference = ReferenceGP(X, Y)
+    model.covar_module.lengthscale = reference.covar_module.lengthscale.detach()
+    model.mean_module.constant = reference.mean_module.constant.detach()
+    model.likelihood.noise = reference.likelihood.noise.detach()
+    weights = nn.Parameter(torch.tensor([0.3, 0.7], device=device, dtype=torch.double))
+    q = 1 if name == "LogExpectedImprovement" else 2
+    query = torch.tensor([[0.21], [0.56]][:q], device=device, dtype=torch.double)
+    query = query.repeat(3, 1, 1, 1).requires_grad_()
+
+    class Scalarization(nn.Module):
+        scalarize = True
+
+        def __init__(self):
+            super().__init__()
+            self.weights = weights
+
+        def forward(self, posterior, X=None):
+            return posterior.scalarize(self.weights)
+
+    arguments = dict(best_f=0.25)
+    expected_arguments = dict(arguments)
+    if name == "LogExpectedImprovement":
+        arguments["posterior_transform"] = Scalarization()
+        expected_arguments["posterior_transform"] = ReferenceTransform(weights)
+    else:
+
+        def function(samples, X=None):
+            return samples @ weights
+
+        arguments.update(
+            objective=GenericMCObjective(function),
+            sampler=FixedSampler(4 * (2 if "Noisy" in name else 1), device),
+        )
+        expected_arguments.update(
+            objective=ReferenceObjective(function), sampler=arguments["sampler"]
+        )
+        if "Noisy" in name:
+            for mapping in (arguments, expected_arguments):
+                mapping.pop("best_f")
+                mapping.update(
+                    X_baseline=X.detach()[0, ::2], cache_root=False, prune_baseline=False
+                )
+    actual = acquisition(name)(model, **arguments)
+    expected = acquisition(name, True)(reference, **expected_arguments)
+    value = actual(query)
+    assert value.shape == (3, 2)
+    torch.testing.assert_close(value, expected(query), rtol=2e-8, atol=2e-9)
+    leaves = (X, Y, query, weights, *model.parameters())
+    first = torch.autograd.grad(value.sum(), leaves, create_graph=True)
+    second = torch.autograd.grad(sum(g.square().sum() for g in first), leaves)
+    assert all(g.device == query.device and torch.isfinite(g).all() for g in (*first, *second))

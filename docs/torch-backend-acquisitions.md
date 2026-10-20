@@ -26,12 +26,14 @@ existing qLogNEI `lower_bound_points` extension. This keeps repeated evaluations
 deterministic; official BoTorch redraws its auxiliary points when needed.
 
 Validation against official revision
-`b0dd01be61d517c387e234903a6e2cc38c057ea2`: 96 focused tests pass on CPU and an
+`b0dd01be61d517c387e234903a6e2cc38c057ea2`: 102 focused tests pass on CPU and an
 NVIDIA RTX 4050 Laptop GPU, including actual Rust-dispatched Tensor GPs. Tests
 cover reference values and first derivatives, mixed second derivatives through
 parameters/training data/queries, inference-plus-acquisition `gradcheck` and
 `gradgradcheck`, constraints, pending points, multiple sample dimensions,
+batched independent multi-output models, scalarization-weight derivatives,
 and forbidden `.cpu()`, `.tolist()`, `.numpy()` and flat-buffer conversions.
+Existing native CPU acquisition suites also pass (240 tests, seven existing skips).
 This checkpoint does not establish GPU support for other model/acquisition
 families or native CPU acquisition optimizers.
 
