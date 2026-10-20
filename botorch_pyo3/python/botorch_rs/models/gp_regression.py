@@ -616,6 +616,7 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         """
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
+        self._sync_torch_parameters()
         if self.training:
             raise RuntimeError(
                 "Fantasy observations can only be added after making predictions with a model "
@@ -681,6 +682,7 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         every module, since all of them have independent parameters per
         output.
         """
+        self._sync_torch_parameters()
         idcs = [int(i) for i in idcs]
         m = self.num_outputs
         if m == len(idcs) and idcs == list(range(m)):
@@ -705,6 +707,7 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         """Batch element ``k`` of a batched model (row-major) as an
         unbatched ``SingleTaskGP`` with its own modules, e.g. a member of an
         ensemble of GPs."""
+        self._sync_torch_parameters()
         old_aug = self._aug_batch_shape
         new = SingleTaskGP.__new__(SingleTaskGP)
         memo: dict[int, Any] = {id(self): new}

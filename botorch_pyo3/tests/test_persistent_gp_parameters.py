@@ -250,6 +250,27 @@ def test_native_low_level_fit_respects_frozen_leaves():
     torch.testing.assert_close(parameter, initial, rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("operation", ["condition", "subset", "member"])
+def test_derived_models_push_pending_torch_parameter_edits(operation):
+    model, _ = model_pair(outputs=2, batch=(2,))
+    model.eval()
+    with torch.no_grad():
+        model.mean_module.raw_constant.fill_(0.45)
+    if operation == "condition":
+        result = model.condition_on_observations(
+            torch.tensor([[0.2, 0.6]], dtype=torch.double),
+            torch.tensor([[[0.2, 0.3]], [[0.4, 0.5]]], dtype=torch.double),
+        )
+    elif operation == "subset":
+        result = model.subset_output([1])
+    else:
+        result = model._member(1)
+    torch.testing.assert_close(
+        result.mean_module.raw_constant,
+        torch.full_like(result.mean_module.raw_constant, 0.45),
+    )
+
+
 def test_sample_query_and_parameter_gradients_are_both_available():
     model, _ = model_pair()
     query = torch.tensor([[0.2, 0.6], [0.7, 0.3]], dtype=torch.double, requires_grad=True)
