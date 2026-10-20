@@ -23,7 +23,7 @@ module with its solver import switched to the port.
 ## Incorrect objective values after failed upstream line searches
 
 Official BoTorch `b0dd01be61d517c387e234903a6e2cc38c057ea2` with
-SciPy 1.17.1 can report an objective value from a rejected trial together
+SciPy 1.18.0 can report an objective value from a rejected trial together
 with the restored point and gradient. For the Rosenbrock objective
 `100*(y-x*x)**2 + (1-x)**2`, start a batch at `[-1.2, 1]` and `[2, 2]`,
 use bounds `[(0, 0.8), (0, 0.7)]`, and set `maxls=1`.
@@ -50,5 +50,5 @@ It has not been submitted upstream.
 
 Source inspection:
 [BoTorch driver](https://github.com/meta-pytorch/botorch/blob/b0dd01be61d517c387e234903a6e2cc38c057ea2/botorch/optim/batched_lbfgs_b.py),
-[SciPy C interface](https://github.com/scipy/scipy/blob/v1.17.1/scipy/optimize/__lbfgsb.h),
-[SciPy Python driver](https://github.com/scipy/scipy/blob/v1.17.1/scipy/optimize/_lbfgsb_py.py).
+[SciPy C interface](https://github.com/scipy/scipy/blob/v1.18.0/scipy/optimize/__lbfgsb.h),
+[SciPy Python driver](https://github.com/scipy/scipy/blob/v1.18.0/scipy/optimize/_lbfgsb_py.py).
