@@ -17,12 +17,32 @@ class SACGP(SingleTaskGP):
     ``train_Yvar=None`` selects the inferred-noise likelihood.
     """
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        if cls is SACGP and _use_torch_backend(
+            backend, train_X, train_Y, *args, kwargs.get("train_Yvar")
+        ):
+            from botorch_rs.models._torch_backend_contextual import TorchSACGP
+
+            return object.__new__(TorchSACGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
         train_Y: Any,
         train_Yvar: Any,
         decomposition: dict[str, list[int]],
+        *,
+        backend: str = "auto",
     ) -> None:
         yshape = to_flat(train_Y, "train_Y")[1]
         batch = yshape[:-2] + ((yshape[-1],) if yshape[-1] > 1 else ())
@@ -50,6 +70,24 @@ class LCEAGP(SingleTaskGP):
 
     covar_module: LCEAKernel
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        if cls is LCEAGP and _use_torch_backend(
+            backend, train_X, train_Y, *args, kwargs.get("train_Yvar")
+        ):
+            from botorch_rs.models._torch_backend_contextual import TorchLCEAGP
+
+            return object.__new__(TorchLCEAGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -61,6 +99,8 @@ class LCEAGP(SingleTaskGP):
         embs_feature_dict: dict | None = None,
         embs_dim_list: list[int] | None = None,
         context_weight_dict: dict | None = None,
+        *,
+        backend: str = "auto",
     ) -> None:
         xs, ys = to_flat(train_X)[1], to_flat(train_Y)[1]
         if len(xs) != 2 or len(ys) != 2 or ys[-1] != 1:

@@ -36,11 +36,26 @@ class SACKernel(Kernel):
     b0dd01be6 inadvertently counts it once per module alias (M+1 times).
     """
 
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        device = kwargs.get("device", args[2] if len(args) > 2 else None)
+        if cls is SACKernel and (
+            _use_torch_backend(backend)
+            or (backend == "auto" and device is not None and str(device) != "cpu")
+        ):
+            from botorch_rs.models._torch_backend_contextual import TorchSACKernel
+
+            return object.__new__(TorchSACKernel)
+        return object.__new__(cls)
+
     def __init__(
         self,
         decomposition: dict[str, list[int]],
         batch_shape: Any,
         device: Any = None,
+        *,
+        backend: str = "auto",
     ) -> None:
         super().__init__(batch_shape=batch_shape)
         if not decomposition:

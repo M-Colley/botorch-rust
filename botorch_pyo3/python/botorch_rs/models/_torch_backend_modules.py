@@ -853,6 +853,8 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
         ScaleKernel,
     )
     from botorch_rs.models.hierarchical.conditional_kernel_gp import HierarchicalConditionalKernel
+    from botorch_rs.models.kernels.contextual_lcea import LCEAKernel
+    from botorch_rs.models.kernels.contextual_sac import SACKernel
     from botorch_rs.models.kernels.heterogeneous_multitask import MultiTaskConditionalKernel
     from botorch_rs.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
 
@@ -883,6 +885,11 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
                 "add" if type(kernel) is AdditiveKernel else "product",
                 train_X,
             )
+        elif type(kernel) in (SACKernel, LCEAKernel):
+            from botorch_rs.models._torch_backend_contextual import TorchLCEAKernel, TorchSACKernel
+
+            factory = TorchSACKernel if type(kernel) is SACKernel else TorchLCEAKernel
+            result = factory(_source=kernel, _like=train_X)
         elif type(kernel) is HierarchicalConditionalKernel:
             from botorch_rs.models._torch_backend_hierarchical import (
                 TorchHierarchicalConditionalKernel,
