@@ -322,15 +322,16 @@ def test_gibbon_standardized_pending_repulsion_uses_one_consistent_posterior_spa
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_mes_zero_control_variate_variance_has_finite_double_backward(device):
+@pytest.mark.parametrize("num_samples", [1, 8])
+def test_mes_zero_control_variate_variance_has_finite_double_backward(device, num_samples):
     from botorch.acquisition.max_value_entropy_search import qMaxValueEntropy as ReferenceMES
     from botorch.models import SingleTaskGP as ReferenceGP
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
 
     X, Y = data(device)
     model = SingleTaskGP(X, Y, backend="torch", outcome_transform=None)
-    sampler = SobolQMCNormalSampler((8,), seed=13)
-    sampler.base_samples = X.new_zeros((8, 1, 1))
+    sampler = SobolQMCNormalSampler((num_samples,), seed=13)
+    sampler.base_samples = X.new_zeros((num_samples, 1, 1))
     acq = port.qMaxValueEntropy(model, X, sampler=sampler, use_gumbel=False, seed=3)
     acq.posterior_max_values = X.new_tensor([[0.75], [1.0], [1.2], [1.4]])
     query = X.new_tensor([[0.23]], requires_grad=True)
@@ -338,10 +339,10 @@ def test_mes_zero_control_variate_variance_has_finite_double_backward(device):
     assert torch.isfinite(value).all()
     assert torch.isfinite(torch.autograd.grad(gradient.square().sum(), query)[0]).all()
     reference = ReferenceMES(
-        ReferenceGP(X, Y, outcome_transform=None), X, use_gumbel=False, num_y_samples=8
+        ReferenceGP(X, Y, outcome_transform=None), X, use_gumbel=False, num_y_samples=num_samples
     )
-    reference.sampler = ReferenceSampler(torch.Size((8,)), seed=13)
-    reference.sampler.base_samples = X.new_zeros((8, 1, 1, 1))
+    reference.sampler = ReferenceSampler(torch.Size((num_samples,)), seed=13)
+    reference.sampler.base_samples = X.new_zeros((num_samples, 1, 1, 1))
     reference.posterior_max_values = acq.posterior_max_values
     assert not torch.isfinite(reference(query)).all()
 

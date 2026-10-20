@@ -473,11 +473,18 @@ fn mes_information_gain<S: Scalar>(
         }
     }
     let h1_bar = h1_sum / n_all;
+    // The unbiased variance of one observation is undefined. Without a
+    // control variate the estimator remains H0 - mean(h1).
+    if s_m <= 1 || n_all <= 1.0 {
+        return Ok(h0 - h1_bar);
+    }
     let mut h0_sum = inp.var_target.lift(0.0);
     for lp in &log_pdf {
-        h0_sum = h0_sum - *lp;
+        // Center before summing so a constant control variate has exactly
+        // zero variance, rather than a rounding residual from its mean.
+        h0_sum = h0_sum + (log_pdf[0] - *lp);
     }
-    let h0_bar = h0_sum / s_m as f64;
+    let h0_bar = -log_pdf[0] + h0_sum / s_m as f64;
     let mut cov = inp.var_target.lift(0.0);
     let mut var_h1 = inp.var_target.lift(0.0);
     for j in 0..s_big {
@@ -496,7 +503,12 @@ fn mes_information_gain<S: Scalar>(
         var_h0 = var_h0 + d0 * d0;
     }
     let var_h0 = var_h0 / (s_m as f64 - 1.0);
-    let beta = cov / (var_h0 * var_h1).sqrt();
+    let product = var_h0 * var_h1;
+    let beta = if product.value() > 0.0 {
+        cov / product.sqrt()
+    } else {
+        inp.var_target.lift(0.0)
+    };
     let h1_hat = h1_bar - beta * (h0_bar - h0);
     Ok(h0 - h1_hat)
 }
@@ -1743,6 +1755,34 @@ impl AcquisitionFunction for QMultiFidelityLowerBoundMaxValueEntropy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_control_variance_and_single_observation_remain_finite() {
+        // A distant threshold makes the truncation ratio exactly one. At
+        // zero normal draws H0 - (-log p(mean)) = 1/2, independently of
+        // Gaussian mean/variance. No control variate is defined or needed.
+        for observations in [1, 8] {
+            let normals = Matrix::zeros(observations, 1);
+            let value =
+                mes_information_gain(&sf_inputs(0.0, 0.3, 0.7, 1.0), 1.0, &[100.0; 4], &normals)
+                    .unwrap();
+            assert!((value - 0.5).abs() < 1e-14);
+            let derivative = mes_information_gain(
+                &sf_inputs(
+                    Dual::<2>::variable(0.0, 0, 2),
+                    Dual::<2>::variable(0.3, 1, 2),
+                    0.7,
+                    1.0,
+                ),
+                1.0,
+                &[100.0; 4],
+                &normals,
+            )
+            .unwrap();
+            assert!((derivative.v - value).abs() < 1e-14);
+            assert!(derivative.grad().iter().all(|g| g.abs() < 1e-14));
+        }
+    }
 
     #[test]
     fn brentq_finds_roots() {

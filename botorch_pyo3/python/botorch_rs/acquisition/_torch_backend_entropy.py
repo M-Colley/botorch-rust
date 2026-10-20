@@ -221,10 +221,8 @@ class TensorMaxValueEntropy(_TensorAcquisition):
             self.sampler.sample_shape[0],
             self.fantasies_sampler.sample_shape[0],
         )
-        if not self._lower_bound and self.num_y_samples < 2:
-            raise ValueError(
-                "MES control-variate estimation requires at least two observation samples."
-            )
+        if not self._lower_bound and self.num_y_samples < 1:
+            raise ValueError("MES requires a positive observation sample count.")
         self._cost_sampler = None
         self.cost_aware_utility = values.get("cost_aware_utility")
         if self._multi_fidelity and self.cost_aware_utility is None:
@@ -335,10 +333,15 @@ class TensorMaxValueEntropy(_TensorAcquisition):
         h0 = -log_density
         first, zero = h1.mean((0, 1)), h0.mean((0, 1))
         cov = ((h1 - first) * (h0 - zero)).mean((0, 1))
-        product = h0.var((0, 1)) * h1.var((0, 1))
-        positive = product > 0
-        denominator = torch.where(positive, product, 1).sqrt()
-        coefficient = torch.where(positive, cov / denominator, 0)
+        if h0.shape[0] * h0.shape[1] <= 1:
+            # Unbiased variance with one observation has undefined gradients,
+            # even if its NaN value is masked afterwards. Do not evaluate it.
+            coefficient = torch.zeros_like(entropy)
+        else:
+            product = h0.var((0, 1)) * h1.var((0, 1))
+            positive = product > 0
+            denominator = torch.where(positive, product, 1).sqrt()
+            coefficient = torch.where(positive, cov / denominator, 0)
         return (entropy - first + coefficient * (zero - entropy)).movedim(-1, 0)
 
     def _gibbon(self, X: Tensor, mean_M: Tensor, variance_M: Tensor, covar_mM: Tensor) -> Tensor:

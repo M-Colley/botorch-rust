@@ -37,7 +37,7 @@ state. Raw training inputs are appended to the maximum candidate set, avoiding
 the existing reference double-input-transform issue.
 
 Validation uses official revision
-`b0dd01be61d517c387e234903a6e2cc38c057ea2`. The focused CPU/CUDA suite has 82
+`b0dd01be61d517c387e234903a6e2cc38c057ea2`. The focused CPU/CUDA suite has 84
 tests, including float32 and float64, synchronized maximum/observation draws,
 minimization/maximization, pending fantasies, traces, costs, query batch shapes,
 first/mixed second derivatives and complete training/query `gradcheck` and
@@ -76,6 +76,11 @@ variance product and returns NaN. Set the control coefficient to zero in this
 case; select a finite positive product before the square root to keep inactive
 branches safe under double backward. Tests assert the reference NaN and the
 port's finite value and second derivative.
+With a single observation, skip variance evaluation entirely: the unbiased
+variance has undefined derivatives even when its NaN value is masked later.
+The one/eight-observation regressions run on both CPU and CUDA. The native
+control mean is centered before summation, so an exactly constant control
+retains exactly zero variance instead of a floating-point mean residual.
 
 These are local implementations and proposed upstream repairs. Root-level
 publication work tracks their issues and pull requests; this chapter does not
@@ -201,3 +206,11 @@ Tests compare the resulting values with the closed Gaussian entropy and
 assert finite first/second derivatives; the original non-finite values or
 variance gradients are reproduced separately. The usual finite-bound
 estimators remain compared directly with the unmodified pinned reference.
+
+The native CPU box implementation applies the same limits: infinite endpoints
+have zero `g*phi(g)` moment and zero posterior-parameter adjoints, including
+the rescaled endpoints in the MC estimator. New Rust regressions verify the
+full-space Gaussian entropy/adjoints for all four estimators and a half-line's
+closed entropy with finite-difference mean/variance/noise derivatives. MES
+has a separate exact-law regression for one/eight zero-normal observation
+draws, checking its finite value and Dual derivatives.
