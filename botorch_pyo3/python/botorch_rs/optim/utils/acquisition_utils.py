@@ -52,6 +52,10 @@ def columnwise_clamp(
     Returns:
         The clamped array (of the type of ``X``).
     """
+    if is_torch_tensor(X):
+        from botorch_rs.optim._torch_optim_utils import columnwise_clamp as tensor_clamp
+
+        return tensor_clamp(X, lower, upper, raise_on_violation)
     if lower is None and upper is None:
         return X
     kind = kind_of(X)
@@ -109,6 +113,15 @@ def fix_features(
     Returns:
         The array ``X`` with fixed features.
     """
+    if is_torch_tensor(X):
+        from botorch_rs.optim._torch_acq_optim import fix_features as tensor_fix_features
+
+        d = X.shape[-1] + (len(fixed_features or {}) if not replace_current_value else 0)
+        if any(not isinstance(index, int) or not -d <= index < d for index in fixed_features or {}):
+            raise ValueError("Fixed feature indices must lie within the input dimension.")
+        if len({index % d for index in fixed_features or {}}) != len(fixed_features or {}):
+            raise ValueError("Fixed feature indices must be unique.")
+        return tensor_fix_features(X, fixed_features, insert=not replace_current_value)
     if fixed_features is None:
         return X
     kind = kind_of(X)

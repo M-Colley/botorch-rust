@@ -15,12 +15,18 @@ def transform_constraint(constraint: Any, d: int, q: int | None = None) -> list[
     indices, coefficients, rhs = constraint
     index = torch.as_tensor(indices)
     if index.dtype not in (torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8):
-        raise ValueError("Constraint indices must be integer tensors.")
+        if not index.is_floating_point() or not bool(
+            torch.isfinite(index).all() & (index == index.trunc()).all()
+        ):
+            raise ValueError(
+                "Constraint indices must contain one-dimensional integer indices or integer pairs."
+            )
+        index = index.long()
     if index.ndim == 1:
         if q is None:
             raise ValueError("Inter-point constraints must have shape n x 2.")
         if bool(((index < 0) | (index >= d)).any()):
-            raise ValueError("Constraint feature indices are out of range.")
+            raise ValueError("Constraint indices cannot exceed the problem dimension.")
         return [(index + i * d, coefficients, rhs) for i in range(q)]
     if index.ndim != 2 or index.shape[-1] != 2:
         raise ValueError("Inter-point constraints must have shape n x 2.")

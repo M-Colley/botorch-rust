@@ -167,6 +167,10 @@ def nonlinear_constraint_is_feasible(
     tolerance: float | None = None,
 ) -> Any:
     """Evaluate a nonlinear constraint for every point or complete q-batch."""
+    if is_torch_tensor(x):
+        from botorch_rs.optim._torch_optim_utils import nonlinear_is_feasible
+
+        return nonlinear_is_feasible(nonlinear_inequality_constraint, is_intrapoint, x, tolerance)
     shape = _ops.shape_of(x)
     if len(shape) < 2:
         raise ValueError("x must have shape batch_shape x q x d.")
@@ -469,6 +473,16 @@ def evaluate_feasibility(
     Returns:
         A boolean array of shape ``batch`` (a bool tensor for torch inputs).
     """
+    if is_torch_tensor(X):
+        from botorch_rs.optim._torch_optim_utils import evaluate_feasibility as tensor_feasibility
+
+        return tensor_feasibility(
+            X,
+            inequality_constraints,
+            equality_constraints,
+            nonlinear_inequality_constraints,
+            tolerance,
+        )
     flat = to_flat(X, "X")
     if len(flat[1]) < 2:
         raise ValueError(f"X must be at least 2-dimensional (`batch x q x d`), got {flat[1]}.")

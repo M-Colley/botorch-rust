@@ -193,6 +193,49 @@ the existing [PR 3395](https://github.com/meta-pytorch/botorch/pull/3395). The n
 alternating optimizer already restores pending state before propagating an
 error; the device implementation does likewise.
 
+Device homotopy optimization now executes real scheduled solves, distance
+pruning, greedy pending updates and the final solve without flattening tensor
+candidates or values. Plain, enumerated mixed and alternating mixed domains
+are tested. Each solve starts from independent decision leaves; a graph-attached
+previous stage does not become a non-leaf optimizer parameter. Homotopy always
+restores its original parameter values and pending points, including failed
+stages and postprocessing. Cleanup failures do not replace an already-active
+optimization exception. Postprocessing is checked against bounds, fixed
+features, constraints and enumerated domains before a candidate is returned.
+The reference's unbatched scalar, non-one-shot pruning restriction remains
+explicit. General constraints use the explicit SciPy interface.
+
+Public `columnwise_clamp`, `fix_features`, `get_best_candidates`,
+`evaluate_feasibility` and `nonlinear_constraint_is_feasible` now retain tensor
+device and selected graphs. Fixed values can carry restart/model batches;
+`None` freezes just its column. Linear intra-point/inter-point constraints,
+equalities, scalar nonlinear callbacks, dtype-specific tolerances and empty
+batches are tested. Constraint transforms also retain the existing array API's
+integer-valued float-index compatibility, rejecting fractional indices.
+Native acquisition callers using an explicit Torch optimizer reuse the fresh
+closure and detached-start loop, retaining their list/NumPy/Torch output kind;
+the default native Adam path remains Rust.
+
+This checkpoint passes 46 focused CPU/CUDA tests plus 160 existing optimizer,
+constraint and phase-9 parity tests. Independent source formulas, first and
+second derivatives, source stage/value parity, genuine optimizations and
+forbidden-host-conversion guards are included. Targeted mypy and Ruff pass.
+
+Two independently reproduced source defects are prepared for upstream review
+against official b0dd01be6. `generation/gen.py` makes graph-attached initial
+conditions optimizer parameters without detaching, so Adam raises
+`ValueError: can't optimize a non-leaf Tensor`, including consecutive homotopy
+stages. Detaching the new decision variables fixes all four CPU/CUDA and
+fixed/free regression cases and repeated stages; the patch is
+`D:/botorch-pr-generator-leaf`, commit `e71f02396`. Port stage-parity tests
+explicitly use this corrected reference generator. Separately,
+`optimize_acqf_homotopy` only restores parameters and pending points after
+successful optimization. All four q=1/q=2 and None/Tensor pending regression
+cases fail on the pinned source. The prepared finally-based repair in
+`D:/botorch-pr-homotopy-rollback`, commit `08d1bb9ab`, passes the 13 source
+homotopy tests and four regression subcases. These are source patches prepared
+for publication; they are not claims that official main already contains them.
+
 Further public optimization helpers are being audited. Local lattice search
 retains the reference's unbatched, non-one-shot restriction. Sequential mixed
 search retains the reference's inter-point-constraint restriction. Forced

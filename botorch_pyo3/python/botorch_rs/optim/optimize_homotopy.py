@@ -1,10 +1,10 @@
 """Homotopy optimization (``botorch.optim.optimize_homotopy``).
 
 The homotopy loop runs in Python (its parameters are Python objects); every
-step is a native :func:`~botorch_rs.optim.optimize_acqf` (or
+step uses :func:`~botorch_rs.optim.optimize_acqf` (or
 :func:`~botorch_rs.optim.optimize_acqf_mixed`,
 :func:`~botorch_rs.optim.optimize_acqf_mixed_alternating`) and
-:func:`prune_candidates` runs in Rust.
+:func:`prune_candidates` runs in Rust for array inputs and on-device for tensors.
 """
 
 from __future__ import annotations
@@ -14,7 +14,8 @@ from itertools import product
 from typing import Any, cast
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import first_kind, from_flat, from_pair, kind_of, to_flat
+from botorch_rs._arrays import first_kind, from_flat, from_pair, is_torch_tensor, kind_of, to_flat
+from botorch_rs.exceptions.errors import CandidateGenerationError, UnsupportedError
 from botorch_rs.optim.homotopy import Homotopy
 from botorch_rs.optim.optimize import _concat_rows, optimize_acqf, optimize_acqf_mixed
 from botorch_rs.optim.optimize_mixed import (
@@ -37,6 +38,21 @@ def prune_candidates(candidates: Any, acq_values: Any, prune_tolerance: float) -
     Returns:
         An ``m x d`` array of pruned candidates.
     """
+    if is_torch_tensor(candidates):
+        import torch
+
+        if candidates.ndim != 2:
+            raise ValueError("`candidates` must be of size `n x d`.")
+        if acq_values.ndim != 1 or acq_values.shape[0] != candidates.shape[0]:
+            raise ValueError("`acq_values` must be of size `n`.")
+        if prune_tolerance < 0:
+            raise ValueError("`prune_tolerance` must be >= 0.")
+        ordered = candidates[acq_values.argsort(descending=True)]
+        kept = ordered[:1]
+        for i in range(1, ordered.shape[0]):
+            if bool(torch.cdist(ordered[i : i + 1], kept).amin() > prune_tolerance):
+                kept = torch.cat((kept, ordered[i : i + 1]), -2)
+        return kept
     cflat = to_flat(candidates, "candidates")
     if len(cflat[1]) != 2:
         raise ValueError("`candidates` must be of size `n x d`.")
@@ -59,14 +75,101 @@ def _torch_argmax(values: list[float]) -> int:
 
 def _unsqueeze1(X: Any) -> Any:
     """``X.unsqueeze(1)`` for an ``n x d`` array."""
+    if is_torch_tensor(X):
+        return X.unsqueeze(1)
     data, shape = to_flat(X, "X")
     return from_flat(data, (shape[0], 1, shape[1]), kind_of(X))
 
 
 def _squeeze1(X: Any) -> Any:
     """``X.squeeze(1)`` for an ``n x 1 x d`` array."""
+    if is_torch_tensor(X):
+        return X.squeeze(1)
     data, shape = to_flat(X, "X")
     return from_flat(data, (shape[0], shape[-1]), kind_of(X))
+
+
+def _check_postprocessed(
+    X: Any,
+    original: Any,
+    bounds: Any,
+    fixed: Any,
+    inequalities: Any,
+    equalities: Any,
+    nonlinear: Any,
+    domains: Any = None,
+) -> None:
+    """Postprocessing must preserve feasible physical candidate coordinates."""
+    from botorch_rs.optim.parameter_constraints import (
+        evaluate_feasibility,
+        get_constraint_tolerance,
+    )
+
+    if is_torch_tensor(X):
+        import torch
+
+        from botorch_rs.optim._torch_acq_optim import _fixed_values
+
+        if (
+            not is_torch_tensor(original)
+            or X.shape != original.shape
+            or X.dtype != original.dtype
+            or X.device != original.device
+        ):
+            raise CandidateGenerationError(
+                "Postprocessing must retain candidate shape, dtype and device."
+            )
+        limits = torch.as_tensor(bounds, dtype=X.dtype, device=X.device)
+        tolerance = get_constraint_tolerance(X.dtype)
+        if not bool(torch.isfinite(X).all()) or bool(
+            ((X < limits[0] - tolerance) | (X > limits[1] + tolerance)).any()
+        ):
+            raise CandidateGenerationError(
+                "Homotopy postprocessing produced nonfinite or out-of-bounds candidates."
+            )
+        for index, value in _fixed_values(original, fixed, limits[0], limits[1]).items():
+            if not torch.allclose(X[..., index], value, rtol=0, atol=tolerance):
+                raise CandidateGenerationError(
+                    "Homotopy postprocessing changed fixed feature values."
+                )
+        if not bool(evaluate_feasibility(X, inequalities, equalities, nonlinear).all()):
+            raise CandidateGenerationError(
+                "Homotopy postprocessing produced infeasible candidates."
+            )
+        for index, values in (domains or {}).items():
+            allowed = torch.as_tensor(values, dtype=X.dtype, device=X.device)
+            if not bool((X[..., index, None] - allowed).abs().amin(-1).le(tolerance).all()):
+                raise CandidateGenerationError("Homotopy postprocessing left a discrete domain.")
+        return
+    import math
+
+    data, shape = to_flat(X)
+    previous, old_shape = to_flat(original)
+    native_limits, limit_shape = to_flat(bounds)
+    d = limit_shape[-1]
+    if shape != old_shape or any(
+        not math.isfinite(value)
+        or value < native_limits[i % d] - 1e-8
+        or value > native_limits[d + i % d] + 1e-8
+        for i, value in enumerate(data)
+    ):
+        raise CandidateGenerationError("Homotopy postprocessing produced invalid candidates.")
+    for index, value in (fixed or {}).items():
+        for row in range(len(data) // d):
+            target = previous[row * d + index] if value is None else float(to_flat(value)[0][0])
+            if abs(data[row * d + index] - target) > 1e-8:
+                raise CandidateGenerationError(
+                    "Homotopy postprocessing changed fixed feature values."
+                )
+    if not all(to_flat(evaluate_feasibility(X, inequalities, equalities, nonlinear))[0]):
+        raise CandidateGenerationError("Homotopy postprocessing produced infeasible candidates.")
+    for index, values in (domains or {}).items():
+        native_allowed = to_flat(values)[0]
+        if any(
+            min(abs(data[row * d + index] - value) for value in native_allowed) > 1e-8
+            for row in range(len(data) // d)
+        ):
+            raise CandidateGenerationError("Homotopy postprocessing left a discrete domain.")
 
 
 def optimize_acqf_homotopy(
@@ -111,6 +214,21 @@ def optimize_acqf_homotopy(
         A ``q x d`` array of candidates and their ``q`` acquisition values
         (``None`` if ``return_acq_values=False``).
     """
+    tensor_backend = getattr(acq_function, "_tensor_backend", None) == "torch"
+    if tensor_backend:
+        import torch
+
+        from botorch_rs.acquisition.acquisition import OneShotAcquisitionFunction
+        from botorch_rs.optim._torch_acq_initializers import acquisition_batch_shape
+        from botorch_rs.optim._torch_acq_optim import _join_pending, _limit
+
+        _limit(q, "q")
+        if acquisition_batch_shape(acq_function) or isinstance(
+            acq_function, OneShotAcquisitionFunction
+        ):
+            raise UnsupportedError(
+                "Homotopy optimization requires an unbatched, non-one-shot acquisition."
+            )
     kind = first_kind(bounds)
     use_mixed_alternating = should_use_mixed_alternating_optimizer(
         discrete_dims=discrete_dims, cat_dims=cat_dims
@@ -168,105 +286,160 @@ def optimize_acqf_homotopy(
         )
 
     candidate_list: list[Any] = []
-    acq_value_list: list[float] = []
+    acq_value_list: list[Any] = []
     base_X_pending = acq_function.X_pending if q > 1 else None
     selected_candidates: Any = None
-    for _ in range(q):
-        candidates = batch_initial_conditions
-        q_raw_samples = raw_samples
-        homotopy.restart()
+    failed = False
+    try:
+        for _ in range(q):
+            candidates = batch_initial_conditions
+            q_raw_samples = raw_samples
+            homotopy.restart()
 
-        while not homotopy.should_stop:
+            while not homotopy.should_stop:
+                if use_mixed_alternating:
+                    candidates, acq_values = optimization_fn(
+                        acq_function=acq_function,
+                        bounds=bounds,
+                        q=1,
+                        options=options,
+                        raw_samples=q_raw_samples or raw_samples,
+                        post_processing_func=post_processing_func,
+                        **fixed_features_kwargs,
+                        **shared_optimize_acqf_kwargs,
+                    )
+                    candidates = _unsqueeze1(candidates)
+                    acq_values = (
+                        acq_values.reshape(-1)
+                        if tensor_backend
+                        else from_flat(to_flat(acq_values)[0], (1,), kind_of(acq_values))
+                    )
+                else:
+                    candidates, acq_values = optimization_fn(
+                        acq_function=acq_function,
+                        bounds=bounds,
+                        q=1,
+                        options=options,
+                        batch_initial_conditions=candidates,
+                        raw_samples=q_raw_samples,
+                        **fixed_features_kwargs,
+                        **shared_optimize_acqf_kwargs,
+                    )
+                homotopy.step()
+                # Set raw_samples to None such that pruned restarts are not
+                # repopulated at each step in the homotopy.
+                q_raw_samples = None
+                candidates = _unsqueeze1(
+                    prune_candidates(
+                        candidates=_squeeze1(candidates),
+                        acq_values=acq_values,
+                        prune_tolerance=prune_tolerance,
+                    )
+                )
+
+            # Optimize one more time with the final options.
             if use_mixed_alternating:
                 candidates, acq_values = optimization_fn(
                     acq_function=acq_function,
                     bounds=bounds,
                     q=1,
-                    options=options,
-                    raw_samples=q_raw_samples or raw_samples,
+                    options=final_options,
+                    raw_samples=raw_samples,
                     post_processing_func=post_processing_func,
                     **fixed_features_kwargs,
                     **shared_optimize_acqf_kwargs,
                 )
                 candidates = _unsqueeze1(candidates)
-                acq_values = from_flat(to_flat(acq_values)[0], (1,), kind_of(acq_values))
+                acq_values = (
+                    acq_values.reshape(-1)
+                    if tensor_backend
+                    else from_flat(to_flat(acq_values)[0], (1,), kind_of(acq_values))
+                )
             else:
                 candidates, acq_values = optimization_fn(
                     acq_function=acq_function,
                     bounds=bounds,
                     q=1,
-                    options=options,
-                    batch_initial_conditions=candidates,
+                    options=final_options,
                     raw_samples=q_raw_samples,
+                    batch_initial_conditions=candidates,
                     **fixed_features_kwargs,
                     **shared_optimize_acqf_kwargs,
                 )
-            homotopy.step()
-            # Set raw_samples to None such that pruned restarts are not
-            # repopulated at each step in the homotopy.
-            q_raw_samples = None
-            candidates = _unsqueeze1(
-                prune_candidates(
-                    candidates=_squeeze1(candidates),
-                    acq_values=acq_values,
-                    prune_tolerance=prune_tolerance,
+
+            # Post-process the candidates and grab the best candidate.
+            if post_processing_func is not None and not use_mixed_alternating:
+                before = candidates
+                candidates = post_processing_func(candidates)
+                _check_postprocessed(
+                    candidates,
+                    before,
+                    bounds,
+                    fixed_features,
+                    inequality_constraints,
+                    equality_constraints,
+                    nonlinear_inequality_constraints,
+                    {**(discrete_dims or {}), **(cat_dims or {})},
                 )
-            )
+                acq_values = acq_function(candidates)
 
-        # Optimize one more time with the final options.
-        if use_mixed_alternating:
-            candidates, acq_values = optimization_fn(
-                acq_function=acq_function,
-                bounds=bounds,
-                q=1,
-                options=final_options,
-                raw_samples=raw_samples,
-                post_processing_func=post_processing_func,
-                **fixed_features_kwargs,
-                **shared_optimize_acqf_kwargs,
+            if tensor_backend:
+                if acq_values.shape != candidates.shape[:1]:
+                    raise UnsupportedError("Homotopy optimization requires one scalar per restart.")
+                best = acq_values.argmax()
+                candidate = candidates[best]
+                value = acq_values[best]
+            else:
+                values = [float(v) for v in to_flat(acq_values, "acq_values")[0]]
+                best = _torch_argmax(values)
+                cdata, cshape = to_flat(candidates, "candidates")
+                per = cshape[-2] * cshape[-1]
+                candidate = from_flat(cdata[best * per : (best + 1) * per], tuple(cshape[1:]), kind)
+                value = values[best]
+            candidate_list.append(candidate)
+            if return_acq_values:
+                acq_value_list.append(value)
+            selected_candidates = (
+                torch.cat(candidate_list, -2)
+                if tensor_backend
+                else _concat_rows(candidate_list, kind)
             )
-            candidates = _unsqueeze1(candidates)
-            acq_values = from_flat(to_flat(acq_values)[0], (1,), kind_of(acq_values))
-        else:
-            candidates, acq_values = optimization_fn(
-                acq_function=acq_function,
-                bounds=bounds,
-                q=1,
-                options=final_options,
-                raw_samples=q_raw_samples,
-                batch_initial_conditions=candidates,
-                **fixed_features_kwargs,
-                **shared_optimize_acqf_kwargs,
-            )
+            if q > 1:
+                acq_function.set_X_pending(
+                    _join_pending(base_X_pending, candidate_list)
+                    if tensor_backend
+                    else (
+                        _concat_rows([base_X_pending, selected_candidates], kind)
+                        if base_X_pending is not None
+                        else selected_candidates
+                    )
+                )
 
-        # Post-process the candidates and grab the best candidate.
-        if post_processing_func is not None and not use_mixed_alternating:
-            candidates = post_processing_func(candidates)
-            acq_values = acq_function(candidates)
-
-        values = [float(v) for v in to_flat(acq_values, "acq_values")[0]]
-        best = _torch_argmax(values)
-        cdata, cshape = to_flat(candidates, "candidates")
-        per = cshape[-2] * cshape[-1]
-        candidate = from_flat(cdata[best * per : (best + 1) * per], tuple(cshape[1:]), kind)
-        candidate_list.append(candidate)
-        if return_acq_values:
-            acq_value_list.append(values[best])
-        selected_candidates = _concat_rows(candidate_list, kind)
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        restore_error = None
         if q > 1:
-            acq_function.set_X_pending(
-                _concat_rows([base_X_pending, selected_candidates], kind)
-                if base_X_pending is not None
-                else selected_candidates
-            )
-
-    if q > 1:  # Reset acq_function to previous X_pending state
-        acq_function.set_X_pending(base_X_pending)
-    homotopy.reset()  # Reset the homotopy parameters
+            try:
+                acq_function.set_X_pending(base_X_pending)
+            except Exception as error:
+                restore_error = error
+        try:
+            homotopy.reset()
+        except Exception as error:
+            if restore_error is None:
+                restore_error = error
+        if restore_error is not None and not failed:
+            raise restore_error
 
     if not return_acq_values:
         return selected_candidates, None
-    return selected_candidates, from_flat(acq_value_list, (len(acq_value_list),), kind)
+    return selected_candidates, (
+        torch.stack(acq_value_list)
+        if tensor_backend
+        else from_flat(acq_value_list, (len(acq_value_list),), kind)
+    )
 
 
 __all__ = ["optimize_acqf_homotopy", "prune_candidates"]

@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import ArrayKind, first_kind, from_flat, kind_of, to_flat
+from botorch_rs._arrays import ArrayKind, first_kind, from_flat, is_torch_tensor, kind_of, to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import OptimizationWarning
 from botorch_rs.optim.parameter_constraints import (
@@ -318,68 +318,23 @@ def _gen_candidates_torch_loop(
 ) -> tuple[Any, Any]:
     """BoTorch's ``gen_candidates_torch`` loop with a torch optimizer (on the
     natively computed values and gradients)."""
-    import time
-
     import torch
 
-    from botorch_rs.optim.stopping import ExpMAStoppingCriterion
-    from botorch_rs.optim.utils.acquisition_utils import fix_features
+    from botorch_rs.optim._torch_acq_optim import gen_torch
 
-    start_time = time.monotonic()
-    options = options or {}
-    X0 = torch.as_tensor(initial_conditions, dtype=torch.float64)
-    d = X0.shape[-1]
-    free = [i for i in range(d) if not fixed_features or i not in fixed_features]
-
-    def clamp(X: Any) -> Any:
-        lo = None if lower_bounds is None else torch.as_tensor(lower_bounds, dtype=X.dtype)
-        hi = None if upper_bounds is None else torch.as_tensor(upper_bounds, dtype=X.dtype)
-        if lo is not None and lo.ndim > 0 and lo.numel() == d and X.shape[-1] != d:
-            lo = lo[free]
-        if hi is not None and hi.ndim > 0 and hi.numel() == d and X.shape[-1] != d:
-            hi = hi[free]
-        return X.clamp(lo, hi) if lo is not None or hi is not None else X
-
-    params = clamp(X0)[..., free].clone().requires_grad_(True)
-    optimizer_options = dict(options.get("optimizer_options", {}) or {})
-    stopping_options = dict(options.get("stopping_criterion_options", {}) or {})
-    if "maxiter" in options:
-        warnings.warn(
-            "Passing 'maxiter' directly in options is deprecated. "
-            "Please use options['stopping_criterion_options']['maxiter'] instead.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        stopping_options.setdefault("maxiter", options["maxiter"])
-    optimizer_options.setdefault("lr", 0.025)
-    opt = optimizer(params=[params], **optimizer_options)
-    criterion = ExpMAStoppingCriterion(**stopping_options)
-    i, stop = 0, False
-    while not stop:
-        i += 1
-        with torch.no_grad():
-            X = clamp(params).requires_grad_(True)
-        loss = -acquisition_function(
-            fix_features(X, fixed_features, replace_current_value=False)
-        ).sum()
-        grad = torch.autograd.grad(loss, X)[0]
-        if callback:
-            callback(i, loss, grad)
-
-        def assign_grad(grad: Any = grad, loss: Any = loss) -> Any:
-            opt.zero_grad()
-            params.grad = grad
-            return loss
-
-        opt.step(assign_grad)
-        stop = criterion(loss.detach())
-        if timeout_sec is not None and time.monotonic() - start_time > timeout_sec:
-            stop = True
-    with torch.no_grad():
-        final = fix_features(clamp(params), fixed_features, replace_current_value=False)
-        values = acquisition_function(final)
+    candidates, values = gen_torch(
+        torch.as_tensor(initial_conditions, dtype=torch.float64),
+        acquisition_function,
+        lower_bounds=lower_bounds,
+        upper_bounds=upper_bounds,
+        optimizer=optimizer,
+        options=options,
+        callback=callback,
+        fixed_features=fixed_features,
+        timeout_sec=timeout_sec,
+    )
     kind = kind_of(initial_conditions)
-    return from_flat(final.reshape(-1).tolist(), tuple(final.shape), kind), from_flat(
+    return from_flat(candidates.reshape(-1).tolist(), tuple(candidates.shape), kind), from_flat(
         values.reshape(-1).tolist(), tuple(values.shape), kind
     )
 
@@ -397,6 +352,8 @@ def get_best_candidates(batch_candidates: Any, batch_values: Any) -> Any:
     Returns:
         A ``q x d`` (or ``d``) array of the candidates with the highest value.
     """
+    if is_torch_tensor(batch_candidates) and is_torch_tensor(batch_values):
+        return batch_candidates[batch_values.argmax()]
     values = [float(v) for v in to_flat(batch_values, "batch_values")[0]]
     best = next((i for i, v in enumerate(values) if v != v), None)
     if best is None:
