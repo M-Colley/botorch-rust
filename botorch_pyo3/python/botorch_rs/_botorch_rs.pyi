@@ -8,7 +8,8 @@ order and ``shape`` the dimensions. Arguments accept a float64
 ``BoolBuf``) return more than 16 values as an ``array.array('d')`` (or
 ``bytes`` of 0/1 for boolean masks), fewer as a list; small results of fixed
 size (``ArrayOut``) return a list. Use the BoTorch-style classes of the
-``botorch_rs`` package instead of this module.
+``botorch_rs`` package instead of this module. The ``tensor_*`` functions accept
+Torch tensors directly and preserve their device, dtype and autograd graph.
 """
 
 from array import array
@@ -3434,3 +3435,32 @@ class SharedGPFit:
     ) -> tuple[ArrayOut, list[float]]: ...
     def fit(self, **kwargs: Any) -> tuple[float, int, int, str, str, int]: ...
     def fit_torch(self, **kwargs: Any) -> tuple[int, float, int, float | None, str | None]: ...
+
+def tensor_kernel(
+    kind: str,
+    x1: Any,
+    x2: Any,
+    lengthscale: Any = None,
+    nu: float = 2.5,
+    diag: bool = False,
+    last_dim_is_batch: bool = False,
+) -> Any: ...
+def tensor_exact_gp_posterior(
+    train_y: Any,
+    k_train: Any,
+    k_train_query: Any,
+    k_query: Any,
+    train_mean: Any,
+    query_mean: Any,
+    train_noise: Any,
+    jitter: float = 0.0,
+    observation_noise: Any = None,
+) -> tuple[Any, Any]: ...
+def tensor_exact_mll(
+    train_y: Any,
+    k_train: Any,
+    train_mean: Any,
+    train_noise: Any,
+    jitter: float = 0.0,
+    normalize: bool = False,
+) -> Any: ...

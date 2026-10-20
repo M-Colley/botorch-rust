@@ -8,7 +8,9 @@
 //! arrays and nested lists, and provides BoTorch's module layout, class names
 //! and argument handling on top of the classes defined here. Errors map onto
 //! the exception hierarchy of `botorch_rs.exceptions` ([`errors`]), and every
-//! computation runs with the GIL released ([`threads`]).
+//! CPU numerical computations release the GIL ([`threads`]). The optional
+//! [`binding_torch`] functions dispatch Torch tensor operations while preserving
+//! the caller's device and higher-order autograd graph.
 
 use pyo3::prelude::*;
 
@@ -17,6 +19,7 @@ mod additive;
 mod approximate;
 mod arrays;
 mod batched_lbfgsb;
+mod binding_torch;
 mod callbacks;
 mod composite;
 mod contextual;
@@ -71,6 +74,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     additive::register(m)?;
     models::posterior_autograd::register(m)?;
     batched_lbfgsb::register(m)?;
+    binding_torch::register(m)?;
     m.add_function(wrap_pyfunction!(heterogeneous::target_task_model, m)?)?;
     empirical::register(m)?;
     em_kl::register(m)?;
