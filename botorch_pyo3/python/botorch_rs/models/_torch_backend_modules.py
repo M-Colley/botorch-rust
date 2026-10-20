@@ -1012,7 +1012,12 @@ class TorchStandardize(nn.Module):
             std = torch.ones_like(self.means)
         else:
             count = (~Y.isnan()).sum(dim=-2, keepdim=True)
-            std = ((Y - self.means).square().nansum(dim=-2, keepdim=True) / (count - 1)).sqrt()
+            variance = (Y - self.means).square().nansum(dim=-2, keepdim=True) / (count - 1)
+            # Masking sqrt(0) afterwards still backpropagates 0 * inf = NaN.
+            # Clamp before sqrt, keeping the original threshold and value-one
+            # branch below it so first and higher derivatives remain finite.
+            std = variance.clamp_min(self._min_stdv**2).sqrt()
+            std = torch.where(variance >= self._min_stdv**2, std, 1.0)
         self.stdvs = torch.where(std >= self._min_stdv, std, 1.0)
         if self._outputs is not None:
             used = torch.zeros(self._m, dtype=torch.bool, device=Y.device)

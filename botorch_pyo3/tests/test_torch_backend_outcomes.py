@@ -227,3 +227,32 @@ def test_outcome_subsets_preserve_fitted_statistics_and_selected_output_graphs(d
     torch.testing.assert_close(actual, expected)
     _compare_gradients(actual.square(), expected.square(), (y,))
     torch.testing.assert_close(subset.untransform(actual)[0], y[..., [1, 0, 1]])
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("n,variation", [(1, 0.0), (3, 0.0), (3, 1e-10)])
+def test_standardize_constant_targets_have_finite_higher_gradients(device, dtype, n, variation):
+    y = torch.ones(n, 1, dtype=dtype, device=device)
+    y = (y + variation * torch.arange(n, dtype=dtype, device=device).unsqueeze(-1)).requires_grad_()
+    module = build_outcome_transform(Standardize(1), 1, y)
+    module.train()
+    actual, _ = module(y)
+    expected = y - y.mean(-2, keepdim=True)
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(module.stdvs, torch.ones_like(module.stdvs))
+    weights = torch.linspace(0.2, 0.7, n, dtype=dtype, device=device).unsqueeze(-1)
+    _compare_gradients(
+        actual.square() + weights * actual, expected.square() + weights * expected, (y,)
+    )
+    if dtype == torch.float64:
+        gradient = torch.autograd.grad((weights * actual).sum(), y)[0]
+        h = 1e-10
+        difference = torch.zeros_like(y)
+        for i in range(n):
+            delta = torch.zeros_like(y)
+            delta[i] = h
+            high, _ = module(y.detach() + delta)
+            low, _ = module(y.detach() - delta)
+            difference[i] = (weights * (high - low)).sum() / (2 * h)
+        torch.testing.assert_close(gradient, difference, atol=2e-6, rtol=2e-6)

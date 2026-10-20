@@ -97,3 +97,13 @@ uses domain-safe positive/negative branches, giving slope one for both Bilog
 and its inverse. Away from zero, values and first/second derivatives match the
 reference. The function is C1 and is not C2 at zero; no unique Hessian exists
 there. The repair is checked with a centered finite difference at the origin.
+
+Constant-target Standardize gradients also need a reference repair. Computing
+`sqrt(variance)` at zero before replacing small standard deviations with one
+can backpropagate `0 * inf` through the inactive branch. For example, training
+`Standardize(1)` on `torch.ones(3, 1, requires_grad=True)` gives NaN first and
+second target derivatives in the tested reference. The adapter clamps variance
+to `min_stdv**2` before taking its square root, then applies the original
+constant-one branch according to the original variance. Values are unchanged.
+CPU/CUDA float32/float64 regressions cover constant, near-constant and single
+observations, with finite differences small enough to stay below the threshold.
