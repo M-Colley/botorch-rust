@@ -98,28 +98,9 @@ class ScalarizedPosteriorTransform(PosteriorTransform):
 
     def forward(self, posterior: Any, X: Any = None) -> Any:
         """The scalarized (single-output) posterior of a botorch_rs posterior."""
-        from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
+        from botorch_rs.posteriors.gpytorch import scalarize_posterior
 
-        if not isinstance(posterior, GPyTorchPosterior):
-            raise UnsupportedError("ScalarizedPosteriorTransform requires a botorch_rs posterior.")
-        if posterior._transform is not None:
-            raise UnsupportedError("The posterior has already been transformed.")
-        if posterior._m != len(self._weights):
-            raise RuntimeError(
-                "Output shape not equal to that of weights. Output shape is "
-                f"{posterior._m} and weights are {len(self._weights)}"
-            )
-        return GPyTorchPosterior(
-            posterior._rs,
-            posterior._x,
-            posterior._kind,
-            posterior._observation_noise,
-            num_outputs=posterior._m,
-            model_batch_shape=posterior._batch,
-            output_indices=posterior._output_indices,
-            transform=(self._weights, self._offset),
-            points_per_input=posterior._points_per_input,
-        )
+        return scalarize_posterior(posterior, self.weights, self._offset)
 
     def __repr__(self) -> str:
         return f"ScalarizedPosteriorTransform(weights={self._weights}, offset={self._offset})"

@@ -4,7 +4,10 @@
 groups of `n_w` posterior points to weighted expectations. The outputs keep
 their output dimension. Weights have shape `n_w x m` (one column may be
 broadcast to all outputs), are nonnegative, and are normalized independently
-per output. Normalization, weighted outcome evaluation, and full covariance
+per output. Default uniform weights use float64; official BoTorch creates
+its default weight buffer in torch's default dtype (usually float32), so
+comparisons with float64 posterior moments use explicit float64 uniform
+weights in the reference. Normalization, weighted outcome evaluation, and full covariance
 contractions execute through Rust array primitives. Cross-point and
 cross-output covariance terms are preserved.
 
@@ -14,6 +17,8 @@ such as `InputPerturbation`. It returns a native Gaussian posterior with
 means, marginal variances, full covariance, quantile/density evaluation,
 explicit-base-sample sampling, and IID/Sobol normal samplers. Interleaved
 multitask distributions are rejected, matching official BoTorch b0dd01be6.
+The explicit moments also support further output scalarization through
+`ScalarizedPosteriorTransform`.
 
 `evaluate` supports lists, NumPy, and torch, including first-order torch
 gradients in outcomes and weights. Posterior moment construction follows

@@ -82,7 +82,10 @@ def test_full_correlated_gaussian_parity(q: int, m: int, batch: tuple, weighted:
     variance = covariance.diagonal(dim1=-2, dim2=-1).reshape(*batch, m, q * nw).transpose(-1, -2)
     rs._marginals = (list(to_flat(mean)[0]), list(to_flat(variance)[0]))
     weights = torch.rand(nw, m, generator=generator, dtype=torch.float64) if weighted else None
-    tb, tr = BtTransform(nw, weights), ExpectationPosteriorTransform(nw, weights)
+    # Official default uniform weights are a float32 buffer even for a
+    # float64 posterior. Compare exact float64 normalization explicitly.
+    reference_weights = weights if weights is not None else torch.ones(nw, 1, dtype=torch.float64)
+    tb, tr = BtTransform(nw, reference_weights), ExpectationPosteriorTransform(nw, weights)
     pb, pr = tb(bt), tr(rs)
     torch.testing.assert_close(pr.mean, pb.mean, rtol=1e-12, atol=1e-12)
     torch.testing.assert_close(pr.variance, pb.variance, rtol=1e-12, atol=1e-12)
@@ -96,6 +99,17 @@ def test_full_correlated_gaussian_parity(q: int, m: int, batch: tuple, weighted:
     torch.testing.assert_close(samples_r, samples_b, rtol=1e-10, atol=1e-10)
     for sampler in (IIDNormalSampler((4,), seed=51), SobolQMCNormalSampler((4,), seed=51)):
         assert tuple(sampler(pr).shape) == (4, *batch, q, m)
+    # The resulting explicit moments remain compatible with scalarization.
+    from botorch.acquisition.objective import ScalarizedPosteriorTransform as BtScalarize
+
+    from botorch_rs.acquisition.objective import ScalarizedPosteriorTransform
+
+    output_weights = torch.linspace(0.2, 0.8, m, dtype=torch.float64)
+    sb, sr = BtScalarize(output_weights)(pb), ScalarizedPosteriorTransform(output_weights)(pr)
+    torch.testing.assert_close(sr.mean, sb.mean, rtol=1e-12, atol=1e-12)
+    torch.testing.assert_close(
+        sr.distribution.covariance_matrix, sb.distribution.covariance_matrix, rtol=1e-12, atol=1e-12
+    )
 
 
 def test_evaluate_torch_gradients_in_outcomes_and_weights() -> None:
