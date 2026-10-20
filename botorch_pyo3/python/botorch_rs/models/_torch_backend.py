@@ -163,12 +163,19 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
                     values.shape,
                     values.dtype,
                     values.device,
-                    tuple((id(parameter), version) for parameter, version in zip(parameters, versions[1:], strict=True)),
+                    tuple(
+                        (id(parameter), version)
+                        for parameter, version in zip(parameters, versions[1:], strict=True)
+                    ),
                 )
                 needs_graph = torch.is_grad_enabled() and (
                     values.requires_grad or any(parameter.requires_grad for parameter in parameters)
                 )
-                if needs_graph or None in versions or self._transform_fit_versions.get(id(transform)) != key:
+                if (
+                    needs_graph
+                    or None in versions
+                    or self._transform_fit_versions.get(id(transform)) != key
+                ):
                     if getattr(transform, "transform_on_train", True):
                         fit = getattr(transform, "fit", None)
                         if fit is not None:

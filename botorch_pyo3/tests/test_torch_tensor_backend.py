@@ -381,7 +381,12 @@ def test_nonlinear_posterior_sampling_and_training_graphs(device, kind):
     X.requires_grad_()
     Y = Y.exp().detach().requires_grad_()
     query.requires_grad_()
-    transforms = {"log": Log(), "power": Power(0.5), "bilog": Bilog(), "chain": ChainedOutcomeTransform(log=Log(), standardize=Standardize(2))}
+    transforms = {
+        "log": Log(),
+        "power": Power(0.5),
+        "bilog": Bilog(),
+        "chain": ChainedOutcomeTransform(log=Log(), standardize=Standardize(2)),
+    }
     model = SingleTaskGP(X, Y, outcome_transform=transforms[kind], backend="torch")
     posterior = model.posterior(query, output_indices=[1])
     sampler = IIDNormalSampler((4,), seed=13)
@@ -396,7 +401,10 @@ def test_nonlinear_posterior_sampling_and_training_graphs(device, kind):
     subset = model.subset_output([1])
     expected = model.posterior(query, output_indices=[1])
     normals = torch.ones((2,) + expected.base_sample_shape, dtype=X.dtype, device=X.device)
-    torch.testing.assert_close(subset.posterior(query).rsample_from_base_samples((2,), normals), expected.rsample_from_base_samples((2,), normals))
+    torch.testing.assert_close(
+        subset.posterior(query).rsample_from_base_samples((2,), normals),
+        expected.rsample_from_base_samples((2,), normals),
+    )
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -412,5 +420,7 @@ def test_nonlinear_model_list_samples_keep_duplicate_outputs_identical(device):
     samples = IIDNormalSampler((3,), seed=31)(posterior)
     assert samples.shape == (3, 3, 3)
     torch.testing.assert_close(samples[..., 0], samples[..., 2], atol=0, rtol=0)
-    gradients = torch.autograd.grad(samples.square().sum(), (Y, *first.parameters(), *second.parameters()), create_graph=True)
+    gradients = torch.autograd.grad(
+        samples.square().sum(), (Y, *first.parameters(), *second.parameters()), create_graph=True
+    )
     assert all(torch.isfinite(g).all() for g in gradients)

@@ -100,7 +100,9 @@ class ScalarizedPosteriorTransform(PosteriorTransform):
         """The scalarized (single-output) posterior of a botorch_rs posterior."""
         from botorch_rs.posteriors.gpytorch import scalarize_posterior
 
-        offset = self.offset if getattr(posterior, "_tensor_backend", None) == "torch" else self._offset
+        offset = (
+            self.offset if getattr(posterior, "_tensor_backend", None) == "torch" else self._offset
+        )
         return scalarize_posterior(posterior, self.weights, offset)
 
     def __repr__(self) -> str:

@@ -156,7 +156,76 @@ class TensorKnowledgeGradient(nn.Module):
         return values.mean(dim=0)
 
     def evaluate(self, X: Any, bounds: Any, **kwargs: Any) -> Any:
-        raise UnsupportedError(
-            "Torch KG currently supports the augmented one-shot forward method. "
-            "The separately optimized evaluate method is not yet implemented."
+        """Optimize each fantasy's terminal decision with the selected solver.
+
+        The optimizing decisions are treated as fixed when differentiating the
+        returned value, as in BoTorch's envelope-gradient evaluation.
+        """
+        from botorch_rs.generation.gen import gen_candidates_scipy
+
+        if not isinstance(X, Tensor) or X.ndim < 2:
+            raise ValueError("X must have shape batch_shape x q x d.")
+        X = X.unsqueeze(0) if X.ndim == 2 else X
+        bounds = torch.as_tensor(bounds, dtype=X.dtype, device=X.device)
+        if (
+            bounds.shape != (2, X.shape[-1])
+            or not bool(torch.isfinite(bounds).all())
+            or bool((bounds[0] > bounds[1]).any())
+        ):
+            raise ValueError("bounds must be a finite ordered 2 x d Tensor.")
+        restarts = int(kwargs.pop("num_restarts", 20))
+        raw = int(kwargs.pop("raw_samples", 1024))
+        options = dict(kwargs.pop("options", {}) or {})
+        scipy_options = dict(kwargs.pop("scipy_options", {}) or {})
+        generator = kwargs.pop("gen_candidates", gen_candidates_scipy)
+        if kwargs:
+            raise UnsupportedError(f"Unsupported KG evaluate arguments: {sorted(kwargs)}.")
+        if restarts < 1 or raw < restarts:
+            raise ValueError("raw_samples must be at least num_restarts > 0.")
+        evaluated = X
+        if self.X_pending is not None:
+            pending = self.X_pending.to(X)
+            batch = torch.broadcast_shapes(X.shape[:-2], pending.shape[:-2])
+            evaluated = torch.cat(
+                (X.expand(*batch, *X.shape[-2:]), pending.expand(*batch, *pending.shape[-2:])),
+                dim=-2,
+            )
+        if self.expand is not None:
+            evaluated = self.expand(evaluated)
+        model = self.model.fantasize(X=evaluated, sampler=self.sampler, propagate_grads=True)
+        base = self._value_function(model)
+        if self.project is not None:
+            from botorch_rs.acquisition.knowledge_gradient import ProjectedAcquisitionFunction
+
+            base = ProjectedAcquisitionFunction(base, self.project)
+        batch = model.batch_shape
+        engine = torch.quasirandom.SobolEngine(X.shape[-1], scramble=True, seed=options.get("seed"))
+        unit = engine.draw(raw, dtype=X.dtype).to(X.device)
+        candidates = (
+            (bounds[0] + (bounds[1] - bounds[0]) * unit)
+            .reshape(raw, *(1 for _ in batch), 1, X.shape[-1])
+            .expand(raw, *batch, 1, X.shape[-1])
         )
+        with torch.no_grad():
+            values = base(candidates)
+            indices = values.topk(restarts, dim=0).indices
+            initial = candidates.gather(
+                0, indices[..., None, None].expand(restarts, *batch, 1, X.shape[-1])
+            ).contiguous()
+        init_options = {"seed", "frac_random", "num_inner_restarts", "raw_inner_samples", "eta"}
+        solver_options = {key: value for key, value in options.items() if key not in init_options}
+        solver_options.update(scipy_options)
+        choices, values = generator(
+            initial, base, lower_bounds=bounds[0], upper_bounds=bounds[1], options=solver_options
+        )
+        with torch.no_grad():
+            best = values.argmax(dim=0)
+            selected = choices.gather(
+                0, best[None, ..., None, None].expand(1, *batch, 1, X.shape[-1])
+            ).squeeze(0)
+        values = base(selected)
+        if self.current_value is not None:
+            values = values - self.current_value.to(values)
+        if self.cost_aware_utility is not None:
+            values = self.cost_aware_utility(X=X, deltas=values, sampler=self.cost_sampler)
+        return values.mean(dim=0)

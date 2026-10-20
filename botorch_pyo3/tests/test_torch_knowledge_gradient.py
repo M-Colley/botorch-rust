@@ -153,3 +153,79 @@ def test_multifidelity_kg_project_expand_and_generic_cost_graphs(device):
         sum(g.square().sum() for g in gradients), (query, *model.parameters())
     )
     assert all(torch.isfinite(g).all() for g in second)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_kg_evaluate_inner_optimum_and_outer_envelope_gradients(device):
+    X, Y = model_data(device)
+    model = SingleTaskGP(X, Y, backend="torch", outcome_transform=None)
+    acq = qKnowledgeGradient(
+        model, num_fantasies=2, sampler=SobolQMCNormalSampler((2,), seed=7), current_value=0.2
+    )
+    query = X.new_tensor([[0.21]], requires_grad=True)
+    bounds = X.new_tensor([[0.0], [1.0]])
+    value = acq.evaluate(
+        query,
+        bounds,
+        num_restarts=4,
+        raw_samples=32,
+        options={"seed": 17},
+        scipy_options={"maxiter": 35, "ftol": 1e-12},
+    )
+    fantasy = model.fantasize(query.unsqueeze(0), acq.sampler, propagate_grads=True)
+    grid = (
+        torch.linspace(0, 1, 1001, dtype=X.dtype, device=X.device)
+        .reshape(1001, 1, 1, 1, 1)
+        .expand(1001, 2, 1, 1, 1)
+    )
+    with torch.no_grad():
+        expected = (
+            fantasy.posterior(grid).mean.squeeze(-1).squeeze(-1).amax(dim=0).mean(dim=0) - 0.2
+        )
+    torch.testing.assert_close(value, expected, atol=2e-5, rtol=2e-5)
+    gradient = torch.autograd.grad(value.sum(), (query, *model.parameters()))
+    assert all(torch.isfinite(g).all() for g in gradient)
+    epsilon = 1e-5
+
+    def evaluate(points):
+        return acq.evaluate(
+            points,
+            bounds,
+            num_restarts=4,
+            raw_samples=32,
+            options={"seed": 17},
+            scipy_options={"maxiter": 35, "ftol": 1e-12},
+        )
+
+    finite_difference = (
+        evaluate(query.detach() + epsilon) - evaluate(query.detach() - epsilon)
+    ) / (2 * epsilon)
+    torch.testing.assert_close(
+        gradient[0].squeeze(), finite_difference.squeeze(), atol=3e-4, rtol=3e-4
+    )
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_kg_evaluate_torch_optimizer_has_no_host_value_transfer(device):
+    from botorch_rs.generation.gen import gen_candidates_torch
+
+    X, Y = model_data(device)
+    model = SingleTaskGP(X, Y, backend="torch", outcome_transform=None)
+    acq = qKnowledgeGradient(model, num_fantasies=2, sampler=SobolQMCNormalSampler((2,), seed=7))
+    query = X.new_tensor([[0.21]], requires_grad=True)
+    with (
+        patch.object(torch.Tensor, "cpu", side_effect=AssertionError("host transfer")),
+        patch.object(torch.Tensor, "tolist", side_effect=AssertionError("host transfer")),
+        patch.object(torch.Tensor, "numpy", side_effect=AssertionError("host transfer")),
+    ):
+        value = acq.evaluate(
+            query,
+            X.new_tensor([[0.0], [1.0]]),
+            num_restarts=2,
+            raw_samples=8,
+            options={"seed": 19, "stopping_criterion_options": {"maxiter": 3}},
+            gen_candidates=gen_candidates_torch,
+        )
+        gradient = torch.autograd.grad(value.sum(), query)[0]
+    assert torch.isfinite(value).all()
+    assert torch.isfinite(gradient).all()

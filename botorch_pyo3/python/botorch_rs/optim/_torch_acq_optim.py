@@ -351,7 +351,9 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
                     sequential_values.append(value)
         finally:
             acquisition.set_X_pending(original)
-        return torch.cat(points, dim=-2), torch.stack(sequential_values) if args["return_acq_values"] else None
+        return torch.cat(points, dim=-2), torch.stack(sequential_values) if args[
+            "return_acq_values"
+        ] else None
     one_shot = isinstance(acquisition, OneShotAcquisitionFunction)
     augmented = acquisition.get_augmented_q_batch_size(q) if one_shot else q
     options = dict(args["options"] or {})

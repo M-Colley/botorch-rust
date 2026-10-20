@@ -31,8 +31,13 @@ Native computation uses CPU float64. Torch/NumPy results preserve the
 input dtype and device, with transfers when needed. The audited official
 BoTorch core API inventory contains 776 public classes/functions, all
 available under matching paths; this measures API availability, not every
-configuration or Torch behavior. GPU computation, general higher-order
-autograd and some specialized model configurations remain unsupported.
+configuration or Torch behavior. Supported models also accept
+`backend="torch"` for computation on the actual Tensor device, float32/float64,
+and full PyTorch autograd graphs through data and model Parameters. CUDA
+training data select that backend automatically. Specialized models and
+acquisition/optimization configurations still have gaps; GPU parity is not
+complete. See the repository's
+[Torch backend scope](https://github.com/M-Colley/botorch-rust/blob/main/docs/torch-backend.md).
 See the repository's [coverage and configuration limits](https://github.com/M-Colley/botorch-rust#readme)
 and [correctness findings](https://github.com/M-Colley/botorch-rust/blob/main/docs/correctness-findings.md).
 Performance depends on the workload and should be checked on representative

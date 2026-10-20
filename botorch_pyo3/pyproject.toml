@@ -30,6 +30,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+torch = ["torch"]
 test = ["pytest>=8"]
 # The parity tests compare against BoTorch (and use torch, GPyTorch, NumPy).
 parity = ["pytest>=8", "botorch", "numpy"]

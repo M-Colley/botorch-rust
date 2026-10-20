@@ -81,8 +81,10 @@ balances compatibility and performance:
   mixed, MAP SAAS and ensembles), fully Bayesian GPs with native NUTS,
   variational and higher-order GPs, preference learning, the single- and
   multi-objective acquisition functions, and acquisition optimization.
-  Specialized configurations, GPU execution and remaining
-  hyperparameter-gradient configurations are listed below. Public-name
+  An optional Torch backend adds GPU execution and complete autograd graphs
+  for the implemented model/acquisition families; its
+  [coverage and remaining limits](docs/torch-backend.md) are tracked separately.
+  Specialized configurations and remaining gradient configurations are listed below. Public-name
   coverage and numerical parity are tracked separately.
 
 ## Installation
@@ -504,8 +506,11 @@ The main remaining gaps are:
   models; some model-list conditioning and fantasy combinations; and the
   shared-parameter fitting across some training batches. Each model chapter
   documents its current limits. Unsupported options raise `UnsupportedError`.
-- **Tensor semantics:** GPU execution, general higher-order derivatives and
-  custom torch modules throughout models remain unsupported. Ordinary CPU
+- **Tensor semantics:** the optional [Torch backend](docs/torch-backend.md)
+  supports device-resident float32/float64 and higher-order graphs for its
+  documented model and acquisition families, including training inputs,
+  targets, noise and actual model Parameters. GPU coverage is not complete.
+  The following limits describe the default native CPU backend. Ordinary CPU
   Torch `SingleTaskGP` models have persistent parameters and first-order
   parameter gradients through posterior moments, samples and exact MLLs
   ([scope](docs/posterior-parameter-gradients.md)). Supported native Gaussian
