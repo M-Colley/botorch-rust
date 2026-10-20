@@ -76,7 +76,9 @@ supports joint optimization, best/all restarts, fixed features, postprocessing,
 one-shot candidate extraction and sequential pending-point restoration.
 Constrained automatic initialization currently requires feasible supplied
 initial conditions or a custom generator. The automatic box initializer uses
-top-value selection. Batched model restart selection, acquisition sequences,
+device-resident Boltzmann, nonnegative or top-n restart selection and supports
+`init_batch_limit` for raw scoring. Candidate `batch_limit`, forced parallel
+SciPy mode and aggregation limits raise explicit errors. Batched model restart selection, acquisition sequences,
 specialized mixed/discrete/cyclic optimization and remaining initial-condition
 heuristics still need the Torch path. Unsupported configurations raise errors.
 

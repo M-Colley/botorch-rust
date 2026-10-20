@@ -109,7 +109,8 @@ def gen_torch(
             stacklevel=3,
         )
         stopping.setdefault("maxiter", options.pop("maxiter"))
-    options.pop("max_optimization_problem_aggregation_size", None)
+    if "max_optimization_problem_aggregation_size" in options:
+        raise UnsupportedError("Torch candidate aggregation limits are not implemented.")
     if options:
         raise UnsupportedError(f"Unsupported Torch candidate options: {sorted(options)}.")
     criterion = ExpMAStoppingCriterion(**stopping)
@@ -133,16 +134,29 @@ def gen_torch(
         return clamp(fix_features(parameter, fixed, insert=True), lower_bounds, upper_bounds)
 
     started = time.monotonic()
-    for iteration in range(1, criterion.maxiter + 1):
+
+    def evaluate() -> Tensor:
         opt.zero_grad(set_to_none=True)
-        with torch.no_grad():
-            evaluated = candidates().requires_grad_(True)
-        loss = -acquisition_function(evaluated).sum()
-        gradient = torch.autograd.grad(loss, evaluated)[0][..., free]
+        if isinstance(opt, torch.optim.LBFGS):
+            # A line search needs the actual current loss and derivative,
+            # including the candidate projection, at every closure invocation.
+            loss = -acquisition_function(candidates()).sum()
+            parameter.grad = torch.autograd.grad(loss, parameter)[0]
+        else:
+            with torch.no_grad():
+                evaluated = candidates().requires_grad_(True)
+            loss = -acquisition_function(evaluated).sum()
+            parameter.grad = torch.autograd.grad(loss, evaluated)[0][..., free]
+        return loss
+
+    for iteration in range(1, criterion.maxiter + 1):
+        loss = evaluate()
         if callback is not None:
-            callback(iteration, loss, gradient)
-        parameter.grad = gradient
-        opt.step()
+            callback(iteration, loss, parameter.grad)
+        if isinstance(opt, torch.optim.LBFGS):
+            opt.step(evaluate)
+        else:
+            opt.step()
         history.append(loss.detach())
         if len(history) > criterion.n_window + 1:
             history.pop(0)
@@ -200,6 +214,10 @@ def gen_scipy(
     import numpy as np
     from scipy.optimize import minimize
 
+    if use_parallel_mode is True:
+        raise UnsupportedError(
+            "The Torch SciPy driver implements serial mode only; use_parallel_mode=True is unsupported."
+        )
     shape = initial_conditions.shape
     if len(shape) < 2:
         raise ValueError("initial_conditions must have at least two dimensions.")
@@ -235,7 +253,8 @@ def gen_scipy(
     if not options.pop("with_grad", True):
         raise UnsupportedError("Torch candidate generation requires with_grad=True.")
     callback = options.pop("callback", None)
-    options.pop("max_optimization_problem_aggregation_size", None)
+    if "max_optimization_problem_aggregation_size" in options:
+        raise UnsupportedError("Torch candidate aggregation limits are not implemented.")
     options.pop("disp", None)
     options.pop("iprint", None)
     for source, target in (("max_cor", "maxcor"), ("pgtol", "gtol"), ("tol", "gtol")):
@@ -337,10 +356,13 @@ def gen_scipy(
         final = last
     final = clamp(fix_features(final, fixed), lower_bounds, upper_bounds)
     if constrained:
+        from botorch_rs.optim.parameter_constraints import get_constraint_tolerance
+
+        tolerance = get_constraint_tolerance(final.dtype)
         inequalities, equalities = _constraints(
             final, inequality_constraints, equality_constraints, nonlinear_inequality_constraints
         )
-        if bool((inequalities < -1e-6).any()) or bool((equalities.abs() > 1e-6).any()):
+        if bool((inequalities < -tolerance).any()) or bool((equalities.abs() > tolerance).any()):
             raise CandidateGenerationError("SciPy did not produce feasible candidates.")
     with torch.no_grad():
         return final.detach(), acquisition_function(final)
@@ -362,7 +384,25 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
         raise ValueError("q and num_restarts must be positive.")
     if args["acq_function_sequence"] is not None:
         raise UnsupportedError("Torch acquisition sequences are not yet supported.")
+    if args["ic_generator"] is None and args["ic_gen_kwargs"]:
+        raise UnsupportedError(
+            "Additional initialization keywords require a custom ic_generator on the Torch backend."
+        )
     if args["sequential"] and q > 1:
+        if any(
+            torch.as_tensor(indices).ndim != 1
+            for specifications in (args["inequality_constraints"], args["equality_constraints"])
+            for indices, _, _ in specifications or []
+        ):
+            raise UnsupportedError(
+                "Sequential Torch optimization does not support inter-point linear constraints."
+            )
+        if any(
+            not intra_point for _, intra_point in args["nonlinear_inequality_constraints"] or []
+        ):
+            raise UnsupportedError(
+                "Sequential Torch optimization does not support inter-point nonlinear constraints."
+            )
         if not args["return_best_only"] or args["batch_initial_conditions"] is not None:
             raise UnsupportedError(
                 "Sequential optimization requires return_best_only and generated initial conditions."
@@ -396,6 +436,29 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
     one_shot = isinstance(acquisition, OneShotAcquisitionFunction)
     augmented = acquisition.get_augmented_q_batch_size(q) if one_shot else q
     options = dict(args["options"] or {})
+    if options.get("batch_limit") is not None:
+        raise UnsupportedError(
+            "Torch optimization batch_limit is not yet implemented; init_batch_limit controls raw scoring only."
+        )
+    from botorch_rs.optim.optimize import _INIT_KEYS
+
+    init_keys = {
+        "seed",
+        "batch_limit",
+        "init_batch_limit",
+        "topn",
+        "nonnegative",
+        "eta",
+        "alpha",
+        "largest",
+        "sorted",
+    }
+    if args["ic_generator"] is None:
+        unsupported = (options.keys() & _INIT_KEYS) - init_keys
+        if unsupported:
+            raise UnsupportedError(
+                f"Unsupported Torch initialization options: {sorted(unsupported)}."
+            )
     initial = args["batch_initial_conditions"]
     if initial is None and args["ic_generator"] is not None:
         initial = args["ic_generator"](
@@ -404,7 +467,10 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
             q=q,
             num_restarts=restarts,
             raw_samples=args["raw_samples"],
+            fixed_features=args["fixed_features"],
             options=options,
+            inequality_constraints=args["inequality_constraints"],
+            equality_constraints=args["equality_constraints"],
             **args["ic_gen_kwargs"],
         )
     elif initial is None:
@@ -421,29 +487,16 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
             raise ValueError(
                 "raw_samples must be at least num_restarts when no initial conditions are given."
             )
-        engine = torch.quasirandom.SobolEngine(
-            augmented * bounds.shape[-1], scramble=True, seed=options.get("seed")
+        from botorch_rs.optim._torch_acq_initializers import gen_initial_conditions
+
+        initial = gen_initial_conditions(
+            acquisition, bounds, augmented, restarts, raw, args["fixed_features"], options
         )
-        unit = (
-            engine.draw(raw, dtype=bounds.dtype)
-            .to(bounds.device)
-            .reshape(raw, augmented, bounds.shape[-1])
-        )
-        samples = fix_features(bounds[0] + (bounds[1] - bounds[0]) * unit, args["fixed_features"])
-        with torch.no_grad():
-            values = acquisition(samples)
-            if values.shape != (raw,):
-                raise UnsupportedError(
-                    "Torch automatic initialization requires one scalar per raw candidate batch."
-                )
-            indices = values.topk(restarts).indices
-            initial = samples.index_select(0, indices)
     initial = initial.to(bounds)
     generator = args["gen_candidates"] or gen_candidates_scipy
     generator_base = generator.func if isinstance(generator, functools.partial) else generator
     torch_generator = getattr(generator_base, "__name__", "") == "gen_candidates_torch"
-    init_keys = {"seed", "batch_limit", "init_batch_limit", "topn", "nonnegative", "eta", "alpha"}
-    gen_options = {key: value for key, value in options.items() if key not in init_keys}
+    gen_options = {key: value for key, value in options.items() if key not in _INIT_KEYS}
     generation_args = {
         "initial_conditions": initial,
         "acquisition_function": acquisition,
@@ -467,9 +520,75 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
         raise UnsupportedError(
             "Torch optimizers currently support box constraints and fixed features; use SciPy SLSQP for parameter constraints."
         )
-    candidates, values = generator(**generation_args)
+    started = time.monotonic()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", OptimizationWarning)
+        candidates, values = generator(**generation_args)
+    failed = any(issubclass(w.category, OptimizationWarning) for w in caught)
+    remaining = (
+        None if args["timeout_sec"] is None else args["timeout_sec"] - (time.monotonic() - started)
+    )
+    if (
+        failed
+        and args["batch_initial_conditions"] is None
+        and args.get("retry_on_optimization_warning", True)
+        and (remaining is None or remaining > 0)
+    ):
+        for warning in caught:
+            if not issubclass(warning.category, OptimizationWarning):
+                warnings.warn(warning.message, warning.category, stacklevel=3)
+        retry_options = dict(options)
+        if retry_options.get("seed") is not None:
+            retry_options["seed"] += 1
+        return optimize(
+            dict(
+                args,
+                options=retry_options,
+                retry_on_optimization_warning=False,
+                timeout_sec=remaining,
+            )
+        )
+    for warning in caught:
+        warnings.warn(warning.message, warning.category, stacklevel=3)
     if args["post_processing_func"] is not None:
+        from botorch_rs.optim.parameter_constraints import get_constraint_tolerance
+
+        tolerance = get_constraint_tolerance(bounds.dtype)
         candidates = args["post_processing_func"](candidates)
+        if (
+            not isinstance(candidates, Tensor)
+            or candidates.shape != initial.shape
+            or candidates.device != bounds.device
+            or candidates.dtype != bounds.dtype
+        ):
+            raise CandidateGenerationError(
+                "Post-processing must retain the candidate tensor shape, dtype and device."
+            )
+        if (
+            not bool(torch.isfinite(candidates).all())
+            or bool((candidates < bounds[0] - tolerance).any())
+            or bool((candidates > bounds[1] + tolerance).any())
+        ):
+            raise CandidateGenerationError(
+                "Post-processing produced nonfinite or out-of-bounds candidates."
+            )
+        for index, value in _fixed_values(
+            clamp(initial, bounds[0], bounds[1]), args["fixed_features"], bounds[0], bounds[1]
+        ).items():
+            if not torch.allclose(candidates[..., index], value, rtol=0, atol=tolerance):
+                raise CandidateGenerationError("Post-processing changed fixed feature values.")
+        inequalities, equalities = _constraints(
+            candidates,
+            args["inequality_constraints"],
+            args["equality_constraints"],
+            args["nonlinear_inequality_constraints"],
+        )
+        if (
+            not bool(torch.isfinite(inequalities).all() & torch.isfinite(equalities).all())
+            or bool((inequalities < -tolerance).any())
+            or bool((equalities.abs() > tolerance).any())
+        ):
+            raise CandidateGenerationError("Post-processing produced infeasible candidates.")
         with torch.no_grad():
             values = acquisition(candidates)
     if args["return_best_only"]:
