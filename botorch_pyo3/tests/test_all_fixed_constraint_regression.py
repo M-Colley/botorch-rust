@@ -23,6 +23,7 @@ class Quadratic(torch.nn.Module):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_all_fixed_optimizer_rejects_constraint_ignored_by_pinned_reference(device):
+    pytest.importorskip("botorch")
     from botorch.optim import optimize_acqf as reference
 
     bounds = torch.tensor([[0.0], [1.0]], dtype=torch.double, device=device)

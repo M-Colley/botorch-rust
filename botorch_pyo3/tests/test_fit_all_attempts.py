@@ -122,6 +122,8 @@ def test_best_attempt_matches_official_with_identical_restart_values(monkeypatch
     torch = pytest.importorskip("torch")
     official = pytest.importorskip("botorch.fit")
     from botorch.models import SingleTaskGP as ReferenceGP
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as ReferenceMLL
 
     import botorch_rs.optim.utils.model_utils as native_utils

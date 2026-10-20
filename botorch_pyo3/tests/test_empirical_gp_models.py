@@ -182,6 +182,8 @@ def test_official_model_mll_gradients_and_joint_posterior(
     official: object, correlated: bool, fixed: bool
 ) -> None:
     import torch
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as OfficialMLL
 
     torch.set_default_dtype(torch.float64)

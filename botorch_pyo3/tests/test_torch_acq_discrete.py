@@ -38,6 +38,7 @@ def no_host():
 @pytest.mark.parametrize("q", [1, 3])
 @pytest.mark.parametrize("unique", [False, True])
 def test_discrete_matches_reference_and_chunk_limit(device, q, unique):
+    pytest.importorskip("botorch")
     from botorch.optim.optimize import optimize_acqf_discrete as reference
 
     choices = torch.tensor([[0.1], [0.3], [0.5], [0.7], [0.9]], dtype=torch.double, device=device)
@@ -67,6 +68,7 @@ def test_discrete_matches_reference_and_chunk_limit(device, q, unique):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("return_values", [False, True])
 def test_discrete_local_search_reference_initials_and_cleanup(device, return_values):
+    pytest.importorskip("botorch")
     from botorch.optim.optimize import optimize_acqf_discrete_local_search as reference
 
     grid = torch.tensor([0.0, 0.25, 0.5, 0.75, 1.0], dtype=torch.double, device=device)
@@ -134,6 +136,8 @@ def test_mixed_real_device_continuous_search_and_domain_selection(device, q, ret
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_mixed_all_restarts_of_winning_combination_and_reference(device):
+    pytest.importorskip("scipy")
+    pytest.importorskip("botorch")
     from botorch.optim.optimize import optimize_acqf_mixed as reference
 
     bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double, device=device)
@@ -242,6 +246,8 @@ def test_acquisition_list_own_baselines_and_exception_cleanup(device, tensor_bac
         raw_samples=2,
         fixed_features={0: 0.3},
     )
+    if tensor_backend:
+        kwargs["ic_gen_kwargs"] = {"gen_candidates": gen_candidates_torch}
     if fail:
         with pytest.raises(Exception, match="deliberate acquisition failure"):
             optimize_acqf_list(**kwargs)
@@ -263,6 +269,7 @@ def test_acquisition_list_own_baselines_and_exception_cleanup(device, tensor_bac
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("minimize", [False, True])
 def test_tensor_stopping_matches_reference_and_retains_device(device, minimize):
+    pytest.importorskip("botorch")
     from botorch.optim.stopping import ExpMAStoppingCriterion as Reference
 
     from botorch_rs.optim.stopping import ExpMAStoppingCriterion

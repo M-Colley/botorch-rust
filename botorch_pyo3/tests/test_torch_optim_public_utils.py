@@ -22,6 +22,7 @@ from botorch_rs.optim.utils.acquisition_utils import columnwise_clamp, fix_featu
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("insert", [False, True])
 def test_public_clamp_fix_selected_graphs_match_source(device, insert):
+    pytest.importorskip("botorch")
     from botorch.generation.gen import get_best_candidates as reference_best
     from botorch.optim.utils.acquisition_utils import columnwise_clamp as reference_clamp
     from botorch.optim.utils.acquisition_utils import fix_features as reference_fix
@@ -66,6 +67,7 @@ def test_fixed_none_detaches_only_fixed_column_and_checks_keys(device):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("batch", [(), (3,), (2, 3)])
 def test_public_feasibility_matches_independent_reference_all_constraint_types(device, batch):
+    pytest.importorskip("botorch")
     from botorch.optim.parameter_constraints import evaluate_feasibility as reference
     from botorch.optim.parameter_constraints import (
         nonlinear_constraint_is_feasible as reference_nonlinear,

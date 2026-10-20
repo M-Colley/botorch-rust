@@ -136,6 +136,7 @@ def test_live_botorch_assorted_parity() -> None:
         ):
             torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     for propagate in (False, True):
+        pytest.importorskip("gpytorch")
         import gpytorch
 
         with settings.propagate_grads(propagate), rs.gpt_posterior_settings():

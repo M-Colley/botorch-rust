@@ -37,6 +37,7 @@ def kg(device, fantasies=3, batched=False, reference=False):
         X = X.expand(2, *X.shape).clone()
         Y = torch.stack((Y, Y * 0.7))
     if reference:
+        pytest.importorskip("botorch")
         from botorch.acquisition.knowledge_gradient import qKnowledgeGradient as ReferenceKG
         from botorch.models import SingleTaskGP as ReferenceGP
         from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
@@ -78,6 +79,7 @@ def test_boltzmann_optimizer_resampling_independent_formula(device, batch):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_kg_tail_placement_matches_official_heuristic_with_identical_raw_optima(device):
+    pytest.importorskip("botorch")
     from botorch.optim.initializers import gen_one_shot_kg_initial_conditions as reference
 
     actual_acq, reference_acq = kg(device, fantasies=4), kg(device, fantasies=4, reference=True)

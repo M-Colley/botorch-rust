@@ -24,6 +24,7 @@ from helpers import KINDS, as_kind, assert_close, check_kind, importorskip_botor
 def official_kernel() -> type:
     importorskip_botorch()
     try:
+        pytest.importorskip("botorch")
         from botorch.models.kernels.integrated_white_noise import (
             IntegratedWhiteNoiseKernel as BtKernel,
         )
@@ -111,9 +112,13 @@ def test_official_kernel_values_and_known_diagonal_bug(order: int) -> None:
 def test_single_task_gp_mll_posteriors_and_input_gradients(order: int) -> None:
     BtKernel = official_kernel()
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.acquisition.analytic import PosteriorMean as BtMean
     from botorch.acquisition.analytic import PosteriorStandardDeviation as BtPSD
     from botorch.models import SingleTaskGP as BtGP
+
+    pytest.importorskip("gpytorch")
     from gpytorch.kernels import ScaleKernel as BtScale
     from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL
 

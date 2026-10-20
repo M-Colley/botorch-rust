@@ -29,7 +29,10 @@ class GaussianConditioningOracle(torch.nn.Module):
         self.model, self.inputs, self.outputs, self.noise = model, inputs, outputs, noise
 
     def posterior(self, X, observation_noise=False, posterior_transform=None):
+        pytest.importorskip("botorch")
         from botorch.posteriors.gpytorch import GPyTorchPosterior
+
+        pytest.importorskip("gpytorch")
         from gpytorch.distributions import MultivariateNormal
 
         batch = torch.broadcast_shapes(X.shape[:-2], self.inputs.shape[:-2])
@@ -58,11 +61,16 @@ def data(device):
 def make_pair(
     device, estimation_type, condition_noiseless, q, pending, normalized=False, dtype=torch.double
 ):
+    pytest.importorskip("botorch")
     from botorch.acquisition.joint_entropy_search import qJointEntropySearch as ReferenceJES
     from botorch.models import SingleTaskGP as ReferenceGP
     from botorch.models.transforms.input import Normalize as ReferenceNormalize
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
+
+    pytest.importorskip("botorch")
     from hvkg_helpers import use_fantasy_mean_cache
+
+    pytest.importorskip("botorch")
     from so_acquisition_helpers import correct_jes_monte_carlo, jes_optimal_inputs
 
     from botorch_rs.models.transforms.input import Normalize
@@ -131,6 +139,7 @@ def test_values_and_query_gradients_match_corrected_reference(
     q,
     pending,
 ):
+    pytest.importorskip("botorch")
     from so_acquisition_helpers import no_fast_pred_var
 
     actual, reference, query = make_pair(device, estimation_type, condition_noiseless, q, pending)
@@ -150,6 +159,7 @@ def test_values_and_query_gradients_match_corrected_reference(
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("estimation_type", ["LB", "MC"])
 def test_normalize_applied_once_and_arbitrary_t_batches(device, estimation_type):
+    pytest.importorskip("botorch")
     from so_acquisition_helpers import no_fast_pred_var
 
     actual, reference, query = make_pair(device, estimation_type, False, 2, False, normalized=True)
@@ -194,6 +204,7 @@ def test_training_optima_and_query_gradgradcheck(device, estimation_type):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_conditional_normal_scaling_reproduces_official_error(device):
+    pytest.importorskip("scipy")
     from scipy.stats import norm
 
     # F variance .3, observation Y=F+E variance 1. At Y=1,
@@ -255,12 +266,17 @@ def test_all_parameter_hvps_and_no_host_data_conversion(device, estimation_type,
 @pytest.mark.parametrize("estimation_type", ["LB", "MC"])
 @pytest.mark.parametrize("model_list", [False, True])
 def test_scalarization_and_independent_model_list(device, estimation_type, model_list):
+    pytest.importorskip("botorch")
     from botorch.acquisition.joint_entropy_search import qJointEntropySearch as ReferenceJES
     from botorch.acquisition.objective import ScalarizedPosteriorTransform as ReferenceTransform
     from botorch.models import ModelListGP as ReferenceList
     from botorch.models import SingleTaskGP as ReferenceGP
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
+
+    pytest.importorskip("botorch")
     from jes_reference import correct_jes_monte_carlo
+
+    pytest.importorskip("botorch")
     from so_acquisition_helpers import no_fast_pred_var
 
     from botorch_rs.acquisition.objective import ScalarizedPosteriorTransform

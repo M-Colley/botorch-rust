@@ -42,6 +42,7 @@ def data(device, task_feature=1, grad=False):
 @pytest.mark.parametrize("task_feature", [0, 1])
 @pytest.mark.parametrize("fixed", [False, True])
 def test_official_full_joint_posterior_mll_and_standalone_modules(device, task_feature, fixed):
+    pytest.importorskip("botorch")
     from botorch.models.empirical_gps.multitask_empirical_1d_gp import (
         MultiTaskEmpiricalOneDimensionalGP as RefGP,
     )
@@ -51,6 +52,8 @@ def test_official_full_joint_posterior_mll_and_standalone_modules(device, task_f
     from botorch.models.empirical_gps.multitask_empirical_1d_gp import (
         MultiTaskEmpiricalOneDimensionalMean as RefMean,
     )
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as RefMLL
 
     X, Y, Q, H, curves = data(device, task_feature)
@@ -183,6 +186,7 @@ def test_missing_task_fixed_noise_fallback_conditions_fantasies_and_task_validat
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_wide_homogeneous_native_modules_additive_kernel_and_actual_fit(device):
+    pytest.importorskip("scipy")
     from botorch_rs.kernels import RBFKernel, ScaleKernel
 
     _, _, _, H, curves = data(device)

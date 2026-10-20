@@ -31,6 +31,8 @@ class Quadratic(torch.nn.Module):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_torch_optimizer_iterates_match_reference_and_stay_on_device(device):
+    pytest.importorskip("scipy")
+    pytest.importorskip("botorch")
     from botorch.generation.gen import gen_candidates_torch as reference
 
     initial = torch.tensor([[[0.1, 0.2]], [[0.8, 0.4]]], dtype=torch.double, device=device)
@@ -53,6 +55,8 @@ def test_torch_optimizer_iterates_match_reference_and_stay_on_device(device):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("generator", [gen_candidates_scipy, gen_candidates_torch])
 def test_optimize_selects_restarts_fixed_features_and_recomputes_postprocessing(device, generator):
+    if generator is not gen_candidates_torch:
+        pytest.importorskip("scipy")
     bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double, device=device)
     options = {"seed": 13, "maxiter": 80}
     if generator is gen_candidates_torch:
@@ -91,6 +95,7 @@ def test_optimize_selects_restarts_fixed_features_and_recomputes_postprocessing(
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_slsqp_linear_interpoint_and_nonlinear_constraints(device):
+    pytest.importorskip("scipy")
     initial = torch.full((2, 2, 2), 0.2, dtype=torch.double, device=device)
     inequalities = [
         (torch.tensor([[0, 0], [1, 0]], device=device), initial.new_tensor([-1.0, -1.0]), -1.0)
@@ -114,6 +119,7 @@ def test_slsqp_linear_interpoint_and_nonlinear_constraints(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_gp_candidates_improve_and_keep_model_parameter_grads_clean(device):
+    pytest.importorskip("scipy")
     X = torch.linspace(0, 1, 5, dtype=torch.double, device=device).unsqueeze(-1)
     model = SingleTaskGP(X, (5 * X).sin(), backend="torch")
     acq = PosteriorMean(model)
@@ -191,6 +197,8 @@ def test_logei_torch_search_no_host_value_roundtrip(device):
 def test_none_fixed_features_retain_each_restart_values_and_invalid_fixed_bounds_raise(
     device, generator
 ):
+    if generator is not gen_candidates_torch:
+        pytest.importorskip("scipy")
     initial = torch.tensor([[[0.1, 0.2]], [[0.4, 0.8]]], dtype=torch.double, device=device)
     options = (
         {"maxiter": 30}

@@ -22,6 +22,7 @@ DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
 def pair(device, offset=0, count=3, reference=False):
     if reference:
+        pytest.importorskip("botorch")
         from botorch.models.fully_bayesian import SaasFullyBayesianSingleTaskGP as ReferenceGP
 
         cls = ReferenceGP
@@ -58,6 +59,7 @@ def query(device):
 @pytest.mark.parametrize("mixed", [False, True])
 @pytest.mark.parametrize("noise", [False, True, "tensor"])
 def test_gaussian_mixture_lists_match_reference_or_explicit_component_noise(device, mixed, noise):
+    pytest.importorskip("botorch")
     from botorch.models import ModelListGP as ReferenceList
     from botorch.models import SingleTaskGP as ReferenceGP
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
@@ -76,6 +78,8 @@ def test_gaussian_mixture_lists_match_reference_or_explicit_component_noise(devi
     actual = model.posterior(points, observation_noise=observation_noise)
     if noise == "tensor":
         from botorch.posteriors.fully_bayesian import GaussianMixturePosterior as ReferenceMixture
+
+        pytest.importorskip("gpytorch")
         from gpytorch.distributions import MultitaskMultivariateNormal
 
         # Official fully Bayesian posterior adds an axis to X but omits the

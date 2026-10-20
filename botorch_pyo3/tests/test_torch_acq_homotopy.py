@@ -39,6 +39,7 @@ def make_schedule(acquisition, library=schedule, callbacks=None):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("tolerance", [0.0, 1e-4, 0.1])
 def test_device_pruning_matches_reference_and_retains_selected_graph(device, tolerance):
+    pytest.importorskip("botorch")
     from botorch.optim.optimize_homotopy import prune_candidates as reference
 
     points = torch.tensor(
@@ -60,6 +61,8 @@ def test_device_pruning_matches_reference_and_retains_selected_graph(device, tol
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("q", [1, 2])
 def test_real_device_homotopy_matches_reference_stages_and_resets(device, q):
+    pytest.importorskip("scipy")
+    pytest.importorskip("botorch")
     from botorch.generation.gen import gen_candidates_torch as reference_generator
     from botorch.optim import homotopy as reference_schedule
     from botorch.optim.optimize_homotopy import optimize_acqf_homotopy as reference
@@ -157,6 +160,8 @@ def test_device_homotopy_uses_mixed_and_alternating_domains(device, alternating)
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("failure", ["bounds", "fixed", "constraint", "domain"])
 def test_homotopy_rejects_infeasible_postprocessing_and_restores_schedule(device, failure):
+    if failure == "constraint":
+        pytest.importorskip("scipy")
     acquisition = Peak(device, dimension=2)
     bounds = acquisition.target.new_tensor([[0.0, 0.0], [1.0, 1.0]])
     options = {"stopping_criterion_options": {"maxiter": 2}}

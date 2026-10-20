@@ -125,12 +125,14 @@ def _manual_reduction(acquisition, member, baseline_n=0):
     elif name == "qProbabilityOfImprovement":
         utility = ((values - best.unsqueeze(-1)) / acquisition.tau.to(values)).sigmoid()
     elif acquisition._log:
+        pytest.importorskip("botorch")
         from botorch.acquisition.logei import _log_improvement
 
         utility = _log_improvement(values, best, acquisition.tau_relu.to(values), acquisition.fat)
     else:
         utility = (values - best.unsqueeze(-1)).clamp_min(0)
     if acquisition._log:
+        pytest.importorskip("botorch")
         from botorch.utils.safe_math import fatmax
 
         return torch.logsumexp(

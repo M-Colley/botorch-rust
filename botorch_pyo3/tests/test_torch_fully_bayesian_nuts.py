@@ -91,7 +91,10 @@ def test_potential_native_value_gradient_hessian_and_batch(device, kernel, fixed
 def test_potential_independent_numpyro(kernel):
     pytest.importorskip("jax")
     pytest.importorskip("numpyro")
+    pytest.importorskip("botorch")
     from botorch.models import fully_bayesian as reference
+
+    pytest.importorskip("botorch")
     from fully_bayesian_helpers import jax_x64, numpyro_potential
 
     x, y, noise = _data()
@@ -116,7 +119,10 @@ def test_potential_independent_numpyro(kernel):
 def reference_run():
     pytest.importorskip("jax")
     pytest.importorskip("numpyro")
+    pytest.importorskip("botorch")
     from botorch.models.fully_bayesian import SaasFullyBayesianSingleTaskGP
+
+    pytest.importorskip("botorch")
     from fully_bayesian_helpers import bt_fit_recorded, jax_x64
 
     x, y, noise = _data()

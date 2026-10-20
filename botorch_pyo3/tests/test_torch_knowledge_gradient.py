@@ -31,6 +31,7 @@ def model_data(device, outputs=1):
 @pytest.mark.parametrize("objective_kind", ["mean", "nonlinear", "linear"])
 @pytest.mark.parametrize("pending", [False, True])
 def test_kg_values_match_pinned_reference(device, objective_kind, pending):
+    pytest.importorskip("botorch")
     from botorch.acquisition.knowledge_gradient import qKnowledgeGradient as ReferenceKG
     from botorch.acquisition.objective import GenericMCObjective as ReferenceObjective
     from botorch.models import SingleTaskGP as ReferenceGP
@@ -162,6 +163,7 @@ def test_multifidelity_kg_project_expand_and_generic_cost_graphs(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_kg_evaluate_inner_optimum_and_outer_envelope_gradients(device):
+    pytest.importorskip("scipy")
     X, Y = model_data(device)
     model = SingleTaskGP(X, Y, backend="torch", outcome_transform=None)
     acq = qKnowledgeGradient(

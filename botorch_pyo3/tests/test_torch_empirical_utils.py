@@ -11,9 +11,10 @@ pytest.importorskip("torch")
 
 import test_empirical_gp_utils as reference_helpers
 import torch
-from test_torch_em_empirical_gp import DEVICES
 
 from botorch_rs.models.empirical_gps import utils
+
+DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
 
 @pytest.fixture(scope="module")
@@ -187,6 +188,7 @@ def test_unique_metadata_psd_shrinkage_and_synthesized_curves(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_ard_registration_and_constraint_checks_stay_on_device(device):
+    pytest.importorskip("gpytorch")
     from gpytorch.module import Module
 
     module = Module()

@@ -38,6 +38,7 @@ def data(device, task_feature):
 def test_multitask_entropy_matches_corrected_source_and_retains_query_graph(
     device, name, task_feature, full
 ):
+    pytest.importorskip("botorch")
     from botorch.acquisition import max_value_entropy_search as reference
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
 
@@ -94,6 +95,7 @@ def test_multitask_entropy_matches_corrected_source_and_retains_query_graph(
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("name", NAMES)
 def test_multitask_entropy_source_constructor_failure_and_explicit_train_baselines(device, name):
+    pytest.importorskip("botorch")
     from botorch.acquisition import max_value_entropy_search as reference
 
     X, Y, continuous, candidate = data(device, 1)

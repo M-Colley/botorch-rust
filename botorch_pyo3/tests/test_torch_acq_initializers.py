@@ -42,6 +42,7 @@ DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
     ],
 )
 def test_restart_selection_matches_unmodified_reference_rng(device, kind, values, options):
+    pytest.importorskip("botorch")
     from botorch.optim import initializers as reference
 
     X = torch.arange(32, dtype=torch.double, device=device).reshape(8, 2, 2)
@@ -61,6 +62,7 @@ def test_restart_selection_matches_unmodified_reference_rng(device, kind, values
 def test_automatic_initialization_uses_boltzmann_seed_and_chunks_without_host_data(
     device, monkeypatch
 ):
+    pytest.importorskip("botorch")
     from botorch.optim.initializers import initialize_q_batch
 
     bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double, device=device)
@@ -113,6 +115,7 @@ def test_automatic_initialization_uses_boltzmann_seed_and_chunks_without_host_da
     ],
 )
 def test_high_level_initializer_options_follow_reference_formula(device, options):
+    pytest.importorskip("botorch")
     from botorch.optim import initializers as reference
 
     class PositiveQuadratic(Quadratic):
@@ -152,6 +155,7 @@ def test_high_level_initializer_options_follow_reference_formula(device, options
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_unimplemented_optimizer_options_are_rejected(device):
+    pytest.importorskip("scipy")
     bounds = torch.tensor([[0.0], [1.0]], dtype=torch.double, device=device)
     with pytest.raises(UnsupportedError, match="custom ic_generator"):
         optimize_acqf(Quadratic(), bounds, 1, 2, 8, unknown_initializer_argument=True)
@@ -221,6 +225,7 @@ def test_custom_initializer_receives_fixed_features_constraints_and_extra_keywor
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("kind", ["linear", "nonlinear", "bounds", "fixed"])
 def test_postprocessing_cannot_return_infeasible_candidates(device, kind):
+    pytest.importorskip("scipy")
     bounds = torch.tensor([[0.0], [1.0]], dtype=torch.double, device=device)
     initial = bounds.new_full((2, 1, 1), 0.6)
     kwargs = {}

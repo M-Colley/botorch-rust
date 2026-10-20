@@ -22,6 +22,7 @@ def sorted_rows(values):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("outcomes", [3, 4])
 def test_general_tensor_cells_match_fast_partitioning(device, outcomes):
+    pytest.importorskip("botorch")
     from botorch.utils.multi_objective.box_decompositions.non_dominated import (
         FastNondominatedPartitioning,
     )

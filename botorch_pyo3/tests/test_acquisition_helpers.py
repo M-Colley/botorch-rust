@@ -25,6 +25,8 @@ def test_helper_parity_with_botorch() -> None:
 
     importorskip_botorch()
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.acquisition.fixed_feature import get_device_of_sequence as bt_device
     from botorch.acquisition.fixed_feature import get_dtype_of_sequence as bt_dtype
     from botorch.acquisition.logei import check_tau as bt_check

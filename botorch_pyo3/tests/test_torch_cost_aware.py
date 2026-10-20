@@ -39,6 +39,7 @@ def gradients_and_hvp(loss, arguments):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("dtype", [torch.float32, torch.double])
 def test_affine_persistent_weights_fixed_cost_and_full_graph_reference(device, dtype):
+    pytest.importorskip("botorch")
     from botorch.models.cost import AffineFidelityCostModel as ReferenceCost
 
     X, _ = inputs(device, dtype)
@@ -64,6 +65,7 @@ def test_affine_persistent_weights_fixed_cost_and_full_graph_reference(device, d
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_fixed_cost_buffer_identity_sampling_and_second_derivatives(device):
+    pytest.importorskip("botorch")
     from botorch.models.cost import FixedCostModel as ReferenceCost
 
     X, deltas = inputs(device)
@@ -96,6 +98,7 @@ def test_fixed_cost_buffer_identity_sampling_and_second_derivatives(device):
 def test_inverse_cost_defaults_masks_signed_log_and_stochastic_reference(
     device, log, use_mean, mask_outputs
 ):
+    pytest.importorskip("botorch")
     from botorch.acquisition.cost_aware import InverseCostWeightedUtility as ReferenceUtility
     from botorch.models.cost import FixedCostModel as ReferenceCost
 
@@ -254,9 +257,12 @@ def test_multifidelity_kg_inverse_cost_end_to_end_parameters_and_double_backward
 def test_gaussian_cost_mean_or_shared_normal_samples_and_parameter_gradients_reference(
     device, use_mean
 ):
+    pytest.importorskip("botorch")
     from botorch.acquisition.cost_aware import InverseCostWeightedUtility as ReferenceUtility
     from botorch.models import SingleTaskGP as ReferenceGP
     from botorch.settings import propagate_grads
+
+    pytest.importorskip("gpytorch")
     from gpytorch.settings import detach_test_caches
 
     train = torch.tensor([[0.1, 0.2], [0.5, 0.7], [0.8, 0.4]], dtype=torch.double, device=device)

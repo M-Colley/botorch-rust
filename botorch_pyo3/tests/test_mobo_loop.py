@@ -82,6 +82,8 @@ def mobo_loop(seed: int, kind: str = "list", iterations: int = ITERATIONS) -> li
 def bt_mobo_loop(seed: int, iterations: int = ITERATIONS) -> list[float]:
     """The same loop in BoTorch (same initial design and settings)."""
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.acquisition.multi_objective.logei import (
         qLogNoisyExpectedHypervolumeImprovement as BtQLogNEHVI,
     )
@@ -94,6 +96,8 @@ def bt_mobo_loop(seed: int, iterations: int = ITERATIONS) -> list[float]:
     from botorch.utils.multi_objective.box_decompositions import (
         DominatedPartitioning as BtDominatedPartitioning,
     )
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL
 
     dt = torch.float64

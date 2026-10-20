@@ -75,9 +75,13 @@ def test_official_kernel_mll_parameter_and_input_gradients(
 ) -> None:
     importorskip_botorch()
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.acquisition.analytic import PosteriorMean as BtMean
     from botorch.acquisition.analytic import PosteriorStandardDeviation as BtSD
     from botorch.models.contextual import LCEAGP as BtGP
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL
 
     generator = torch.Generator().manual_seed(367)

@@ -34,6 +34,7 @@ def data(device, dtype=torch.double, batch=False, missing=False):
 
 
 def paired(X, T, Y, standardize=False):
+    pytest.importorskip("botorch")
     from botorch.models.latent_kronecker_gp import LatentKroneckerGP as Reference
 
     kwargs = {} if standardize else {"outcome_transform": None}
@@ -174,6 +175,7 @@ def test_matheron_true_joint_covariance_and_first_second_derivatives(device, mis
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_model_query_time_batches_nonzero_product_means_and_custom_modules(device):
+    pytest.importorskip("gpytorch")
     from gpytorch.kernels import RBFKernel
 
     X, T, Y, Q, U = data(device, batch=True, missing=True)

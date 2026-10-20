@@ -102,6 +102,8 @@ class FixedSampler(nn.Module):
 
 
 def acquisition(name, reference=False):
+    if reference:
+        pytest.importorskip("botorch")
     prefix = "botorch" if reference else "botorch_rs"
     module = (
         "logei"
@@ -241,6 +243,7 @@ def test_tensor_acquisition_rejects_unknown_options_and_unsupported_family():
     ],
 )
 def test_constraints_objective_pending_and_multidimensional_samples(device, name, fat):
+    pytest.importorskip("botorch")
     from botorch.acquisition.objective import GenericMCObjective as ReferenceObjective
 
     from botorch_rs.acquisition.objective import GenericMCObjective
@@ -325,6 +328,7 @@ def test_noisy_pending_constraint_reference(device, incremental):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 def test_log_ei_tails_match_values_and_two_derivatives(device, dtype):
+    pytest.importorskip("botorch")
     from botorch.acquisition.analytic import _log_ei_helper
 
     from botorch_rs.acquisition._torch_backend_acquisition import _log_ei
@@ -398,7 +402,10 @@ def native_data(device):
     ANALYTIC + MC + [("qNoisyExpectedImprovement", {}), ("qLogNoisyExpectedImprovement", {})],
 )
 def test_real_native_torch_gp_acquisition_reference_and_higher_order_graph(device, name, kwargs):
+    pytest.importorskip("botorch")
     from botorch.models import SingleTaskGP as ReferenceGP
+
+    pytest.importorskip("gpytorch")
     from gpytorch import settings
 
     from botorch_rs.models import SingleTaskGP
@@ -522,6 +529,7 @@ def test_real_native_default_sampler_acquisition_has_no_host_conversion(device, 
     "name", ["LogExpectedImprovement", "qLogExpectedImprovement", "qLogNoisyExpectedImprovement"]
 )
 def test_real_batched_multi_output_acquisition_and_scalarization_graph(device, name):
+    pytest.importorskip("botorch")
     from botorch.acquisition.objective import GenericMCObjective as ReferenceObjective
     from botorch.acquisition.objective import ScalarizedPosteriorTransform as ReferenceTransform
     from botorch.models import SingleTaskGP as ReferenceGP

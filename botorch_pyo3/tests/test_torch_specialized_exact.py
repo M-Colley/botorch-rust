@@ -51,6 +51,7 @@ def data(spec, device, dtype=torch.double, batch=False):
 
 
 def classes_and_options(spec):
+    pytest.importorskip("botorch")
     from botorch.models.gp_regression_fidelity import SingleTaskMultiFidelityGP as ReferenceFidelity
     from botorch.models.gp_regression_mixed import MixedSingleTaskGP as ReferenceMixed
 
@@ -89,7 +90,10 @@ def parameters(model):
 def test_official_posterior_covariance_mll_and_parameter_query_gradients(
     device, dtype, batch, spec
 ):
+    pytest.importorskip("botorch")
     from botorch.settings import propagate_grads
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood
     from gpytorch.settings import detach_test_caches
 
@@ -215,6 +219,7 @@ def test_conditioning_samples_automatic_dispatch_and_native_boundary(device, spe
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("spec", ["mixed", "downsampling"])
 def test_custom_torch_continuous_kernels_keep_live_parameters_and_priors(device, spec):
+    pytest.importorskip("gpytorch")
     from gpytorch.kernels import RBFKernel
     from gpytorch.mlls import ExactMarginalLogLikelihood
     from gpytorch.priors import GammaPrior

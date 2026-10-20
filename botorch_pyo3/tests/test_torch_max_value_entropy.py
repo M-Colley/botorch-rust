@@ -36,6 +36,7 @@ def project(X):
 
 
 def make_pair(device, name, pending=False, maximize=True, trace=False, dtype=torch.double):
+    pytest.importorskip("botorch")
     from botorch.acquisition import max_value_entropy_search as reference
     from botorch.models import SingleTaskGP as ReferenceGP
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
@@ -177,6 +178,7 @@ def test_entropy_constructor_forward_and_second_backward_never_copy_inference_to
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_tensor_gumbel_quantiles_match_float64_oracle_and_reference_rng(device):
+    pytest.importorskip("botorch")
     from botorch.acquisition.max_value_entropy_search import _sample_max_value_Gumbel as reference
     from botorch.models import SingleTaskGP as ReferenceGP
 
@@ -194,6 +196,7 @@ def test_tensor_gumbel_quantiles_match_float64_oracle_and_reference_rng(device):
     torch.testing.assert_close(actual, expected, rtol=2e-7, atol=2e-8)
     from math import log
 
+    pytest.importorskip("scipy")
     from scipy.optimize import brentq
     from scipy.stats import norm
 
@@ -248,6 +251,7 @@ def test_float32_entropy_reference_values_and_gradients(device, name):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("name", NAMES)
 def test_default_gumbel_constructor_preserves_reference_rng_order(device, name):
+    pytest.importorskip("botorch")
     from botorch.acquisition import max_value_entropy_search as reference
     from botorch.models import SingleTaskGP as ReferenceGP
 
@@ -293,6 +297,7 @@ def test_entropy_multiple_query_batches_equal_independent_rows_and_keep_all_para
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_gibbon_standardized_pending_repulsion_uses_one_consistent_posterior_space(device):
+    pytest.importorskip("botorch")
     from botorch.acquisition.max_value_entropy_search import qLowerBoundMaxValueEntropy as Reference
     from botorch.models import SingleTaskGP as ReferenceGP
 
@@ -329,6 +334,7 @@ def test_gibbon_standardized_pending_repulsion_uses_one_consistent_posterior_spa
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("num_samples", [1, 8])
 def test_mes_zero_control_variate_variance_has_finite_double_backward(device, num_samples):
+    pytest.importorskip("botorch")
     from botorch.acquisition.max_value_entropy_search import qMaxValueEntropy as ReferenceMES
     from botorch.models import SingleTaskGP as ReferenceGP
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler

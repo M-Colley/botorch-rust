@@ -36,6 +36,8 @@ class Quadratic(torch.nn.Module):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_batched_boltzmann_initializer_matches_reference(device):
+    pytest.importorskip("scipy")
+    pytest.importorskip("botorch")
     from botorch.optim.initializers import initialize_q_batch as reference
 
     X = torch.linspace(0, 1, 8 * 2 * 3 * 2 * 2, dtype=torch.double, device=device).reshape(
@@ -62,6 +64,8 @@ def test_batched_boltzmann_initializer_matches_reference(device):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("generator", [gen_candidates_torch, gen_candidates_scipy])
 def test_lowlevel_aggregation_and_highlevel_batch_limits_keep_fixed_values(device, generator):
+    if generator is not gen_candidates_torch:
+        pytest.importorskip("scipy")
     initial = torch.linspace(0.1, 0.9, 7 * 2 * 2, dtype=torch.double, device=device).reshape(
         7, 2, 2
     )

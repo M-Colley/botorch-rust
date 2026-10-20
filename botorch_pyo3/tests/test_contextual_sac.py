@@ -121,7 +121,11 @@ def test_official_kernel_corrected_mll_and_posterior_parity(
 ) -> None:
     importorskip_botorch()
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.models.contextual import SACGP as BtGP
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL
 
     generator = torch.Generator().manual_seed(172)

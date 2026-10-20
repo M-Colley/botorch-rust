@@ -140,6 +140,7 @@ def test_multioutput_model_noise_fantasy_batch_broadcast_and_frozen_transforms(d
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_official_apportioned_timeout_reaches_every_actual_fit(device):
+    pytest.importorskip("scipy")
     X, Y, _ = data(device)
     model = RobustRelevancePursuitSingleTaskGP(
         X.detach(), Y.detach(), backend="torch", outcome_transform=None

@@ -28,6 +28,7 @@ DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 )
 @pytest.mark.parametrize("maximize", [False, True])
 def test_constrained_values_and_query_hessians_match_reference(device, name, maximize):
+    pytest.importorskip("botorch")
     from botorch.models import SingleTaskGP as ReferenceGP
 
     X = torch.tensor([[0.03], [0.29], [0.58], [0.87]], device=device, dtype=torch.double)
@@ -38,6 +39,7 @@ def test_constrained_values_and_query_hessians_match_reference(device, name, max
     if name != "LogProbabilityOfFeasibility":
         arguments.update(best_f=0.4, objective_index=0, maximize=maximize)
     cls = getattr(importlib.import_module("botorch_rs.acquisition.analytic"), name)
+    pytest.importorskip("botorch")
     ref_cls = getattr(importlib.import_module("botorch.acquisition.analytic"), name)
     actual = cls(SingleTaskGP(X, Y, backend="torch"), **arguments)(query)
     expected = ref_cls(ReferenceGP(X, Y), **arguments)(query)
@@ -107,6 +109,7 @@ def test_scalarized_mean_weights_follow_parameter_updates_and_full_graphs(device
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_log_interval_extreme_tail_values_and_second_derivatives(device):
+    pytest.importorskip("botorch")
     from botorch.utils.probability.utils import log_prob_normal_in
 
     lower = torch.tensor(

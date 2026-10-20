@@ -19,6 +19,7 @@ from botorch_rs.sampling.normal import IIDNormalSampler
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("batched", [False, True])
 def test_learned_samples_and_first_query_derivative_independent_reference(device, batched):
+    pytest.importorskip("botorch")
     from botorch.acquisition.objective import LearnedObjective as Reference
 
     models, _, data = _pair(device, "probit", batch=batched)

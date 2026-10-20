@@ -48,6 +48,7 @@ def make_pair(
     normalized=False,
     dtype=torch.double,
 ):
+    pytest.importorskip("botorch")
     from botorch.acquisition.multi_objective.joint_entropy_search import (
         qLowerBoundMultiObjectiveJointEntropySearch as ReferenceJES,
     )
@@ -194,6 +195,7 @@ def test_all_parameter_graphs_without_inference_host_data(device, joint, estimat
 def test_infinite_box_limits_have_gaussian_values_and_finite_hessians(device, estimator):
     import math
 
+    pytest.importorskip("botorch")
     from botorch.acquisition.multi_objective import joint_entropy_search as reference
 
     from botorch_rs.acquisition.multi_objective.joint_entropy_search import _entropy
@@ -226,6 +228,7 @@ def test_infinite_box_limits_have_gaussian_values_and_finite_hessians(device, es
 def test_monte_carlo_infinite_box_preserves_gaussian_entropy_gradients(device):
     import math
 
+    pytest.importorskip("botorch")
     from botorch.acquisition.multi_objective import joint_entropy_search as reference
 
     from botorch_rs.acquisition.multi_objective.joint_entropy_search import _entropy

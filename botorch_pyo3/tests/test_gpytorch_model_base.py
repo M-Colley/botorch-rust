@@ -70,6 +70,8 @@ def test_independent_output_dimensions_match_official(
 ) -> None:
     importorskip_botorch()
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.models.gpytorch import BatchedMultiOutputGPyTorchModel as BtBase
 
     generator = torch.Generator().manual_seed(731)

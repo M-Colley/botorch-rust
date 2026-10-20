@@ -19,6 +19,7 @@ DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("depth", [0, 1, 3])
 def test_nondegenerate_reference_values_and_full_graph(device, depth):
+    pytest.importorskip("botorch")
     from botorch.models.kernels.infinite_width_bnn import InfiniteWidthBNNKernel as Reference
 
     actual = (

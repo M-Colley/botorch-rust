@@ -27,6 +27,7 @@ def data(device):
 
 def model(X, Y, reference=False):
     if reference:
+        pytest.importorskip("botorch")
         from botorch.models import SingleTaskGP as ReferenceGP
 
         return ReferenceGP(X, Y, outcome_transform=None)
@@ -35,6 +36,7 @@ def model(X, Y, reference=False):
 
 def arguments(depth, kind, reference=False):
     if reference:
+        pytest.importorskip("botorch")
         from botorch.acquisition.analytic import ExpectedImprovement as EI
         from botorch.acquisition.analytic import PosteriorMean as Mean
         from botorch.acquisition.monte_carlo import qExpectedImprovement as qEI
@@ -67,6 +69,7 @@ def arguments(depth, kind, reference=False):
 
 
 def synchronize_inner(acq, reference):
+    pytest.importorskip("botorch")
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
 
     for i, sampler in enumerate(acq.inner_samplers):
@@ -80,6 +83,7 @@ def synchronize_inner(acq, reference):
 @pytest.mark.parametrize("kind", ["mean", "ei", "mc"])
 @pytest.mark.parametrize("pending", [False, True])
 def test_multi_step_values_match_reference(device, depth, kind, pending):
+    pytest.importorskip("botorch")
     from botorch.acquisition.multi_step_lookahead import qMultiStepLookahead as Reference
 
     X, Y = data(device)
@@ -198,6 +202,7 @@ def test_live_sample_weights_and_fantasy_argument_factories(device):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("scalarize", [False, True])
 def test_multioutput_transform_and_nonlinear_objective_reference(device, scalarize):
+    pytest.importorskip("botorch")
     from botorch.acquisition.analytic import PosteriorMean as ReferenceMean
     from botorch.acquisition.monte_carlo import qSimpleRegret as ReferenceRegret
     from botorch.acquisition.multi_step_lookahead import qMultiStepLookahead as Reference

@@ -38,6 +38,7 @@ def test_triangle_uniform_moments_and_feasibility(device, q):
         points.square().mean((0, 1)), bounds.new_full((2,), 1 / 6), atol=0.015, rtol=0
     )
     # The independent reference samples the same stationary law with its own RNG.
+    pytest.importorskip("botorch")
     from botorch.optim.initializers import sample_q_batches_from_polytope as reference
 
     expected = reference(3072, q, bounds, 96, 8, seed=17, inequality_constraints=[constraint])
@@ -84,6 +85,7 @@ def test_joint_q_inequality_and_equality_laws(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_constraint_transforms_match_reference_without_host_conversion(device):
+    pytest.importorskip("botorch")
     from botorch.optim.initializers import transform_constraints as reference
 
     constraints = [
@@ -105,6 +107,7 @@ def test_constraint_transforms_match_reference_without_host_conversion(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_constrained_initialization_and_real_slsqp_search(device):
+    pytest.importorskip("scipy")
     bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double, device=device)
     constraint = (torch.tensor([0, 1], device=device), bounds.new_tensor([-1.0, -1.0]), -0.8)
     acquisition = Quadratic()
@@ -132,6 +135,7 @@ def test_inconsistent_affine_constraints_fail_explicitly(device):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("qmc", [False, True])
 def test_truncated_public_helper_matches_reference_and_preserves_graph(device, qmc):
+    pytest.importorskip("botorch")
     from botorch.utils.sampling import sample_truncated_normal_perturbations as reference
 
     from botorch_rs.utils.sampling import sample_truncated_normal_perturbations
@@ -188,6 +192,7 @@ def test_seeded_perturbation_gradcheck_and_subset_center_law(device):
 def test_around_best_reference_selection_seed_and_constrained_raw_feasibility(device):
     from types import SimpleNamespace
 
+    pytest.importorskip("botorch")
     from botorch.optim.initializers import sample_points_around_best as reference
 
     from botorch_rs.optim.initializers import sample_points_around_best

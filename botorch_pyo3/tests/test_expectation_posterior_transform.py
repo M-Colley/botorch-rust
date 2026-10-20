@@ -61,8 +61,12 @@ def test_incompatible_q_and_outputs() -> None:
 def test_full_correlated_gaussian_parity(q: int, m: int, batch: tuple, weighted: bool) -> None:
     importorskip_botorch()
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.acquisition.objective import ExpectationPosteriorTransform as BtTransform
     from botorch.posteriors.gpytorch import GPyTorchPosterior as BtPosterior
+
+    pytest.importorskip("gpytorch")
     from gpytorch.distributions import MultitaskMultivariateNormal, MultivariateNormal
 
     nw = 3
@@ -115,6 +119,8 @@ def test_full_correlated_gaussian_parity(q: int, m: int, batch: tuple, weighted:
 def test_evaluate_torch_gradients_in_outcomes_and_weights() -> None:
     importorskip_botorch()
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.acquisition.objective import ExpectationPosteriorTransform as BtTransform
 
     outcomes = torch.linspace(-1.0, 1.0, 24, dtype=torch.float64).reshape(2, 6, 2).requires_grad_()

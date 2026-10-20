@@ -23,6 +23,8 @@ def official_integral(name, values):
     from types import SimpleNamespace
 
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.acquisition.multi_objective.analytic import (
         ExpectedHypervolumeImprovement as Official,
     )

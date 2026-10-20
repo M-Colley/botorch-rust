@@ -36,6 +36,7 @@ def inputs(bounds, acquisition=None, options=None, fixed=None, inequality=None, 
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_device_round_neighbors_and_complements_match_reference(device):
+    pytest.importorskip("botorch")
     from botorch.optim import optimize_mixed as reference
 
     X = torch.tensor([[0.1, 0.4, 0.7], [0.9, 0.6, 0.3]], dtype=torch.double, device=device)
@@ -58,6 +59,7 @@ def test_device_round_neighbors_and_complements_match_reference(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_public_discrete_and_continuous_steps_match_actual_reference(device):
+    pytest.importorskip("botorch")
     from botorch.optim import optimize_mixed as reference
 
     bounds = torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=torch.double, device=device)
@@ -189,6 +191,7 @@ def test_mixed_relaxes_large_ordinal_domain_and_preserves_fixed_features(device)
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_mixed_linear_constraints_and_continuous_equalities(device):
+    pytest.importorskip("scipy")
     bounds = torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=torch.double, device=device)
     inequality = [(torch.tensor([0, 1], device=device), bounds.new_tensor([-1.0, -1.0]), -1.0)]
     equality = [(torch.tensor([2], device=device), bounds.new_ones(1), 0.4)]
@@ -243,6 +246,7 @@ def test_mixed_exception_restores_original_pending(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_mixed_real_gp_matches_reference_quality_and_keeps_training_grads_empty(device):
+    pytest.importorskip("botorch")
     from botorch.acquisition.analytic import PosteriorMean as RefMean
     from botorch.models import SingleTaskGP as RefGP
     from botorch.optim.optimize_mixed import optimize_acqf_mixed_alternating as reference

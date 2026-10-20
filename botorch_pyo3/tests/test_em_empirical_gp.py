@@ -255,6 +255,7 @@ def test_prior_roundtrip_preserves_native_prior_precision(tmp_path: Path) -> Non
 def model_pair(
     official: Any, inducing: bool, base: bool, learnable: bool = False
 ) -> tuple[Any, Any]:
+    pytest.importorskip("gpytorch")
     import gpytorch
     import torch
 

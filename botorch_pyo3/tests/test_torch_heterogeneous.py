@@ -27,6 +27,7 @@ FEATURES = [[2, 0], [0, 1], [1, 2]]
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_public_auxiliary_kernels_and_native_conversion(device):
+    pytest.importorskip("botorch")
     from botorch.models.kernels.heterogeneous_multitask import CombinatorialCovarModule as Reference
 
     x = torch.tensor([[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]], dtype=torch.double, device=device)
@@ -65,9 +66,12 @@ def training(device, requires_grad=False):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("fixed", [False, True])
 def test_official_model_values_likelihood_and_query_derivatives(device, fixed):
+    pytest.importorskip("botorch")
     from botorch.models.heterogeneous_mtgp import HeterogeneousMTGP as Reference
     from botorch.models.transforms.input import Normalize as ReferenceNormalize
     from botorch.models.transforms.outcome import Standardize as ReferenceStandardize
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as ReferenceMLL
 
     Xs, Ys = training(device)
@@ -170,6 +174,7 @@ def test_no_host_conversion_and_source_migration(device, monkeypatch):
 @pytest.mark.parametrize("saas", [False, True])
 @pytest.mark.parametrize("combinatorial", [False, True])
 def test_conditional_kernel_values_gradients_and_diagonals(device, saas, combinatorial):
+    pytest.importorskip("botorch")
     from botorch.models.kernels.heterogeneous_multitask import (
         MultiTaskConditionalKernel as Reference,
     )

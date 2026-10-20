@@ -22,6 +22,7 @@ from botorch_rs.optim.parameter_constraints import (
 def test_device_projection_matches_reference_values_and_every_first_derivative(
     device, dtype, batch, scalar
 ):
+    pytest.importorskip("botorch")
     from botorch.optim.parameter_constraints import project_to_equality_constraints as reference
 
     X = (
@@ -102,6 +103,7 @@ def test_device_projection_identity_empty_batch_validation_and_singular_system(d
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_feasibility_equality_tolerance_matches_source_strict_boundary(device):
+    pytest.importorskip("botorch")
     from botorch.optim.parameter_constraints import evaluate_feasibility as reference
 
     X = torch.tensor([[0.5]], dtype=torch.double, device=device)

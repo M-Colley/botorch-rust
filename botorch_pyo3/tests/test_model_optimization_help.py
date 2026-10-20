@@ -48,6 +48,8 @@ def test_native_diagnostics_capture_parameters_and_original_transformed_data(tmp
 def test_gpytorch_diagnostic_json_matches_official(tmp_path):
     importorskip_botorch()
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.models import SingleTaskGP as OfficialGP
     from botorch.models.utils.assorted import get_data_for_optimization_help as official
 
@@ -123,6 +125,8 @@ def test_invalid_native_target_and_noise_replacement_is_atomic(kind):
 def test_restore_python_model_protocol_matches_official():
     importorskip_botorch()
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.models import SingleTaskGP as OfficialGP
 
     model = OfficialGP(

@@ -62,6 +62,7 @@ def test_public_selection_kernel_conversion_and_no_host_algebra(device, monkeypa
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("saas", [False, True])
 def test_standalone_kernel_values_parameters_and_full_graph(device, saas):
+    pytest.importorskip("botorch")
     from botorch.models.hierarchical.conditional_kernel_gp import (
         HierarchicalConditionalKernel as Reference,
     )

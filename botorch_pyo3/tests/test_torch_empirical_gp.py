@@ -40,6 +40,7 @@ def data(device, curves=4, outputs=2, grad=False, batch=False):
 def classes(correlated, reference=False):
     if reference:
         if correlated:
+            pytest.importorskip("botorch")
             from botorch.models.empirical_gps.multioutput_empirical_1d_gp import (
                 MultiOutputEmpiricalOneDimensionalGP as GP,
             )
@@ -50,6 +51,7 @@ def classes(correlated, reference=False):
                 MultiOutputEmpiricalOneDimensionalMean as Mean,
             )
         else:
+            pytest.importorskip("botorch")
             from botorch.models.empirical_gps.empirical_1d_gp import (
                 EmpiricalOneDimensionalGP as GP,
             )
@@ -104,6 +106,7 @@ def test_public_means_kernels_match_official(device, correlated, use_svd, ard):
 def test_exact_models_official_values_and_public_training_distribution(
     device, correlated, batch, fixed
 ):
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as RefMLL
 
     X, Y, Q, HX, HY = data(device, batch=batch)
@@ -263,6 +266,7 @@ def test_compressed_basis_historical_hessians(device, correlated):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("correlated", [False, True])
 def test_native_descriptor_conversion_and_additive_base_kernel(device, correlated):
+    pytest.importorskip("scipy")
     from botorch_rs.fit import fit_gpytorch_mll
     from botorch_rs.kernels import RBFKernel, ScaleKernel
 
@@ -328,6 +332,8 @@ def test_correlated_explicit_noise_broadcast_and_upstream_lazy_kernel_defect(dev
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_explicit_conditioning_noise_and_custom_gaussian_likelihood(device):
+    pytest.importorskip("scipy")
+    pytest.importorskip("gpytorch")
     from gpytorch.likelihoods import GaussianLikelihood
 
     X, Y, Q, HX, HY = data(device)

@@ -26,6 +26,7 @@ def _kwargs(name, like, *, reference=False, winner=False, pending=False):
             {"previous_winner": like.new_tensor([[0.2, 0.5]], requires_grad=True)} if winner else {}
         )
     if name == NAMES[1]:
+        pytest.importorskip("botorch")
         from botorch.sampling.normal import IIDNormalSampler as ReferenceSampler
 
         sampler = (ReferenceSampler if reference else IIDNormalSampler)(
@@ -42,6 +43,7 @@ def _kwargs(name, like, *, reference=False, winner=False, pending=False):
 @pytest.mark.parametrize("name", NAMES)
 @pytest.mark.parametrize("batch", [False, True])
 def test_independent_official_preference_values_and_query_gradients(device, name, batch):
+    pytest.importorskip("botorch")
     from botorch.acquisition import preference as reference
 
     models, _, inputs = _pair(device, "probit", batch=batch)
@@ -74,7 +76,10 @@ class _ReferenceOnPort(torch.nn.Module):
         return self.base.batch_shape
 
     def posterior(self, X, posterior_transform=None):
+        pytest.importorskip("botorch")
         from botorch.posteriors.gpytorch import GPyTorchPosterior
+
+        pytest.importorskip("gpytorch")
         from gpytorch.distributions import MultivariateNormal
 
         posterior = self.base.posterior(X, posterior_transform=posterior_transform)
@@ -89,6 +94,7 @@ class _ReferenceOnPort(torch.nn.Module):
 def test_all_data_query_parameter_second_graphs_against_unmodified_official_formula(
     device, name, outcome
 ):
+    pytest.importorskip("botorch")
     from botorch.acquisition import preference as reference
     from botorch.acquisition.objective import GenericMCObjective as ReferenceObjective
 
@@ -166,6 +172,7 @@ def test_all_data_query_parameter_second_graphs_against_unmodified_official_form
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_public_preference_query_optimizer_and_value_grad(device):
+    pytest.importorskip("scipy")
     from botorch_rs.models.pairwise_gp import PairwiseGP
     from botorch_rs.optim.optimize import optimize_acqf
 

@@ -103,6 +103,8 @@ def test_official_task_model_mll_and_posteriors(
     official: object, fixed: bool, task_feature: int
 ) -> None:
     import torch
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as OfficialMLL
 
     torch.set_default_dtype(torch.double)

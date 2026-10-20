@@ -31,6 +31,7 @@ def data(device):
 
 def build(X, Y, reference=False):
     if reference:
+        pytest.importorskip("botorch")
         from botorch.models import ModelListGP as ModelList
         from botorch.models import SingleTaskGP as GP
     else:
@@ -50,6 +51,7 @@ def build(X, Y, reference=False):
 
 def options(reference=False, fantasies=2):
     if reference:
+        pytest.importorskip("botorch")
         from botorch.sampling.list_sampler import ListSampler as List
         from botorch.sampling.normal import SobolQMCNormalSampler as Sampler
     else:
@@ -67,6 +69,7 @@ def options(reference=False, fantasies=2):
 @pytest.mark.parametrize("log", [False, True])
 @pytest.mark.parametrize("pending", [False, True])
 def test_hvkg_reference_values(device, mean, log, pending):
+    pytest.importorskip("botorch")
     from botorch.acquisition.multi_objective.hypervolume_knowledge_gradient import (
         qHypervolumeKnowledgeGradient as Reference,
     )
@@ -214,6 +217,7 @@ def test_mf_hvkg_cost_projection_and_separate_sampler(device, stochastic):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("mean", [False, True])
 def test_three_objectives_and_live_objective_weights(device, mean):
+    pytest.importorskip("botorch")
     from botorch.acquisition.multi_objective.hypervolume_knowledge_gradient import (
         qHypervolumeKnowledgeGradient as Reference,
     )

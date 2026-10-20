@@ -143,6 +143,7 @@ def test_extra_analytic_ensemble_reductions(device, name):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         cls = getattr(importlib.import_module("botorch_rs.acquisition.analytic"), name)
+        pytest.importorskip("botorch")
         reference_cls = getattr(importlib.import_module("botorch.acquisition.analytic"), name)
         actual, expected = cls(model, **kwargs)(query), reference_cls(model, **kwargs)(query)
     assert actual.shape == (4,)
@@ -153,6 +154,7 @@ def test_extra_analytic_ensemble_reductions(device, name):
 @pytest.mark.parametrize("log", [False, True])
 @pytest.mark.parametrize("noisy", [False, True])
 def test_ensemble_hypervolume_averages_after_member_hvi(device, log, noisy):
+    pytest.importorskip("botorch")
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
     from botorch.utils.multi_objective.box_decompositions.non_dominated import (
         FastNondominatedPartitioning as ReferencePartition,
@@ -194,6 +196,7 @@ def test_ensemble_hypervolume_averages_after_member_hvi(device, log, noisy):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_ensemble_scalar_pruning_matches_reference_with_same_seed(device):
+    pytest.importorskip("botorch")
     from botorch.acquisition.utils import prune_inferior_points
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
 
@@ -223,6 +226,7 @@ def test_ensemble_scalar_pruning_matches_reference_with_same_seed(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_ensemble_front_pruning_matches_reference_member_marginalization(device):
+    pytest.importorskip("botorch")
     from botorch.acquisition.utils import _prune_inferior_shared_processing
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
     from botorch.utils.multi_objective.pareto import is_non_dominated

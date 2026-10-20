@@ -31,6 +31,7 @@ def data(device, dtype=torch.double, batch=False):
 
 
 def paired(X, Y, rank=2, likelihood_rank=0, standardize=False):
+    pytest.importorskip("botorch")
     from botorch.models import KroneckerMultiTaskGP as Reference
     from botorch.models.transforms.outcome import Standardize as ReferenceStandardize
 
@@ -94,6 +95,7 @@ def reference_law(model, X, Y, Q):
 def test_exact_correlated_law_and_data_mll_against_official_modules(
     device, dtype, batch, rank, likelihood_rank
 ):
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood
 
     X, Y, Q = data(device, dtype, batch)
@@ -256,7 +258,10 @@ def test_lkj_density_has_one_correlation_term_and_live_second_derivatives(device
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_standalone_official_multitask_kernel_repeats_existing_task_batch(device):
+    pytest.importorskip("gpytorch")
     from gpytorch.kernels import MultitaskKernel, RBFKernel
+
+    pytest.importorskip("linear_operator")
     from linear_operator.operators import KroneckerProductLinearOperator, to_linear_operator
 
     X, _, _ = data(device, batch=True)
@@ -286,6 +291,7 @@ def test_standalone_official_multitask_kernel_repeats_existing_task_batch(device
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_custom_multitask_likelihood_noise_flags_and_live_parameters(device):
+    pytest.importorskip("gpytorch")
     from gpytorch.likelihoods import MultitaskGaussianLikelihood
 
     X, Y, Q = data(device)

@@ -72,11 +72,14 @@ def _pair(
     device, feature=1, fixed=False, transforms=False, warp=False, subset=False, gradients=False
 ):
     pytest.importorskip("jax")
+    pytest.importorskip("botorch")
     from botorch.models import fully_bayesian_multitask as reference
     from botorch.models.transforms.input import ChainedInputTransform as ReferenceChain
     from botorch.models.transforms.input import Normalize as ReferenceNormalize
     from botorch.models.transforms.input import Warp as ReferenceWarp
     from botorch.models.transforms.outcome import Standardize as ReferenceStandardize
+
+    pytest.importorskip("botorch")
     from fully_bayesian_helpers import jax_x64
 
     base = [i for i in range(3) if i != feature]
@@ -292,6 +295,7 @@ def test_task_nuts_really_fits_and_preserves_loaded_law_on_invalid_refit(device,
 
 
 def _posterior_gradient(model, data, query, create_graph):
+    pytest.importorskip("botorch")
     from botorch import settings
 
     model.eval()
@@ -310,7 +314,10 @@ def _posterior_gradient(model, data, query, create_graph):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_complete_loaded_task_data_query_parameter_gradient_and_mixed_hvp(device):
+    pytest.importorskip("botorch")
     from botorch.models.fully_bayesian_multitask import SaasFullyBayesianMultiTaskGP as Reference
+
+    pytest.importorskip("botorch")
     from fully_bayesian_helpers import jax_x64
 
     (model, reference), data = _pair(device, fixed=True, gradients=True)
@@ -348,10 +355,13 @@ def test_complete_loaded_task_data_query_parameter_gradient_and_mixed_hvp(device
 
 @pytest.mark.parametrize("warp", [False, True])
 def test_task_potential_independent_jax_density_and_derivative(warp):
+    pytest.importorskip("botorch")
     from botorch.models.fully_bayesian_multitask import (
         MultitaskSaasPyroModel as ReferencePyro,
     )
     from botorch.models.fully_bayesian_multitask import SaasFullyBayesianMultiTaskGP as Reference
+
+    pytest.importorskip("botorch")
     from fully_bayesian_helpers import jax_x64, numpyro_potential
 
     x, y, noise = _data("cpu", feature=2, labels=(0, 1))
@@ -369,7 +379,10 @@ def test_task_potential_independent_jax_density_and_derivative(warp):
 
 @pytest.fixture(scope="module")
 def task_reference_run():
+    pytest.importorskip("botorch")
     from botorch.models.fully_bayesian_multitask import SaasFullyBayesianMultiTaskGP as Reference
+
+    pytest.importorskip("botorch")
     from fully_bayesian_helpers import bt_fit_recorded, jax_x64
 
     x, y, noise = _data("cpu", feature=2, labels=(0, 1))
@@ -402,12 +415,15 @@ def test_task_nuts_replays_numpyro_warmup_and_sample_states(device, task_referen
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("family", ["matern", "linear"])
 def test_latent_feature_pyro_compositions_loaded_law_graphs_and_real_nuts(device, family):
+    pytest.importorskip("botorch")
     from botorch.models import fully_bayesian as reference_fb
     from botorch.models.fully_bayesian_multitask import (
         LatentFeatureMultiTaskPyroMixin as ReferenceMixin,
     )
     from botorch.models.fully_bayesian_multitask import SaasFullyBayesianMultiTaskGP as Reference
     from botorch.models.transforms.input import Normalize as ReferenceNormalize
+
+    pytest.importorskip("botorch")
     from fully_bayesian_helpers import jax_x64
 
     from botorch_rs.models import fully_bayesian as fb

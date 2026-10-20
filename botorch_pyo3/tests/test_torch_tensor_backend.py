@@ -32,7 +32,10 @@ def data(device="cpu", dtype=torch.double, batch=(), outputs=1):
 @pytest.mark.parametrize("batch,outputs", [((), 1), ((), 2), ((2,), 1), ((2,), 2)])
 @pytest.mark.parametrize("fixed", [False, True])
 def test_exact_posterior_and_mll_reference(device, dtype, batch, outputs, fixed):
+    pytest.importorskip("botorch")
     from botorch.models import SingleTaskGP as ReferenceGP
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as ReferenceMLL
 
     X, Y, query = data(device, dtype, batch, outputs)
@@ -345,6 +348,7 @@ def test_frozen_training_factor_preserves_query_double_backward(device):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("on_train,on_eval", [(True, True), (False, True), (True, False)])
 def test_public_input_transform_flags_and_training_call_protocol(device, on_train, on_eval):
+    pytest.importorskip("botorch")
     from botorch.models import SingleTaskGP as ReferenceGP
     from botorch.models.transforms.input import Normalize as ReferenceNormalize
 

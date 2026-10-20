@@ -29,6 +29,7 @@ def rosenbrock(x, batch_indices=None):
 @pytest.mark.parametrize("bounds", [None, [(-2, 2), (None, 3)], [(0.4, 0.4), (0.2, None)]])
 def test_quadratic_official_parity(dtype, bounds):
     importorskip_botorch()
+    pytest.importorskip("botorch")
     from botorch.optim.batched_lbfgs_b import fmin_l_bfgs_b_batched as official
 
     x = np.asarray([[1.0, 2.0], [-1.0, 0.0], [0.0, 0.0]], dtype=dtype)
@@ -53,6 +54,7 @@ def test_quadratic_official_parity(dtype, bounds):
 )
 def test_rosenbrock_official_values_and_termination(bounds, options):
     importorskip_botorch()
+    pytest.importorskip("botorch")
     from botorch.optim.batched_lbfgs_b import fmin_l_bfgs_b_batched as official
 
     x = np.array([[-1.2, 1.0], [2.0, 2.0]])
@@ -72,6 +74,7 @@ def test_rosenbrock_official_values_and_termination(bounds, options):
 
 
 def test_active_rows_preserve_original_indices_and_float32_gradients():
+    pytest.importorskip("scipy")
     seen = []
     centers = np.array([[0.0, 0.0], [1.0, -2.0], [-3.0, 1.0]])
     scales = np.array([[1.0, 1.0], [2.0, 9.0], [0.3, 5.0]])
@@ -96,6 +99,7 @@ def test_active_rows_preserve_original_indices_and_float32_gradients():
 
 @pytest.mark.parametrize("intermediate", [False, True])
 def test_callback_stops_each_independent_state(intermediate):
+    pytest.importorskip("scipy")
     points = []
 
     def simple_callback(x):
@@ -116,6 +120,7 @@ def test_callback_stops_each_independent_state(intermediate):
 
 
 def test_inverse_hessian_native_operator_matches_scipy_curvature_operator():
+    pytest.importorskip("scipy")
     from scipy.optimize._lbfgsb_py import LbfgsInvHessProduct
 
     _, _, results = fmin_l_bfgs_b_batched(rosenbrock, [[-1.2, 1.0]], maxiter=7, maxcor=3)
@@ -173,6 +178,7 @@ def test_suspended_state_can_fork_line_search_without_aliasing():
     ],
 )
 def test_invalid_options(options):
+    pytest.importorskip("scipy")
     with pytest.raises((ValueError, AssertionError)):
         fmin_l_bfgs_b_batched(quadratic, [[1.0]], **options)
 
@@ -186,11 +192,14 @@ def test_invalid_options(options):
     ],
 )
 def test_invalid_objective_results_are_rejected(func):
+    pytest.importorskip("scipy")
     with pytest.raises(ValueError):
         fmin_l_bfgs_b_batched(func, [[1.0, 2.0]])
 
 
 def test_objective_exception_propagates():
+    pytest.importorskip("scipy")
+
     def fail(x):
         raise RuntimeError("objective failed")
 

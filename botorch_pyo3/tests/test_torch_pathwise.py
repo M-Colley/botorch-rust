@@ -34,9 +34,12 @@ def data(device):
 
 def model(X, Y, kernel="rbf", transformed=False, fixed=False, reference=False):
     if reference:
+        pytest.importorskip("botorch")
         from botorch.models import SingleTaskGP as GP
         from botorch.models.transforms.input import Normalize
         from botorch.models.transforms.outcome import Standardize
+
+        pytest.importorskip("gpytorch")
         from gpytorch.kernels import MaternKernel as Matern
         from gpytorch.kernels import RBFKernel as RBF
         from gpytorch.kernels import ScaleKernel as Scale
@@ -83,6 +86,7 @@ def paths(gp, shape=(2,), draws=None, seed=23):
 @pytest.mark.parametrize("transformed", [False, True])
 @pytest.mark.parametrize("outputs", [1, 2])
 def test_device_matheron_paths_match_reference_draws(device, kernel, transformed, outputs):
+    pytest.importorskip("botorch")
     from botorch.sampling.pathwise import draw_kernel_feature_paths as ReferencePrior
     from botorch.sampling.pathwise import draw_matheron_paths as ReferencePaths
     from mo_entropy_helpers import bt_path_draws, recorded_randn

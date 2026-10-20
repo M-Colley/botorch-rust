@@ -127,6 +127,7 @@ def test_value_initializer_parity_after_current_model_optimization(
 ) -> None:
     torch = pytest.importorskip("torch")
     bt = pytest.importorskip("botorch.optim.initializers")
+    pytest.importorskip("botorch")
     bt_opt = importlib.import_module("botorch.optim.optimize")
     rs_opt = importlib.import_module("botorch_rs.optim.optimize")
     rs_kg = importlib.import_module("botorch_rs.acquisition.knowledge_gradient")

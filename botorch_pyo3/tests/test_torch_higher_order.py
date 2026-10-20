@@ -31,6 +31,7 @@ def data(device, dtype=torch.double, batch=False):
 
 
 def paired(X, Y, **kwargs):
+    pytest.importorskip("botorch")
     from botorch.models.higher_order_gp import HigherOrderGP as Reference
 
     a = HigherOrderGP(X, Y, backend="torch", **kwargs)
@@ -230,6 +231,7 @@ def test_explicit_unsupported_and_input_validation(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_standardization_input_transform_custom_kernels_and_mll_higher_derivatives(device):
+    pytest.importorskip("gpytorch")
     from gpytorch.kernels import RBFKernel
     from gpytorch.likelihoods import GaussianLikelihood
 

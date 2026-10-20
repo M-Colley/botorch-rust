@@ -164,10 +164,13 @@ def test_full_first_and_second_training_query_parameter_derivatives(device, conv
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_official_unbatched_values_and_prior(device):
+    pytest.importorskip("botorch")
     from botorch.models import SingleTaskGP as RefGP
     from botorch.models.likelihoods.sparse_outlier_noise import (
         SparseOutlierGaussianLikelihood as RefLikelihood,
     )
+
+    pytest.importorskip("gpytorch")
     from gpytorch.likelihoods import GaussianLikelihood as RefBase
     from gpytorch.mlls import ExactMarginalLogLikelihood as RefMLL
     from gpytorch.priors import NormalPrior as RefPrior
@@ -197,6 +200,7 @@ def test_official_unbatched_values_and_prior(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_batched_support_atomicity_trainability_and_direct_likelihood(device):
+    pytest.importorskip("gpytorch")
     from gpytorch.likelihoods import GaussianLikelihood as RefBase
 
     base = RefBase(batch_shape=torch.Size([2])).to(device=device, dtype=torch.double).noise_covar
@@ -274,6 +278,7 @@ def test_loo_centering_and_gradient_probe_restore(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_actual_support_search_fit_and_model_comparison(device):
+    pytest.importorskip("scipy")
     X, Y, _ = data(device)
     model = RobustRelevancePursuitSingleTaskGP(
         X, Y, backend="torch", outcome_transform=None, cache_model_trace=True
@@ -323,7 +328,10 @@ def test_public_factory_copy_and_initialize(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_standalone_torch_likelihood_and_registered_base_priors(device):
+    pytest.importorskip("botorch")
     from botorch.utils.constraints import NonTransformedInterval
+
+    pytest.importorskip("gpytorch")
     from gpytorch.distributions import MultivariateNormal
     from gpytorch.likelihoods import GaussianLikelihood as RefBase
     from gpytorch.priors import NormalPrior as RefPrior
@@ -364,6 +372,7 @@ def test_standalone_torch_likelihood_and_registered_base_priors(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_custom_base_likelihood_identity_and_fixed_support_batches(device):
+    pytest.importorskip("gpytorch")
     from gpytorch.likelihoods import GaussianLikelihood as RefBase
 
     X, Y, Q = data(device, batch=True)

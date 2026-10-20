@@ -26,6 +26,7 @@ def make_pair(
     maximize=True,
     dtype=torch.double,
 ):
+    pytest.importorskip("botorch")
     from botorch.acquisition.multi_objective.predictive_entropy_search import (
         qMultiObjectivePredictiveEntropySearch as ReferenceMOPES,
     )
@@ -157,6 +158,7 @@ def test_complete_parameter_graphs_repeated_backwards_without_host_data(
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_first_pivot_failure_requires_damping_and_reproduces_reference_error(device):
+    pytest.importorskip("botorch")
     from botorch.acquisition.multi_objective.predictive_entropy_search import (
         _update_damping as reference_damping,
     )
@@ -186,6 +188,7 @@ def test_first_pivot_failure_requires_damping_and_reproduces_reference_error(dev
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_log_cdf_extreme_tail_has_finite_matching_clamped_derivatives(device):
+    pytest.importorskip("botorch")
     from botorch.acquisition.multi_objective.predictive_entropy_search import (
         log_cdf_robust as reference_log_cdf,
     )

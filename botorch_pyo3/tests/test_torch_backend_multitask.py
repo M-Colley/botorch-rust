@@ -32,6 +32,7 @@ def data(device, dtype=torch.double, task_feature=-1, labels=(0, 1)):
 
 
 def paired_models(X, Y, task_feature=-1, noise=None, **kwargs):
+    pytest.importorskip("botorch")
     from botorch.models import MultiTaskGP as ReferenceGP
 
     torch.manual_seed(23)
@@ -48,7 +49,10 @@ def paired_models(X, Y, task_feature=-1, noise=None, **kwargs):
 def test_default_multitask_reference_moments_mll_and_parameter_gradients(
     device, dtype, task_feature, fixed
 ):
+    pytest.importorskip("botorch")
     from botorch.settings import propagate_grads
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as ReferenceMLL
     from gpytorch.settings import detach_test_caches
 
@@ -185,8 +189,11 @@ def test_correlated_samples_scalarization_and_parameter_double_backward(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_custom_kernel_mean_gaussian_likelihood_and_input_transform(device):
+    pytest.importorskip("botorch")
     from botorch.models import MultiTaskGP as ReferenceGP
     from botorch.models.transforms.input import Normalize as ReferenceNormalize
+
+    pytest.importorskip("gpytorch")
     from gpytorch.kernels import MaternKernel as ReferenceMatern
     from gpytorch.likelihoods import GaussianLikelihood as ReferenceLikelihood
     from gpytorch.means import ConstantMean as ReferenceMean
@@ -301,6 +308,7 @@ def test_every_raw_parameter_gradcheck_and_gradgradcheck(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_torch_custom_kernel_likelihood_and_live_training_optimizer(device):
+    pytest.importorskip("gpytorch")
     from gpytorch.likelihoods import GaussianLikelihood
 
     X, Y, query = data(device)

@@ -39,6 +39,7 @@ def _data(device, batch=False, gradients=False, dtype=None):
 
 
 def _pair(device, kind, batch=False, gradients=False, transforms=False):
+    pytest.importorskip("botorch")
     from botorch.models.likelihoods import pairwise as reference_likelihood
     from botorch.models.pairwise_gp import PairwiseGP as Reference
     from botorch.models.pairwise_gp import PairwiseLaplaceMarginalLogLikelihood as ReferenceMLL
@@ -216,6 +217,7 @@ def test_duplicates_conditioning_saved_graphs_and_real_adam(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_self_comparison_is_constant_likelihood_after_consolidation(device):
+    pytest.importorskip("botorch")
     from botorch.models.pairwise_gp import PairwiseGP as Reference
 
     x = torch.tensor(
@@ -235,6 +237,8 @@ def test_self_comparison_is_constant_likelihood_after_consolidation(device):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("method", ["scipy", "torch"])
 def test_public_fitting_and_loss_closure_optimize_actual_leaves(device, method):
+    if method == "scipy":
+        pytest.importorskip("scipy")
     from botorch_rs.fit import fit_gpytorch_mll
     from botorch_rs.optim.closures.model_closures import get_loss_closure_with_grads
     from botorch_rs.optim.fit import fit_gpytorch_mll_torch

@@ -134,8 +134,13 @@ def test_hogp_query_gradients_and_fixed_base_samples_match_official(standardize,
     from helpers import importorskip_botorch
 
     importorskip_botorch()
+    pytest.importorskip("botorch")
     from botorch.models.higher_order_gp import HigherOrderGP as BtHigher
+
+    pytest.importorskip("gpytorch")
     from gpytorch.settings import max_cholesky_size
+
+    pytest.importorskip("linear_operator")
     from linear_operator.settings import _fast_solves
 
     x = torch.tensor([[0.1], [0.4], [0.8]], dtype=torch.float64)

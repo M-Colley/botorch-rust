@@ -144,9 +144,15 @@ def test_posterior_samples_snapshot_parameters(kind: str, standardize: bool) -> 
 def test_live_botorch_parity(seed: int, latent_init: str) -> None:
     importorskip_botorch()
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.models.higher_order_gp import HigherOrderGP as BtHigherOrderGP
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL
     from gpytorch.settings import max_cholesky_size
+
+    pytest.importorskip("linear_operator")
     from linear_operator.settings import _fast_solves
 
     torch.set_num_threads(1)
@@ -208,9 +214,13 @@ def test_live_botorch_parity(seed: int, latent_init: str) -> None:
 def test_multiple_latent_coordinates_and_input_transform() -> None:
     importorskip_botorch()
     import torch
+
+    pytest.importorskip("botorch")
     from botorch.models.higher_order_gp import HigherOrderGP as BtHigherOrderGP
     from botorch.models.transforms.input import Normalize as BtNormalize
     from botorch.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL
 
     X, Y = data()
