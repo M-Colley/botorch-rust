@@ -1,9 +1,10 @@
-"""Native EM empirical-prior parity against official source b0dd01be6."""
+"""Native EM parity with the explicitly corrected mean-prior caller from PR 3388."""
 
 from __future__ import annotations
 
 import copy
 import importlib.util
+import inspect
 import math
 import os
 import sys
@@ -56,6 +57,19 @@ def official() -> Any:
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
         modules[name] = module
+    # The pinned caller omits m_0 and silently centers every MAP mean prior
+    # on zero. Execute only this documented repair in the isolated namespace;
+    # the independent reference checkout remains unchanged.
+    em = modules["em_empirical_gp"]
+    original = inspect.getsource(em._run_em_algorithm)
+    old = "K_mu=K_mu,"
+    assert original.count(old) == 1
+    corrected = original.replace(
+        old,
+        old
+        + "\n            m_0=mean_module(X_inducing).reshape(-1) if K_mu is not None else None,",
+    )
+    exec(compile(corrected, str(folder / "em_empirical_gp.py"), "exec"), em.__dict__)
     return SimpleNamespace(**modules)
 
 

@@ -326,7 +326,11 @@ pub fn em_directional(
         let updated_mean = if let Some(prior_inverse) = &mean_prior_inverse {
             let current_inverse = covariance.inverse()?;
             let precision = current_inverse.scale(count as f64).add(prior_inverse);
-            precision.inverse()?.mul(&current_inverse.mul(&sum))
+            precision.inverse()?.mul(
+                &current_inverse
+                    .mul(&sum)
+                    .add(&prior_inverse.mul(&prior_mean)),
+            )
         } else {
             sum.scale(1.0 / count as f64)
         };

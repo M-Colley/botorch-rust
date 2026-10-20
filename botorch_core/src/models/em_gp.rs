@@ -22,7 +22,7 @@ pub struct EMOptions {
     pub noise: f64,
     /// Maximum number of EM updates.
     pub iterations: usize,
-    /// Kernel prior on the empirical mean, centered on zero as upstream.
+    /// Kernel prior on the empirical mean, centered on the parametric mean.
     pub mean_prior: bool,
     /// Inverse-Wishart prior on the empirical covariance.
     pub covariance_prior: bool,
@@ -306,7 +306,8 @@ pub fn run_em_prior(
         let updated_mean = if let Some(inverse_prior) = &mean_prior_inverse {
             let inverse = psd_safe_cholesky(&covariance)?.inverse();
             let precision = &inverse * count as f64 + inverse_prior;
-            psd_safe_cholesky(&precision)?.solve_vec(&(inverse * sum))
+            let prior_mean = Vector::from_element(n, constant);
+            psd_safe_cholesky(&precision)?.solve_vec(&(inverse * sum + inverse_prior * prior_mean))
         } else {
             sum / count as f64
         };
@@ -396,6 +397,78 @@ mod tests {
         assert!((&result.mean - mean).amax() < 1e-12);
         assert!((&result.covariance - covariance).amax() < 2e-10);
         assert_eq!(result.iterations, 1);
+    }
+
+    #[test]
+    fn map_mean_prior_preserves_parametric_location() {
+        let (data, z, kernel) = data();
+        let indices = vec![vec![0, 1, 2]; 4];
+        let offset = 7.0;
+        let shifted: Vec<_> = data
+            .iter()
+            .map(|d| EMDataset {
+                x: d.x.clone(),
+                y: &d.y + Vector::from_element(d.y.len(), offset),
+            })
+            .collect();
+        for inducing in [false, true] {
+            let options = EMOptions {
+                noise: 0.03,
+                iterations: 4,
+                mean_prior: true,
+                covariance_prior: true,
+                shrinkage: 0.2,
+                tolerance: None,
+                ..Default::default()
+            };
+            let selection = if inducing {
+                None
+            } else {
+                Some(indices.as_slice())
+            };
+            let base =
+                pretrain_em_prior(&data, kernel.clone(), z.clone(), 0.35, selection, &options)
+                    .unwrap();
+            let shifted = pretrain_em_prior(
+                &shifted,
+                kernel.clone(),
+                z.clone(),
+                0.35 + offset,
+                selection,
+                &options,
+            )
+            .unwrap();
+            assert!((&shifted.mean - &base.mean - Vector::from_element(3, offset)).amax() < 1e-10);
+            assert!((&shifted.covariance - &base.covariance).amax() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn naive_initialization_keeps_the_configured_map_prior_center() {
+        let (_, _, kernel) = data();
+        let z = Matrix::from_element(1, 1, 0.4);
+        let data = vec![EMDataset {
+            x: z.clone(),
+            y: Vector::from_element(1, 5.0),
+        }];
+        let indices = vec![vec![0]];
+        let result = pretrain_em_prior(
+            &data,
+            kernel,
+            z,
+            5.0,
+            Some(&indices),
+            &EMOptions {
+                noise: 0.1,
+                iterations: 1,
+                mean_prior: true,
+                naive_init: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // E[f | y] = 5/1.1; precision-weighting it with N(5,1) gives this MAP mean.
+        assert!((result.mean[0] - (5.0 / 1.1 + 5.0) / 2.0).abs() < 1e-12);
     }
     #[test]
     fn indexed_and_exact_inducing_em_match_with_map_and_shrinkage() {
