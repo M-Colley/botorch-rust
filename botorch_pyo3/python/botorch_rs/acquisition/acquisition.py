@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+from abc import ABC, abstractmethod
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -427,6 +428,18 @@ class AcquisitionFunction:
         return f"{type(self).__name__}()"
 
 
+class MultiModelAcquisitionFunction(AcquisitionFunction, ABC):
+    """Base for custom acquisition functions using a dictionary of models."""
+
+    def __init__(self, model_dict: Any) -> None:
+        self.model_dict = model_dict
+
+    @abstractmethod
+    def forward(self, X: Any) -> Any:
+        """Evaluate the custom acquisition function using ``model_dict``."""
+        raise NotImplementedError
+
+
 class OneShotAcquisitionFunction(AcquisitionFunction):
     """Base class of the one-shot acquisition functions (e.g. the hypervolume
     knowledge gradient), whose candidate sets are augmented by auxiliary
@@ -443,5 +456,6 @@ __all__ = [
     "ENSEMBLE_ACQUISITION_FUNCTIONS",
     "AcquisitionFunction",
     "MCSamplerMixin",
+    "MultiModelAcquisitionFunction",
     "OneShotAcquisitionFunction",
 ]

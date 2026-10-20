@@ -8,6 +8,8 @@ the constrained acquisition functions, which read several outputs.
 
 from __future__ import annotations
 
+import sys
+from abc import ABC, abstractmethod
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -46,6 +48,65 @@ class AnalyticAcquisitionFunction(AcquisitionFunction):
 
     def set_X_pending(self, X_pending: Any = None) -> None:
         raise UnsupportedError("Analytic acquisition functions do not account for X_pending yet.")
+
+
+class ConstrainedAnalyticAcquisitionFunctionMixin(ABC):
+    """Prepare Gaussian constraint bounds and evaluate native log feasibility."""
+
+    def __init__(self, constraints: dict[int, tuple[float | None, float | None]]) -> None:
+        self.constraints = constraints
+        self._preprocess_constraint_bounds(constraints)
+
+    @abstractmethod
+    def register_buffer(self, name: str, tensor: Any, persistent: bool = True) -> None:
+        """Register a bound/index buffer on the concrete acquisition class."""
+        raise NotImplementedError
+
+    def _preprocess_constraint_bounds(
+        self, constraints: dict[int, tuple[float | None, float | None]]
+    ) -> None:
+        if not constraints:
+            raise ValueError("There must be at least one constraint.")
+        if getattr(self, "objective_index", None) in constraints:
+            raise ValueError("Output corresponding to objective should not be a constraint.")
+        lower_indices, upper_indices, both_indices = [], [], []
+        lower, upper, both = [], [], []
+        for index, (lo, hi) in constraints.items():
+            if lo is not None and hi is not None:
+                if hi <= lo:
+                    raise ValueError("Upper bound is less than the lower bound.")
+                both_indices.append(index)
+                both.append([lo, hi])
+            elif lo is not None:
+                lower_indices.append(index)
+                lower.append(lo)
+            elif hi is not None:
+                upper_indices.append(index)
+                upper.append(hi)
+        torch = sys.modules.get("torch")
+        for name, value in (
+            ("con_lower_inds", lower_indices),
+            ("con_upper_inds", upper_indices),
+            ("con_both_inds", both_indices),
+            ("con_both", both),
+            ("con_lower", lower),
+            ("con_upper", upper),
+        ):
+            self.register_buffer(name, tensor=value if torch is None else torch.as_tensor(value))
+
+    def _compute_log_prob_feas(self, means: Any, sigmas: Any) -> Any:
+        from botorch_rs.utils.probability.utils import compute_log_prob_feas_from_bounds
+
+        return compute_log_prob_feas_from_bounds(
+            con_lower_inds=self.con_lower_inds,  # type: ignore[attr-defined]
+            con_upper_inds=self.con_upper_inds,  # type: ignore[attr-defined]
+            con_both_inds=self.con_both_inds,  # type: ignore[attr-defined]
+            con_lower=self.con_lower,  # type: ignore[attr-defined]
+            con_upper=self.con_upper,  # type: ignore[attr-defined]
+            con_both=self.con_both,  # type: ignore[attr-defined]
+            means=means,
+            sigmas=sigmas,
+        )
 
 
 class _ImprovementBased(AnalyticAcquisitionFunction):
@@ -423,6 +484,7 @@ class LogNoisyExpectedImprovement(_NoisyExpectedImprovementBase):
 
 __all__ = [
     "AnalyticAcquisitionFunction",
+    "ConstrainedAnalyticAcquisitionFunctionMixin",
     "ConstrainedExpectedImprovement",
     "ExpectedImprovement",
     "LogConstrainedExpectedImprovement",

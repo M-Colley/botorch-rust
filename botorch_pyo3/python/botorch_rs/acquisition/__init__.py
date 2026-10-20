@@ -3,6 +3,7 @@
 from botorch_rs.acquisition.acquisition import (
     AcquisitionFunction,
     MCSamplerMixin,
+    MultiModelAcquisitionFunction,
     OneShotAcquisitionFunction,
 )
 from botorch_rs.acquisition.active_learning import (
@@ -11,6 +12,7 @@ from botorch_rs.acquisition.active_learning import (
 )
 from botorch_rs.acquisition.analytic import (
     AnalyticAcquisitionFunction,
+    ConstrainedAnalyticAcquisitionFunctionMixin,
     ConstrainedExpectedImprovement,
     ExpectedImprovement,
     LogConstrainedExpectedImprovement,
@@ -140,6 +142,8 @@ __all__ = [
     "MCAcquisitionFunction",
     "MCAcquisitionObjective",
     "MCSamplerMixin",
+    "MultiModelAcquisitionFunction",
+    "ConstrainedAnalyticAcquisitionFunctionMixin",
     "MaxValueBase",
     "MultiOutputAcquisitionFunction",
     "OneShotAcquisitionFunction",

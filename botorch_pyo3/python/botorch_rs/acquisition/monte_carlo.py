@@ -616,15 +616,17 @@ def supports_cache_root(model: Any) -> bool:
     ``supports_cache_root``): the models of a ``ModelListGP`` must, and
     multi-task (``MultiTaskGP``, ``LCEMGP``, ``KroneckerMultiTaskGP``) and
     deterministic models do not."""
-    from botorch_rs.models.gp_regression import SingleTaskGP
+    from botorch_rs.models.gpytorch import GPyTorchModel
     from botorch_rs.models.model_list_gp_regression import ModelListGP
-    from botorch_rs.models.multitask import KroneckerMultiTaskGP, MultiTaskGP
 
     if isinstance(model, ModelListGP):
         return all(supports_cache_root(m) for m in model.models)
-    if isinstance(model, (MultiTaskGP, KroneckerMultiTaskGP)):
+    if getattr(model, "_supports_cache_root", True) is False:
         return False
-    return isinstance(model, SingleTaskGP)
+    if not isinstance(model, GPyTorchModel):
+        return False
+    transform = getattr(model, "outcome_transform", None)
+    return transform is None or bool(transform._is_linear)
 
 
 class qNoisyExpectedImprovement(SampleReducingMCAcquisitionFunction):
