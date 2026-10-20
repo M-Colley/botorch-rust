@@ -340,6 +340,104 @@ def extract_targets_and_noise_single_output(model: Any) -> tuple[Any, Any]:
     return targets, noise
 
 
+def restore_targets_and_noise_single_output(model: Any, Y: Any, Yvar: Any, strict: bool) -> None:
+    """Restore transformed targets and optional fixed noise from columns.
+
+    Native models replace both arrays atomically and invalidate cached
+    factorizations. Other models use the ordinary ``set_train_data`` protocol.
+    """
+    from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood
+
+    if _ops.shape_of(Y)[-1:] != (1,):
+        raise ValueError("Y must have a trailing single-output dimension")
+    targets = _ops.getitem(Y, (Ellipsis, 0))
+    likelihood = model.likelihood
+    fixed = isinstance(likelihood, FixedNoiseGaussianLikelihood) or any(
+        base.__name__ == "FixedNoiseGaussianLikelihood" for base in type(likelihood).__mro__
+    )
+    noise = None
+    if fixed and Yvar is not None:
+        if _ops.shape_of(Yvar)[-1:] != (1,):
+            raise ValueError("Yvar must have a trailing single-output dimension")
+        noise = _ops.getitem(Yvar, (Ellipsis, 0))
+    replace = getattr(model, "_replace_transformed_train_data", None)
+    if callable(replace):
+        replace(targets=targets, noise=noise, strict=strict)
+        return
+    if noise is not None:
+        likelihood.noise_covar.noise = noise
+    model.set_train_data(targets=targets, strict=strict)
+
+
+def get_data_for_optimization_help(model: Any, path: str = "optimization_help_data.json") -> None:
+    """Save local model diagnostics in BoTorch's JSON issue-help layout.
+
+    Python models export their ``state_dict``. Native models export actual
+    named raw parameters and add ``native_info`` with original/transformed
+    training data and component descriptions. This is a diagnostic snapshot,
+    not a cross-library model checkpoint. No data are uploaded.
+    """
+    import json
+
+    def nested(value: Any) -> Any:
+        detach = getattr(value, "detach", None)
+        if callable(detach):
+            value = detach().cpu()
+        tolist = getattr(value, "tolist", None)
+        if callable(tolist):
+            return tolist()
+        return value
+
+    train_X = model.train_inputs[0]
+    train_Y = model.train_targets
+    if len(_ops.shape_of(train_Y)) == 1:
+        train_Y = _ops.getitem(train_Y, (Ellipsis, None))
+    state = getattr(model, "state_dict", None)
+    native = not callable(state) and getattr(model, "_rs", None) is not None
+    if native:
+        parameters = dict(model.named_parameters())
+    elif callable(state):
+        parameters = state()
+    else:
+        raise TypeError("The model must expose state_dict() or native named_parameters().")
+    data = {
+        "dtype": _ops.dtype_name(train_X) or "float64",
+        "train_X": nested(train_X),
+        "train_Y": nested(train_Y),
+        "state_dict": {key: nested(value) for key, value in parameters.items()},
+    }
+    if native:
+        info: dict[str, Any] = {
+            "class": type(model).__name__,
+            "components": {
+                name: repr(getattr(model, name, None))
+                for name in (
+                    "covar_module",
+                    "mean_module",
+                    "likelihood",
+                    "input_transform",
+                    "outcome_transform",
+                )
+            },
+        }
+        for name, method_name in (
+            ("train_X_transformed", "transformed_train_inputs"),
+            ("train_Y_original", "train_targets"),
+            ("train_Yvar_original", "train_yvar"),
+        ):
+            method = getattr(model._rs, method_name, None)
+            if callable(method):
+                pair = method()
+                info[name] = (
+                    None if pair is None else from_flat(pair[0], tuple(pair[1]), ArrayKind("list"))
+                )
+        data["native_info"] = info
+    # Validate serialization before opening an existing destination.
+    encoded = json.dumps(data)
+    with open(path, "w", encoding="utf-8") as stream:
+        stream.write(encoded)
+
+
 __all__ = [
     "add_output_dim",
     "check_min_max_scaling",
@@ -349,9 +447,11 @@ __all__ = [
     "detect_duplicates",
     "extract_targets_and_noise_single_output",
     "fantasize",
+    "get_data_for_optimization_help",
     "get_task_value_remapping",
     "gpt_posterior_settings",
     "mod_batch_shape",
     "multioutput_to_batch_mode_transform",
+    "restore_targets_and_noise_single_output",
     "validate_input_scaling",
 ]

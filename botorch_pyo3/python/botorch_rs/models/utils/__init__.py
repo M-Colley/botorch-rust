@@ -10,10 +10,12 @@ from botorch_rs.models.utils.assorted import (
     detect_duplicates,
     extract_targets_and_noise_single_output,
     fantasize,
+    get_data_for_optimization_help,
     get_task_value_remapping,
     gpt_posterior_settings,
     mod_batch_shape,
     multioutput_to_batch_mode_transform,
+    restore_targets_and_noise_single_output,
     validate_input_scaling,
 )
 from botorch_rs.models.utils.gpytorch_modules import (
@@ -35,6 +37,7 @@ __all__ = [
     "detect_duplicates",
     "extract_targets_and_noise_single_output",
     "fantasize",
+    "get_data_for_optimization_help",
     "get_covar_module_with_dim_scaled_prior",
     "get_gaussian_likelihood_with_gamma_prior",
     "get_gaussian_likelihood_with_lognormal_prior",
@@ -43,5 +46,6 @@ __all__ = [
     "gpt_posterior_settings",
     "mod_batch_shape",
     "multioutput_to_batch_mode_transform",
+    "restore_targets_and_noise_single_output",
     "validate_input_scaling",
 ]
