@@ -89,12 +89,14 @@ def test_variational_parameter_views_are_persistent_leaves(outputs, dtype):
     else:
         assert model.likelihood.raw_noise is entries["likelihood.noise_covar.raw_noise"]
     assert vs.inducing_points is entries[prefix + "inducing_points"]
-    assert vs._variational_distribution.variational_mean is entries[
-        prefix + "_variational_distribution.variational_mean"
-    ]
-    assert vs._variational_distribution.chol_variational_covar is entries[
-        prefix + "_variational_distribution.chol_variational_covar"
-    ]
+    assert (
+        vs._variational_distribution.variational_mean
+        is entries[prefix + "_variational_distribution.variational_mean"]
+    )
+    assert (
+        vs._variational_distribution.chol_variational_covar
+        is entries[prefix + "_variational_distribution.chol_variational_covar"]
+    )
     model.model(x)
     assert int(vs.variational_params_initialized) == 1
     assert all(leaf is dict(model.named_parameters())[name] for name, leaf in entries.items())
@@ -196,7 +198,9 @@ def test_variational_scipy_parameter_selection_and_explicit_bounds():
     name = next(name for name in leaves if name.endswith("variational_mean"))
     before = {key: value.detach().clone() for key, value in leaves.items()}
     fit_gpytorch_mll_scipy(
-        mll, parameters={name: leaves[name]}, bounds={name: (-0.05, 0.05)},
+        mll,
+        parameters={name: leaves[name]},
+        bounds={name: (-0.05, 0.05)},
         options={"maxiter": 3},
     )
     assert (leaves[name] >= -0.05).all() and (leaves[name] <= 0.05).all()
@@ -237,3 +241,28 @@ def test_conflicting_native_and_torch_variational_edits_fail_explicitly():
     model._rs.set_raw_parameters(raw)
     with pytest.raises(RuntimeError, match="both modified"):
         tuple(model.parameters())
+
+
+@pytest.mark.parametrize("case", [CASES[0], CASES[2]], ids=lambda case: case.name)
+def test_variational_prior_sampling_synchronizes_existing_parameter_leaves(case):
+    from botorch_rs.optim.utils.model_utils import sample_all_priors
+
+    _, model, _, _ = build_pair(case)
+    expected = copy.deepcopy(model)
+    leaves = dict(model._named_raw())
+    with torch.no_grad():
+        model.model.mean_module.raw_constant.fill_(0.45)
+    expected.model.mean_module.constant = 0.45
+    sample_all_priors(model, seed=37)
+    sample_all_priors(expected, seed=37)
+    raw = model._rs.raw_parameters()
+    offset = 0
+    for name, count in model._rs.parameter_names():
+        torch.testing.assert_close(
+            leaves[name].detach().reshape(-1),
+            torch.tensor(raw[offset : offset + count], dtype=leaves[name].dtype),
+            rtol=0,
+            atol=0,
+        )
+        offset += count
+    assert raw == expected._rs.raw_parameters()

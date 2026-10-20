@@ -21,6 +21,7 @@ from botorch_rs.models import SingleTaskGP  # noqa: E402
 from botorch_rs.optim.utils.model_utils import (  # noqa: E402
     get_parameters,
     get_parameters_and_bounds,
+    sample_all_priors,
 )
 
 
@@ -311,3 +312,38 @@ def test_sample_query_and_parameter_gradients_are_both_available():
     assert torch.isfinite(torch.autograd.grad(samples.sum(), query, retain_graph=True)[0]).all()
     for gradient in torch.autograd.grad(samples.sum(), tuple(model.parameters())):
         assert torch.isfinite(gradient).all()
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_prior_sampling_synchronizes_pending_edits_and_existing_leaf_references(dtype):
+    x = torch.tensor([[0.1], [0.5], [0.9]], dtype=dtype)
+    model = SingleTaskGP(x, torch.sin(x), outcome_transform=None)
+    expected = copy.deepcopy(model)
+    leaves = tuple(model.parameters())
+    leaves[0].requires_grad_(False)
+    with torch.no_grad():
+        model.mean_module.raw_constant.fill_(0.45)
+    expected.mean_module.constant = 0.45
+    sample_all_priors(model, seed=17)
+    sample_all_priors(expected, seed=17)
+    # Read held references before any public getter can synchronize them.
+    torch.testing.assert_close(
+        torch.cat([p.detach().reshape(-1) for p in leaves]),
+        torch.tensor(model._rs.raw_parameters(), dtype=dtype),
+        rtol=0,
+        atol=0,
+    )
+    assert model._rs.raw_parameters() == expected._rs.raw_parameters()
+    assert not leaves[0].requires_grad
+    assert all(a is b for a, b in zip(leaves, model.parameters(), strict=True))
+
+
+def test_prior_sampling_visits_aliased_gp_list_children_once():
+    from botorch_rs.models import ModelListGP
+
+    child, _ = model_pair()
+    expected = copy.deepcopy(child)
+    combined = ModelListGP(child, child)
+    sample_all_priors(combined, seed=29)
+    sample_all_priors(expected, seed=29)
+    assert child._rs.raw_parameters() == expected._rs.raw_parameters()

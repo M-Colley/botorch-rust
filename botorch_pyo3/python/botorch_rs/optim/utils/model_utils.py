@@ -235,14 +235,23 @@ def sample_all_priors(model: Any, max_retries: int = 100, seed: int | None = Non
     from botorch_rs import _botorch_rs as _rs
 
     models = model.models if hasattr(model, "models") else [model]
+    visited: set[int] = set()
     for i, m in enumerate(models):
+        if id(m) in visited:
+            continue
+        visited.add(id(m))
         rs = getattr(m, "_rs", None)
+        sync = getattr(m, "_sync_torch_parameters", None)
+        if sync is not None:
+            sync()
         if isinstance(rs, _rs.SingleTaskVariationalGP):
             rs.sample_all_priors(None if seed is None else int(seed) + i)
-            continue
-        if rs is None or not isinstance(rs, _rs.SingleTaskGP):
+        elif isinstance(rs, _rs.SingleTaskGP):
+            _rs.sample_all_priors(rs, None if seed is None else int(seed) + i)
+        else:
             raise UnsupportedError("sample_all_priors requires botorch_rs SingleTaskGP models.")
-        _rs.sample_all_priors(rs, None if seed is None else int(seed) + i)
+        if sync is not None:
+            sync()
 
 
 __all__ = [
