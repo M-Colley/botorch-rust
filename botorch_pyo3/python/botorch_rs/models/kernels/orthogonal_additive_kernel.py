@@ -8,15 +8,18 @@ import warnings
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import from_flat, kind_from_dtype
+from botorch_rs._arrays import broadcast_shapes, from_flat, kind_from_dtype, kind_of, to_flat
 from botorch_rs.constraints import Interval, Positive
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.kernels import (
     Kernel,
     MaternKernel,
     RBFKernel,
+    _batch_matrix,
     _check_batch_shape,
     _check_prior,
+    _flat_index,
+    _indices,
     _properties,
 )
 from botorch_rs.priors import Prior
@@ -118,7 +121,8 @@ class OrthogonalAdditiveKernel(Kernel):
         exact = dtype is not None and "64" in str(dtype)
         self._dtype = dtype
         self._round = (lambda v: v) if exact else _f32
-        z, w = leggauss(self.quad_deg, a=0, b=1, dtype=dtype)
+        self._local_kind = kind_from_dtype(dtype, device)
+        z, w = leggauss(self.quad_deg, a=0, b=1, dtype=dtype, device=device)
         self.z = z
         self.w = w
 
@@ -226,6 +230,100 @@ class OrthogonalAdditiveKernel(Kernel):
         if self.second_order:
             n += self.dim * (self.dim - 1) // 2
         return n
+
+    @property
+    def component_indices(self) -> dict[str, Any]:
+        """Input dimension indices in the native component enumeration."""
+        kind = self._kind_out()
+
+        def indices(values: list[int], shape: tuple[int, ...]) -> Any:
+            if kind.lib == "torch":
+                import torch
+
+                return torch.tensor(values, dtype=torch.long, device=kind.device).reshape(shape)
+            if kind.lib == "numpy":
+                import numpy as np
+
+                return np.asarray(values, dtype=np.int64).reshape(shape)
+            return from_flat(values, shape, kind)
+
+        result = {
+            "bias": indices([0], (1,)),
+            "first_order": indices(list(range(self.dim)), (self.dim,)),
+        }
+        if self.second_order:
+            pairs = [v for i in range(self.dim) for j in range(i + 1, self.dim) for v in (i, j)]
+            result["second_order"] = indices(pairs, (self.dim * (self.dim - 1) // 2, 2))
+        return result
+
+    def get_component_index(
+        self, component_type: str, dim_index: int | tuple[int, int] | None = None
+    ) -> int:
+        """Map a component type and input dimensions to its batch index."""
+        if component_type == "bias":
+            return 0
+        if component_type == "first_order":
+            if not isinstance(dim_index, int):
+                raise ValueError("dim_index must be an int for first_order")
+            if not 0 <= dim_index < self.dim:
+                raise IndexError(f"dim_index {dim_index} out of range [0, {self.dim - 1}]")
+            return 1 + dim_index
+        if component_type == "second_order":
+            if not self.second_order:
+                raise ValueError("second_order components not enabled for this kernel")
+            if not isinstance(dim_index, tuple) or len(dim_index) != 2:
+                raise ValueError("dim_index must be a tuple (i, j) for second_order")
+            i, j = dim_index
+            if i >= j:
+                raise ValueError(f"For second_order, require i < j, got ({i}, {j})")
+            if i < 0 or j >= self.dim:
+                raise IndexError(f"Invalid second_order index ({i}, {j}) for dim={self.dim}")
+            return 1 + self.dim + sum(self.dim - k - 1 for k in range(i)) + j - i - 1
+        raise ValueError(f"Unknown component_type: {component_type}")
+
+    def _parts(
+        self, x1: Any = None, x2: Any = None, *, mode: str, diag: bool = False, eps: float = 1e-6
+    ) -> Any:
+        batch = self._aug if self._model is not None else self.batch_shape
+        a = None if x1 is None else to_flat(x1, "x1")
+        b = None if x2 is None else to_flat(x2, "x2")
+        shape = broadcast_shapes(
+            batch, () if a is None else a[1][:-2], () if b is None else b[1][:-2]
+        )
+        if shape is None:
+            raise RuntimeError("The kernel and input batch shapes do not broadcast.")
+        raws = self._raw_per_element(len(batch))
+        data: list[float] = []
+        tail: tuple[int, ...] = ()
+        for index in _indices(shape):
+            values, out_shape = _rs.additive_kernel_parts(
+                self._node(),
+                raws[_flat_index(index, batch)],
+                self.dim,
+                None if a is None else _batch_matrix(a, index),
+                None if b is None else _batch_matrix(b, index),
+                mode,
+                diag,
+                eps,
+            )
+            data.extend(values)
+            tail = tuple(out_shape)
+        return from_flat(data, (*shape, *tail), self._kind_out() if a is None else kind_of(x1))
+
+    def k(self, x1: Any, x2: Any, diag: bool = False) -> Any:
+        """Unorthogonalized base covariance for each input dimension."""
+        return self._parts(x1, x2, mode="base", diag=diag)
+
+    def normalizer(self, eps: float = 1e-6) -> Any:
+        """Native quadrature normalizers, recomputed from current parameters."""
+        return self._parts(mode="normalizer", eps=eps)
+
+    def _non_reduced_forward(
+        self, x1: Any, x2: Any, diag: bool = False, last_dim_is_batch: bool = False
+    ) -> Any:
+        if last_dim_is_batch:
+            raise UnsupportedError("OrthogonalAdditiveKernel does not support `last_dim_is_batch`.")
+        return self._parts(x1, x2, mode="components", diag=diag)
 
     def __repr__(self) -> str:
         return f"OrthogonalAdditiveKernel(dim={self.dim}, base_kernel={self.base_kernel!r})"

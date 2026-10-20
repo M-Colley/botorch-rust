@@ -219,6 +219,13 @@ def posterior_query_samples_vjp(
 ) -> ArrayBuf: ...
 def target_task_model(model: Model, feature_indices: Sequence[int], imputation: Sequence[float]) -> Model: ...
 
+def additive_component_model(model: SingleTaskGP, extra_batch_dims: int = 0) -> Model: ...
+def additive_kernel_parts(
+    node: KernelNode, raw: Sequence[float], input_dim: int,
+    x1: Array | None = None, x2: Array | None = None, mode: str = "base",
+    diag: bool = False, eps: float = 1e-6,
+) -> ArrayBuf: ...
+
 class KernelNode:
     @staticmethod
     def heterogeneous(

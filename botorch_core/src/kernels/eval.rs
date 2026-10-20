@@ -27,6 +27,8 @@ use crate::kernels::contextual::LceaState;
 use crate::kernels::empirical::EmpiricalBasisState;
 use crate::kernels::nonfinite::{self, TrainingNan};
 use crate::kernels::oak::{gauss_legendre_01, OAK_NORMALIZER_EPS};
+
+mod oak_public;
 use crate::kernels::tree::{KernelNode, KernelType, MatrixPrior, ParamSpec};
 use crate::kernels::{KernelKind, MATERN_MIN_DISTANCE};
 use crate::priors::Prior;

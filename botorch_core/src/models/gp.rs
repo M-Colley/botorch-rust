@@ -45,6 +45,7 @@ use crate::transforms::outcome::{OutcomeChain, PointAffine, SampleStep, SampleTr
 use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
 use crate::{Matrix, Vector};
 
+pub mod additive;
 mod conditioning;
 mod lookahead;
 mod noiseless_fantasy;

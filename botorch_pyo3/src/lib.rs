@@ -13,6 +13,7 @@
 use pyo3::prelude::*;
 
 mod acquisition;
+mod additive;
 mod approximate;
 mod arrays;
 mod batched_lbfgsb;
@@ -63,6 +64,7 @@ mod transforms;
 #[pymodule]
 #[pyo3(name = "_botorch_rs")]
 fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    additive::register(m)?;
     models::posterior_autograd::register(m)?;
     batched_lbfgsb::register(m)?;
     m.add_function(wrap_pyfunction!(heterogeneous::target_task_model, m)?)?;
