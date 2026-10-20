@@ -44,7 +44,7 @@ Supported model paths include exact single-task independent outputs and
 batches, Gaussian and nonlinear-outcome model lists, long-format `MultiTaskGP`,
 `MixedSingleTaskGP`, `SingleTaskMultiFidelityGP`, `KroneckerMultiTaskGP`, `HigherOrderGP`,
 whitened `SingleTaskVariationalGP`, and loaded-sample fully Bayesian Matérn,
-SAAS and linear single-task models. Exact single-task and correlated multitask
+SAAS and linear single-task and latent-task multitask models. Exact single-task and correlated multitask
 conditioning and fantasies retain training-data and parameter graphs. See the
 detailed model notes for configuration limits. The Kronecker implementation
 currently uses dense exact factorization; its structured performance work is
@@ -93,9 +93,9 @@ Remaining GPU families include latent Kronecker models,
 preference, contextual, hierarchical, heterogeneous and empirical multitask
 models, robust relevance pursuit, hypervolume KG, multistep lookahead and
 pathwise acquisitions.
-Some are under active implementation. Device-resident NUTS fits scalar Matérn,
-SAAS and linear fully Bayesian models; custom probabilistic overrides and
-multitask Tensor NUTS remain unsupported. See
+Some are under active implementation. Device-resident NUTS fits scalar and
+latent-task multitask Matérn, SAAS and linear fully Bayesian models. Custom
+probabilistic overrides remain unsupported. See
 [sampler semantics and verification](torch-fully-bayesian.md).
 Noisy acquisition root caching currently falls back to exact joint sampling
 with an explicit warning. The 776-name API availability audit does not measure
@@ -133,6 +133,7 @@ Further details: [tensor algebra](tensor-native-algebra.md),
 [higher-order model](torch-higher-order.md),
 [MAP SAAS](torch-map-saas.md),
 [fully Bayesian models](torch-fully-bayesian.md),
+[fully Bayesian multitask models](torch-fully-bayesian-multitask.md),
 [entropy search](torch-entropy-search.md),
 [acquisitions](torch-backend-acquisitions.md).
 

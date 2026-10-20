@@ -23,7 +23,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | SciPy L-BFGS-B restored objective | Tested [branch](https://github.com/M-Colley/scipy/compare/main...codex/lbfgsb-restored-objective); human submission required, see below |
 | Heterogeneous multitask conditioning input layout | Patch and upstream regressions pending |
 | Empirical multitask unseen-task noise | Existing [BoTorch #3389](https://github.com/meta-pytorch/botorch/pull/3389) |
-| Seven sparse-outlier / relevance-pursuit defects | Patches and upstream regressions pending |
+| Sparse-outlier / relevance-pursuit numerical and state defects | New [BoTorch #3482](https://github.com/meta-pytorch/botorch/pull/3482), including gradient-probe rollback; 43 tests and 120 subtests pass |
 | Selecting one output from a multi-output GP | Existing [BoTorch #3396](https://github.com/meta-pytorch/botorch/pull/3396) |
 | Additive component bias broadcasting and repeated outcome location | Patches and upstream regressions pending |
 | Validated empty Beta expansion | New [BoTorch #3473](https://github.com/meta-pytorch/botorch/pull/3473) |
@@ -52,7 +52,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Multitask kernel repeats existing task covariance batches | New [GPyTorch #2817](https://github.com/cornellius-gp/gpytorch/pull/2817) |
 | GIBBON pending covariance units | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) |
 | GIBBON multiple query batch axes | Upstream patch and regressions pending |
-| MES zero-variance control variate | Newly verified; upstream patch and regression pending |
+| MES zero-variance and one-draw control variates | New [BoTorch #3481](https://github.com/meta-pytorch/botorch/pull/3481); native one-draw repair in progress |
 | Scalar JES conditional normal standardization | New [BoTorch #3479](https://github.com/meta-pytorch/botorch/pull/3479); native CPU and GPU repaired with independent Gaussian regression |
 | PES damping accepts failed first-pivot Cholesky | New [BoTorch #3480](https://github.com/meta-pytorch/botorch/pull/3480); native CPU and GPU regressions cover the repair |
 | Additive MAP SAAS factory dtype/device | New [BoTorch #3478](https://github.com/meta-pytorch/botorch/pull/3478) |
