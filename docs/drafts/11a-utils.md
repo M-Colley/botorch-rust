@@ -122,6 +122,33 @@ Coverage against BoTorch main (`scripts/api_coverage.py`): utils 93/97
   without the parallel mode (the restarts' leading dimensions pair them with
   the sample paths, so the paths are evaluated on all restarts at once).
 
+## Portable trajectory comparison grid
+
+`TrajectoryPlanning` smooth interpolation evaluates the SciPy FITPACK spline
+at a default float32 `torch.linspace(0, 1, 1000)` grid. Some CPU compilers
+contract its second-half expression `end - step * i` into an FMA; others
+round the multiplication and subtraction separately. The grids differ by
+one float32 ULP, which changes the obstacle-weighted arc-length quadrature
+by more than the spline comparison tolerance. This is normal floating-point
+platform variation, not an upstream correctness bug.
+
+The Ubuntu CI cases `TrajectoryPlanning-14` (`dim=8`) and
+`TrajectoryPlanning-16` (`dim=6, max_step_size=0.2`) had mixed relative
+errors `2.749579202248941e-7` and `6.8784293081513e-8`. Emulating the fused
+grid with exact double intermediates and one float32 cast reproduces
+`2.749579206190748e-7` and exactly `6.8784293081513e-8`, respectively.
+The nonfused Windows grid gives full trajectory costs within `1.3e-15`
+elementwise relative error.
+
+The comparison context replaces only the reference's default 1000-point
+float32 grid with explicit two-ended multiplication and subtraction. Its
+waypoint construction, SciPy `splprep`/`splev`, obstacle checks and cost
+remain the original reference code. Other `linspace` calls and explicit
+dtypes delegate unchanged. The native portable grid and the existing
+`1e-9` value tolerance are unchanged. A regression preserves the fused-grid
+reproduction and verifies controlled-grid values, batching and forward
+evaluation.
+
 ## Unported
 
 - `botorch.utils.jax_utils` (needs JAX) and `botorch.utils.lcbench` (dataset

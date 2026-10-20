@@ -46,6 +46,7 @@ torch = pytest.importorskip("torch")
 
 import botorch.utils.probability.utils as bt_pu  # noqa: E402
 import botorch.utils.safe_math as bt_sm  # noqa: E402
+from trajectory_reference import portable_trajectory_grid  # noqa: E402
 
 import botorch_rs.utils.probability.utils as rs_pu  # noqa: E402
 import botorch_rs.utils.safe_math as rs_sm  # noqa: E402
@@ -920,13 +921,19 @@ def test_test_functions(mod: str, name: str, kw: dict[str, Any]) -> None:
             _same_attr(getattr(a, attr), ve, f"{name}.{attr}")
     X = _problem_points(e, 9, 40)
     X3 = X.reshape(3, 3, -1)
-    ve = e.evaluate_true(X)
+    # CPU compilers may fuse the reference's default float32 linspace.
+    # Compare both spline implementations on the same explicit sampling grid.
+    trajectory = name == "TrajectoryPlanning" and kw.get("use_smooth_interp", True)
+    with portable_trajectory_grid(trajectory):
+        ve = e.evaluate_true(X)
     C.check(f"{name} evaluate_true", a.evaluate_true(X), ve, TOL)
     # BoTorch's TrajectoryPlanning only accepts ``n x d`` inputs (it iterates
     # over the first dimension); the batched values are compared with the
     # values of the flattened batch.
     C.check(f"{name} evaluate_true batched", a.evaluate_true(X3), ve.reshape(3, 3), TOL)
-    C.check(f"{name} forward", a(X), e(X), TOL)
+    with portable_trajectory_grid(trajectory):
+        forward_reference = e(X)
+    C.check(f"{name} forward", a(X), forward_reference, TOL)
     if getattr(e, "_optimizers", None):
         opt = torch.tensor(e._optimizers, dtype=DT)
         C.check(
