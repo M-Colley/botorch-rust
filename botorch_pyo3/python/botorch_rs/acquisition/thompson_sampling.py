@@ -197,8 +197,8 @@ class PathwiseThompsonSampling(AcquisitionFunction):
         if kind.lib == "numpy":
             import numpy as np
 
-            index = np.broadcast_to(np.asarray(ids, dtype=np.int64).reshape(q, 1, m), target)
-            return np.take_along_axis(values, index, axis=-2).squeeze(-2)
+            numpy_index = np.broadcast_to(np.asarray(ids, dtype=np.int64).reshape(q, 1, m), target)
+            return np.take_along_axis(values, numpy_index, axis=-2).squeeze(-2)
         data = to_flat(values, "values")[0]
         selected = [
             data[((batch * q + path) * size + int(ids[path * m + output])) * m + output]
