@@ -188,9 +188,8 @@ with two CPU-callback/CUDA exclusions. Targeted mypy and Ruff checks pass.
 The pinned source also leaves augmented pending points installed if a later
 `optimize_acqf_mixed_alternating` initialization fails. Two source regressions
 (None and Tensor pending states) fail on unchanged b0dd01be6; a `try/finally`
-repair makes them pass alongside existing value/retry tests. The prepared
-patch is in `D:/botorch-pr-mixed-pending`, for extension of the existing
-[PR 3395](https://github.com/meta-pytorch/botorch/pull/3395). The native Rust
+repair makes them pass alongside existing value/retry tests. The patch extends
+the existing [PR 3395](https://github.com/meta-pytorch/botorch/pull/3395). The native Rust
 alternating optimizer already restores pending state before propagating an
 error; the device implementation does likewise.
 

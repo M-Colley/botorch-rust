@@ -37,7 +37,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Fully Bayesian default multitask warp columns | Existing [BoTorch #3465](https://github.com/meta-pytorch/botorch/pull/3465) |
 | Higher-order fantasy covariance wrappers and sample axes | New [BoTorch #3491](https://github.com/meta-pytorch/botorch/pull/3491); 19 tests and 12 subtests pass |
 | Sequential acquisition dispatch and leaked pending state | New [BoTorch #3469](https://github.com/meta-pytorch/botorch/pull/3469) |
-| Acquisition-list own pending baseline and exception cleanup | Existing [BoTorch #3395](https://github.com/meta-pytorch/botorch/pull/3395) extended with `finally` rollback; seven list tests and four new exception subtests pass |
+| Acquisition-list own pending baseline and list/mixed-alternating exception cleanup | Existing [BoTorch #3395](https://github.com/meta-pytorch/botorch/pull/3395) extended with `finally` rollback; nine integrated list/mixed tests and six exception subtests pass |
 | Fixed-feature values follow unsorted caller columns | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391); both port backends corrected and 14 wrapper tests pass |
 | All-fixed candidate feasibility | New [BoTorch #3470](https://github.com/meta-pytorch/botorch/pull/3470) |
 | Correlated empirical fantasies | Existing [BoTorch #3388](https://github.com/meta-pytorch/botorch/pull/3388) |
@@ -69,10 +69,14 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Pairwise model broadcasting to singleton query batches | New [BoTorch #3489](https://github.com/meta-pytorch/botorch/pull/3489); 17 model tests and 32 subtests pass |
 | Pairwise self-comparisons after duplicate consolidation and stable logit derivatives | New [BoTorch #3494](https://github.com/meta-pytorch/botorch/pull/3494); 19 source tests and 46 subtests pass |
 | Correlated empirical kernel lazy output-count metadata | New [BoTorch #3499](https://github.com/meta-pytorch/botorch/pull/3499); four source tests and 31 subtests pass |
+| Independent empirical lazy kernel output batches and rectangular query broadcasting | New [BoTorch #3500](https://github.com/meta-pytorch/botorch/pull/3500); four source tests and 34 subtests pass |
+| Cached normal sampler and low-rank draws with multidimensional sample shapes | New [BoTorch #3501](https://github.com/meta-pytorch/botorch/pull/3501); eight source tests and 64 subtests pass |
+| Multitask data-kernel active dimensions | Existing [GPyTorch #2809](https://github.com/cornellius-gp/gpytorch/pull/2809) |
 | Multistep incumbent units and batched analytic thresholds | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) and [#3453](https://github.com/meta-pytorch/botorch/pull/3453) |
 | Multistep fantasy base ranges and query-batch tree layout | Existing [BoTorch #3452](https://github.com/meta-pytorch/botorch/pull/3452) |
 | TriangularLinearOperator second derivatives through matrix parameters | Narrow analytic-VJP enhancement in new [linear_operator #152](https://github.com/cornellius-gp/linear_operator/pull/152); 130 tests and 12 subtests pass |
 | Port cosine float32 large-phase accuracy | Fixed in `4f1ad62`; CPU/CUDA regressions fail against old frozen binary and all 132 focused tensor cases pass with repair |
+| Port bounded Torch L-BFGS false stationary trial | Fixed in `4062e86`, included in port PR #1; isolated CPU/CUDA interior and boundary regressions pass |
 
 ## Retracted report
 

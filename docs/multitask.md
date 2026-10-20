@@ -365,7 +365,7 @@ kernel matrices (see "Tolerances above nominal").
 | 2, 5 | meta-pytorch/botorch#3446 |
 | 3 | meta-pytorch/botorch#3447 |
 | 4, 6 | meta-pytorch/botorch#3396 (bug 6: raises `NotImplementedError`) |
-| 7 | GPyTorch fix prepared, not yet submitted |
+| 7 | [GPyTorch #2809](https://github.com/cornellius-gp/gpytorch/pull/2809) |
 | 8 | meta-pytorch/botorch#3389 and #3374 |
 | 9 | meta-pytorch/botorch#3448 (also affects `SingleTaskGP`) |
 | 10 | `fantasize` and qKG: meta-pytorch/botorch#3374; qMES not filed (its `train_inputs` include the task column, which needs a design decision) |

@@ -263,6 +263,10 @@ output count). Preserve the model's existing vectorization behavior and add
 standalone `kernel(Q, Z).to_dense()` and diagonal regressions when applying
 the fix. Neither reference checkout was changed.
 
+The independent output-batch and query-broadcasting repair is submitted in
+[BoTorch #3500](https://github.com/meta-pytorch/botorch/pull/3500); the correlated
+event-count repair is in [#3499](https://github.com/meta-pytorch/botorch/pull/3499).
+
 ## Upstream fixed-noise prediction of an unobserved task
 
 The empirical multi-task model explicitly permits a task absent from training.

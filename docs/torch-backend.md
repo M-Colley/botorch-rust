@@ -88,7 +88,8 @@ execution. Discrete enumeration, lattice local search, mixed combination search,
 acquisition lists and cyclic search now have device implementations. Linear
 constrained automatic initialization, around-best sampling and KG/hypervolume
 initialization heuristics retain their device calculations. Mixed alternating
-search and remaining public initialization helpers are still being completed. See
+search now alternates device categorical/ordinal steps with actual bounded
+continuous optimization. Further public helpers are still being completed. See
 [optimization verification](torch-optimization.md).
 
 MAP SAAS, additive MAP SAAS and MAP SAAS ensembles now retain their coupled
@@ -122,8 +123,9 @@ integrated Wiener kernel uses consistent polynomial branches at coincident
 inputs so its smooth Hessians remain correct.
 
 Remaining GPU families and configurations include iterative EM models,
-preference-ensemble integration, and parts of the standalone kernel
-and public optimization helper catalogues.
+preference-ensemble integration, and remaining public optimization helpers.
+The [standalone kernel catalogue](torch-kernel-catalogue.md) now includes
+categorical, fidelity and positive task kernels with device prior graphs.
 Some are under active implementation. Device-resident NUTS fits scalar and
 latent-task multitask Matérn, SAAS and linear fully Bayesian models. Custom
 probabilistic overrides remain unsupported. See

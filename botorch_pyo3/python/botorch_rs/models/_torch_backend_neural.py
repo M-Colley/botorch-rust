@@ -15,6 +15,7 @@ from botorch_rs.models.kernels.infinite_width_bnn import InfiniteWidthBNNKernel
 class TorchInfiniteWidthBNNKernel(TorchAlgebraKernel, InfiniteWidthBNNKernel):  # type: ignore[misc]
     raw_weight_var_constraint: Any
     raw_bias_var_constraint: Any
+
     @property
     def batch_shape(self) -> Any:
         return self._tensor_batch_shape

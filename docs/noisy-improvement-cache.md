@@ -51,6 +51,11 @@ already preserves all sample axes; the test compares its actual forward
 incumbents with the official correctly initialized cached incumbents and
 records the reference forward exception.
 
+The sampler-axis correction and the corresponding low-rank RHS reshaping are
+submitted in [BoTorch #3501](https://github.com/meta-pytorch/botorch/pull/3501).
+Eight source tests and 64 subtests pass, including multidimensional cached
+acquisitions matching the equivalent flattened-sample law on CPU and CUDA.
+
 Cached numerical fallback correctness
 -------------------------------------
 
