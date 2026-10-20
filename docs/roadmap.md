@@ -92,9 +92,10 @@ Ported:
 - fitting with torch optimizers, the closures and stopping criteria;
 - `batch_cross_validation`.
 
-Remaining:
-- `acq_function_sequence`;
-- `data_loader` closures.
+Sequential acquisition sequences now optimize each acquisition through the
+native candidate generator and restore pending points after failures
+([scope and upstream fixes](sequence-optimization.md)). Remaining:
+`data_loader` closures.
 
 `loo_cv`, `efficient_loo_cv` and `ensemble_loo_cv` now use native cached
 factorizations, with batched independent outputs, fixed noise, outcome
