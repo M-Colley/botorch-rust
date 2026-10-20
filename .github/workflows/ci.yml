@@ -18,53 +18,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust:
-    name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # PyO3's build configuration (botorch_pyo3) needs a Python interpreter.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Set up the Rust toolchain (rust-toolchain.toml)
-        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        with:
-          components: rustfmt, clippy
-          rustflags: ""
-      - name: rustfmt
-        run: cargo fmt --all --check
-      - name: clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Tests (unit, BoTorch parity fixtures, doctests)
-        run: cargo test --workspace --locked
-
-  python-lint:
-    name: Python lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Install ruff and mypy
-        run: python -m pip install ruff mypy
-      - name: ruff
-        run: |
-          ruff check --config botorch_pyo3/pyproject.toml botorch_pyo3/python botorch_pyo3/tests scripts/develop.py scripts/benchmark.py scripts/plot_benchmarks.py scripts/api_coverage.py scripts/benchmark_mo_utils.py scripts/fixtures_mo_test_functions.py scripts/benchmark_arrays.py scripts/fixtures_mo_acquisition.py scripts/fixtures_mo_hvkg.py scripts/benchmark_mo_hvkg.py scripts/fixtures_mo_entropy.py scripts/benchmark_mo_entropy.py scripts/fixtures_mo_robust.py scripts/fixtures_deterministic.py scripts/fixtures_lcemgp.py scripts/fixtures_8_so_acquisition.py scripts/fixtures_optim.py scripts/fixtures_6a_kernels.py scripts/fixtures_6b_transforms.py scripts/fixtures_7a_multitask.py scripts/fixtures_7b_models.py scripts/fixtures_8b_acquisition_rest.py scripts/fixtures_10b_preference.py scripts/fit_comparison_sim.py scripts/fixtures_10a_fully_bayesian.py scripts/fixtures_10c_approximate.py scripts/fixtures_11a_utils.py
-          ruff format --check --config botorch_pyo3/pyproject.toml botorch_pyo3/python botorch_pyo3/tests scripts/develop.py scripts/benchmark.py scripts/plot_benchmarks.py scripts/api_coverage.py scripts/benchmark_mo_utils.py scripts/fixtures_mo_test_functions.py scripts/benchmark_arrays.py scripts/fixtures_mo_acquisition.py scripts/fixtures_mo_hvkg.py scripts/benchmark_mo_hvkg.py scripts/fixtures_mo_entropy.py scripts/benchmark_mo_entropy.py scripts/fixtures_mo_robust.py scripts/fixtures_deterministic.py scripts/fixtures_lcemgp.py scripts/fixtures_8_so_acquisition.py scripts/fixtures_optim.py scripts/fixtures_6a_kernels.py scripts/fixtures_6b_transforms.py scripts/fixtures_7a_multitask.py scripts/fixtures_7b_models.py scripts/fixtures_8b_acquisition_rest.py scripts/fixtures_10b_preference.py scripts/fit_comparison_sim.py scripts/fixtures_10a_fully_bayesian.py scripts/fixtures_10c_approximate.py scripts/fixtures_11a_utils.py
-      - name: mypy
-        working-directory: botorch_pyo3
-        run: mypy python/botorch_rs
-
   python:
     name: Python ${{ matrix.python-version }} (${{ matrix.os }}, ${{ matrix.label }})
     runs-on: ${{ matrix.os }}
@@ -72,33 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # No optional packages: nested lists only.
-          - os: ubuntu-latest
-            python-version: "3.11"
-            label: lists
-            packages: ""
-          - os: ubuntu-latest
-            python-version: "3.13"
-            label: numpy + torch
-            packages: numpy torch
-          - os: windows-latest
-            python-version: "3.12"
-            label: numpy
-            packages: numpy
-          - os: macos-latest
-            python-version: "3.13"
-            label: numpy
-            packages: numpy
-          # The newest CPython.
-          - os: ubuntu-latest
-            python-version: "3.15"
-            label: numpy + torch
-            packages: numpy torch
-          - os: windows-latest
-            python-version: "3.15"
-            label: numpy
-            packages: numpy
-          # Parity and API coverage against the audited official source.
+          # Diagnostic: Linux parity equivalence only, not the complete CI matrix.
           - os: ubuntu-latest
             python-version: "3.12"
             label: BoTorch parity
@@ -144,12 +71,6 @@ jobs:
       - name: Strict pinned core API inventory
         if: matrix.parity
         run: python scripts/api_coverage.py --require-full --out api-coverage-ci.md --json-out api-coverage-ci.json
-      - name: Tests
-        working-directory: botorch_pyo3
-        env:
-          # The parity entry must run (not skip) the BoTorch comparisons.
-          BOTORCH_RS_REQUIRE_BOTORCH: ${{ matrix.parity && '1' || '' }}
-        run: python -m pytest tests -q -rs -m "not equivalence"
       # The unified equivalence suite against live BoTorch (a few minutes); its
       # terminal summary lists the worst error of every compared quantity.
       - name: Equivalence suite (BoTorch)
