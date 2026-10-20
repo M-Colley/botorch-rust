@@ -446,6 +446,12 @@ remaining work. The strict core check,
 reference, including audited constructor parameters and public members.
 Configuration and numerical parity remain separate requirements.
 
+The [2026-10-20 release verification](docs/verification-release-2026-10-20.json)
+records 522 passing Rust tests and 7,495 passing Python tests, with 47 Python
+cases skipped. This local Windows CPU run uses the pinned official reference.
+The report includes wheel hashes, exact case accounting, packaging checks,
+benchmark settings and remaining compatibility limits.
+
 The previously separate fully Bayesian, approximate and utility worktrees
 are integrated in this branch:
 

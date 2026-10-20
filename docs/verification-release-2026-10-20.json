@@ -1,0 +1,141 @@
+{
+  "recorded_utc": "2026-10-20T05:36:04.589511+00:00",
+  "status": "validation_passed",
+  "behavioral_parity_complete": false,
+  "scope": "Official core BoTorch public API; native CPU float64; documented configuration and autograd limits remain.",
+  "source_revision": "d4b95da756513b3b1bd615feb2569b33460c97a8",
+  "native_source_revision": "4a8b8bda1348b748f23d7408cc42108c9158b97b",
+  "official_reference_revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+  "environment": {
+    "platform": "Windows-11-10.0.26300-SP0",
+    "python": "3.13.12",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "torch": "2.13.0+cu132",
+    "numpy": "2.5.2",
+    "gpytorch": "1.15.2",
+    "pytest": "9.0.3"
+  },
+  "artifact": {
+    "wheel": "target/wheels/botorch_rust-0.2.0-cp311-abi3-win_amd64.whl",
+    "wheel_sha256": "19430c31fa9496016957182e4dc1f011e137bb0f04e0e869ebf124e2146f92fa",
+    "extension_sha256": "543749d9f2df2aa1b89faa2985b9f706edd2e7eca5014d7bf49235e074f6def9",
+    "source_files_matching_wheel": 245,
+    "source_mismatches": [],
+    "bytecode_cache_files": 0,
+    "runtime_payload_files_identical_to_full_test_package": 247
+  },
+  "api_inventory": {
+    "available": 776,
+    "audited": 776,
+    "gaps": [],
+    "meaning": "Symbol availability is not proof of numerical parity, supported configurations, autograd compatibility or performance.",
+    "community_included": false
+  },
+  "native_tests": {
+    "passed": 522,
+    "groups": 46,
+    "failed": 0,
+    "ignored": 0,
+    "command": "cargo test --workspace --locked"
+  },
+  "python_tests": {
+    "totals": {
+      "broad": {
+        "selected": 6307,
+        "passed": 6275,
+        "skipped": 32
+      },
+      "equivalence": {
+        "selected": 1235,
+        "passed": 1220,
+        "skipped": 15
+      }
+    },
+    "canonical_collection_skips": [],
+    "case_ids_exactly_once": true,
+    "python_executable": "C:\\Users\\Mark\\miniconda3\\python.exe",
+    "python_source_revision": "d4b95da756513b3b1bd615feb2569b33460c97a8",
+    "python_sources_sha256": "c21f4c1ee31cb7f4164683f5f7038781868a7b519798f5b8dff392a75818c4ef",
+    "reference_revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "native_sha256": {
+      "target/complete-port-release-python/botorch_rs/_botorch_rs.pyd": "543749d9f2df2aa1b89faa2985b9f706edd2e7eca5014d7bf49235e074f6def9"
+    },
+    "helper_sha256": "a5c942a3f9e9078117a2f500d884aa2f6fd478d9219fdf1cb7ac332fc109a61e",
+    "environment": {
+      "PYTHONPATH": "C:/Users/Mark/Desktop/botorch-rs/target/complete-port-release-python;C:/Users/Mark/Desktop/botorch-rs/.reference/botorch",
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "BOTORCH_RS_REQUIRE_BOTORCH": "1"
+    }
+  },
+  "checks": {
+    "clippy_warnings_as_errors": "passed",
+    "rustfmt": "passed",
+    "ruff_check_and_format": "passed (451 CI-selected files)",
+    "mypy": "passed (245 source files)",
+    "lists_only_prediction_sampling_optimization": "passed without Torch or NumPy"
+  },
+  "performance": {
+    "report": "benchmarks/noisy-cache-complete-release-2026-10-20.json",
+    "parameters": {
+      "train": 32,
+      "baseline": 180,
+      "batches": 8,
+      "q": 2,
+      "samples": 128,
+      "threads": 1,
+      "warmup": 3,
+      "repeats": 21,
+      "rust_profile": "release"
+    },
+    "median_ms": {
+      "joint": {
+        "rust": 15.812500030733645,
+        "reference": 15.740000002551824,
+        "reference_over_rust": 0.9954150179895078
+      },
+      "cached": {
+        "rust": 1.3996000052429736,
+        "reference": 8.358799968846142,
+        "reference_over_rust": 5.972277749023755
+      }
+    },
+    "scope": "Forward-only CPU qLogNEI with shared normals; excludes fitting, construction and imports; no universal speedup claim."
+  },
+  "remaining_limits": [
+    "Native GPU execution and general higher-order Torch derivatives.",
+    "Autograd to stored training inputs/targets and fantasy training data; propagate_grads does not enable it.",
+    "Some specialized-model training batches and input transforms; additional variational families/likelihoods.",
+    "Posterior/acquisition parameter autograd for specialized models and remaining acquisition families/wrappers.",
+    "Historical empirical index-grid movement, batched/approximate path models and full Torch model-state interoperability.",
+    "botorch_community remains separate from the audited core inventory."
+  ],
+  "reproduce_python": {
+    "setup": "Build/install the wheel, place the pinned official checkout on PYTHONPATH and set BOTORCH_RS_REQUIRE_BOTORCH=1, OMP_NUM_THREADS=1, MKL_NUM_THREADS=1.",
+    "broad": "python -m pytest botorch_pyo3/tests -q -rs -m \"not equivalence\"",
+    "equivalence": "python -m pytest botorch_pyo3/tests -q -rs -m equivalence",
+    "api": "python scripts/api_coverage.py --require-full --out docs/api_coverage.md --json-out docs/api_coverage.json"
+  },
+  "delivery_revision": "a99a4bf91e934ed81337700e5396cd17d6e1dcb2",
+  "full_test_artifact": {
+    "wheel": "target/complete-wheel-with-bytecode.whl",
+    "wheel_sha256": "3d1f8b43998d9afdf24d0351fd449f765de8216fc914be6f3902e2352f599d38"
+  },
+  "packaging_validation": {
+    "only_configuration_change_since_full_test": {
+      "tool.maturin.exclude": [
+        "**/__pycache__/**",
+        "**/*.pyc",
+        "**/*.pyo"
+      ]
+    },
+    "pytest_settings_unchanged": true,
+    "all_source_stubs_typing_and_native_payload_bytes_unchanged": true,
+    "validated_record_entries": 250,
+    "zip_entries": 251,
+    "source_only_install_tests_passed": 248,
+    "source_only_install_bytecode_caches": 0,
+    "note": "The full Python suite ran before generated bytecode was excluded. The clean wheel retains every tested runtime payload byte; its no-compile installation passed 248 additional tests with bytecode writing disabled.",
+    "configuration_documentation": "https://www.maturin.rs/config.html"
+  }
+}
