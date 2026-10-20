@@ -117,3 +117,21 @@ Further details: [tensor algebra](tensor-native-algebra.md),
 [multi-task model](torch-backend-multitask.md),
 [fully Bayesian models](torch-fully-bayesian.md),
 [acquisitions](torch-backend-acquisitions.md).
+
+## Release verification
+
+The 2026-10-20 Windows wheel passed 8,683 Python cases, with 47 documented
+skips, against the pinned official reference. The two complementary test phases
+account for all 8,730 collected case IDs exactly once. Their execution phases,
+installed Python sources, native binary, helper and reference fingerprints
+remain consistent before and after both runs. The wheel contains 265 matching
+Python source files, no bytecode caches and no duplicate archive members.
+The Rust workspace passed 522 tests in 46 groups; strict Clippy, rustfmt,
+Ruff and mypy also passed. The source checkout now uses the same validated
+native binary and passes a real CUDA first/second-derivative smoke check.
+
+The [machine-readable verification report](verification-torch-release-2026-10-20.json)
+records the exact local wheel, hashes, commands, test ledger, benchmarks and
+remaining limits. Its `gpu_coverage_complete` and `behavioral_parity_complete`
+flags remain false. Main-package public-symbol availability is 776/776;
+that inventory is separate from behavioral and GPU coverage.
