@@ -23,6 +23,7 @@
 use std::f64::consts::PI;
 
 use crate::error::{BotorchError, Result};
+use crate::kernels::contextual::LceaState;
 use crate::kernels::nonfinite::{self, TrainingNan};
 use crate::kernels::oak::{gauss_legendre_01, OAK_NORMALIZER_EPS};
 use crate::kernels::tree::{KernelNode, KernelType, MatrixPrior, ParamSpec};
@@ -256,6 +257,7 @@ impl IntegratedWhiteNoise {
 
 #[derive(Clone, Debug)]
 enum NodeKind {
+    Lcea(Box<LceaState>),
     Stationary {
         kind: KernelKind,
         ls: Vec<f64>,
@@ -702,6 +704,10 @@ fn build_node(spec: &KernelNode, cur: &mut Cursor<'_>, parent_dim: usize) -> Res
     let off = cur.pos;
     let params = spec.params();
     let kind = match spec.kind() {
+        KernelType::ContextualLcea(spec) => {
+            let values: Vec<f64> = params.iter().flat_map(|p| cur.take(p).1).collect();
+            NodeKind::Lcea(Box::new(LceaState::new(spec, &values, off)?))
+        }
         KernelType::Stationary(kind) => {
             let (_, ls) = cur.take(&params[0]);
             // (A SAAS prior's `raw_tau` enters the priors only.)
@@ -1281,6 +1287,7 @@ impl Node {
             }
             NodeKind::Polynomial { .. }
             | NodeKind::Categorical { .. }
+            | NodeKind::Lcea(_)
             | NodeKind::IntegratedWhiteNoise(_)
             | NodeKind::Activation(_) => leaf(local, Vec::new()),
             NodeKind::Ltf {
@@ -1333,6 +1340,7 @@ impl Node {
     /// same point of the same set, as on the diagonal of `K(A, A)`).
     fn value(&self, a: &NodePrep, i: usize, b: &NodePrep, j: usize, same: bool) -> f64 {
         match &self.kind {
+            NodeKind::Lcea(state) => state.value(a.row(i), b.row(j)),
             NodeKind::Stationary { kind, .. } => {
                 if same {
                     kind.value(0.0)
@@ -1694,6 +1702,15 @@ impl Node {
         let mut val = Vector::zeros(nb);
         let mut grad = Matrix::zeros(nb, k);
         match &self.kind {
+            NodeKind::Lcea(state) => {
+                for j in 0..nb {
+                    let (v, g) = state.input_gradient(a.row(i), b.row(j));
+                    val[j] = v;
+                    for m in 0..k {
+                        grad[(j, m)] = g[m];
+                    }
+                }
+            }
             NodeKind::Stationary { kind, ls, .. } => {
                 let x = a.row(i);
                 for j in 0..nb {
@@ -1914,6 +1931,11 @@ impl Node {
         let off = self.off;
         let n = a.n;
         match &self.kind {
+            NodeKind::Lcea(state) => {
+                for_pairs(w, true, |i, j, weight| {
+                    state.accumulate_parameter_gradient(a.row(i), a.row(j), weight, out)
+                });
+            }
             NodeKind::IntegratedWhiteNoise(_) | NodeKind::Activation(_) => {}
             NodeKind::Stationary { kind, ls, shared } => {
                 let mut gl = vec![0.0; k];

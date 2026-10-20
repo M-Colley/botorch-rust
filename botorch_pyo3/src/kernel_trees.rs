@@ -3,12 +3,13 @@
 //! `botorch_rs.kernels` and `botorch_rs.models.kernels` build and pass to a
 //! `SingleTaskGP` as its `covar_module`.
 
-use botorch_core::kernels::{KernelNode, MatrixPrior, TreeKernel};
+use botorch_core::kernels::contextual::{LceaSpec, LceaState};
+use botorch_core::kernels::{KernelNode, KernelType, MatrixPrior, TreeKernel};
 use botorch_core::Matrix;
 use pyo3::prelude::*;
 
-use crate::arrays::{Array, ArrayBuf};
-use crate::errors::{dimension_error, IntoPyResult};
+use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
+use crate::errors::{dimension_error, unsupported, IntoPyResult};
 use crate::specs::{kind_from_name, kind_name, PyConstraint, PyKernelSpec, PyPrior};
 
 /// A kernel (tree) configuration: the kernel class, its parameters with
@@ -22,6 +23,13 @@ pub struct PyKernelNode {
 impl PyKernelNode {
     fn wrap(inner: KernelNode) -> Self {
         Self { inner }
+    }
+
+    fn lcea_spec(&self) -> PyResult<&LceaSpec> {
+        match self.inner.kind() {
+            KernelType::ContextualLcea(spec) => Ok(spec),
+            _ => Err(unsupported("requires a native LCEAKernel node")),
+        }
     }
 }
 
@@ -223,6 +231,58 @@ impl PyKernelNode {
         KernelNode::contextual_sac(decomposition, base.inner.clone())
             .into_py_result()
             .map(Self::wrap)
+    }
+
+    /// LCEA with shared spatial and embedding RBF parameters.
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (contexts,categorical,embedding_shapes,fixed_embeddings,context_weights,task,base))]
+    fn contextual_lcea(
+        contexts: Vec<Vec<usize>>,
+        categorical: Vec<Vec<usize>>,
+        embedding_shapes: Vec<(usize, usize)>,
+        fixed_embeddings: Array,
+        context_weights: Option<Vec<f64>>,
+        task: PyRef<'_, PyKernelNode>,
+        base: PyRef<'_, PyKernelNode>,
+    ) -> PyResult<Self> {
+        let spec = LceaSpec {
+            contexts,
+            categorical,
+            embedding_shapes,
+            fixed_embeddings: fixed_embeddings.matrix("fixed_embeddings")?,
+            context_weights,
+        };
+        KernelNode::contextual_lcea(spec, task.inner.clone(), base.inner.clone())
+            .into_py_result()
+            .map(Self::wrap)
+    }
+
+    /// Native max-norm update of the shared embedding tables.
+    fn contextual_lcea_normalize(&self, mut raw: Vec<f64>) -> PyResult<Vec<f64>> {
+        self.lcea_spec()?
+            .normalize_parameters(&mut raw)
+            .into_py_result()?;
+        Ok(raw)
+    }
+
+    /// Effective learned plus fixed context embeddings.
+    fn contextual_lcea_embeddings(&self, raw: Vec<f64>) -> PyResult<ArrayOut> {
+        if raw.len() != self.inner.num_raw() {
+            return Err(dimension_error("inconsistent LCEA raw parameters"));
+        }
+        let actual = self.inner.transform_all(&raw);
+        Ok(matrix_out(&self.lcea_spec()?.embeddings(&actual)))
+    }
+
+    /// Native context covariance, including the amplitude outer product.
+    fn contextual_lcea_covariance(&self, raw: Vec<f64>) -> PyResult<ArrayOut> {
+        if raw.len() != self.inner.num_raw() {
+            return Err(dimension_error("inconsistent LCEA raw parameters"));
+        }
+        let actual = self.inner.transform_all(&raw);
+        let state = LceaState::new(self.lcea_spec()?, &actual, 0).into_py_result()?;
+        Ok(matrix_out(state.context_covariance()))
     }
 
     /// `AdditiveKernel(*kernels)`.

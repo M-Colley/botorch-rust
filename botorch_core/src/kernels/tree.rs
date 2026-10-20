@@ -21,6 +21,7 @@
 
 use crate::constraints::{Constraint, GreaterThan};
 use crate::error::{BotorchError, Result};
+use crate::kernels::contextual::LceaSpec;
 use crate::kernels::KernelKind;
 use crate::priors::Prior;
 
@@ -154,6 +155,8 @@ pub const SAAS_EPS: f64 = 1e-8;
 /// The kernel classes of a [`KernelNode`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum KernelType {
+    /// Latent context embedding additive covariance with shared parameters.
+    ContextualLcea(Box<LceaSpec>),
     /// `RBFKernel` or `MaternKernel(nu)` (parameter `raw_lengthscale`).
     Stationary(KernelKind),
     /// `RQKernel`: `(1 + r²/(2α))^(-α)` (`raw_lengthscale`, `raw_alpha`).
@@ -716,6 +719,45 @@ impl KernelNode {
         ))
     }
 
+    /// LCEA's amplitudes, learned embeddings, task RBF and spatial RBF.
+    pub fn contextual_lcea(spec: LceaSpec, task: KernelNode, base: KernelNode) -> Result<Self> {
+        spec.validate(usize::MAX)?;
+        for (kernel, d) in [(&task, spec.embedding_dim()), (&base, spec.spatial_dim())] {
+            if !matches!(kernel.kind, KernelType::Stationary(KernelKind::Rbf))
+                || kernel.active_dims.is_some()
+                || kernel.params.len() != 1
+                || kernel.params[0].shape != [1, d]
+            {
+                return Err(BotorchError::Unsupported(
+                    "LCEAKernel needs shared ARD RBF task and spatial kernels".into(),
+                ));
+            }
+        }
+        let mut params = vec![ParamSpec::new(
+            "raw_outputscale_list",
+            vec![spec.scale_count()],
+            positive(),
+        )];
+        params.extend(
+            spec.embedding_shapes
+                .iter()
+                .enumerate()
+                .map(|(i, &(n, d))| {
+                    ParamSpec::new(&format!("emb_layers.{i}.weight"), vec![n, d], None)
+                }),
+        );
+        let mut task_parameter = task.params[0].clone();
+        task_parameter.name = "task_covar_module.raw_lengthscale".into();
+        params.push(task_parameter);
+        let mut base_parameter = base.params[0].clone();
+        base_parameter.name = "base_kernel.raw_lengthscale".into();
+        params.push(base_parameter);
+        Ok(Self::leaf(
+            KernelType::ContextualLcea(Box::new(spec)),
+            params,
+        ))
+    }
+
     /// `AdditiveKernel(*kernels)`.
     ///
     /// # Errors
@@ -1239,6 +1281,7 @@ impl KernelNode {
                     )));
                 }
             }
+            KernelType::ContextualLcea(spec) => spec.validate(k)?,
             KernelType::ContextualSac { contexts } => {
                 if let Some(&bad) = contexts.iter().flatten().find(|&&j| j >= k) {
                     return Err(BotorchError::Runtime(format!(
