@@ -218,9 +218,14 @@ limits are explicit in the linked family notes. Structured Tensor models use
 dense exact algebra, and noisy root-cache requests use the documented exact
 joint-sampling performance fallback.
 
-Separate focused checks at port commit `dac2a48` covered Torch 2.14 CPU
-compatibility with explicit reference-oracle controls. They are not part of
-this installed-wheel ledger and do not certify Torch 2.14 GPU coverage.
+All 11 [cross-platform CI jobs](https://github.com/M-Colley/botorch-rust/actions/runs/39508767912)
+pass at test revision `e5a6c0ad3da8`, including Rust on Linux, macOS
+and Windows, optional-dependency matrices, and the full Linux Torch 2.14 CPU
+BoTorch broad/equivalence suites. Changes after the frozen wheel affect tests
+and documentation only; the report verifies unchanged Python payloads and all
+300 Rust/Cargo source inputs. Linux CI builds its own platform extension.
+Its case counts are separate from the Windows installed-wheel ledger. Local
+CUDA validation uses Torch 2.13; Torch 2.14 GPU coverage is not certified.
 
 The [earlier release certificate](verification-torch-release-2026-10-20.json),
 its wheel and older measurements remain preserved as historical checkpoints.
