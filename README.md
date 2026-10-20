@@ -81,8 +81,8 @@ balances compatibility and performance:
   mixed, MAP SAAS and ensembles), fully Bayesian GPs with native NUTS,
   variational and higher-order GPs, preference learning, the single- and
   multi-objective acquisition functions, and acquisition optimization.
-  Specialized configurations, GPU execution and
-  autograd through model hyperparameters are listed below. Public-name
+  Specialized configurations, GPU execution and remaining
+  hyperparameter-gradient configurations are listed below. Public-name
   coverage and numerical parity are tracked separately.
 
 ## Installation
@@ -506,8 +506,9 @@ The main remaining gaps are:
   posteriors retain first-order Torch query autograd
   ([scope](docs/posterior-query-autograd.md)); native structured Matheron
   posteriors also expose query adjoints, with documented fantasy-batch limits.
-  Acquisition and joint model-list parameter graphs remain configuration
-  work. Exact GPs also expose explicit native
+  Joint Gaussian model lists also carry child parameter graphs
+  ([scope](docs/joint-model-list-autograd.md)). Acquisition parameter graphs
+  remain configuration work. Exact GPs also expose explicit native
   [posterior parameter pullbacks](docs/posterior-parameter-gradients.md).
   Models compute on the CPU in float64
   and restore the caller's array dtype and device. Acquisition functions
