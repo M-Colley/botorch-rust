@@ -1026,6 +1026,33 @@ class SingleTaskVariationalGP(ApproximateGPyTorchModel):
 
     _has_train_inputs = True
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if cls is SingleTaskVariationalGP:
+            if backend not in ("auto", "native", "torch"):
+                raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+            tensor_backend = backend == "torch" or (
+                backend == "auto"
+                and any(
+                    getattr(value, "requires_grad", False)
+                    or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
+                    for value in (train_X, train_Y, kwargs.get("inducing_points"))
+                )
+            )
+            if tensor_backend:
+                from botorch_rs.models._torch_backend_variational import (
+                    TorchSingleTaskVariationalGP,
+                )
+
+                return object.__new__(TorchSingleTaskVariationalGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -1041,6 +1068,8 @@ class SingleTaskVariationalGP(ApproximateGPyTorchModel):
         inducing_point_allocator: InducingPointAllocator | None = None,
         outcome_transform: OutcomeTransform | None = None,
         input_transform: InputTransform | None = None,
+        *,
+        backend: str = "auto",
     ) -> None:
         r"""
         Args:

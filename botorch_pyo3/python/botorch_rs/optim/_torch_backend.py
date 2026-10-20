@@ -9,6 +9,9 @@ from typing import Any
 def parameter_bounds(module: Any) -> dict[str, tuple[float | None, float | None]]:
     model = getattr(module, "model", module)
     roots = list(getattr(model, "models", (model,)))
+    likelihood = getattr(module, "likelihood", None)
+    if likelihood is not None:
+        roots.append(likelihood)
     by_identity = {}
     for root in roots:
         for _, child in root.named_modules():

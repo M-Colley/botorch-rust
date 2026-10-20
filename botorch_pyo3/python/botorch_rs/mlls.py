@@ -522,6 +522,20 @@ class VariationalELBO(_ApproximateMarginalLogLikelihood):
         >>> loss = -mll(model.model(train_x), train_y)
     """
 
+    def __new__(
+        cls,
+        likelihood: Any,
+        model: Any,
+        num_data: int,
+        beta: float = 1.0,
+        combine_terms: bool = True,
+    ) -> Any:
+        if cls is VariationalELBO and getattr(model, "_tensor_backend", None) == "torch":
+            from botorch_rs.models._torch_backend_variational import TorchVariationalELBO
+
+            return TorchVariationalELBO(likelihood, model, num_data, beta, combine_terms)
+        return object.__new__(cls)
+
 
 __all__ = [
     "ExactMarginalLogLikelihood",
