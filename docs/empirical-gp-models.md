@@ -87,7 +87,16 @@ gradients and refresh the learned moments and target posterior after parameter
 updates. Default construction and fitting match official BoTorch values,
 raw parameter gradients and posterior moments; independent finite differences
 exercise indexed and explicit-inducing layouts with ML and MAP updates.
-Warm-start EM and learnable inducing locations remain explicit boundaries.
+Warm-start EM initializes each rerun from the previous detached learned
+moments, while evaluating mean/IW priors and shrinkage against the current
+parametric kernel. Each observed-data likelihood call advances the state
+once and differentiates through that run; previous runs contribute no gradient.
+The native L-BFGS-B and Adam closures retain this state between evaluations.
+Parameter assignment preserves warm moments until a training forward or MLL
+call refines them. Explicit-parameter `value_and_grad(raw_parameters)` evaluates
+against the current seed without changing model state, allowing reproducible
+finite-difference diagnostics. Existing posterior snapshots remain immutable.
+Learnable inducing locations remain an explicit boundary.
 Arbitrary Python mean/likelihood objects and tensor-valued predictive noise
 are rejected.
 

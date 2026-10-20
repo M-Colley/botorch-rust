@@ -11,7 +11,6 @@ use botorch_core::fit::{FitOptions, FitStatus};
 use botorch_core::models::em_gp::{EMDataset, EMOptions};
 use botorch_core::models::em_model::{EMEmpiricalGP, EMGPPrior, EMModelOptions, EMPrior};
 use botorch_core::models::{ConstantMeanSpec, Model};
-use botorch_core::optim::fit::fit_gpytorch_mll_torch;
 use botorch_core::optim::minimize::TorchMinimizeOptions;
 use botorch_core::optim::{AdamOptions, ExpMaStoppingCriterion};
 use pyo3::prelude::*;
@@ -37,7 +36,7 @@ impl PyEMGaussianProcess {
 #[pymethods]
 impl PyEMGaussianProcess {
     #[new]
-    #[pyo3(signature=(x,y,history_x,history_y,inducing,mean,covariance,kernel,kernel_raw,likelihood,noise_raw,constant=0.0,learn_mean=false,mean_prior=None,mean_constraint=None,base=None,base_raw=Vec::new(),interpolate=true,inducing_observations=false,freeze_pretrained=false,em_iterations=None,em_mean_prior=false,em_covar_prior=false,em_iw_nu=None,em_tolerance=Some(1e-6),em_shrinkage=0.0))]
+    #[pyo3(signature=(x,y,history_x,history_y,inducing,mean,covariance,kernel,kernel_raw,likelihood,noise_raw,constant=0.0,learn_mean=false,mean_prior=None,mean_constraint=None,base=None,base_raw=Vec::new(),interpolate=true,inducing_observations=false,freeze_pretrained=false,em_iterations=None,em_mean_prior=false,em_covar_prior=false,em_iw_nu=None,em_tolerance=Some(1e-6),em_shrinkage=0.0,warm_start_em=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -67,6 +66,7 @@ impl PyEMGaussianProcess {
         em_iw_nu: Option<f64>,
         em_tolerance: Option<f64>,
         em_shrinkage: f64,
+        warm_start_em: bool,
     ) -> PyResult<Self> {
         if !learn_mean && (mean_prior.is_some() || mean_constraint.is_some() || constant != 0.0) {
             return Err(value_error(
@@ -130,6 +130,7 @@ impl PyEMGaussianProcess {
                 shrinkage: em_shrinkage,
                 ..Default::default()
             }),
+            warm_start_em,
         };
         let model =
             threads::run(py, || EMEmpiricalGP::new(x, y, data, prior, options)).into_py_result()?;
@@ -216,6 +217,20 @@ impl PyEMGaussianProcess {
             matrix_out(&factor).into(),
             (delta.as_slice().to_vec(), vec![n]),
         )
+    }
+    fn refresh_em(&self, py: Python<'_>) -> PyResult<()> {
+        let mut model = (*self.get()).clone();
+        threads::run(py, || model.refresh_em()).into_py_result()?;
+        self.set(model);
+        Ok(())
+    }
+    #[pyo3(signature=(raw=None))]
+    fn advance_mll(&self, py: Python<'_>, raw: Option<Vec<f64>>) -> PyResult<(ArrayOut, Vec<f64>)> {
+        let mut model = (*self.get()).clone();
+        let raw = raw.unwrap_or_else(|| model.raw_parameters().to_vec());
+        let (value, gradient) = threads::run(py, || model.advance_mll(&raw)).into_py_result()?;
+        self.set(model);
+        Ok(((vec![value], vec![]), gradient))
     }
     fn freeze_pretrained(&self, freeze: bool) {
         let mut model = (*self.get()).clone();
@@ -336,7 +351,7 @@ impl PyEMGaussianProcess {
         };
         let mut m = (*self.get()).clone();
         let r = threads::run(py, || {
-            fit_gpytorch_mll_torch(&mut m, mask.as_deref(), bounds.as_deref(), &options, None)
+            m.fit_mll_torch(mask.as_deref(), bounds.as_deref(), &options)
         })
         .into_py_result()?;
         self.set(m);

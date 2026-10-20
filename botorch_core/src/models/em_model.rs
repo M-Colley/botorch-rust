@@ -5,11 +5,13 @@ use crate::fit::{minimize_with_retries, FitOptions, FitResult, Fittable};
 use crate::kernels::{KernelNode, TreeKernel};
 use crate::linalg::{psd_safe_cholesky, CholeskyFactor};
 use crate::models::em_differentiation::em_directional;
-use crate::models::em_gp::{pretrain_em_prior, EMDataset, EMInterpolation, EMOptions};
+use crate::models::em_gp::{run_em_prior, EMDataset, EMInterpolation, EMOptions};
 use crate::models::{ConstantMeanSpec, GaussianLikelihoodSpec, Model};
 use crate::optim::fit::MllModel;
+use crate::optim::minimize::{OptimizationResult, TorchMinimizeOptions};
 use crate::posterior::{JointPosteriorGrad, Posterior};
 use crate::{Matrix, Vector};
+use std::cell::RefCell;
 
 /// Immutable empirical inducing moments, extended by a mutable parametric GP.
 #[derive(Clone, Debug)]
@@ -47,6 +49,8 @@ pub struct EMModelOptions {
     pub freeze_pretrained: bool,
     /// Refit inducing moments through differentiable EM for from-scratch models.
     pub em: Option<EMOptions>,
+    /// Start each EM rerun from the previous detached learned moments.
+    pub warm_start_em: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -276,6 +280,19 @@ impl EMEmpiricalGP {
     }
     /// Replace all raw parameters atomically after validating the new cache.
     pub fn set_raw_parameters(&mut self, raw: &[f64]) -> Result<()> {
+        if self.options.em.is_some() && !self.options.warm_start_em {
+            return self.refresh_em_at(raw);
+        }
+        self.install_state(raw, self.prior.clone())
+    }
+    fn install_state(&mut self, raw: &[f64], prior: EMPrior) -> Result<()> {
+        let cache = Self::build_cache(&self.train_x, &self.train_y, &prior, &self.options, raw)?;
+        self.raw = raw.to_vec();
+        self.prior = prior;
+        self.cache = cache;
+        Ok(())
+    }
+    fn refresh_em_at(&mut self, raw: &[f64]) -> Result<()> {
         let prior = if let Some(options) = &self.options.em {
             let (interpolation, _) = Self::components(&self.prior, &self.options, raw)?;
             let indices = if self.options.inducing_observations {
@@ -292,13 +309,16 @@ impl EMEmpiricalGP {
                 noise: self.options.likelihood.noise_constraint.transform(raw[0]),
                 ..options.clone()
             };
-            let result = pretrain_em_prior(
+            let result = run_em_prior(
                 &self.datasets,
                 interpolation.kernel,
                 self.prior.x.clone(),
                 interpolation.constant,
                 indices.as_deref(),
                 &options,
+                self.options
+                    .warm_start_em
+                    .then_some((&self.prior.mean, &self.prior.covariance)),
             )?;
             EMPrior {
                 x: self.prior.x.clone(),
@@ -308,11 +328,27 @@ impl EMEmpiricalGP {
         } else {
             self.prior.clone()
         };
-        let cache = Self::build_cache(&self.train_x, &self.train_y, &prior, &self.options, raw)?;
-        self.raw = raw.to_vec();
-        self.prior = prior;
-        self.cache = cache;
-        Ok(())
+        self.install_state(raw, prior)
+    }
+    /// Run one configured EM refinement, without evaluating an MLL.
+    pub fn refresh_em(&mut self) -> Result<()> {
+        self.refresh_em_at(&self.raw.clone())
+    }
+    /// Evaluate one EM-refined MLL and atomically retain its learned moments.
+    pub fn advance_mll(&mut self, raw: &[f64]) -> Result<(f64, Vec<f64>)> {
+        if self.options.em.is_none() {
+            return self.mll_value_and_grad(raw);
+        }
+        let (value, gradient, mean, covariance) = self.differentiated_mll(raw)?;
+        self.install_state(
+            raw,
+            EMPrior {
+                x: self.prior.x.clone(),
+                mean,
+                covariance,
+            },
+        )?;
+        Ok((value, gradient))
     }
     /// Actual Gaussian observation variance.
     pub fn noise(&self) -> f64 {
@@ -419,7 +455,7 @@ impl EMEmpiricalGP {
     /// Historical observed-data MLL and its analytic raw-parameter gradient.
     pub fn mll_value_and_grad(&self, raw: &[f64]) -> Result<(f64, Vec<f64>)> {
         if self.options.em.is_some() {
-            return self.differentiated_mll(raw);
+            return self.differentiated_mll(raw).map(|(v, g, _, _)| (v, g));
         }
         let (interpolation, base) = Self::components(&self.prior, &self.options, raw)?;
         let kernel = &interpolation.kernel;
@@ -539,7 +575,7 @@ impl EMEmpiricalGP {
         }
         Ok((value / scale, grad))
     }
-    fn differentiated_mll(&self, raw: &[f64]) -> Result<(f64, Vec<f64>)> {
+    fn differentiated_mll(&self, raw: &[f64]) -> Result<(f64, Vec<f64>, Vector, Matrix)> {
         let (interpolation, _) = Self::components(&self.prior, &self.options, raw)?;
         let options = EMOptions {
             noise: self.options.likelihood.noise_constraint.transform(raw[0]),
@@ -585,6 +621,9 @@ impl EMEmpiricalGP {
                 } else {
                     0.0
                 },
+                self.options
+                    .warm_start_em
+                    .then_some((&self.prior.mean, &self.prior.covariance)),
             )?);
         }
         let mut fixed = self.clone();
@@ -630,7 +669,7 @@ impl EMEmpiricalGP {
                     .sum())
                 / total as f64;
         }
-        Ok((value, gradient))
+        Ok((value, gradient, fixed.prior.mean, fixed.prior.covariance))
     }
     /// Current learned inducing moments and interpolation cache for metadata.
     pub fn inducing_state(&self) -> (Vector, Matrix, Matrix, Vector) {
@@ -848,7 +887,45 @@ impl Fittable for EMEmpiricalGP {
     }
 }
 
+// Fit-local mutable history. Model and posterior handles themselves continue
+// to own immutable snapshots; only explicit optimizer evaluations advance EM.
+struct WarmEMFit(RefCell<EMEmpiricalGP>);
+impl MllModel for WarmEMFit {
+    fn raw_parameter_vector(&self) -> Vec<f64> {
+        self.0.borrow().raw.clone()
+    }
+    fn set_raw_parameter_vector(&mut self, values: &[f64]) -> Result<()> {
+        self.0.get_mut().set_raw_parameters(values)
+    }
+    fn raw_bounds(&self) -> Vec<(f64, f64)> {
+        self.0.borrow().raw_parameter_bounds()
+    }
+    fn mll_values_and_gradient(&self, raw: &[f64]) -> Result<(Vec<f64>, Vec<f64>)> {
+        self.0
+            .borrow_mut()
+            .advance_mll(raw)
+            .map(|(v, g)| (vec![v], g))
+    }
+}
+
 impl EMEmpiricalGP {
+    /// Fit with Adam, advancing detached warm-start moments per evaluation.
+    pub fn fit_mll_torch(
+        &mut self,
+        mask: Option<&[bool]>,
+        bounds: Option<&[(f64, f64)]>,
+        options: &TorchMinimizeOptions,
+    ) -> Result<OptimizationResult> {
+        if self.options.warm_start_em && self.options.em.is_some() {
+            let mut state = WarmEMFit(RefCell::new(self.clone()));
+            let result =
+                crate::optim::fit::fit_gpytorch_mll_torch(&mut state, mask, bounds, options, None)?;
+            *self = state.0.into_inner();
+            Ok(result)
+        } else {
+            crate::optim::fit::fit_gpytorch_mll_torch(self, mask, bounds, options, None)
+        }
+    }
     /// Fit selected raw entries, preserving excluded parameters exactly.
     pub fn fit_mll_with_mask(
         &mut self,
@@ -868,6 +945,20 @@ impl EMEmpiricalGP {
                     limits[i] = (self.raw[i], self.raw[i]);
                 }
             }
+        }
+        if self.options.warm_start_em && self.options.em.is_some() {
+            let state = RefCell::new(self.clone());
+            let (result, raw) = minimize_with_retries(
+                &self.raw,
+                &limits,
+                options,
+                |raw| state.borrow_mut().advance_mll(raw),
+                |rng| self.sample_all_priors(rng),
+            )?;
+            let mut model = state.into_inner();
+            model.set_raw_parameters(&raw)?;
+            *self = model;
+            return Ok(result);
         }
         let (result, raw) = minimize_with_retries(
             &self.raw,
@@ -934,6 +1025,7 @@ mod tests {
             inducing_observations: inducing,
             freeze_pretrained: false,
             em: None,
+            warm_start_em: false,
         };
         EMEmpiricalGP::new(
             x,
@@ -1028,6 +1120,54 @@ mod tests {
                 let (mean, covariance, _, _) = model.inducing_state();
                 assert_eq!(mean.len(), 3);
                 assert_eq!(covariance.shape(), (3, 3));
+            }
+        }
+    }
+
+    #[test]
+    fn warm_em_gradients_use_detached_seed_and_advance_once() {
+        for inducing in [false, true] {
+            for priors in [false, true] {
+                let mut model = model(inducing, false);
+                model.options.em = Some(EMOptions {
+                    iterations: 2,
+                    mean_prior: priors,
+                    covariance_prior: priors,
+                    tolerance: None,
+                    shrinkage: 0.13,
+                    ..Default::default()
+                });
+                model.options.warm_start_em = true;
+                for _ in 0..2 {
+                    let raw = model.raw.clone();
+                    let before = model.prior.clone();
+                    let (expected, gradient) = model.mll_value_and_grad(&raw).unwrap();
+                    assert_eq!(model.prior.mean, before.mean);
+                    for p in 0..raw.len() {
+                        let mut plus = raw.clone();
+                        let mut minus = raw.clone();
+                        plus[p] += 1e-6;
+                        minus[p] -= 1e-6;
+                        let numerical = (model.mll_value_and_grad(&plus).unwrap().0
+                            - model.mll_value_and_grad(&minus).unwrap().0)
+                            / 2e-6;
+                        assert!(
+                            (numerical - gradient[p]).abs() < 2e-5,
+                            "{inducing} {priors} {p}: {numerical} != {}",
+                            gradient[p]
+                        );
+                    }
+                    let (actual, actual_gradient) = model.advance_mll(&raw).unwrap();
+                    assert!((actual - expected).abs() < 1e-12);
+                    assert_eq!(actual_gradient, gradient);
+                    assert!((&model.prior.mean - before.mean).amax() > 1e-7);
+                }
+                let moments = model.prior.clone();
+                let mut raw = model.raw.clone();
+                raw[0] += 0.1;
+                model.set_raw_parameters(&raw).unwrap();
+                assert_eq!(model.prior.mean, moments.mean);
+                assert_eq!(model.prior.covariance, moments.covariance);
             }
         }
     }

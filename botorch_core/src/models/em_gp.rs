@@ -156,6 +156,20 @@ pub fn pretrain_em_prior(
     indices: Option<&[Vec<usize>]>,
     options: &EMOptions,
 ) -> Result<EMResult> {
+    run_em_prior(datasets, kernel, inducing, constant, indices, options, None)
+}
+
+/// Continue EM from detached learned moments, retaining fresh parametric priors.
+#[allow(clippy::too_many_arguments)]
+pub fn run_em_prior(
+    datasets: &[EMDataset],
+    kernel: TreeKernel,
+    inducing: Matrix,
+    constant: f64,
+    indices: Option<&[Vec<usize>]>,
+    options: &EMOptions,
+    initial: Option<(&Vector, &Matrix)>,
+) -> Result<EMResult> {
     let n = inducing.nrows();
     let d = inducing.ncols();
     let count = datasets.len();
@@ -193,13 +207,29 @@ pub fn pretrain_em_prior(
     }
     let kernel_covariance = kernel.covariance_symmetric(&inducing)?;
     let kernel_cholesky = psd_safe_cholesky(&kernel_covariance)?;
-    let mut mean = Vector::from_element(n, if options.naive_init { 0.0 } else { constant });
-    let mut covariance = if options.naive_init {
+    let initial_covariance = if options.naive_init {
         Matrix::identity(n, n)
     } else {
         kernel_covariance.clone()
     };
-    let initial_covariance = covariance.clone();
+    let (mut mean, mut covariance) = if let Some((mean, covariance)) = initial {
+        if mean.len() != n
+            || covariance.shape() != (n, n)
+            || mean.iter().chain(covariance.iter()).any(|v| !v.is_finite())
+            || (covariance - covariance.transpose()).amax() > 1e-9
+            || covariance.clone().symmetric_eigen().eigenvalues.min() < -1e-9
+        {
+            return Err(BotorchError::InvalidArgument(
+                "invalid EM warm-start moments".into(),
+            ));
+        }
+        (mean.clone(), covariance.clone())
+    } else {
+        (
+            Vector::from_element(n, if options.naive_init { 0.0 } else { constant }),
+            initial_covariance.clone(),
+        )
+    };
     let mut observations = Vec::with_capacity(count);
     for (i, data) in datasets.iter().enumerate() {
         if data.x.nrows() == 0

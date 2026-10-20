@@ -292,8 +292,9 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
 
     Pretrained mean/kernel parameters may be frozen or fitted through shift
     interpolation. Historical EM moments stay fixed during this fitting path.
-    Models constructed from datasets differentiate through complete cold EM
-    reruns when fitting their parametric mean, kernel and observation noise.
+    Models constructed from datasets differentiate through complete EM reruns
+    when fitting their mean, kernel and observation noise. Warm starts use the
+    preceding learned moments as a detached initialization.
     """
 
     def __init__(
@@ -319,10 +320,8 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
     ) -> None:
         from botorch_rs.models.higher_order_gp import _initial_raw_noise
 
-        if learnable_inducing_points or warm_start_em:
-            raise UnsupportedError(
-                "Learnable inducing locations and warm-start EM gradients are not implemented."
-            )
+        if learnable_inducing_points:
+            raise UnsupportedError("Learnable inducing locations are not implemented.")
         if likelihood is None:
             likelihood = GaussianLikelihood()
         if not isinstance(likelihood, GaussianLikelihood) or likelihood.batch_shape:
@@ -393,7 +392,7 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
             em_prior.use_covar_prior,
         )
         self.iw_nu, self.em_convergence_tol = em_prior.iw_nu, em_prior.em_convergence_tol
-        self.warm_start_em = False
+        self.warm_start_em = warm_start_em
         self._covariance_shrinkage = covariance_shrinkage
         self._num_outputs = 1
         self._additive_base = None
@@ -436,6 +435,7 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
             em_iw_nu=self.iw_nu if not self._using_pretrained_prior else None,
             em_tolerance=self.em_convergence_tol if not self._using_pretrained_prior else 1e-6,
             em_shrinkage=self._covariance_shrinkage if not self._using_pretrained_prior else 0.0,
+            warm_start_em=self.warm_start_em,
         )
         self._last_em_sync_raw: tuple[float, ...] | None = None
         self._param_shapes = {name: tuple(shape) for name, shape in self._rs.parameter_shapes()}
@@ -513,7 +513,7 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
 
     def _refresh_em(self) -> None:
         if not self._using_pretrained_prior:
-            self._rs.set_raw_parameters(self._rs.raw_parameters())
+            self._rs.refresh_em()
         self._sync_em_state(force=True)
 
     @property
@@ -651,18 +651,23 @@ class EMEmpiricalMarginalLogLikelihood(MarginalLogLikelihood):
 
     def forward(self, function_dist: Any = None, target: Any = None) -> Any:
         self._validate_fit()
-        self.model._refresh_em()
-        value = self.model._rs.mll()
+        if self.model._using_pretrained_prior:
+            value = self.model._rs.mll()
+        else:
+            value, _ = self.model._rs.advance_mll()
+        self.model._sync_em_state(force=True)
         return from_flat(value[0], tuple(value[1]), self.model._kind)
 
     __call__ = forward
 
     def value_and_grad(self, raw_parameters: Any = None) -> tuple[float, list[float]]:
         self._validate_fit()
-        if raw_parameters is None:
-            self.model._refresh_em()
         raw = None if raw_parameters is None else list(to_flat(raw_parameters)[0])
-        value, gradient = self.model._rs.mll_value_and_grad(raw)
+        if raw_parameters is None and not self.model._using_pretrained_prior:
+            value, gradient = self.model._rs.advance_mll()
+            self.model._sync_em_state(force=True)
+        else:
+            value, gradient = self.model._rs.mll_value_and_grad(raw)
         return float(value[0][0]), list(gradient)
 
     def _fit(
@@ -717,7 +722,7 @@ class EMEmpiricalMarginalLogLikelihood(MarginalLogLikelihood):
             )
         else:
             raise UnsupportedError("EM fitting supports native L-BFGS-B or Adam.")
-        self.model._sync_em_state()
+        self.model._sync_em_state(force=True)
         self.eval()
         return self
 

@@ -702,3 +702,85 @@ def test_float32_rank_limited_em_covariance_roundtrip() -> None:
     invalid = replace(prior, Sigma_inducing=-torch.eye(6, dtype=torch.float32))
     with pytest.raises(ValueError, match="indefinite"):
         EMEmpiricalGaussianProcess.from_pretrained(invalid, X[:2], history[0].Y[:2])
+
+
+@pytest.mark.parametrize("inducing", [False, True])
+@pytest.mark.parametrize("priors", [False, True])
+def test_warm_start_em_values_gradients_and_state_match_official(
+    official: Any, inducing: bool, priors: bool
+) -> None:
+    torch = pytest.importorskip("torch")
+    gpytorch = pytest.importorskip("gpytorch")
+    mean, kernel = modules()
+    ref_mean = gpytorch.means.ConstantMean().double()
+    ref_mean.constant = torch.tensor(0.35, dtype=torch.double)
+    ref_kernel = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel()).double()
+    ref_kernel.base_kernel.lengthscale = torch.tensor(0.42, dtype=torch.double)
+    ref_kernel.outputscale = torch.tensor(1.3, dtype=torch.double)
+    X = torch.tensor([[0.1], [0.5]], dtype=torch.double)
+    Y = torch.tensor([[0.7], [0.6]], dtype=torch.double)
+    options = dict(
+        warm_start_em=True,
+        num_em_iterations=2,
+        em_convergence_tol=None,
+        use_mean_prior=priors,
+        use_covar_prior=priors,
+        covariance_shrinkage=0.13,
+    )
+    if inducing:
+        options["inducing_points"] = torch.tensor([[0.05], [0.4], [0.85]], dtype=torch.double)
+    actual = EMEmpiricalGaussianProcess(
+        X, Y, datasets=datasets("torch"), mean_module=mean, covar_module=kernel, **options
+    )
+    expected = official.em_empirical_gp.EMEmpiricalGaussianProcess(
+        X, Y,
+        datasets=[official.utils.ExperimentDataset(X=d.X, Y=d.Y) for d in datasets("torch")],
+        mean_module=ref_mean, covar_module=ref_kernel,
+        likelihood=gpytorch.likelihoods.GaussianLikelihood().double(), **options,
+    )
+    a_mll = EMEmpiricalMarginalLogLikelihood(actual.likelihood, actual)
+    b_mll = official.em_empirical_gp.EMEmpiricalMarginalLogLikelihood(expected.likelihood, expected)
+    for step in range(3):
+        value, gradient = a_mll.value_and_grad()
+        reference = b_mll(None, None)
+        reference.backward()
+        assert_close(value, reference, rtol=3e-7, atol=3e-9)
+        parameters = dict(expected.named_parameters())
+        offset = 0
+        for name, shape in actual._rs.parameter_shapes():
+            size = math.prod(shape)
+            g = parameters[name].grad
+            assert_close(gradient[offset:offset+size], [0.0]*size if g is None else g.reshape(-1), rtol=3e-5, atol=3e-7)
+            offset += size
+        assert_close(actual._mu_inducing, expected._mu_inducing, rtol=3e-7, atol=3e-9)
+        assert_close(actual._Sigma_inducing, expected._Sigma_inducing, rtol=3e-7, atol=3e-9)
+        expected.zero_grad(set_to_none=True)
+        if step == 1:
+            previous = actual._mu_inducing.clone()
+            kernel.base_kernel.lengthscale = 0.47
+            ref_kernel.base_kernel.lengthscale = torch.tensor(0.47, dtype=torch.double)
+            torch.testing.assert_close(actual._mu_inducing, previous)
+
+
+@pytest.mark.parametrize("adam", [False, True])
+def test_warm_em_native_fit_updates_moments_and_preserves_posterior(adam: bool) -> None:
+    mean, kernel = modules()
+    model = EMEmpiricalGaussianProcess(
+        [[0.1], [0.5]], [[0.7], [0.6]], datasets=datasets("list"),
+        mean_module=mean, covar_module=kernel, warm_start_em=True,
+        inducing_points=[[0.05], [0.4], [0.85]], num_em_iterations=2,
+        em_convergence_tol=None,
+    )
+    mll = EMEmpiricalMarginalLogLikelihood(model.likelihood, model)
+    posterior = model.posterior([[0.2], [0.7]])
+    before = copy.deepcopy(posterior.mean)
+    initial = copy.deepcopy(model._mu_inducing)
+    raw = model._rs.raw_parameters()
+    if adam:
+        fit_gpytorch_mll_torch(mll, step_limit=3, stopping_criterion=None)
+    else:
+        fit_gpytorch_mll(mll, optimizer_kwargs={"options": {"maxiter": 3}}, max_attempts=1)
+    assert model._rs.raw_parameters() != raw
+    assert model._mu_inducing != initial
+    assert_close(posterior.mean, before)
+    assert math.isfinite(float(mll()))

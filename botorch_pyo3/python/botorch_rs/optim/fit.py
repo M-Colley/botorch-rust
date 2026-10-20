@@ -248,7 +248,7 @@ def fit_gpytorch_mll_scipy(
             max_attempts=1, **hogp_kwargs
         )
         if getattr(mll, "_rs_em_fit", False):
-            mll.model._sync_em_state()
+            mll.model._sync_em_state(force=True)
         return OptimizationResult(
             step=int(nit), fval=float(loss), status=OptimizationStatus[status], message=message
         )
@@ -478,7 +478,7 @@ def fit_gpytorch_mll_torch(
                 )
             )
             if getattr(mll, "_rs_em_fit", False):
-                mll.model._sync_em_state()
+                mll.model._sync_em_state(force=True)
             return result
         if getattr(mll, "_rs_shared_fit", False) or getattr(mll, "_rs_em_fit", False):
             raise UnsupportedError(

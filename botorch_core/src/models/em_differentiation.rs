@@ -159,6 +159,7 @@ pub fn em_directional(
     parameter: Option<(usize, f64)>,
     constant_tangent: f64,
     noise_tangent: f64,
+    initial: Option<(&Vector, &Matrix)>,
 ) -> Result<EMDirectional> {
     let n = inducing.nrows();
     let count = datasets.len();
@@ -174,8 +175,16 @@ pub fn em_directional(
         || options.tolerance.is_some_and(|v| !v.is_finite() || v < 0.0)
         || parameter.is_some_and(|(_, d)| !d.is_finite())
         || datasets.iter().any(|d| {
-            d.x.nrows() == 0 || d.y.len() != d.x.nrows() || d.y.iter().any(|v| !v.is_finite())
+            d.x.nrows() == 0
+                || d.x.ncols() != inducing.ncols()
+                || d.y.len() != d.x.nrows()
+                || d.x.iter().chain(d.y.iter()).any(|v| !v.is_finite())
         })
+        || inducing.iter().any(|v| !v.is_finite())
+        || options.covariance_prior
+            && options
+                .iw_nu
+                .is_some_and(|v| !v.is_finite() || v <= n as f64 - 1.0)
     {
         return Err(BotorchError::InvalidArgument(
             "EM derivatives require data and inducing points".into(),
@@ -201,6 +210,23 @@ pub fn em_directional(
         ),
     };
     let mut covariance = initial_covariance.clone();
+    if let Some((seed_mean, seed_covariance)) = initial {
+        if seed_mean.len() != n
+            || seed_covariance.shape() != (n, n)
+            || seed_mean
+                .iter()
+                .chain(seed_covariance.iter())
+                .any(|v| !v.is_finite())
+            || (seed_covariance - seed_covariance.transpose()).amax() > 1e-9
+            || seed_covariance.clone().symmetric_eigen().eigenvalues.min() < -1e-9
+        {
+            return Err(BotorchError::InvalidArgument(
+                "invalid EM warm-start moments".into(),
+            ));
+        }
+        mean = Dual::fixed(Matrix::from_column_slice(n, 1, seed_mean.as_slice()));
+        covariance = Dual::fixed(seed_covariance.clone());
+    }
     let all: Vec<_> = (0..n).collect();
     let prior_mean = Dual {
         value: Matrix::from_element(n, 1, constant),
@@ -382,6 +408,7 @@ mod tests {
             Some((0, node.transform_derivatives(&raw)[0])),
             0.0,
             0.0,
+            None,
         )
         .unwrap();
         let run = |scale: f64| {
@@ -466,6 +493,7 @@ mod tests {
                         },
                         if parameter == 1 { 1.0 } else { 0.0 },
                         if parameter == 0 { 1.0 } else { 0.0 },
+                        None,
                     )
                     .unwrap();
                     assert!((&directional.mean - &expected.mean).amax() < 1e-9);
