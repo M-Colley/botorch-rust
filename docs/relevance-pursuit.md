@@ -115,3 +115,39 @@ check expansion, contraction, pending edits and leaf identities; the full
 forward/backward pursuit and robust-model fitting tests cover repeated
 layout changes.
 
+
+## Prepared upstream repair and dependency follow-up
+
+The official-source repair is prepared separately on branch
+`codex/robust-noise-correctness` (base `b0dd01be6`). Its regression suite covers
+all seven issues above on CPU and CUDA, including actual gradients through
+batched rho gathers, sparse/dense/support edits along the final axis, frozen
+parameters, failure during support search or model comparison, and successful
+installation of the selected likelihood. Discrete pursuit still has a single
+shared support; batched ranking now raises before mutation instead of inventing
+a reduction across batches or using the wrong indexing axis. Batched likelihood
+values and per-batch expansion objectives remain available.
+
+The fixed-noise repair also exposed a separate `linear_operator` 0.6.1 defect.
+`ZeroLinearOperator` records a requested dtype/device, but `to_dense` calls
+`torch.zeros(*self.sizes)` without either keyword. This minimal regression
+fails on CPU for dtype and on CUDA for both dtype and device:
+
+```python
+import torch
+from linear_operator.operators import ZeroLinearOperator
+
+for device in ["cpu", "cuda"]:
+    zero = ZeroLinearOperator(2, 3, 3, dtype=torch.double,
+                              device=torch.device(device))
+    expected = torch.zeros(2, 3, 3, dtype=torch.double, device=device)
+    torch.testing.assert_close(zero.to_dense(), expected)
+```
+
+The proposed dependency repair is to pass `dtype=self.dtype` and
+`device=self.device` to `torch.zeros` in `ZeroLinearOperator.to_dense`, with
+both device cases as regressions. The sparse-noise repair uses a
+`DiagLinearOperator` of an explicitly allocated zero diagonal, preserving
+shape, dtype and device even before that dependency repair is released.
+Publication and deduplication are tracked centrally in
+[upstream-pull-requests.md](upstream-pull-requests.md).
