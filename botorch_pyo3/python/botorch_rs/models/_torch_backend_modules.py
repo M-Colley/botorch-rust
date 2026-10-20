@@ -383,6 +383,10 @@ class TorchKernel(_TorchModule):
 
 
 class TorchStationaryKernel(TorchKernel):
+    _tensor_backend = "torch"
+    has_lengthscale = True
+    _saas_fixed_tau: Tensor | None
+
     def __init__(self, source: Any, like: Tensor) -> None:
         super().__init__(like, source.active_dims)
         self.ard_num_dims = source.ard_num_dims
@@ -397,6 +401,100 @@ class TorchStationaryKernel(TorchKernel):
             requires_grad=not isinstance(original, nn.Parameter) or original.requires_grad,
         )
         self._register_prior("lengthscale_prior", source.lengthscale_prior, "lengthscale", 2)
+        if getattr(source, "_saas", None) is not None:
+            self.configure_saas_prior(
+                source._saas_helper._tau,
+                log_scale=type(source.raw_lengthscale_constraint).__name__
+                == "LogTransformedInterval",
+            )
+            self._assign("raw_lengthscale", raw)
+            if source._saas_helper._tau is None:
+                self._assign("raw_tau", source.raw_tau)
+
+    def configure_saas_prior(
+        self, tau: Any = None, log_scale: bool = True
+    ) -> TorchStationaryKernel:
+        """Install the coupled SAAS prior, retaining its device and parameter graph."""
+        from botorch_rs.constraints import Interval
+        from botorch_rs.models.map_saas import _double_half_cauchy
+        from botorch_rs.utils.constraints import LogTransformedInterval
+
+        if hasattr(self, "lengthscale_prior") or hasattr(self, "inv_lengthscale_prior"):
+            raise UnsupportedError("base_kernel must not specify a lengthscale or SAAS prior")
+        fixed = None
+        if tau is not None:
+            fixed = torch.as_tensor(tau).to(self._anchor)
+            if not isinstance(tau, (int, float)) and fixed.shape != self.batch_shape:
+                raise ValueError(f"Expected tau shape {self.batch_shape}, got {fixed.shape}.")
+            if not bool(torch.isfinite(fixed).all() & (fixed > 0).all()):
+                raise ValueError("SAAS tau must be finite and positive.")
+        interval = LogTransformedInterval if log_scale else Interval
+
+        def constraint(source: Any) -> TorchConstraint:
+            result = TorchConstraint(source, self._anchor)
+            # GPyTorch creates these bounds in the Torch default dtype,
+            # even when add_saas_prior receives an already-double kernel.
+            # Preserve that factory precision before device/dtype promotion.
+            result.lower_bound = torch.tensor(source.lower_bound).to(self._anchor)
+            result.upper_bound = torch.tensor(source.upper_bound).to(self._anchor)
+            if result.transform_name == "exp":
+                result.raw_bounds = (
+                    float(result.lower_bound.log()),
+                    float(result.upper_bound.log()),
+                )
+            return result
+
+        self.raw_lengthscale_constraint = constraint(interval(0.01, 1e4, initial_value=1))
+        self._assign(
+            "raw_lengthscale",
+            self.raw_lengthscale.new_zeros(self.raw_lengthscale.shape)
+            if log_scale
+            else self.raw_lengthscale_constraint.inverse_transform(
+                torch.ones_like(self.raw_lengthscale)
+            ),
+        )
+        if tau is None:
+            self.raw_tau_constraint = constraint(interval(1e-3, 10, initial_value=0.1))
+            initial = self._anchor.new_full(self.batch_shape, 0.1)
+            self.raw_tau = nn.Parameter(self.raw_tau_constraint.inverse_transform(initial))
+            self._register_prior("tau_prior", _double_half_cauchy(0.1), "tau")
+            self.register_buffer("_saas_fixed_tau", None)
+        else:
+            self.register_buffer("_saas_fixed_tau", fixed)
+        self._register_prior(
+            "inv_lengthscale_prior", _double_half_cauchy(1.0), "inv_lengthscale", 2
+        )
+        return self
+
+    @property
+    def tau(self) -> Tensor:
+        fixed = self._saas_fixed_tau
+        return self.raw_tau_constraint.transform(self.raw_tau) if fixed is None else fixed
+
+    @tau.setter
+    def tau(self, value: Any) -> None:
+        if self._saas_fixed_tau is not None:
+            raise UnsupportedError(
+                "A fixed SAAS tau cannot be set through its learned-prior closure."
+            )
+        constraint = self.raw_tau_constraint
+        bounded = _tensor(value, self.raw_tau).clamp(
+            constraint.lower_bound + 1e-8, constraint.upper_bound - 1e-8
+        )
+        self._assign("raw_tau", bounded, constraint)
+
+    @property
+    def inv_lengthscale(self) -> Tensor:
+        return self.tau[..., None, None] / self.lengthscale.square()
+
+    @inv_lengthscale.setter
+    def inv_lengthscale(self, value: Any) -> None:
+        constraint = self.raw_lengthscale_constraint
+        self.lengthscale = (
+            (self.tau[..., None, None] / _tensor(value, self.raw_lengthscale))
+            .sqrt()
+            .clamp(constraint.lower_bound + 1e-8, constraint.upper_bound - 1e-8)
+        )
 
     @property
     def lengthscale(self) -> Tensor:

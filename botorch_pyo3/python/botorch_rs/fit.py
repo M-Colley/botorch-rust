@@ -371,6 +371,8 @@ def get_fitted_map_saas_model(
     outcome_transform: Any = None,
     tau: Any = None,
     optimizer_kwargs: dict[str, Any] | None = None,
+    *,
+    backend: str = "auto",
 ) -> Any:
     """Get a fitted MAP SAAS model with a Matern kernel.
 
@@ -401,6 +403,7 @@ def get_fitted_map_saas_model(
         input_transform=(input_transform.train() if input_transform is not None else None),
         outcome_transform=outcome_transform,
         tau=tau,
+        backend=backend,
     )
     mll = ExactMarginalLogLikelihood(model=model, likelihood=model.likelihood)
     fit_gpytorch_mll(mll, optimizer_kwargs=optimizer_kwargs)

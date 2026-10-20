@@ -24,6 +24,7 @@ import importlib
 import math
 import random
 import struct
+import sys
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -44,6 +45,24 @@ from botorch_rs.utils.constraints import LogTransformedInterval
 from botorch_rs.utils.types import DEFAULT
 
 EPS = 1e-8
+
+
+def _use_torch_backend(backend: str, *values: Any) -> bool:
+    if backend not in ("auto", "native", "torch"):
+        raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+    torch = sys.modules.get("torch")
+    return backend == "torch" or (
+        backend == "auto"
+        and torch is not None
+        and any(
+            isinstance(value, torch.nn.Module)
+            or (
+                isinstance(value, torch.Tensor)
+                and (value.device.type != "cpu" or value.requires_grad)
+            )
+            for value in values
+        )
+    )
 
 
 def _double_half_cauchy(scale: float) -> HalfCauchyPrior:
@@ -107,7 +126,7 @@ class SaasPriorHelper:
         data, shape = to_flat(self.tau_prior_param_or_closure(m), "tau")
         return list(data), tuple(shape)
 
-    def tau(self, m: Kernel) -> Any:
+    def tau(self, m: Any) -> Any:
         """The global shrinkage parameter ``tau``.
 
         Args:
@@ -116,10 +135,15 @@ class SaasPriorHelper:
         Returns:
             The global shrinkage parameter of the SAAS prior.
         """
+        if getattr(m, "_tensor_backend", None) == "torch":
+            if self._tau is None:
+                return m.tau
+            torch = importlib.import_module("torch")
+            return torch.as_tensor(self._tau).to(m.lengthscale)
         data, shape = self._tau_values(m)
         return from_flat(data, shape, kind_of(m.lengthscale))
 
-    def inv_lengthscale_prior_param_or_closure(self, m: Kernel) -> Any:
+    def inv_lengthscale_prior_param_or_closure(self, m: Any) -> Any:
         """Closure to compute the scaled inverse lengthscale parameter (``tau / l^2``)
         to which the SAAS prior is applied.
 
@@ -129,13 +153,15 @@ class SaasPriorHelper:
         Returns:
             The scaled inverse lengthscale parameter.
         """
+        if getattr(m, "_tensor_backend", None) == "torch":
+            return self.tau(m)[..., None, None] / m.lengthscale.square()
         ls, shape = to_flat(m.lengthscale, "lengthscale")
         taus, _ = self._tau_values(m)
         d = shape[-1]
         out = [taus[(i // d) % len(taus)] / (v * v) for i, v in enumerate(ls)]
         return from_flat(out, tuple(shape), kind_of(m.lengthscale))
 
-    def inv_lengthscale_prior_setting_closure(self, m: Kernel, value: Any) -> None:
+    def inv_lengthscale_prior_setting_closure(self, m: Any, value: Any) -> None:
         """Closure to set the inverse lengthscale prior parameter.
 
         Args:
@@ -144,6 +170,15 @@ class SaasPriorHelper:
                 (``tau / l^2``), used to recover and set the lengthscale of
                 the kernel.
         """
+        if getattr(m, "_tensor_backend", None) == "torch":
+            torch = importlib.import_module("torch")
+            c = m.raw_lengthscale_constraint
+            m.lengthscale = (
+                (self.tau(m)[..., None, None] / torch.as_tensor(value).to(m.lengthscale))
+                .sqrt()
+                .clamp(c.lower_bound + EPS, c.upper_bound - EPS)
+            )
+            return
         values, _ = to_flat(value, "value")
         _, shape = to_flat(m.lengthscale, "lengthscale")
         taus, _ = self._tau_values(m)
@@ -156,7 +191,7 @@ class SaasPriorHelper:
         ]
         m.lengthscale = from_flat(new, tuple(shape), kind_of(m.lengthscale))
 
-    def tau_prior_param_or_closure(self, m: Kernel) -> Any:
+    def tau_prior_param_or_closure(self, m: Any) -> Any:
         """Closure to compute the global shrinkage parameter ``tau``.
 
         Args:
@@ -165,17 +200,22 @@ class SaasPriorHelper:
         Returns:
             The transformed global shrinkage parameter ``tau``.
         """
+        if getattr(m, "_tensor_backend", None) == "torch":
+            return m.raw_tau_constraint.transform(m.raw_tau)
         raw, shape = to_flat(m.raw_tau, "raw_tau")
         c = m.raw_tau_constraint  # type: ignore[attr-defined]
         return from_flat([c.transform(r) for r in raw], tuple(shape), kind_of(m.raw_tau))
 
-    def tau_prior_setting_closure(self, m: Kernel, value: Any) -> None:
+    def tau_prior_setting_closure(self, m: Any, value: Any) -> None:
         """Closure to set the global shrinkage parameter ``tau``.
 
         Args:
             m: A kernel object equipped with a ``raw_tau`` parameter.
             value: The value of the global shrinkage parameter.
         """
+        if getattr(m, "_tensor_backend", None) == "torch":
+            m.tau = value
+            return
         c = m.raw_tau_constraint  # type: ignore[attr-defined]
         values, shape = to_flat(value, "value")
         lb, ub = c.lower_bound, c.upper_bound
@@ -184,10 +224,10 @@ class SaasPriorHelper:
 
 
 def add_saas_prior(
-    base_kernel: Kernel,
+    base_kernel: Any,
     tau: Any = None,
     log_scale: bool = True,
-) -> Kernel:
+) -> Any:
     """Add a SAAS prior to a given base_kernel.
 
     The SAAS prior is given by tau / lengthscale^2 ~ HC(1.0). If tau is None,
@@ -219,7 +259,9 @@ def add_saas_prior(
     model. The priors are created in double precision (BoTorch: in the
     kernel's dtype, double precision in its MAP SAAS models).
     """
-    if not base_kernel.has_lengthscale:
+    if getattr(base_kernel, "_tensor_backend", None) == "torch":
+        return base_kernel.configure_saas_prior(tau, log_scale)
+    if not getattr(base_kernel, "has_lengthscale", False):
         raise UnsupportedError("base_kernel must have lengthscale(s)")
     if getattr(base_kernel, "lengthscale_prior", None) is not None:
         raise UnsupportedError("base_kernel must not specify a lengthscale prior")
@@ -310,6 +352,8 @@ def get_map_saas_model(
     input_transform: InputTransform | None = None,
     outcome_transform: Any = None,
     tau: Any = None,
+    *,
+    backend: str = "auto",
 ) -> SingleTaskGP:
     """Helper method for creating an unfitted MAP SAAS model.
 
@@ -327,6 +371,14 @@ def get_map_saas_model(
     Returns:
         A SingleTaskGP with a Matern kernel and a SAAS prior.
     """
+    if _use_torch_backend(
+        backend, train_X, train_Y, train_Yvar, tau, input_transform, outcome_transform
+    ):
+        from botorch_rs.models._torch_backend_map_saas import get_torch_map_saas_model
+
+        return get_torch_map_saas_model(
+            train_X, train_Y, train_Yvar, input_transform, outcome_transform, tau
+        )
     _, aug_batch_shape = SingleTaskGP.get_batch_dimensions(train_X=train_X, train_Y=train_Y)
     mean_module = get_mean_module_with_normal_prior(batch_shape=aug_batch_shape)
     ard_num_dims = _ard_num_dims(train_X, input_transform)
@@ -361,7 +413,9 @@ def get_additive_map_saas_covar_module(
     batch_shape: Any = None,
     dtype: Any = None,
     device: Any = None,
-) -> AdditiveKernel:
+    *,
+    backend: str = "auto",
+) -> Any:
     """Return an additive map SAAS covar module.
 
     The constructed kernel is an additive kernel with ``num_taus`` terms. Each term is a
@@ -382,6 +436,18 @@ def get_additive_map_saas_covar_module(
     ``HalfCauchy(0.1)``, as BoTorch's), or from Python's ``random`` module
     without torch.
     """
+    if backend == "torch" or (backend == "auto" and (dtype is not None or device is not None)):
+        torch = importlib.import_module("torch")
+        from botorch_rs.models._torch_backend_map_saas import build_additive_saas_kernel
+
+        return build_additive_saas_kernel(
+            ard_num_dims,
+            num_taus,
+            torch.Size(batch_shape or ()),
+            torch.empty(0, dtype=dtype, device=device),
+            active_dims,
+        )
+    _use_torch_backend(backend)
     shape = _check_batch_shape(batch_shape)
     kernels: list[Kernel] = []
     for _ in range(num_taus):
@@ -412,6 +478,26 @@ class AdditiveMapSaasSingleTaskGP(SingleTaskGP):
     of sparsity levels. We learn all the hyperparameters using MAP inference.
     """
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if cls is AdditiveMapSaasSingleTaskGP and _use_torch_backend(
+            backend,
+            train_X,
+            train_Y,
+            *args[:1],
+            *(kwargs.get(name) for name in ("train_Yvar", "input_transform", "outcome_transform")),
+        ):
+            from botorch_rs.models._torch_backend_map_saas import TorchAdditiveMapSaasSingleTaskGP
+
+            return object.__new__(TorchAdditiveMapSaasSingleTaskGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -420,6 +506,8 @@ class AdditiveMapSaasSingleTaskGP(SingleTaskGP):
         outcome_transform: Any = DEFAULT,
         input_transform: InputTransform | None = None,
         num_taus: int = 4,
+        *,
+        backend: str = "auto",
     ) -> None:
         """Instantiates an AdditiveMapSaasSingleTaskGP.
 
@@ -471,6 +559,29 @@ class EnsembleMapSaasSingleTaskGP(SingleTaskGP):
     _is_ensemble = True
     _supports_batched_models = False
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if cls is EnsembleMapSaasSingleTaskGP and _use_torch_backend(
+            backend,
+            train_X,
+            train_Y,
+            *args[:1],
+            *(
+                kwargs.get(name)
+                for name in ("train_Yvar", "taus", "input_transform", "outcome_transform")
+            ),
+        ):
+            from botorch_rs.models._torch_backend_map_saas import TorchEnsembleMapSaasSingleTaskGP
+
+            return object.__new__(TorchEnsembleMapSaasSingleTaskGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -480,6 +591,8 @@ class EnsembleMapSaasSingleTaskGP(SingleTaskGP):
         taus: Any = None,
         outcome_transform: Any = DEFAULT,
         input_transform: InputTransform | None = None,
+        *,
+        backend: str = "auto",
     ) -> None:
         """Instantiates an ``EnsembleMapSaasSingleTaskGP``, which is a batched
         ensemble of ``SingleTaskGP``s with the Matern-5/2 kernel and a SAAS prior.
