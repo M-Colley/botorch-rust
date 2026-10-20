@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 from collections.abc import Iterator
 from typing import Any
 
@@ -94,6 +95,43 @@ class MultiTaskGP(MultiTaskGPyTorchModel):
     #: observed mean (not for the samples of a fully Bayesian model).
     _eval_unobserved_tasks = True
 
+    def __new__(cls, train_X: Any = None, train_Y: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if cls is MultiTaskGP:
+            backend = kwargs.get("backend", "auto")
+            if backend not in ("auto", "native", "torch"):
+                raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+            torch = sys.modules.get("torch")
+            values = (train_X, train_Y, kwargs.get("train_Yvar"), *args[1:2])
+            modules = tuple(
+                kwargs.get(name)
+                for name in (
+                    "mean_module",
+                    "covar_module",
+                    "likelihood",
+                    "task_covar_prior",
+                    "input_transform",
+                    "outcome_transform",
+                )
+            ) + tuple(args[2:])
+            if backend == "torch" or (
+                backend == "auto"
+                and (
+                    any(
+                        getattr(value, "requires_grad", False)
+                        or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
+                        for value in values
+                    )
+                    or (
+                        torch is not None
+                        and any(isinstance(module, torch.nn.Module) for module in modules)
+                    )
+                )
+            ):
+                from botorch_rs.models._torch_backend_multitask import TorchMultiTaskGP
+
+                return object.__new__(TorchMultiTaskGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -110,6 +148,8 @@ class MultiTaskGP(MultiTaskGPyTorchModel):
         outcome_transform: Any = DEFAULT,
         input_transform: Any = None,
         validate_task_values: bool = True,
+        *,
+        backend: str = "auto",
     ) -> None:
         from botorch_rs.models.gp_regression import _validate_tensor_args
         from botorch_rs.models.transforms.input import Normalize
