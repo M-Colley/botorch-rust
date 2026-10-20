@@ -10,17 +10,26 @@ _function: Any = None
 
 
 def elbo_output(
-    model: Any, x: Any, y: Any, num_data: float, beta: float, terms: Any, combine: bool
+    model: Any,
+    x: Any,
+    y: Any,
+    num_data: float,
+    beta: float,
+    terms: Any,
+    combine: bool,
+    native: Any = None,
+    leaves: Any = None,
 ) -> Any:
     global _function
     values = (terms[0] - terms[1] + terms[2],) if combine else terms
     outputs = tuple(from_flat([value], (), model._kind) for value in values)
-    state = model._sync_torch_parameters()
-    if state is None:
+    if leaves is None:
+        state = model._sync_torch_parameters()
+        leaves = () if state is None else tuple(parameter for _, parameter in state.entries)
+    if not leaves:
         return outputs[0] if combine else outputs
     import torch
 
-    leaves = tuple(parameter for _, parameter in state.entries)
     if not torch.is_grad_enabled() or not any(parameter.requires_grad for parameter in leaves):
         return outputs[0] if combine else outputs
     if _function is None:
@@ -38,7 +47,9 @@ def elbo_output(
             @once_differentiable
             def backward(ctx: Any, *adjoints: Any) -> tuple[Any, ...]:  # type: ignore[override]
                 native, x_, y_, n_, beta_, combined = ctx.native
-                weights = [0.0 if adjoint is None else to_flat(adjoint)[0][0] for adjoint in adjoints]
+                weights = [
+                    0.0 if adjoint is None else to_flat(adjoint)[0][0] for adjoint in adjoints
+                ]
                 if combined:
                     weights = [weights[0], -weights[0], weights[0]]
                 data = native.elbo_terms_parameter_vjp(x_, y_, n_, beta_, weights)
@@ -50,5 +61,6 @@ def elbo_output(
                 return None, None, *gradients
 
         _function = _NativeELBO
-    native = (model._rs.copy(), x, y, num_data, beta, combine)
+    source = model._rs if native is None else native
+    native = (source.copy(), x, y, num_data, beta, combine)
     return _function.apply(native, outputs, *leaves)

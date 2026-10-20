@@ -113,7 +113,12 @@ def _fit_scipy_approximate(
     mll.model._outer._ensure_initialized()
     mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
     loss, nit, _, status, message, _ = mll._rs.fit(
-        float(mll.num_data), float(mll.beta), max_attempts=1, mask=mask, bounds=flat_bounds, **kwargs
+        float(mll.num_data),
+        float(mll.beta),
+        max_attempts=1,
+        mask=mask,
+        bounds=flat_bounds,
+        **kwargs,
     )
     mll.model._outer._sync_torch_parameters()
     result = OptimizationResult(

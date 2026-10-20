@@ -300,6 +300,10 @@ class MultitaskGaussianLikelihood(Likelihood):
     @property
     def noise(self) -> Any:
         """The global noise variance (shape ``1``)."""
+        if getattr(self._model, "_sync_torch_parameters", lambda: None)() is not None:
+            from botorch_rs.models._torch_parameters import constrained_parameter
+
+            return constrained_parameter(self.raw_noise, self.noise_constraint)
         return self._out([self._model._rs.noises()[1]], (1,))
 
     @noise.setter
@@ -327,6 +331,10 @@ class MultitaskGaussianLikelihood(Likelihood):
             raise AttributeError(
                 "Cannot set diagonal task noises when covariance has ", self.rank, ">0"
             )
+        if getattr(self._model, "_sync_torch_parameters", lambda: None)() is not None:
+            from botorch_rs.models._torch_parameters import constrained_parameter
+
+            return constrained_parameter(self.raw_task_noises, self.noise_constraint)
         return self._out(list(self._model._rs.noises()[0]), (self.num_tasks,))
 
     @task_noises.setter

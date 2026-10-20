@@ -278,9 +278,9 @@ class _ApproximateMarginalLogLikelihood(MarginalLogLikelihood):
         return x, (list(ydata), [n, m])
 
     def _terms(self, approximate_dist_f: Any, target: Any) -> tuple[float, float, float]:
-        self.model._outer._ensure_initialized()
         x, y = self._elbo_data(approximate_dist_f, target)
-        return self._rs.elbo(x, y, float(self.num_data), float(self.beta))  # type: ignore[no-any-return]
+        source = self._rs if approximate_dist_f is None else approximate_dist_f._native
+        return source.elbo(x, y, float(self.num_data), float(self.beta))  # type: ignore[no-any-return]
 
     def __call__(self, approximate_dist_f: Any = None, target: Any = None, **kwargs: Any) -> Any:
         r"""The ELBO of the targets ``target`` under ``approximate_dist_f =
@@ -289,9 +289,10 @@ class _ApproximateMarginalLogLikelihood(MarginalLogLikelihood):
         log_prior)`` with ``combine_terms=False``."""
         if kwargs:
             raise UnsupportedError(f"Unsupported arguments: {sorted(kwargs)}.")
-        self.model._outer._ensure_initialized()
         x, y = self._elbo_data(approximate_dist_f, target)
-        terms = self._rs.elbo(x, y, float(self.num_data), float(self.beta))
+        source = self._rs if approximate_dist_f is None else approximate_dist_f._native
+        leaves = None if approximate_dist_f is None else approximate_dist_f._parameter_leaves
+        terms = source.elbo(x, y, float(self.num_data), float(self.beta))
         from botorch_rs.models._elbo_autograd import elbo_output
 
         return elbo_output(
@@ -302,6 +303,8 @@ class _ApproximateMarginalLogLikelihood(MarginalLogLikelihood):
             float(self.beta),
             terms,
             self.combine_terms,
+            native=source,
+            leaves=leaves,
         )
 
     forward = __call__

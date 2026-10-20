@@ -92,6 +92,9 @@ class _ApproximateOutput:
 
     def __init__(self, owner: SingleTaskVariationalGP, X: Any) -> None:
         self._owner = owner
+        state = owner._sync_torch_parameters()
+        self._parameter_leaves = () if state is None else tuple(p for _, p in state.entries)
+        self._native = owner._rs.copy()
         self._kind = kind_of(X)
         flat = to_flat(X, "X")
         if len(flat[1]) == 1:
@@ -109,12 +112,12 @@ class _ApproximateOutput:
         self._diag_only = (
             owner.model.training
             and owner.num_outputs == 1
-            and self._x[1][0] > int(owner._rs.num_inducing)
+            and self._x[1][0] > int(self._native.num_inducing)
         )
 
     def _parts(self) -> tuple[Any, Any, Any]:
         if self._cache is None:
-            self._cache = self._owner._rs.latent(self._x)
+            self._cache = self._native.latent(self._x)
         return self._cache
 
     @property
@@ -150,7 +153,7 @@ class _ApproximateOutput:
             # Off the diagonal: the prior covariance K(X, X).
             cov = list(cov)
             for t in range(m):
-                k, _ = self._owner._rs.kernel_matrix(self._x, t)
+                k, _ = self._native.kernel_matrix(self._x, t)
                 for i in range(q):
                     for j in range(q):
                         if i != j:
@@ -826,7 +829,10 @@ class ApproximateGPyTorchModel(GPyTorchModel):
         new = self.__class__.__new__(self.__class__)
         memo[id(self)] = new
         for key, value in self.__dict__.items():
-            if key == "_torch_parameter_requires_grad" and "_torch_parameter_state" in self.__dict__:
+            if (
+                key == "_torch_parameter_requires_grad"
+                and "_torch_parameter_state" in self.__dict__
+            ):
                 continue
             if key == "_torch_parameter_state":
                 new.__dict__["_torch_parameter_requires_grad"] = {

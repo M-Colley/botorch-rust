@@ -28,7 +28,13 @@ autograd for both stored training data and caller-supplied minibatches. For
 `combine_terms=False`, the expected log likelihood, scaled KL divergence and
 scaled log prior each have their own native gradients, so arbitrary weighted
 combinations work. Saved ELBO graphs retain immutable native parameter and
-minibatch snapshots. These are first-order parameter derivatives; this does not
+minibatch snapshots. The latent output of `model.model(X)` also retains its
+native source and input values before any lazy moment evaluation. An ELBO
+called with that saved output uses the same source for its expected likelihood,
+KL and prior terms, and connects to the original parameter leaves. Calling
+`mll()` without an output evaluates the current model. Multitask logical noise
+properties synchronize raw edits and expose native constraint derivatives.
+These are first-order parameter derivatives; this does not
 add higher-order autograd, batched training models, learned input transforms,
 or automatic parameter derivatives of the variational posterior distribution.
 Non-Torch arrays retain the native explicit-gradient API. Native numerical
