@@ -112,3 +112,36 @@ def test_log_interval_extreme_tail_values_and_second_derivatives(device):
     torch.testing.assert_close(actual, log_prob_normal_in(lower, upper), atol=2e-11, rtol=2e-11)
     assert torch.autograd.gradcheck(log_normal_interval, (lower, upper), atol=2e-5)
     assert torch.autograd.gradgradcheck(log_normal_interval, (lower, upper), atol=2e-5)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_nongaussian_outcome_transform_rejects_gaussian_closed_form_acquisitions(device):
+    from botorch_rs.acquisition.analytic import (
+        LogConstrainedExpectedImprovement,
+        LogExpectedImprovement,
+        PosteriorMean,
+    )
+    from botorch_rs.acquisition.logei import qLogExpectedImprovement
+    from botorch_rs.exceptions.errors import UnsupportedError
+    from botorch_rs.models.transforms.outcome import Log
+    from botorch_rs.sampling.normal import SobolQMCNormalSampler
+
+    X = torch.tensor([[0.03], [0.29], [0.58], [0.87]], dtype=torch.double, device=device)
+    model = SingleTaskGP(X, (3 * X).exp(), backend="torch", outcome_transform=Log())
+    query = X.new_tensor([[0.21]], requires_grad=True)
+    with pytest.raises(UnsupportedError, match="Gaussian posterior"):
+        LogExpectedImprovement(model, best_f=1.0)(query)
+    # The actual transformed mean and sampled improvement remain valid.
+    assert torch.isfinite(PosteriorMean(model)(query)).all()
+    value = qLogExpectedImprovement(model, best_f=1.0, sampler=SobolQMCNormalSampler((8,), seed=7))(
+        query
+    )
+    gradient = torch.autograd.grad(value.sum(), query, create_graph=True)[0]
+    assert torch.isfinite(torch.autograd.grad(gradient.sum(), query)[0]).all()
+    multi = SingleTaskGP(
+        X, torch.cat(((3 * X).exp(), (2 * X).exp()), -1), backend="torch", outcome_transform=Log()
+    )
+    with pytest.raises(UnsupportedError, match="Gaussian posterior"):
+        LogConstrainedExpectedImprovement(
+            multi, best_f=1.0, objective_index=0, constraints={1: (0.1, None)}
+        )(query)

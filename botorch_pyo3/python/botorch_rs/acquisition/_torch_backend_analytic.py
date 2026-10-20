@@ -118,6 +118,12 @@ class TensorAnalyticExtra(nn.Module):
             if posterior.mean.shape[-1] != 1 or X.shape[-2] != self.weights.numel():
                 raise ValueError("The posterior must have one output and q must match weights.")
             return _average_ensemble(posterior.mean.squeeze(-1) @ self.weights.to(X), self.model)
+        from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+
+        if not isinstance(posterior, TorchGPyTorchPosterior):
+            raise UnsupportedError(
+                "Analytic Gaussian constraints require a Gaussian posterior; use an MC acquisition for nonlinear outcome transforms."
+            )
         means = posterior.mean.squeeze(-2)
         sigmas = posterior.variance.clamp_min(1e-12).sqrt().squeeze(-2)
         log_probability = self._compute_log_prob_feas(means, sigmas)

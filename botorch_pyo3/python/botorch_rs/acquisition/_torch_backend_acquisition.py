@@ -305,6 +305,18 @@ class _TensorAcquisition(nn.Module):
         self, X: Tensor, compute_sigma: bool = True, min_var: float = 1e-12
     ) -> tuple[Tensor, Tensor | None]:
         posterior = self._posterior(X)
+        if self._name in {
+            "ExpectedImprovement",
+            "LogExpectedImprovement",
+            "ProbabilityOfImprovement",
+            "LogProbabilityOfImprovement",
+        }:
+            from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+
+            if not isinstance(posterior, TorchGPyTorchPosterior):
+                raise UnsupportedError(
+                    "Analytic EI/PI requires a Gaussian posterior; use an MC acquisition for nonlinear outcome transforms."
+                )
         mean = posterior.mean.squeeze(-2)
         sigma = (
             posterior.variance.clamp_min(min_var).sqrt().reshape(mean.shape)
