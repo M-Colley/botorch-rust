@@ -213,6 +213,12 @@ class TorchModelListGP(torch.nn.Module, ModelListGP):
                         "Decoupled fantasies require single-output component models."
                     )
                 inputs = X[..., evaluation_mask[:, i], :]
+            if inputs.shape[-2] == 0:
+                # An unobserved output retains its existing posterior. Sampling
+                # a zero-dimensional QMC Gaussian is neither needed nor valid.
+                models.append(model)
+                start = stop
+                continue
             member_sampler = sampler if samplers is None else samplers[i]
             noise = None if observation_noise is None else observation_noise[..., start:stop]
             models.append(

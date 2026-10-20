@@ -434,6 +434,20 @@ def _get_hv_value_function(
     (``sampler``, default: 128 Sobol samples) of a set of designs, at
     ``project(X)`` if ``project`` is given. ``valfunc_cls`` and
     ``valfunc_argfac`` are not used (as in BoTorch)."""
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.acquisition._torch_backend_hvkg import tensor_hv_value_function
+
+        return tensor_hv_value_function(
+            model,
+            ref_point,
+            objective,
+            sampler,
+            project,
+            valfunc_cls,
+            valfunc_argfac,
+            use_posterior_mean,
+            log,
+        )
     return _HypervolumeValueFunction(
         model, ref_point, objective, sampler, project, use_posterior_mean, log
     )
@@ -447,6 +461,12 @@ def _split_hvkg_fantasy_points(X: Any, n_f: int, num_pareto: int) -> tuple[Any, 
     (rows ``q + i * num_pareto ..`` of ``X[b]``). For a single t-batch this is
     BoTorch's reshape; for several, BoTorch's reshape mixes the designs of
     different t-batches (see the migration notes)."""
+    if is_torch_tensor(X):
+        if X.ndim < 2 or min(n_f, num_pareto) < 1 or n_f * num_pareto > X.shape[-2]:
+            raise ValueError("Fantasy counts must be positive and fit the q-batch dimension.")
+        q = X.shape[-2] - n_f * num_pareto
+        fantasies = X[..., q:, :].reshape(*X.shape[:-2], n_f, num_pareto, X.shape[-1])
+        return X[..., :q, :], fantasies.movedim(-3, 0)
     data, shape = to_flat(X, "X")
     rows, d = shape[-2], shape[-1]
     if n_f * num_pareto > rows:
@@ -457,10 +477,6 @@ def _split_hvkg_fantasy_points(X: Any, n_f: int, num_pareto: int) -> tuple[Any, 
     batch = tuple(shape[:-2])
     nb = math.prod(batch)
     q = rows - n_f * num_pareto
-    if is_torch_tensor(X):
-        # Views of X (differentiable).
-        fantasies = X[..., q:, :].reshape(*batch, n_f, num_pareto, d)
-        return X[..., :q, :], fantasies.movedim(-3, 0)
     kind = kind_of(X)
     actual: list[float] = []
     fant: list[float] = [0.0] * (n_f * nb * num_pareto * d)

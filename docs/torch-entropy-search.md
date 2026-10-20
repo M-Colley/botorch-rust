@@ -214,3 +214,33 @@ full-space Gaussian entropy/adjoints for all four estimators and a half-line's
 closed entropy with finite-difference mean/variance/noise derivatives. MES
 has a separate exact-law regression for one/eight zero-normal observation
 draws, checking its finite value and Dual derivatives.
+
+## Hypervolume knowledge gradient
+
+`qHypervolumeKnowledgeGradient` and its multi-fidelity variant now evaluate
+their complete fantasy trees on the Tensor backend. The inner value is the
+port's device qEHVI or qLogEHVI over an empty front, using either posterior
+means or synchronized Gaussian draws. Training inputs/targets, model
+parameters, reference points, objective weights and every actual/fantasy
+design retain their graphs. Pending observations, decoupled evaluation masks,
+projection and deterministic/stochastic costs are supported. Cost sampling
+uses independent clones of the fantasy streams, retaining Gaussian cost
+correlations. A completely unobserved component retains its original model
+instead of invoking an invalid zero-dimensional QMC sampler.
+
+The 34-case CPU/CUDA suite checks pinned-reference values for mean/sample,
+standard/log and pending/decoupled configurations, two/three objectives,
+live weights, full training/query `gradcheck` and `gradgradcheck`, all
+parameter Hessian products, multiple query batches, multi-fidelity projection
+and costs, and absence of inference-data host conversions. Combined with
+the scalar KG regression suite, 56 cases pass. Reference value comparisons
+use a single query batch because the pinned reference's fantasy reshape
+mixes designs across different query batches. The port retains its existing
+correct per-batch fantasy layout and tests batched evaluations against
+independent calls.
+
+HVKG currently requires a ModelListGP of single-output components, as in the
+native implementation. Trace observations remain unsupported, matching
+BoTorch. The reserved `valfunc_cls` and `valfunc_argfac` arguments have no
+effect, matching the pinned official value factory. No HVKG speedup has been
+measured.

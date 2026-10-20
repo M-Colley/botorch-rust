@@ -52,7 +52,14 @@ _MULTI_OBJECTIVE = frozenset(
         "qLogNoisyExpectedHypervolumeImprovement",
     }
 )
-_LOOKAHEAD = frozenset({"qKnowledgeGradient", "qMultiFidelityKnowledgeGradient"})
+_LOOKAHEAD = frozenset(
+    {
+        "qKnowledgeGradient",
+        "qMultiFidelityKnowledgeGradient",
+        "qHypervolumeKnowledgeGradient",
+        "qMultiFidelityHypervolumeKnowledgeGradient",
+    }
+)
 _EXTRA_ANALYTIC = frozenset(
     {
         "ConstrainedExpectedImprovement",
@@ -108,11 +115,18 @@ def tensor_acquisition(public_class: type) -> Any:
                 else TensorMultiObjectiveAcquisition
             )
         elif public_class.__name__ in _LOOKAHEAD:
-            from botorch_rs.acquisition._torch_backend_knowledge_gradient import (
-                TensorKnowledgeGradient,
-            )
+            if "Hypervolume" in public_class.__name__:
+                from botorch_rs.acquisition._torch_backend_hvkg import (
+                    TensorHypervolumeKnowledgeGradient,
+                )
 
-            mixin = TensorKnowledgeGradient
+                mixin = TensorHypervolumeKnowledgeGradient
+            else:
+                from botorch_rs.acquisition._torch_backend_knowledge_gradient import (
+                    TensorKnowledgeGradient,
+                )
+
+                mixin = TensorKnowledgeGradient
         elif public_class.__name__ in _EXTRA_ANALYTIC:
             from botorch_rs.acquisition._torch_backend_analytic import TensorAnalyticExtra
 
