@@ -126,6 +126,7 @@ class TorchPrior(nn.Module):
     hyperparameters: Tensor
     _normal_variance: Tensor
     _normal_log_scale: Tensor
+    has_rsample = True
 
     def __init__(self, source: Any, like: Tensor) -> None:
         super().__init__()
@@ -189,6 +190,38 @@ class TorchPrior(nn.Module):
             -distance.clamp_min(0).square() / (2 * sigma.square())
             - (b - a + math.sqrt(2 * math.pi) * sigma).log()
         )
+
+    def _extended_shape(self, sample_shape: Any = ()) -> torch.Size:
+        return torch.Size(sample_shape)
+
+    def rsample(self, sample_shape: Any = ()) -> Tensor:
+        """Draw on the prior device; SmoothedBox retains its true tails."""
+        shape, p = torch.Size(sample_shape), self.hyperparameters.unbind()
+        distributions = torch.distributions
+        factories = {
+            "Normal": lambda: distributions.Normal(p[0], p[1]),
+            "LogNormal": lambda: distributions.LogNormal(p[0], p[1]),
+            "Gamma": lambda: distributions.Gamma(p[0], p[1]),
+            "Uniform": lambda: distributions.Uniform(p[0], p[1]),
+            "HalfCauchy": lambda: distributions.HalfCauchy(p[0]),
+            "HalfNormal": lambda: distributions.HalfNormal(p[0]),
+            "Beta": lambda: distributions.Beta(p[0], p[1]),
+        }
+        if self.kind in factories:
+            return factories[self.kind]().rsample(shape)
+        a, b, sigma = p
+        tail_weight = math.sqrt(2 * math.pi) * sigma / (b - a + math.sqrt(2 * math.pi) * sigma)
+        # As in the reference, this discrete mixture selection is not a
+        # pathwise derivative of the mixture weight. Hyperparameters are
+        # fixed prior buffers; sample_all_priors runs under no_grad.
+        tails = torch.bernoulli(tail_weight.expand(shape))
+        uniform = a + torch.rand(shape, dtype=a.dtype, device=a.device) * (b - a)
+        gaussian = torch.randn(shape, dtype=a.dtype, device=a.device) * sigma
+        return torch.where(tails > 0, gaussian + torch.where(gaussian < 0, a, b), uniform)
+
+    def sample(self, sample_shape: Any = ()) -> Tensor:
+        with torch.no_grad():
+            return self.rsample(sample_shape)
 
 
 class _TorchModule(nn.Module):
@@ -254,6 +287,54 @@ class _TorchModule(nn.Module):
             else:
                 setattr(self, name, value)
         return self
+
+    def named_priors(self) -> Any:
+        yield from tensor_prior_records(self)
+
+
+def tensor_prior_records(module: nn.Module) -> Any:
+    """Registered owned and GPyTorch priors, deduplicated across module aliases."""
+    seen: set[tuple[int, str, int]] = set()
+    for prefix, child in module.named_modules():
+        if isinstance(child, _TorchModule):
+            for name, (attribute, _) in child._prior_parameters.items():
+                prior = getattr(child, name)
+
+                def closure(owner: Any, attribute: str = attribute) -> Tensor:
+                    return getattr(owner, attribute)
+
+                def setting(owner: Any, value: Tensor, attribute: str = attribute) -> None:
+                    current = getattr(owner, attribute)
+                    if isinstance(current, nn.Parameter):
+                        constraint = getattr(
+                            owner,
+                            f"{attribute}_constraint",
+                            getattr(owner, f"raw_{attribute}_constraint", None),
+                        )
+                        if constraint is not None and not bool(
+                            (
+                                (value >= constraint.lower_bound)
+                                & (value <= constraint.upper_bound)
+                            ).all()
+                        ):
+                            raise ValueError("Sample is out of bounds of its current constraints.")
+                        owner._assign(attribute, value)
+                    else:
+                        setattr(owner, attribute, value)
+
+                key = (id(child), name, id(prior))
+                if key not in seen:
+                    seen.add(key)
+                    yield f"{prefix}.{name}" if prefix else name, child, prior, closure, setting
+        else:
+            named = getattr(child, "named_priors", None)
+            if not callable(named):
+                continue
+            for name, owner, prior, get, set_value in named():
+                key = (id(owner), name.rsplit(".", 1)[-1], id(prior))
+                if key not in seen:
+                    seen.add(key)
+                    yield f"{prefix}.{name}" if prefix else name, owner, prior, get, set_value
 
 
 class TorchKernel(_TorchModule):

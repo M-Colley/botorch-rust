@@ -249,6 +249,9 @@ def sample_all_priors(model: Any, max_retries: int = 100, seed: int | None = Non
     seeds the draws."""
     from botorch_rs import _botorch_rs as _rs
 
+    if getattr(model, "_tensor_backend", None) == "torch":
+        _sample_tensor_priors(model, max_retries, seed)
+        return
     models = model.models if hasattr(model, "models") else [model]
     visited: set[int] = set()
     for i, m in enumerate(models):
@@ -267,6 +270,73 @@ def sample_all_priors(model: Any, max_retries: int = 100, seed: int | None = Non
             raise UnsupportedError("sample_all_priors requires botorch_rs SingleTaskGP models.")
         if sync is not None:
             sync()
+
+
+def _sample_tensor_priors(model: Any, max_retries: int, seed: int | None) -> None:
+    import warnings
+
+    import torch
+
+    from botorch_rs.exceptions.warnings import BotorchWarning
+    from botorch_rs.models._torch_backend_modules import tensor_prior_records
+
+    if not isinstance(max_retries, int) or max_retries < 1:
+        raise ValueError("max_retries must be a positive integer.")
+    devices = sorted(
+        {
+            value.device.index
+            for value in (*model.parameters(), *model.buffers())
+            if value.device.type == "cuda"
+        }
+    )
+    with torch.random.fork_rng(devices=devices, enabled=seed is not None), torch.no_grad():
+        if seed is not None:
+            torch.random.default_generator.manual_seed(int(seed))
+            for device in devices:
+                torch.cuda.default_generators[device].manual_seed(int(seed))
+        for name, owner, prior, closure, setting_closure in tensor_prior_records(model):
+            if setting_closure is None:
+                raise RuntimeError(
+                    "Must provide inverse transform to be able to sample from prior."
+                )
+            target = closure(owner)
+            shape = prior._extended_shape()
+            # Singleton prior batch/event axes still represent one scalar
+            # distribution: draw independent values for every target entry.
+            scalar = shape.numel() == 1
+            sample_shape = target.shape if scalar else target.shape[: -len(shape)]
+            saved = [(parameter, parameter.detach().clone()) for parameter in owner.parameters()]
+            for attempt in range(max_retries):
+                try:
+                    draw = prior.sample(sample_shape).to(target)
+                    if scalar:
+                        draw = draw.reshape(target.shape)
+                    if not bool(torch.isfinite(draw).all()):
+                        raise ValueError("Prior sample must have finite raw values.")
+                    setting_closure(owner, draw)
+                    break
+                except NotImplementedError:
+                    for parameter, value in saved:
+                        parameter.copy_(value)
+                    warnings.warn(
+                        f"Sampling not implemented for {type(prior).__name__} ({name}). Skipping.",
+                        BotorchWarning,
+                        stacklevel=3,
+                    )
+                    break
+                except (RuntimeError, ValueError) as error:
+                    for parameter, value in saved:
+                        parameter.copy_(value)
+                    message = str(error)
+                    if not any(
+                        token in message
+                        for token in ("out of bounds", "finite raw values", "constraint's support")
+                    ):
+                        raise
+                    if attempt == max_retries - 1:
+                        raise RuntimeError(
+                            f"Failed to sample a feasible parameter value from the prior after {max_retries} attempts."
+                        ) from error
 
 
 __all__ = [

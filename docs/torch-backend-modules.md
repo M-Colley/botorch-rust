@@ -7,6 +7,34 @@ ordinary Torch optimizers consume the same parameter objects used in inference.
 Covariance evaluation dispatches through Rust `tensor_kernel` to the installed
 Torch runtime, retaining the input device, dtype, and autograd graph.
 
+`sample_all_priors` samples actual Torch-backend Parameters in place. The eight
+owned univariate families (Normal, LogNormal, Gamma, Uniform, HalfCauchy,
+HalfNormal, Beta and SmoothedBox) generate draws on their prior's device and
+dtype. SmoothedBox retains its uniform middle and Gaussian tails with their
+correct mixture weight; it is not approximated by a bounded uniform. Its
+discrete mixture selection follows the reference sampler, rather than claiming
+a pathwise derivative of the mixture weight. Model prior sampling runs under
+`no_grad` and preserves Parameter identities and trainability flags.
+
+Module and model-list aliases are visited once. Registered GPyTorch priors and
+their setting closures are supported, including scalar singleton prior axes
+and non-scalar prior batches. User-supplied prior implementations retain their
+own sampling behavior; outputs are converted to the target Parameter's dtype
+and device before its setter. This also handles GPyTorch transformed priors
+whose cached base distribution remains CPU/float32 after `Module.to` moves
+their buffers. The owned prior samplers do not have that cache/device mismatch.
+
+An explicit `seed` isolates and restores CPU and participating CUDA RNG states.
+Without a seed the usual Torch RNG states advance. Constraint failures retry up
+to `max_retries`, restoring the previous raw values after each rejected draw;
+an exhausted attempt limit raises. Missing inverse-setting closures and
+unrelated sampler failures raise directly. A foreign prior without sampling
+support emits `BotorchWarning`, as in the reference. The focused 51 CPU/CUDA
+sampling cases compare owned draws against independent Torch distributions,
+check SmoothedBox tail probability and moments, and exercise exact/SVGP
+Parameters, aliases, retries, foreign priors, seeded RNG isolation and surviving
+posterior graphs.
+
 The current converter supports RBF, Matérn (0.5, 1.5, 2.5), RQ, Periodic,
 Cosine, Linear, Polynomial, Scale, Additive and Product kernels. ARD, active
 dimensions, model batches, feature batches, shared kernel objects and configured
