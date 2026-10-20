@@ -185,6 +185,9 @@ class TensorMaxValueEntropy(_TensorAcquisition):
         if train is None and hasattr(self.model, "train_inputs"):
             train = self.model.train_inputs[0]
         self._dimension = candidate.shape[-1]
+        from botorch_rs.acquisition.max_value_entropy_search import _candidate_train_inputs
+
+        train = _candidate_train_inputs(self.model, train, self._dimension)
         self._validate_points(candidate, "candidate_set")
         if train is not None:
             self._validate_points(train, "train_inputs")

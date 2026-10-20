@@ -316,6 +316,23 @@ query batches does not change an existing query's value. The upstream
 multioutput fantasy reshape failure is already tracked as
 [GPyTorch issue 2804](https://github.com/cornellius-gp/gpytorch/issues/2804).
 
+## Multitask entropy baselines
+
+MES and GIBBON also support single-output `MultiTaskGP` designs without the
+categorical task column. Their training baseline is aligned to the continuous
+design coordinates, while posterior sampling still targets `output_tasks`.
+Task columns at the beginning, interior and end, external labels, full-labelled
+designs and explicitly supplied full/reduced baselines are covered. Full task
+columns are retained when the candidate set supplies them. This corrects a
+constructor failure in both pinned BoTorch b0dd01be6 and the initial Tensor
+port. The native default already used continuous training coordinates; explicit
+native baselines now follow the same rule. Task-free pending fantasies remain
+the model's separate unsupported configuration. The combined max-entropy and
+multitask suite passes 161 CPU/CUDA tests, including 34 focused cases with
+first/second derivatives and no host conversion. The independently tested
+source patch is `D:/botorch-pr-multitask-entropy`, commit `92d08a63f`; see
+[multitask bug 10](multitask.md) for the historical report and source test counts.
+
 ## Device pathwise sampling
 
 `draw_kernel_feature_paths`, `draw_matheron_paths`, `gaussian_update` and

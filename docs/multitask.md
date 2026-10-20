@@ -5,6 +5,12 @@ The port of BoTorch's multi-task GPs, `MultiTaskGP` and `KroneckerMultiTaskGP`
 equivalence results and the BoTorch and GPyTorch bugs found. Reference: BoTorch
 main at da00e0401 and BoTorch 0.18.1 (GPyTorch 1.15.2, linear_operator 0.6.1).
 
+This is the historical phase-7a audit. Later native and Torch implementations
+extend several capabilities listed below; see [Torch backend](torch-backend.md)
+for the current device model scope. The MES/GIBBON baseline issue in bug 10 was
+independently rechecked against official b0dd01be6 and repaired in the port;
+its prepared upstream patch and current validation are recorded below.
+
 Rust: `botorch_core/src/models/multitask/` (`mod.rs`: the `TaskLayout` shared
 with `LCEMGP`; `gp.rs`: `MultiTaskGP`; `kronecker.rs`: `KroneckerMultiTaskGP`).
 Bindings: `botorch_pyo3/src/multitask.rs`. Python:
@@ -334,9 +340,15 @@ random in the unit cube with the task column last unless stated.
     (`RuntimeError: Unsupported batch shapes ...`), and so does
     `qKnowledgeGradient` on a single-output-task `MultiTaskGP`
     (`RuntimeError: Sizes of tensors must match ...`), and so does
-    `qMaxValueEntropy(m, candidate_set)(X)` (`RuntimeError: Sizes of tensors
-    must match ...`). botorch_rs raises a clear error for `fantasize`, does
-    not support qKG, and evaluates qMES.
+    `qMaxValueEntropy(m, candidate_set)(X)` and GIBBON (`RuntimeError: Sizes of
+    tensors must match ...`). The entropy failure occurs at construction:
+    `MaxValueBase` appends long-format `train_inputs` (including the task column)
+    to the task-free `candidate_set`. The port now removes that column only
+    when designs have `num_non_task_features` columns. Their posterior retains
+    the selected `output_tasks`; explicit task-labelled designs and reduced
+    user baselines are preserved. Native default baselines already used
+    continuous coordinates; explicit baselines and the Torch constructor now
+    use the same law. Task-free fantasies/KG remain a separate model boundary.
 11. **`Model.fantasize` of a fixed-noise `MultiTaskGP` with several output
     tasks fails with `IndexError`**: for `num_outputs > 1` it transposes
     `likelihood.noise`, a vector (`n`) for a `MultiTaskGP`:
@@ -368,8 +380,20 @@ kernel matrices (see "Tolerances above nominal").
 | 7 | [GPyTorch #2809](https://github.com/cornellius-gp/gpytorch/pull/2809) |
 | 8 | meta-pytorch/botorch#3389 and #3374 |
 | 9 | meta-pytorch/botorch#3448 (also affects `SingleTaskGP`) |
-| 10 | `fantasize` and qKG: meta-pytorch/botorch#3374; qMES not filed (its `train_inputs` include the task column, which needs a design decision) |
+| 10 | `fantasize` and qKG: meta-pytorch/botorch#3374. MES/GIBBON: verified source repair prepared in `D:/botorch-pr-multitask-entropy`, commit `92d08a63f`, for centralized publication. |
 | 11 | meta-pytorch/botorch#3374 |
+
+The MES/GIBBON follow-up passes 161 port CPU/CUDA max-entropy and multitask
+tests, including 34 new cases for first/interior/last task columns, external
+task labels, selected output tasks, full-labelled candidates, explicit
+baselines, query/parameter gradients, second backward and prohibited host
+conversion guards. Native explicit-baseline parity covers lists, NumPy and
+Torch inputs. The unchanged pinned source fails all twelve task-free
+CPU/CUDA/column/acquisition regression subcases; the proposed source repair
+passes its full max-entropy suite and new regressions (10 tests, 14 subcases).
+Reference numerical tests use fixed noise to isolate this issue from the
+already reported inferred-noise task-remapping bug 1. This is a proposed
+upstream patch, not a claim that official main already includes it.
 
 ## Verification
 

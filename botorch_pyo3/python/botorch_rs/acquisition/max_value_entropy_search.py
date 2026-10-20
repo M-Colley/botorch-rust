@@ -61,6 +61,30 @@ def _candidates(candidate_set: Any, d: int, name: str = "candidate_set") -> Any:
     return flat
 
 
+def _candidate_train_inputs(model: Any, train_inputs: Any, candidate_width: int) -> Any:
+    """Align long-format multitask baselines with task-free design coordinates.
+
+    Retargeting observed continuous locations through ``model.posterior`` uses
+    the selected ``output_tasks``. Explicit task-column candidate sets retain
+    their labels and their full training baseline.
+    """
+    if train_inputs is None:
+        return None
+    d = getattr(model, "num_non_task_features", None)
+    task_feature = getattr(model, "_task_feature", None)
+    shape = _ops.shape_of(train_inputs)
+    if d == candidate_width and task_feature is not None and shape[-1] == d + 1:
+        task_feature %= d + 1
+        return _ops.concat(
+            [
+                _ops.getitem(train_inputs, (Ellipsis, slice(None, task_feature))),
+                _ops.getitem(train_inputs, (Ellipsis, slice(task_feature + 1, None))),
+            ],
+            -1,
+        )
+    return train_inputs
+
+
 class MaxValueBase(AcquisitionFunction):
     r"""Base class of the max-value entropy search acquisition functions: the
     max values are sampled at construction from the posterior over the
@@ -102,6 +126,7 @@ class MaxValueBase(AcquisitionFunction):
         self._max_seed = seed
         if train_inputs is None and hasattr(model, "train_inputs"):
             train_inputs = model.train_inputs[0]
+        train_inputs = _candidate_train_inputs(model, train_inputs, d)
         if train_inputs is not None:
             _candidates(train_inputs, d, "train_inputs")
             candidate_set = _ops.concat([candidate_set, train_inputs], 0)
@@ -196,6 +221,7 @@ class MaxValueBase(AcquisitionFunction):
             raise UnsupportedError(f"Multi-output models are not supported by {self._name}.")
         rs_model = model._acquisition_model(None)
         d = int(rs_model.dim)
+        train_inputs = _candidate_train_inputs(model, train_inputs, d)
         self.candidate_set = candidate_set
         self.num_mv_samples = int(num_mv_samples)
         self.posterior_transform = posterior_transform
