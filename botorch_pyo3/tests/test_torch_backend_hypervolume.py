@@ -75,22 +75,26 @@ def test_hypervolume_reference_device_and_full_graph(device, outcomes, q, log):
 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("log", [False, True])
-def test_observed_front_and_reference_gradcheck(device, log):
-    X, Y, ref, _ = data(device, 2)
+@pytest.mark.parametrize("outcomes", [2, 3])
+def test_observed_front_and_reference_gradcheck(device, log, outcomes):
+    X, Y, ref, _ = data(device, outcomes)
     model = SingleTaskGP(X.detach(), Y.detach(), backend="torch")
     ref.requires_grad_()
-    observed = torch.tensor(
-        [[0.1, 0.55], [0.3, 0.3], [0.6, 0.05]], device=device, dtype=torch.double
-    ).requires_grad_()
+    coordinates = (
+        [[0.1, 0.55], [0.3, 0.3], [0.6, 0.05]]
+        if outcomes == 2
+        else [[0.1, 0.55, 0.2], [0.3, 0.3, 0.5], [0.6, 0.05, 0.3]]
+    )
+    observed = torch.tensor(coordinates, device=device, dtype=torch.double).requires_grad_()
     query = torch.tensor([[0.21], [0.56]], device=device, dtype=torch.double).requires_grad_()
 
     def evaluate(front, reference, candidate):
         partition = FastNondominatedPartitioning(reference, Y=front)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            return acquisition(log)(model, reference, partition, sampler=FixedSampler(4, device))(
-                candidate
-            )
+            return acquisition(log)(
+                model, reference, partition, sampler=FixedSampler(2 * outcomes, device)
+            )(candidate)
 
     assert torch.autograd.gradcheck(evaluate, (observed, ref, query), fast_mode=True)
     assert torch.autograd.gradgradcheck(evaluate, (observed, ref, query), fast_mode=True)
@@ -192,12 +196,13 @@ def test_hypervolume_default_sampler_no_host_conversion(device, log, monkeypatch
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("log", [False, True])
 @pytest.mark.parametrize("pending,incremental", [(False, True), (True, True), (True, False)])
-def test_noisy_hypervolume_joint_reference(device, log, pending, incremental):
+@pytest.mark.parametrize("outcomes", [2, 3])
+def test_noisy_hypervolume_joint_reference(device, log, pending, incremental, outcomes):
     from botorch.sampling.normal import SobolQMCNormalSampler as ReferenceSampler
 
     from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
-    X, Y, ref, _ = data(device, 2)
+    X, Y, ref, _ = data(device, outcomes)
     model = SingleTaskGP(X, Y, backend="torch")
     baseline = X.detach()[::2]
     query = torch.tensor([[0.21], [0.56]], device=device, dtype=torch.double).requires_grad_()
@@ -235,10 +240,11 @@ def test_noisy_hypervolume_joint_reference(device, log, pending, incremental):
 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("log", [False, True])
-def test_noisy_full_graph_extension_gradcheck(device, log):
+@pytest.mark.parametrize("outcomes", [2, 3])
+def test_noisy_full_graph_extension_gradcheck(device, log, outcomes):
     from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
-    X, Y, ref, _ = data(device, 2)
+    X, Y, ref, _ = data(device, outcomes)
     ref.requires_grad_()
     query = torch.tensor([[0.21], [0.56]], device=device, dtype=torch.double).requires_grad_()
 
@@ -324,10 +330,11 @@ def test_noisy_batched_constraints_and_weight_graphs(device, log):
 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("log", [False, True])
-def test_noisy_hypervolume_no_host_copies_and_pending_prefix(device, log, monkeypatch):
+@pytest.mark.parametrize("outcomes", [2, 3])
+def test_noisy_hypervolume_no_host_copies_and_pending_prefix(device, log, monkeypatch, outcomes):
     from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
-    X, Y, ref, _ = data(device, 2)
+    X, Y, ref, _ = data(device, outcomes)
     model = SingleTaskGP(X, Y, backend="torch")
     query = torch.tensor([[0.21], [0.56]], device=device, dtype=torch.double).requires_grad_()
     with warnings.catch_warnings():
@@ -378,12 +385,13 @@ def test_noisy_hypervolume_no_host_copies_and_pending_prefix(device, log, monkey
 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("log", [False, True])
-def test_noisy_pruning_to_empty_front_matches_empty_ehvi(device, log):
+@pytest.mark.parametrize("outcomes", [2, 3])
+def test_noisy_pruning_to_empty_front_matches_empty_ehvi(device, log, outcomes):
     from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
-    X, Y, _, _ = data(device, 2)
+    X, Y, _, _ = data(device, outcomes)
     model = SingleTaskGP(X, Y, backend="torch")
-    ref = torch.full((2,), 10.0, dtype=Y.dtype, device=device)
+    ref = torch.full((outcomes,), 10.0, dtype=Y.dtype, device=device)
     query = torch.tensor([[0.21], [0.56]], device=device, dtype=torch.double)
     partition = FastNondominatedPartitioning(ref, Y=Y.detach()[:0])
     with warnings.catch_warnings():
@@ -414,7 +422,7 @@ def test_noisy_hypervolume_cache_fallback_and_explicit_boundaries():
     with pytest.warns(RuntimeWarning, match="full-joint"):
         actual = acquisition(True, noisy=True)(model, ref, X_baseline=X.detach(), cache_root=True)
     assert actual.cache_root is False
-    with pytest.raises(NotImplementedError, match="two objectives"):
+    with pytest.raises(ValueError, match="model outcomes"):
         acquisition(True, noisy=True)(
             model, torch.zeros(3, dtype=torch.double), X_baseline=X.detach()
         )

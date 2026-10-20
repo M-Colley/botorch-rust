@@ -68,20 +68,24 @@ the actual log-fatplus, smooth minimum and signed log-area formulas for
 qLogEHVI. Fixed decompositions support any objective dimension; two and three
 objectives are tested on CPU and CUDA. Constraints, differentiable multi-output
 objectives, pending points, and objective-weight/temperature/training/query
-graphs are covered by 32 focused tests. Tests forbid inference data transfers
+graphs are covered by focused CPU/CUDA tests. Tests forbid inference data transfers
 through CPU, NumPy, lists or flat buffers and verify first and second derivatives.
 
-For differentiable two-objective observed fronts, the acquisition rebuilds exact
-staircase cells from retained caller-owned outcomes with device-side comparisons,
-sorting and gathering. Native CPU box decomposition methods retain their
+For differentiable observed fronts, the acquisition rebuilds exact cells from
+retained caller-owned outcomes. Two objectives use staircase cells; higher
+dimensions port the two-pass Lacour local-upper-bound algorithm used by
+`FastNondominatedPartitioning`. Tests compare every cell boundary against that
+reference for ragged three- and four-objective fronts. Above two objectives,
+differentiable observed fronts require `FastNondominatedPartitioning` so that
+the log acquisition retains the reference cell decomposition. All boundary
+values and graphs remain on device. Integer scalar reads determine the widths
+of padded ragged cell arrays. Native CPU box decomposition methods retain their
 original numerical behavior. Observed-front and reference-point derivatives pass
-`gradcheck` and `gradgradcheck`. Differentiable observed-front rebuilding above
-two objectives remains outside this checkpoint and raises an explicit error.
-Static native partition construction
+`gradcheck` and `gradgradcheck`. Static native partition construction
 may still run on CPU; the acquisition's posterior inference and HVI calculations
 remain on the model device.
 
-qNEHVI and qLogNEHVI additionally support exact two-objective Pareto cells
+qNEHVI and qLogNEHVI additionally support exact general-dimensional Pareto cells
 computed on device from joint posterior samples. They support constraints,
 weighted or generic multi-output objectives, model/t-batches, pruning, empty
 fronts, and incremental or nonincremental pending points. `cache_root=True`
@@ -96,6 +100,10 @@ By default baseline latent samples are detached, matching the reference's
 available. `detach_baseline=False` retains the baseline latent graph as well;
 the complete training-data/reference/query function passes `gradcheck` and
 `gradgradcheck` on CPU and CUDA. The combined acquisition/sampler suite now has
-171 passing tests, including 61 hypervolume tests. Above-two-objective noisy
-partitioning, approximate `alpha>0` partitioning, and ensemble marginalization
-remain explicit boundaries in this checkpoint.
+205 passing tests, including 89 hypervolume acquisition tests and six exact
+geometry tests. Noisy acquisition values and first/second derivatives are
+compared against the pinned reference for two and three objectives on CPU and
+CUDA. The geometry algorithm supports higher dimensions, with the usual growth
+in the number of Pareto cells; this checkpoint does not establish practical
+performance at large objective counts. Approximate `alpha>0` partitioning and
+ensemble marginalization remain explicit boundaries in this checkpoint.

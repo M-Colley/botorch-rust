@@ -13,25 +13,12 @@ import torch
 from torch import Tensor, nn
 
 from botorch_rs.acquisition._torch_backend_acquisition import _log_softplus, _TensorAcquisition
+from botorch_rs.acquisition._torch_box_decomposition import nondominated_mask, partition_nd
 from botorch_rs.acquisition._torch_reductions import fatmax, logsumexp, smooth_amax
 from botorch_rs.acquisition.multi_objective.objective import IdentityMCMultiOutputObjective
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import legacy_ei_numerics_warning
 from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
-
-
-def nondominated_mask(Y: Tensor, ref: Tensor, feasible: Tensor | None = None) -> Tensor:
-    """Maximization Pareto membership; comparisons select differentiable values."""
-    valid = (Y > ref).all(dim=-1)
-    if feasible is not None:
-        valid = valid & feasible
-    a, b = Y.unsqueeze(-3), Y.unsqueeze(-2)
-    dominates = (a >= b).all(-1) & (a > b).any(-1)
-    dominates = dominates & valid.unsqueeze(-2)
-    duplicate = (a == b).all(-1)
-    indices = torch.arange(Y.shape[-2], device=Y.device)
-    duplicate = duplicate & (indices.unsqueeze(-2) < indices.unsqueeze(-1))
-    return valid & ~(dominates | duplicate).any(dim=-1)
 
 
 def partition_2d(
@@ -62,6 +49,12 @@ def partition_2d(
     lower = torch.where(active.unsqueeze(-1), lower, reference.unsqueeze(-2))
     upper = torch.where(active.unsqueeze(-1), upper, reference.unsqueeze(-2) + 1)
     return lower, upper, active
+
+
+def _partition(
+    Y: Tensor, ref: Tensor, feasible: Tensor | None = None
+) -> tuple[Tensor, Tensor, Tensor]:
+    return partition_2d(Y, ref, feasible) if Y.shape[-1] == 2 else partition_nd(Y, ref, feasible)
 
 
 def _log_difference(even: Tensor, odd: Tensor) -> Tensor:
@@ -134,21 +127,22 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
         source = getattr(partitioning, "_tensor_source_Y", None)
         if source is None:
             source = getattr(partitioning, "Y", None)
-        if (
-            isinstance(source, Tensor)
-            and (source.requires_grad or ref.requires_grad)
-            and ref.numel() == 2
+        if isinstance(source, Tensor) and (
+            source.requires_grad or (ref.requires_grad and ref.numel() == 2)
         ):
+            fast = getattr(partitioning, "_rs_kind", None) == "fast_nondominated" or any(
+                cls.__name__ == "FastNondominatedPartitioning" for cls in type(partitioning).__mro__
+            )
+            if ref.numel() > 2 and not fast:
+                raise UnsupportedError(
+                    "Differentiable observed fronts above two objectives require FastNondominatedPartitioning."
+                )
             if getattr(partitioning, "alpha", 0) != 0:
                 raise UnsupportedError(
                     "Differentiable observed fronts require exact partitioning (alpha=0)."
                 )
             self.register_buffer("_observed_source", source)
         else:
-            if isinstance(source, Tensor) and source.requires_grad:
-                raise UnsupportedError(
-                    "Differentiable observed-front rebuilding currently requires two objectives."
-                )
             self.register_buffer("_observed_source", None)
         old_ref = torch.as_tensor(partitioning.ref_point, dtype=like.dtype, device=like.device)
         self.register_buffer("_reference_cells", self.cell_lower_bounds == old_ref)
@@ -177,7 +171,7 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
 
     def _cells(self, obj: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         if self._observed_source is not None:
-            return partition_2d(self._observed_source.to(obj), self.ref_point.to(obj))
+            return _partition(self._observed_source.to(obj), self.ref_point.to(obj))
         lower = self.cell_lower_bounds.to(obj)
         # The mathematical reference vertex stays differentiable even when a
         # fixed native decomposition supplied its other boundary coordinates.
@@ -271,15 +265,27 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
         return self._hypervolume(samples, objective)
 
 
-def _dominated_volume_2d(Y: Tensor, ref: Tensor, feasible: Tensor | None = None) -> Tensor:
-    lower, upper, active = partition_2d(Y, ref, feasible)
+def _dominated_volume(Y: Tensor, ref: Tensor, feasible: Tensor | None = None) -> Tensor:
+    lower, upper, active = _partition(Y, ref, feasible)
+    if Y.shape[-1] > 2:
+        valid = (Y > ref).all(-1)
+        if feasible is not None:
+            valid = valid & feasible
+        ideal = (
+            torch.where(valid.unsqueeze(-1), Y, ref).amax(-2)
+            if Y.shape[-2]
+            else ref.expand(*Y.shape[:-2], Y.shape[-1])
+        )
+        side = (torch.minimum(upper, ideal.unsqueeze(-2)) - lower).clamp_min(0)
+        nondominated = side.prod(-1).masked_fill(~active, 0).sum(-1)
+        return (ideal - ref).clamp_min(0).prod(-1) - nondominated
     finite = torch.isfinite(upper[..., 0]) & active
     widths = torch.where(finite, upper[..., 0], lower[..., 0]) - lower[..., 0]
     return (widths * (lower[..., 1] - ref[..., 1])).sum(-1)
 
 
 class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
-    """Exact 2-D joint noisy hypervolume sampling, with device-only Pareto cells."""
+    """Exact joint noisy hypervolume sampling, with device-only Pareto cells."""
 
     _X_baseline: Tensor
     base_sampler: Any
@@ -297,9 +303,9 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
         bound.apply_defaults()
         values = dict(bound.arguments)
         self._init_common(values)
-        if self.ref_point.numel() != 2:
-            raise UnsupportedError(
-                "Device-side noisy hypervolume partitioning currently requires two objectives."
+        if values["objective"] is None and self.ref_point.numel() != self.model.num_outputs:
+            raise ValueError(
+                "The reference point must match the model outcomes unless an objective selects or expands outputs."
             )
         if values["alpha"] != 0 or values["marginalize_dim"] is not None:
             raise UnsupportedError(
@@ -357,7 +363,7 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
                 (*self.sample_shape, *self.model.batch_shape, 0, self.model.num_outputs)
             )
         objective = self.objective(samples, X=baseline)
-        cells = partition_2d(objective, self.ref_point, self._feasible(samples))
+        cells = _partition(objective, self.ref_point, self._feasible(samples))
         self._cell_lower_tensor, self._cell_upper_tensor, self._last_cell_mask = cells
         self._last_baseline_objective = objective
 
@@ -511,18 +517,18 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
         self.baseline_samples, self.baseline_obj = baseline_samples, baseline_obj
         self._last_baseline_objective = baseline_obj
         feasible = self._feasible(baseline_samples)
-        cells = partition_2d(baseline_obj, self.ref_point.to(objective), feasible)
+        cells = _partition(baseline_obj, self.ref_point.to(objective), feasible)
         self._cell_lower_tensor, self._cell_upper_tensor, self._last_cell_mask = cells
         value = self._hypervolume(samples[..., count:, :], candidate_obj, cells)
         if not self.incremental_nehvi and self._cached_pending_count:
             n = self._X_baseline.shape[-2]
-            pending_hv = _dominated_volume_2d(baseline_obj, self.ref_point, feasible)
+            pending_hv = _dominated_volume(baseline_obj, self.ref_point, feasible)
             if n:
                 observed_samples = self._observed_sampler(self._prefix_posterior(posterior, n))
                 if self.detach_baseline:
                     observed_samples = observed_samples.detach()
                 observed_obj = self.objective(observed_samples, X=self._X_baseline)
-                observed_hv = _dominated_volume_2d(
+                observed_hv = _dominated_volume(
                     observed_obj, self.ref_point, self._feasible(observed_samples)
                 )
                 if self.detach_baseline:
