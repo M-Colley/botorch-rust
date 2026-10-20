@@ -49,6 +49,7 @@ pub mod additive;
 mod conditioning;
 mod lookahead;
 mod noiseless_fantasy;
+mod parameter_grad;
 
 pub(crate) use conditioning::{FantasyAdjoint, FantasyGp, FantasyPosterior};
 pub(crate) use lookahead::{CondAdjoint, CondFactor, CondGp, CondPosterior};

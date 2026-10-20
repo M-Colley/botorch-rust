@@ -32,6 +32,7 @@ use crate::threads;
 use crate::transforms::{numel, PyNormalize, PyStandardize};
 use pyo3::IntoPyObjectExt;
 
+mod parameter_grad;
 pub mod posterior_autograd;
 
 /// Rows per parallel work item of the marginal posterior.
@@ -1201,6 +1202,27 @@ impl PySingleTaskGP {
     /// The raw hyperparameters in flat order (BoTorch's `named_parameters()`).
     fn raw_parameters(&self) -> Vec<f64> {
         self.snapshot().raw_parameters().as_slice().to_vec()
+    }
+
+    #[pyo3(signature = (x, mean_adjoint, covariance_adjoint, observation_noise=false))]
+    fn posterior_parameter_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        mean_adjoint: Array,
+        covariance_adjoint: Array,
+        observation_noise: bool,
+    ) -> PyResult<ArrayBuf> {
+        let model = self.snapshot();
+        threads::run(py, || {
+            parameter_grad::parameter_vjp(
+                &model,
+                &x,
+                &mean_adjoint,
+                &covariance_adjoint,
+                observation_noise,
+            )
+        })
     }
 
     /// Sets the raw hyperparameters from a flat vector.

@@ -768,6 +768,31 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         for _, value in self.named_parameters():
             yield value
 
+    def posterior_parameter_vjp(
+        self,
+        X: Any,
+        mean_adjoint: Any,
+        covariance_adjoint: Any,
+        observation_noise: bool = False,
+    ) -> Any:
+        """Native posterior derivative in flat ``named_parameters`` order.
+
+        ``mean_adjoint`` has the posterior mean's ``... x q x m`` layout.
+        ``covariance_adjoint`` uses the joint normal's output-major
+        ``... x (q*m) x (q*m)`` layout. Model and query batch broadcasting
+        is reduced into the original model parameters. The result is an
+        explicit first-order gradient; no prior-density terms are added.
+        """
+        return from_pair(
+            self._rs.posterior_parameter_vjp(
+                to_flat(X, "X"),
+                to_flat(mean_adjoint, "mean_adjoint"),
+                to_flat(covariance_adjoint, "covariance_adjoint"),
+                observation_noise,
+            ),
+            self._kind,
+        )
+
     def initialize(self, **kwargs: Any) -> SingleTaskGP:
         """Sets hyperparameters by (dotted) name, like GPyTorch's
         ``Module.initialize``, e.g. ``model.initialize(**{"likelihood.noise": 1e-3,
