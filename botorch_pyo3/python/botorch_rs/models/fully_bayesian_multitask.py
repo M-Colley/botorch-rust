@@ -9,6 +9,12 @@ NumPyro model (evaluated in Rust). Every MCMC sample is then a
 ``L`` of the Matérn-5/2 kernel matrix of the latent task features (BoTorch's
 ``IndexKernel`` with ``covar_factor = L`` and ``var = 0``); the posterior is
 the mixture of their posteriors.
+
+``backend="torch"`` (also selected automatically for CUDA inputs or data
+requiring gradients) constructs device-resident correlated components and
+uses the Torch-dispatched multinomial NUTS sampler. See
+``docs/torch-fully-bayesian-multitask.md`` for supported compositions and
+validation of data, parameter and query derivatives.
 """
 
 from __future__ import annotations
@@ -281,6 +287,31 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
     _is_fully_bayesian = True
     _is_ensemble = True
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        if cls is SaasFullyBayesianMultiTaskGP and _use_torch_backend(
+            backend,
+            train_X,
+            train_Y,
+            *args[1:2],
+            kwargs.get("train_Yvar"),
+            *(kwargs.get(name) for name in ("input_transform", "outcome_transform")),
+        ):
+            from botorch_rs.models._torch_backend_fully_bayesian_multitask import (
+                TorchSaasFullyBayesianMultiTaskGP,
+            )
+
+            return object.__new__(TorchSaasFullyBayesianMultiTaskGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -294,6 +325,8 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
         input_transform: InputTransform | None = None,
         pyro_model: MultitaskSaasPyroModel | None = None,
         validate_task_values: bool = True,
+        *,
+        backend: str = "auto",
     ) -> None:
         r"""Initialize the fully Bayesian multi-task GP model.
 

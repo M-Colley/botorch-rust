@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import Tensor
@@ -48,6 +48,7 @@ class TorchMCMCPotential:
         warp_eps: float = 1e-7,
         input_transform: Any = None,
         outcome_transform: Any = None,
+        task: tuple[int, int, int] | None = None,
     ) -> None:
         if kernel not in ("matern", "saas", "linear"):
             raise UnsupportedError(f"Unknown Torch MCMC kernel {kernel!r}.")
@@ -72,11 +73,38 @@ class TorchMCMCPotential:
             train_Yvar.shape != train_Y.shape or bool((train_Yvar < 0).any())
         ):
             raise ValueError("train_Yvar must be nonnegative and match train_Y.shape.")
-        d = train_X.shape[-1]
+        columns = train_X.shape[-1]
+        self.task = task
+        if task is not None:
+            feature, tasks, rank = task
+            if (
+                type(feature) is not int
+                or not 0 <= feature < columns
+                or type(tasks) is not int
+                or tasks < 1
+                or type(rank) is not int
+                or not 1 <= rank <= tasks
+            ):
+                raise ValueError("Invalid task feature, count or latent rank.")
+            labels = train_X[..., feature]
+            if not bool(((labels == labels.long()) & (labels >= 0) & (labels < tasks)).all()):
+                raise ValueError("Potential task labels must be mapped to [0, num_tasks).")
+            self.task_indices = labels.long()
+            self.base_indices = torch.tensor(
+                [i for i in range(columns) if i != feature], device=train_X.device, dtype=torch.long
+            )
+        d = columns - int(task is not None)
+        if d < 1:
+            raise ValueError("MCMC needs at least one continuous feature.")
         if warp_indices is not None and (
             not warp_indices
             or len(set(warp_indices)) != len(warp_indices)
-            or any(type(index) is not int or not 0 <= index < d for index in warp_indices)
+            or any(
+                type(index) is not int
+                or not 0 <= index < columns
+                or (task is not None and index == task[0])
+                for index in warp_indices
+            )
             or not math.isfinite(warp_eps)
             or not 0 < warp_eps < 0.5
         ):
@@ -98,7 +126,16 @@ class TorchMCMCPotential:
             raise ValueError(
                 "Outputscale Gamma concentration and rate must be finite positive scalars."
             )
-        sites = [_Site("mean", (), "normal", (0.0, 1.0), positive=False)]
+        sites = [
+            _Site("mean", () if task is None else (task[1],), "normal", (0.0, 1.0), positive=False)
+        ]
+        if task is not None:
+            sites.extend(
+                (
+                    _Site("latent_features", (task[1], task[2]), "normal", (0.0, 1.0), False),
+                    _Site("task_lengthscale", (task[2],), "gamma", (6.0, 3.0)),
+                )
+            )
         if kernel == "matern":
             sites.append(
                 _Site(
@@ -137,8 +174,10 @@ class TorchMCMCPotential:
     @classmethod
     def from_model(cls, model: Any) -> TorchMCMCPotential:
         from botorch_rs.models.fully_bayesian import LinearPyroModel, MaternPyroModel, SaasPyroModel
+        from botorch_rs.models.fully_bayesian_multitask import LatentFeatureMultiTaskPyroMixin
 
         pyro = model.pyro_model
+        multitask = isinstance(pyro, LatentFeatureMultiTaskPyroMixin)
         if (
             not isinstance(pyro, (MaternPyroModel, SaasPyroModel, LinearPyroModel))
             or pyro._prior_mode
@@ -159,11 +198,23 @@ class TorchMCMCPotential:
             "_maybe_input_warp",
             "_warp_jax",
             "_maybe_multitask_transform",
+            "sample_latent_features",
+            "sample_task_lengthscale",
+            "_build_task_covar",
+            "_get_task_indices_and_base_idxr_jax",
+            "_task_structure",
+            "_warp_indices",
+            "_member_modules",
+            "load_mcmc_samples",
+            "_build_covar_module",
+            "_build_mean_module",
+            "_build_multitask_covariance",
+            "_build_input_transform",
         ):
             method = getattr(pyro, name, None)
-            if (
-                method is not None
-                and getattr(method, "__module__", "") != "botorch_rs.models.fully_bayesian"
+            if method is not None and getattr(method, "__module__", "") not in (
+                "botorch_rs.models.fully_bayesian",
+                "botorch_rs.models.fully_bayesian_multitask",
             ):
                 raise UnsupportedError(f"Torch NUTS does not implement custom {name} overrides.")
         prior = None
@@ -175,12 +226,20 @@ class TorchMCMCPotential:
         indices = None
         if pyro.use_input_warping:
             indices = (
-                list(range(model._train_X.shape[-1]))
-                if pyro.indices is None
-                else list(pyro.indices)
+                pyro._warp_indices()
+                if multitask
+                else (
+                    list(range(model._train_X.shape[-1]))
+                    if pyro.indices is None
+                    else list(pyro.indices)
+                )
             )
-        return cls(
-            model._train_X,
+        task_spec = None
+        if multitask:
+            task_model = cast(LatentFeatureMultiTaskPyroMixin, pyro)
+            task_spec = (task_model.task_feature, task_model.num_tasks, task_model.task_rank)
+        result = cls(
+            model._mapped_inputs(model._train_X) if multitask else model._train_X,
             model._train_Y,
             model._train_Yvar,
             kernel=pyro._rs_kernel,
@@ -189,7 +248,13 @@ class TorchMCMCPotential:
             warp_eps=pyro._eps,
             input_transform=model._fb_user_input_transform,
             outcome_transform=model.outcome_transform,
+            task=task_spec,
         )
+        if multitask:
+            # Task indices are discrete metadata, while common transforms
+            # must still receive original task labels and original data graphs.
+            result.train_X = model._train_X
+        return result
 
     def sites(self) -> list[tuple[str, list[int], bool]]:
         return [(site.name, list(site.shape), site.positive) for site in self._sites]
@@ -208,8 +273,14 @@ class TorchMCMCPotential:
         if self.input_transform is not None:
             transform = getattr(self.input_transform, "preprocess_transform", self.input_transform)
             x = transform(x)
+        if self.task is not None and not torch.equal(
+            x[..., self.task[0]], self.train_X[..., self.task[0]]
+        ):
+            raise UnsupportedError("Input transforms must preserve mapped categorical task labels.")
         if self.outcome_transform is not None:
             y, noise = self.outcome_transform(y, noise, X=self.train_X)
+        if x.ndim != 2 or y.shape != (x.shape[-2], 1):
+            raise UnsupportedError("Torch NUTS requires unbatched transformed training data.")
         return (
             x,
             y.squeeze(-1),
@@ -268,6 +339,8 @@ class TorchMCMCPotential:
             )
             shape = torch.broadcast_shapes(x.shape[:-2], z.shape[:-1])
             x = x.expand(*shape, *x.shape[-2:]).index_copy(-1, self.warp_indices, warped)
+        if self.task is not None:
+            x = x.index_select(-1, self.base_indices)
         if self.kernel == "linear":
             variance = (values["tau_sq"].unsqueeze(-1) * values["_weight_variance_sq"]).sqrt()
             covariance = _rs.tensor_kernel(
@@ -289,9 +362,14 @@ class TorchMCMCPotential:
             if fixed_noise is not None
             else (values["noise"] + _NOISE_FLOOR).unsqueeze(-1)
         )
-        likelihood = _rs.tensor_exact_mll(
-            y, covariance, values["mean"].unsqueeze(-1), noise, normalize=False
-        )
+        mean = values["mean"].unsqueeze(-1)
+        if self.task is not None:
+            features = values["latent_features"].index_select(-2, self.task_indices)
+            covariance = covariance * _rs.tensor_kernel(
+                "matern", features, features, values["task_lengthscale"].unsqueeze(-2), nu=2.5
+            )
+            mean = values["mean"].index_select(-1, self.task_indices)
+        likelihood = _rs.tensor_exact_mll(y, covariance, mean, noise, normalize=False)
         return -joint - likelihood
 
     def value_and_grad(self, z: Tensor, create_graph: bool = False) -> tuple[Tensor, Tensor]:

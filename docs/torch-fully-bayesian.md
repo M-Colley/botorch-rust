@@ -94,8 +94,9 @@ the eager Tensor sampler; the native sampler remains compiled. Progress bars
 are currently omitted by both backends. MAP MLL fitting is explicitly rejected
 for fully Bayesian classes; ordinary MAP SAAS models are a separate family.
 Training inputs remain `n x d` with single-output `n x 1` observations, matching
-the official family. This checkpoint does not add Tensor NUTS for multitask
-models or arbitrary custom Pyro-model overrides. A Gaussian mixture requires
+the official family. The subsequent [multitask checkpoint](torch-fully-bayesian-multitask.md)
+adds latent-feature multitask loaded inference and device NUTS. Arbitrary
+custom Pyro-model overrides remain unsupported. A Gaussian mixture requires
 linear outcome transforms. Ensemble acquisitions use the Torch adapter.
 
 ## Canonical sampling and rectangular roots
