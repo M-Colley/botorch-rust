@@ -186,6 +186,43 @@ def test_official_psd_projection_and_shrinkage_gradients(official: object) -> No
         torch.testing.assert_close(a, b, rtol=1e-10, atol=1e-10)
 
 
+@pytest.mark.parametrize("floor,gap", [(1e-10, 5e-14), (0.0, 0.0)])
+def test_psd_clipping_boundary_gradients_are_symmetric(floor: float, gap: float) -> None:
+    import torch
+
+    if gap:
+        value = torch.diag(torch.tensor([floor + gap, floor - gap], dtype=torch.float64))
+        weights = torch.tensor([[1.0, 2.0], [2.0, 1.0]], dtype=torch.float64)
+        expected = torch.tensor([[1.0, 1.0], [1.0, 0.0]], dtype=torch.float64)
+    else:
+        value = torch.diag(torch.tensor([0.0, 1.0], dtype=torch.float64))
+        weights = expected = torch.eye(2, dtype=torch.float64)
+    value.requires_grad_()
+    projected = rs.project_psd(value, floor)
+    actual = torch.autograd.grad((projected * weights).sum(), value)[0]
+    eigenvalues, eigenvectors = torch.linalg.eigh(value)
+    reference = (eigenvectors * eigenvalues.clamp_min(floor)) @ eigenvectors.T
+    reference_gradient = torch.autograd.grad((reference * weights).sum(), value)[0]
+    torch.testing.assert_close(actual, expected, rtol=1e-9, atol=1e-12)
+    torch.testing.assert_close(actual, reference_gradient, rtol=1e-9, atol=1e-12)
+    torch.testing.assert_close(actual, actual.T, rtol=0.0, atol=0.0)
+
+
+def test_shrinkage_trace_clamp_boundary_gradient(official: object) -> None:
+    import torch
+
+    covariance = torch.tensor([[2e-12]], dtype=torch.float64, requires_grad=True)
+    target = torch.tensor([[1e-12]], dtype=torch.float64, requires_grad=True)
+    actual = rs.trace_matched_shrinkage(covariance, target, 0.3)
+    reference = official.trace_matched_shrinkage(covariance, target, 0.3)
+    gradients = torch.autograd.grad(actual.sum(), (covariance, target))
+    reference_gradients = torch.autograd.grad(reference.sum(), (covariance, target))
+    for value, expected in zip(gradients, reference_gradients, strict=True):
+        torch.testing.assert_close(value, expected, rtol=1e-12, atol=1e-12)
+    torch.testing.assert_close(gradients[0], torch.ones_like(covariance))
+    torch.testing.assert_close(gradients[1], torch.zeros_like(target))
+
+
 @pytest.mark.parametrize("kind", KINDS)
 @pytest.mark.parametrize("correction", [0, 1])
 def test_synthetic_em_curves_reproduce_prior(kind: str, correction: int) -> None:

@@ -122,12 +122,15 @@ pub fn project_psd_vjp(a: &Matrix, floor: f64, gradient: &Matrix) -> Result<Matr
         for j in 0..a.ncols() {
             let x = eig.eigenvalues[i];
             let y = eig.eigenvalues[j];
-            let divided = if (x - y).abs() > 1e-12 * (1.0 + x.abs().max(y.abs())) {
-                (x.max(floor) - y.max(floor)) / (x - y)
-            } else if x > floor {
+            let divided = if x >= floor && y >= floor {
                 1.0
-            } else {
+            } else if x < floor && y < floor {
                 0.0
+            } else {
+                // Straddling eigenvalues are distinct even arbitrarily close
+                // to the clipping floor. Their divided difference is finite
+                // and symmetric; a one-sided "near equal" fallback is not.
+                (x.max(floor) - y.max(floor)) / (x - y)
             };
             local[(i, j)] *= divided;
         }
@@ -164,7 +167,7 @@ pub fn trace_matched_shrinkage_vjp(
     let gc = gradient * (1.0 - alpha)
         + Matrix::identity(cov.nrows(), cov.ncols()) * (alpha * inner / denominator);
     let mut gt = gradient * (alpha * ratio);
-    if target.trace() > 1e-12 {
+    if target.trace() >= 1e-12 {
         gt -= Matrix::identity(cov.nrows(), cov.ncols()) * (alpha * ratio * inner / denominator);
     }
     let ga = gradient
@@ -443,5 +446,27 @@ mod tests {
         .sum()
             / 2e-6;
         assert!((fd - ga).abs() < 1e-8);
+    }
+
+    #[test]
+    fn psd_projection_derivatives_are_symmetric_across_close_clipping_branches() {
+        let floor = 1e-10;
+        let a = Matrix::from_diagonal(&Vector::from_vec(vec![floor + 5e-14, floor - 5e-14]));
+        let gradient = Matrix::from_row_slice(2, 2, &[1.0, 2.0, 2.0, 1.0]);
+        let actual = project_psd_vjp(&a, floor, &gradient).unwrap();
+        let expected = Matrix::from_row_slice(2, 2, &[1.0, 1.0, 1.0, 0.0]);
+        assert!((actual - expected).amax() < 1e-12);
+        let a = Matrix::from_diagonal(&Vector::from_vec(vec![0.0, 1.0]));
+        let actual = project_psd_vjp(&a, 0.0, &Matrix::identity(2, 2)).unwrap();
+        assert_eq!(actual, Matrix::identity(2, 2));
+        let (gc, gt, _) = trace_matched_shrinkage_vjp(
+            &Matrix::from_element(1, 1, 2e-12),
+            &Matrix::from_element(1, 1, 1e-12),
+            0.3,
+            &Matrix::identity(1, 1),
+        )
+        .unwrap();
+        assert!((gc[(0, 0)] - 1.0).abs() < 1e-12);
+        assert!(gt[(0, 0)].abs() < 1e-12);
     }
 }

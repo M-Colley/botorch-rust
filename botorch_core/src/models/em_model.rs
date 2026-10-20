@@ -1,10 +1,11 @@
-//! Exact conditioning and analytic fitting of fixed empirical inducing priors.
+//! Exact conditioning and analytic fitting of learned empirical inducing priors.
 
 use crate::error::{BotorchError, Result};
 use crate::fit::{minimize_with_retries, FitOptions, FitResult, Fittable};
 use crate::kernels::{KernelNode, TreeKernel};
 use crate::linalg::{psd_safe_cholesky, CholeskyFactor};
-use crate::models::em_gp::{EMDataset, EMInterpolation};
+use crate::models::em_differentiation::em_directional;
+use crate::models::em_gp::{pretrain_em_prior, EMDataset, EMInterpolation, EMOptions};
 use crate::models::{ConstantMeanSpec, GaussianLikelihoodSpec, Model};
 use crate::optim::fit::MllModel;
 use crate::posterior::{JointPosteriorGrad, Posterior};
@@ -44,6 +45,8 @@ pub struct EMModelOptions {
     pub inducing_observations: bool,
     /// Freeze the parametric mean and interpolation kernel during fitting.
     pub freeze_pretrained: bool,
+    /// Refit inducing moments through differentiable EM for from-scratch models.
+    pub em: Option<EMOptions>,
 }
 
 #[derive(Clone, Debug)]
@@ -54,7 +57,7 @@ struct Cache {
     alpha: Vector,
 }
 
-/// Exact GP conditioned on target data, retaining fixed EM historical moments.
+/// Exact GP conditioned on target data with fixed or differentiable EM moments.
 #[derive(Clone, Debug)]
 pub struct EMEmpiricalGP {
     train_x: Matrix,
@@ -100,6 +103,18 @@ impl EMEmpiricalGP {
     ) -> Result<Self> {
         let n = prior.x.nrows();
         let d = prior.x.ncols();
+        if options.em.as_ref().is_some_and(|em| {
+            !(0.0..=1.0).contains(&em.shrinkage)
+                || em.tolerance.is_some_and(|v| !v.is_finite() || v < 0.0)
+                || em.covariance_prior
+                    && em
+                        .iw_nu
+                        .is_some_and(|v| !v.is_finite() || v <= n as f64 - 1.0)
+        }) {
+            return Err(BotorchError::InvalidArgument(
+                "invalid EM training configuration".into(),
+            ));
+        }
         if n == 0
             || d == 0
             || prior.mean.len() != n
@@ -261,14 +276,41 @@ impl EMEmpiricalGP {
     }
     /// Replace all raw parameters atomically after validating the new cache.
     pub fn set_raw_parameters(&mut self, raw: &[f64]) -> Result<()> {
-        let cache = Self::build_cache(
-            &self.train_x,
-            &self.train_y,
-            &self.prior,
-            &self.options,
-            raw,
-        )?;
+        let prior = if let Some(options) = &self.options.em {
+            let (interpolation, _) = Self::components(&self.prior, &self.options, raw)?;
+            let indices = if self.options.inducing_observations {
+                None
+            } else {
+                Some(
+                    self.datasets
+                        .iter()
+                        .map(|d| index_rows(&d.x, &self.prior.x))
+                        .collect::<Result<Vec<_>>>()?,
+                )
+            };
+            let options = EMOptions {
+                noise: self.options.likelihood.noise_constraint.transform(raw[0]),
+                ..options.clone()
+            };
+            let result = pretrain_em_prior(
+                &self.datasets,
+                interpolation.kernel,
+                self.prior.x.clone(),
+                interpolation.constant,
+                indices.as_deref(),
+                &options,
+            )?;
+            EMPrior {
+                x: self.prior.x.clone(),
+                mean: result.mean,
+                covariance: result.covariance,
+            }
+        } else {
+            self.prior.clone()
+        };
+        let cache = Self::build_cache(&self.train_x, &self.train_y, &prior, &self.options, raw)?;
         self.raw = raw.to_vec();
+        self.prior = prior;
         self.cache = cache;
         Ok(())
     }
@@ -376,6 +418,9 @@ impl EMEmpiricalGP {
     }
     /// Historical observed-data MLL and its analytic raw-parameter gradient.
     pub fn mll_value_and_grad(&self, raw: &[f64]) -> Result<(f64, Vec<f64>)> {
+        if self.options.em.is_some() {
+            return self.differentiated_mll(raw);
+        }
         let (interpolation, base) = Self::components(&self.prior, &self.options, raw)?;
         let kernel = &interpolation.kernel;
         let noise = self.options.likelihood.noise_constraint.transform(raw[0]);
@@ -493,6 +538,108 @@ impl EMEmpiricalGP {
             *g /= scale;
         }
         Ok((value / scale, grad))
+    }
+    fn differentiated_mll(&self, raw: &[f64]) -> Result<(f64, Vec<f64>)> {
+        let (interpolation, _) = Self::components(&self.prior, &self.options, raw)?;
+        let options = EMOptions {
+            noise: self.options.likelihood.noise_constraint.transform(raw[0]),
+            ..self
+                .options
+                .em
+                .as_ref()
+                .expect("checked EM options")
+                .clone()
+        };
+        if !options.noise.is_finite() || options.noise < 0.0 {
+            return Err(BotorchError::InvalidArgument(
+                "invalid EM observation noise".into(),
+            ));
+        }
+        let offset = Self::kernel_offset(&self.options);
+        let end = offset + self.options.kernel.num_raw();
+        let transforms = self.options.kernel.transform_derivatives(&raw[offset..end]);
+        let mut directions = Vec::with_capacity(end);
+        for p in 0..end {
+            directions.push(em_directional(
+                &self.datasets,
+                &interpolation.kernel,
+                &self.prior.x,
+                interpolation.constant,
+                self.options.inducing_observations,
+                &options,
+                if p >= offset {
+                    Some((p - offset, transforms[p - offset]))
+                } else {
+                    None
+                },
+                if self.options.mean.is_some() && p == 1 {
+                    1.0
+                } else {
+                    0.0
+                },
+                if p == 0 {
+                    self.options
+                        .likelihood
+                        .noise_constraint
+                        .transform_derivative(raw[0])
+                } else {
+                    0.0
+                },
+            )?);
+        }
+        let mut fixed = self.clone();
+        fixed.options.em = None;
+        fixed.prior.mean = directions[0].mean.clone();
+        fixed.prior.covariance = directions[0].covariance.clone();
+        let (value, mut gradient) = fixed.mll_value_and_grad(raw)?;
+        let (interpolation, base) = Self::components(&fixed.prior, &fixed.options, raw)?;
+        let m = self.prior.x.nrows();
+        let mut mean_adjoint = Vector::zeros(m);
+        let mut covariance_adjoint = Matrix::zeros(m, m);
+        let mut total = 0;
+        for data in &self.datasets {
+            let n = data.x.nrows();
+            let weights = if self.options.inducing_observations {
+                let cross = interpolation.kernel.covariance(&data.x, &self.prior.x)?;
+                interpolation.cholesky.solve(&cross.transpose()).transpose()
+            } else {
+                let indices = index_rows(&data.x, &self.prior.x)?;
+                Matrix::from_fn(n, m, |i, j| if j == indices[i] { 1.0 } else { 0.0 })
+            };
+            let (mean, mut covariance) = Self::prior_at(
+                &data.x,
+                &fixed.prior,
+                &interpolation,
+                base.as_ref(),
+                self.options.inducing_observations,
+            )?;
+            for i in 0..n {
+                covariance[(i, i)] += options.noise;
+            }
+            let factor = psd_safe_cholesky(&covariance)?;
+            let alpha = factor.solve_vec(&(&data.y - mean));
+            let adjoint = (&alpha * alpha.transpose() - factor.inverse()) * 0.5;
+            mean_adjoint += weights.transpose() * alpha;
+            covariance_adjoint += weights.transpose() * adjoint * &weights;
+            total += n;
+        }
+        for (p, direction) in directions.iter().enumerate() {
+            gradient[p] += (mean_adjoint.dot(&direction.mean_tangent)
+                + covariance_adjoint
+                    .component_mul(&direction.covariance_tangent)
+                    .sum())
+                / total as f64;
+        }
+        Ok((value, gradient))
+    }
+    /// Current learned inducing moments and interpolation cache for metadata.
+    pub fn inducing_state(&self) -> (Vector, Matrix, Matrix, Vector) {
+        (
+            self.prior.mean.clone(),
+            self.prior.covariance.clone(),
+            self.cache.interpolation.cholesky.l().clone(),
+            &self.prior.mean - Vector::from_element(self.prior.mean.len(), self.constant()),
+        )
     }
     fn combined(&self, x: &Matrix) -> Result<(Vector, Matrix, Matrix)> {
         let n = self.train_x.nrows();
@@ -786,6 +933,7 @@ mod tests {
             interpolate: true,
             inducing_observations: inducing,
             freeze_pretrained: false,
+            em: None,
         };
         EMEmpiricalGP::new(
             x,
@@ -843,6 +991,44 @@ mod tests {
                 (noisy.covariance - &g.covariance - Matrix::identity(2, 2) * model.noise()).amax()
                     < 1e-12
             );
+        }
+    }
+
+    #[test]
+    fn end_to_end_rerun_mll_gradients_match_finite_differences() {
+        for inducing in [false, true] {
+            for priors in [false, true] {
+                let mut model = model(inducing, false);
+                model.options.em = Some(EMOptions {
+                    iterations: 3,
+                    mean_prior: priors,
+                    covariance_prior: priors,
+                    tolerance: None,
+                    shrinkage: 0.1,
+                    ..Default::default()
+                });
+                let raw = model.raw_parameters().to_vec();
+                let (_, gradient) = model.mll_value_and_grad(&raw).unwrap();
+                for i in 0..raw.len() {
+                    let mut plus = raw.clone();
+                    let mut minus = raw.clone();
+                    let h = 1e-6;
+                    plus[i] += h;
+                    minus[i] -= h;
+                    let numerical = (model.mll_value_and_grad(&plus).unwrap().0
+                        - model.mll_value_and_grad(&minus).unwrap().0)
+                        / (2.0 * h);
+                    assert!(
+                        (numerical - gradient[i]).abs() < 3e-5,
+                        "inducing={inducing} priors={priors} raw{i}: {numerical} != {}",
+                        gradient[i]
+                    );
+                }
+                model.set_raw_parameters(&raw).unwrap();
+                let (mean, covariance, _, _) = model.inducing_state();
+                assert_eq!(mean.len(), 3);
+                assert_eq!(covariance.shape(), (3, 3));
+            }
         }
     }
 }

@@ -273,11 +273,27 @@ def _copy_modules(*modules: Any) -> Any:
     return _PriorUnpickler(buffer).load()
 
 
+def _canonical_inducing_covariance(value: Any) -> Any:
+    """Remove covariance roundoff introduced by low-precision array storage."""
+    pair = to_flat(value)
+    epsilon = {"float32": 2e-7, "float16": 1e-3, "bfloat16": 8e-3}.get(_ops.dtype_name(value) or "")
+    if epsilon is None:
+        return pair
+    canonical = _rs.empirical_project_psd(pair, 0.0)
+    scale = max(1.0, max((abs(x) for x in pair[0]), default=0.0))
+    tolerance = epsilon * max(pair[1], default=1) * scale
+    if any(abs(a - b) > tolerance for a, b in zip(pair[0], canonical[0], strict=True)):
+        raise ValueError("EM inducing covariance is indefinite beyond its storage precision.")
+    return canonical
+
+
 class EMEmpiricalGaussianProcess(GPyTorchModel):
-    """Exact native conditioning on a fixed EM prior, with analytic fitting.
+    """Exact native conditioning on an EM prior, with analytic fitting.
 
     Pretrained mean/kernel parameters may be frozen or fitted through shift
     interpolation. Historical EM moments stay fixed during this fitting path.
+    Models constructed from datasets differentiate through complete cold EM
+    reruns when fitting their parametric mean, kernel and observation noise.
     """
 
     def __init__(
@@ -347,7 +363,14 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
             raise TypeError("em_prior must be an EMPriorContainer.")
         if _ops.shape_of(em_prior.X_inducing)[-1] != xs[-1]:
             raise ValueError("The EM prior and train_X feature dimensions differ.")
-        mean, covar = _copy_modules(em_prior.mean_module, em_prior.covar_module)
+        if using_pretrained:
+            mean, covar = _copy_modules(em_prior.mean_module, em_prior.covar_module)
+        else:
+            mean, covar = em_prior.mean_module, em_prior.covar_module
+            if mean._model is not None or covar._model is not None:
+                raise UnsupportedError(
+                    "From-scratch EM mean/kernel modules must initially be unbound."
+                )
         self.initial_mean_module, self.initial_covar_module = mean, covar
         self.likelihood = GaussianLikelihood(likelihood.noise_prior, likelihood.noise_constraint)
         self._train_X, self._train_Y = _ops.clone(train_X), _ops.clone(train_Y)
@@ -371,6 +394,7 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
         )
         self.iw_nu, self.em_convergence_tol = em_prior.iw_nu, em_prior.em_convergence_tol
         self.warm_start_em = False
+        self._covariance_shrinkage = covariance_shrinkage
         self._num_outputs = 1
         self._additive_base = None
         self._construct_native(raw_noise, freeze=False)
@@ -392,7 +416,7 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
             [to_flat(data.Y) for data in self.datasets],
             to_flat(self._X_inducing),
             to_flat(self._mu_inducing),
-            to_flat(self._Sigma_inducing),
+            _canonical_inducing_covariance(self._Sigma_inducing),
             node,
             raw,
             self.likelihood._spec,
@@ -406,10 +430,23 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
             interpolate=self.enable_interpolation or self._use_inducing_points,
             inducing_observations=self._use_inducing_points,
             freeze_pretrained=freeze,
+            em_iterations=None if self._using_pretrained_prior else self.num_em_iterations,
+            em_mean_prior=self.use_mean_prior if not self._using_pretrained_prior else False,
+            em_covar_prior=self.use_covar_prior if not self._using_pretrained_prior else False,
+            em_iw_nu=self.iw_nu if not self._using_pretrained_prior else None,
+            em_tolerance=self.em_convergence_tol if not self._using_pretrained_prior else 1e-6,
+            em_shrinkage=self._covariance_shrinkage if not self._using_pretrained_prior else 0.0,
         )
+        self._last_em_sync_raw: tuple[float, ...] | None = None
         self._param_shapes = {name: tuple(shape) for name, shape in self._rs.parameter_shapes()}
         self.likelihood._bind(self)
+        if isinstance(mean, ConstantMean):
+            mean._has_local_constant = False
         mean._bind(self)
+        # Native construction already installed these exact raw values. Avoid
+        # redundant setter calls (and EM reruns) while binding descriptors.
+        for kernel in covar._all_kernels():
+            kernel._local.clear()
         covar._bind(self, "initial_covar_module.")
         if base is not None:
             base._bind(self, "_additive_base.")
@@ -455,6 +492,29 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
         self._datasets = list(value)
         if hasattr(self, "_rs"):
             self._construct_native(self._rs.raw_parameters()[0], self._freeze_pretrained)
+
+    def _sync_em_state(self, force: bool = False) -> None:
+        raw = tuple(self._rs.raw_parameters())
+        if not force and raw == self._last_em_sync_raw:
+            return
+        mean, covariance, factor, delta = self._rs.em_state()
+        kind = kind_of(self._X_inducing)
+        (
+            self._mu_inducing,
+            self._Sigma_inducing,
+            self._cached_L_kernel_inducing,
+            self._cached_delta_mu,
+        ) = (
+            from_flat(value[0], tuple(value[1]), kind)
+            for value in (mean, covariance, factor, delta)
+        )
+
+        self._last_em_sync_raw = raw
+
+    def _refresh_em(self) -> None:
+        if not self._using_pretrained_prior:
+            self._rs.set_raw_parameters(self._rs.raw_parameters())
+        self._sync_em_state(force=True)
 
     @property
     def batch_shape(self) -> tuple[()]:
@@ -532,6 +592,7 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
         if output_indices is not None and list(output_indices) != [0]:
             raise ValueError("EMEmpiricalGaussianProcess has one output.")
         self.eval()
+        self._sync_em_state()
         return GPyTorchPosterior(
             self._rs.model_handle(),
             to_flat(X),
@@ -551,9 +612,7 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
 
     def forward(self, X: Any) -> Any:
         if self.training and not self._using_pretrained_prior:
-            raise UnsupportedError(
-                "Training-time EM reruns are not implemented; use eval() for cached prediction or construct from a pretrained prior for fitting."
-            )
+            self._refresh_em()
         return GPyTorchPosterior(
             self._rs.prior_model_handle(),
             to_flat(X),
@@ -587,13 +646,12 @@ class EMEmpiricalMarginalLogLikelihood(MarginalLogLikelihood):
         super().__init__(likelihood, model)
 
     def _validate_fit(self) -> None:
-        if not self.model._using_pretrained_prior:
-            raise UnsupportedError(
-                "Differentiating through EM iterations is not implemented; pretrain_em_prior then from_pretrained supports analytic fitting of the fixed prior."
-            )
+        if not isinstance(self.model, EMEmpiricalGaussianProcess):
+            raise TypeError("EM likelihood fitting requires an EM Gaussian-process model.")
 
     def forward(self, function_dist: Any = None, target: Any = None) -> Any:
         self._validate_fit()
+        self.model._refresh_em()
         value = self.model._rs.mll()
         return from_flat(value[0], tuple(value[1]), self.model._kind)
 
@@ -601,6 +659,8 @@ class EMEmpiricalMarginalLogLikelihood(MarginalLogLikelihood):
 
     def value_and_grad(self, raw_parameters: Any = None) -> tuple[float, list[float]]:
         self._validate_fit()
+        if raw_parameters is None:
+            self.model._refresh_em()
         raw = None if raw_parameters is None else list(to_flat(raw_parameters)[0])
         value, gradient = self.model._rs.mll_value_and_grad(raw)
         return float(value[0][0]), list(gradient)
@@ -657,6 +717,7 @@ class EMEmpiricalMarginalLogLikelihood(MarginalLogLikelihood):
             )
         else:
             raise UnsupportedError("EM fitting supports native L-BFGS-B or Adam.")
+        self.model._sync_em_state()
         self.eval()
         return self
 

@@ -247,6 +247,8 @@ def fit_gpytorch_mll_scipy(
         loss, nit, _, status, message, _ = _native_fit_backend(mll).fit(
             max_attempts=1, **hogp_kwargs
         )
+        if getattr(mll, "_rs_em_fit", False):
+            mll.model._sync_em_state()
         return OptimizationResult(
             step=int(nit), fval=float(loss), status=OptimizationStatus[status], message=message
         )
@@ -465,7 +467,7 @@ def fit_gpytorch_mll_torch(
                     if "latent_parameters" in name:
                         mask[off : off + size] = [False] * size
             stopping = None if stopping_criterion is None else stopping_criterion._native_args()
-            return _result(
+            result = _result(
                 _native_fit_backend(mll).fit_torch(
                     mask=mask,
                     bounds=flat_bounds,
@@ -475,6 +477,9 @@ def fit_gpytorch_mll_torch(
                     **adam,
                 )
             )
+            if getattr(mll, "_rs_em_fit", False):
+                mll.model._sync_em_state()
+            return result
         if getattr(mll, "_rs_shared_fit", False) or getattr(mll, "_rs_em_fit", False):
             raise UnsupportedError(
                 "EM and shared-GP Adam fitting require the native closure and stopping criterion, with no scheduler or callback."

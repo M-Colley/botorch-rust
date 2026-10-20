@@ -78,11 +78,19 @@ kernel while holding learned inducing moments fixed. The default factory
 freezes the pretrained mean/kernel; `freeze_pretrained=False` enables their
 joint fitting. Native L-BFGS-B and Adam use these analytic gradients.
 
-Constructing from historical datasets performs native initial EM and supports
-cached evaluation. Differentiating through subsequent EM iterations, warm
-starts and learnable inducing locations are explicit current boundaries.
-Use a pretrained prior for analytic fixed-prior fitting. Arbitrary Python
-mean/likelihood objects and tensor-valued predictive noise are rejected.
+Constructing from historical datasets performs native initial EM. Training
+reruns EM from the parametric kernel prior and differentiates through every
+conditioning and moment update in Rust. The derivatives include Gaussian
+mean priors, inverse-Wishart covariance priors, trace-matched shrinkage and
+spectral PSD clipping. Both native fitters use the resulting historical MLL
+gradients and refresh the learned moments and target posterior after parameter
+updates. Default construction and fitting match official BoTorch values,
+raw parameter gradients and posterior moments; independent finite differences
+exercise indexed and explicit-inducing layouts with ML and MAP updates.
+Warm-start EM and learnable inducing locations remain explicit boundaries.
+Arbitrary Python mean/likelihood objects and tensor-valued predictive noise
+are rejected.
+
 `build_shared_gp_model_list` returns exact scalar `SingleTaskGP` components
 sharing the caller's actual native mean/kernel descriptors. Its returned
 `SumMarginalLogLikelihood` aggregates the per-dataset normalized likelihoods
@@ -97,6 +105,20 @@ reruns EM on the complete historical data. It supports L-BFGS-B or Adam,
 historical-dataset subsampling and immutable container histories. Inducing
 locations are currently fixed. Recorded histories snapshot descriptors and
 moments so later kernel mutations do not change earlier trajectory states.
+
+Two native derivative regressions cover eigenvalues immediately on opposite
+sides of the PSD floor and the exact trace-clamp boundary. Spectral divided
+differences now follow both clipping branches symmetrically, including when
+the eigenvalue gap is smaller than `1e-12`; a positive-semidefinite matrix at
+the floor uses Torch's inclusive clamp derivative. Trace-shrinkage derivatives
+also use the inclusive boundary convention. These correct port bugs rather
+than changing the reference's behavior.
+
+Float32 EM containers can round a rank-deficient covariance to a slightly
+indefinite matrix. The constructor repairs only negative eigenvalues within
+the input dtype's storage precision using native projection; it continues to
+reject materially indefinite covariances. Regression tests exercise the
+rank-deficient Float32 case and rejection of a negative identity matrix.
 
 ## Upstream EM subsampling index mismatch
 

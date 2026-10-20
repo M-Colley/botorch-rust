@@ -1,6 +1,6 @@
 //! Immutable native EM-prior model handles and analytic historical MLL fitting.
 
-use crate::arrays::{Array, ArrayOut};
+use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
 use crate::em_gp::{matrix, vector};
 use crate::errors::{value_error, IntoPyResult};
 use crate::kernel_trees::PyKernelNode;
@@ -8,7 +8,7 @@ use crate::models::PyModel;
 use crate::specs::{PyConstraint, PyLikelihoodSpec, PyPrior};
 use crate::threads;
 use botorch_core::fit::{FitOptions, FitStatus};
-use botorch_core::models::em_gp::EMDataset;
+use botorch_core::models::em_gp::{EMDataset, EMOptions};
 use botorch_core::models::em_model::{EMEmpiricalGP, EMGPPrior, EMModelOptions, EMPrior};
 use botorch_core::models::{ConstantMeanSpec, Model};
 use botorch_core::optim::fit::fit_gpytorch_mll_torch;
@@ -19,6 +19,7 @@ use std::sync::{Arc, RwLock};
 
 type TorchFitSummary = (usize, f64, u8, Option<f64>, Option<String>);
 type FitSummary = (f64, usize, usize, &'static str, String, usize);
+type InducingState = (ArrayOut, ArrayBuf, ArrayBuf, ArrayOut);
 
 #[pyclass(frozen, name = "EMGaussianProcess", module = "botorch_rs._botorch_rs")]
 pub struct PyEMGaussianProcess {
@@ -36,7 +37,7 @@ impl PyEMGaussianProcess {
 #[pymethods]
 impl PyEMGaussianProcess {
     #[new]
-    #[pyo3(signature=(x,y,history_x,history_y,inducing,mean,covariance,kernel,kernel_raw,likelihood,noise_raw,constant=0.0,learn_mean=false,mean_prior=None,mean_constraint=None,base=None,base_raw=Vec::new(),interpolate=true,inducing_observations=false,freeze_pretrained=false))]
+    #[pyo3(signature=(x,y,history_x,history_y,inducing,mean,covariance,kernel,kernel_raw,likelihood,noise_raw,constant=0.0,learn_mean=false,mean_prior=None,mean_constraint=None,base=None,base_raw=Vec::new(),interpolate=true,inducing_observations=false,freeze_pretrained=false,em_iterations=None,em_mean_prior=false,em_covar_prior=false,em_iw_nu=None,em_tolerance=Some(1e-6),em_shrinkage=0.0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -60,7 +61,27 @@ impl PyEMGaussianProcess {
         interpolate: bool,
         inducing_observations: bool,
         freeze_pretrained: bool,
+        em_iterations: Option<usize>,
+        em_mean_prior: bool,
+        em_covar_prior: bool,
+        em_iw_nu: Option<f64>,
+        em_tolerance: Option<f64>,
+        em_shrinkage: f64,
     ) -> PyResult<Self> {
+        if !learn_mean && (mean_prior.is_some() || mean_constraint.is_some() || constant != 0.0) {
+            return Err(value_error(
+                "constant mean configuration requires learn_mean=true",
+            ));
+        }
+        if em_iterations.is_none()
+            && (em_mean_prior
+                || em_covar_prior
+                || em_iw_nu.is_some()
+                || em_shrinkage != 0.0
+                || em_tolerance != Some(1e-6))
+        {
+            return Err(value_error("EM training options require em_iterations"));
+        }
         if history_x.len() != history_y.len() {
             return Err(value_error("historical EM dataset counts differ"));
         }
@@ -100,6 +121,15 @@ impl PyEMGaussianProcess {
             interpolate,
             inducing_observations,
             freeze_pretrained,
+            em: em_iterations.map(|iterations| EMOptions {
+                iterations,
+                mean_prior: em_mean_prior,
+                covariance_prior: em_covar_prior,
+                iw_nu: em_iw_nu,
+                tolerance: em_tolerance,
+                shrinkage: em_shrinkage,
+                ..Default::default()
+            }),
         };
         let model =
             threads::run(py, || EMEmpiricalGP::new(x, y, data, prior, options)).into_py_result()?;
@@ -176,6 +206,16 @@ impl PyEMGaussianProcess {
         PyModel {
             inner: Arc::new(EMGPPrior(self.get())),
         }
+    }
+    fn em_state(&self) -> InducingState {
+        let (mean, covariance, factor, delta) = self.get().inducing_state();
+        let n = mean.len();
+        (
+            (mean.as_slice().to_vec(), vec![n]),
+            matrix_out(&covariance).into(),
+            matrix_out(&factor).into(),
+            (delta.as_slice().to_vec(), vec![n]),
+        )
     }
     fn freeze_pretrained(&self, freeze: bool) {
         let mut model = (*self.get()).clone();
