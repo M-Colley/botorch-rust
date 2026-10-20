@@ -128,11 +128,9 @@ def test_changed_model_requires_reconstruction_but_old_backward_snapshot_works(e
     assert torch.isfinite(analytic.LogExpectedImprovement(model, best_f=0.4)(query)).all()
 
 
-def test_unsupported_noisy_parameter_backward_preserves_query_only():
+def test_unsupported_joint_analytic_parameter_backward_preserves_query_only():
     model, _ = model_pair()
-    acquisition = mc.qNoisyExpectedImprovement(
-        model, X_baseline=model.train_inputs[0], prune_baseline=False
-    )
+    acquisition = analytic.qAnalyticProbabilityOfImprovement(model, best_f=0.4)
     query = torch.tensor([[[0.2, 0.6]]], dtype=torch.double, requires_grad=True)
     value = acquisition(query)
     assert torch.isfinite(torch.autograd.grad(value.sum(), query, retain_graph=True)[0]).all()
@@ -414,3 +412,31 @@ def test_native_wrapper_parameter_boundary_and_original_source_detection():
     newly_wrapped_old_base = FixedFeatureAcquisitionFunction(base, d=2, columns=[1], values=[0.6])
     with pytest.raises(RuntimeError, match="Reconstruct the acquisition"):
         newly_wrapped_old_base(query)
+
+
+def test_changed_shared_binding_metadata_requires_new_acquisition_snapshot():
+    from botorch_rs.means import ConstantMean
+    from botorch_rs.models.empirical_gps.shared_gp import _SharedBinding
+
+    model, _ = model_pair()
+    acquisition = analytic.PosteriorMean(model)
+    query = torch.tensor([[[0.2, 0.6]]], dtype=torch.double)
+    original = acquisition(query)
+    parameters = tuple(model.parameters())
+    expected = torch.autograd.grad(original.sum(), parameters, retain_graph=True)
+    generation = model._rs.parameter_state_version
+    shared_mean = ConstantMean()
+    shared_mean._bind(_SharedBinding([model]))
+    model.mean_module = shared_mean
+    assert model._rs.parameter_state_version == generation
+    with pytest.raises(RuntimeError, match="Reconstruct the acquisition"):
+        acquisition(query)
+    actual = torch.autograd.grad(original.sum(), parameters)
+    for result, want in zip(actual, expected, strict=True):
+        torch.testing.assert_close(result, want)
+    rebuilt = analytic.PosteriorMean(model)
+    query.requires_grad_()
+    value = rebuilt(query)
+    assert torch.isfinite(torch.autograd.grad(value.sum(), query, retain_graph=True)[0]).all()
+    with pytest.raises(UnsupportedError, match="shared mean/kernel bindings"):
+        value.sum().backward()

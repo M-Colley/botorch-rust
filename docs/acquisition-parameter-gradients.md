@@ -41,15 +41,19 @@ Only first derivatives are supported.
 
 Native acquisitions capture a model snapshot at construction. Forward and
 `value_and_grad` now detect changed native model generations, source identities,
-or leaf values and raise with an instruction to reconstruct the acquisition.
+leaf values, or parameter-boundary metadata and raise with an instruction to
+reconstruct the acquisition.
 Rebuild after fitting, setters, training-data changes, or Torch optimizer steps.
 Already-created backward graphs retain the original law even after such
 changes. Private native calls bypass the public validation/synchronization
 protocol. Native candidate optimization uses its original fixed acquisition
 snapshot; construct that acquisition after synchronizing the model.
 
-Noisy EI, knowledge-gradient, entropy, multiobjective, and acquisition-wrapper
-parameter pullbacks are outside this checkpoint. When an unsupported native
+Noisy EI and LogNEI now expose actual-path cached/joint parameter tapes with
+explicitly detached baseline factors/incumbents; see
+`noisy-acquisition-parameter-gradients.md` for that distinct derivative contract.
+Knowledge-gradient, entropy, multiobjective, and acquisition-wrapper parameter
+pullbacks remain outside this implementation. When an unsupported native
 family is used with persistent trainable leaves, requesting its parameter
 backward raises an explicit `UnsupportedError`; its query-only derivative
 interface remains available. Nonlinear moment-matched scalarization also

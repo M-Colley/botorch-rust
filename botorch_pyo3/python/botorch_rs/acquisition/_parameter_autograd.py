@@ -36,10 +36,11 @@ class ParameterSnapshot:
         return tuple(tuple(to_flat(p)[0]) for _, p in self.entries)
 
     def validate(self, model: Any) -> None:
-        if model is self.model:
-            model._sync_torch_parameters()
+        state = model._sync_torch_parameters() if model is self.model else None
         if (
             model is not self.model
+            or state is None
+            or state.gradient_error != self.error
             or self._versions() != self.versions
             or self._values() != self.values
         ):

@@ -65,7 +65,7 @@ pub struct PyAcquisitionFunction {
     module = "botorch_rs._botorch_rs"
 )]
 pub struct PyAcquisitionParameterTape {
-    records: Vec<botorch_core::acquisition::adjoints::PosteriorAdjoints>,
+    records: Vec<botorch_core::acquisition::adjoints::ParameterAdjoints>,
     batch_shape: Vec<usize>,
 }
 
@@ -770,16 +770,41 @@ impl PyAcquisitionFunction {
         query_gradient: bool,
     ) -> PyResult<(ArrayBuf, Option<ArrayBuf>, PyAcquisitionParameterTape)> {
         let (batch, sets) = candidate_sets(&x)?;
+        self.check_objective_batch(&batch)?;
+        let capture = self.nei.is_some() || self.linear_nei.is_some();
         let results = threads::run(py, || {
             sets.par_iter()
-                .map(|points| self.inner.forward_with_adjoints(points, query_gradient))
+                .enumerate()
+                .map(|(index, points)| {
+                    self.in_objective_batch(&batch, index, || match (&self.nei, &self.linear_nei) {
+                        (Some(nei), _) => {
+                            nei.forward_with_adjoints_and_incumbents(points, query_gradient)
+                        }
+                        (_, Some(nei)) => {
+                            nei.forward_with_adjoints_and_incumbents(points, query_gradient)
+                        }
+                        _ => self
+                            .inner
+                            .forward_with_adjoints(points, query_gradient)
+                            .map(|result| (result, Vec::new())),
+                    })
+                })
                 .collect::<botorch_core::Result<Vec<_>>>()
         })
         .into_py_result()?;
+        if capture {
+            self.store_incumbents(
+                &results
+                    .iter()
+                    .map(|(_, best)| best.clone())
+                    .collect::<Vec<_>>(),
+                &batch,
+            );
+        }
         let mut values = Vec::with_capacity(results.len());
         let mut gradients = Vec::new();
         let mut records = Vec::with_capacity(results.len());
-        for result in results {
+        for (result, _) in results {
             values.push(result.value);
             if let Some(gradient) = result.query_gradient {
                 gradients.extend(matrix_out(&gradient).0);

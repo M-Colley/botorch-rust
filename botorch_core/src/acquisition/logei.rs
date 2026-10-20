@@ -727,6 +727,22 @@ impl QLogNoisyExpectedImprovement {
         Ok((value, gradient.map(|(g, _)| g), best))
     }
 
+    /// Retain the backend's actual cached/joint path and exact incumbents.
+    ///
+    /// # Errors
+    /// Candidate, model, objective, constraint, or root-pullback errors.
+    pub fn forward_with_adjoints_and_incumbents(
+        &self,
+        x: &Matrix,
+        query_gradient: bool,
+    ) -> Result<(crate::acquisition::adjoints::AcquisitionAdjoints, Vec<f64>)> {
+        let backend = read_lock(&self.state)
+            .backend
+            .clone()
+            .ok_or_else(|| BotorchError::Runtime("qLogNEI baseline is not initialized".into()))?;
+        backend.evaluate_with_adjoints(x, query_gradient, Some(&self.reduction))
+    }
+
     fn evaluate_captured(
         &self,
         x: &Matrix,
@@ -771,6 +787,20 @@ impl crate::acquisition::SampleReducing for QLogNoisyExpectedImprovement {
 }
 
 impl AcquisitionFunction for QLogNoisyExpectedImprovement {
+    fn supports_parameter_gradients(&self) -> bool {
+        true
+    }
+
+    fn forward_with_adjoints(
+        &self,
+        x: &Matrix,
+        query_gradient: bool,
+    ) -> Result<crate::acquisition::adjoints::AcquisitionAdjoints> {
+        Ok(self
+            .forward_with_adjoints_and_incumbents(x, query_gradient)?
+            .0)
+    }
+
     fn model(&self) -> &Arc<dyn Model> {
         &self.model
     }

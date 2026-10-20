@@ -302,7 +302,8 @@ where
             inputs: x.clone(),
             mean: ma,
             covariance: ca,
-        },
+        }
+        .into(),
     })
 }
 
