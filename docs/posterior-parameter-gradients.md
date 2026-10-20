@@ -62,6 +62,13 @@ Specialized GP subclasses retain their established query-gradient interfaces.
 Containers expose their actual child parameters. Sparse-outlier likelihood
 parameters and conditioned input snapshots that do not match the stored
 input-transform program remain explicit unsupported native pullbacks.
+
+`build_shared_gp_model_list` fits one global mean/kernel through its native
+shared MLL backend. Its public shared modules are backed by independent
+child raw states, so ordinary child parameter graphs cannot represent the
+tie. Automatic parameter backward explicitly rejects these shared bindings;
+query-only derivatives and the native shared likelihood/fitter remain
+available. Changing shared-binding metadata also refreshes this boundary.
 Sample backward reuses the native covariance-root and outcome-transform
 adjoints, then applies the same full conditional pullback. Explicit base
 samples are snapshotted; multi-dimensional sample shapes and per-batch base

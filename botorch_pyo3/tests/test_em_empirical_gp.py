@@ -15,6 +15,7 @@ import pytest
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs.constraints import GreaterThan
+from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.fit import fit_gpytorch_mll
 from botorch_rs.kernels import RBFKernel, ScaleKernel
 from botorch_rs.likelihoods import GaussianLikelihood
@@ -502,6 +503,26 @@ def test_shared_gp_joint_fit_and_array_kinds(kind: str) -> None:
     posterior = models.posterior(as_kind([[0.12], [0.6]], kind))
     check_kind(posterior.mean, kind)
     assert len(posterior.mean) == 2
+    names = [name for name, _ in mll.named_parameters()]
+    assert [name for name, _ in mll.named_parameters(prefix="outer")] == [
+        f"outer.{name}" for name in names
+    ]
+    assert not list(mll.named_parameters(recurse=False))
+    assert len(list(mll.named_parameters(remove_duplicate=False))) == len(names)
+
+
+@pytest.mark.parametrize("zero_mean", [False, True])
+def test_shared_native_bindings_reject_untied_parameter_graphs(zero_mean: bool) -> None:
+    torch = pytest.importorskip("torch")
+    mean = ZeroMean() if zero_mean else ConstantMean()
+    models, mll = build_shared_gp_model_list(datasets("torch"), mean, RBFKernel())
+    query = torch.tensor([[0.15], [0.65]], dtype=torch.double, requires_grad=True)
+    value = models.posterior(query).mean
+    assert torch.isfinite(torch.autograd.grad(value.sum(), query, retain_graph=True)[0]).all()
+    with pytest.raises(UnsupportedError, match="shared mean/kernel bindings"):
+        value.sum().backward()
+    native_value, gradient = mll.value_and_grad()
+    assert math.isfinite(native_value) and all(math.isfinite(g) for g in gradient)
 
 
 @pytest.mark.parametrize("adam", [False, True])

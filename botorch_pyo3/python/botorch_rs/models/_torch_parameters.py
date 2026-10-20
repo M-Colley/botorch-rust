@@ -88,6 +88,7 @@ class TorchParameterState:
     def sync(self, model: Any) -> None:
         import torch
 
+        self.gradient_error = _shared_transform_error(model)
         values = self._values()
         dirty = values != self.leaf_values
         if model._rs.parameter_state_version != self.version:
@@ -150,8 +151,18 @@ class TorchParameterState:
 
 
 def _shared_transform_error(model: Any) -> str | None:
-    """Current native learned transforms have independent model-element state."""
+    """Check metadata that requires a tied native parameter layout."""
     from botorch_rs.models.transforms.input import Warp
+
+    for name in ("mean_module", "covar_module"):
+        module = getattr(model, name, None)
+        owner = getattr(module, "_model", model)
+        if owner is not None and owner is not model:
+            return (
+                "Automatic parameter gradients do not support shared mean/kernel bindings "
+                "with independent native parameter leaves. Use the native shared-model "
+                "likelihood/fitter; query-only gradients remain available."
+            )
 
     def check(transform: Any) -> bool:
         if isinstance(transform, Warp):

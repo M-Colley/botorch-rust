@@ -122,11 +122,19 @@ class _SharedSumMarginalLogLikelihood(SumMarginalLogLikelihood):
         value, gradient = self._rs.mll_value_and_grad(raw)
         return float(value[0][0]), list(gradient)
 
-    def named_parameters(self) -> Any:
+    def named_parameters(
+        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
+    ) -> Any:
+        # This backend already stores each globally shared parameter once.
+        if not recurse:
+            return
         raw, offset = self._rs.raw_parameters(), 0
         for name, shape in self._rs.parameter_shapes():
             count = math.prod(shape)
-            yield name, from_flat(raw[offset : offset + count], tuple(shape), self._kind)
+            yield (
+                f"{prefix}.{name}" if prefix else name,
+                from_flat(raw[offset : offset + count], tuple(shape), self._kind),
+            )
             offset += count
 
     def _param_entries(self) -> list[Any]:
