@@ -23,6 +23,15 @@ all its gradients. Tests check both complete training graphs and second query
 derivatives with frozen factors, and count one training factorization across
 multiple predictions.
 
+Query-only batch dimensions are packed into columns of one triangular solve.
+For example, sixteen `n x 2` cross-covariance blocks sharing one training factor
+become one `n x 32` right-hand side. This avoids Torch materializing sixteen
+copies of the `n x n` factor. Model batch dimensions retain their own factors,
+including singleton dimensions that broadcast against query batches. The result
+is reshaped back before posterior covariances are formed. Regression tests
+compare values, every input gradient and Hessian-vector products with the
+original broadcast solve on CPU and CUDA.
+
 Explicit jitter in these functions is fixed configuration. Sampling can use
 `tensor_psd_safe_cholesky`, which first attempts the original matrix and adds
 increasing diagonal jitter only to failed batch members. This decision reads

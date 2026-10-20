@@ -369,3 +369,51 @@ def test_predict_does_not_repeat_training_cholesky(monkeypatch):
             mean.expand(q.shape[:-1]),
         )
     assert calls == [(3, 3)]
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize(
+    "factor_batch,cross_batch", [((), (2, 3)), ((3,), (2, 3)), ((1, 3), (2, 4, 3))]
+)
+def test_packed_query_rhs_matches_broadcast_solve_and_full_derivatives(
+    device, factor_batch, cross_batch, monkeypatch
+):
+    torch.manual_seed(41)
+    raw = torch.randn(*factor_batch, 4, 4, dtype=torch.double, device=device, requires_grad=True)
+    chol = raw.tril(-1) * 0.1 + torch.eye(4, dtype=torch.double, device=device) * 1.3
+    alpha = torch.randn(*factor_batch, 4, dtype=torch.double, device=device, requires_grad=True)
+    cross = (
+        torch.randn(*cross_batch, 4, 2, dtype=torch.double, device=device, requires_grad=True) * 0.1
+    )
+    query = torch.eye(2, dtype=torch.double, device=device).expand(*cross_batch, 2, 2)
+    mean = torch.zeros(*cross_batch, 2, dtype=torch.double, device=device)
+    original = torch.linalg.solve_triangular
+    calls = []
+
+    def counted(a, b, **kwargs):
+        calls.append((tuple(a.shape), tuple(b.shape)))
+        return original(a, b, **kwargs)
+
+    monkeypatch.setattr(torch.linalg, "solve_triangular", counted)
+    values, covariance = native.tensor_exact_gp_predict(chol, alpha, cross, query, mean)
+    assert len(calls) == 1
+    # Query-only batch dimensions must become RHS columns, not repeated factors.
+    assert len(calls[0][1]) == len(chol.shape)
+    expected_mean = (cross.transpose(-1, -2) @ alpha.unsqueeze(-1)).squeeze(-1)
+    solution = original(chol, cross, upper=False)
+    expected_covariance = query - solution.transpose(-1, -2) @ solution
+    torch.testing.assert_close(values, expected_mean, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(covariance, expected_covariance, atol=1e-12, rtol=1e-12)
+    leaves = (raw, alpha, cross)
+    gradient = torch.autograd.grad(
+        values.square().sum() + covariance.square().sum(), leaves, create_graph=True
+    )
+    expected_gradient = torch.autograd.grad(
+        expected_mean.square().sum() + expected_covariance.square().sum(), leaves, create_graph=True
+    )
+    for actual, expected in zip(gradient, expected_gradient, strict=True):
+        torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+    second = torch.autograd.grad(sum(g.square().sum() for g in gradient), leaves, retain_graph=True)
+    expected_second = torch.autograd.grad(sum(g.square().sum() for g in expected_gradient), leaves)
+    for actual, expected in zip(second, expected_second, strict=True):
+        torch.testing.assert_close(actual, expected, atol=1e-11, rtol=1e-11)

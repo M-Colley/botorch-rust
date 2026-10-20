@@ -338,7 +338,7 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
             )
         original = acquisition.X_pending
         points: list[Tensor] = []
-        values: list[Tensor] = []
+        sequential_values: list[Tensor] = []
         try:
             for _ in range(q):
                 if points:
@@ -348,10 +348,10 @@ def optimize(arguments: Mapping[str, Any]) -> tuple[Tensor, Tensor | None]:
                 candidate, value = optimize(dict(args, q=1, sequential=False))
                 points.append(candidate)
                 if value is not None:
-                    values.append(value)
+                    sequential_values.append(value)
         finally:
             acquisition.set_X_pending(original)
-        return torch.cat(points, dim=-2), torch.stack(values) if args["return_acq_values"] else None
+        return torch.cat(points, dim=-2), torch.stack(sequential_values) if args["return_acq_values"] else None
     one_shot = isinstance(acquisition, OneShotAcquisitionFunction)
     augmented = acquisition.get_augmented_q_batch_size(q) if one_shot else q
     options = dict(args["options"] or {})

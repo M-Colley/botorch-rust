@@ -77,6 +77,53 @@ fn check_training_shapes(targets: &Tensor<'_>, covariance: &Tensor<'_>) -> PyRes
     Ok(n)
 }
 
+/// Pack query-only batch dimensions into RHS columns. Broadcasting a large
+/// triangular factor over those dimensions materializes one n-by-n factor per
+/// query batch in Torch's solver; a single multi-RHS solve avoids that copy.
+fn solve_query_blocks<'py>(
+    torch: &Bound<'py, PyModule>,
+    chol: &Tensor<'py>,
+    cross: &Tensor<'py>,
+) -> PyResult<Tensor<'py>> {
+    let (factor_shape, cross_shape) = (shape(chol)?, shape(cross)?);
+    let kwargs = PyDict::new(torch.py());
+    kwargs.set_item("upper", false)?;
+    let extra = cross_shape.len().saturating_sub(factor_shape.len());
+    let linalg = torch.getattr("linalg")?;
+    if extra == 0 || cross_shape[..extra].iter().product::<usize>() <= 1 {
+        return linalg.call_method("solve_triangular", (chol, cross), Some(&kwargs));
+    }
+    let rank = cross_shape.len();
+    let factor_batches = factor_shape.len() - 2;
+    let (n, q) = (cross_shape[rank - 2], cross_shape[rank - 1]);
+    let columns = cross_shape[..extra]
+        .iter()
+        .try_fold(q, |size, width| size.checked_mul(*width))
+        .ok_or_else(|| dimension_error("Packed query dimensions overflow"))?;
+    let permutation: Vec<usize> = (extra..rank - 1)
+        .chain(0..extra)
+        .chain([rank - 1])
+        .collect();
+    let mut packed_shape = cross_shape[extra..rank - 2].to_vec();
+    packed_shape.extend([n, columns]);
+    let packed = cross
+        .call_method1("permute", (permutation,))?
+        .call_method1("reshape", (packed_shape,))?;
+    let solved = linalg.call_method("solve_triangular", (chol, packed), Some(&kwargs))?;
+    let solved_shape = shape(&solved)?;
+    let mut expanded_shape = solved_shape[..factor_batches].to_vec();
+    expanded_shape.push(n);
+    expanded_shape.extend_from_slice(&cross_shape[..extra]);
+    expanded_shape.push(q);
+    let inverse: Vec<usize> = (factor_batches + 1..factor_batches + 1 + extra)
+        .chain(0..factor_batches + 1)
+        .chain([rank - 1])
+        .collect();
+    solved
+        .call_method1("reshape", (expanded_shape,))?
+        .call_method1("permute", (inverse,))
+}
+
 /// Dense RBF or Matern covariance using only differentiable Torch operations.
 #[pyfunction]
 #[pyo3(signature = (kind, x1, x2, lengthscale=None, nu=2.5, diag=false, last_dim_is_batch=false, parameters=None))]
@@ -299,13 +346,7 @@ fn tensor_exact_gp_predict<'py>(
         .matmul(alpha.call_method1("unsqueeze", (-1,))?)?
         .call_method1("squeeze", (-1,))?
         .add(query_mean)?;
-    let kwargs = PyDict::new(py);
-    kwargs.set_item("upper", false)?;
-    let solved = torch.getattr("linalg")?.call_method(
-        "solve_triangular",
-        (chol, k_train_query),
-        Some(&kwargs),
-    )?;
+    let solved = solve_query_blocks(&torch, chol, k_train_query)?;
     let mut covariance = k_query.sub(transpose(&solved)?.matmul(&solved)?)?;
     if let Some(noise) = observation_noise {
         require_tensor(&torch, noise, "observation_noise")?;
