@@ -72,7 +72,7 @@ def fit_gpytorch_mll(
     ):
         return mll._fit(closure, optimizer, closure_kwargs, optimizer_kwargs, **kwargs)
 
-    if isinstance(mll.model, RobustRelevancePursuitMixin):
+    if isinstance(getattr(mll, "model", None), RobustRelevancePursuitMixin):
         return cast(
             MarginalLogLikelihood,
             mll.model.custom_fit(

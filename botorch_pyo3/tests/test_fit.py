@@ -66,6 +66,12 @@ def test_mll_requires_the_model_likelihood() -> None:
         mll(object(), object())
 
 
+@pytest.mark.parametrize("invalid", [object(), None, {}, 1])
+def test_fit_rejects_unrelated_objects_before_model_dispatch(invalid) -> None:
+    with pytest.raises(UnsupportedError, match="requires a botorch_rs"):
+        fit_gpytorch_mll(invalid)
+
+
 def test_mll_gradient_matches_finite_differences() -> None:
     X, Y = make_data(n=12, d=2, seed=5)
     model = SingleTaskGP(X, Y)
