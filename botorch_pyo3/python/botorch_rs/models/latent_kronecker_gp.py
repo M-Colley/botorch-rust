@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 import warnings
 from typing import Any
 
@@ -59,6 +60,35 @@ class LatentKroneckerGP(GPyTorchModel, FantasizeMixin):
     are returned in original outcome units.
     """
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_T: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if cls is LatentKroneckerGP:
+            if backend not in {"auto", "native", "torch"}:
+                raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+            torch = sys.modules.get("torch")
+            requested = any(
+                getattr(v, "requires_grad", False)
+                or getattr(getattr(v, "device", None), "type", "cpu") != "cpu"
+                for v in (train_X, train_T, train_Y)
+            )
+            modules = (
+                any(isinstance(v, torch.nn.Module) for v in (*args, *kwargs.values()))
+                if torch
+                else False
+            )
+            if backend == "torch" or (backend == "auto" and (requested or modules)):
+                from botorch_rs.models._torch_backend_latent_kronecker import TorchLatentKroneckerGP
+
+                return object.__new__(TorchLatentKroneckerGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -71,6 +101,8 @@ class LatentKroneckerGP(GPyTorchModel, FantasizeMixin):
         covar_module_T: Any = None,
         input_transform: Any = None,
         outcome_transform: Any = DEFAULT,
+        *,
+        backend: str = "auto",
     ) -> None:
         x, t, y = (
             to_flat(train_X, "train_X"),

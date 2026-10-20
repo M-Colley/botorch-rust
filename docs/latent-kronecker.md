@@ -23,11 +23,60 @@ Query feature/time batches broadcast, and Sobol/IID samplers use the
 structured posterior's base-sample protocol. The base-sample layout is
 full training-grid prior, observed training noise, conditional test prior.
 
-Training batches, learned input transforms and iterative solver controls
-raise explicit unsupported errors. Observation noise in the Python
+On the native backend, training batches, learned input transforms and iterative
+solver controls raise explicit unsupported errors. Observation noise in the Python
 posterior, posterior transforms and conditioning raise NotImplementedError,
 as in the audited official model. Model-specific acquisition adapters and
 iterative masked-grid scalability remain separate gaps.
+
+## Tensor CPU/CUDA backend
+
+`LatentKroneckerGP(..., backend="torch")` evaluates the same masked correlated
+feature/time Gaussian law on device, with persistent Torch parameters and
+first and higher derivatives through training features, training times,
+observed targets, query features/times, likelihood, factor means/kernels
+and learned input transforms. CUDA inputs, gradient-bearing data or actual
+Torch modules select this backend automatically. Tensor operations call the
+Rust exact-factor/prediction bindings without detaching or copying numerical
+values to the host. Native CPU/list behavior remains available.
+
+Training batches are supported when the finite-observation mask agrees across
+all members, as required by the pinned official model. Batch/query/time axes
+broadcast. Means are the product of the two factor means, covariance is
+`K_X` Kronecker `K_T`, and the actual observed rows/columns select the training
+system. Default Standardize fits only observed cells per model batch;
+raw-space moments and samples share the same affine law and retain the target
+graph. The MLL normalizes by the number of observed cells. Public Torch fitting
+optimizes these actual leaves; custom Torch covariance and Gaussian modules
+retain their identities and derivative contracts.
+
+Matheron sampling draws the full train-grid/query-grid joint prior, plus
+independent noise only for observed training cells. Its normal vector uses
+`n_train_full + n_observed + n_test` entries, in the advertised train-prior,
+observed-noise, test-prior order. The block root preserves the complete Schur
+complement, including the feature/time cross terms missing from the pinned
+reference sampler. Both moments and draws use `batch x q x t` original-space
+shape; `distribution` exposes the full point-major joint covariance.
+
+Configured-noise conditioning and fantasies append observations on the
+existing time grid and preserve the original transform fitting data. Missing
+new observations are allowed with a shared mask. Fantasy observations use
+the supplied sampler's full noisy Gaussian law, with no additional ambient
+random draws outside its base-sample protocol. Feature/time/parameter
+higher derivatives remain connected when `propagate_grads=True`.
+
+This implementation uses dense exact masked solves and joint roots; it does
+not claim iterative masked-grid scalability. Iterative solver controls,
+explicit observation-noise posterior overrides and arbitrary posterior or
+non-Standardize outcome transforms raise explicit unsupported errors.
+Changing the existing training missing-value pattern requires reconstruction.
+Dataset factorization continues to use the existing native adapter.
+
+`test_torch_latent_kronecker.py` compares CPU/CUDA float32/float64 values,
+likelihoods and full-graph gradients against a Gaussian conditional built
+from the pinned official factor modules. It covers model batches, missing
+cells, novel times, mixed Hessian products, actual sample covariance,
+Standardize/Warp, custom modules, public fitting and deterministic fantasies.
 
 ## Official-source bugs and proposed corrections
 
