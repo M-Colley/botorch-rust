@@ -332,8 +332,7 @@ raise. Input/outcome transforms and correlated `output_indices` remain explicitl
 unsupported, matching these upstream model APIs. Independent output subsetting
 updates the historical output tables as well as the likelihood and training data.
 
-The Tensor checkpoint does not establish GPU support for the empirical multitask
-or iterative EM families, which remain separate work. Validation in
+The iterative EM family remains a separate Tensor checkpoint. Validation in
 `test_torch_empirical_gp.py` includes CPU/CUDA official mean, kernel, full
 posterior and MLL parity, independent dense historical-curve mixed Hessians,
 compressed-basis historical Hessians, additive kernels and real fits, native
@@ -343,3 +342,34 @@ conditioning suites pass alongside these tests. The standalone correlated lazy
 metadata regression also proves the previously documented upstream repair:
 `num_outputs_per_input` returning the historical output count makes the unchanged
 forward covariance usable through the ordinary GPyTorch lazy call.
+
+
+### Paired-history empirical multitask models
+
+`MultitaskEmpiricalOneDimensionalGP` and its empirical mean/kernel now select
+`backend="torch"` explicitly or automatically for CUDA, differentiable data,
+and custom Torch modules. Each historical task retains its own progression
+knots. Paired historical curves determine the full cross-task covariance;
+the implementation does not replace it with independent task posteriors.
+Only rows belonging to a task are interpolated against that task's knots, so
+unrelated task domains do not impose spurious interpolation restrictions.
+
+Exact training, MLL, conditioning, fantasies, sampling, and batched prediction
+reuse the Rust Tensor Gaussian operations. Continuous training/query coordinates,
+historical knots and curves, observed targets, learned noise, and additive
+kernel parameters retain first- and second-order graphs on CPU and CUDA.
+Categorical task labels have zero derivatives and are validated before gather.
+Actual Tensor mean/kernel modules and converted native interpolation descriptors
+are supported. Wide and homogeneous constructors assemble their data on device.
+Fixed-noise prediction averages observations by task and uses the global observed
+mean for tasks with no observations, as in the corrected ordinary multitask law.
+
+The public model supports model batches, query batches, and fantasy batches;
+`set_train_data` validates and updates the task metadata atomically. Predictive
+Tensor noise remains an explicit limitation of the common multitask API, matching
+the pinned reference's limitation. Validation in
+`test_torch_empirical_multitask.py` compares unmodified official mean, covariance,
+posterior and MLL results and independently checks paired-curve mixed Hessians,
+noise-only automatic backend selection, historical-buffer mutation, additive
+kernels, fits, constructors, conditioning and fantasies. The combined empirical
+Tensor and legacy suites passed 137 tests at this checkpoint.

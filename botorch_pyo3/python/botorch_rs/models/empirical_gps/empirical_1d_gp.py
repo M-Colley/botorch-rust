@@ -403,11 +403,15 @@ class EmpiricalOneDimensionalGP(GPyTorchModel, FantasizeMixin):
     ) -> Any:
         torch = sys.modules.get("torch")
         modules = [
-            kwargs.get(name)
-            for name in ("mean_module", "covar_module", "likelihood", "base_covar_module")
+            *args[1:],
+            *(
+                kwargs.get(name)
+                for name in ("mean_module", "covar_module", "likelihood", "base_covar_module")
+            ),
         ]
         use_tensor = _use_tensor_backend(
-            (train_X, train_Y, historical_X, historical_Y, *args[:1]), backend
+            (train_X, train_Y, historical_X, historical_Y, kwargs.get("train_Yvar"), *args[:1]),
+            backend,
         )
         if backend == "auto" and torch is not None:
             use_tensor = use_tensor or any(

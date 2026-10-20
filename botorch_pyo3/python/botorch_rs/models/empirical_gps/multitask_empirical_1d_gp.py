@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -19,6 +20,7 @@ from botorch_rs.models.empirical_gps.empirical_1d_gp import (
     EmpiricalOneDimensionalKernel,
     _SharedKernelBinding,
     _stack,
+    _use_tensor_backend,
 )
 from botorch_rs.models.empirical_gps.utils import (
     LinearInterpolation1D,
@@ -71,7 +73,27 @@ def _inputs(x: Any, task_feature: int, num_tasks: int) -> tuple[Any, list[int], 
 class MultiTaskEmpiricalOneDimensionalMean(Mean):
     """Per-task interpolation of paired historical sample means."""
 
-    def __init__(self, historical_Xs: Any, historical_Ys: Any, task_feature: int) -> None:
+    def __new__(
+        cls,
+        historical_Xs: Any = None,
+        historical_Ys: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        values = (
+            *(historical_Xs if historical_Xs is not None else []),
+            *(historical_Ys if historical_Ys is not None else []),
+        )
+        if cls is MultiTaskEmpiricalOneDimensionalMean and _use_tensor_backend(values, backend):
+            from botorch_rs.models.empirical_gps._torch_multitask import TensorTaskEmpiricalMean
+
+            return object.__new__(TensorTaskEmpiricalMean)
+        return object.__new__(cls)
+
+    def __init__(
+        self, historical_Xs: Any, historical_Ys: Any, task_feature: int, *, backend: str = "auto"
+    ) -> None:
         _history(historical_Xs, historical_Ys)
         if task_feature not in (0, 1, -1, -2):
             raise ValueError("Invalid task_feature.")
@@ -114,6 +136,24 @@ class MultiTaskEmpiricalOneDimensionalKernel(EmpiricalOneDimensionalKernel):
     _is_task_kernel = True
     _vectorize_outputs = False
 
+    def __new__(
+        cls,
+        historical_Xs: Any = None,
+        historical_Ys: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        values = (
+            *(historical_Xs if historical_Xs is not None else []),
+            *(historical_Ys if historical_Ys is not None else []),
+        )
+        if cls is MultiTaskEmpiricalOneDimensionalKernel and _use_tensor_backend(values, backend):
+            from botorch_rs.models.empirical_gps._torch_multitask import TensorTaskEmpiricalKernel
+
+            return object.__new__(TensorTaskEmpiricalKernel)
+        return object.__new__(cls)
+
     def __init__(
         self,
         historical_Xs: Any,
@@ -121,6 +161,8 @@ class MultiTaskEmpiricalOneDimensionalKernel(EmpiricalOneDimensionalKernel):
         task_feature: int,
         num_curves: int,
         correction: int = 0,
+        *,
+        backend: str = "auto",
     ) -> None:
         curves = _history(historical_Xs, historical_Ys)
         if curves != num_curves or not isinstance(correction, int) or correction >= curves:
@@ -194,6 +236,41 @@ class MultiTaskEmpiricalOneDimensionalGP(EmpiricalOneDimensionalGP, MultiTaskGPy
 
     _correlated = True
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        task_feature: Any = None,
+        historical_Xs: Any = None,
+        historical_Ys: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        values = (
+            train_X,
+            train_Y,
+            *(historical_Xs if historical_Xs is not None else []),
+            *(historical_Ys if historical_Ys is not None else []),
+            kwargs.get("train_Yvar"),
+            *args[:1],
+        )
+        torch = sys.modules.get("torch")
+        modules = (
+            *args[3:],
+            *(kwargs.get(name) for name in ("mean_module", "covar_module", "base_covar_module")),
+        )
+        selected = _use_tensor_backend(values, backend) or (
+            backend == "auto"
+            and torch is not None
+            and any(isinstance(module, torch.nn.Module) for module in modules)
+        )
+        if cls is MultiTaskEmpiricalOneDimensionalGP and selected:
+            from botorch_rs.models.empirical_gps._torch_multitask import TensorTaskEmpiricalGP
+
+            return object.__new__(TensorTaskEmpiricalGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -207,6 +284,8 @@ class MultiTaskEmpiricalOneDimensionalGP(EmpiricalOneDimensionalGP, MultiTaskGPy
         mean_module: Any = None,
         covar_module: Any = None,
         base_covar_module: Any = None,
+        *,
+        backend: str = "auto",
     ) -> None:
         if (mean_module is None) != (covar_module is None):
             raise ValueError("mean_module and covar_module must be provided together.")
@@ -416,7 +495,28 @@ class MultiTaskEmpiricalOneDimensionalGP(EmpiricalOneDimensionalGP, MultiTaskGPy
         train_Yvar: Any = None,
         output_tasks: Any = None,
         correction: int = 0,
+        *,
+        backend: str = "auto",
     ) -> Any:
+        values = (
+            train_X,
+            train_Y,
+            *(historical_Xs if historical_Xs is not None else []),
+            *(historical_Ys if historical_Ys is not None else []),
+            train_Yvar,
+        )
+        if _use_tensor_backend(values, backend):
+            from botorch_rs.models.empirical_gps._torch_multitask import TensorTaskEmpiricalGP
+
+            return TensorTaskEmpiricalGP.from_wide_format(
+                train_X,
+                train_Y,
+                historical_Xs,
+                historical_Ys,
+                train_Yvar,
+                output_tasks,
+                correction,
+            )
         x, xs = to_flat(train_X)
         y, ys = to_flat(train_Y)
         if (
@@ -434,7 +534,9 @@ class MultiTaskEmpiricalOneDimensionalGP(EmpiricalOneDimensionalGP, MultiTaskGPy
         xx = from_flat([v for p in x for s in range(m) for v in (p, float(s))], (n * m, 2), kind)
         yy = from_flat(y, (n * m, 1), kind)
         vv = None if train_Yvar is None else _reshape(train_Yvar, (n * m, 1))
-        return cls(xx, yy, 1, historical_Xs, historical_Ys, vv, output_tasks, correction)
+        return cls(
+            xx, yy, 1, historical_Xs, historical_Ys, vv, output_tasks, correction, backend=backend
+        )
 
 
 __all__ = [

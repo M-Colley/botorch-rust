@@ -65,6 +65,8 @@ class TensorLinearInterpolation(nn.Module):
 
     def forward(self, query: Any) -> Any:
         x, y = self._x, self._y
+        if not bool(torch.isfinite(query).all()):
+            raise ValueError("Interpolation queries must be finite.")
         if bool(((query < x[0]) | (query > x[-1])).any()):
             raise ValueError("Query is outside the historical interpolation range.")
         indices = torch.searchsorted(x, query.contiguous()).clamp(1, x.numel() - 1)
