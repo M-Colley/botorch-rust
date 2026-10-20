@@ -297,3 +297,48 @@ def test_cuda_device_factory_auto_selection_and_cpu_migration():
     kernel.cpu()
     torch.testing.assert_close(kernel(x.detach().cpu()), value)
     assert kernel.base_kernel.raw_lengthscale.device.type == "cpu"
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("configuration", ["active_dims", "batched_inputs"])
+def test_multitask_known_upstream_failures_use_independent_kronecker_oracle(device, configuration):
+    # GPyTorch2809 bypasses the child active_dims;2817 repeats existing task
+    # batches instead of broadcasting them. Compare the mathematical law,
+    # rather than retaining either faulty source configuration as an oracle.
+    batch = (2,) if configuration == "batched_inputs" else ()
+    base = kernels.RBFKernel(
+        ard_num_dims=1 if not batch else 2,
+        active_dims=[1] if not batch else None,
+        batch_shape=batch,
+        backend="torch",
+        dtype=torch.double,
+        device=device,
+    )
+    kernel = kernels.MultitaskKernel(base, 2, rank=1, batch_shape=batch, backend="torch")
+    x = torch.rand(*batch, 4, 2, dtype=torch.double, device=device, requires_grad=True)
+    z = torch.rand(*((1,) if batch else ()), 3, 2, dtype=x.dtype, device=device, requires_grad=True)
+    spatial = base(x, z)
+    task = kernel.task_covar_module.covar_matrix
+    expected = (
+        torch.stack([torch.kron(spatial[i].contiguous(), task[i].contiguous()) for i in range(2)])
+        if batch
+        else torch.kron(spatial.contiguous(), task.contiguous())
+    )
+    actual = kernel(x, z)
+    torch.testing.assert_close(actual, expected, atol=3e-13, rtol=3e-11)
+    torch.testing.assert_close(
+        kernel(x[..., :3, :], z, diag=True), expected[..., :6, :].diagonal(dim1=-2, dim2=-1)
+    )
+    variables = (x, z, *kernel.parameters())
+    first = torch.autograd.grad(
+        actual.square().sum(), variables, create_graph=True, retain_graph=True
+    )
+    oracle = torch.autograd.grad(
+        expected.square().sum(), variables, create_graph=True, retain_graph=True
+    )
+    for a, b in zip(first, oracle, strict=True):
+        torch.testing.assert_close(a, b, atol=3e-11, rtol=3e-9)
+    second = torch.autograd.grad(sum(g.square().sum() for g in first), variables, retain_graph=True)
+    refsecond = torch.autograd.grad(sum(g.square().sum() for g in oracle), variables)
+    for a, b in zip(second, refsecond, strict=True):
+        torch.testing.assert_close(a, b, atol=3e-10, rtol=3e-8)

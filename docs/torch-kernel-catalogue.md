@@ -71,3 +71,11 @@ than the independent-output SingleTaskGP. Native IndexKernel and MultitaskKernel
 descriptors are converted genuinely when a Torch model requests them. Tests
 compare official GPyTorch covariance/parameter/input derivatives, independent
 Kronecker indexing, actual GP fitting and higher derivatives on CPU and CUDA.
+
+The Tensor multitask implementation applies the data child's active dimensions
+and broadcasts existing task batches rather than repeating their sizes. The
+corresponding GPyTorch defects are already tracked in
+[GPyTorch #2809](https://github.com/cornellius-gp/gpytorch/pull/2809) and
+[GPyTorch #2817](https://github.com/cornellius-gp/gpytorch/pull/2817). Four additional
+CPU/CUDA cases compare these configurations with independent explicit Kronecker
+products and all input/parameter first and second derivatives.
