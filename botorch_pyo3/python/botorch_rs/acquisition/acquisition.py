@@ -437,7 +437,24 @@ class AcquisitionFunction:
         if snapshot is not None and not self.__dict__.get("_ensemble_acqfs"):
             snapshot.validate(self.model)
         flat, kind, shape = self._candidates(X)
-        (values, batch), (grads, _) = self._rs.forward_with_grad(flat)
+        use_tape = False
+        if (
+            snapshot is not None
+            and not self.__dict__.get("_ensemble_acqfs")
+            and is_torch_tensor(X)
+            and self._rs.supports_parameter_gradients
+        ):
+            import torch
+
+            use_tape = torch.is_grad_enabled() and any(p.requires_grad for _, p in snapshot.entries)
+        if use_tape:
+            # Match forward's Gaussian-adjoint evaluation exactly: the optimized
+            # query-only analytic route can differ by a few float64 ULPs.
+            (values, batch), gradient, _ = self._rs.forward_with_adjoint_tape(flat, True)
+            assert gradient is not None
+            grads, _ = gradient
+        else:
+            (values, batch), (grads, _) = self._rs.forward_with_grad(flat)
         self._after_evaluation()
         return from_flat(values, batch, kind), from_flat(grads, shape, kind)
 
