@@ -114,3 +114,23 @@ using common `q`-dimensional normals, the parity tests construct an independent
 dense GPyTorch MVN from the official posterior's existing mean and covariance.
 Original reference models supply all compared moments. This oracle selects the
 same canonical square root; it is not a workaround for a reference defect.
+
+For a one-input linear model queried at two points, the latent covariance is
+rank one. Even when both libraries select dense roots, roundoff in its zero
+eigenvalue can change whether a Cholesky factorization succeeds or adds
+`1e-8` diagonal jitter. Identical base normals then need not produce identical
+realized samples. Four affected CI configurations have this rank-one geometry;
+controlled Torch 2.13 and 2.14 probes show posterior means and covariance
+entries agreeing to ordinary floating-point precision, while the strict
+sampled acquisition comparison depends on this platform-specific root choice.
+This does not establish an upstream sampling defect.
+
+The randomized scalar-MC comparison therefore uses `q <= d` for linear
+models, with its existing value and gradient tolerances unchanged. It still
+checks two-point posterior moments. Separate fixed- and inferred-noise
+rank-one tests compare the joint posterior and its query derivatives to
+closed-form Bayesian linear regression. Joint two-point qEI, qSimpleRegret,
+and smooth qLogEI values and gradients are also checked against independent
+closed forms using explicitly supplied zero base normals, which remove the
+root-dependent sample term. These are deterministic contraction tests, not
+claims about a Monte Carlo estimator's convergence.

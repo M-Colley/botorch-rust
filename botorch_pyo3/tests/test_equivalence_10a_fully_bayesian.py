@@ -45,6 +45,12 @@ from botorch.acquisition.analytic import LogExpectedImprovement as BtLogEI  # no
 from botorch.acquisition.bayesian_active_learning import (  # noqa: E402
     qBayesianActiveLearningByDisagreement as BtBALD,
 )
+from botorch.acquisition.monte_carlo import (  # noqa: E402
+    qExpectedImprovement as BtEI,
+)
+from botorch.acquisition.monte_carlo import (  # noqa: E402
+    qSimpleRegret as BtSimpleRegret,
+)
 from botorch.sampling.normal import SobolQMCNormalSampler as BtSampler  # noqa: E402
 from fully_bayesian_helpers import (  # noqa: E402
     DT,
@@ -57,6 +63,7 @@ from fully_bayesian_helpers import (  # noqa: E402
     model_pair,
     numpyro_potential,
     perturbed,
+    raw_box_data,
     rs_class,
 )
 from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL  # noqa: E402
@@ -72,6 +79,12 @@ from botorch_rs.acquisition import logei as rs_logei  # noqa: E402
 from botorch_rs.acquisition.analytic import LogExpectedImprovement as RsLogEI  # noqa: E402
 from botorch_rs.acquisition.bayesian_active_learning import (  # noqa: E402
     qBayesianActiveLearningByDisagreement as RsBALD,
+)
+from botorch_rs.acquisition.monte_carlo import (  # noqa: E402
+    qExpectedImprovement as RsEI,
+)
+from botorch_rs.acquisition.monte_carlo import (  # noqa: E402
+    qSimpleRegret as RsSimpleRegret,
 )
 from botorch_rs.fit import fit_fully_bayesian_model_nuts as rs_fit  # noqa: E402
 from botorch_rs.mlls import ExactMarginalLogLikelihood as RsMLL  # noqa: E402
@@ -191,7 +204,11 @@ def _random_model_case(seed: int, c: dict[str, Any]) -> None:
     vr_, gr_ = values_and_grads(RsLogEI(rs, best_f=best), X1)
     CHECK.check_log(f"{label}: LogEI values", vr_, vb_, VALUE_TOL)
     check_grad(CHECK, f"{label}: LogEI gradients", gr_, gb_, GRAD_TOL)
-    q = 2
+    # A d-dimensional linear model has latent posterior rank at most d.
+    # Common dense Cholesky normals are comparable only for q <= d: at a
+    # zero eigenvalue, roundoff can change whether either library adds jitter.
+    # Keep q=2 moment checks above and independent rank-one joint tests below.
+    q = min(2, c["d"]) if c["model"] == "linear" else 2
     n = X.shape[0]
     Xq = lo + (hi - lo) * torch.rand(1, q, c["d"], generator=g, dtype=DT)
     Z = torch.randn(16, 1, 1, q, generator=g, dtype=DT)
@@ -251,6 +268,107 @@ def _random_model_case(seed: int, c: dict[str, Any]) -> None:
         gb_t.abs().max().item(), 1e-12
     )
     CHECK.check_bound(f"{label}: qBALD gradients", err, GRAD_TOL)
+
+
+@pytest.mark.parametrize("fixed", [False, True])
+def test_rank_one_linear_joint_law_and_zero_normal_acquisitions(fixed: bool) -> None:
+    """Check singular q=2 posteriors without equating jitter-dependent roots.
+
+    Bayesian linear regression has a one-dimensional weight posterior here.
+    Its closed form checks moments and their query derivatives independently.
+    Zero base normals then check joint MC values/derivatives without a root
+    contribution; ordinary random-normal comparisons above use full-rank q.
+    """
+    samples = {
+        "mean": torch.tensor([-0.2, 0.1, 0.4], dtype=DT),
+        "weight_variance": torch.tensor([[0.3], [0.7], [1.1]], dtype=DT),
+    }
+    if not fixed:
+        samples["noise"] = torch.tensor([0.03, 0.07, 0.11], dtype=DT)
+    bt, rs, X, _ = model_pair(
+        "linear",
+        d=1,
+        n=8,
+        num=3,
+        seed=571,
+        fixed=fixed,
+        warp=False,
+        transforms=False,
+        samples=samples,
+    )
+    _, Y, Yvar = raw_box_data(n=8, d=1, seed=571, transforms=False)
+    features = (X - 0.5).squeeze(-1)
+    noise = Yvar.squeeze(-1).expand(3, -1) if fixed else samples["noise"].unsqueeze(-1)
+    weight_variance = (
+        samples["weight_variance"].squeeze(-1).reciprocal() + (features.square() / noise).sum(-1)
+    ).reciprocal()
+    weight_mean = weight_variance * (
+        features * (Y.squeeze(-1) - samples["mean"].unsqueeze(-1)) / noise
+    ).sum(-1)
+
+    def moments(query: Any) -> tuple[Any, Any]:
+        f = (query - 0.5).squeeze(-1).unsqueeze(-2)
+        mean = samples["mean"].unsqueeze(-1) + f * weight_mean.unsqueeze(-1)
+        covariance = weight_variance[..., None, None] * f.unsqueeze(-1) * f.unsqueeze(-2)
+        return mean.unsqueeze(-1), covariance
+
+    query = torch.tensor([[[0.65], [0.9]], [[0.6], [0.8]]], dtype=DT)
+    expected_mean, expected_covariance = moments(query)
+    # Positive noise leaves nonzero weight uncertainty, but the latent joint
+    # covariance is still rank one, rather than positive definite in q=2.
+    assert bool((weight_variance > 0).all())
+    assert torch.linalg.det(expected_covariance).abs().max() < 1e-18
+    with gpytorch.settings.lazily_evaluate_kernels(False):
+        for model in (bt, rs):
+            posterior = model.posterior(query)
+            CHECK.check("rank-one linear mean", posterior.mean, expected_mean, VALUE_TOL)
+            CHECK.check(
+                "rank-one linear covariance",
+                posterior.distribution.covariance_matrix,
+                expected_covariance,
+                VALUE_TOL,
+            )
+            for name, field in (
+                ("mean", lambda p: p.mean),
+                ("covariance", lambda p: p.distribution.covariance_matrix),
+            ):
+                _, actual_grad = values_and_grads(
+                    lambda x, field=field, model=model: field(model.posterior(x)), query
+                )
+                _, expected_grad = values_and_grads(
+                    lambda x, name=name: moments(x)[0 if name == "mean" else 1], query
+                )
+                check_grad(CHECK, f"rank-one linear {name} gradient", actual_grad, expected_grad)
+
+        best_f, tau_relu, tau_max = -2.0, 0.2, 0.1
+        for name, bt_type, rs_type in (
+            ("qEI", BtEI, RsEI),
+            ("qSimpleRegret", BtSimpleRegret, RsSimpleRegret),
+            ("qLogEI", bt_logei.qLogExpectedImprovement, rs_logei.qLogExpectedImprovement),
+        ):
+
+            def closed_form(x: Any, name: str = name) -> Any:
+                mean = moments(x)[0].squeeze(-1)
+                if name == "qSimpleRegret":
+                    return mean.amax(-1).mean(-1)
+                improvement = mean - best_f
+                if name == "qEI":
+                    return improvement.clamp_min(0).amax(-1).mean(-1)
+                log_improvement = (
+                    tau_relu * torch.nn.functional.softplus(improvement / tau_relu)
+                ).log()
+                smooth_max = tau_max * torch.logsumexp(log_improvement / tau_max, dim=-1)
+                return torch.logsumexp(smooth_max, dim=-1) - torch.log(torch.tensor(3.0, dtype=DT))
+
+            expected_value, expected_grad = values_and_grads(closed_form, query)
+            s_bt, s_rs = _sampler_pair(torch.zeros(8, 1, 1, 2, dtype=DT))
+            kwargs = {} if name == "qSimpleRegret" else {"best_f": best_f}
+            if name == "qLogEI":
+                kwargs.update(fat=False, tau_relu=tau_relu, tau_max=tau_max)
+            for acqf in (bt_type(bt, sampler=s_bt, **kwargs), rs_type(rs, sampler=s_rs, **kwargs)):
+                value, grad = values_and_grads(acqf, query)
+                CHECK.check(f"rank-one zero-normal {name}", value, expected_value, VALUE_TOL)
+                check_grad(CHECK, f"rank-one zero-normal {name} gradient", grad, expected_grad)
 
 
 @pytest.mark.parametrize("seed", range(12))
