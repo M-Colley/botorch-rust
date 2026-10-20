@@ -432,10 +432,12 @@ counterpart.
 | hyperparameter setters (`outputscale`, `noise`, `constant`, `lengthscale`, `initialize`) | same | values with as many elements as the parameter are reshaped, as in GPyTorch: e.g. `covar_module.outputscale = torch.tensor([v])` |
 | `botorch.exceptions` | `botorch_rs.exceptions` | `BotorchRsError` hierarchy (also `ValueError`, `RuntimeError`, `NotImplementedError` subclasses) and BoTorch's warnings |
 
-Everything else in BoTorch is not ported yet: see
-[What is not ported yet](#what-is-not-ported-yet).
+See [coverage and configuration limits](#what-is-not-ported-yet) for the
+audited main-package inventory and backend-specific restrictions.
 
-## What is not ported yet
+<a id="what-is-not-ported-yet"></a>
+
+## Coverage and configuration limits
 
 The consolidated development branch provides **all 776 public
 BoTorch classes and functions**, compared with official upstream
@@ -449,11 +451,13 @@ remaining work. The strict core check,
 reference, including audited constructor parameters and public members.
 Configuration and numerical parity remain separate requirements.
 
-The [2026-10-20 release verification](docs/verification-release-2026-10-20.json)
-records 522 passing Rust tests and 7,495 passing Python tests, with 47 Python
-cases skipped. This local Windows CPU run uses the pinned official reference.
-The report includes wheel hashes, exact case accounting, packaging checks,
-benchmark settings and remaining compatibility limits.
+The [integrated release verification](docs/verification-main-device-release-2026-10-20.json)
+records 532 passing Rust tests/doctests and 10,542 passing Python cases, with
+49 recorded skips. The installed Windows wheel is tested on CPU and CUDA
+against the pinned official reference, including specialized models,
+entropy/search acquisitions and device NUTS. The report includes wheel hashes,
+exact case accounting, packaging checks, benchmark settings and configuration
+limits. Earlier release certificates remain preserved separately.
 
 The previously separate fully Bayesian, approximate and utility worktrees
 are integrated in this branch:
