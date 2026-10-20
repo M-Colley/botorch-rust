@@ -19,7 +19,7 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import kind_of, to_flat
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
+from botorch_rs.acquisition.acquisition import AcquisitionFunction, MCSamplerMixin, pending_arg
 from botorch_rs.acquisition.objective import transform_arg
 from botorch_rs.exceptions.errors import UnsupportedError
 
@@ -74,7 +74,7 @@ class qNegIntegratedPosteriorVariance(AcquisitionFunction):
         )
 
 
-class PairwiseMCPosteriorVariance(AcquisitionFunction):
+class PairwiseMCPosteriorVariance(AcquisitionFunction, MCSamplerMixin):
     r"""Variance of difference for Active Learning
 
     Given a model and an objective, calculate the posterior sample variance

@@ -243,6 +243,24 @@ class NoisyExpectedHypervolumeMixin:
 
     _rs_nehvi: Any
     _baseline_kind: Any
+    _default_sample_shape = (512,)
+    sampler: Any = None
+
+    def get_posterior_samples(self: Any, posterior: Any) -> Any:
+        """Draw samples through the same sampler protocol as other MC acquisitions."""
+        from botorch_rs.acquisition.acquisition import MCSamplerMixin
+
+        return MCSamplerMixin.get_posterior_samples(self, posterior)
+
+    @property
+    def sample_shape(self: Any) -> Any:
+        return self._default_sample_shape if self.sampler is None else self.sampler.sample_shape
+
+    def set_X_pending(self: Any, X_pending: Any = None) -> None:
+        """Update pending points through the native acquisition and its caches."""
+        from botorch_rs.acquisition.acquisition import AcquisitionFunction
+
+        AcquisitionFunction.set_X_pending(self, X_pending)
 
     @property
     def X_baseline(self) -> Any:

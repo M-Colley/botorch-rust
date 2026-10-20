@@ -25,6 +25,7 @@ the candidate with the pending points; the multi-fidelity GIBBON uses the
 
 from __future__ import annotations
 
+import copy
 import math
 from collections.abc import Callable
 from typing import Any
@@ -304,6 +305,13 @@ class qMultiFidelityMaxValueEntropy(qMaxValueEntropy):
     """
 
     _name = "qMultiFidelityMaxValueEntropy"
+
+    @property
+    def cost_sampler(self) -> Any:
+        """An independent copy of the fantasy sampler for cost sampling."""
+        if getattr(self, "_cost_sampler", None) is None:
+            self._cost_sampler = copy.deepcopy(self.fantasies_sampler)
+        return self._cost_sampler
 
     def __init__(
         self,

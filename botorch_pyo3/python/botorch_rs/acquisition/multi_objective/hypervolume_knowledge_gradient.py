@@ -14,7 +14,11 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import first_kind, from_flat, is_torch_tensor, kind_of, to_flat
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, OneShotAcquisitionFunction
+from botorch_rs.acquisition.acquisition import (
+    AcquisitionFunction,
+    MCSamplerMixin,
+    OneShotAcquisitionFunction,
+)
 from botorch_rs.acquisition.cost_aware import CostAwareUtility, _mask_arg
 from botorch_rs.acquisition.multi_objective.base import ref_point_arg
 from botorch_rs.acquisition.multi_objective.objective import is_mo_objective, mo_objective_arg
@@ -60,7 +64,7 @@ def _identity(X: Any) -> Any:
     return X
 
 
-class qHypervolumeKnowledgeGradient(OneShotAcquisitionFunction):
+class qHypervolumeKnowledgeGradient(OneShotAcquisitionFunction, MCSamplerMixin):
     r"""Batch hypervolume knowledge gradient using one-shot optimization.
 
     The input ``X`` (``batch_shape x (q + num_fantasies * num_pareto) x d``)
