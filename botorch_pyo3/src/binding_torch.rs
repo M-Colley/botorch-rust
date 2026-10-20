@@ -284,9 +284,81 @@ fn tensor_exact_mll<'py>(
     }
 }
 
+/// Cholesky with adaptive diagonal jitter only for failing batch members.
+#[pyfunction]
+#[pyo3(signature = (matrix, jitter=None, max_tries=3))]
+fn tensor_psd_safe_cholesky<'py>(
+    py: Python<'py>,
+    matrix: &Tensor<'py>,
+    jitter: Option<f64>,
+    max_tries: usize,
+) -> PyResult<Tensor<'py>> {
+    let torch = torch_module(py)?;
+    require_tensor(&torch, matrix, "matrix")?;
+    let sizes = shape(matrix)?;
+    if sizes.len() < 2 || sizes[sizes.len() - 2] != sizes[sizes.len() - 1] {
+        return Err(dimension_error("matrix must end in n x n"));
+    }
+    let jitter = match jitter {
+        Some(value) => value,
+        None => {
+            if matrix.getattr("dtype")?.eq(torch.getattr("float64")?)? {
+                1e-8
+            } else {
+                1e-6
+            }
+        }
+    };
+    validate_jitter(jitter)?;
+    let linalg = torch.getattr("linalg")?;
+    let factor = |value: &Tensor<'py>| -> PyResult<TensorPair<'py>> {
+        let result = linalg.call_method1("cholesky_ex", (value,))?;
+        Ok((result.get_item(0)?, result.get_item(1)?))
+    };
+    let (mut lower, mut info) = factor(matrix)?;
+    // Only the small factorization-status tensor is synchronized for control
+    // flow. Matrix values, factors and their autograd graphs remain on device.
+    if !info.call_method0("any")?.is_truthy()? {
+        return Ok(lower);
+    }
+    let mut additions = torch.call_method1("zeros_like", (diagonal(matrix)?,))?;
+    let mut previous_jitter = 0.0;
+    let mut current_jitter = jitter;
+    for _ in 0..max_tries {
+        let failing = info
+            .call_method1("gt", (0,))?
+            .call_method1("to", (matrix.getattr("dtype")?,))?
+            .call_method1("unsqueeze", (-1,))?;
+        additions = additions.add(failing.mul(current_jitter - previous_jitter)?)?;
+        let candidate = matrix.add(additions.call_method0("diag_embed")?)?;
+        let category = py
+            .import("botorch_rs.exceptions.warnings")?
+            .getattr("NumericsWarning")?;
+        py.import("warnings")?.call_method1(
+            "warn",
+            (
+                format!("A not p.d., added jitter of {current_jitter:.1e} to the diagonal"),
+                category,
+            ),
+        )?;
+        (lower, info) = factor(&candidate)?;
+        if !info.call_method0("any")?.is_truthy()? {
+            return Ok(lower);
+        }
+        previous_jitter = current_jitter;
+        current_jitter *= 10.0;
+    }
+    Err(crate::errors::to_pyerr(
+        botorch_core::BotorchError::NotPsd {
+            jitter: previous_jitter,
+        },
+    ))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tensor_kernel, m)?)?;
     m.add_function(wrap_pyfunction!(tensor_exact_gp_posterior, m)?)?;
     m.add_function(wrap_pyfunction!(tensor_exact_mll, m)?)?;
+    m.add_function(wrap_pyfunction!(tensor_psd_safe_cholesky, m)?)?;
     Ok(())
 }

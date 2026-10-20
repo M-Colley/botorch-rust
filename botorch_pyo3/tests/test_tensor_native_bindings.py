@@ -196,3 +196,82 @@ def test_jitter_is_explicit_and_shape_errors_are_clear():
         native.tensor_kernel("rbf", [[0.1]], [[0.2]])
     with pytest.raises(NotImplementedError, match="nu"):
         native.tensor_kernel("matern", y.unsqueeze(-1), y.unsqueeze(-1), nu=0.8)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_psd_safe_cholesky_pd_path_has_exact_graph_and_higher_derivatives(device):
+    raw = torch.tensor(
+        [[1.2, 0.2], [0.1, 0.8]], dtype=torch.double, device=device, requires_grad=True
+    )
+
+    def function(value):
+        matrix = value @ value.T + torch.eye(2, dtype=value.dtype, device=value.device) * 0.2
+        return native.tensor_psd_safe_cholesky(matrix)
+
+    assert torch.autograd.gradcheck(function, (raw,), fast_mode=True)
+    assert torch.autograd.gradgradcheck(function, (raw,), fast_mode=True)
+    matrix = raw @ raw.T + torch.eye(2, dtype=raw.dtype, device=raw.device) * 0.2
+    actual = native.tensor_psd_safe_cholesky(matrix)
+    assert actual.device == matrix.device and actual.grad_fn is not None
+    torch.testing.assert_close(actual, torch.linalg.cholesky(matrix), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_psd_safe_cholesky_only_jitters_failing_batch_members(device, dtype):
+    from botorch_rs.exceptions.warnings import NumericsWarning
+
+    matrix = (
+        torch.stack([torch.eye(2), torch.diag(torch.tensor([1.0, 0.0]))])
+        .to(device=device, dtype=dtype)
+        .requires_grad_()
+    )
+    original = matrix.detach().clone()
+    jitter = 1e-8 if dtype == torch.float64 else 1e-6
+    with pytest.warns(NumericsWarning, match="added jitter") as warnings:
+        actual = native.tensor_psd_safe_cholesky(matrix)
+    assert len(warnings) == 1
+    assert torch.equal(matrix, original)
+    additions = torch.tensor([[0.0, 0.0], [jitter, jitter]], dtype=dtype, device=device)
+    expected = torch.linalg.cholesky(matrix + torch.diag_embed(additions))
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    (gradient,) = torch.autograd.grad(actual.sum(), matrix, create_graph=True)
+    (expected_gradient,) = torch.autograd.grad(expected.sum(), matrix, create_graph=True)
+    torch.testing.assert_close(gradient, expected_gradient, rtol=0, atol=0)
+    (hessian_vector,) = torch.autograd.grad(gradient.sum(), matrix)
+    (expected_hessian_vector,) = torch.autograd.grad(expected_gradient.sum(), matrix)
+    torch.testing.assert_close(hessian_vector, expected_hessian_vector, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_psd_safe_cholesky_retains_successful_batches_during_later_retries(device):
+    from botorch_rs.exceptions.warnings import NumericsWarning
+
+    matrix = torch.tensor(
+        [[[1.0, 1.0], [1.0, 1.0]], [[1.0, 0.0], [0.0, -5e-8]]],
+        dtype=torch.double,
+        device=device,
+        requires_grad=True,
+    )
+    with pytest.warns(NumericsWarning) as warnings:
+        lower = native.tensor_psd_safe_cholesky(matrix, jitter=1e-8, max_tries=2)
+    assert len(warnings) == 2
+    additions = torch.tensor([[1e-8, 1e-8], [1e-7, 1e-7]], dtype=matrix.dtype, device=device)
+    torch.testing.assert_close(lower, torch.linalg.cholesky(matrix + torch.diag_embed(additions)))
+    assert torch.isfinite(torch.autograd.grad(lower.sum(), matrix)[0]).all()
+
+
+def test_psd_safe_cholesky_exhaustion_and_invalid_options_are_explicit():
+    from botorch_rs.exceptions.errors import NotPSDError
+    from botorch_rs.exceptions.warnings import NumericsWarning
+
+    bad = torch.tensor([[1.0, 2.0], [2.0, 1.0]], dtype=torch.double)
+    with pytest.warns(NumericsWarning) as warnings, pytest.raises(NotPSDError):
+        native.tensor_psd_safe_cholesky(bad, max_tries=2)
+    assert len(warnings) == 2
+    with pytest.raises(NotPSDError):
+        native.tensor_psd_safe_cholesky(bad, max_tries=0)
+    with pytest.raises(ValueError, match="jitter"):
+        native.tensor_psd_safe_cholesky(bad, jitter=-1.0)
+    with pytest.raises(ValueError, match="n x n"):
+        native.tensor_psd_safe_cholesky(torch.ones(2, 3))

@@ -3464,3 +3464,6 @@ def tensor_exact_mll(
     jitter: float = 0.0,
     normalize: bool = False,
 ) -> Any: ...
+def tensor_psd_safe_cholesky(
+    matrix: Any, jitter: float | None = None, max_tries: int = 3
+) -> Any: ...
