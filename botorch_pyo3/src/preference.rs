@@ -103,6 +103,13 @@ enum Inner {
 }
 
 impl Inner {
+    fn input_transform(&self) -> Option<&ChainedInputTransform> {
+        match self {
+            Inner::Single(m) => m.input_transform(),
+            Inner::Batched(b) => b.shared_input_transform(),
+        }
+    }
+
     fn elements(&self) -> Vec<&PairwiseGP> {
         match self {
             Inner::Single(m) => vec![m],
@@ -847,7 +854,11 @@ impl PyPairwiseGP {
                         let ck = &comps[if comps.len() == 1 { 0 } else { k }];
                         els.push(base.with_observations(xk, ck, true)?);
                     }
-                    Inner::Batched(BatchedPairwiseGP::from_elements(shape, els)?)
+                    Inner::Batched(BatchedPairwiseGP::from_elements_with_transform(
+                        shape,
+                        els,
+                        inner.input_transform().cloned(),
+                    )?)
                 }
             };
             if update {
@@ -899,7 +910,7 @@ impl PyPairwiseGP {
     /// without a transform).
     fn input_chain_states(&self, py: Python<'_>) -> PyResult<Option<Vec<Py<PyAny>>>> {
         let inner = self.get();
-        match inner.first().input_transform() {
+        match inner.input_transform() {
             Some(chain) => Ok(Some(crate::input_perturbation::chain_state(py, chain)?)),
             None => Ok(None),
         }

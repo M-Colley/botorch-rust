@@ -123,11 +123,9 @@ def _default_covar_module(dim: int | None, batch_shape: tuple[int, ...]) -> Kern
     if dim is not None:
         spec = _rs.PairwiseGP.default_kernel_spec(dim, _float32_default())
         preset = lambda d: _rs.PairwiseGP.default_kernel_spec(d, _float32_default())  # noqa: E731
-        kernel = _kernel_from_spec(spec, preset, batch_shape)
-        # BoTorch's ScaleKernel has no batch shape (one outputscale for all
-        # batch elements); the RBF kernel has the data's.
-        kernel._batch_shape = ()
-        return kernel
+        # GPyTorch's ScaleKernel inherits the base kernel's batch shape,
+        # including one independent outputscale per training batch member.
+        return _kernel_from_spec(spec, preset, batch_shape)
     # Without data (no dimension): one shared lengthscale, as in BoTorch.
     from botorch_rs.constraints import GreaterThan, Interval
     from botorch_rs.priors import GammaPrior, SmoothedBoxPrior

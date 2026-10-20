@@ -1740,6 +1740,18 @@ pub struct BatchedPairwiseGP {
     elements: Vec<PairwiseGP>,
     raw: Vec<f64>,
     param_map: Vec<Vec<usize>>,
+    shared_input_transform: Option<ChainedInputTransform>,
+}
+
+fn pooled_inputs(inputs: &[&Matrix], dim: usize) -> Matrix {
+    let rows = inputs.iter().map(|x| x.nrows()).sum();
+    let mut pooled = Matrix::zeros(rows, dim);
+    let mut offset = 0;
+    for input in inputs {
+        pooled.rows_mut(offset, input.nrows()).copy_from(input);
+        offset += input.nrows();
+    }
+    pooled
 }
 
 impl BatchedPairwiseGP {
@@ -1756,7 +1768,7 @@ impl BatchedPairwiseGP {
         batch_shape: Vec<usize>,
         data: Vec<(Matrix, Vec<(usize, usize)>)>,
         dim: usize,
-        options: PairwiseGPOptions,
+        mut options: PairwiseGPOptions,
         raw: Option<Vec<f64>>,
         param_map: Option<Vec<Vec<usize>>>,
         draws: Option<&[f64]>,
@@ -1784,6 +1796,15 @@ impl BatchedPairwiseGP {
                     d.len()
                 )));
             }
+        }
+        // Shared coefficient-learning transforms reduce over every input
+        // batch, as Normalize(batch_shape=()) does in BoTorch. Individual
+        // Laplace solves must reuse these pooled coefficients.
+        let mut shared_input_transform = options.input_transform.clone();
+        if let Some(chain) = &mut shared_input_transform {
+            let inputs: Vec<&Matrix> = data.iter().map(|(x, _)| x).collect();
+            chain.fit(&pooled_inputs(&inputs, dim))?;
+            options.input_transform = Some(chain.frozen());
         }
         let template = PairwiseGP::new_impl(None, dim, options.clone(), None, false)?;
         let k = template.raw.len();
@@ -1813,6 +1834,7 @@ impl BatchedPairwiseGP {
             elements,
             raw,
             param_map,
+            shared_input_transform,
         })
     }
 
@@ -1832,6 +1854,17 @@ impl BatchedPairwiseGP {
     /// The batch from elements sharing all hyperparameters (e.g. the
     /// fantasies of an unbatched model).
     pub fn from_elements(batch_shape: Vec<usize>, elements: Vec<PairwiseGP>) -> Result<Self> {
+        let shared = elements.first().and_then(|e| e.input_transform.clone());
+        Self::from_elements_with_transform(batch_shape, elements, shared)
+    }
+
+    /// A batch retaining the original shared transform's coefficient-learning
+    /// flags (individual member views may have frozen coefficients).
+    pub fn from_elements_with_transform(
+        batch_shape: Vec<usize>,
+        elements: Vec<PairwiseGP>,
+        shared_input_transform: Option<ChainedInputTransform>,
+    ) -> Result<Self> {
         let b: usize = batch_shape.iter().product();
         if elements.len() != b || b == 0 {
             return Err(BotorchError::DimensionMismatch(format!(
@@ -1846,7 +1879,31 @@ impl BatchedPairwiseGP {
             elements,
             raw,
             param_map: vec![(0..k).collect(); b],
+            shared_input_transform,
         })
+    }
+
+    /// The shared input transform, with its original learning flags.
+    pub fn shared_input_transform(&self) -> Option<&ChainedInputTransform> {
+        self.shared_input_transform.as_ref()
+    }
+
+    fn prepare_shared_transform(&mut self) -> Result<()> {
+        if let Some(chain) = &mut self.shared_input_transform {
+            if self.elements[0].training {
+                let inputs: Vec<&Matrix> = self
+                    .elements
+                    .iter()
+                    .map(|e| &e.data.as_ref().expect("batch member has data").datapoints)
+                    .collect();
+                chain.fit(&pooled_inputs(&inputs, self.elements[0].dim))?;
+            }
+            let frozen = chain.frozen();
+            for element in &mut self.elements {
+                element.input_transform = Some(frozen.clone());
+            }
+        }
+        Ok(())
     }
 
     /// The batch shape.
@@ -1909,6 +1966,7 @@ impl BatchedPairwiseGP {
     /// # Errors
     /// See [`PairwiseGP::update`].
     pub fn update(&mut self, draws: Option<&[f64]>) -> Result<()> {
+        self.prepare_shared_transform()?;
         let n = self.elements[0].num_datapoints();
         for (e, el) in self.elements.iter_mut().enumerate() {
             el.update(draws.map(|d| &d[e * n..(e + 1) * n]))?;
@@ -2024,6 +2082,7 @@ impl BatchedPairwiseGP {
     /// See [`PairwiseGP::fit`].
     pub fn fit(&mut self, options: FitOptions) -> Result<FitResult> {
         self.set_training(true);
+        self.prepare_shared_transform()?;
         let bounds = self.global_bounds();
         let x_init = self.raw.clone();
         let warm: std::cell::RefCell<Vec<Vec<f64>>> = std::cell::RefCell::new(
@@ -2210,6 +2269,64 @@ mod tests {
 
     fn draws(n: usize) -> Vec<f64> {
         (0..n).map(|i| ((i as f64) * 0.7).sin()).collect()
+    }
+
+    #[test]
+    fn shared_batch_normalization_uses_pooled_data_and_retains_learning_flags() {
+        use crate::transforms::input::InputTransformStep;
+        use crate::Normalize;
+
+        let (x, comps) = data();
+        let shifted = x.add_scalar(2.0);
+        let options = PairwiseGPOptions {
+            input_transform: Some(
+                ChainedInputTransform::new(vec![InputTransformStep::Normalize(Normalize::new(2))])
+                    .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let mut batch = BatchedPairwiseGP::new(
+            vec![2],
+            vec![(x.clone(), comps.clone()), (shifted.clone(), comps)],
+            2,
+            options,
+            None,
+            None,
+            Some(&draws(12)),
+        )
+        .unwrap();
+        let mut expected = Normalize::new(2);
+        expected.fit(&pooled_inputs(&[&x, &shifted], 2)).unwrap();
+        for element in batch.elements() {
+            let raw = &element.data().unwrap().datapoints;
+            assert_eq!(
+                element.training_inputs_tf().unwrap(),
+                expected.transform(raw).unwrap()
+            );
+        }
+        // A training-mode conditioned batch must relearn the shared bounds
+        // from all of its augmented data, even though member views are frozen.
+        let new_x = Matrix::from_row_slice(2, 2, &[4.0, 3.0, 5.0, 4.0]);
+        let shared = batch.shared_input_transform().cloned();
+        let elements = batch
+            .elements()
+            .iter()
+            .map(|e| e.with_observations(&new_x, &[(0, 1)], true).unwrap())
+            .collect();
+        batch = BatchedPairwiseGP::from_elements_with_transform(vec![2], elements, shared).unwrap();
+        batch.update(None).unwrap();
+        let raw: Vec<&Matrix> = batch
+            .elements()
+            .iter()
+            .map(|e| &e.data().unwrap().datapoints)
+            .collect();
+        expected.fit(&pooled_inputs(&raw, 2)).unwrap();
+        for (element, input) in batch.elements().iter().zip(raw) {
+            assert_eq!(
+                element.training_inputs_tf().unwrap(),
+                expected.transform(input).unwrap()
+            );
+        }
     }
 
     #[test]

@@ -239,7 +239,7 @@ def test_batched_model() -> None:
     m = PairwiseGP(X, C)
     assert m.batch_shape == (2,)
     assert tuple(m.covar_module.base_kernel.raw_lengthscale.shape) == (2, 1, 2)
-    assert tuple(m.covar_module.raw_outputscale.shape) == ()
+    assert tuple(m.covar_module.raw_outputscale.shape) == (2,)
     assert tuple(m.posterior(torch.rand(3, 2, dtype=torch.float64)).mean.shape) == (2, 3, 1)
     fit_gpytorch_mll(PairwiseLaplaceMarginalLogLikelihood(m.likelihood, m))
 
