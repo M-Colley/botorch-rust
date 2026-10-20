@@ -542,6 +542,7 @@ class ApproximateGPyTorchModel(GPyTorchModel):
             prefix += "base_variational_strategy."
         inner._strategy._bind(self, prefix)
         self._param_shapes = self._compute_shapes()
+        self._torch_parameters_ready = True
 
     def _compute_shapes(self) -> dict[str, tuple[int, ...]]:
         inner = self.model
@@ -583,6 +584,24 @@ class ApproximateGPyTorchModel(GPyTorchModel):
 
     # -- parameters ------------------------------------------------------------
 
+    def _sync_torch_parameters(self) -> Any:
+        """Synchronize persistent Torch leaves with the native variational GP."""
+        if (
+            self._kind.lib != "torch"
+            or getattr(self._kind.device, "type", "cpu") != "cpu"
+            or not self.__dict__.get("_torch_parameters_ready", False)
+        ):
+            return None
+        state = self.__dict__.get("_torch_parameter_state")
+        if state is None:
+            from botorch_rs.models._torch_parameters import TorchParameterState
+
+            shapes = [(name, self._param_shapes[name]) for name, _ in self._rs.parameter_names()]
+            state = self._torch_parameter_state = TorchParameterState(self, shapes)
+        else:
+            state.sync(self)
+        return state
+
     def _param_index(self, suffix: str) -> tuple[str, int, int]:
         offsets = self._offsets()
         if suffix in offsets:
@@ -593,14 +612,23 @@ class ApproximateGPyTorchModel(GPyTorchModel):
         raise AttributeError(f"The model has no parameter {suffix!r}.")
 
     def _raw_param(self, suffix: str) -> list[float]:
+        self._sync_torch_parameters()
         _, off, size = self._param_index(suffix)
         return list(self._rs.raw_parameters()[off : off + size])
+
+    def _raw_param_array(self, suffix: str) -> Any:
+        state = self._sync_torch_parameters()
+        name, _, _ = self._param_index(suffix)
+        if state is not None:
+            return state.parameter(name)
+        return from_flat(self._raw_param(suffix), self._param_shapes[name], self._kind)
 
     def _raw_param_shape(self, suffix: str) -> tuple[int, ...]:
         name, _, _ = self._param_index(suffix)
         return self._param_shapes[name]
 
     def _set_raw_param(self, suffix: str, value: Any) -> None:
+        self._sync_torch_parameters()
         name, off, size = self._param_index(suffix)
         data, shape = to_flat(value, suffix)
         target = self._param_shapes[name]
@@ -618,6 +646,10 @@ class ApproximateGPyTorchModel(GPyTorchModel):
 
     def _named_raw(self) -> Iterator[tuple[str, Any]]:
         """``(name, raw value)`` in the ELBO's order (likelihood first)."""
+        state = self._sync_torch_parameters()
+        if state is not None:
+            yield from state.entries
+            return
         values = self._rs.raw_parameters()
         off = 0
         for name, size in self._rs.parameter_names():
@@ -657,7 +689,9 @@ class ApproximateGPyTorchModel(GPyTorchModel):
         return self
 
     def _ensure_initialized(self) -> None:
+        self._sync_torch_parameters()
         self.model._strategy._ensure_initialized()
+        self._sync_torch_parameters()
 
     def _kl_divergence(self, summed: bool) -> Any:
         """``KL(q(u) ‖ N(0, I))`` of every output (summed over the outputs)."""
@@ -788,9 +822,17 @@ class ApproximateGPyTorchModel(GPyTorchModel):
     # -- copying -----------------------------------------------------------
 
     def __deepcopy__(self, memo: dict[int, Any]) -> ApproximateGPyTorchModel:
+        self._sync_torch_parameters()
         new = self.__class__.__new__(self.__class__)
         memo[id(self)] = new
         for key, value in self.__dict__.items():
+            if key == "_torch_parameter_requires_grad" and "_torch_parameter_state" in self.__dict__:
+                continue
+            if key == "_torch_parameter_state":
+                new.__dict__["_torch_parameter_requires_grad"] = {
+                    name: parameter.requires_grad for name, parameter in value.entries
+                }
+                continue
             if key == "_rs":
                 new.__dict__[key] = value.copy()
             else:

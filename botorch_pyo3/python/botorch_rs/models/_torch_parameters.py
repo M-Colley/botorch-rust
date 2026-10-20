@@ -45,12 +45,14 @@ def constrained_parameter(raw: Any, constraint: Any) -> Any:
 
 
 class TorchParameterState:
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: Any, shapes: Any = None) -> None:
         import torch
 
         self.gradient_error = _shared_transform_error(model)
         self.entries: list[tuple[str, Any]] = []
-        self.shapes = [(name, tuple(shape)) for name, shape in model._rs.parameter_shapes()]
+        if shapes is None:
+            shapes = model._rs.parameter_shapes()
+        self.shapes = [(name, tuple(shape)) for name, shape in shapes]
         raw = model._rs.raw_parameters()
         offset = 0
         for name, shape in self.shapes:

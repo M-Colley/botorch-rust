@@ -83,19 +83,17 @@ def _fit_scipy_approximate(
     callback: Any,
     timeout_sec: float | None,
 ) -> OptimizationResult:
-    """One L-BFGS-B run on a variational ELBO (all parameters, default bounds)."""
+    """One native L-BFGS-B run on the selected variational parameters."""
     if (
-        parameters is not None
-        or bounds is not None
-        or closure is not None
+        closure is not None
         or closure_kwargs is not None
         or method != "L-BFGS-B"
         or callback is not None
         or timeout_sec is not None
     ):
         raise UnsupportedError(
-            "botorch_rs fits a variational ELBO with L-BFGS-B over all parameters (no "
-            "`parameters`, `bounds`, closures, callbacks or timeouts)."
+            "botorch_rs fits a variational ELBO with native L-BFGS-B (no "
+            "custom closures, callbacks or timeouts)."
         )
     opts = dict(options or {})
     kwargs: dict[str, Any] = {}
@@ -113,9 +111,11 @@ def _fit_scipy_approximate(
             f"Unknown solver options: {', '.join(sorted(opts))}", UserWarning, stacklevel=3
         )
     mll.model._outer._ensure_initialized()
+    mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
     loss, nit, _, status, message, _ = mll._rs.fit(
-        float(mll.num_data), float(mll.beta), max_attempts=1, **kwargs
+        float(mll.num_data), float(mll.beta), max_attempts=1, mask=mask, bounds=flat_bounds, **kwargs
     )
+    mll.model._outer._sync_torch_parameters()
     result = OptimizationResult(
         step=int(nit),
         fval=float(loss),
@@ -506,7 +506,7 @@ def fit_gpytorch_mll_torch(
         mll.model._outer._ensure_initialized()
         mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
         stopping = None if stopping_criterion is None else stopping_criterion._native_args()
-        return _result(
+        result = _result(
             mll._rs.fit_torch(
                 float(mll.num_data),
                 float(mll.beta),
@@ -518,6 +518,8 @@ def fit_gpytorch_mll_torch(
                 **adam,
             )
         )
+        mll.model._outer._sync_torch_parameters()
+        return result
     stopping_native = (
         stopping_criterion is None or type(stopping_criterion) is ExpMAStoppingCriterion
     )

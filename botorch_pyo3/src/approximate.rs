@@ -9,10 +9,11 @@
 //! for its posteriors. Posteriors and acquisition functions use the generic
 //! model handle ([`PyModel`]).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use botorch_core::acquisition::{ScalarizedModel, ScalarizedPosteriorTransform};
-use botorch_core::fit::{FitOptions, FitStatus, Fittable};
+use botorch_core::fit::{FitOptions, FitStatus};
 use botorch_core::models::approximate_gp::{
     ElboFit, SingleTaskVariationalGP, SingleTaskVariationalGPOptions, VariationalLikelihood,
     VariationalMean,
@@ -58,6 +59,7 @@ fn status_name(s: FitStatus) -> &'static str {
 )]
 pub struct PySingleTaskVariationalGP {
     inner: RwLock<Arc<SingleTaskVariationalGP>>,
+    parameter_state_version: AtomicU64,
 }
 
 impl PySingleTaskVariationalGP {
@@ -67,6 +69,7 @@ impl PySingleTaskVariationalGP {
 
     fn set(&self, model: SingleTaskVariationalGP) {
         *self.inner.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(model);
+        self.parameter_state_version.fetch_add(1, Ordering::Release);
     }
 
     /// The offset and size of the raw parameter `name`.
@@ -224,6 +227,7 @@ impl PySingleTaskVariationalGP {
             .into_py_result()?;
         Ok(Self {
             inner: RwLock::new(Arc::new(model)),
+            parameter_state_version: AtomicU64::new(0),
         })
     }
 
@@ -246,6 +250,11 @@ impl PySingleTaskVariationalGP {
     /// The flat raw parameters.
     fn raw_parameters(&self) -> Vec<f64> {
         self.get().raw_parameters().to_vec()
+    }
+
+    #[getter]
+    fn parameter_state_version(&self) -> u64 {
+        self.parameter_state_version.load(Ordering::Acquire)
     }
 
     /// Sets the flat raw parameters.
@@ -455,9 +464,28 @@ impl PySingleTaskVariationalGP {
         Ok((terms.value(), gradient))
     }
 
+    /// Native parameter pullback of separately weighted ELBO terms.
+    fn elbo_terms_parameter_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        y: Array,
+        num_data: f64,
+        beta: f64,
+        adjoints: [f64; 3],
+    ) -> PyResult<Vec<f64>> {
+        let x = x.matrix("X")?;
+        let y = y.matrix("target")?;
+        let model = self.get();
+        threads::run(py, || {
+            model.elbo_terms_parameter_vjp(&x, &y, num_data, beta, adjoints)
+        })
+        .into_py_result()
+    }
+
     /// `fit_gpytorch_mll` on the ELBO with L-BFGS-B and BoTorch's retries
     /// (prior samples of the kernel and mean parameters).
-    #[pyo3(signature = (num_data, beta=1.0, maxcor=None, pgtol=None, ftol=None, maxiter=None, maxfun=None, maxls=None, max_attempts=None, seed=None))]
+    #[pyo3(signature = (num_data, beta=1.0, maxcor=None, pgtol=None, ftol=None, maxiter=None, maxfun=None, maxls=None, max_attempts=None, seed=None, mask=None, bounds=None))]
     #[allow(clippy::too_many_arguments)]
     fn fit(
         &self,
@@ -472,6 +500,8 @@ impl PySingleTaskVariationalGP {
         maxls: Option<usize>,
         max_attempts: Option<usize>,
         seed: Option<u64>,
+        mask: Option<Vec<bool>>,
+        bounds: Option<Vec<(f64, f64)>>,
     ) -> PyResult<FitSummary> {
         let d = FitOptions::default();
         let options = FitOptions {
@@ -489,7 +519,10 @@ impl PySingleTaskVariationalGP {
             num_data,
             beta,
         };
-        let r = threads::run(py, || model.fit_mll(options)).into_py_result()?;
+        let r = threads::run(py, || {
+            model.fit_mll_with_mask(options, mask.as_deref(), bounds.as_deref())
+        })
+        .into_py_result()?;
         self.set(model.model);
         Ok((
             r.loss,
@@ -609,6 +642,7 @@ impl PySingleTaskVariationalGP {
     fn copy(&self) -> Self {
         Self {
             inner: RwLock::new(self.get()),
+            parameter_state_version: AtomicU64::new(0),
         }
     }
 }

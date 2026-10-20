@@ -278,6 +278,7 @@ class _ApproximateMarginalLogLikelihood(MarginalLogLikelihood):
         return x, (list(ydata), [n, m])
 
     def _terms(self, approximate_dist_f: Any, target: Any) -> tuple[float, float, float]:
+        self.model._outer._ensure_initialized()
         x, y = self._elbo_data(approximate_dist_f, target)
         return self._rs.elbo(x, y, float(self.num_data), float(self.beta))  # type: ignore[no-any-return]
 
@@ -288,11 +289,20 @@ class _ApproximateMarginalLogLikelihood(MarginalLogLikelihood):
         log_prior)`` with ``combine_terms=False``."""
         if kwargs:
             raise UnsupportedError(f"Unsupported arguments: {sorted(kwargs)}.")
-        ll, kl, lp = self._terms(approximate_dist_f, target)
-        kind = self._kind
-        if self.combine_terms:
-            return from_flat([ll - kl + lp], (), kind)
-        return from_flat([ll], (), kind), from_flat([kl], (), kind), from_flat([lp], (), kind)
+        self.model._outer._ensure_initialized()
+        x, y = self._elbo_data(approximate_dist_f, target)
+        terms = self._rs.elbo(x, y, float(self.num_data), float(self.beta))
+        from botorch_rs.models._elbo_autograd import elbo_output
+
+        return elbo_output(
+            self.model._outer,
+            x,
+            y,
+            float(self.num_data),
+            float(self.beta),
+            terms,
+            self.combine_terms,
+        )
 
     forward = __call__
 

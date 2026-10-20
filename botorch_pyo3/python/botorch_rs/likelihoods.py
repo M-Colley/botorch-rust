@@ -311,6 +311,9 @@ class MultitaskGaussianLikelihood(Likelihood):
 
     @property
     def raw_noise(self) -> Any:
+        getter = getattr(self._model, "_raw_param_array", None)
+        if getter is not None:
+            return getter("likelihood.raw_noise")
         return self._out(self._model._raw_param("likelihood.raw_noise"), (1,))
 
     @raw_noise.setter
@@ -340,6 +343,9 @@ class MultitaskGaussianLikelihood(Likelihood):
 
     @property
     def raw_task_noises(self) -> Any:
+        getter = getattr(self._model, "_raw_param_array", None)
+        if getter is not None:
+            return getter("likelihood.raw_task_noises")
         return self._out(self._model._raw_param("likelihood.raw_task_noises"), (self.num_tasks,))
 
     @raw_task_noises.setter

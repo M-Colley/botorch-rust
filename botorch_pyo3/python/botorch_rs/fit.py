@@ -421,6 +421,9 @@ def _fit_fallback_approximate(
     outer = mll.model._outer
     mll.train()
     outer._ensure_initialized()
+    from botorch_rs.optim.fit import _mask_and_bounds
+
+    mask, flat_bounds = _mask_and_bounds(mll, None, None)
     if name == "fit_gpytorch_mll_scipy":
         options = _scipy_options(optimizer_kwargs)
         loss, iterations, evaluations, status, message, attempts = mll._rs.fit(
@@ -434,7 +437,10 @@ def _fit_fallback_approximate(
             maxls=options.get("maxls"),
             max_attempts=max_attempts,
             seed=None if seed is None else int(seed),
+            mask=mask,
+            bounds=flat_bounds,
         )
+        outer._sync_torch_parameters()
         mll._fit_result = {
             "fval": loss,
             "nit": iterations,
@@ -454,6 +460,10 @@ def _fit_fallback_approximate(
     for attempt in range(1, max_attempts + 1):
         if attempt > 1:
             mll._rs.sample_all_priors(None if seed is None else int(seed) + attempt)
+            if mask is not None:
+                from botorch_rs._fit_attempts import restore_frozen
+
+                restore_frozen(outer, raw, [(i, i + 1) for i, free in enumerate(mask) if not free])
         mll.train()
         try:
             with warnings.catch_warnings(record=True) as ws:
@@ -461,6 +471,7 @@ def _fit_fallback_approximate(
                 result = fit_gpytorch_mll_torch(mll, **(optimizer_kwargs or {}))
         except NotPSDError:
             mll._rs.set_raw_parameters(raw)
+            outer._sync_torch_parameters()
             continue
         failed = [w for w in ws if issubclass(w.category, OptimizationWarning)]
         for w in ws:
@@ -469,6 +480,7 @@ def _fit_fallback_approximate(
             mll._fit_result = result
             return mll.eval()
         mll._rs.set_raw_parameters(raw)
+        outer._sync_torch_parameters()
     raise ModelFittingError("All attempts to fit the model have failed.")
 
 

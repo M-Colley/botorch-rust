@@ -95,9 +95,7 @@ class CholeskyVariationalDistribution(_VariationalDistribution):
         shape = (*self.batch_shape, self.num_inducing_points)
         if self._owner is None:
             return from_flat(self._local_mean, shape, LIST)
-        return from_flat(
-            self._owner._raw_param(self._prefix + "variational_mean"), shape, self._kind()
-        )
+        return self._owner._raw_param_array(self._prefix + "variational_mean")
 
     @variational_mean.setter
     def variational_mean(self, value: Any) -> None:
@@ -114,9 +112,7 @@ class CholeskyVariationalDistribution(_VariationalDistribution):
         shape = (*self.batch_shape, mi, mi)
         if self._owner is None:
             return from_flat(self._local_chol, shape, LIST)
-        return from_flat(
-            self._owner._raw_param(self._prefix + "chol_variational_covar"), shape, self._kind()
-        )
+        return self._owner._raw_param_array(self._prefix + "chol_variational_covar")
 
     @chol_variational_covar.setter
     def chol_variational_covar(self, value: Any) -> None:
@@ -242,11 +238,15 @@ class VariationalStrategy(_VariationalStrategy):
     def inducing_points(self) -> Any:
         """The inducing point locations (``M x d``, in the space of the
         transformed inputs)."""
+        self._owner._sync_torch_parameters()
+        if self.learn_inducing_locations:
+            return self._owner._raw_param_array(self._prefix + "inducing_points")
         data, shape = self._owner._rs.inducing_points()
         return from_flat(data, tuple(shape), self._owner._kind)
 
     @inducing_points.setter
     def inducing_points(self, value: Any) -> None:
+        self._owner._sync_torch_parameters()
         self._owner._rs.set_inducing_points(to_flat(value, "inducing_points"))
 
     @property

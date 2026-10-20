@@ -1138,6 +1138,43 @@ impl SingleTaskVariationalGP {
         beta: f64,
         with_grad: bool,
     ) -> Result<(ElboTerms, Option<Vec<f64>>)> {
+        self.elbo_impl_weighted(raw, x, y, num_data, beta, with_grad, [1.0, -1.0, 1.0])
+    }
+
+    /// Contract the three separate ELBO terms with caller-supplied adjoints.
+    /// Terms are `(expected log likelihood, scaled KL, scaled log prior)`.
+    ///
+    /// # Errors
+    /// Returns an error for invalid data, parameters, or nonfinite adjoints.
+    pub fn elbo_terms_parameter_vjp(
+        &self,
+        x: &Matrix,
+        y: &Matrix,
+        num_data: f64,
+        beta: f64,
+        adjoints: [f64; 3],
+    ) -> Result<Vec<f64>> {
+        if adjoints.iter().any(|v| !v.is_finite()) {
+            return Err(BotorchError::InvalidArgument(
+                "ELBO term adjoints must be finite".into(),
+            ));
+        }
+        let (_, gradient) =
+            self.elbo_impl_weighted(&self.raw, x, y, num_data, beta, true, adjoints)?;
+        Ok(gradient.expect("requested ELBO gradients"))
+    }
+
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    fn elbo_impl_weighted(
+        &self,
+        raw: &[f64],
+        x: &Matrix,
+        y: &Matrix,
+        num_data: f64,
+        beta: f64,
+        with_grad: bool,
+        weights: [f64; 3],
+    ) -> Result<(ElboTerms, Option<Vec<f64>>)> {
         if raw.len() != self.raw.len() {
             return Err(BotorchError::DimensionMismatch(format!(
                 "expected {} raw parameters, got {}",
@@ -1247,9 +1284,9 @@ impl SingleTaskVariationalGP {
                 let r = y[(i, t)] - p.mu[i];
                 let q = r * r + v;
                 ll += -0.5 * (q / s2 + ln_s2 + LN_2PI);
-                gmu[i] = r / s2 / nf;
-                gvar[i] = -0.5 / s2 / nf * dv;
-                gs2 += 0.5 * (q / (s2 * s2) - 1.0 / s2) / nf;
+                gmu[i] = weights[0] * r / s2 / nf;
+                gvar[i] = weights[0] * -0.5 / s2 / nf * dv;
+                gs2 += weights[0] * 0.5 * (q / (s2 * s2) - 1.0 / s2) / nf;
             }
             ll_total += ll;
             g_noise[t] = gs2;
@@ -1266,7 +1303,7 @@ impl SingleTaskVariationalGP {
             if !with_grad {
                 continue;
             }
-            let kl_scale = beta / num_data;
+            let kl_scale = -weights[1] * beta / num_data;
             // Variational mean and Cholesky factor.
             let gm = &p.a * &gmu - &p.mean * kl_scale;
             let ms = self.layout.var_mean.start + t * mi;
@@ -1368,7 +1405,7 @@ impl SingleTaskVariationalGP {
                 let kraw: Vec<f64> = part.kidx.iter().map(|&i| raw[i]).collect();
                 let deriv = self.options.covar_module.transform_derivatives(&kraw);
                 for (k, &gi) in part.kidx.iter().enumerate() {
-                    grad[gi] += g[k] * deriv[k] / num_data;
+                    grad[gi] += weights[2] * g[k] * deriv[k] / num_data;
                 }
                 lp
             } else {
@@ -1385,7 +1422,7 @@ impl SingleTaskVariationalGP {
                     let v = lvals[0];
                     let mut g = g_noise[0];
                     if let Some(p) = prior {
-                        g += p.grad_log_prob(v) / num_data;
+                        g += weights[2] * p.grad_log_prob(v) / num_data;
                     }
                     grad[lr.start] += g * nc.transform_derivative(lraw[0]);
                 }
@@ -1395,12 +1432,12 @@ impl SingleTaskVariationalGP {
                         let mut g = g_noise[t];
                         g_global += g_noise[t];
                         if let Some(p) = prior {
-                            g += p.grad_log_prob(lvals[t]) / num_data;
+                            g += weights[2] * p.grad_log_prob(lvals[t]) / num_data;
                         }
                         grad[lr.start + t] += g * nc.transform_derivative(lraw[t]);
                     }
                     if let Some(p) = prior {
-                        g_global += p.grad_log_prob(lvals[m]) / num_data;
+                        g_global += weights[2] * p.grad_log_prob(lvals[m]) / num_data;
                     }
                     grad[lr.start + m] += g_global * nc.transform_derivative(lraw[m]);
                 }
@@ -1408,7 +1445,7 @@ impl SingleTaskVariationalGP {
             if let VariationalMean::Constant(spec) = self.options.mean_module {
                 if let Some(prior) = spec.prior {
                     for i in self.layout.constant.clone() {
-                        grad[i] += prior.grad_log_prob(raw[i]) / num_data;
+                        grad[i] += weights[2] * prior.grad_log_prob(raw[i]) / num_data;
                     }
                 }
             }
@@ -1474,8 +1511,36 @@ impl Fittable for ElboFit {
     type Output = FitResult;
 
     fn fit_mll(&mut self, options: FitOptions) -> Result<FitResult> {
+        self.fit_mll_with_mask(options, None, None)
+    }
+}
+
+impl ElboFit {
+    /// Fit selected parameters within optional raw bounds, preserving frozen
+    /// entries exactly on every prior restart.
+    ///
+    /// # Errors
+    /// Returns an error for invalid mask/bounds lengths or failed optimization.
+    pub fn fit_mll_with_mask(
+        &mut self,
+        options: FitOptions,
+        mask: Option<&[bool]>,
+        bounds: Option<&[(f64, f64)]>,
+    ) -> Result<FitResult> {
         let x0 = self.model.raw.clone();
-        let bounds = self.model.raw_parameter_bounds();
+        let mut bounds = bounds.map_or_else(|| self.model.raw_parameter_bounds(), <[_]>::to_vec);
+        if bounds.len() != x0.len() || mask.is_some_and(|m| m.len() != x0.len()) {
+            return Err(BotorchError::DimensionMismatch(
+                "variational parameter mask/bounds length differs".into(),
+            ));
+        }
+        if let Some(mask) = mask {
+            for (i, free) in mask.iter().enumerate() {
+                if !free {
+                    bounds[i] = (x0[i], x0[i]);
+                }
+            }
+        }
         let (result, x) = {
             let m = &self.model;
             let (nd, beta) = (self.num_data, self.beta);
@@ -1782,6 +1847,43 @@ mod tests {
         // diagonal of its full matrix.
         let bnn = KernelNode::scale(KernelNode::infinite_width_bnn(2, 1e-7).unwrap());
         check_gradient(&model(1, true, bnn, false));
+    }
+
+    #[test]
+    fn separately_weighted_elbo_terms_match_finite_differences() {
+        for m in [1, 2] {
+            let mdl = model(m, true, rbf_tree(2), m > 1);
+            let x = mdl.train_x.rows(1, 4).into_owned();
+            let y = mdl.train_y.as_ref().unwrap().rows(1, 4).into_owned();
+            for weights in [[0.3, -0.7, 1.2], [0.0, 1.0, 0.0], [0.0, 0.0, -0.6]] {
+                let gradient = mdl
+                    .elbo_terms_parameter_vjp(&x, &y, 17.0, 0.6, weights)
+                    .unwrap();
+                for (k, analytic) in gradient.iter().enumerate() {
+                    let mut raw = mdl.raw_parameters().to_vec();
+                    let h = 1e-6 * raw[k].abs().max(1.0);
+                    raw[k] += h;
+                    let p = mdl.elbo_terms(Some(&raw), &x, &y, 17.0, 0.6).unwrap();
+                    raw[k] -= 2.0 * h;
+                    let n = mdl.elbo_terms(Some(&raw), &x, &y, 17.0, 0.6).unwrap();
+                    let differences = [
+                        p.log_likelihood - n.log_likelihood,
+                        p.kl_divergence - n.kl_divergence,
+                        p.log_prior - n.log_prior,
+                    ];
+                    let fd = differences
+                        .iter()
+                        .zip(weights)
+                        .map(|(d, w)| d * w)
+                        .sum::<f64>()
+                        / (2.0 * h);
+                    assert!(
+                        (fd - analytic).abs() < 2e-5 * analytic.abs().max(1.0),
+                        "output={m}, raw={k}: analytic={analytic}, FD={fd}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
