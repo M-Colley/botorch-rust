@@ -23,10 +23,12 @@ member-major).
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import to_flat
+from botorch_rs import _ops
+from botorch_rs._arrays import from_flat, kind_of, to_flat
 from botorch_rs.acquisition.acquisition import AcquisitionFunction, _is_ensemble_model
 from botorch_rs.acquisition.objective import objective_arg, transform_arg
 from botorch_rs.exceptions.errors import UnsupportedError
@@ -155,12 +157,56 @@ class PathwiseThompsonSampling(AcquisitionFunction):
         if lib == "torch":
             import torch
 
-            return torch.tensor(idx, dtype=torch.long).reshape(q, 1, m)
+            return torch.tensor(idx, dtype=torch.long, device=self.model._kind.device).reshape(
+                q, 1, m
+            )
         if lib == "numpy":
             import numpy as np
 
             return np.asarray(idx, dtype=np.int64).reshape(q, 1, m)
         return [[[idx[j * m + t] for t in range(m)]] for j in range(q)]
+
+    def select_from_ensemble_models(self, values: Any) -> Any:
+        """Gather each drawn path/output's fixed ensemble member.
+
+        Inputs have shape ``... x paths x ensemble x outputs``. Selection
+        preserves input-array gradients and does not redraw the native paths.
+        """
+        if not self._is_ensemble:
+            return values
+        ids = self._state.ensemble_indices
+        if ids is None:
+            raise RuntimeError("Draw the paths before selecting ensemble members.")
+        shape = _ops.shape_of(values)
+        if len(shape) < 3:
+            raise ValueError("Expected values with shape (..., paths, ensemble, outputs).")
+        q, size, m = shape[-3:]
+        if len(ids) != q * m or m != self.model.num_outputs or any(not 0 <= i < size for i in ids):
+            raise ValueError("Values do not match the drawn path/output/ensemble dimensions.")
+        kind = kind_of(values)
+        target = (*shape[:-3], q, 1, m)
+        if kind.lib == "torch":
+            import torch
+
+            index = (
+                torch.as_tensor(ids, dtype=torch.long, device=values.device)
+                .reshape(q, 1, m)
+                .expand(target)
+            )
+            return values.gather(-2, index).squeeze(-2)
+        if kind.lib == "numpy":
+            import numpy as np
+
+            index = np.broadcast_to(np.asarray(ids, dtype=np.int64).reshape(q, 1, m), target)
+            return np.take_along_axis(values, index, axis=-2).squeeze(-2)
+        data = to_flat(values, "values")[0]
+        selected = [
+            data[((batch * q + path) * size + int(ids[path * m + output])) * m + output]
+            for batch in range(math.prod(shape[:-3]))
+            for path in range(q)
+            for output in range(m)
+        ]
+        return from_flat(selected, (*shape[:-3], q, m), kind)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(batch_size={self.batch_size})"

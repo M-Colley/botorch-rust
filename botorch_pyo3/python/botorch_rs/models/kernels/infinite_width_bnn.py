@@ -46,5 +46,9 @@ class InfiniteWidthBNNKernel(Kernel):
     raw_weight_var, weight_var = _properties("raw_weight_var")
     raw_bias_var, bias_var = _properties("raw_bias_var")
 
+    def k(self, x1: Any, x2: Any) -> Any:
+        """Full arc-cosine covariance, using the native layer recursion."""
+        return self(x1, x2)
+
 
 __all__ = ["InfiniteWidthBNNKernel"]
