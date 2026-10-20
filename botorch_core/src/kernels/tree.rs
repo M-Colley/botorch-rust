@@ -453,7 +453,7 @@ impl KernelNode {
     ///
     /// # Errors
     /// [`BotorchError::InvalidArgument`] with GPyTorch's message if
-    /// `rank > num_tasks`, or for zero tasks or rank.
+    /// `rank > num_tasks`, or for zero tasks. Rank zero gives a diagonal task covariance.
     pub fn index(num_tasks: usize, rank: usize) -> Result<Self> {
         check_tasks(num_tasks, rank)?;
         Ok(Self::leaf(
@@ -1550,9 +1550,9 @@ fn sample_node<R: rand::Rng + ?Sized>(
 }
 
 fn check_tasks(num_tasks: usize, rank: usize) -> Result<()> {
-    if num_tasks == 0 || rank == 0 {
+    if num_tasks == 0 {
         return Err(BotorchError::InvalidArgument(
-            "num_tasks and rank must be positive".into(),
+            "num_tasks must be positive".into(),
         ));
     }
     if rank > num_tasks {

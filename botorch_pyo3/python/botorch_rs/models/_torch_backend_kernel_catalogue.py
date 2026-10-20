@@ -178,6 +178,21 @@ class _TorchLKJCovariancePrior(nn.Module):
             return (factor @ factor.transpose(-1, -2)) * scales.unsqueeze(-1) * scales.unsqueeze(-2)
 
 
+def _index_initial_parameter(source: Any, name: str, like: Tensor) -> Any:
+    if source.rank != 0 or source._model is not None:
+        return getattr(source, name)
+    shape = (
+        (*source.batch_shape, source.num_tasks, 0)
+        if name in ("covar_factor", "raw_covar_factor")
+        else (*source.batch_shape, source.num_tasks)
+    )
+    original = source._local.get(name)
+    if original is not None:
+        return _tensor(original, like).reshape(shape)
+    constraint = source.raw_var_constraint
+    return _tensor(constraint.inverse_transform(constraint.initial_value), like).expand(shape)
+
+
 class TorchPositiveIndexKernel(_BatchShape, TorchKernel, PositiveIndexKernel):  # type: ignore[misc]
     """Positive low-rank task covariance with arbitrary kernel/input batches."""
 
@@ -200,7 +215,7 @@ class TorchPositiveIndexKernel(_BatchShape, TorchKernel, PositiveIndexKernel):  
         self.raw_var_constraint = TorchConstraint(source.raw_var_constraint, like)
         self.raw_covar_factor_constraint = TorchConstraint(source.raw_covar_factor_constraint, like)
         for name in ("raw_var", "raw_covar_factor"):
-            original = getattr(source, name)
+            original = _index_initial_parameter(source, name, like)
             self.register_parameter(
                 name,
                 nn.Parameter(

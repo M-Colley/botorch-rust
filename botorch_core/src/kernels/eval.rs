@@ -3088,7 +3088,88 @@ mod tests {
         ])
         .unwrap();
         v.push(pidx);
+        for task in [
+            KernelNode::index(3, 0).unwrap(),
+            KernelNode::positive_index(3, 0, 1, true).unwrap(),
+        ] {
+            v.push(
+                KernelNode::product(vec![
+                    ad(st(KernelKind::Rbf, Some(2)), vec![0, 1]),
+                    ad(task, vec![2]),
+                ])
+                .unwrap(),
+            );
+        }
         v
+    }
+
+    #[test]
+    fn zero_rank_index_covariance_diagonal_and_prior_derivatives() {
+        let raw = vec![-0.4, 0.2, 0.9];
+        let x = Matrix::from_row_slice(4, 1, &[0.0, 2.0, 1.0, 0.0]);
+        let labels = [0, 2, 1, 0];
+        let prior = MatrixPrior::LkjCovariance {
+            n: 3,
+            eta: 1.7,
+            sd_prior: Prior::gamma(2.0, 1.3).unwrap(),
+        };
+        for normalized in [false, true] {
+            let tree = if normalized {
+                KernelNode::positive_index(3, 0, 1, true).unwrap()
+            } else {
+                KernelNode::index(3, 0).unwrap()
+            }
+            .with_task_prior(prior.clone())
+            .unwrap();
+            assert_eq!(tree.num_raw(), 3);
+            let kernel = TreeKernel::build(&tree, &raw, 1).unwrap();
+            let variances = kernel.values();
+            let scale = if normalized { variances[1] } else { 1.0 };
+            let covariance = kernel.covariance_symmetric(&x).unwrap();
+            for (i, &left) in labels.iter().enumerate() {
+                for (j, &right) in labels.iter().enumerate() {
+                    let expected = if left == right {
+                        variances[left] / scale
+                    } else {
+                        0.0
+                    };
+                    assert!((covariance[(i, j)] - expected).abs() < 1e-14);
+                }
+            }
+            let prep = kernel.prepare(&x).unwrap();
+            for (i, &label) in labels.iter().enumerate() {
+                assert!((kernel.diag_mode(&prep, i) - variances[label] / scale).abs() < 1e-14);
+                let (_, input_gradient) = kernel.cross_with_grad(&prep, i, &prep);
+                assert!(input_gradient.iter().all(|&v| v == 0.0));
+            }
+            let weights = Matrix::from_element(4, 4, 1.0);
+            let gradient = kernel.contract(&prep, &weights);
+            let (_, prior_gradient) = kernel.log_prior_and_grad().unwrap();
+            let transforms = tree.transform_derivatives(&raw);
+            for parameter in 0..raw.len() {
+                let mut plus = raw.clone();
+                plus[parameter] += 1e-6;
+                let mut minus = raw.clone();
+                minus[parameter] -= 1e-6;
+                let evaluate = |values: &[f64]| {
+                    let k = TreeKernel::build(&tree, values, 1).unwrap();
+                    (
+                        k.covariance_symmetric(&x).unwrap().sum(),
+                        k.log_prior().unwrap(),
+                    )
+                };
+                let (kp, pp) = evaluate(&plus);
+                let (km, pm) = evaluate(&minus);
+                assert!(
+                    ((kp - km) / 2e-6 - gradient[parameter] * transforms[parameter]).abs() < 1e-7
+                );
+                assert!(
+                    ((pp - pm) / 2e-6 - prior_gradient[parameter] * transforms[parameter]).abs()
+                        < 1e-7
+                );
+            }
+        }
+        assert!(KernelNode::index(0, 0).is_err());
     }
 
     /// Inputs with the last column holding task indices 0..3 for the index

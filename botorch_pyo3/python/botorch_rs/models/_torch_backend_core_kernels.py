@@ -12,6 +12,7 @@ from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models._torch_backend_kernel_catalogue import (
     TorchPositiveIndexKernel,
     _BatchShape,
+    _index_initial_parameter,
     _TorchLKJCovariancePrior,
 )
 from botorch_rs.models._torch_backend_modules import (
@@ -76,27 +77,7 @@ class TorchCoreIndexKernel(_BatchShape, TorchKernel, public.IndexKernel):  # typ
         self.num_tasks, self.rank = source.num_tasks, source.rank
         self.raw_var_constraint = TorchConstraint(source.raw_var_constraint, like)
         for name in ("covar_factor", "raw_var"):
-            if self.rank == 0:
-                # Native KernelNode requires positive rank, but the public
-                # GPyTorch diagonal-only rank-zero parameterization is valid.
-                # Its construction values need no CPU covariance evaluation.
-                shape = (
-                    (*self.batch_shape, self.num_tasks, 0)
-                    if name == "covar_factor"
-                    else (*self.batch_shape, self.num_tasks)
-                )
-                original = source._local.get(name)
-                if original is None:
-                    original = source.raw_var_constraint.inverse_transform(
-                        source.raw_var_constraint.initial_value
-                    )
-                original = (
-                    _tensor(original, like).reshape(shape)
-                    if name in source._local
-                    else _tensor(original, like).expand(shape)
-                )
-            else:
-                original = getattr(source, name)
+            original = _index_initial_parameter(source, name, like)
             self.register_parameter(
                 name,
                 nn.Parameter(

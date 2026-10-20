@@ -56,9 +56,8 @@ are counted once. State dictionaries, deep copies, and module serialization
 preserve the device modules.
 
 Generic IndexKernel supports unconstrained factors, including rank zero's
-diagonal-only law, arbitrary task batches and safe discrete gathers. The native
-CPU KernelNode still requires positive rank; rank zero is implemented directly
-in the Tensor backend. A full-rank generic IndexKernel can initialize an LKJ
+diagonal-only law, arbitrary task batches and safe discrete gathers. Native CPU KernelNode and Tensor kernels both support this diagonal-only
+parameterization. A full-rank generic IndexKernel can initialize an LKJ
 covariance draw exactly by splitting a positive diagonal from its Cholesky
 factor. Lower-rank matrix draws use projected initialization. This differs
 from PositiveIndexKernel, whose positive-factor and optional unit-scale
