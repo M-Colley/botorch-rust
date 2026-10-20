@@ -29,7 +29,7 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import from_pair, kind_of, to_flat
+from botorch_rs._arrays import from_pair, is_torch_tensor, kind_of, to_flat
 from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.model_list_gp_regression import ModelListGP
@@ -125,7 +125,14 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
 def log_cdf_robust(x: Any) -> Any:
     r"""The logarithm of the standard normal CDF, computed robustly:
     ``log Phi(x)`` for ``x < 5`` and ``-Phi(-x)`` otherwise, clamped to
-    ``[min, -eps]`` (values only; no autograd)."""
+    ``[min, -eps]``. Device tensors and tensors requiring gradients use the
+    differentiable Torch algebra; array inputs retain the native CPU path."""
+    if is_torch_tensor(x) and (x.requires_grad or x.is_cuda):
+        from botorch_rs.acquisition._torch_backend_predictive_entropy import (
+            log_cdf_robust as tensor_log_cdf,
+        )
+
+        return tensor_log_cdf(x)
     return from_pair(_rs.log_cdf_robust(to_flat(x, "x")), kind_of(x))
 
 

@@ -118,3 +118,48 @@ parameters, query locations and normal draws; other fixture entries remain
 unchanged. Earlier conditioning/input-transform/marginal-density corrections
 are described in [the native acquisition chapter](single-objective-acquisition.md).
 The new Rust scalar regression tests the closed Gaussian example directly.
+
+## Predictive entropy search
+
+`qPredictiveEntropySearch` and `qMultiObjectivePredictiveEntropySearch` now
+run their expectation-propagation algebra on device. Both support pending
+points, `q > 1`, several query-batch axes, maximization/minimization and scalar
+or independent multi-output Gaussian models, including ModelListGP. Ordinary
+initial model batches are rejected in the same way as the official family;
+fully Bayesian EP mixtures are also outside this implementation's supported
+scope. Raw training locations are used when building factors, consistent with
+the native port's existing input-transform correction. The reference's
+deliberately noisy candidate EP covariance convention is preserved.
+
+PES damping and fallback select discrete branches. The implementation retains
+exact Torch derivatives within the selected branch; it does not claim
+differentiability at a damping/convergence/fallback boundary. It recomputes the
+EP factor graph for differentiable evaluations, retaining training-data,
+optimal-location and hyperparameter dependence and permitting repeated backward
+calls. Functional factor assembly avoids in-place modification of tensors saved
+by autograd. Cholesky branch choices are made without recording invalid factors;
+only the final positive matrix is factored on the differentiable tape.
+`log_cdf_robust` preserves the reference's CDF rounding/clamps and tail
+approximation while masking logarithm-of-zero branches before evaluation.
+
+The 30-case CPU/CUDA suite checks reference values/query derivatives, complete
+training/optimal/query `gradcheck` and `gradgradcheck`, all parameter Hessian
+products, repeated backward calls, Normalize, pending points, scalar/MO/list
+models, float32/float64, minimization, arbitrary query batches and forbidden
+inference-data `.cpu()`, `.numpy()` and `.tolist()` conversions. Scalar device
+convergence/PSD decisions synchronize metadata with Python, as in the reference.
+Two additional JES regressions check real device candidate optimization and
+ensure model parameter `.grad` fields remain untouched. No speed improvement
+has been measured for this EP implementation.
+
+**PES can accept a failed first Cholesky pivot.** The official
+`multi_objective/predictive_entropy_search.py:1032,1046` checks whether the sum
+of Cholesky `info` codes exceeds one. Every nonzero code is a failure, including
+`info=1`. On CPU, calling `_update_damping(I2, diag(-1,1), tensor(1.), 1e-4)`
+returns damping one and a finite invalid factor. The additional NaN test does
+not detect it. CUDA's failed factor can contain NaNs and trigger that separate
+fallback, so the exact unmodified symptom is backend dependent. Reject any
+nonzero code; in this example damping one half produces the valid matrix
+`diag(1e-4, 1.0001)` after jitter. Both native Rust tests and CPU/CUDA Tensor
+tests cover the repair, with the unmodified CPU failure asserted separately.
+The Rust change also rejects a previous precision whose first pivot fails.

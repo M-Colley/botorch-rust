@@ -139,6 +139,7 @@ def test_values_and_query_gradients_match_corrected_reference(
     torch.testing.assert_close(gradient, expected_gradient, rtol=2e-5, atol=2e-6)
     assert torch.isfinite(torch.autograd.grad(gradient.square().sum(), query)[0]).all()
     assert value.device == query.device and isinstance(actual, qJointEntropySearch)
+    assert actual._tensor_backend == "torch"
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -311,3 +312,27 @@ def test_scalarization_and_independent_model_list(device, estimation_type, model
         torch.isfinite(g).all()
         for g in torch.autograd.grad(sum(g.square().sum() for g in gradient), (query, weights))
     )
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_joint_entropy_dispatches_device_candidate_optimizer(device, monkeypatch):
+    from botorch_rs.generation.gen import gen_candidates_torch
+
+    acquisition, _, query = make_pair(device, "LB", False, 1, False)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Entropy optimizer transferred inference tensors to host.")
+
+    monkeypatch.setattr(torch.Tensor, "cpu", forbidden)
+    monkeypatch.setattr(torch.Tensor, "numpy", forbidden)
+    monkeypatch.setattr(torch.Tensor, "tolist", forbidden)
+    candidates, values = gen_candidates_torch(
+        query,
+        acquisition,
+        lower_bounds=0.0,
+        upper_bounds=1.0,
+        options={"stopping_criterion_options": {"maxiter": 2}},
+    )
+    assert candidates.device == query.device and values.device == query.device
+    assert torch.isfinite(values).all()
+    assert all(parameter.grad is None for parameter in acquisition.model.parameters())

@@ -69,6 +69,8 @@ _ENTROPY = frozenset(
         "qMultiFidelityMaxValueEntropy",
         "qMultiFidelityLowerBoundMaxValueEntropy",
         "qJointEntropySearch",
+        "qPredictiveEntropySearch",
+        "qMultiObjectivePredictiveEntropySearch",
     }
 )
 _TYPES: dict[type, type] = {}
@@ -125,7 +127,13 @@ def tensor_acquisition(public_class: type) -> Any:
                 else TensorProjected
             )
         elif public_class.__name__ in _ENTROPY:
-            if public_class.__name__ == "qJointEntropySearch":
+            if "PredictiveEntropySearch" in public_class.__name__:
+                from botorch_rs.acquisition._torch_backend_predictive_entropy import (
+                    TensorPredictiveEntropy,
+                )
+
+                mixin = TensorPredictiveEntropy
+            elif public_class.__name__ == "qJointEntropySearch":
                 from botorch_rs.acquisition._torch_backend_joint_entropy import (
                     TensorJointEntropySearch,
                 )
@@ -203,6 +211,7 @@ def _average_ensemble(value: Tensor, model: Any, log: bool = False) -> Tensor:
 class _TensorAcquisition(nn.Module):
     """Mixin preceding the public acquisition class in the dispatched MRO."""
 
+    _tensor_backend = "torch"
     _public_class: type
     best_f: Tensor
     beta: Tensor
