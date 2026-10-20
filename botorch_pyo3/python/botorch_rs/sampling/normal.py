@@ -60,8 +60,8 @@ class NormalMCSampler(MCSampler):
     _base_shape: tuple[int, ...] | None
     base_samples: Any
 
-    def _tensor_samples(self, posterior: Any) -> Any:
-        """Sample on the posterior device without flattening its graph."""
+    def _construct_tensor_base_samples(self, posterior: Any) -> None:
+        """Construct device-resident normals without evaluating the posterior root."""
         import torch
 
         shape = self._get_collapsed_shape(posterior)
@@ -105,7 +105,11 @@ class NormalMCSampler(MCSampler):
         else:
             self.base_samples = current
         self._base_shape = tuple(current.shape)
-        return posterior.rsample_from_base_samples(self.sample_shape, current)
+
+    def _tensor_samples(self, posterior: Any) -> Any:
+        """Sample on the posterior device without flattening its graph."""
+        self._construct_tensor_base_samples(posterior)
+        return posterior.rsample_from_base_samples(self.sample_shape, self.base_samples)
 
     @property
     def num_samples(self) -> int:
@@ -134,6 +138,9 @@ class NormalMCSampler(MCSampler):
         self._rs.set_base_samples((values, (self.num_samples, len(values) // self.num_samples)))
 
     def _construct_base_samples(self, posterior: Any) -> None:
+        if getattr(posterior, "_tensor_backend", None) == "torch":
+            self._construct_tensor_base_samples(posterior)
+            return
         kind = _posterior_kind(posterior)
         if kind is None:
             raise UnsupportedError("The sampler requires a botorch_rs posterior.")
@@ -172,6 +179,9 @@ class NormalMCSampler(MCSampler):
             )
         if tuple(base_sampler.sample_shape) != tuple(self.sample_shape):
             raise ValueError("Base samplers must have the same sample_shape.")
+        if getattr(posterior, "_tensor_backend", None) == "torch":
+            self._update_tensor_base_samples(posterior, base_sampler, underlying)
+            return
         self._construct_base_samples(posterior)
         if base_sampler.base_samples is None:
             return
@@ -202,6 +212,41 @@ class NormalMCSampler(MCSampler):
                 row * width : (row + 1) * width
             ]
         self._store_base_samples(data, tuple(target_shape), _posterior_kind(posterior))
+
+    def _update_tensor_base_samples(
+        self, posterior: Any, base_sampler: Any, underlying: Any
+    ) -> None:
+        import torch
+
+        self._construct_tensor_base_samples(posterior)
+        if base_sampler.base_samples is None:
+            return
+        target = self.base_samples
+        source = torch.as_tensor(
+            base_sampler.base_samples, dtype=target.dtype, device=target.device
+        )
+        if source.ndim > target.ndim:
+            raise ValueError("Baseline base samples have more dimensions than the joint samples.")
+        point_axis = -2 if underlying._is_mt else -1
+        source_points = source.shape[point_axis]
+        if source_points > target.shape[point_axis]:
+            raise ValueError("Baseline base samples contain more points than the joint posterior.")
+        sample_dims = len(self.sample_shape)
+        source = source.reshape(
+            *self.sample_shape,
+            *((1,) * (target.ndim - source.ndim)),
+            *source.shape[sample_dims:],
+        )
+        prefix_shape = list(target.shape)
+        prefix_shape[point_axis] = source_points
+        prefix = source.expand(prefix_shape)
+        suffix = target.narrow(point_axis, source_points, target.shape[point_axis] - source_points)
+        updated = torch.cat((prefix, suffix), dim=point_axis)
+        if isinstance(self, SobolQMCNormalSampler):
+            self._base_samples = updated
+        else:
+            self.base_samples = updated
+        self._base_shape = tuple(updated.shape)
 
 
 class SobolQMCNormalSampler(NormalMCSampler):
