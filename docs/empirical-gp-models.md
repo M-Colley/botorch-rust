@@ -336,7 +336,7 @@ raise. Input/outcome transforms and correlated `output_indices` remain explicitl
 unsupported, matching these upstream model APIs. Independent output subsetting
 updates the historical output tables as well as the likelihood and training data.
 
-The iterative EM family remains a separate Tensor checkpoint. Validation in
+Validation in
 `test_torch_empirical_gp.py` includes CPU/CUDA official mean, kernel, full
 posterior and MLL parity, independent dense historical-curve mixed Hessians,
 compressed-basis historical Hessians, additive kernels and real fits, native
@@ -377,3 +377,67 @@ posterior and MLL results and independently checks paired-curve mixed Hessians,
 noise-only automatic backend selection, historical-buffer mutation, additive
 kernels, fits, constructors, conditioning and fantasies. The combined empirical
 Tensor and legacy suites passed 137 tests at this checkpoint.
+
+
+### Device-resident EM empirical priors and models
+
+`pretrain_em_prior`, `EMEmpiricalGaussianProcess` and its `from_pretrained`
+constructor accept `backend="torch"`. CUDA, differentiable inputs or actual
+Torch modules select the Tensor path automatically. Indexed and explicit-inducing
+E-steps, Gaussian-mean and inverse-Wishart MAP updates, trace-matched shrinkage,
+PSD stabilization, convergence stopping and both initializations run on the
+input device. Rust dispatches safe Cholesky and Gaussian prediction; the EM
+updates use differentiable Torch matrix operations. Neither models nor priors
+call upstream BoTorch at runtime or transfer numerical evaluation to CPU.
+
+The MAP mean prior is centered on the actual parametric mean at the inducing
+points: its right-hand side includes `K_mu.inverse() @ m(Z)`. Pinned upstream
+`b0dd01be6` omits this term at the caller, shrinking toward zero. The port uses
+the corrected law already proposed in [BoTorch #3388](https://github.com/meta-pytorch/botorch/pull/3388).
+The Tensor regression oracle compiles an isolated copy of the official source
+with exactly this missing `m_0` argument added; the source checkout stays
+unchanged. Offset-equivariance tests verify that shifting historical and target
+values together with the parametric mean shifts predictions without changing
+the covariance or observed-data MLL.
+
+Every training forward and historical MLL evaluation owns a fresh EM graph.
+Cold reruns differentiate through every update; warm reruns start from detached
+previous moments. Persistent learned moments are detached registered buffers,
+so an older backward, a later warm update, serialization, device/dtype moves and
+subsequent independent posterior backward calls do not reuse a consumed graph.
+The historical MLL uses all historical datasets and their full indexing,
+independently of the target conditioning observations. Both SciPy and Torch
+fitters optimize the actual Tensor leaves through this objective. Scalar
+Gaussian noise and custom Torch Gaussian likelihood, mean and kernel modules
+are supported; the likelihood must remain homoscedastic as upstream requires.
+`ExperimentDataset.Yvar` is retained as metadata and is not consumed by the EM
+likelihood, matching the source law.
+
+Pretrained containers own deep historical/module snapshots and detached moments.
+Freezing pretrained modules preserves derivatives through live shift weights,
+the full Schur residual, explicit inducing locations and an optional full
+additive covariance. Target training/query data, predictive noise, parameters,
+historical values and (with explicit inducing points) historical coordinates
+retain mixed first/second derivatives. Without explicit inducing points, union
+grid locations and observation membership are fixed discrete metadata. Inducing
+locations become actual learnable Parameters only when requested. Conditioning,
+fantasies, sampling, direct-index queries and batched prediction preserve the
+same learned prior.
+
+PSD projection returns the symmetric input directly when all eigenvalues exceed
+the floor, avoiding artificial eigenvector singularities at repeated positive
+eigenvalues. A mixed clipped spectrum with repeated eigenvalues currently raises
+`UnsupportedError` when a gradient is requested, rather than returning the NaN
+gradients produced by a plain `eigh` backward. Such spectra require a dedicated
+spectral Fréchet rule for the Tensor path; the native first-order rule remains
+available. Distinct clipped spectra use Torch's eigendecomposition derivative
+rules, with the usual nonsmooth boundary at the floor. Training data are scalar
+and unbatched; query/fantasy batches are supported. Input/outcome transforms
+remain outside this upstream model API.
+
+`test_torch_em_empirical_gp.py` covers CPU/CUDA corrected-source moments,
+every recorded EM iteration, cold/warm MLL and parameter gradients, independent
+mixed Hessians through explicit inducing points and historical data, immutable
+warm snapshots, float32 zero-noise stabilization, reusable-container round trips,
+native-prior conversion, condition/fantasy/sample derivatives, and both fitting
+routes. Native EM and all existing empirical model regressions run alongside it.

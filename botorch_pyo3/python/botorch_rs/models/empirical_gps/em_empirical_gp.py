@@ -6,6 +6,7 @@ import copy
 import io
 import math
 import pickle
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +26,22 @@ from botorch_rs.models.empirical_gps.utils import (
 )
 from botorch_rs.models.gpytorch import GPyTorchModel
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
+
+
+def _torch_em_requested(backend: str, values: Any, modules: Any = ()) -> bool:
+    if backend not in ("auto", "native", "torch"):
+        raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+    if backend != "auto":
+        return backend == "torch"
+    torch = sys.modules.get("torch")
+    return torch is not None and (
+        any(
+            isinstance(value, torch.Tensor) and (value.device.type != "cpu" or value.requires_grad)
+            for value in values
+            if value is not None
+        )
+        or any(isinstance(module, torch.nn.Module) for module in modules if module is not None)
+    )
 
 
 def _mean_constant(module: Any) -> float:
@@ -182,12 +199,38 @@ def pretrain_em_prior(
     init_mode: str = "kernel",
     iteration_history: list[tuple[Any, Any]] | None = None,
     covariance_shrinkage: float = 0.0,
+    *,
+    backend: str = "auto",
 ) -> EMPriorContainer:
     """Estimate exact Gaussian inducing moments from independent historical curves.
 
     Indexed and inducing-point E-steps, mean/IW MAP updates, PSD stabilization
     and trace-matched shrinkage are native. Historical observations are fixed.
     """
+    if _torch_em_requested(
+        backend,
+        [value for data in datasets for value in (data.X, data.Y)]
+        + [inducing_points, likelihood_noise],
+        (mean_module, covar_module),
+    ):
+        from botorch_rs.models.empirical_gps._torch_em import pretrain
+
+        return pretrain(
+            datasets,
+            mean_module,
+            covar_module,
+            likelihood_noise,
+            inducing_points,
+            num_em_iterations,
+            use_mean_prior,
+            use_covar_prior,
+            iw_nu,
+            em_convergence_tol,
+            enable_interpolation,
+            init_mode,
+            iteration_history,
+            covariance_shrinkage,
+        )
     if not datasets:
         raise ValueError("At least one historical dataset is required.")
     if not isinstance(num_em_iterations, int) or num_em_iterations < 0:
@@ -297,6 +340,29 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
     preceding learned moments as a detached initialization.
     """
 
+    _additive_base: Any
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        if cls is EMEmpiricalGaussianProcess:
+            prior = kwargs.get("em_prior", args[2] if len(args) > 2 else None)
+            datasets = kwargs.get("datasets", args[3] if len(args) > 3 else None)
+            values = list(args[:2]) + [
+                kwargs.get("train_X"),
+                kwargs.get("train_Y"),
+                kwargs.get("inducing_points"),
+            ]
+            values.extend(value for data in (datasets or []) for value in (data.X, data.Y))
+            modules = [kwargs.get(name) for name in ("mean_module", "covar_module", "likelihood")]
+            modules.extend(args[4:7])
+            if prior is not None:
+                values.extend((prior.X_inducing, prior.mu_inducing))
+                modules.extend((prior.mean_module, prior.covar_module))
+            if _torch_em_requested(kwargs.get("backend", "auto"), values, modules):
+                from botorch_rs.models.empirical_gps._torch_em import TensorEMGaussianProcess
+
+                return object.__new__(TensorEMGaussianProcess)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -317,6 +383,8 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
         init_mode: str = "kernel",
         learnable_inducing_points: bool = False,
         covariance_shrinkage: float = 0.0,
+        *,
+        backend: str = "auto",
     ) -> None:
         from botorch_rs.models.higher_order_gp import _initial_raw_noise
 
@@ -469,14 +537,33 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
         freeze_pretrained: bool = True,
         learnable_inducing_points: bool = False,
         base_covar_module: Kernel | None = None,
+        *,
+        backend: str = "auto",
     ) -> EMEmpiricalGaussianProcess:
+        if _torch_em_requested(
+            backend,
+            (train_X, train_Y, em_prior.X_inducing),
+            (em_prior.mean_module, em_prior.covar_module, likelihood, base_covar_module),
+        ):
+            backend = "torch"
         model = cls(
             train_X,
             train_Y,
             em_prior=em_prior,
             likelihood=likelihood,
             learnable_inducing_points=learnable_inducing_points,
+            backend=backend,
         )
+        if getattr(model, "_tensor_backend", None) == "torch":
+            from botorch_rs.models._torch_backend_modules import build_kernel
+
+            if freeze_pretrained:
+                model.freeze_pretrained_parameters()
+            if base_covar_module is not None:
+                model._additive_base = build_kernel(
+                    base_covar_module, train_X.shape[-1], (), train_X
+                )
+            return model
         if base_covar_module is not None:
             (base,) = _copy_modules(base_covar_module)
             model._additive_base = base
@@ -522,7 +609,7 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
 
         self._last_em_sync_raw = raw
 
-    def _refresh_em(self) -> None:
+    def _refresh_em(self) -> Any:
         if not self._using_pretrained_prior:
             self._rs.refresh_em()
         self._sync_em_state(force=True)
@@ -691,6 +778,8 @@ class EMEmpiricalMarginalLogLikelihood(MarginalLogLikelihood):
 
     def forward(self, function_dist: Any = None, target: Any = None) -> Any:
         self._validate_fit()
+        if getattr(self.model, "_tensor_backend", None) == "torch":
+            return self.model._historical_mll()
         if self.model._using_pretrained_prior:
             value = self.model._rs.mll()
         else:
@@ -702,6 +791,11 @@ class EMEmpiricalMarginalLogLikelihood(MarginalLogLikelihood):
 
     def value_and_grad(self, raw_parameters: Any = None) -> tuple[float, list[float]]:
         self._validate_fit()
+        if getattr(self.model, "_tensor_backend", None) == "torch":
+            raise UnsupportedError(
+                "The flat native EM value_and_grad protocol requires backend='native'; "
+                "use mll() with torch.autograd.grad on the Tensor backend."
+            )
         raw = None if raw_parameters is None else list(to_flat(raw_parameters)[0])
         if raw_parameters is None and not self.model._using_pretrained_prior:
             value, gradient = self.model._rs.advance_mll()
