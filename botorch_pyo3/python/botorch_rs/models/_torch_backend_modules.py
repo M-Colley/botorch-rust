@@ -77,11 +77,28 @@ class TorchPrior(nn.Module):
     """Univariate prior evaluated in the parameter's device and dtype."""
 
     hyperparameters: Tensor
+    _normal_variance: Tensor
+    _normal_log_scale: Tensor
 
     def __init__(self, source: Any, like: Tensor) -> None:
         super().__init__()
         self.kind = source._rs.kind
         self.register_buffer("hyperparameters", _tensor(source._rs.parameters, like))
+        if self.kind == "LogNormal":
+            # GPyTorch's transformed LogNormal keeps a Normal base_dist with
+            # its construction dtype even after Module.to(). Its variance
+            # and log(scale) are therefore computed before promotion to the
+            # sampled parameter's dtype. Preserve those constants explicitly,
+            # including the default float32 prior on float64 GP parameters.
+            dtypes = source.__dict__.get("_buffer_argument_dtypes", {}).values()
+            dtype = (
+                "float64"
+                if "float64" in dtypes
+                else source.__dict__.get("_buffer_factory_dtype", "float32")
+            )
+            factory = torch.tensor(source._rs.parameters, dtype=getattr(torch, dtype))
+            self.register_buffer("_normal_variance", factory[1].square().to(like))
+            self.register_buffer("_normal_log_scale", factory[1].log().to(like))
         if self.kind not in (
             "LogNormal",
             "Gamma",
@@ -100,7 +117,15 @@ class TorchPrior(nn.Module):
         if self.kind == "Normal":
             return distributions.Normal(p[0], p[1]).log_prob(value)
         if self.kind == "LogNormal":
-            return distributions.LogNormal(p[0], p[1]).log_prob(value)
+            if not bool((value > 0).all()):
+                raise ValueError("LogNormal prior values must be positive.")
+            log_value = value.log()
+            return (
+                -(log_value - p[0]).square() / (2 * self._normal_variance)
+                - self._normal_log_scale
+                - 0.5 * math.log(2 * math.pi)
+                - log_value
+            )
         if self.kind == "Gamma":
             return distributions.Gamma(p[0], p[1], validate_args=False).log_prob(value)
         if self.kind == "Uniform":
@@ -387,7 +412,7 @@ class TorchZeroMean(_TorchModule):
         return x.new_zeros(*shape, x.shape[-2])
 
 
-class TorchGaussianLikelihood(_TorchModule):
+class _TorchGaussianNoise(_TorchModule):
     def __init__(self, source: Any, like: Tensor) -> None:
         super().__init__(like)
         self.batch_shape = torch.Size(source.batch_shape)
@@ -404,10 +429,6 @@ class TorchGaussianLikelihood(_TorchModule):
         self._register_prior("noise_prior", source.noise_prior, "noise", 1)
 
     @property
-    def noise_covar(self) -> TorchGaussianLikelihood:
-        return self
-
-    @property
     def raw_noise_constraint(self) -> TorchConstraint:
         return self.noise_constraint
 
@@ -418,6 +439,37 @@ class TorchGaussianLikelihood(_TorchModule):
     @noise.setter
     def noise(self, value: Any) -> None:
         self._assign("raw_noise", value, self.noise_constraint)
+
+
+class TorchGaussianLikelihood(_TorchModule):
+    def __init__(self, source: Any, like: Tensor) -> None:
+        super().__init__(like)
+        self.batch_shape = torch.Size(source.batch_shape)
+        self.noise_covar = _TorchGaussianNoise(source, like)
+
+    @property
+    def raw_noise(self) -> nn.Parameter:
+        return self.noise_covar.raw_noise
+
+    @raw_noise.setter
+    def raw_noise(self, value: Any) -> None:
+        self.noise_covar._assign("raw_noise", value)
+
+    @property
+    def noise_constraint(self) -> TorchConstraint:
+        return self.noise_covar.noise_constraint
+
+    @property
+    def raw_noise_constraint(self) -> TorchConstraint:
+        return self.noise_covar.noise_constraint
+
+    @property
+    def noise(self) -> Tensor:
+        return self.noise_covar.noise
+
+    @noise.setter
+    def noise(self, value: Any) -> None:
+        self.noise_covar.noise = value
 
     def noise_for(self, n: int, noise: Tensor | None = None) -> Tensor:
         return self.noise.expand(*self.batch_shape, n) if noise is None else noise
@@ -494,7 +546,7 @@ def build_kernel(source: Any, d: int, aug_batch_shape: Any, train_X: Tensor) -> 
             )
         else:
             raise UnsupportedError(
-                "Torch backend kernels currently support RBF, Matérn, Scale, Additive and Product; a custom torch.nn.Module kernel is also accepted."
+                "Torch backend kernels currently support RBF, Matérn, RQ, Periodic, Cosine, Linear, Polynomial, Scale, Additive and Product; a custom torch.nn.Module kernel is also accepted."
             )
         memo[id(kernel)] = result
         return result
@@ -604,12 +656,165 @@ class TorchNormalize(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         if not (self.transform_on_train if self.training else self.transform_on_eval):
             return x
+        if not self.training and not self.transform_on_fantasize:
+            from botorch_rs.models.utils.assorted import fantasize
+
+            if fantasize.on():
+                return x
         if self.training and self.learn_bounds:
             self._fit(x)
         return self._map(x, self.reverse)
 
     def untransform(self, x: Tensor) -> Tensor:
         return self._map(x, not self.reverse)
+
+    def transform(self, x: Tensor) -> Tensor:
+        return self._map(x, self.reverse)
+
+    def preprocess_transform(self, x: Tensor) -> Tensor:
+        return self.transform(x) if self.transform_on_train else x
+
+
+class TorchWarp(_TorchModule):
+    """Learned Kumaraswamy CDF, including full input and parameter graphs."""
+
+    _tensor_backend = "torch"
+    indices: Tensor
+    concentration0: nn.Parameter
+    concentration1: nn.Parameter
+
+    def __init__(self, source: Any, d: int, train_X: Tensor) -> None:
+        from botorch_rs.constraints import GreaterThan
+
+        super().__init__(train_X)
+        if source._d != d:
+            raise ValueError("Warp's d must equal the training input dimension.")
+        self.d = d
+        self.batch_shape = torch.Size(source.batch_shape)
+        self._eps = source._eps
+        self.reverse = source.reverse
+        self.transform_on_train = source.transform_on_train
+        self.transform_on_eval = source.transform_on_eval
+        self.transform_on_fantasize = source.transform_on_fantasize
+        self.register_buffer(
+            "indices", torch.tensor(source.indices, dtype=torch.long, device=train_X.device)
+        )
+        self._normalize = TorchNormalize(source._normalize, d, train_X)
+        for i in (0, 1):
+            name = f"concentration{i}"
+            original = getattr(source, name)
+            self.register_parameter(
+                name,
+                nn.Parameter(
+                    _tensor(original, train_X).clone(),
+                    requires_grad=not isinstance(original, nn.Parameter) or original.requires_grad,
+                ),
+            )
+            self.add_module(
+                f"{name}_constraint",
+                TorchConstraint(
+                    GreaterThan(source._min_concentration_level, transform=None), train_X
+                ),
+            )
+            self._register_prior(
+                f"{name}_prior",
+                getattr(source, f"{name}_prior"),
+                name,
+                2 if self.batch_shape else 1,
+            )
+
+    def fit(self, x: Tensor) -> TorchWarp:
+        if self.transform_on_train:
+            self._normalize.fit(x)
+        return self
+
+    def _warp(self, x: Tensor, inverse: bool) -> Tensor:
+        if x.shape[-1] != self.d:
+            raise ValueError(f"Warp expected {self.d} features.")
+        batch = torch.broadcast_shapes(x.shape[:-2], self.batch_shape)
+        x = x.expand(*batch, *x.shape[-2:])
+        selected = x.index_select(-1, self.indices)
+        c0, c1, eps = self.concentration0, self.concentration1, self._eps
+        if inverse:
+            values = (((1 - (1 - selected).pow(1 / c0)).pow(1 / c1) - eps) / (1 - 2 * eps)).clamp(
+                0, 1
+            )
+        else:
+            selected = (selected * (1 - 2 * eps) + eps).clamp(eps, 1 - eps)
+            values = 1 - (1 - selected.pow(c1)).pow(c0)
+        return x.index_copy(-1, self.indices, values)
+
+    def transform(self, x: Tensor) -> Tensor:
+        if self.reverse:
+            return self._normalize.untransform(self._warp(x, True))
+        return self._warp(self._normalize.transform(x), False)
+
+    def untransform(self, x: Tensor) -> Tensor:
+        if self.reverse:
+            return self._warp(self._normalize.transform(x), False)
+        return self._normalize.untransform(self._warp(x, True))
+
+    def forward(self, x: Tensor) -> Tensor:
+        if not (self.transform_on_train if self.training else self.transform_on_eval):
+            return x
+        if not self.training and not self.transform_on_fantasize:
+            from botorch_rs.models.utils.assorted import fantasize
+
+            if fantasize.on():
+                return x
+        if self.training and not self.reverse:
+            self.fit(x)
+        return self.transform(x)
+
+    def preprocess_transform(self, x: Tensor) -> Tensor:
+        return self.transform(x) if self.transform_on_train else x
+
+    def _set_concentration(self, i: int, value: Any) -> None:
+        self._assign(f"concentration{i}", value)
+
+
+class TorchInputChain(_TorchModule):
+    _tensor_backend = "torch"
+
+    def __init__(self, transforms: dict[str, nn.Module], like: Tensor) -> None:
+        super().__init__(like)
+        self._transform_names = tuple(transforms)
+        for name, transform in transforms.items():
+            self.add_module(name, transform)
+
+    def __getitem__(self, name: str) -> nn.Module:
+        if name not in self._transform_names:
+            raise KeyError(name)
+        return getattr(self, name)
+
+    def forward(self, x: Tensor) -> Tensor:
+        for name in self._transform_names:
+            x = self[name](x)
+        return x
+
+    def fit(self, x: Tensor) -> TorchInputChain:
+        states = [(self[name], self[name].training) for name in self._transform_names]
+        try:
+            for module, _ in states:
+                module.train()
+                x = module(x)
+        finally:
+            for module, state in states:
+                module.train(state)
+        return self
+
+    def preprocess_transform(self, x: Tensor) -> Tensor:
+        for name in self._transform_names:
+            module = self[name]
+            method = getattr(module, "preprocess_transform", module)
+            x = method(x)
+        return x
+
+    def untransform(self, x: Tensor) -> Tensor:
+        for name in reversed(self._transform_names):
+            module: Any = self[name]
+            x = module.untransform(x)
+        return x
 
 
 class TorchStandardize(nn.Module):
@@ -675,7 +880,7 @@ class TorchStandardize(nn.Module):
 
 
 def build_input_transform(source: Any, d: int, train_X: Tensor) -> nn.Module | None:
-    from botorch_rs.models.transforms.input import Normalize
+    from botorch_rs.models.transforms.input import ChainedInputTransform, Normalize, Warp
 
     if source is None:
         return None
@@ -684,8 +889,19 @@ def build_input_transform(source: Any, d: int, train_X: Tensor) -> nn.Module | N
     if type(source) is Normalize:
         with torch.no_grad():
             return TorchNormalize(source, d, train_X).eval()
+    if type(source) is Warp:
+        with torch.no_grad():
+            return TorchWarp(source, d, train_X).eval()
+    if type(source) is ChainedInputTransform:
+        children: dict[str, nn.Module] = {}
+        for name, child in source.items():
+            module = build_input_transform(child, d, train_X)
+            assert module is not None
+            children[name] = module
+        with torch.no_grad():
+            return TorchInputChain(children, train_X).fit(train_X).eval()
     raise UnsupportedError(
-        "Torch backend input transforms currently support Normalize or a torch.nn.Module."
+        "Torch backend input transforms currently support Normalize, Warp, ChainedInputTransform or a torch.nn.Module."
     )
 
 

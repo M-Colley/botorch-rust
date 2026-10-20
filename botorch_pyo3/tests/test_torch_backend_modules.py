@@ -25,7 +25,7 @@ from botorch_rs.models._torch_backend_modules import (
     build_mean,
     build_outcome_transform,
 )
-from botorch_rs.models.transforms.input import Normalize
+from botorch_rs.models.transforms.input import ChainedInputTransform, Normalize, Warp
 from botorch_rs.priors import (
     GammaPrior,
     HalfCauchyPrior,
@@ -136,6 +136,7 @@ def test_mean_and_noise_parameters_are_persistent_real_modules(device, batch_sha
         x,
     )
     held_mean, held_noise = mean.raw_constant, likelihood.raw_noise
+    assert list(dict(likelihood.named_parameters())) == ["noise_covar.raw_noise"]
     mean.constant = 0.3
     likelihood.noise = 0.2
     assert mean.raw_constant is held_mean and likelihood.raw_noise is held_noise
@@ -162,6 +163,25 @@ def test_mean_and_noise_parameters_are_persistent_real_modules(device, batch_sha
     zero = build_mean(ZeroMean(batch_shape=batch_shape), batch_shape, x)
     assert list(zero.parameters()) == []
     assert not zero(x).any()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_default_lognormal_prior_preserves_reference_factory_constants(device):
+    from botorch.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
+
+    x = torch.zeros(4, 3, dtype=torch.double, device=device)
+    actual = build_kernel(None, 3, (), x)
+    reference = get_covar_module_with_dim_scaled_prior(3).to(x)
+    expected = reference.lengthscale_prior.log_prob(reference.lengthscale).sum()
+    torch.testing.assert_close(actual.log_prior(), expected, atol=2e-14, rtol=2e-14)
+    grads = [
+        torch.autograd.grad(value, parameter)[0]
+        for value, parameter in [
+            (actual.log_prior(), actual.raw_lengthscale),
+            (expected, reference.raw_lengthscale),
+        ]
+    ]
+    torch.testing.assert_close(*grads, atol=2e-14, rtol=2e-14)
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -257,6 +277,68 @@ def test_normalize_training_graph_and_frozen_query_bounds(device, indices):
     query = x.detach() + 5
     torch.testing.assert_close(module.untransform(module(query)), query)
     torch.testing.assert_close(before, module.offset)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("batch_shape", [(), (2,)])
+@pytest.mark.parametrize("chain", [False, True])
+def test_warp_and_chain_full_training_parameter_graphs(device, batch_shape, chain):
+    from botorch.models.transforms.input import ChainedInputTransform as ReferenceChain
+    from botorch.models.transforms.input import Normalize as ReferenceNormalize
+    from botorch.models.transforms.input import Warp as ReferenceWarp
+
+    x = (
+        torch.tensor(
+            [[0.1, 0.4, 0.2], [0.4, 0.9, 0.8], [0.8, 0.2, 0.4], [0.7, 0.5, 0.6]],
+            dtype=torch.double,
+            device=device,
+        )
+        .expand(*batch_shape, 4, 3)
+        .clone()
+        .requires_grad_()
+    )
+    source_warp = Warp(
+        3, [0, 2], batch_shape=batch_shape, concentration0_prior=LogNormalPrior(0, 0.7)
+    )
+    source_warp.initialize(concentration0=0.9, concentration1=1.3)
+    reference_warp = ReferenceWarp(3, [0, 2], batch_shape=torch.Size(batch_shape)).to(x)
+    with torch.no_grad():
+        reference_warp.concentration0.fill_(0.9)
+        reference_warp.concentration1.fill_(1.3)
+    source = (
+        ChainedInputTransform(normalize=Normalize(3), warp=source_warp) if chain else source_warp
+    )
+    reference = (
+        ReferenceChain(normalize=ReferenceNormalize(3), warp=reference_warp).to(x)
+        if chain
+        else reference_warp
+    )
+    actual = build_input_transform(source, 3, x)
+    actual.train()
+    expected = reference(x)
+    observed = actual(x)
+    torch.testing.assert_close(observed, expected)
+    weight = torch.linspace(-0.4, 0.9, x.numel(), dtype=x.dtype, device=device).reshape_as(x)
+    first = [
+        torch.autograd.grad((value * weight).sum(), [x, *module.parameters()], create_graph=True)
+        for value, module in [(observed, actual), (expected, reference)]
+    ]
+    for a, b in zip(*first, strict=True):
+        torch.testing.assert_close(a, b)
+    second = [
+        torch.autograd.grad(sum(g.square().sum() for g in grads), [x, *module.parameters()])
+        for grads, module in zip(first, [actual, reference], strict=True)
+    ]
+    for a, b in zip(*second, strict=True):
+        torch.testing.assert_close(a, b)
+    actual.fit(x)
+    actual.eval()
+    expected_prior_shape = batch_shape
+    assert actual.log_prior().shape == expected_prior_shape
+    warp = actual.warp if chain else actual
+    assert warp.raw_parameter_bounds()["concentration0"][0] == pytest.approx(1e-4)
+    query = x.detach() * 0.6 + 0.2
+    torch.testing.assert_close(actual.untransform(actual(query)), query, atol=1e-9, rtol=1e-9)
 
 
 @pytest.mark.parametrize("device", DEVICES)
