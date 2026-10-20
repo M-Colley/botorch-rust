@@ -27,3 +27,15 @@ and explicit observation noise. Python tests compare official conditioning,
 fantasy batches, fixed-noise layouts, snapshots, empty queries and query
 gradients. Multiple sample dimensions are flattened for the official ExactGP
 reference, which accepts only one new fantasy batch dimension.
+
+The pinned official correlated-output model inherits a conditioning method
+that assumes independent output batches. With two outputs, ordinary
+`condition_on_observations(X, Y)` creates an extra fantasy dimension; with
+fixed noise it can discard the supplied noise and raise. Its training
+representation instead has one joint event of `n * m` observations. The
+tested workaround calls `get_fantasy_model` with
+`inputs=X.repeat_interleave(m, dim=-2)`, `targets=Y.reshape(*Y.shape[:-2], -1)`
+and the identically flattened `noise`, when provided. Repeating inputs and
+flattening targets must be done together. An upstream fix should override
+the correlated model's conditioning method to perform this conversion;
+the native port conditions directly in the joint-event representation.

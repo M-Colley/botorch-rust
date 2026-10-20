@@ -484,6 +484,15 @@ class EmpiricalOneDimensionalGP(GPyTorchModel, FantasizeMixin):
 
     @property
     def train_inputs(self) -> tuple[Any]:
+        if self._correlated:
+            data, shape = to_flat(self._train_X)
+            return (
+                from_flat(
+                    [value for value in data for _ in range(self.num_outputs)],
+                    (*shape[:-2], shape[-2] * self.num_outputs, 1),
+                    self._kind,
+                ),
+            )
         if self.num_outputs > 1 and not self._correlated:
             n = _ops.shape_of(self._train_X)[-2]
             return (

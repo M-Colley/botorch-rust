@@ -59,7 +59,16 @@ def test_empirical_conditioning_matches_official(correlated, fixed):
     y = torch.tensor([[2.4, 2.7], [2.0, 1.8]])
     noise = torch.tensor([[0.04, 0.02], [0.03, 0.05]]) if fixed else None
     native = actual.condition_on_observations(x, y, noise=noise)
-    official = reference.condition_on_observations(x, y, noise=noise)
+    if correlated:
+        # This model stores a single joint event, unlike the generic
+        # GPyTorchModel.condition_on_observations target layout.
+        official = reference.get_fantasy_model(
+            inputs=x.repeat_interleave(actual.num_outputs, dim=-2),
+            targets=y.reshape(-1),
+            **({"noise": noise.reshape(-1)} if noise is not None else {}),
+        )
+    else:
+        official = reference.condition_on_observations(x, y, noise=noise)
     q = torch.tensor(query)
     pa, pb = native.posterior(q), official.posterior(q)
     torch.testing.assert_close(pa.mean, pb.mean, rtol=4e-8, atol=4e-9)
@@ -68,6 +77,9 @@ def test_empirical_conditioning_matches_official(correlated, fixed):
     )
     assert _ops.shape_of(actual.train_targets)[-1] == (8 if correlated else 4)
     assert _ops.shape_of(native.train_targets)[-1] == (12 if correlated else 6)
+    assert_close(actual.train_inputs[0], reference.train_inputs[0], rtol=0, atol=0)
+    assert_close(native.train_inputs[0], official.train_inputs[0], rtol=0, atol=0)
+    assert_close(native.train_targets, official.train_targets, rtol=4e-8, atol=4e-9)
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -87,7 +99,9 @@ def test_empirical_fantasies_form_native_model_batches(kind, fixed, sample_shape
     official = reference.condition_on_observations(
         torch.tensor([[0.25], [0.7]]),
         y.reshape(math.prod(sample_shape), 2, 2),
-        noise=None if noise is None else noise.reshape(math.prod(sample_shape), 2, 2),
+        # Noise is shared across fantasies; ExactGP expects the input batch
+        # layout here, excluding the extra target-only fantasy dimension.
+        noise=None if noise is None else noise.reshape(-1, 2, 2)[0],
     )
     pa, pb = fantasies.posterior(as_kind(query, kind)), official.posterior(torch.tensor(query))
     assert_close(pa.mean, pb.mean.reshape(*sample_shape, 3, 2), rtol=4e-8, atol=4e-9)
