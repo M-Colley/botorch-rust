@@ -6,8 +6,12 @@ from operator import index as integer_index
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import to_flat
-from botorch_rs.kernels import Kernel
+from botorch_rs._arrays import from_flat, kind_of, to_flat
+from botorch_rs.kernels import Kernel, MaternKernel, ScaleKernel, _KernelList
+from botorch_rs.models.map_saas import add_saas_prior
+from botorch_rs.utils.constraints import LogTransformedInterval
+
+LOG_OUTPUTSCALE_CONSTRAINT = LogTransformedInterval(1e-2, 1e4, initial_value=10)
 
 
 def _features(feature_indices: list[list[int]]) -> list[set[int]]:
@@ -113,4 +117,88 @@ class DeltaKernel(Kernel):
     forward = __call__
 
 
-__all__ = ["DeltaKernel", "find_subsets", "map_subsets"]
+class CombinatorialCovarModule(ScaleKernel):
+    """Native scaled Matérn-5/2 covariance on binary feature memberships."""
+
+    def __init__(self, ard_num_dims: int | None = None) -> None:
+        base = MaternKernel(nu=2.5, ard_num_dims=ard_num_dims)
+        if ard_num_dims is not None and ard_num_dims > 1:
+            add_saas_prior(base)
+        super().__init__(base, outputscale_constraint=LOG_OUTPUTSCALE_CONSTRAINT)
+
+
+class MultiTaskConditionalKernel(Kernel):
+    """Native sum of spatial covariances gated by shared task features.
+
+    The final optional covariance evaluates a Matérn kernel on the tasks'
+    binary subset memberships. Task indicators are discrete integer indices.
+    """
+
+    def __init__(
+        self,
+        feature_indices: list[list[int]],
+        task_feature_index: int = -1,
+        use_saas_prior: bool = True,
+        use_combinatorial_kernel: bool = True,
+    ) -> None:
+        super().__init__()
+        features = _features(feature_indices)
+        if any(not features_for_task for features_for_task in features):
+            raise ValueError("Each heterogeneous task must contain at least one feature.")
+        self.feature_indices = [list(indices) for indices in feature_indices]
+        self.task_feature_index = integer_index(task_feature_index)
+        self.use_saas_prior = bool(use_saas_prior)
+        self.use_combinatorial_kernel = bool(use_combinatorial_kernel)
+        self.active_index_map, self.binary_map = map_subsets(
+            find_subsets(feature_indices), feature_indices
+        )
+        self.kernels = _KernelList(self.construct_individual_kernels())
+        # This remains registered, with its priors, when disabled, matching
+        # BoTorch's named parameters and marginal-likelihood prior terms.
+        self.combinatorial_kernel = CombinatorialCovarModule(ard_num_dims=len(self.kernels))
+        self.delta_kernel = DeltaKernel()
+
+    def construct_individual_kernels(self) -> list[Kernel]:
+        kernels: list[Kernel] = []
+        for indices in self.active_index_map:
+            base = MaternKernel(nu=2.5, ard_num_dims=len(indices), active_dims=indices)
+            if self.use_saas_prior:
+                add_saas_prior(base)
+            kernels.append(ScaleKernel(base, outputscale_constraint=LOG_OUTPUTSCALE_CONSTRAINT))
+        return kernels
+
+    def map_task_to_binary(self, x_task: Any) -> Any:
+        data, shape = to_flat(x_task, "x_task")
+        mapped: list[float] = []
+        for value in data:
+            if not 0 <= value < len(self.binary_map) or value != int(value):
+                raise ValueError(f"Task index {value} is invalid for {len(self.binary_map)} tasks.")
+            mapped.extend(self.binary_map[int(value)])
+        return from_flat(mapped, (*shape, len(self.kernels)), kind_of(x_task))
+
+    def _children(self) -> list[tuple[str, Kernel]]:
+        return [
+            *((f"kernels.{i}", kernel) for i, kernel in enumerate(self.kernels)),
+            ("combinatorial_kernel", self.combinatorial_kernel),
+        ]
+
+    def _base_node(self) -> _rs.KernelNode:
+        return _rs.KernelNode.heterogeneous(
+            self.task_feature_index,
+            [[bool(value) for value in row] for row in self.binary_map],
+            [kernel._node() for kernel in self.kernels],
+            self.combinatorial_kernel._node(),
+            self.use_combinatorial_kernel,
+        )
+
+    def forward(self, x1: Any, x2: Any, diag: bool = False, **params: Any) -> Any:
+        return self(x1, x2, diag=diag, **params)
+
+
+__all__ = [
+    "DeltaKernel",
+    "CombinatorialCovarModule",
+    "MultiTaskConditionalKernel",
+    "find_subsets",
+    "map_subsets",
+]

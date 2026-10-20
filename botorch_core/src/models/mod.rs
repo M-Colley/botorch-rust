@@ -27,6 +27,7 @@ pub mod deterministic;
 pub mod ensemble;
 pub mod fantasize;
 pub mod gp;
+pub mod heterogeneous;
 pub mod higher_order_gp;
 pub mod inducing_point_allocators;
 pub mod latent_kronecker_gp;

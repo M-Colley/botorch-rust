@@ -207,6 +207,8 @@ class KernelSpec:
     @property
     def outputscale_constraint(self) -> Constraint | None: ...
 
+def target_task_model(model: Model, feature_indices: Sequence[int], imputation: Sequence[float]) -> Model: ...
+
 class KernelNode:
     @staticmethod
     def heterogeneous(

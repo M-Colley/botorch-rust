@@ -18,6 +18,7 @@ from botorch_rs.models.gpytorch import (
     ModelListGPyTorchModel,
     MultiTaskGPyTorchModel,
 )
+from botorch_rs.models.heterogeneous_mtgp import HeterogeneousMTGP
 from botorch_rs.models.higher_order_gp import HigherOrderGP
 from botorch_rs.models.latent_kronecker_gp import LatentKroneckerGP
 from botorch_rs.models.map_saas import (
@@ -43,6 +44,7 @@ __all__ = [
     "ModelListGPyTorchModel",
     "MultiTaskGPyTorchModel",
     "HigherOrderGP",
+    "HeterogeneousMTGP",
     "LatentKroneckerGP",
     "KroneckerMultiTaskGP",
     "MixedSingleTaskGP",
