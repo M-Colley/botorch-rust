@@ -70,8 +70,8 @@ candidate generator. The returned value retains outer training-data, candidate,
 and parameter derivatives while holding the optimizing decisions fixed, as in
 the envelope-gradient interface. It does not differentiate the optimizer's
 iterations. This is separate from the complete graph of augmented one-shot KG.
-Initial inner decisions use Sobol points and per-fantasy top-value selection;
-this is not BoTorch's current-model-guided initialization heuristic.
+KG and hypervolume KG initializers optimize the current model's value function
+and use device Boltzmann resampling to seed the inner fantasy decisions.
 
 `gen_candidates_torch` uses actual Torch optimizers on device-resident candidate
 leaves. `gen_candidates_scipy` uses L-BFGS-B or constrained SLSQP; only candidate
@@ -79,8 +79,8 @@ vectors, acquisition values and derivatives cross the SciPy boundary. Model
 training data and posterior algebra stay on their device. `optimize_acqf`
 supports joint optimization, best/all restarts, fixed features, postprocessing,
 one-shot candidate extraction and sequential pending-point restoration.
-Constrained automatic initialization currently requires feasible supplied
-initial conditions or a custom generator. The automatic box initializer uses
+Linear-constrained automatic initialization samples the feasible polytope on
+device. The automatic box initializer uses
 device-resident Boltzmann, nonnegative or top-n restart selection, including
 model batches and `init_batch_limit` raw scoring. Candidate `batch_limit`,
 low-level aggregation chunks and acquisition sequences now retain their device
@@ -116,8 +116,13 @@ graphs. Sparse conditioning and fantasies retain the original outlier leaves
 and assign zero outlier noise to appended observation labels; search timeouts
 follow the source's per-fit allocation.
 
-Remaining GPU families and configurations include empirical multitask/iterative
-EM models, preference-ensemble integration, and parts of the standalone kernel
+Empirical multitask models now retain the full historical cross-task covariance,
+including conditioning, fantasies and data/parameter higher derivatives. The
+integrated Wiener kernel uses consistent polynomial branches at coincident
+inputs so its smooth Hessians remain correct.
+
+Remaining GPU families and configurations include iterative EM models,
+preference-ensemble integration, and parts of the standalone kernel
 and public optimization helper catalogues.
 Some are under active implementation. Device-resident NUTS fits scalar and
 latent-task multitask Matérn, SAAS and linear fully Bayesian models. Custom
@@ -178,7 +183,14 @@ Ruff and mypy also passed. These results describe the frozen wheel recorded in
 that report. Subsequent specialized-model, entropy-search and NUTS changes
 have separate focused verification; a fresh combined release is pending.
 
-Later integrated checks passed 327 Rust core unit tests, 355 kernel/scalar
+At source checkpoint `ac07139`, a combined run of all `test_torch*.py` files
+passed 2,337 cases with two skips, using the rebuilt release extension on CPU
+and the local CUDA GPU. The complete Rust workspace passed 528 tests and doc
+tests in 46 groups; its 300 Rust source files were unchanged by the later
+Python-only model additions. These checks are separate from an installed-wheel
+release certificate.
+
+Earlier integrated checks passed 327 Rust core unit tests, 355 kernel/scalar
 acquisition cases (11 skips) with the rebuilt release binary, 99 multitask
 fully Bayesian CPU/CUDA cases, 48 latent Kronecker cases, 34 hypervolume KG
 cases, and 78 PairwiseGP/multistep cases. These focused suites overlap other

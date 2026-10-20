@@ -119,4 +119,5 @@ therefore leaves them behind. Constructing with the intended `dtype` and
 `device` is a workaround; the proposed repair registers these static tensors as
 buffers. The port's Tensor quadrature and interaction indices migrate with the
 module, and its regression constructs on CPU before moving to CUDA. This issue
-is separate from the component broadcast/location fixes in #3486.
+is separate from the component broadcast/location fixes in #3486. The migration
+repair is submitted in [BoTorch #3495](https://github.com/meta-pytorch/botorch/pull/3495).

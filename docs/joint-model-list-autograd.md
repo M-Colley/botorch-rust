@@ -47,6 +47,12 @@ lazy block indexing or extract contiguous blocks directly from the
 `BlockDiagLinearOperator` base operator. The Rust port constructs its
 independent blocks directly and does not reproduce the lazy indexing bug.
 
+The existing [BoTorch #3409](https://github.com/meta-pytorch/botorch/pull/3409)
+implements direct extraction for noninterleaved independent blocks, including
+an interpolated-kernel fallback. [BoTorch #3412](https://github.com/meta-pytorch/botorch/pull/3412)
+handles interleaved variational blocks. These address the documented workaround;
+no duplicate submission is needed.
+
 Some official multioutput GP batches also fail during `ExactGP` predictive
 cache reshaping when query and model batch axes broadcast. Joint parity
 tests therefore assemble the exact Gaussian conditional using the actual
@@ -58,4 +64,5 @@ on supported layouts. Native directional finite differences independently
 check the newly supported parent/child broadcast cases. Evaluating independent
 conditional blocks and broadcasting them explicitly is a working solution
 for the reference batch-cache failure; this document does not claim a
-one-line upstream cache fix.
+one-line upstream cache fix. The underlying singleton-axis squeeze is already
+addressed by [GPyTorch #2804](https://github.com/cornellius-gp/gpytorch/pull/2804).

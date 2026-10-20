@@ -17,6 +17,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Latent Kronecker sample covariance, outcome-space moments, time batches and composite factors | New [BoTorch #3488](https://github.com/meta-pytorch/botorch/pull/3488) |
 | Batched Boltzmann normalization | Existing [BoTorch #3435](https://github.com/meta-pytorch/botorch/pull/3435) |
 | Integrated white-noise cross diagonal | Existing [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387) |
+| Integrated Wiener coincident smooth Hessians | New [BoTorch #3496](https://github.com/meta-pytorch/botorch/pull/3496); four source tests and 18 CPU/CUDA subtests pass |
 | Invalid expectation weights | New [BoTorch #3467](https://github.com/meta-pytorch/botorch/pull/3467) |
 | LCEA embeddings | Batch-table repair in existing [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387); declared feature order and label mapping in new [#3487](https://github.com/meta-pytorch/botorch/pull/3487) |
 | Hierarchical category validation, transform fitting, task-column mapping and cycles | New [BoTorch #3490](https://github.com/meta-pytorch/botorch/pull/3490); 19 tests and 22 subtests pass |
@@ -27,6 +28,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Sparse-outlier / relevance-pursuit numerical and state defects | New [BoTorch #3482](https://github.com/meta-pytorch/botorch/pull/3482), including gradient-probe rollback; 43 tests and 120 subtests pass |
 | Selecting one output from a multi-output GP | Existing [BoTorch #3396](https://github.com/meta-pytorch/botorch/pull/3396) |
 | Additive component bias broadcasting and repeated outcome location | New [BoTorch #3486](https://github.com/meta-pytorch/botorch/pull/3486) |
+| Orthogonal additive quadrature/interaction buffers after module migration | New [BoTorch #3495](https://github.com/meta-pytorch/botorch/pull/3495); two source tests and ten subtests pass |
 | Validated empty Beta expansion | New [BoTorch #3473](https://github.com/meta-pytorch/botorch/pull/3473) |
 | Multi-axis fantasy observation noise | New [BoTorch #3476](https://github.com/meta-pytorch/botorch/pull/3476) |
 | EM dataset subset indices | Existing [BoTorch #3388](https://github.com/meta-pytorch/botorch/pull/3388) |
@@ -40,11 +42,13 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | All-fixed candidate feasibility | New [BoTorch #3470](https://github.com/meta-pytorch/botorch/pull/3470) |
 | Correlated empirical fantasies | Existing [BoTorch #3388](https://github.com/meta-pytorch/botorch/pull/3388) |
 | Empty data-loader closure hang | New [BoTorch #3466](https://github.com/meta-pytorch/botorch/pull/3466) |
-| Learned-preference noisy-improvement cache law | Patch and upstream regressions pending |
+| Learned-preference noisy-improvement cache law | New [BoTorch #3497](https://github.com/meta-pytorch/botorch/pull/3497); seven source tests and ten subtests pass |
+| Constrained MC objectives drop `X` and fail with augmented preference samples | New [BoTorch #3498](https://github.com/meta-pytorch/botorch/pull/3498); 17 source tests and 18 subtests pass |
 | Categorical feature axis | Existing [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387) |
 | Generic kernel diagonal ranks | New [GPyTorch #2815](https://github.com/cornellius-gp/gpytorch/pull/2815) |
 | Composite lazy feature counts | New [GPyTorch #2818](https://github.com/cornellius-gp/gpytorch/pull/2818), including composite feature indexing |
-| Model-list joint covariance blocks | Existing [BoTorch #3409](https://github.com/meta-pytorch/botorch/pull/3409) and [#3412](https://github.com/meta-pytorch/botorch/pull/3412); exact workaround coverage under audit |
+| Model-list joint covariance blocks | Existing [BoTorch #3409](https://github.com/meta-pytorch/botorch/pull/3409) extracts noninterleaved blocks, including interpolated kernels; [#3412](https://github.com/meta-pytorch/botorch/pull/3412) extracts interleaved variational blocks. These cover the documented dense-block workaround without a duplicate PR |
+| Exact predictive cache squeezes a singleton model batch axis | Existing [GPyTorch #2804](https://github.com/cornellius-gp/gpytorch/pull/2804) |
 | Variational unbatched zero-mean conversion | New [GPyTorch #2813](https://github.com/cornellius-gp/gpytorch/pull/2813) |
 | Neural-kernel self-diagonal consistency, zero-clipping derivatives and large-variance overflow | New [BoTorch #3492](https://github.com/meta-pytorch/botorch/pull/3492); 19 tests and 31 subtests pass. Separate paired-input repair remains in [#3387](https://github.com/meta-pytorch/botorch/pull/3387) |
 | Constant-target transform first/second derivatives | New [BoTorch #3468](https://github.com/meta-pytorch/botorch/pull/3468) |
@@ -63,8 +67,8 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Multiobjective entropy at infinite integration bounds | New [BoTorch #3485](https://github.com/meta-pytorch/botorch/pull/3485); GPU and native Gaussian-limit and derivative regressions pass |
 | Linear latent-task MCMC loader bypasses mixin dispatch | Existing [BoTorch #3465](https://github.com/meta-pytorch/botorch/pull/3465) extended with mean/covariance hooks and continuous-only centering; 16 source tests and 30 subtests pass |
 | Pairwise model broadcasting to singleton query batches | New [BoTorch #3489](https://github.com/meta-pytorch/botorch/pull/3489); 17 model tests and 32 subtests pass |
-| Pairwise self-comparisons after duplicate consolidation | Native and GPU cancel the comparison; upstream scatter-add repair and regression in progress |
-| Correlated empirical kernel lazy output-count metadata | Confirmed and documented; upstream regression and submission pending |
+| Pairwise self-comparisons after duplicate consolidation and stable logit derivatives | New [BoTorch #3494](https://github.com/meta-pytorch/botorch/pull/3494); 19 source tests and 46 subtests pass |
+| Correlated empirical kernel lazy output-count metadata | New [BoTorch #3499](https://github.com/meta-pytorch/botorch/pull/3499); four source tests and 31 subtests pass |
 | Multistep incumbent units and batched analytic thresholds | Existing [BoTorch #3391](https://github.com/meta-pytorch/botorch/pull/3391) and [#3453](https://github.com/meta-pytorch/botorch/pull/3453) |
 | Multistep fantasy base ranges and query-batch tree layout | Existing [BoTorch #3452](https://github.com/meta-pytorch/botorch/pull/3452) |
 | TriangularLinearOperator second derivatives through matrix parameters | Narrow analytic-VJP enhancement in new [linear_operator #152](https://github.com/cornellius-gp/linear_operator/pull/152); 130 tests and 12 subtests pass |

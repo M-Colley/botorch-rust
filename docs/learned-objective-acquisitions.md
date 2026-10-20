@@ -145,6 +145,9 @@ condition a genuine learned-preference cache and retain consistent common
 preference normals. Merely caching baseline preference utilities and drawing
 candidate utilities separately does not preserve the law.
 
+The correctness fallback and CPU/CUDA regressions are submitted in
+[BoTorch #3497](https://github.com/meta-pytorch/botorch/pull/3497).
+
 ## Objective composition
 
 Native legacy `ConstrainedMCObjective` also repeats its feasibility values
@@ -154,6 +157,9 @@ wrapper does not repeat these samples and can fail with incompatible leading
 dimensions. The comparison test evaluates the explicit repeated feasibility
 formula with the official learned samples. Direct acquisition `constraints=`
 remain the preferred interface; official LogEI rejects the legacy wrapper.
+
+The augmented-sample repair and forwarding of input-dependent objective `X`
+are submitted in [BoTorch #3498](https://github.com/meta-pytorch/botorch/pull/3498).
 
 The port's existing multi-dimensional preference `sample_shape` convention
 flattens all preference draws into the leading utility axis. The official

@@ -58,7 +58,8 @@ not move them. Constructing with `device="cuda"` is a workaround. The proposed
 upstream repair registers each indexer as a buffer (with stable internal buffer
 names), then resolves those buffers during evaluation. The port does this and
 tests CPU construction followed by CUDA migration. This is distinct from the
-previously reported duplicate shared-prior counting defect.
+previously reported duplicate shared-prior counting defect. The migration repair
+is submitted in [BoTorch #3493](https://github.com/meta-pytorch/botorch/pull/3493).
 
 ## Latent context embedding multitask GP
 
