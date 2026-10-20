@@ -71,6 +71,8 @@ _ENTROPY = frozenset(
         "qJointEntropySearch",
         "qPredictiveEntropySearch",
         "qMultiObjectivePredictiveEntropySearch",
+        "qLowerBoundMultiObjectiveJointEntropySearch",
+        "qLowerBoundMultiObjectiveMaxValueEntropySearch",
     }
 )
 _TYPES: dict[type, type] = {}
@@ -133,6 +135,12 @@ def tensor_acquisition(public_class: type) -> Any:
                 )
 
                 mixin = TensorPredictiveEntropy
+            elif "MultiObjective" in public_class.__name__:
+                from botorch_rs.acquisition._torch_backend_mo_entropy import (
+                    TensorMultiObjectiveEntropy,
+                )
+
+                mixin = TensorMultiObjectiveEntropy
             elif public_class.__name__ == "qJointEntropySearch":
                 from botorch_rs.acquisition._torch_backend_joint_entropy import (
                     TensorJointEntropySearch,

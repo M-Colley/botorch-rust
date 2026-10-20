@@ -163,3 +163,41 @@ nonzero code; in this example damping one half produces the valid matrix
 `diag(1e-4, 1.0001)` after jitter. Both native Rust tests and CPU/CUDA Tensor
 tests cover the repair, with the unmodified CPU failure asserted separately.
 The Rust change also rejects a previous precision whose first pivot fails.
+
+## Multiobjective lower-bound MES and JES
+
+`qLowerBoundMultiObjectiveMaxValueEntropySearch` and
+`qLowerBoundMultiObjectiveJointEntropySearch` now support all four reference
+estimators (`0`, `LB`, `LB2`, `MC`) with device-resident posterior statistics,
+Gaussian draws/densities and truncated moments. They preserve the existing
+native/reference Gaussian-constant convention for batches, including its
+`q > 1` behavior. This checkpoint does not change that numerical definition.
+JES conditions on raw Pareto locations, retaining gradients through the
+conditioning observations. The public entropy helper functions also retain
+Tensor graphs when a Tensor is on CUDA or requires gradients.
+
+The 80-case CPU/CUDA suite checks scalar and multiple objectives, ModelListGP,
+Normalize, pending points, arbitrary query batches, synchronized Monte Carlo
+draws, float32/float64, all model-parameter Hessian products and complete
+training/Pareto/bound/query `gradcheck` and `gradgradcheck`. Bound Hessian checks
+use disjoint boxes in the smooth interior. Independently perturbing duplicate
+shared partition faces can make boxes overlap and cross the reference's
+probability-mass clamp, where a classical Hessian need not exist. No inference
+arrays are converted to host Python/NumPy data. Initial model batches are
+rejected as in the official family; JES conditioning on fixed-noise models
+requires unspecified Pareto observation noise and is explicitly rejected,
+matching the source's unsupported configuration.
+
+**Infinite integration bounds need normal-tail limits.** In the pinned
+multiobjective entropy helpers, `g * phi(g)` is evaluated directly at
+`g = +/-inf`. A single box spanning the full Gaussian space therefore yields
+non-finite noiseless/moment entropy (`NaN`, or `-inf` for CUDA log-determinant
+paths), although its exact entropy is finite. The Monte Carlo forward value
+can remain finite while its variance derivative becomes NaN because
+standardizing an infinite bound records an infinite variance derivative.
+The port masks infinite bounds *before* standardization, substitutes exact
+CDF limits `0/1`, and uses the tail limit `g * phi(g) = 0`.
+Tests compare the resulting values with the closed Gaussian entropy and
+assert finite first/second derivatives; the original non-finite values or
+variance gradients are reproduced separately. The usual finite-bound
+estimators remain compared directly with the unmodified pinned reference.
