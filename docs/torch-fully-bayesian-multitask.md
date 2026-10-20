@@ -81,3 +81,33 @@ independently, multiplies their dense matrices, and applies the exact noisy
 Gaussian conditioning equations. This selects the physical law without
 depending on a particular singular-root decomposition; it is not a claim
 that low-rank covariance roots are invalid.
+
+## NUTS replay precision
+
+The double-precision multitask replay checks every warmup and sampling state,
+every recorded draw, and every discrete transition decision. A fixed absolute
+state threshold alone is not a portable precision model: a Linux Torch 2.14
+run exceeded the former `2e-7 + 2e-8 * abs(state)` threshold in one coordinate,
+although all transition decisions and draw consumption agreed. The same
+dependency versions had passed an earlier Linux run. Local one-, two-, and
+four-thread probes produce identical Torch trajectories, while reference
+NumPyro reruns with continuous training coordinates changed by `1e-13` can
+drift by over `2e-6` without changing their discrete decisions.
+
+The replay now uses the existing threshold as a floor and compares each
+coordinate against ten times that transition's measured NumPyro self-spread.
+Six reference twins perturb only continuous coordinates by relative `1e-14`
+or `1e-13`; categorical labels, random draws, and transition decisions must
+remain identical. Step-size comparisons use the same measured-sensitivity
+rule with their original precision floor. This follows the native replay
+equivalence tests' existing conditioning control. To ensure this envelope
+does not conceal an incorrect force, the Tensor potential and gradient are
+also compared directly with the independent JAX density at every unchanged
+saved reference state, with absolute tolerances `3e-10` and `2e-9` and relative
+tolerances `3e-11` and `3e-10`, respectively.
+
+Focused validation against pinned BoTorch `b0dd01be` passes on Torch 2.13
+CPU/CUDA and Torch 2.14.1 CPU. Maximum state-error/bound ratios are `0.01857`,
+`0.007877`, and `0.01446`, respectively. Maximum potential errors are below
+`1.3e-13`, and maximum gradient errors below `2.2e-13`. The sampler runtime
+is unchanged; this finding does not establish an upstream NUTS defect.
