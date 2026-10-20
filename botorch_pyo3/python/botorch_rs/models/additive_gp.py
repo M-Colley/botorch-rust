@@ -30,6 +30,24 @@ class OrthogonalAdditiveGP(SingleTaskGP):
 
     _infer_all_components: bool = False
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        if cls is OrthogonalAdditiveGP and _use_torch_backend(
+            backend, train_X, train_Y, *args, *kwargs.values()
+        ):
+            from botorch_rs.models._torch_backend_additive import TorchOrthogonalAdditiveGP
+
+            return object.__new__(TorchOrthogonalAdditiveGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -40,6 +58,8 @@ class OrthogonalAdditiveGP(SingleTaskGP):
         mean_module: ConstantMean | None = None,
         outcome_transform: Any = DEFAULT,
         input_transform: InputTransform | None = None,
+        *,
+        backend: str = "auto",
     ) -> None:
         """Initialize the OrthogonalAdditiveGP.
 

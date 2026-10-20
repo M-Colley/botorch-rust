@@ -54,6 +54,19 @@ class OrthogonalAdditiveKernel(Kernel):
     ``-inf`` log density for many priors).
     """
 
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        device = kwargs.get("device", args[7] if len(args) > 7 else None)
+        if cls is OrthogonalAdditiveKernel and (
+            _use_torch_backend(backend)
+            or (backend == "auto" and device is not None and str(device) != "cpu")
+        ):
+            from botorch_rs.models._torch_backend_additive import TorchOrthogonalAdditiveKernel
+
+            return object.__new__(TorchOrthogonalAdditiveKernel)
+        return object.__new__(cls)
+
     def __init__(
         self,
         dim: int,
@@ -69,6 +82,8 @@ class OrthogonalAdditiveKernel(Kernel):
         coeffs_1_prior: Prior | None = None,
         coeffs_2_prior: Prior | None = None,
         check_hypercube: bool = True,
+        *,
+        backend: str = "auto",
     ) -> None:
         super().__init__(batch_shape=batch_shape)
         self.dim = int(dim)

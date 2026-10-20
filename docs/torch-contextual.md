@@ -27,7 +27,7 @@ LCEA models retain the official unbatched, one-output training contract; LCEA
 kernels can be batched independently. Both kernels implement aligned diagonal
 evaluation and unequal input grids. `last_dim_is_batch=True` is rejected: the
 context decomposition already defines grouped feature axes. Orthogonal additive
-Tensor models are separate work and are not claimed by this checkpoint.
+Tensor kernels and models are documented in [additive-components.md](additive-components.md).
 
 `tests/test_torch_contextual.py` covers CPU/CUDA float32 and float64, official
 kernel and posterior values and first derivatives, independent context-pair
