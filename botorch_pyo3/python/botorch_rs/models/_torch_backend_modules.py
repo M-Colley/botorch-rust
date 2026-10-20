@@ -737,8 +737,6 @@ class TorchNormalize(nn.Module):
         )
         self.register_buffer("offset", _tensor(source.offset, train_X).clone())
         self.register_buffer("coefficient", _tensor(source.coefficient, train_X).clone())
-        if self.learn_bounds:
-            self._fit(train_X)
 
     def _fit(self, x: Tensor) -> None:
         selected = x if self.indices is None else x.index_select(-1, self.indices)
@@ -751,7 +749,7 @@ class TorchNormalize(nn.Module):
         self.offset = torch.where(small, 0.0, low) + (0.5 - self.center) * self.coefficient
 
     def fit(self, x: Tensor) -> TorchNormalize:
-        if self.learn_bounds:
+        if self.learn_bounds and self.transform_on_train and not self.reverse:
             self._fit(x)
         return self
 
@@ -774,7 +772,7 @@ class TorchNormalize(nn.Module):
 
             if fantasize.on():
                 return x
-        if self.training and self.learn_bounds:
+        if self.training and self.learn_bounds and not self.reverse:
             self._fit(x)
         return self._map(x, self.reverse)
 
@@ -837,7 +835,7 @@ class TorchWarp(_TorchModule):
             )
 
     def fit(self, x: Tensor) -> TorchWarp:
-        if self.transform_on_train:
+        if self.transform_on_train and not self.reverse:
             self._normalize.fit(x)
         return self
 
@@ -1001,10 +999,10 @@ def build_input_transform(source: Any, d: int, train_X: Tensor) -> nn.Module | N
         return source.to(train_X)
     if type(source) is Normalize:
         with torch.no_grad():
-            return TorchNormalize(source, d, train_X).eval()
+            return TorchNormalize(source, d, train_X).fit(train_X).eval()
     if type(source) is Warp:
         with torch.no_grad():
-            return TorchWarp(source, d, train_X).eval()
+            return TorchWarp(source, d, train_X).fit(train_X).eval()
     if type(source) is ChainedInputTransform:
         children: dict[str, nn.Module] = {}
         for name, child in source.items():

@@ -308,6 +308,28 @@ def test_transform_flags_distinguish_stored_training_from_queries(device, train_
 
 
 @pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("family", ["Normalize", "Warp"])
+@pytest.mark.parametrize("train_flag,reverse", [(False, False), (True, True), (False, True)])
+def test_input_transform_initial_fit_honors_disabled_and_reverse_maps(
+    device, family, train_flag, reverse
+):
+    from botorch.models.transforms import input as reference_input
+
+    x = torch.tensor([[0.2, 0.3], [0.6, 0.8], [0.4, 0.7]], dtype=torch.double, device=device)
+    kwargs = {"d": 2, "transform_on_train": train_flag, "reverse": reverse}
+    if family == "Warp":
+        kwargs["indices"] = [0, 1]
+    source = {"Normalize": Normalize, "Warp": Warp}[family](**kwargs)
+    module = build_input_transform(source, 2, x)
+    reference = getattr(reference_input, family)(**kwargs).to(x)
+    with torch.no_grad():
+        reference(x)
+    reference.eval()
+    query = x * 0.5 + 0.2
+    torch.testing.assert_close(module(query), reference(query))
+
+
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("m", [1, 2])
 def test_standardize_training_graph_and_independent_covariance_untransform(device, m):
     from botorch.models.transforms.outcome import Standardize as ReferenceStandardize
