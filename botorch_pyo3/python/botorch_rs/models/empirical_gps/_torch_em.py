@@ -113,23 +113,28 @@ def _noise(value: Any, like: Any) -> Any:
 
 
 def psd_projection(value: Any, floor: float = 1e-10) -> Any:
-    symmetric = (value + value.mT) * 0.5
+    # Classify and clip the same promoted matrix. Float32 eigvalsh can place a
+    # small negative eigenvalue above the floor (or conversely), causing an
+    # incorrect identity/constant branch and order-one derivative errors.
+    working = value.to(torch.double) if value.dtype == torch.float32 else value
+    symmetric = (working + working.mT) * 0.5
     # Away from the floor the map is exactly the identity. Returning that
     # identity also avoids spurious eigenvector singularities at repeated
     # positive eigenvalues (the function itself is smooth there).
     eigenvalues = torch.linalg.eigvalsh(symmetric)
     if bool((eigenvalues >= floor).all()):
-        return symmetric
+        return symmetric.to(value.dtype)
     if bool((eigenvalues < floor).all()):
-        return symmetric * 0 + floor * torch.eye(
-            value.shape[-1], device=value.device, dtype=value.dtype
-        )
+        return (
+            symmetric * 0
+            + floor * torch.eye(value.shape[-1], device=value.device, dtype=working.dtype)
+        ).to(value.dtype)
     if torch.is_grad_enabled() and symmetric.requires_grad:
         from botorch_rs.models.empirical_gps._torch_spectral import smooth_psd_floor
 
-        return smooth_psd_floor(symmetric, floor)
+        return smooth_psd_floor(symmetric, floor).to(value.dtype)
     eigenvalues, vectors = torch.linalg.eigh(symmetric)
-    return (vectors * eigenvalues.clamp_min(floor).unsqueeze(-2)) @ vectors.mT
+    return ((vectors * eigenvalues.clamp_min(floor).unsqueeze(-2)) @ vectors.mT).to(value.dtype)
 
 
 def interpolate(

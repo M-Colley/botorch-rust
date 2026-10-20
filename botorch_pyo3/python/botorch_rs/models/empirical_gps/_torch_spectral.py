@@ -69,7 +69,7 @@ def smooth_psd_floor(value: Any, floor: float) -> Any:
     working = _symmetric(working)
     identity = torch.eye(value.shape[-1], device=value.device, dtype=working.dtype)
     with torch.no_grad():
-        eigenvalues = torch.linalg.eigvalsh(working)
+        eigenvalues, vectors = torch.linalg.eigh(working)
         tolerance = (
             torch.finfo(working.dtype).eps
             * eigenvalues.abs().amax(-1, keepdim=True).clamp_min(1)
@@ -89,7 +89,16 @@ def smooth_psd_floor(value: Any, floor: float) -> Any:
     if not has_above:
         return (working * 0 + floor * identity).to(value.dtype)
     assert divider is not None
-    shifted = working - divider * identity
+    # An orthogonal coordinate change can be held fixed at every derivative
+    # order: F(A) = Q F(Q^T A Q) Q^T for every fixed Q. Use the detached
+    # eigenbasis so small Sylvester duals are never mixed with large ordinary
+    # modes in matrix products. The local primal is exactly diagonal in exact
+    # arithmetic; remove only its roundoff residual while retaining the full
+    # Q^T dA Q differential (including all off-diagonal directions).
+    local = vectors.mT @ working @ vectors
+    local = torch.diag_embed(eigenvalues) + (local - local.detach())
+    shifted = local - divider * identity
     absolute = _SymmetricAbsolute.apply(shifted)
     projector = (identity + torch.linalg.solve(absolute, shifted)) * 0.5
-    return (floor * identity + _symmetric(projector @ (working - floor * identity))).to(value.dtype)
+    projected = floor * identity + _symmetric(projector @ (local - floor * identity))
+    return (vectors @ projected @ vectors.mT).to(value.dtype)

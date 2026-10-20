@@ -1,10 +1,11 @@
 """Independent finite differences at repeated mixed PSD clipping eigenspaces."""
 
 import pytest
-import torch
 
-from botorch_rs.models.empirical_gps._torch_em import psd_projection
-from botorch_rs.models.empirical_gps._torch_spectral import smooth_psd_floor
+torch = pytest.importorskip("torch")
+
+from botorch_rs.models.empirical_gps._torch_em import psd_projection  # noqa: E402
+from botorch_rs.models.empirical_gps._torch_spectral import smooth_psd_floor  # noqa: E402
 
 DEVICES = ["cpu", "cuda"] if torch.cuda.is_available() else ["cpu"]
 
@@ -137,7 +138,7 @@ def test_gap_projector_mixed_batch_and_single_side_graphs(device, dtype):
     gradient = torch.arange(1, 17, dtype=dtype, device=device).reshape(4, 4)
     output = smooth_psd_floor(matrices, 1e-10)
     torch.testing.assert_close(output, torch.diag_embed(diagonal.clamp_min(1e-10)))
-    actual = torch.autograd.grad((output * gradient).sum(), matrices)[0]
+    actual = torch.autograd.grad((output * gradient).sum(), matrices, create_graph=True)[0]
     expected = _stable_loewner_vjp(matrices.detach(), gradient, 1e-10)
     torch.testing.assert_close(
         actual.double(),
@@ -145,6 +146,9 @@ def test_gap_projector_mixed_batch_and_single_side_graphs(device, dtype):
         atol=1e-6 if dtype == torch.float32 else 1e-12,
         rtol=1e-6 if dtype == torch.float32 else 1e-12,
     )
+    second = torch.autograd.grad(actual.square().sum(), matrices, create_graph=True)[0]
+    third = torch.autograd.grad(second.square().sum(), matrices)[0]
+    assert torch.isfinite(second).all() and torch.isfinite(third).all()
     for tensor in (matrices[:1].detach().requires_grad_(), matrices[1:2].detach().requires_grad_()):
         result = smooth_psd_floor(tensor, 1e-10)
         assert result.requires_grad
@@ -164,3 +168,43 @@ def test_gap_projector_retains_explicit_nondifferentiable_threshold_error(device
     ).requires_grad_()
     with pytest.raises(ValueError, match="clipping threshold"):
         smooth_psd_floor(value, 0.1)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+@pytest.mark.parametrize("differentiable", [False, True])
+def test_float32_public_projection_classifies_promoted_matrix_before_single_side_fast_path(
+    device, sign, differentiable
+):
+    from test_torch_acq_discrete import no_host
+
+    # These rotations produce actual float32 matrices with a mixed spectrum.
+    # On the audited LAPACK/cuSOLVER versions, float32 eigvalsh instead puts
+    # all eigenvalues on the sign's side of the floor, incorrectly selecting
+    # the identity (sign=+1) or constant (sign=-1) fast path. The promoted
+    # matrix is the independent oracle, irrespective of platform eig rounding.
+    generator = torch.Generator(device=device).manual_seed(3 if device == "cpu" else 0)
+    basis, _ = torch.linalg.qr(
+        torch.randn(4, 4, dtype=torch.double, device=device, generator=generator)
+    )
+    value = (basis @ torch.diag(basis.new_tensor([0.0, 0.0, sign, 2 * sign])) @ basis.mT).float()
+    value.requires_grad_(differentiable)
+    promoted = (value.detach().double() + value.detach().double().mT) * 0.5
+    eigenvalues, vectors = torch.linalg.eigh(promoted)
+    floor = 1e-10
+    assert bool((eigenvalues < floor).any()) and bool((eigenvalues > floor).any())
+    expected = ((vectors * eigenvalues.clamp_min(floor).unsqueeze(-2)) @ vectors.mT).float()
+    gradient = value.new_tensor(
+        [[0.7, 0.3, -0.5, 0.2], [0.3, -0.8, 0.4, 0.6], [-0.5, 0.4, 1.1, 0.9], [0.2, 0.6, 0.9, -0.2]]
+    )
+    expected_vjp = _stable_loewner_vjp(promoted, gradient, floor)
+    with no_host(), torch.set_grad_enabled(differentiable):
+        output = psd_projection(value, floor)
+        if differentiable:
+            actual_vjp = torch.autograd.grad((output * gradient).sum(), value, create_graph=True)[0]
+            torch.testing.assert_close(actual_vjp.double(), expected_vjp, atol=2e-6, rtol=2e-6)
+            second = torch.autograd.grad((actual_vjp * gradient).sum(), value, create_graph=True)[0]
+            third = torch.autograd.grad((second * gradient).sum(), value)[0]
+            assert torch.isfinite(second).all() and torch.isfinite(third).all()
+    torch.testing.assert_close(output, expected, atol=1e-7 if sign > 0 else 1e-12, rtol=2e-6)
+    assert output.dtype == torch.float32 and output.device == value.device
