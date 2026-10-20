@@ -754,11 +754,20 @@ def test_optimize_acqf_list(pair: tuple) -> None:
             ic_generator=ic_generator,
         )
     calls["n"] = 0
+    original_pending = [
+        None if acq.X_pending is None else torch.as_tensor(acq.X_pending).clone()
+        for acq in acqfs_rs
+    ]
     x_rs, v_rs = rs_optimize.optimize_acqf_list(
         acqfs_rs, bounds, num_restarts=3, raw_samples=8, ic_generator=ic_generator
     )
     x_rs = torch.as_tensor(x_rs)
-    assert torch.equal(torch.as_tensor(acqfs_rs[1].X_pending), x_rs[:1])
+    # Optimization restores each acquisition's own pending state (#3395).
+    for acq, pending in zip(acqfs_rs, original_pending, strict=True):
+        if pending is None:
+            assert acq.X_pending is None
+        else:
+            assert torch.equal(torch.as_tensor(acq.X_pending), pending)
     if not botorch_has_pending_semantics():
         # BoTorch 0.18.1 handles the pending point of the second step
         # differently (meta-pytorch/botorch#3379 aligned it) and, with SciPy

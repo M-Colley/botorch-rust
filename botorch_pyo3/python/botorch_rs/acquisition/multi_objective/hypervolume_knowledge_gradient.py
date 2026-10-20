@@ -462,8 +462,13 @@ def _split_hvkg_fantasy_points(X: Any, n_f: int, num_pareto: int) -> tuple[Any, 
     BoTorch's reshape; for several, BoTorch's reshape mixes the designs of
     different t-batches (see the migration notes)."""
     if is_torch_tensor(X):
-        if X.ndim < 2 or min(n_f, num_pareto) < 1 or n_f * num_pareto > X.shape[-2]:
+        if X.ndim < 2 or min(n_f, num_pareto) < 1:
             raise ValueError("Fantasy counts must be positive and fit the q-batch dimension.")
+        if n_f * num_pareto > X.shape[-2]:
+            raise ValueError(
+                f"`n_f*num_pareto` ({n_f * num_pareto}) must be less than"
+                f" the `q`-batch dimension of `X` ({X.shape[-2]})."
+            )
         q = X.shape[-2] - n_f * num_pareto
         fantasies = X[..., q:, :].reshape(*X.shape[:-2], n_f, num_pareto, X.shape[-1])
         return X[..., :q, :], fantasies.movedim(-3, 0)
