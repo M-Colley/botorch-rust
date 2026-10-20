@@ -112,13 +112,9 @@ def project_equalities(X: Tensor, constraints: Any) -> Tensor:
             raise ValueError("Constraint indices exceed the input dimension.")
         coefficient = torch.as_tensor(coefficients, dtype=X.dtype, device=X.device)
         coefficient = coefficient.expand(index.shape)
-        row = X.new_zeros(d)
-        # Indexed assignment uses the last occurrence of a duplicate feature.
-        # Sequential scatters also give its actual derivative: overwritten
-        # coefficients have zero sensitivity, rather than scatter's duplicate
-        # gradient which incorrectly gathers every occurrence.
-        for j in range(index.numel()):
-            row = row.scatter(0, index[j : j + 1], coefficient[j : j + 1])
+        # Each tuple declares sum_j coefficients[j] * X[indices[j]] = rhs.
+        # Repeated feature indices therefore add to the same matrix column.
+        row = X.new_zeros(d).scatter_add(0, index, coefficient)
         rows.append(row)
         right_hand_sides.append(torch.as_tensor(rhs, dtype=X.dtype, device=X.device).reshape(()))
     if not rows:

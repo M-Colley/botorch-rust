@@ -69,12 +69,10 @@ def test_device_projection_complete_gradcheck_and_gradgradcheck(device, duplicat
             evaluate, (X, coefficients, second_coefficients, rhs), fast_mode=True
         )
     if duplicate:
-        # The first coefficient is overwritten by the second. Its numerical
-        # sensitivity is zero, unlike the pinned source's duplicate assignment
-        # backward, which propagates a nonzero adjoint to both coefficients.
+        # Both occurrences contribute to the same summed matrix column.
         value = evaluate(X, coefficients, second_coefficients, rhs)
         gradient = torch.autograd.grad(value.square().sum(), coefficients)[0]
-        assert gradient[0] == 0 and gradient[1] != 0
+        assert gradient[0] == gradient[1] and gradient[0] != 0
 
 
 @pytest.mark.parametrize("device", DEVICES)

@@ -247,17 +247,23 @@ complete `gradcheck`/`gradgradcheck`, and no-host-transfer guards. Targeted
 mypy and Ruff pass. The Tensor feasibility helper also follows the reference's
 strict equality tolerance at the exact boundary.
 
-For repeated feature indices, projection retains the existing source/native
-matrix's last-write values. Successive scatter operations give its actual
-derivative: an overwritten coefficient has zero sensitivity. The pinned
-source's indexed-assignment backward instead propagates the same adjoint to
-every occurrence. With indices `[0,0,2]`, coefficients `[1.2,-0.7,0.8]`,
-`X=[[0.2,0.3,0.8]]` and RHS `0.4`, the source squared-projection loss reports
-coefficient-0 derivative `-0.2757`, although its central finite difference is
-zero. The device implementation passes first/second numerical derivative
-checks for this repeated-index case. This is a verified gradient discrepancy;
-the upstream repair must choose between deterministic overwrite semantics and
-combining repeated terms according to the declared linear-constraint sum.
+Repeated feature indices now add their coefficients, matching each tuple's
+declared sum `sum_j coefficient[j] * X[index[j]] = rhs`. Device rows use
+`scatter_add`; both native projection and its adjoint construct the same summed
+matrix. For indices `[0,0,2]` and coefficients `[1.2,-0.7,0.8]`, the correct
+row is `[0.5,0,0.8]`. The pinned source and previous native implementation
+instead used a last-write row `[-0.7,0,0.8]`, which projects onto a different
+hyperplane. The source indexed-assignment backward also disagrees with finite
+differences of its own overwritten values: with `X=[[0.2,0.3,0.8]]` and RHS
+`0.4`, squared projected norm has coefficient-0 derivative `-0.2757`, although
+its central finite difference is zero. The port deliberately follows the
+declared sum, with every repeated coefficient contributing additively.
+Independent one-row closed forms, declared-constraint residuals and complete
+point/coefficient/RHS numerical derivative checks cover vector/scalar duplicate
+coefficients. The corrected Tensor suite passes 36 CPU/CUDA cases before the
+fresh native build; added Rust/native binding tests await that integrated build.
+The earlier 75-case checkpoint remains historical; repeated-index expectations
+now use the corrected summed-constraint oracle rather than last-write values.
 
 Local lattice search
 retains the reference's unbatched, non-one-shot restriction. Sequential mixed
