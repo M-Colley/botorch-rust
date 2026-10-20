@@ -70,10 +70,10 @@ def main() -> None:
     dtype = getattr(torch, args.dtype)
     devices = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
     package = Path(botorch_rs.__file__).resolve().parent
-    reference = Path(botorch.__file__).resolve().parent
+    reference_package = Path(botorch.__file__).resolve().parent
     script = Path(__file__).resolve()
     source_revision = revision(script.parent.parent)
-    reference_revision = revision(reference)
+    reference_revision = revision(reference_package)
     python_hash, python_count = python_fingerprint(package)
     script_hash = hashlib.sha256(script.read_bytes()).hexdigest()
     report = {
@@ -182,7 +182,7 @@ def main() -> None:
     report["fingerprints_stable"] = (
         python_fingerprint(package) == (python_hash, python_count)
         and revision(script.parent.parent) == source_revision
-        and revision(reference) == reference_revision
+        and revision(reference_package) == reference_revision
         and hashlib.sha256(script.read_bytes()).hexdigest() == script_hash
         and hashlib.sha256(Path(_botorch_rs.__file__).read_bytes()).hexdigest() == actual_hash
     )
