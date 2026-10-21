@@ -6,6 +6,7 @@ import pytest
 pytest.importorskip("torch")
 
 
+import copy
 from unittest.mock import patch
 
 import torch
@@ -32,7 +33,7 @@ def data(device):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("convex", [True, False])
 @pytest.mark.parametrize("dense", [False, True])
-def test_exact_conditional_joint_law_and_shared_parameter_hessians(device, convex, dense):
+def test_exact_conditional_joint_law_and_owned_parameter_hessians(device, convex, dense):
     X, Y, Q = data(device)
     model = RobustRelevancePursuitSingleTaskGP(
         X, Y, outcome_transform=None, backend="torch", convex_parameterization=convex
@@ -53,7 +54,16 @@ def test_exact_conditional_joint_law_and_shared_parameter_hessians(device, conve
     assert new_sparse.raw_rho is original_rho
     assert new_sparse.support == (list(range(4)) if dense else [2, 0])
     torch.testing.assert_close(new_sparse.rho, torch.cat((sparse.rho, sparse.rho.new_zeros(2))))
-    joint = model.posterior(torch.cat((new_X, Q)))
+    original = dict(model.named_parameters())
+    child = dict(conditional.named_parameters())
+    copied_names = [name for name in original if name.startswith(("covar_module.", "mean_module."))]
+    assert all(child[name] is not original[name] for name in copied_names)
+    # The sequential Gaussian oracle must use the actual child's hyperparameter
+    # leaves. The robust old-row rho and base-noise leaves remain shared.
+    prior = copy.copy(model)
+    prior._modules = model._modules.copy()
+    prior.covar_module, prior.mean_module = conditional.covar_module, conditional.mean_module
+    joint = prior.posterior(torch.cat((new_X, Q)))
     mean = joint.mean.squeeze(-1)
     covariance = joint.distribution.covariance_matrix
     observed = covariance[:2, :2] + noise.squeeze(-1).diag_embed()
@@ -75,10 +85,13 @@ def test_exact_conditional_joint_law_and_shared_parameter_hessians(device, conve
         new_Y,
         noise,
         original_rho,
-        *model.covar_module.parameters(),
-        *model.mean_module.parameters(),
+        *conditional.covar_module.parameters(),
+        *conditional.mean_module.parameters(),
         *sparse.base_noise.parameters(),
     )
+    assert torch.autograd.grad(
+        loss, tuple(original[name] for name in copied_names), retain_graph=True, allow_unused=True
+    ) == (None,) * len(copied_names)
     ga = torch.autograd.grad(loss, variables, create_graph=True, retain_graph=True)
     gb = torch.autograd.grad(expected, variables, create_graph=True, retain_graph=True)
     for a, b in zip(ga, gb, strict=True):
@@ -87,6 +100,31 @@ def test_exact_conditional_joint_law_and_shared_parameter_hessians(device, conve
     hb = torch.autograd.grad(sum(g.square().sum() for g in gb), variables)
     for a, b in zip(ha, hb, strict=True):
         torch.testing.assert_close(a, b, rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_source_robust_conditioning_owns_new_kernel_and_mean_leaves(device):
+    source = pytest.importorskip("botorch.models.robust_relevance_pursuit_model")
+    X, Y, Q = data(device)
+    model = source.RobustRelevancePursuitSingleTaskGP(
+        X.detach(), Y.detach(), outcome_transform=None
+    ).to(X)
+    model.posterior(Q)
+    child = model.condition_on_observations(X.new_tensor([[0.4]]), Y.new_tensor([[0.3]]))
+    # Refresh the source's disposable cache to isolate actual child partials.
+    child.prediction_strategy = None
+    before, after = dict(model.named_parameters()), dict(child.named_parameters())
+    names = [name for name in before if name.startswith(("covar_module.", "mean_module."))]
+    assert all(after[name] is not before[name] for name in names)
+    posterior = child.posterior(Q)
+    value = posterior.mean.square().sum() + posterior.variance.square().sum()
+    assert torch.autograd.grad(
+        value, tuple(before[name] for name in names), retain_graph=True, allow_unused=True
+    ) == (None,) * len(names)
+    assert all(
+        torch.isfinite(item).all()
+        for item in torch.autograd.grad(value, tuple(after[name] for name in names))
+    )
 
 
 @pytest.mark.parametrize("device", DEVICES)

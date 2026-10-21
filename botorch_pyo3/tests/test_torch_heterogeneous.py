@@ -290,6 +290,9 @@ def test_conditioned_data_noise_and_parameter_graphs_repeat(device, fixed):
     noise = Ys[0].new_tensor([[0.04]], requires_grad=True) if fixed else None
     query = Xs[0].new_tensor([[0.65, 0.6, 0.0]], requires_grad=True)
     conditioned = model.condition_on_observations(observed, target, noise=noise)
+    original, child = dict(model.named_parameters()), dict(conditioned.named_parameters())
+    assert original.keys() == child.keys()
+    assert all(child[name] is not original[name] for name in original)
     inputs = (
         *Xs,
         *Ys,
@@ -298,7 +301,7 @@ def test_conditioned_data_noise_and_parameter_graphs_repeat(device, fixed):
         query,
         *(variances or []),
         *((noise,) if fixed else ()),
-        *model.parameters(),
+        *child.values(),
     )
     for _ in range(2):
         p = conditioned.posterior(query)
@@ -307,11 +310,43 @@ def test_conditioned_data_noise_and_parameter_graphs_repeat(device, fixed):
             + p.variance.sum()
             + ExactMarginalLogLikelihood(conditioned.likelihood, conditioned)()
         )
+        assert torch.autograd.grad(
+            loss, tuple(original.values()), allow_unused=True, retain_graph=True
+        ) == (None,) * len(original)
         first = torch.autograd.grad(loss, inputs, create_graph=True)
-        second = torch.autograd.grad(
-            sum(g.square().sum() for g in first), inputs, allow_unused=True
-        )
-        assert all(g is None or torch.isfinite(g).all() for g in (*first, *second))
+        second = torch.autograd.grad(sum(g.square().sum() for g in first), inputs)
+        assert all(torch.isfinite(g).all() for g in (*first, *second))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_source_heterogeneous_conditioning_owns_new_parameter_leaves(device):
+    source = pytest.importorskip("botorch.models.heterogeneous_mtgp")
+    Xs, Ys = training(device)
+    model = source.HeterogeneousMTGP(Xs, Ys, None, FEATURES, 3, outcome_transform=None).to(Xs[0])
+    query = Xs[0].new_tensor([[0.65, 0.6, 0.0]])
+    model.posterior(query)
+    # The inherited source conditioning method accepts the full feature space.
+    observed = model.map_to_full_tensor(Xs[0].new_tensor([[0.35, 0.25]]), task_index=0)
+    child = model.condition_on_observations(observed, Ys[0].new_tensor([[0.25]]))
+    before, after = dict(model.named_parameters()), dict(child.named_parameters())
+    assert before.keys() == after.keys()
+    assert all(before[name] is not after[name] for name in before)
+    child.prediction_strategy = None
+    posterior = child.posterior(query)
+    value = posterior.mean.square().sum() + posterior.variance.square().sum()
+    assert torch.autograd.grad(
+        value, tuple(before.values()), allow_unused=True, retain_graph=True
+    ) == (None,) * len(before)
+    # raw_tau enters the source SAAS prior rather than its covariance formula.
+    names = [
+        name
+        for name in after
+        if name.startswith(("covar_module.", "mean_module.")) and not name.endswith("raw_tau")
+    ]
+    assert all(
+        torch.isfinite(item).all()
+        for item in torch.autograd.grad(value, tuple(after[name] for name in names))
+    )
 
 
 @pytest.mark.parametrize("device", DEVICES)

@@ -60,6 +60,13 @@ is nonempty. Fixed predictive noise for an unobserved task uses the global
 observed mean, following the repair proposed in
 [BoTorch #3389](https://github.com/meta-pytorch/botorch/pull/3389).
 
+Conditioned models own independent parameter copies, as in the source's
+ExactGP fantasy protocol. Repeated first and mixed second derivatives target
+those actual child leaves while retaining the original observation-data graph.
+An unmodified source control verifies that the original parameter leaves are
+unused after rebuilding its child's prediction cache; active child derivatives
+are checked strictly, including prior-only SAAS parameters in likelihood tests.
+
 Forty focused CPU/CUDA cases check official kernel/posterior/likelihood and
 first-gradient parity, numerical data/query gradcheck and gradgradcheck,
 all-parameter higher derivatives and repeated backwards, independent Gaussian

@@ -219,9 +219,11 @@ noise is extended with the existing Tensor GP convention. Original fitted input
 and outcome-transform statistics remain fixed. Model, output, fantasy, and
 noise-only leading batch axes broadcast without flattening through the CPU
 backend. The original model's data and support metadata remain unchanged;
-kernel, mean, learned base-noise, and existing rho leaves are shared, preserving
-the complete conditional graph. Deepcopy a model first when independent fitted
-parameter objects are desired.
+kernel and mean parameters are independent copies, following ExactGP fantasy
+ownership. Learned base-noise and existing rho leaves remain shared to preserve
+the observation-label extension's complete conditional graph. Derivatives use
+the actual conditioned kernel and mean leaves, rather than the original model's
+copies. Unmodified source controls verify its independent kernel/mean ownership.
 
 If the original rho parameter is in dense representation, every old row is an
 explicit parameter, including any currently zero values outside support metadata.
@@ -249,6 +251,7 @@ are supported without background workers. The native CPU robust fitter retains
 its separately documented timeout restriction.
 
 `test_torch_relevance_conditioning.py` verifies the exact Gaussian conditional
-mean/covariance and mixed Hessians, sparse and dense old layouts, shared leaves,
+mean/covariance and mixed Hessians, sparse and dense old layouts, actual copied
+kernel/mean leaves and shared noise leaves,
 multi-output/model/noise/fantasy batches, fixed noise and transforms, base-noise
 fantasy sampling, and timeout delivery to every actual numerical fit.
