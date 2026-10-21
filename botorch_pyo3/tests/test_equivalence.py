@@ -51,7 +51,7 @@ fits                                     final loss <= BoTorch's + 1e-6
 optimizers, identical initial            >= 80% of the restarts reach
 conditions                               BoTorch's value (relative 1e-6)
 optimizers, end to end (statistical)     best value over 3 seeds >= the median
-                                         of BoTorch's per-seed values - 1e-3
+                                         of BoTorch's per-seed values - 0.05
                                          max(1, |value|); results feasible;
                                          returned values BoTorch's (1e-9)
 polytope samples (statistical)           moments within 0.05 / 0.02 of the

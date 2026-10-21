@@ -20,6 +20,9 @@ Development after the frozen release adds [generic fitting protocols](fitting-pr
 Caller-defined model modules are covered by the
 [custom Torch model protocol](torch-custom-models.md).
 These focused results do not replace the frozen release certificate below.
+The [equivalence verification notes](equivalence-verification.md) distinguish
+strict numerical comparisons, stabilization checks, statistical fitting and
+test-specific independent derivative oracles.
 The [October 21 development verification](verification-main-development-2026-10-21.json)
 records all 11,840 collected CPU/CUDA cases at checkpoint `c156b96`: 11,787
 passed, 51 skipped and two learned-objective pruning failures. Both failures

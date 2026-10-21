@@ -1,0 +1,44 @@
+# Interpreting equivalence verification
+
+Passing test counts establish the collected cases at the recorded source,
+native artifact and reference revisions. They do not establish every public
+configuration, GPU coverage or a universal speedup. The API availability audit
+and behavioral tests are separate measurements.
+
+The unified suite uses several kinds of checks:
+
+| Check | Meaning |
+| --- | --- |
+| Deterministic values / gradients | The mixed elementwise/normwise error is bounded by `1e-9` / `1e-8`; log values use the separately documented log error. |
+| Common-normal MC values / gradients | The same bounds, or ten times the reference's measured sensitivity to a `1e-14` input perturbation; raw and scaled errors are reported. |
+| Numerically singular MC laws | Finiteness and a loose `0.1` value-error bound when the smallest covariance eigenvalue is below `1e-12` of the largest. This is a stabilization check, not strict pointwise equivalence. |
+| Identical-start candidate optimization | At least 80% of restarts reach the reference value within relative `1e-6`. |
+| Three-seed candidate optimization | The port's best result must reach the reference's median within `0.05 * max(1, abs(median))`, with feasibility and returned-value checks. This is a regression guard, not strict optimizer trajectory equivalence. |
+| GP fitting | A separate two-stage first-attempt outcome comparison, described in `fitting.md`, with explicit retries and statistical controls for multiple local optima. |
+
+The optimizer table in the original suite docstring said `1e-3` while its
+existing `OPT_TOL` was `0.05`. The docstring now states the actual bound; the
+implementation tolerance has not been loosened.
+
+An October 21 audit found that the shared numeric error helper treated two NaNs
+as equal. It now rejects any NaN in a numerical equivalence check. Successful
+first-attempt fit outcomes must also be finite before statistical comparison;
+nonfinite outcomes cannot be hidden among other fit results. Explicit tests of
+invalid inputs continue to compare their nonfinite classes separately.
+Regressions cover shared and one-sided NaNs and nonfinite first-attempt results
+from either implementation. The existing deliberately degraded optimizer test
+still verifies that the fitting comparison rejects a systematic regression.
+
+Oracle adjustments are scoped to the affected tests. The source checkout stays
+pinned and clean. Model-list comparisons can materialize its actual covariance
+blocks to work around documented operator-indexing defects; noisy constrained
+improvement can supply common auxiliary lower-bound points. Where a source
+derivative is demonstrably wrong, tests separately check unmodified source
+values/first derivatives and independent Gaussian identities or convergent
+finite differences. Such cases do not certify the defective source derivative.
+Confirmed repairs are linked in `upstream-pull-requests.md`.
+
+A final release needs a fresh source and installed-wheel run with matching
+Python/native fingerprints and every canonical test ID accounted for exactly
+once. Earlier successful checkpoints and focused runs remain separate evidence;
+their overlapping pass counts must not be added into a release total.
