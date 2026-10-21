@@ -15,7 +15,7 @@ from botorch_rs.acquisition._torch_backend_acquisition import _TensorAcquisition
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
-from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
+from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
 CLAMP_LB = 1e-8
 LOG_2PI = math.log(2 * math.pi)
@@ -121,19 +121,7 @@ def sample_maximums(
 
 
 def _clone_sampler(source: Any) -> Any:
-    if not isinstance(source, NormalMCSampler):
-        return copy.deepcopy(source)
-    sampler_type: Any = type(source)
-    result = sampler_type(source.sample_shape, seed=source.seed)
-    if source.base_samples is not None:
-        if isinstance(result, SobolQMCNormalSampler):
-            result._base_samples = source.base_samples.clone()
-        else:
-            result.base_samples = source.base_samples.clone()
-        for name in ("_base_shape", "_tensor_sampler_key", "_base_samples_explicit"):
-            if hasattr(source, name):
-                setattr(result, name, getattr(source, name))
-    return result
+    return copy.deepcopy(source)
 
 
 class TensorMaxValueEntropy(_TensorAcquisition):

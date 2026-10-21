@@ -11,7 +11,7 @@ from typing import Any, cast
 
 from botorch_rs._arrays import LIST, from_flat, to_flat
 from botorch_rs.posteriors.ensemble import EnsemblePosterior
-from botorch_rs.sampling.normal import MCSampler, _sample_shape
+from botorch_rs.sampling.normal import MCSampler, _sample_shape, _uses_tensor_protocol
 
 
 class IndexSampler(MCSampler):
@@ -40,7 +40,7 @@ class IndexSampler(MCSampler):
     def _construct_base_samples(self, posterior: EnsemblePosterior) -> None:
         r"""Constructs base samples as indices to sample with them from the
         Posterior."""
-        if getattr(posterior, "_tensor_backend", None) == "torch":
+        if _uses_tensor_protocol(posterior):
             import torch
 
             from botorch_rs.posteriors._torch_ensemble import TorchEnsemblePosterior, draw_indices
@@ -99,8 +99,6 @@ class IndexSampler(MCSampler):
         return posterior.rsample_from_base_samples(
             sample_shape=self.sample_shape, base_samples=self.base_samples
         )
-
-    __call__ = forward
 
     def _update_base_samples(self, posterior: Any, base_sampler: Any) -> None:
         """Ensemble member coordinates do not grow with the number of query points."""

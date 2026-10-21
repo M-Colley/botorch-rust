@@ -15,9 +15,11 @@ approximations with fixed base samples.
 from __future__ import annotations
 
 import math
+import sys
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
+from botorch_rs._arrays import to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.sampling.normal import (
     IIDNormalSampler,
@@ -25,6 +27,7 @@ from botorch_rs.sampling.normal import (
     NormalMCSampler,
     SobolQMCNormalSampler,
     _sample_shape,
+    _sampler_seed,
 )
 
 
@@ -86,8 +89,6 @@ class ForkedRNGSampler(MCSampler):
             torch.manual_seed(self.seed)
             return posterior.rsample(sample_shape=self.sample_shape)
 
-    __call__ = forward
-
     def __repr__(self) -> str:
         return f"ForkedRNGSampler(sample_shape={self.sample_shape}, seed={self.seed})"
 
@@ -110,15 +111,17 @@ class StochasticSampler(MCSampler):
         self.sample_shape = _sample_shape(sample_shape)
         # Sized base samples for the acquisition functions; a deterministic
         # model's samples do not depend on them.
-        self._rs = _rs.SobolQMCNormalSampler(
-            math.prod(self.sample_shape), None if seed is None else int(seed)
-        )
+        self._rs = _rs.SobolQMCNormalSampler(math.prod(self.sample_shape), _sampler_seed(seed))
 
     @property
     def seed(self) -> int:
         """The seed (drawn at random if not given, as in BoTorch; not used for
         sampling)."""
         return self._rs.seed
+
+    @seed.setter
+    def seed(self, value: int) -> None:
+        self._rs = _rs.SobolQMCNormalSampler(math.prod(self.sample_shape), int(value))
 
     @property
     def num_samples(self) -> int:
@@ -127,8 +130,6 @@ class StochasticSampler(MCSampler):
     def forward(self, posterior: Any) -> Any:
         """Draws MC samples from the posterior (``posterior.rsample``)."""
         return posterior.rsample(sample_shape=self.sample_shape)
-
-    __call__ = forward
 
     def __repr__(self) -> str:
         return f"StochasticSampler(sample_shape={self.sample_shape})"
@@ -159,8 +160,102 @@ def as_iid_sampler(sampler: Any) -> IIDNormalSampler | None:
     reproduces), or ``None``."""
     cls = type(sampler)
     if cls.__name__ == "IIDNormalSampler" and cls.__module__.startswith("botorch."):
-        return IIDNormalSampler(tuple(sampler.sample_shape), seed=int(sampler.seed))
+        result = IIDNormalSampler(tuple(sampler.sample_shape), seed=int(sampler.seed))
+        result.base_samples = sampler.base_samples
+        return result
     return None
+
+
+def _require_native_sampler(sampler: Any) -> None:
+    """Do not erase caller numerical methods, parameters or module hooks."""
+    cls = type(sampler)
+    public = getattr(cls, "_sampler_public_type", cls)
+    canonical = public in (
+        IIDNormalSampler,
+        SobolQMCNormalSampler,
+        ForkedRNGSampler,
+        StochasticSampler,
+    ) or (
+        cls.__module__ in ("botorch.sampling.normal", "botorch.sampling.stochastic_samplers")
+        and cls.__name__
+        in ("IIDNormalSampler", "SobolQMCNormalSampler", "ForkedRNGSampler", "StochasticSampler")
+    )
+    message = (
+        "Native acquisitions require canonical sampler descriptors without caller methods, "
+        "Parameters or hooks. Construct the model with backend='torch' to execute a custom "
+        "sampler and retain its module state and autograd graph."
+    )
+    if not canonical:
+        raise UnsupportedError(message)
+    for name in (
+        "forward",
+        "__call__",
+        "_construct_base_samples",
+        "_get_collapsed_shape",
+        "_get_extended_base_sample_shape",
+        "_get_batch_range",
+        "_update_base_samples",
+    ):
+        method = getattr(sampler, name, None)
+        if name in sampler.__dict__ or (
+            method is not None
+            and (
+                getattr(method, "__qualname__", "").split(".")[0]
+                not in (
+                    "IIDNormalSampler",
+                    "SobolQMCNormalSampler",
+                    "NormalMCSampler",
+                    "MCSampler",
+                    "ForkedRNGSampler",
+                    "StochasticSampler",
+                    "Module",
+                )
+                or getattr(method, "__wrapped__", None) is not None
+            )
+        ):
+            raise UnsupportedError(message)
+    if (
+        getattr(sampler, "batch_range_override", None) is not None
+        or getattr(sampler, "_compiled_call_impl", None) is not None
+    ):
+        raise UnsupportedError(message)
+    torch = sys.modules.get("torch")
+    if torch is not None and isinstance(sampler, torch.nn.Module):
+        if any(True for _ in sampler.parameters()) or any(True for _ in sampler.children()):
+            raise UnsupportedError(message)
+        if any(
+            getattr(sampler, name, None)
+            for name in (
+                "_forward_hooks",
+                "_forward_pre_hooks",
+                "_backward_hooks",
+                "_backward_pre_hooks",
+            )
+        ) or any(
+            getattr(torch.nn.modules.module, name, None)
+            for name in (
+                "_global_forward_hooks",
+                "_global_forward_pre_hooks",
+                "_global_backward_hooks",
+                "_global_backward_pre_hooks",
+            )
+        ):
+            raise UnsupportedError(message)
+    base = getattr(sampler, "base_samples", None)
+    if (
+        getattr(base, "requires_grad", False)
+        or getattr(getattr(base, "device", None), "type", "cpu") != "cpu"
+    ):
+        raise UnsupportedError(message)
+
+
+def _native_normals(sampler: NormalMCSampler) -> NormalMCSampler:
+    if sampler.base_samples is not None:
+        values, _ = to_flat(sampler.base_samples)
+        sampler._rs.set_base_samples(
+            (values, (sampler.num_samples, len(values) // sampler.num_samples))
+        )
+    return sampler
 
 
 def mc_sampler_arg(
@@ -174,11 +269,16 @@ def mc_sampler_arg(
     for a deterministic model."""
     if sampler is None:
         return SobolQMCNormalSampler(sample_shape=default_shape)
+    _require_native_sampler(sampler)
     if isinstance(sampler, NormalMCSampler):
-        return sampler
+        return _native_normals(sampler)
     iid = as_iid_sampler(sampler)
     if iid is not None:
-        return iid
+        return _native_normals(iid)
+    if type(sampler).__name__ == "SobolQMCNormalSampler":
+        normal = SobolQMCNormalSampler(sampler.sample_shape, seed=int(sampler.seed))
+        normal.base_samples = sampler.base_samples
+        return _native_normals(normal)
     stochastic = as_stochastic_sampler(sampler)
     if stochastic is not None:
         if not rs_model.is_deterministic:

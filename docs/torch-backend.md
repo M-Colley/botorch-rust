@@ -261,7 +261,8 @@ Further details: [tensor algebra](tensor-native-algebra.md),
 [fully Bayesian multitask models](torch-fully-bayesian-multitask.md),
 [preference model](torch-pairwise-gp.md),
 [entropy search](torch-entropy-search.md),
-[acquisitions](torch-backend-acquisitions.md).
+[acquisitions](torch-backend-acquisitions.md),
+[public samplers](torch-samplers.md).
 
 ## Release verification
 

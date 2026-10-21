@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+import sys
+from typing import Any, SupportsIndex
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import Pair, broadcast_to, from_flat, kind_of, to_flat
@@ -31,6 +32,13 @@ def _sample_shape(sample_shape: Any) -> tuple[int, ...]:
     return shape
 
 
+def _sampler_seed(seed: int | None) -> int | None:
+    torch = sys.modules.get("torch")
+    if seed is None and torch is not None:
+        return int(torch.randint(0, 1_000_000, (1,)).item())
+    return None if seed is None else int(seed)
+
+
 def _uses_tensor_protocol(posterior: Any) -> bool:
     """Recognize the public Torch posterior protocol without private markers.
 
@@ -56,11 +64,134 @@ class MCSampler:
 
     sample_shape: tuple[int, ...]
 
+    @property
+    def base_samples(self) -> Any:
+        state = self.__dict__
+        if "_native_base_samples" in state:
+            return state["_native_base_samples"]
+        for name in ("_parameters", "_buffers"):
+            if "base_samples" in state.get(name, {}):
+                return state[name]["base_samples"]
+        raise AttributeError("base_samples")
+
+    @base_samples.setter
+    def base_samples(self, value: Any) -> None:
+        self.__dict__["_native_base_samples"] = value
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        if sys.modules.get("torch") is not None:
+            from botorch_rs.sampling._torch_sampler import allocate_sampler
+
+            return allocate_sampler(cls)
+        return object.__new__(cls)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        torch = sys.modules.get("torch")
+        if torch is not None and isinstance(self, torch.nn.Module):
+            from botorch_rs.sampling._torch_sampler import _setattr
+
+            _setattr(self, name, value)
+            return
+        object.__setattr__(self, name, value)
+
+    def __init__(self, sample_shape: Any = None, seed: int | None = None) -> None:
+        if sample_shape is None:
+            sample_shape = getattr(type(self), "sample_shape", None)
+            if sample_shape is None:
+                raise TypeError("MCSampler requires sample_shape.")
+        self.sample_shape = _sample_shape(sample_shape)
+        if seed is None:
+            torch = sys.modules.get("torch")
+            if torch is None:
+                import random
+
+                seed = random.randint(0, 999999)
+            else:
+                seed = int(torch.randint(0, 1000000, (1,)).item())
+        self.seed = int(seed)
+        self.base_samples = None
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = self.__dict__.copy()
+        native = {}
+        for name in ("_rs", "_rs_sampler"):
+            sampler = state.get(name)
+            if isinstance(sampler, _rs.SobolQMCNormalSampler):
+                state.pop(name)
+                native[name] = (sampler.is_iid, sampler.num_samples, sampler.seed)
+        state["_pickle_native_samplers"] = native
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        state = state.copy()
+        native = state.pop("_pickle_native_samplers", {})
+        self.__dict__.update(state)
+        for name, (iid, count, seed) in native.items():
+            sampler = (_rs.SobolQMCNormalSampler.iid if iid else _rs.SobolQMCNormalSampler)(
+                count, seed
+            )
+            self.__dict__[name] = sampler
+            base = getattr(self, "base_samples", None)
+            if base is not None and (
+                getattr(getattr(base, "device", None), "type", "cpu") == "cpu"
+                and not getattr(base, "requires_grad", False)
+            ):
+                values, _ = to_flat(base)
+                sampler.set_base_samples((values, (count, len(values) // count)))
+
+    def __reduce_ex__(self, protocol: SupportsIndex) -> Any:
+        public = getattr(type(self), "_sampler_public_type", type(self))
+        return (_restore_sampler, (public,), self.__getstate__())
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Any:
+        import copy
+
+        result = object.__new__(type(self))
+        memo[id(self)] = result
+        result.__dict__.update(copy.deepcopy(self.__dict__, memo))
+        return result
+
+    def _get_batch_range(self, posterior: Any) -> tuple[int, int]:
+        return _batch_range(posterior, getattr(self, "batch_range_override", None))
+
+    def _get_collapsed_shape(self, posterior: Any) -> tuple[int, ...]:
+        shape = tuple(posterior.base_sample_shape)
+        start, end = self._get_batch_range(posterior)
+        start, end, _ = slice(start, end).indices(len(shape))
+        return (*self.sample_shape, *shape[:start], *(1 for _ in shape[start:end]), *shape[end:])
+
+    def _get_extended_base_sample_shape(self, posterior: Any) -> tuple[int, ...]:
+        return (*self.sample_shape, *posterior.base_sample_shape)
+
+    def _instance_check(self, base_sampler: Any) -> None:
+        public = getattr(type(self), "_sampler_public_type", type(self))
+        if not isinstance(base_sampler, public):
+            raise RuntimeError(
+                f"Expected `base_sampler` to be an instance of {self.__class__.__name__}. "
+                f"Got {base_sampler}."
+            )
+
+    def _update_base_samples(self, posterior: Any, base_sampler: Any) -> None:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement `_update_base_samples`."
+        )
+
     def forward(self, posterior: Any) -> Any:
         raise NotImplementedError
 
     def __call__(self, posterior: Any) -> Any:
+        torch = sys.modules.get("torch")
+        if torch is not None and isinstance(self, torch.nn.Module):
+            return torch.nn.Module.__call__(self, posterior)
         return self.forward(posterior=posterior)
+
+
+def _restore_sampler(public: type) -> Any:
+    if sys.modules.get("torch") is not None:
+        from botorch_rs.sampling._torch_sampler import restore_sampler
+
+        return restore_sampler(public)
+    return object.__new__(public)
 
 
 class NormalMCSampler(MCSampler):
@@ -85,6 +216,8 @@ class NormalMCSampler(MCSampler):
 
         shape = self._get_collapsed_shape(posterior)
         current = self.base_samples
+        if current is not None and not isinstance(current, torch.Tensor):
+            current = torch.as_tensor(current, dtype=posterior.dtype, device=posterior.device)
         explicit = getattr(self, "_base_samples_explicit", False)
         if (
             isinstance(self, IIDNormalSampler)
@@ -97,7 +230,7 @@ class NormalMCSampler(MCSampler):
             current = torch.as_tensor(current, dtype=posterior.dtype, device=posterior.device)
         else:
             key = (shape, posterior.dtype, posterior.device, self.seed)
-            if getattr(self, "_tensor_sampler_key", None) != key or current is None:
+            if current is None or tuple(current.shape) != shape:
                 if isinstance(self, IIDNormalSampler):
                     generator = torch.Generator(device=posterior.device).manual_seed(self.seed)
                     current = torch.randn(
@@ -116,9 +249,9 @@ class NormalMCSampler(MCSampler):
                     current = (
                         uniforms.clamp(epsilon, 1 - epsilon).mul(2).sub(1).erfinv() * math.sqrt(2)
                     ).reshape(shape)
-                self._tensor_sampler_key = key
             elif isinstance(current, torch.Tensor):
                 current = current.to(dtype=posterior.dtype, device=posterior.device)
+            self._tensor_sampler_key = key
         if isinstance(self, SobolQMCNormalSampler):
             self._base_samples = current
         else:
@@ -129,7 +262,7 @@ class NormalMCSampler(MCSampler):
         """Sample on the posterior device without flattening its graph."""
         from botorch_rs.posteriors._base_samples import expand_base_samples
 
-        self._construct_tensor_base_samples(posterior)
+        self._construct_base_samples(posterior)
         points = (
             getattr(posterior, "_q", None) if getattr(posterior, "_is_mt", True) is False else None
         )
@@ -150,7 +283,19 @@ class NormalMCSampler(MCSampler):
     @property
     def seed(self) -> int:
         """The seed of the base samples."""
+        if "_seed" in self.__dict__:
+            return int(self.__dict__["_seed"])
         return int(self._rs.seed)
+
+    @seed.setter
+    def seed(self, value: int) -> None:
+        self._seed = int(value)
+
+    def forward(self, posterior: Any) -> Any:
+        if _uses_tensor_protocol(posterior):
+            return self._tensor_samples(posterior)
+        self._construct_base_samples(posterior)
+        return posterior.rsample_from_base_samples(self.sample_shape, self.base_samples)
 
     def _get_collapsed_shape(self, posterior: Any) -> tuple[int, ...]:
         shape = tuple(posterior.base_sample_shape)
@@ -196,11 +341,7 @@ class NormalMCSampler(MCSampler):
 
     def _update_base_samples(self, posterior: Any, base_sampler: Any) -> None:
         """Reuse baseline normals when extending an ordinary Gaussian posterior."""
-        if not isinstance(base_sampler, self.__class__):
-            raise RuntimeError(
-                "Expected `base_sampler` to be an instance of "
-                f"{self.__class__.__name__}. Got {base_sampler}."
-            )
+        self._instance_check(base_sampler)
         underlying = posterior
         while hasattr(underlying, "_posterior"):
             underlying = underlying._posterior
@@ -302,15 +443,28 @@ class SobolQMCNormalSampler(NormalMCSampler):
 
     def __init__(self, sample_shape: Any, seed: int | None = None) -> None:
         self.sample_shape = _sample_shape(sample_shape)
-        self._rs = _rs.SobolQMCNormalSampler(
-            math.prod(self.sample_shape), None if seed is None else int(seed)
-        )
+        self._rs = _rs.SobolQMCNormalSampler(math.prod(self.sample_shape), _sampler_seed(seed))
         self._base_samples: Any = None
 
     @property
     def seed(self) -> int:
         """The seed of the Sobol sequence (drawn at random if not given)."""
         return self._rs.seed
+
+    @seed.setter
+    def seed(self, value: int) -> None:
+        previous = self.__dict__.get("_rs")
+        if previous is None:
+            self._seed = int(value)
+            return
+        self._rs = _rs.SobolQMCNormalSampler(previous.num_samples, int(value))
+        base = self.base_samples
+        if base is not None and (
+            getattr(getattr(base, "device", None), "type", "cpu") == "cpu"
+            and not getattr(base, "requires_grad", False)
+        ):
+            values, _ = to_flat(base)
+            self._rs.set_base_samples((values, (self.num_samples, len(values) // self.num_samples)))
 
     @property
     def num_samples(self) -> int:
@@ -319,6 +473,12 @@ class SobolQMCNormalSampler(NormalMCSampler):
     @property
     def base_samples(self) -> Any:
         """Cached standard-normal base samples, or ``None`` before drawing."""
+        state = self.__dict__
+        if state.get("_native_base_samples") is not None:
+            return state["_native_base_samples"]
+        for name in ("_parameters", "_buffers"):
+            if "base_samples" in state.get(name, {}):
+                return state[name]["base_samples"]
         return self._base_samples
 
     @base_samples.setter
@@ -384,8 +544,6 @@ class SobolQMCNormalSampler(NormalMCSampler):
         q, m = posterior._q, posterior._m
         z: Pair = self._rs.base_samples(q * m)
         return posterior._samples_out(z, self.sample_shape)
-
-    __call__ = forward
 
     def __repr__(self) -> str:
         return f"SobolQMCNormalSampler(sample_shape={self.sample_shape}, seed={self.seed})"
@@ -525,8 +683,6 @@ class IIDNormalSampler(NormalMCSampler):
                     data.extend(z[off : off + qm])
             pair = (data, (n, nb, qm))
         return posterior._samples_out(pair, self.sample_shape)
-
-    __call__ = forward
 
     def __repr__(self) -> str:
         return f"IIDNormalSampler(sample_shape={self.sample_shape}, seed={self.seed})"
