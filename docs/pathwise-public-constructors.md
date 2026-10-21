@@ -79,6 +79,20 @@ feature modules. The reference's kernel-distance Hessian is unavailable in
 some versions, so its independent Hessian comparison uses the smooth
 root/noise/target algebra; port query Hessians are also checked for finiteness.
 
+Pinned `b0dd01be6` accepts a Tensor noise covariance but calls its removed
+`Tensor.cholesky()` method on Torch 2.14. The port already uses the supported
+linear-algebra API. Those override regressions therefore use the independent
+reference kernel and a dense Gaussian solve; they retain strict values, complete
+first derivatives and the supported Hessian comparison on the symmetric
+covariance and lower-triangular factor domains. The source repair is published
+as [BoTorch #3516](https://github.com/meta-pytorch/botorch/pull/3516), head
+`87cfecc4ad5569e9b6ecf84159fe6ec519505579`. Against the unchanged source, the
+three new methods expose ten failing CPU subcases on Torch 2.14.1. With the
+Tensor-only repair, all seven update/posterior-sampling methods pass on Torch
+2.13 CPU/CUDA and Torch 2.14.1 CPU; the original LinearOperator branch remains
+unchanged. The new methods cover twenty CPU/CUDA dtype/factor subcases on 2.13
+and ten CPU subcases on 2.14.1. Source formatting and lint checks pass.
+
 The port-specific `draws` replay extension applies to the default optimized
 factories. Arbitrary callback compositions do not expose a joint draw record
 and cannot combine custom generators with explicit native `draws`. Native
