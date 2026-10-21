@@ -290,7 +290,7 @@ def test_errors() -> None:
     with pytest.raises(AttributeError):
         fit_gpytorch_mll(VariationalELBO(no_targets.likelihood, no_targets.model, num_data=12))
     mll = VariationalELBO(model.likelihood, model.model, num_data=12)
-    with pytest.raises(UnsupportedError, match="data_loader"):
+    with pytest.raises(TypeError, match="iterable"):
         fit_gpytorch_mll(mll, data_loader=object())
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
