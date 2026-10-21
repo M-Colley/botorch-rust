@@ -31,11 +31,13 @@ posterior exposes the actual full joint conditional covariance in output-major
 order, consistent with the other Tensor Gaussian posteriors. Sampling uses the
 same correlated law. Output selection and scalarization use that full matrix.
 Standardize applies its captured affine transformation to moments and Matheron
-samples. Other outcome-transform types currently raise `UnsupportedError`.
+samples. [General outcome transforms](structured-outcome-transforms.md) also
+support nonlinear maps, chains, and custom differentiable affine modules while
+retaining the structured sampling protocol.
 Conditioning and fantasies append complete task vectors at new input points;
 fantasy batches and `propagate_grads=True` retain the full derivative graph.
-Explicit per-observation conditioning/fantasy noise is a remaining boundary;
-these methods currently use the configured Gaussian task-noise model.
+Explicit per-observation conditioning noise is retained in transformed outcome
+units. Fantasies use the configured Gaussian task-noise model.
 
 Task covariance has a learned factor and positive diagonal, with the default
 LKJ correlation / marginal-scale prior. The prior keeps the existing native

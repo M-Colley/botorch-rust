@@ -1592,6 +1592,35 @@ def build_outcome_transform(
             raise ValueError("An outcome transform requires train_Y or train_X for dtype/device.")
         result = TorchStandardize(m, like.shape[:-2], like)
     elif (
+        isinstance(source, nn.Module)
+        and type(source).__module__ == "botorch.models.higher_order_gp"
+        and type(source).__name__ == "FlattenedStandardize"
+        and type(source).__call__ is nn.Module.__call__
+        and all(
+            name not in source.__dict__
+            and getattr(getattr(type(source), name, None), "__qualname__", None)
+            == f"FlattenedStandardize.{name}"
+            for name in ("forward", "untransform", "untransform_posterior")
+        )
+    ):
+        from botorch_rs.models._torch_backend_higher_order import TorchFlattenedStandardize
+
+        if like is None:
+            raise ValueError("An outcome transform requires train_Y or train_X for dtype/device.")
+        flattened_source: Any = source
+        result = TorchFlattenedStandardize(
+            flattened_source.output_shape,
+            flattened_source._batch_shape,
+            like,
+            min_stdv=flattened_source._min_stdv,
+        )
+        if train_Y is None and bool(flattened_source._is_trained):
+            result.means, result.stdvs = (
+                flattened_source.means.to(like).clone(),
+                flattened_source.stdvs.to(like).clone(),
+            )
+            result._is_trained = True
+    elif (
         isinstance(source, StratifiedStandardize)
         and type(source).forward is StratifiedStandardize.forward
         and type(source).untransform is StratifiedStandardize.untransform

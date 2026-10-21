@@ -173,7 +173,9 @@ def multitask_observed_law(
     return observed_mean, observed_covariance
 
 
-def condition_likelihood(model: Any, conditioned: Any, noise: Any, Y: Tensor) -> None:
+def condition_likelihood(
+    model: Any, conditioned: Any, noise: Any, Y: Tensor, X: Tensor | None = None
+) -> None:
     """Retain the likelihood's fantasy protocol and explicit observation noise."""
     if noise is not None:
         if (
@@ -193,7 +195,7 @@ def condition_likelihood(model: Any, conditioned: Any, noise: Any, Y: Tensor) ->
     transformed = noise
     if noise is not None and model.outcome_transform is not None and hasattr(model, "target_shape"):
         model._training_values()
-        transformed = model.outcome_transform(Y, noise)[1]
+        transformed = model.outcome_transform(Y, noise, X=X)[1]
     if callable(hook):
         options = {} if transformed is None else {"noise": transformed.flatten(-dimensions - 1)}
         conditioned.likelihood = hook(**options)
@@ -245,7 +247,10 @@ def conditioned_observed_law(
         noise = getattr(model, name)
         count = noise.shape[-dimensions - 1]
         if model.outcome_transform is not None and hasattr(model, "target_shape"):
-            noise = model.outcome_transform(torch.zeros_like(noise), noise)[1]
+            axis = -dimensions - 1
+            raw_values = model._train_Y.narrow(axis, start, count)
+            inputs = model._train_X.narrow(-2, start, count)
+            noise = model.outcome_transform(raw_values, noise, X=inputs)[1]
         flat = noise.flatten(-dimensions - 1)
         keep[start * m : (start + count) * m] = 0
         # cat keeps the supplied noise graph and allows broadcast fantasy axes.
@@ -271,10 +276,14 @@ def fixed_conditioning_noise(model: Any) -> Tensor | None:
     original = model._conditioning_fixed_noise
     dimensions = len(getattr(model, "target_shape", (model.num_outputs,)))
     values = [original]
-    for _, name in segments:
+    for start, name in segments:
         noise = getattr(model, name)
         if model.outcome_transform is not None:
-            noise = model.outcome_transform(torch.zeros_like(noise), noise)[1]
+            axis = -dimensions - 1
+            count = noise.shape[axis]
+            raw_values = model._train_Y.narrow(axis, start, count)
+            inputs = model._train_X.narrow(-2, start, count)
+            noise = model.outcome_transform(raw_values, noise, X=inputs)[1]
         values.append(noise.flatten(-dimensions - 1))
     batch = torch.broadcast_shapes(*(value.shape[:-1] for value in values))
     return torch.cat([value.expand(*batch, value.shape[-1]) for value in values], -1)

@@ -19,6 +19,7 @@ from botorch_rs.models._torch_backend_modules import (
     build_input_transform,
     build_kernel,
     build_likelihood,
+    build_outcome_transform,
     module_log_prior,
 )
 from botorch_rs.models.higher_order_gp import FlattenedStandardize, HigherOrderGP
@@ -243,9 +244,18 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
             self.outcome_transform = None
         elif isinstance(outcome_transform, TorchFlattenedStandardize):
             self.outcome_transform = outcome_transform.to(train_X)
+        elif (
+            type(outcome_transform).__module__ == "botorch.models.higher_order_gp"
+            and type(outcome_transform).__name__ == "FlattenedStandardize"
+        ):
+            self.outcome_transform = TorchFlattenedStandardize(
+                self.target_shape, batch, train_Y, min_stdv=outcome_transform._min_stdv
+            )
         else:
-            raise UnsupportedError(
-                "Tensor HigherOrderGP outcomes support FlattenedStandardize or None."
+            with torch.no_grad():
+                outcome_inputs = self.transform_inputs(train_X)
+            self.outcome_transform = build_outcome_transform(
+                outcome_transform, train_Y.shape[-1], train_Y, train_X=outcome_inputs
             )
         if isinstance(likelihood, nn.Module):
             from botorch_rs.models._torch_structured_likelihood import validate_scalar_likelihood
@@ -351,7 +361,7 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
         Y = (
             self._train_Y
             if self.outcome_transform is None
-            else self.outcome_transform(self._train_Y)[0]
+            else self.outcome_transform(self._train_Y, X=X)[0]
         )
         return X, Y.reshape(*Y.shape[: len(self.batch_shape) + 1], self._grid_size)
 
@@ -517,7 +527,13 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
         index = torch.arange(q * m, device=X.device).reshape(q, m).T.flatten()
         covariance = covariance.index_select(-1, index).index_select(-2, index)
         location, scale = 0.0, 1.0
-        if untransform and self.outcome_transform is not None:
+        from botorch_rs.models._backend_selection import native_port_descriptor_type
+
+        flattened_standardize = (
+            type(self.outcome_transform) is TorchFlattenedStandardize
+            or native_port_descriptor_type(self.outcome_transform) is FlattenedStandardize
+        )
+        if untransform and flattened_standardize:
             location, scale = (
                 self.outcome_transform.means.clone(),
                 self.outcome_transform.stdvs.clone(),
@@ -539,7 +555,14 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
             location,
             scale,
         )
-        return TorchHigherOrderPosterior(base, self.target_shape, self.num_outputs)
+        posterior = TorchHigherOrderPosterior(base, self.target_shape, self.num_outputs)
+        if untransform and self.outcome_transform is not None and not flattened_standardize:
+            from botorch_rs.models._torch_structured_outcomes import TorchStructuredOutcomePosterior
+
+            return TorchStructuredOutcomePosterior(
+                posterior, self.outcome_transform, query, scalar_events=False
+            )
+        return posterior
 
     def make_posterior_variances(self, joint_covariance_matrix: Any) -> Tensor:
         from botorch_rs.models._torch_structured_likelihood import scalar_observed_law
@@ -617,7 +640,7 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
         from botorch_rs.models._torch_structured_likelihood import condition_likelihood
 
         self.eval()
-        condition_likelihood(self, model, noise, Y)
+        condition_likelihood(self, model, noise, Y, X=X)
         return model.eval()
 
     def fantasize(

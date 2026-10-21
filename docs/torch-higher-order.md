@@ -35,8 +35,10 @@ This initial Tensor implementation materializes the full Kronecker covariance
 and uses a dense exact solve: memory grows quadratically and factorization
 cubically with `n*grid_size`. It preserves correlation and full graphs but
 does not yet claim the reference operator solver's large-grid scalability.
-Fixed per-observation conditioning noise, output selection and arbitrary
-posterior/outcome transforms are explicit unsupported configurations.
+Per-observation conditioning noise is supported in raw outcome units. Output
+selection and arbitrary posterior transforms retain their existing unsupported
+boundary. [General outcome transforms](structured-outcome-transforms.md)
+support nonlinear maps, chains, and custom differentiable affine modules.
 
 The pinned official reference (`b0dd01be6`) detaches latent covariance during
 evaluation. Tests therefore compare full training/latent/query derivatives

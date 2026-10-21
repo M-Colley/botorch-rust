@@ -17,7 +17,6 @@ from botorch_rs.models._torch_backend_modules import (
     TorchConstantMean,
     TorchConstraint,
     TorchPrior,
-    TorchStandardize,
     _TorchModule,
     build_input_transform,
     build_kernel,
@@ -25,7 +24,6 @@ from botorch_rs.models._torch_backend_modules import (
     module_log_prior,
 )
 from botorch_rs.models.multitask import KroneckerMultiTaskGP
-from botorch_rs.models.transforms.outcome import Standardize
 from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
 from botorch_rs.posteriors.multitask import MultitaskGPPosterior
 
@@ -405,13 +403,11 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         ):
             self.register_buffer(name, value)
         self.input_transform = build_input_transform(input_transform, train_X.shape[-1], train_X)
-        self.outcome_transform = build_outcome_transform(outcome_transform, tasks, train_Y)
-        if self.outcome_transform is not None and not isinstance(
-            self.outcome_transform, (TorchStandardize, Standardize)
-        ):
-            raise UnsupportedError(
-                "Structured Tensor outcomes currently support Standardize or None."
-            )
+        with torch.no_grad():
+            outcome_inputs = self.transform_inputs(train_X)
+        self.outcome_transform = build_outcome_transform(
+            outcome_transform, tasks, train_Y, train_X=outcome_inputs
+        )
         batch = self.batch_shape
         if isinstance(likelihood, nn.Module):
             self.likelihood = likelihood.to(train_X)
@@ -494,7 +490,7 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         Y = (
             self._train_Y
             if self.outcome_transform is None
-            else self.outcome_transform(self._train_Y)[0]
+            else self.outcome_transform(self._train_Y, X=X)[0]
         )
         return X, Y
 
@@ -658,7 +654,10 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         permutation = torch.arange(q * m, device=X.device).reshape(q, m).transpose(-1, -2).flatten()
         covariance = covariance.index_select(-2, permutation).index_select(-1, permutation)
         location, scale = 0.0, 1.0
-        if untransform and self.outcome_transform is not None:
+        from botorch_rs.models._torch_structured_outcomes import is_scalar_standardize
+
+        standardize = is_scalar_standardize(self.outcome_transform)
+        if untransform and standardize:
             location, scale = (
                 self.outcome_transform.means.clone(),
                 self.outcome_transform.stdvs.clone(),
@@ -681,6 +680,17 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
             location,
             scale,
         )
+        if untransform and self.outcome_transform is not None and not standardize:
+            from botorch_rs.models._torch_structured_outcomes import TorchStructuredOutcomePosterior
+
+            transform = self.outcome_transform
+            if output_indices is not None:
+                posterior = posterior.subset_output(output_indices)
+                transform = transform.subset_output(output_indices)
+                output_indices = None
+            posterior = TorchStructuredOutcomePosterior(
+                posterior, transform, query, scalar_events=False
+            )
         if output_indices is not None:
             posterior = posterior.subset_output(output_indices)
         return posterior if posterior_transform is None else posterior_transform(posterior, X=X)
@@ -742,7 +752,7 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         from botorch_rs.models._torch_structured_likelihood import condition_likelihood
 
         self.eval()
-        condition_likelihood(self, model, noise, Y)
+        condition_likelihood(self, model, noise, Y, X=X)
         return model.eval()
 
     def fantasize(

@@ -16,7 +16,9 @@ def is_scalar_standardize(transform: Any) -> bool:
     from botorch_rs.models._torch_backend_modules import TorchStandardize
     from botorch_rs.models.transforms.outcome import Standardize
 
-    return type(transform) is TorchStandardize or native_port_descriptor_type(transform) is Standardize
+    return (
+        type(transform) is TorchStandardize or native_port_descriptor_type(transform) is Standardize
+    )
 
 
 class _OutcomeMapping(nn.Module):
@@ -38,7 +40,9 @@ class TorchStructuredOutcomePosterior(TransformedPosterior):
 
     _uses_matheron = True
 
-    def __init__(self, posterior: TorchGPyTorchPosterior, transform: nn.Module, X: Tensor) -> None:
+    def __init__(
+        self, posterior: Any, transform: nn.Module, X: Tensor, scalar_events: bool = True
+    ) -> None:
         self._mapping = _OutcomeMapping(transform)
         # Functional calls preserve source leaf partials and immutable fitted
         # statistics even if another posterior refits the live model transform.
@@ -51,13 +55,19 @@ class TorchStructuredOutcomePosterior(TransformedPosterior):
         }
         self._context = X
         shape = posterior.mean.shape
-        q, m = shape[-2:]
-        index = torch.arange(q * m, device=posterior.device).reshape(m, q).T.flatten()
-        covariance = posterior._covariance_tensor.index_select(-2, index).index_select(-1, index)
-        self._flat = TorchGPyTorchPosterior(posterior.mean.flatten(-2).unsqueeze(-1), covariance)
+        self._flat = posterior
+        if scalar_events:
+            q, m = shape[-2:]
+            index = torch.arange(q * m, device=posterior.device).reshape(m, q).T.flatten()
+            covariance = posterior._covariance_tensor.index_select(-2, index).index_select(
+                -1, index
+            )
+            self._flat = TorchGPyTorchPosterior(
+                posterior.mean.flatten(-2).unsqueeze(-1), covariance
+            )
 
         def samples(value: Tensor) -> Tensor:
-            flat = value.flatten(-2).unsqueeze(-1)
+            flat = value.flatten(-2).unsqueeze(-1) if scalar_events else value
             return self._evaluate("samples", flat).reshape(value.shape)
 
         super().__init__(

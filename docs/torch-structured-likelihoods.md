@@ -47,6 +47,8 @@ contract. Existing observation blocks retain their full Gaussian law. Fixed
 noise modules retain both original/supplied noise gradients and optional
 additional learned noise. Calibration is evaluated afresh for repeated
 backward calls, rather than storing a consumed standardization graph.
+Nonlinear higher-order variance maps use the actual appended raw observations
+when converting conditioning noise, including during subsequent predictions.
 
 Conditioned noise follows state dictionaries, model copies, serialization and
 dtype/device migration. Correlated supplied marginals also determine the law
