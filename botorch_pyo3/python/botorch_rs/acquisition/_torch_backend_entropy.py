@@ -13,8 +13,7 @@ from torch import Tensor, nn
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs.acquisition._torch_backend_acquisition import _TensorAcquisition
 from botorch_rs.exceptions.errors import UnsupportedError
-from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
-from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
+from botorch_rs.posteriors._torch_gaussian import gaussian_posterior
 from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
 CLAMP_LB = 1e-8
@@ -22,13 +21,10 @@ LOG_2PI = math.log(2 * math.pi)
 
 
 def _gaussian(model: Any, X: Tensor, transform: Any = None, noise: bool = False) -> Any:
-    posterior = model.posterior(X, observation_noise=noise, posterior_transform=transform)
-    if (
-        isinstance(posterior, GPyTorchPosterior)
-        and posterior.__dict__.get("_distribution_adapter") is not None
-    ):
-        posterior = TorchGPyTorchPosterior(posterior.mean, posterior.distribution.covariance_matrix)
-    if not isinstance(posterior, TorchGPyTorchPosterior) or posterior.mean.shape[-1] != 1:
+    posterior = gaussian_posterior(
+        model.posterior(X, observation_noise=noise, posterior_transform=transform)
+    )
+    if posterior.mean.shape[-1] != 1:
         raise UnsupportedError("Device entropy search requires a scalar Gaussian posterior.")
     return posterior
 

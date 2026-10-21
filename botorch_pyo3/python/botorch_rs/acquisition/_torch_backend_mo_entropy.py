@@ -16,6 +16,7 @@ from botorch_rs import _botorch_rs as _rs
 from botorch_rs.acquisition._torch_backend_acquisition import _TensorAcquisition
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+from botorch_rs.posteriors._torch_gaussian import gaussian_posterior
 from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
 
@@ -120,10 +121,7 @@ class TensorMultiObjectiveEntropy(_TensorAcquisition):
             )
 
     def _model_posterior(self, model: Any, X: Tensor, noise: bool) -> TorchGPyTorchPosterior:
-        posterior = model.posterior(X, observation_noise=noise)
-        if not isinstance(posterior, TorchGPyTorchPosterior):
-            raise UnsupportedError("Multiobjective entropy requires Gaussian device posteriors.")
-        return posterior
+        return gaussian_posterior(model.posterior(X, observation_noise=noise))
 
     def _compute_posterior_statistics(self, X: Tensor) -> dict[str, Any]:
         eps = torch.finfo(X.dtype).eps

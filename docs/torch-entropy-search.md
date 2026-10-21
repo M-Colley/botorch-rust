@@ -19,6 +19,15 @@ mixtures remain explicit boundaries. MES observation/fantasy
 samplers currently require one sample dimension. A single observation sample
 uses the finite zero-control-coefficient fallback described below.
 
+Custom public models may return a Gaussian posterior backed by an actual Torch
+or caller-supplied GPyTorch multivariate normal. Scalar and multi-objective
+entropy formulas read that posterior's public mean and full covariance without
+requiring the port's private posterior class. Multitask interleaved and
+noninterleaved event layouts retain their correct point/output ordering.
+CPU/CUDA controls compare all four multi-objective estimators, joint and
+nonjoint, with the unmodified source; separate dense conditioning and sampling
+controls check full covariance, explicit draws and all-leaf mixed Hessians.
+
 Thompson maxima and Gumbel fitting run on device. The Gumbel sampler solves the
 independent Gaussian maximum's three quantiles with batched log-CDF bisection.
 It retains posterior precision, consistent with the existing native CPU sampler;
