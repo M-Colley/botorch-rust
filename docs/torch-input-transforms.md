@@ -104,12 +104,31 @@ fitting are tested explicitly. This describes the verified scalar model and
 generic-builder scope; it does not establish every specialized model's
 transform configuration. Conditioning/fantasy layouts for transforms with
 different raw training/query widths require separate model integration tests.
-Whole-object pickle is also separate: the retained public objects contain
-unpicklable native descriptor caches; the tested persistence interface is the
-model state dictionary plus ordinary model construction.
+
+Whole-model pickle now retains every family's actual Tensor buffers, caller
+callback modules and Parameters. Ordinary pickle memoization preserves shared
+transforms and aliases to caller-owned modules/Parameters saved alongside the
+model. Native input descriptors are regenerated from their primitive
+configuration and cached statistics instead of being pickled. Univariate Warp
+priors retain their exact native factory precision and Torch logarithm terms.
+The resulting model supports posterior values, complete first/higher
+derivatives and device/dtype conversion after loading. Seven unmodified source
+model families independently establish that whole-object pickle is a supported
+source operation. Caller callbacks still need to satisfy normal Python pickle
+requirements, just as in the source.
 
 The bridge checkpoint passes 68 new CPU/CUDA cases and 507 integrated
 transform/module/Tensor-model cases. The existing native transform parity
 selection passes 48 cases without tolerance changes. Torch 2.14.1 CPU passes
 34 new cases and skips 34 CUDA cases; Ruff and Mypy pass for the six changed
 implementation modules.
+
+The persistence checkpoint adds 58 CPU/CUDA cases and two exact native prior
+precision controls. All 271 selected persistence, bridge, direct transform and
+prior cases pass. A separate selection covering persistence, the bridge and
+empirical models passes 180 cases. Training row validation checks the actual
+input transform against the original target rows, preserving empirical
+subclasses that use a flattened correlated-output training representation.
+Torch 2.14.1 CPU passes 29 persistence cases and skips 29 CUDA cases (before
+adding the two native precision controls). It does not certify the complete
+package.

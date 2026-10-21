@@ -91,13 +91,13 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         self.outcome_transform = build_outcome_transform(
             outcome_transform, self.num_outputs, train_Y, train_X=outcome_inputs
         )
-        transformed_X, transformed_Y, noise = self._training_values(clamp_noise=False)
-        if transformed_X.shape[-2] != transformed_Y.shape[-1]:
+        _, _, noise = self._training_values(clamp_noise=False)
+        if outcome_inputs.shape[-2] != train_Y.shape[-2]:
             raise ValueError(
                 "The training input transform must preserve the number of target rows."
             )
         self.covar_module = build_kernel(
-            covar_module, transformed_X.shape[-1], self._aug_batch_shape, train_X
+            covar_module, outcome_inputs.shape[-1], self._aug_batch_shape, train_X
         )
         self.mean_module = build_mean(mean_module, self._aug_batch_shape, train_X)
         self.likelihood = build_likelihood(likelihood, noise, self._aug_batch_shape, train_X)

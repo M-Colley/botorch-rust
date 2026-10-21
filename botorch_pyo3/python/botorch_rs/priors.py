@@ -41,6 +41,32 @@ class Prior(NativeBufferModule):
 
     _rs: _rs.Prior
 
+    def __getstate__(self) -> dict[str, Any]:
+        state = self.__dict__.copy()
+        native = state.pop("_rs", None)
+        if native is not None:
+            state["_pickle_prior_state"] = _rs.em_prior_state(native)
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        state = state.copy()
+        native = state.pop("_pickle_prior_state", None)
+        self.__dict__.update(state)
+        if native is not None:
+            name, parameters, float32, torch_log = native
+            names = {
+                "LogNormal": "log_normal",
+                "Gamma": "gamma",
+                "Normal": "normal",
+                "Uniform": "uniform",
+                "HalfNormal": "half_normal",
+                "HalfCauchy": "half_cauchy",
+                "Beta": "beta",
+                "SmoothedBox": "smoothed_box",
+            }
+            prior = getattr(_rs.Prior, names[name])(*parameters, float32=float32)
+            self._rs = prior if torch_log is None else prior.with_torch_log(torch_log)
+
     def log_prob(self, x: Any) -> Any:
         """The log density at ``x`` (elementwise for arrays)."""
         data, shape = to_flat(x, "x")

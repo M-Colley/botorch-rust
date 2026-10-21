@@ -92,6 +92,16 @@ class InputTransform(NativeBufferModule):
     transform_on_eval: bool = True
     transform_on_fantasize: bool = True
 
+    def __getstate__(self) -> dict[str, Any]:
+        from botorch_rs.models.transforms._input_pickle import get_state
+
+        return get_state(self)
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        from botorch_rs.models.transforms._input_pickle import set_state
+
+        set_state(self, state)
+
     def train(self, mode: bool = True) -> InputTransform:
         self.training = mode
         return self
