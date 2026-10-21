@@ -64,8 +64,8 @@ The adapter materializes supplied Gaussian noise operators through their Tensor
 multiplication rather than the generic LinearOperator Matmul autograd wrapper.
 That wrapper's inherited bilinear-derivative fallback detaches higher graphs
 for Kronecker noise; independent dense task-noise formulas check the complete
-sample Hessians instead. The source defect is being prepared separately for
-upstream review.
+sample Hessians instead. The source repair is submitted in
+[linear_operator #155](https://github.com/cornellius-gp/linear_operator/pull/155).
 
 `test_torch_variational_gaussian_protocol.py` adds 42 CPU/CUDA cases: canonical
 Gaussian module identity, shifted Gaussian subclass semantics, diagonal and

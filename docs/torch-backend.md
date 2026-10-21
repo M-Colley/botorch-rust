@@ -30,6 +30,12 @@ passed, 51 skipped and two learned-objective pruning failures. Both failures
 were repaired in `d65f947` and pass focused checks. A separate later checkpoint,
 `d50bca8`, passes all 11 CI jobs, including 1,222 pinned-reference equivalence
 cases. These checkpoints do not certify subsequent changes or a new release.
+The [stricter equivalence audit](verification-equivalence-audit-2026-10-21.json)
+at `30c1c95` executed all 1,237 selected cases exactly once: 1,201 passed,
+15 skipped and 21 failed. Twenty ensemble cases pass after the device repair;
+the remaining inverse-power domain case now classifies undefined values
+separately from finite numerical comparisons. A fresh frozen equivalence run
+at `f943100` is in progress. The failed baseline remains preserved as failed.
 The complete behavior/configuration audit is still open, including remaining
 variational strategies, specialized fitting extensions, custom module protocols,
 and acquisition approximation/cache configurations. A new release and Unity
@@ -248,8 +254,9 @@ This inventory and regression coverage do not certify every possible subclass,
 shape, strategy or backend combination. The report's `gpu_coverage_complete`
 and `behavioral_parity_complete` flags therefore remain false; configuration
 limits are explicit in the linked family notes. Structured Tensor models use
-dense exact algebra, and noisy root-cache requests use the documented exact
-joint-sampling performance fallback.
+dense exact algebra, and that historical wheel's noisy root-cache requests use
+the documented exact joint-sampling performance fallback. Subsequent development
+adds actual baseline roots and Schur sampling as described above.
 
 All 11 [cross-platform CI jobs](https://github.com/M-Colley/botorch-rust/actions/runs/39508767912)
 pass at test revision `e5a6c0ad3da8`, including Rust on Linux, macOS

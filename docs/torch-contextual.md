@@ -107,5 +107,6 @@ original Tensor identities and forwards optional context arguments unchanged.
 Constructed configurations work with native list/NumPy/Tensor predictions and
 the explicit Torch backend. The dataset helper and existing Tensor LCEM suite
 pass 37 combined cases, including CPU/CUDA training/embedding/query first and
-higher derivatives. Native LCEM conditioning/fantasies still require selecting
-the existing Torch backend; this helper does not add those native operations.
+higher derivatives. Later development adds native LCEM conditioning and
+fantasies; [native conditioning verification](lcemgp-conditioning.md) describes
+the shared-factor updates and their remaining fitting/acquisition boundaries.
