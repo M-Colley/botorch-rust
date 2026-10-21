@@ -322,6 +322,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         )
         self.input_transform = build_input_transform(input_transform, d + 1, train_X)
         self.outcome_transform = build_outcome_transform(outcome_transform, 1, train_Y)
+        self._is_custom_likelihood = likelihood is not None
         _, _, fixed_noise = self._training_values()
         if covar_module is None:
             covar_module = get_covar_module_with_dim_scaled_prior(
@@ -344,9 +345,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             if mean_module is None
             else build_mean(mean_module, (), train_X)
         )
-        if fixed_noise is not None:
-            if likelihood is not None:
-                raise UnsupportedError("Specify train_Yvar or a likelihood, not both.")
+        if fixed_noise is not None and likelihood is None:
             self.likelihood = TorchFixedNoiseLikelihood(fixed_noise, (), train_X)
         else:
             if likelihood is None:
@@ -365,10 +364,10 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
                 self.likelihood = TorchHadamardLikelihood(likelihood, self._task_feature, train_X)
             elif type(likelihood) is GaussianLikelihood:
                 self.likelihood = TorchGaussianLikelihood(likelihood, train_X)
-            elif isinstance(likelihood, nn.Module) and isinstance(
-                getattr(likelihood, "noise", None), torch.Tensor
-            ):
-                gaussian = isinstance(likelihood, TorchGaussianLikelihood) or any(
+            elif isinstance(likelihood, nn.Module):
+                gaussian = isinstance(
+                    likelihood, (TorchGaussianLikelihood, TorchFixedNoiseLikelihood)
+                ) or any(
                     cls.__name__
                     in (
                         "_GaussianLikelihoodBase",
@@ -381,15 +380,9 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
                     raise UnsupportedError(
                         "A custom likelihood must be a Torch Gaussian likelihood; a noise attribute alone does not specify a Gaussian distribution."
                     )
-                if cast(torch.Tensor, likelihood.noise).numel() not in (1, self.num_tasks):
-                    raise UnsupportedError(
-                        "A custom Gaussian likelihood must expose scalar or per-task Tensor noise."
-                    )
                 self.likelihood = cast(Any, likelihood).to(train_X)
             else:
-                raise UnsupportedError(
-                    "Torch MultiTaskGP requires Gaussian, Hadamard, fixed noise, or a Torch Gaussian likelihood exposing Tensor noise."
-                )
+                raise UnsupportedError("Torch MultiTaskGP requires a Gaussian likelihood marginal.")
 
     @property
     def num_outputs(self) -> int:
@@ -549,6 +542,133 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         )
         return full.reshape(*X.shape[:-2], m * q, X.shape[-1] + 1), m, q
 
+    def _task_prior_blocks(self, train: Any, query: Any) -> tuple[Any, ...]:
+        """Latent prior blocks on transformed physical inputs, before task mapping."""
+        if type(self).forward is TorchMultiTaskGP.forward:
+            train, query = self._mapped_inputs(train), self._mapped_inputs(query)
+            return (
+                self._mean(train),
+                self._covariance(train, train),
+                self._covariance(train, query),
+                self._mean(query),
+                self._covariance(query, query),
+            )
+        training_prior = nn.Module.__call__(self, train)
+        batch = torch.broadcast_shapes(train.shape[:-2], query.shape[:-2])
+        joined = torch.cat(
+            (train.expand(*batch, *train.shape[-2:]), query.expand(*batch, *query.shape[-2:])), -2
+        )
+        joint = nn.Module.__call__(self, joined)
+        if any(
+            not isinstance(getattr(prior, attribute, None), torch.Tensor)
+            for prior in (training_prior, joint)
+            for attribute in ("mean", "covariance_matrix")
+        ):
+            raise TypeError(
+                "forward must return a Gaussian with Tensor mean and covariance_matrix."
+            )
+        n = train.shape[-2]
+        covariance = joint.covariance_matrix
+        return (
+            training_prior.mean,
+            training_prior.covariance_matrix,
+            covariance[..., :n, n:],
+            joint.mean[..., n:],
+            covariance[..., n:, n:],
+        )
+
+    def _uses_likelihood_marginal(self) -> bool:
+        from botorch_rs.models._torch_gaussian_likelihood import is_fixed_noise, uses_marginal
+
+        return type(self.likelihood) is not TorchHadamardLikelihood and (
+            uses_marginal(self.likelihood)
+            or (getattr(self, "_is_custom_likelihood", False) and is_fixed_noise(self.likelihood))
+        )
+
+    def _likelihood_marginal(
+        self, mean: Any, covariance: Any, X: Any, *, training: bool = False, **kwargs: Any
+    ) -> Any:
+        from botorch_rs.models._torch_gaussian_likelihood import gaussian_marginal
+
+        mapped = self._mapped_inputs(X)
+        if isinstance(self.likelihood, TorchHadamardLikelihood) and kwargs.get("params") is None:
+            kwargs["params"] = (mapped,)
+        return gaussian_marginal(
+            self.likelihood, mean, covariance, mapped, training=training, **kwargs
+        )
+
+    def _conditioned_tensors(
+        self, X: Any, observation_noise: bool = False, *, inputs_transformed: bool = False
+    ) -> Any:
+        """Condition in fitted target units, without output selection or untransform."""
+        self.eval()
+        train, targets, fixed = self._training_values()
+        query = X if inputs_transformed else self.transform_inputs(X)
+        if not torch.equal(query[..., self._task_feature], X[..., self._task_feature]):
+            raise UnsupportedError(
+                "Input transforms must preserve categorical task labels; exclude task_feature."
+            )
+        batch = torch.broadcast_shapes(train.shape[:-2], query.shape[:-2])
+        query = query.expand(*batch, *query.shape[-2:])
+        train_mean, train_cov, cross, query_mean, query_cov = self._task_prior_blocks(train, query)
+        if self._uses_likelihood_marginal():
+            observed_mean, observed_cov = self._likelihood_marginal(
+                train_mean, train_cov, train, training=True
+            )
+            if self._noise_override is not None:
+                diagonal = (observed_cov - train_cov).diagonal(dim1=-2, dim2=-1)
+                noise = torch.where(
+                    torch.isnan(self._noise_override), diagonal, self._noise_override
+                )
+                observed_mean, observed_cov = self._likelihood_marginal(
+                    train_mean, train_cov, train, training=True, noise=noise
+                )
+            train_mean, train_cov = observed_mean, observed_cov
+            train_noise = torch.zeros_like(train_mean)
+        else:
+            train_noise = self._training_noise(targets, fixed)
+        chol, alpha = _rs.tensor_exact_gp_factor(targets, train_cov, train_mean, train_noise)
+        mean, covariance = _rs.tensor_exact_gp_predict(chol, alpha, cross, query_cov, query_mean)
+        if observation_noise:
+            if self._uses_likelihood_marginal():
+                from botorch_rs.models._torch_gaussian_likelihood import is_fixed_noise
+
+                query_noise = (
+                    self._fixed_noise_at(self._mapped_inputs(query), self.likelihood.noise)
+                    if is_fixed_noise(self.likelihood)
+                    else None
+                )
+                mean, covariance = self._likelihood_marginal(
+                    mean, covariance, query, noise=query_noise
+                )
+            else:
+                mapped = self._mapped_inputs(query)
+                noise = (
+                    self._noise_at(mapped) if fixed is None else self._fixed_noise_at(mapped, fixed)
+                )
+                covariance = covariance + torch.diag_embed(noise)
+        return mean, covariance
+
+    def __call__(self, X: Any, *args: Any, **kwargs: Any) -> Any:
+        if self.training:
+            return nn.Module.__call__(self, X, *args, **kwargs)
+        if args or kwargs:
+            raise UnsupportedError(
+                "Evaluation calls accept one input Tensor; use posterior for options."
+            )
+        if (
+            not isinstance(X, torch.Tensor)
+            or X.ndim < 2
+            or X.shape[-1] != self._train_X.shape[-1]
+            or X.dtype != self._train_X.dtype
+            or X.device != self._train_X.device
+        ):
+            raise ValueError(
+                "Evaluation inputs must include tasks and match the model's dtype/device."
+            )
+        mean, covariance = self._conditioned_tensors(X, inputs_transformed=True)
+        return TorchGPyTorchPosterior(mean.unsqueeze(-1), covariance).distribution
+
     def posterior(
         self,
         X: Any,
@@ -573,34 +693,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         if not isinstance(observation_noise, bool):
             raise TypeError("observation_noise must be bool.")
         full, m, q = self._query_inputs(X, output_indices)
-        self.eval()
-        raw_train, Y, fixed = self._training_values()
-        transformed = self.transform_inputs(full)
-        if not torch.equal(transformed[..., self._task_feature], full[..., self._task_feature]):
-            raise UnsupportedError(
-                "Input transforms must preserve categorical task labels; exclude task_feature."
-            )
-        train_X, query_X = self._mapped_inputs(raw_train), self._mapped_inputs(transformed)
-        chol, alpha = _rs.tensor_exact_gp_factor(
-            Y,
-            self._covariance(train_X, train_X),
-            self._mean(train_X),
-            self._training_noise(Y, fixed),
-        )
-        query_noise = None
-        if observation_noise:
-            if fixed is None:
-                query_noise = self._noise_at(query_X)
-            else:
-                query_noise = self._fixed_noise_at(query_X, fixed)
-        mean, covariance = _rs.tensor_exact_gp_predict(
-            chol,
-            alpha,
-            self._covariance(train_X, query_X),
-            self._covariance(query_X, query_X),
-            self._mean(query_X),
-            observation_noise=query_noise,
-        )
+        mean, covariance = self._conditioned_tensors(full, observation_noise)
         mean = mean.reshape(*mean.shape[:-1], m, q).transpose(-1, -2)
         posterior = TorchGPyTorchPosterior(mean, covariance)
         if self.outcome_transform is not None:
@@ -618,10 +711,10 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         return posterior if posterior_transform is None else posterior_transform(posterior, X=X)
 
     def forward(self, X: Any) -> Any:
-        if not self.training:
-            return self.posterior(X).distribution
-        self._fit_transform_graphs()
-        transform = self.input_transform
+        """The latent prior, including in eval mode; __call__ conditions in eval."""
+        if self.training:
+            self._fit_transform_graphs()
+        transform = self.input_transform if self.training else None
         if transform is not None:
             X_transformed = getattr(transform, "preprocess_transform", transform)(X)
             if not torch.equal(X_transformed[..., self._task_feature], X[..., self._task_feature]):
@@ -634,15 +727,46 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             self._mean(X).unsqueeze(-1), self._covariance(X, X)
         ).distribution
 
-    def _exact_mll(self, output: Any = None, target: Any = None) -> Any:
+    def _exact_mll(
+        self, output: Any = None, target: Any = None, *params: Any, **kwargs: Any
+    ) -> Any:
         X, Y, fixed = self._training_values()
         if output is None:
-            X = self._mapped_inputs(X)
-            mean, covariance = self._mean(X), self._covariance(X, X)
+            if type(self).forward is TorchMultiTaskGP.forward:
+                mapped = self._mapped_inputs(X)
+                mean, covariance = self._mean(mapped), self._covariance(mapped, mapped)
+            else:
+                prior = nn.Module.__call__(self, self.train_inputs[0] if self.training else X)
+                mean, covariance = prior.mean, prior.covariance_matrix
         else:
             Y = Y if target is None else target
             mean, covariance = output.mean, output.covariance_matrix
-        value = _rs.tensor_exact_mll(Y, covariance, mean, self._training_noise(Y, fixed))
+        if self._uses_likelihood_marginal():
+            prior_mean, prior_covariance = mean, covariance
+            mean, covariance = self._likelihood_marginal(
+                mean, covariance, X, training=True, params=params or None, kwargs=kwargs
+            )
+            if self._noise_override is not None and "noise" not in kwargs:
+                diagonal = (covariance - prior_covariance).diagonal(dim1=-2, dim2=-1)
+                override = torch.where(
+                    torch.isnan(self._noise_override), diagonal, self._noise_override
+                )
+                mean, covariance = self._likelihood_marginal(
+                    prior_mean,
+                    prior_covariance,
+                    X,
+                    training=True,
+                    params=params or None,
+                    kwargs={**kwargs, "noise": override},
+                )
+            noise = torch.zeros_like(mean)
+        else:
+            if params or kwargs:
+                raise TypeError(
+                    "Additional likelihood arguments require a supplied Gaussian marginal."
+                )
+            noise = self._training_noise(Y, fixed)
+        value = _rs.tensor_exact_mll(Y, covariance, mean, noise, normalize=False)
         return (value + self._log_prior()) / Y.shape[-1]
 
     def set_train_data(self, inputs: Any = None, targets: Any = None, strict: bool = True) -> None:
@@ -662,6 +786,44 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         self._transform_fit_X, self._transform_fit_Y = X, Y
 
     def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
+        from botorch_rs.models._torch_gaussian_likelihood import (
+            is_fixed_noise,
+            is_gpytorch_gaussian,
+        )
+
+        if getattr(self, "_is_custom_likelihood", False) and is_fixed_noise(self.likelihood):
+            from botorch_rs.models._numpyro_fitting import _copy_transform
+            from botorch_rs.models._torch_fully_bayesian_loader import _copy_model
+
+            original_fixed = (
+                self.likelihood.noise_covar.noise
+                if is_gpytorch_gaussian(self.likelihood)
+                else self.likelihood.noise
+            )
+            fixed = original_fixed.unsqueeze(-1)
+            self._fit_transform_graphs()
+            if self.outcome_transform is not None:
+                fixed = self.outcome_transform.untransform(torch.zeros_like(fixed), fixed)[1]
+            stage = _copy_model(self)
+            stage.likelihood = _copy_transform(self.likelihood)
+            stage._train_Yvar, stage._is_custom_likelihood = fixed, False
+            conditioned = TorchMultiTaskGP.condition_on_observations(
+                stage, X, Y, noise=noise, **kwargs
+            )
+            # The supplied likelihood's fixed noise and new conditioning noise
+            # already use fitted target units. Preserve their actual graph
+            # directly instead of retaining an unnecessary transform round trip.
+            extra = noise.squeeze(-1) if noise.ndim > 1 and noise.shape[-1] == 1 else noise
+            batch, count = conditioned.batch_shape, X.shape[-2]
+            conditioned.likelihood.noise = torch.cat(
+                (
+                    original_fixed.expand(*batch, original_fixed.shape[-1]),
+                    extra.expand(*batch, count),
+                ),
+                dim=-1,
+            )
+            conditioned._is_custom_likelihood = True
+            return conditioned
         if kwargs:
             raise UnsupportedError(f"Unsupported conditioning arguments: {sorted(kwargs)}.")
         if (
@@ -692,7 +854,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
                 noise = noise.unsqueeze(-1)
             if not bool(torch.isfinite(noise).all() & (noise >= 0).all()):
                 raise ValueError("Conditioning noise must be finite and nonnegative.")
-        elif self._train_Yvar is not None:
+        elif self._train_Yvar is not None and not self._is_custom_likelihood:
             raise ValueError("Fixed-noise multitask conditioning requires noise.")
         batch = torch.broadcast_shapes(
             self.batch_shape, X.shape[:-2], Y.shape[:-2], () if noise is None else noise.shape[:-2]
@@ -716,7 +878,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             ),
             dim=-2,
         )
-        if self._train_Yvar is not None:
+        if self._train_Yvar is not None and not self._is_custom_likelihood:
             # As in BoTorch, supplied conditioning noise is already transformed.
             self._fit_transform_graphs()
             raw_noise = noise
@@ -744,10 +906,10 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         observed = (tasks.reshape(-1, 1) == torch.arange(self.num_tasks, device=X.device)).any(0)
         model._observed_task_indices = observed.nonzero().squeeze(-1)
         model._unobserved_task_indices = (~observed).nonzero().squeeze(-1)
-        if self._train_Yvar is not None:
+        if self._train_Yvar is not None and not self._is_custom_likelihood:
             model.likelihood = copy.copy(self.likelihood)
             model.likelihood._buffers = self.likelihood._buffers.copy()
-            model.likelihood.noise = model._training_values()[2].detach().clone()
+            model.likelihood.noise = model._training_values()[2].clone()
         return model.eval()
 
     def fantasize(self, X: Any, sampler: Any, observation_noise: Any = None, **kwargs: Any) -> Any:
@@ -769,9 +931,16 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         if not propagate:
             targets = targets.detach()
         noise = None
-        if self._train_Yvar is not None:
+        if self._train_Yvar is not None and not self._is_custom_likelihood:
             _, _, fixed = self._training_values()
             noise = self._fixed_noise_at(
                 self._mapped_inputs(self.transform_inputs(X)), fixed
             ).unsqueeze(-1)
+        elif getattr(self, "_is_custom_likelihood", False):
+            from botorch_rs.models._torch_gaussian_likelihood import is_fixed_noise
+
+            if is_fixed_noise(self.likelihood):
+                noise = self._fixed_noise_at(
+                    self._mapped_inputs(self.transform_inputs(X)), self.likelihood.noise
+                ).unsqueeze(-1)
         return self.condition_on_observations(X, targets, noise=noise)

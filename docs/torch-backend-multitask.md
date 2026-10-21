@@ -55,6 +55,49 @@ For a learned-noise model, explicitly supplied noise enters both the posterior
 mean and covariance, retaining the native port's repair for upstream #3396.
 The original model's training data and fixed-noise inspection buffers stay intact.
 
+## Direct calls and caller-defined priors
+
+`forward(X)` always returns the latent prior. In training mode it applies the
+input transform; in evaluation mode it accepts inputs already transformed by
+the caller. An evaluation-mode `model(X)` conditions on the training data and
+returns the Gaussian in fitted, outcome-transformed target units. It accepts
+the complete long-format input, including its physical task column. It neither
+applies the input transform again nor untransforms the outcome. Public
+`posterior(raw_X)` separately applies the input transform, selects/expands
+requested tasks, and untransforms the resulting outcome. These distinctions
+match the pinned source's ExactGP protocol.
+
+Caller subclasses of MultiTaskGP and LCEMGP retain their actual `forward`
+method. Prediction evaluates that prior jointly on transformed training and
+query inputs to obtain its cross-covariance; the MLL also evaluates the actual
+prior. Cooperative `super().forward`, added parameters, serialization and full
+data/query/parameter Hessian-vector products remain supported. Built-in priors
+retain their blockwise kernel evaluation.
+
+Explicit Gaussian likelihoods retain their actual marginal and object identity,
+including input-dependent, correlated noise covariance and mean changes. A
+canonical supplied Gaussian need not expose a public `.noise` attribute. It
+owns the observation law even if constructor `train_Yvar` was also supplied,
+as in the reference. Task indices passed to likelihoods are mapped indices,
+preserving the existing #3396 raw-label repair. Fixed likelihood conditioning
+appends the actual fixed component while preserving separate learned noise
+parameters and the graphs of original/new noise tensors. Explicit `noise=`
+overrides follow the supplied likelihood's own marginal implementation.
+
+Thirty-two new CPU/CUDA cases compare direct prior/conditional values and first
+derivatives against official BoTorch
+`b0dd01be61d517c387e234903a6e2cc38c057ea2`, and independently check complete
+Gaussian conditioning/MLL values and all data/noise/parameter mixed Hessians.
+They cover Normalize/Standardize, interior task columns, noncontiguous labels,
+query batches, actual correlated likelihoods, subclass serialization and strict
+host-conversion guards. The direct source comparisons use contiguous inferred-
+noise labels to isolate the already reported #3396 defect, and omit fixed
+LCEM embeddings to isolate the source's already reported ARD-width defect;
+independent Gaussian controls retain those configurations. All 303 related
+MT/LCEM/fully Bayesian/subclass/exact-likelihood regressions pass, excluding
+two separately tested NUTS replay cases. Torch 2.14.1 CPU passes 16 new cases
+and skips 16 CUDA cases. Ruff and Mypy pass.
+
 Fantasies sample the correlated observed posterior and append each sample set
 as a model batch. Multiple sample axes and `propagate_grads=True` preserve
 mixed higher derivatives through fantasy inputs, sampled targets and all model
