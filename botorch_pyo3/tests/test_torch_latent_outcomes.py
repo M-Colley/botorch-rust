@@ -3,6 +3,8 @@
 # ruff: noqa: E402
 from __future__ import annotations
 
+import copy
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -303,3 +305,43 @@ def test_pinned_source_training_targets_and_transformed_gaussian_evaluation(devi
     torch.testing.assert_close(
         a_law.covariance_matrix, b_law.covariance_matrix, atol=3e-9, rtol=3e-8
     )
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("family", ["log", "chain", "affine"])
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("missing", [False, True])
+def test_latent_model_state_roundtrip_preserves_grid_targets_and_outcome_law(
+    device, family, batch, missing
+):
+    X, T, Y, Q, U = _data(device, missing=missing, batch=batch)
+    model = LatentKroneckerGP(X, T, Y, outcome_transform=_transform(family, Y), backend="torch")
+    with torch.no_grad():
+        initial = model.posterior(Q, U)
+        means, variances = initial.mean.clone(), initial.variance.clone()
+        targets = model.train_targets.clone()
+        state = copy.deepcopy(model.state_dict())
+        for parameter in model.parameters():
+            parameter.add_(0.13)
+        model.load_state_dict(state)
+        restored = model.posterior(Q, U)
+    torch.testing.assert_close(restored.mean, means)
+    torch.testing.assert_close(restored.variance, variances)
+    torch.testing.assert_close(model.train_targets, targets)
+    assert model.train_targets.shape == targets.shape
+    assert model.train_T.shape[-2] == 2
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("family", ["log", "chain", "affine"])
+def test_latent_fantasy_state_roundtrip_has_writable_time_batches(device, family):
+    X, T, Y, Q, U = _data(device)
+    model = LatentKroneckerGP(X, T, Y, outcome_transform=_transform(family, Y), backend="torch")
+    with torch.no_grad():
+        fantasy = model.fantasize(Q[:1], IIDNormalSampler(torch.Size([2]), seed=178))
+        before = fantasy.posterior(Q, U)
+        means, variances = before.mean.clone(), before.variance.clone()
+        fantasy.load_state_dict(copy.deepcopy(fantasy.state_dict()))
+        restored = fantasy.posterior(Q, U)
+    torch.testing.assert_close(restored.mean, means)
+    torch.testing.assert_close(restored.variance, variances)

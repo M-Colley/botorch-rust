@@ -33,6 +33,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | SAC structural indices and device metadata after module migration | New [BoTorch #3493](https://github.com/meta-pytorch/botorch/pull/3493); 10 source tests and two migration subtests pass |
 | SAC/LCEA dataset constructors omit optional noise | New [BoTorch #3472](https://github.com/meta-pytorch/botorch/pull/3472) |
 | Latent Kronecker sample covariance, outcome-space moments, time batches and composite factors | New [BoTorch #3488](https://github.com/meta-pytorch/botorch/pull/3488); rechecked for general Tensor outcome coverage, including nonlinear moments, without filing a duplicate |
+| Latent Kronecker state loading transposes flattened observed targets/noise | New [BoTorch #3526](https://github.com/meta-pytorch/botorch/pull/3526); 9 source tests and 128 CPU/CUDA subtests pass; regressions fail on unchanged main |
 | Batched Boltzmann normalization | Existing [BoTorch #3435](https://github.com/meta-pytorch/botorch/pull/3435) |
 | Integrated white-noise cross diagonal | Existing [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387) |
 | Integrated Wiener coincident smooth Hessians | New [BoTorch #3496](https://github.com/meta-pytorch/botorch/pull/3496); four source tests and 18 CPU/CUDA subtests pass |

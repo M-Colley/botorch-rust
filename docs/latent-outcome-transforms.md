@@ -43,3 +43,10 @@ joint Matheron constructions check values, samples, every training/query/time
 and model/transform leaf derivative, and mixed Hessian products on CPU/CUDA.
 The same tests cover model batches, missing cells, snapshot stability,
 conditioning, fantasies, and source-valid stratified input context.
+
+Model and fantasy state round trips also cover complete/missing grids and
+batches. Internally broadcast time buffers own writable storage, retaining
+their original Tensor graphs while permitting standard `load_state_dict`
+copying. The separate source bug that transposes flattened observed targets
+when preserving loaded transforms is fixed in
+[BoTorch PR #3526](https://github.com/meta-pytorch/botorch/pull/3526).

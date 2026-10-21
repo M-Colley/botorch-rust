@@ -186,7 +186,7 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
                 "Expected train_X batch x n x d, train_T batch x t x 1 and train_Y batch x n x t."
             )
         try:
-            train_T = train_T.expand(*batch, *train_T.shape[-2:])
+            train_T = train_T.expand(*batch, *train_T.shape[-2:]).clone()
         except RuntimeError as error:
             raise ValueError(
                 "train_T batch shape must broadcast to train_X's batch shape."
@@ -611,7 +611,7 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             ),
             -2,
         )
-        model._train_T = self._train_T.expand(*batch, *self._train_T.shape[-2:])
+        model._train_T = self._train_T.expand(*batch, *self._train_T.shape[-2:]).clone()
         model._mask_valid = self._validate_mask(model._train_Y)
         model._freeze_outcome_statistics = True
         return model.eval()
