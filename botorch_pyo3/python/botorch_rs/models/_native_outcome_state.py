@@ -13,7 +13,7 @@ import sys
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import broadcast_to
+from botorch_rs._arrays import broadcast_to, to_flat
 from botorch_rs.models.transforms.outcome import (
     ChainedOutcomeTransform,
     Standardize,
@@ -53,6 +53,7 @@ def _steps(
         transform._sync_native_statistics()
         step = transform._resolved_step(dimension)
         means, stdvs = step.stats
+        state = transform.__dict__.get("_tensor_standardize")
         signature = (
             "stratified",
             transform._stratification_idx,
@@ -60,6 +61,7 @@ def _steps(
             tuple(means),
             tuple(stdvs),
             transform.min_stdv,
+            None if state is None else tuple(to_flat(state.strata_mapping)[0]),
         )
         return [[step] for _ in range(count)], signature
     if isinstance(transform, Standardize):

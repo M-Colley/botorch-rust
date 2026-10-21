@@ -33,6 +33,10 @@ def _model(family):
             "higher": HigherOrderGP,
             "latent": LatentKroneckerGP,
         }[family]
+        if family == "latent":
+            return cls(x, x.new_tensor([[0.0], [1.0]]), y, backend="native"), x[:2]
+        if family == "kronecker":
+            return cls(x, y, outcome_transform=Standardize(2), backend="native"), x[:2]
         return cls(x, y, backend="native"), x[:2]
     if family.startswith("batched"):
         x = x.expand(2, 4, 1).clone()

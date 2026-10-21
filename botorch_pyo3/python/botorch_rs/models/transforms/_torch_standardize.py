@@ -128,8 +128,9 @@ class TensorStandardizeState(nn.Module):
             self.stdvs = self.stdvs.to(Y)
             self.strata_mapping = self.strata_mapping.to(device=Y.device)
             strata = X[..., self._stratification_idx].long()
-            means_per_task, stdvs_per_task = [], []
-            for index, task in enumerate(self._task_values):
+            means, stdvs = self.means, self.stdvs
+            for task in strata.unique():
+                index = self.strata_mapping[task].long().reshape(1).clone()
                 observed = (strata == task).unsqueeze(-1) & ~Y.isnan()
                 count = observed.sum(dim=-2)
                 values = torch.where(observed, Y, 0)
@@ -138,13 +139,10 @@ class TensorStandardizeState(nn.Module):
                 variance = difference.square().sum(-2) / (count - 1).clamp_min(1)
                 std = variance.clamp_min(self._min_stdv**2).sqrt()
                 std = torch.where((count > 1) & (variance >= self._min_stdv**2), std, 1.0)
-                means_per_task.append(torch.where(count > 0, mean, self.means[..., index, :]))
-                stdvs_per_task.append(torch.where(count > 0, std, self.stdvs[..., index, :]))
-            # Non-contiguous task mappings can contain unused table rows.
-            for index in range(len(self._task_values), self.means.shape[-2]):
-                means_per_task.append(self.means[..., index, :])
-                stdvs_per_task.append(self.stdvs[..., index, :])
-            means, stdvs = torch.stack(means_per_task, -2), torch.stack(stdvs_per_task, -2)
+                mean = torch.where(count > 0, mean, means.index_select(-2, index).squeeze(-2))
+                std = torch.where(count > 0, std, stdvs.index_select(-2, index).squeeze(-2))
+                means = means.index_copy(-2, index, mean.unsqueeze(-2))
+                stdvs = stdvs.index_copy(-2, index, std.unsqueeze(-2))
         self.means, self.stdvs, self._stdvs_sq = means, stdvs, stdvs.square()
         self._is_trained = torch.tensor(True, device=Y.device)
         return self
@@ -155,12 +153,10 @@ class TensorStandardizeState(nn.Module):
         if X is None:
             raise ValueError("X is required for StratifiedStandardize.")
         strata = X[..., self._stratification_idx].long()
-        # Equality with declared tasks handles out-of-range and negative values
-        # without indexing an unrelated table row.
-        tasks = torch.tensor(self._task_values, device=X.device, dtype=torch.long)
-        matches = strata.unsqueeze(-1) == tasks
-        known = matches.any(-1, keepdim=True)
-        indices = matches.long().argmax(-1, keepdim=True)
+        in_range = (strata >= 0) & (strata < self.strata_mapping.numel())
+        mapped = self.strata_mapping[strata.clamp(0, self.strata_mapping.numel() - 1)]
+        known = (in_range & ~mapped.isnan()).unsqueeze(-1)
+        indices = torch.where(known.squeeze(-1), mapped, 0).long().unsqueeze(-1)
         if not bool(known.all()):
             warnings.warn(
                 "Predictions are being made for tasks that were not observed during training. "

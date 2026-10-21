@@ -651,6 +651,9 @@ class LCEMGP(MultiTaskGP):
         return self.train(False)
 
     def train(self, mode: bool = True) -> LCEMGP:
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         self.training = mode
         tf = getattr(self, "outcome_transform", None)
         if tf is not None:

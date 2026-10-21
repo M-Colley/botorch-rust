@@ -802,6 +802,24 @@ class StratifiedStandardize(Standardize):
         idx = self._stratification_idx
         if idx < 0:
             idx += d
+        state = self.__dict__.get("_tensor_standardize")
+        if state is not None and bool(state._is_trained):
+            means = to_flat(state.means)[0]
+            stdvs = to_flat(state.stdvs)[0]
+            values, mapped_means, mapped_stdvs = [], [], []
+            for label, value in enumerate(to_flat(state.strata_mapping)[0]):
+                if math.isnan(value):
+                    continue
+                if not math.isfinite(value) or not 0 <= int(value) < len(means):
+                    raise RuntimeError("Stratification mapping index is out of bounds.")
+                values.append(label)
+                mapped_means.append(means[int(value)])
+                mapped_stdvs.append(stdvs[int(value)])
+            if not values:
+                values, mapped_means, mapped_stdvs = [0], [0.0], [1.0]
+            return _rs.OutcomeStep.stratified(
+                idx, values, self._min_stdv, (mapped_means, mapped_stdvs)
+            )
         stats = self._step.stats if self._step.is_trained else None
         return _rs.OutcomeStep.stratified(idx, self._task_values, self._min_stdv, stats)
 
@@ -885,6 +903,19 @@ class StratifiedStandardize(Standardize):
     def forward(self, Y: Any, Yvar: Any = None, X: Any = None) -> tuple[Any, Any]:
         if first_kind(Y).lib == "torch":
             return self._tensor_state(Y)(Y, Yvar, X=X)
+        state = self.__dict__.get("_tensor_standardize")
+        if self.training and state is not None and bool(state._is_trained):
+            ydata, vdata, x, shape = self._xy(Y, Yvar, X)
+            values = state.means.new_tensor(ydata).reshape(shape)
+            noise = None if vdata is None else values.new_tensor(vdata).reshape(shape)
+            context = values.new_tensor(list(x[0])).reshape(tuple(x[1]))
+            result, variance = state.train()(values, noise, X=context)
+            kind = first_kind(Y)
+            self._kind = kind
+            return (
+                from_flat(list(to_flat(result)[0]), shape, kind),
+                None if variance is None else from_flat(list(to_flat(variance)[0]), shape, kind),
+            )
         self._sync_native_statistics()
         ydata, vdata, x, shape = self._xy(Y, Yvar, X)
         kind = first_kind(Y)

@@ -328,6 +328,7 @@ def _native_entries(module: Any) -> list[tuple[str, Any, str]]:
             "MultiTaskConditionalKernel",
             "HierarchicalConditionalKernel",
             "_ActivatedKernel",
+            "PositiveIndexKernel",
         }
         if (
             type(module).__module__ != "botorch_rs.kernels"
@@ -424,6 +425,7 @@ def _model_entries(module: Any) -> list[tuple[str, Any, str]]:
     from botorch_rs.models.deterministic import DeterministicModel
     from botorch_rs.models.ensemble import EnsembleModel
     from botorch_rs.models.gp_regression import SingleTaskGP
+    from botorch_rs.models.gpytorch import GPyTorchModel
     from botorch_rs.models.model import Model, ModelList
 
     name = type(module).__name__
@@ -448,7 +450,14 @@ def _model_entries(module: Any) -> list[tuple[str, Any, str]]:
         type(module) is Model
         or isinstance(
             module,
-            (SingleTaskGP, ModelList, DeterministicModel, DeterministicCostModel, EnsembleModel),
+            (
+                SingleTaskGP,
+                GPyTorchModel,
+                ModelList,
+                DeterministicModel,
+                DeterministicCostModel,
+                EnsembleModel,
+            ),
         )
         or name == "ModelListGP"
     ):

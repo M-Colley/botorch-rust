@@ -460,7 +460,7 @@ class LatentKroneckerGP(GPyTorchModel, FantasizeMixin):
                     previous.set_raw_parameters(raw)
 
     def __deepcopy__(self, memo: dict[int, Any]) -> LatentKroneckerGP:
-        new = self.__class__.__new__(self.__class__)
+        new = object.__new__(self.__class__)
         memo[id(self)] = new
         for name, value in self.__dict__.items():
             new.__dict__[name] = value.copy() if name == "_rs" else copy.deepcopy(value, memo)

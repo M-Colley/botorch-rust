@@ -28,8 +28,9 @@ class Model(NativeBufferModule):
     def dtypes_of_buffers(self) -> set[Any]:
         """Dtypes of registered buffers, including supported native state.
 
-        Native state is read as tensor snapshots in its logical public dtype;
-        training data and model parameters are not registered buffers.
+        Native-only state is read as tensor snapshots in its logical public
+        dtype. Registered Torch child buffers retain identity; training data
+        and model parameters are not registered buffers.
         """
         return {buffer.dtype for buffer in self.buffers()}
 
