@@ -1,0 +1,411 @@
+{
+  "kind": "installed-wheel-reference-blocked-suite-certificate",
+  "created_utc": "2026-10-21T21:18:28.141136+00:00",
+  "scope": "All canonical cases collected from the frozen suite with reference dependencies blocked in principal workers; not a source-equivalence or global behavioral-coverage certificate.",
+  "version": "0.3.0",
+  "source_revision": "258ff6b544159b2c5e2797c331e39f1095ab7a3d",
+  "source_root": "D:/botorch-rs-release-030",
+  "started_utc": "2026-10-21T20:57:37.228345+00:00",
+  "ended_utc": "2026-10-21T21:12:55.665956+00:00",
+  "result": {
+    "all_passed": true,
+    "suite_complete": true,
+    "fingerprints_stable": true,
+    "batches": 40,
+    "canonical_collected_cases": 6931,
+    "reported_cases": 6931,
+    "accounted_exactly_once": 6931,
+    "passed": 4154,
+    "case_skipped": 2777,
+    "executed_call_phases": 6742,
+    "call_phase_passed": 4154,
+    "call_phase_skipped": 2588,
+    "setup_phase_skipped_without_call": 189,
+    "collection_skipped_modules": 146,
+    "modules_contributing_collected_cases": 199,
+    "suite_python_files_hashed_including_helpers": 367,
+    "equivalence_marked_cases_collected": 0,
+    "denominators": [
+      "6931 = 4154 passed cases + 2777 skipped cases.",
+      "2777 case skips = 2588 call-phase skips + 189 setup-phase skips.",
+      "6742 executed call phases = 4154 passed calls + 2588 skipped calls; 189 setup-skipped cases have no call phase.",
+      "146 modules skipped during collection are separate from the 6931 collected-case denominator; no case count is imputed for uncollected modules.",
+      "367 hashed suite Python files include helpers; they are not a test-case or collected-module denominator."
+    ]
+  },
+  "independent_audit": {
+    "collection_ids_unique": true,
+    "raw_batch_inventory_exactly_001_through_040": true,
+    "raw_batch_items_equal_expected_file_groups_and_summary_ids": true,
+    "collected_reported_multisets_equal": true,
+    "each_case_has_one_setup_and_one_passing_teardown": true,
+    "each_setup_passed_case_has_one_call": true,
+    "setup_skipped_cases_have_no_call": true,
+    "no_deselections_failures_unexecuted_cases_or_xfails": true,
+    "all_worker_provenance_equal_before_and_after": true,
+    "wheel_native_manifest_and_verifier_bytes_rehashed": true,
+    "canonical_case_ids_sha256": "653ee0de155a463b9d4663dc20718d65580f013db9d0da6ae50e86e408d69a8c",
+    "canonical_case_results_sha256": "da8d2159151f7621e044fe97ccdc3181b8c883409133e56befdfa9566327d618",
+    "case_result_digest_encoding": "UTF-8 sorted-key compact JSON of records sorted by id: id,outcome,skip_phase,call_executed.",
+    "id_digest_encoding": "UTF-8 compact JSON of sorted canonical ID strings."
+  },
+  "dependency_mode": {
+    "reference_blocked": true,
+    "method": "Principal worker sys.modules sentinels plus MetaPathFinder; blocked packages remain installed.",
+    "blocked_import_roots": [
+      "botorch",
+      "gpytorch",
+      "linear_operator",
+      "scipy",
+      "pyro",
+      "numpyro",
+      "jax"
+    ],
+    "scope": "worker process; test-owned subprocess dependency controls remain in effect",
+    "subprocess_boundary": "Test-owned child processes retain their own dependency controls. This certificate does not claim a universal dependency block for arbitrary descendants.",
+    "source_enabled_equivalence_claimed": false,
+    "global_behavioral_coverage_claimed": false,
+    "counts_must_not_be_added_to_source_enabled_run": true
+  },
+  "artifact": {
+    "build_manifest": "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\build-manifest.json",
+    "build_manifest_sha256": "1657cd1bea0d962fcadff898763b4120738d3803f713b2a43a3687b79d85d5b1",
+    "wheel": "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\dist\\botorch_rust-0.3.0-cp311-abi3-win_amd64.whl",
+    "wheel_sha256": "f378b6aa5b0603054058102a93780f720a0a92f92dc66bbf7f029252883bdd5c",
+    "revision": "258ff6b544159b2c5e2797c331e39f1095ab7a3d",
+    "native_sha256": "8fa0323b0b1cf80ab4e35dee8216de497586c3213b8489a79abf5bf492ee3675",
+    "distribution_version": "0.3.0",
+    "distribution_metadata": "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\installed\\botorch_rust-0.3.0.dist-info\\METADATA",
+    "installed_record_sha256": "25d4fbb195b55435c54bbbdd10673e78dcdde290f473c2c78ef4e26c1489e724",
+    "pip_direct_url": {
+      "archive_info": {
+        "hash": "sha256=f378b6aa5b0603054058102a93780f720a0a92f92dc66bbf7f029252883bdd5c",
+        "hashes": {
+          "sha256": "f378b6aa5b0603054058102a93780f720a0a92f92dc66bbf7f029252883bdd5c"
+        }
+      },
+      "url": "file:///D:/botorch-release-030/checkpoints/258ff6b54415/dist/botorch_rust-0.3.0-cp311-abi3-win_amd64.whl"
+    }
+  },
+  "reference_pin": {
+    "root": "C:/Users/Mark/Desktop/botorch-rs/.reference/botorch",
+    "revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "status": "",
+    "python_payload_sha256": "4232f1f71d4163aa230a768e66a582149ac0d6f3ef7f5c05bff010cc262a3428",
+    "imported_for_reference_comparison": false
+  },
+  "stable_source_fingerprints": {
+    "head": "258ff6b544159b2c5e2797c331e39f1095ab7a3d",
+    "status": "",
+    "reference_head": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "reference_status": "",
+    "reference_payload_sha256": "4232f1f71d4163aa230a768e66a582149ac0d6f3ef7f5c05bff010cc262a3428",
+    "python_payload_sha256": "1f6c36758b71d57e222445f532bdc32892c7ea73d66fe6b1af8c3520ee2975ef",
+    "python_file_count": 358,
+    "installed_payload_sha256": "1f6c36758b71d57e222445f532bdc32892c7ea73d66fe6b1af8c3520ee2975ef",
+    "tests_sha256": "db8d8f9030809c0d11d0b308e6058e3376637bfbe8d887918be7b48a75c49700",
+    "test_file_count": 367,
+    "worker_sha256": "f46152ac48674e7c378b59be7c23ddad3ee6d457974b5694e6fb76a633bf9794",
+    "controller_sha256": "0c64c7c0697c52f351599da6fffe1120d4b2d0e8d5534a687d1a8ece2acbcfca"
+  },
+  "import_provenance": {
+    "python": "3.13.12 | packaged by Anaconda, Inc. | (main, Feb 24 2026, 16:05:56) [MSC v.1942 64 bit (AMD64)]",
+    "executable": "C:\\Users\\Mark\\miniconda3\\python.exe",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "dependencies": {
+      "botorch_rs": {
+        "distribution": "botorch-rust",
+        "distribution_version": "0.3.0",
+        "imported": true,
+        "runtime_version": "0.3.0",
+        "origin": "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\installed\\botorch_rs\\__init__.py",
+        "origin_sha256": "087b66c3a049ee6f2f3a28ceca3956acca1f486a63c8c5343e2269b1a6babd90"
+      },
+      "botorch": {
+        "distribution": "botorch",
+        "distribution_version": "0.18.1",
+        "imported": false,
+        "reference_blocked": true,
+        "origin": null,
+        "not_imported_reason": "Reference-blocked verification mode"
+      },
+      "torch": {
+        "distribution": "torch",
+        "distribution_version": "2.13.0+cu132",
+        "imported": true,
+        "runtime_version": "2.13.0+cu132",
+        "origin": "C:\\Users\\Mark\\miniconda3\\Lib\\site-packages\\torch\\__init__.py",
+        "origin_sha256": "767496b63c899ec3d1106a4c1eeac664a9b3947a9b2f9eefa7a901cdfe8a0288"
+      },
+      "gpytorch": {
+        "distribution": "gpytorch",
+        "distribution_version": "1.15.2",
+        "imported": false,
+        "reference_blocked": true,
+        "origin": null,
+        "not_imported_reason": "Reference-blocked verification mode"
+      },
+      "linear_operator": {
+        "distribution": "linear-operator",
+        "distribution_version": "0.6.1",
+        "imported": false,
+        "reference_blocked": true,
+        "origin": null,
+        "not_imported_reason": "Reference-blocked verification mode"
+      },
+      "numpy": {
+        "distribution": "numpy",
+        "distribution_version": "2.5.2",
+        "imported": true,
+        "runtime_version": "2.5.2",
+        "origin": "C:\\Users\\Mark\\miniconda3\\Lib\\site-packages\\numpy\\__init__.py",
+        "origin_sha256": "a6958cb364663b7acce81ccfd58eeb65a2b34d5376157f924777b97211a73be4"
+      },
+      "scipy": {
+        "distribution": "scipy",
+        "distribution_version": "1.18.0",
+        "imported": false,
+        "reference_blocked": true,
+        "origin": null,
+        "not_imported_reason": "Reference-blocked verification mode"
+      },
+      "jax": {
+        "distribution": "jax",
+        "distribution_version": "0.9.2",
+        "imported": false,
+        "reference_blocked": true,
+        "origin": null,
+        "not_imported_reason": "Reference-blocked verification mode"
+      },
+      "jaxlib": {
+        "distribution": "jaxlib",
+        "distribution_version": "0.9.2",
+        "imported": false,
+        "reference_blocked": false,
+        "origin": null,
+        "not_imported_reason": "Reference-blocked verification mode"
+      },
+      "numpyro": {
+        "distribution": "numpyro",
+        "distribution_version": "0.21.0",
+        "imported": false,
+        "reference_blocked": true,
+        "origin": null,
+        "not_imported_reason": "Reference-blocked verification mode"
+      },
+      "pyro": {
+        "distribution": "pyro-ppl",
+        "distribution_version": "1.9.1",
+        "imported": false,
+        "reference_blocked": true,
+        "origin": null,
+        "not_imported_reason": "Reference-blocked verification mode"
+      },
+      "pytest": {
+        "distribution": "pytest",
+        "distribution_version": "9.0.3",
+        "imported": true,
+        "runtime_version": "9.0.3",
+        "origin": "C:\\Users\\Mark\\miniconda3\\Lib\\site-packages\\pytest\\__init__.py",
+        "origin_sha256": "7be7a1e2218dc59a19d1ad131e4abe21172a295087efc72898938248782e8766"
+      }
+    },
+    "cuda": true,
+    "cuda_devices": [
+      "NVIDIA GeForce RTX 4050 Laptop GPU"
+    ],
+    "torch_cuda_runtime": "13.2",
+    "reference_blocked": true,
+    "reference_block_scope": "worker process; test-owned subprocess dependency controls remain in effect",
+    "native_origin": "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\native\\_botorch_rs.pyd",
+    "native_sha256": "8fa0323b0b1cf80ab4e35dee8216de497586c3213b8489a79abf5bf492ee3675",
+    "worker_sha256": "f46152ac48674e7c378b59be7c23ddad3ee6d457974b5694e6fb76a633bf9794",
+    "controller_sha256": "0c64c7c0697c52f351599da6fffe1120d4b2d0e8d5534a687d1a8ece2acbcfca",
+    "build_manifest_sha256": "1657cd1bea0d962fcadff898763b4120738d3803f713b2a43a3687b79d85d5b1"
+  },
+  "raw_evidence": {
+    "summary": {
+      "path": "D:\\botorch-verification\\release-030-258ff6b-no-reference\\summary.json",
+      "sha256": "caa6cb51d955ef4ad8c95fe35f7abf6883a69cbdad3c55a82752852e7f97a783"
+    },
+    "collection": {
+      "path": "D:\\botorch-verification\\release-030-258ff6b-no-reference\\collection.json",
+      "sha256": "58c84acba145413af874fcbee535d76f676f67af397787aa06448f2c5e624754"
+    },
+    "controller_log": {
+      "path": "D:/botorch-rs-build/release-030-258ff6b-no-reference-controller.log",
+      "sha256": "1349f541ab26fab0f662fe165016543d8681e1a6f4bfaf0db5bfb03cc7e1bc7a"
+    },
+    "batch_ledger_path_pattern": "D:\\botorch-verification\\release-030-258ff6b-no-reference\\{batch_label}.json",
+    "batch_log_path_pattern": "D:\\botorch-verification\\release-030-258ff6b-no-reference\\{batch_label}.log",
+    "batch_labels": "batch-001 through batch-040 inclusive",
+    "batch_sha256": {
+      "batch-001": {
+        "ledger": "dae708fecb5c1718bf05fb41eef926a53dee3a7d90692cbe18fc0a3e926438db",
+        "log": "58cd95c6f793e9c4b72ab7b1391b37b17c89bc40e11fec3ca75cb3e6d8fc7d6b"
+      },
+      "batch-002": {
+        "ledger": "0523176ed148e99bc4d450887a9f45222634da80d0a00c47dd344f9cd9856826",
+        "log": "1d435a775fa067ad0075220f070596c11f586f94ee888b02d82c432867f88e6d"
+      },
+      "batch-003": {
+        "ledger": "80f9095d414a85a0aacaea0d44f7da07ff90781f579bac9a41a802128351af2a",
+        "log": "70ca9181e634fac24b0682caf3c46d85643f59ca40f990e955dea3f133b1489b"
+      },
+      "batch-004": {
+        "ledger": "0d74406c2c512e2a805b3cad0f12f0fdf6758463ca4c3770219c9f0715b86a60",
+        "log": "1bcb3f071c3f615fbbc5dcf261a73f8d4d4193145056c394e0837cb5716eea06"
+      },
+      "batch-005": {
+        "ledger": "1655694bc926c777bd238ee400de687ee073af2c7f9b7393ae4bb7dabf20ce46",
+        "log": "e1f05b3e38b5e4de4368d701a1d4d753c2130d93610b18b17deca1fbfd25582b"
+      },
+      "batch-006": {
+        "ledger": "df48b7c3943f203e31ab9afed9d5e782c69f9cafecf2221daae2fa684488dc50",
+        "log": "7bcff9c1edb81b799742e218ee2556ae0efcb3aba26b024dd15e573badea7b64"
+      },
+      "batch-007": {
+        "ledger": "67577169ffdcbed0aa68a35b09ebc5697b655897f40fd23fa92cc18a48882215",
+        "log": "63dda1bd7f408530dc672443c405c0e4a9240504db131a342b819b1d94c37172"
+      },
+      "batch-008": {
+        "ledger": "b7097244a726c8000da578c1d79f298b42f57d1a8862a0c3e678d2ce6d3d6230",
+        "log": "a2ed349332c9b4a38978e0804abbc72c334bcce139668d124bc9962fa935a402"
+      },
+      "batch-009": {
+        "ledger": "fb884c82bc12754892bfc00e1621b903cc7b6515be28856e4a09a6661fd92e4d",
+        "log": "7cb24ddd64a311e279d85c116920b3dc7406e4b9f634f681eed9e843bd41b523"
+      },
+      "batch-010": {
+        "ledger": "8191ee022f07670bcaea02294e4007440e5b4c009f483bd2bb0eff4636f3271c",
+        "log": "c1ef42454ba65056cfbc9b5288dddf30e4c124188e08c344a2cb1eb6c9d9c616"
+      },
+      "batch-011": {
+        "ledger": "36e52e26a9d74507c3acb3803553a6db9f932d1c1a78de97f5546a1f52a1285f",
+        "log": "9c6555204b192b910c3194e0d229fce06c2752f54493d9e3bfe145c0a9df2dcd"
+      },
+      "batch-012": {
+        "ledger": "cd7d7f61713dc3d0bd488ec53201a9b87d71ea7ea54a6441a1258be0e9fafc6a",
+        "log": "2f8b884fc29f06bbc7cebc3d812be7a363fc00ed27035667bccd57299198fbde"
+      },
+      "batch-013": {
+        "ledger": "d90b9bd74dfeadc5f11b66ef2ae83290e9311af43821854e1c1f83d8373d88d6",
+        "log": "fb126c0c4db7933134787c3a0fe662d4d6e576131ca8daf803c865e696ecea75"
+      },
+      "batch-014": {
+        "ledger": "044b488e3c7623d4de80a466411cb00051b5e657838e2e7554f8344d82a180b9",
+        "log": "9ba91f648fe6b8e250a4c0be892ba8308ecfb23345817f8bae7e0e0935ba4268"
+      },
+      "batch-015": {
+        "ledger": "c95cfdb32965a5771fa13b93f884b0c35097e6a6ab26200274c1f4a36b8c13f5",
+        "log": "380e422a530a2e4bfc9839de60f7373214ebabb32c14615ca3eb2fa533e13589"
+      },
+      "batch-016": {
+        "ledger": "a4c646fc78025c704a2ec7d2152231c8e5a81222670b5b303f0ffc0580e55fbf",
+        "log": "b4216c45376d7274854fe06132ee772e86487ac37666e190d0c4e4246cfab1b9"
+      },
+      "batch-017": {
+        "ledger": "7f669ec1af4868ab08884c12fce5e675561770c429642bde33f56b39f416afb1",
+        "log": "ce58314506f561f3fdf24116327a07270d6a16f24f3141b8b2a0928e3cf9cbe1"
+      },
+      "batch-018": {
+        "ledger": "20b52c2eb03fa2cbc852df8a1fcdc30021a8605828ec3a6adf7f8608c79a143d",
+        "log": "b9fe8c36f07b5481ca7cb811b13a466220b8f42c542bbfc3c5a7fb44f405f270"
+      },
+      "batch-019": {
+        "ledger": "e3d614ca91572cf691f896d0bed0abcad818b6a945f6ae2606228e13cf58b0f7",
+        "log": "290f1bebf6a0d27c0afccf4372af210d24eb6f0f74742eae8c5b68be442f1ac7"
+      },
+      "batch-020": {
+        "ledger": "a0a705156d828287f6995591a5fefa3da00d096c1b22d68776e7297ff4a80347",
+        "log": "ddf4ca2f157d7da3574f369200dd2b8bf097289ed493aff664cac896922bdd5e"
+      },
+      "batch-021": {
+        "ledger": "24bbf715f07643d789fc3469128651cbd012295d8498630b0b2ba84c6d266dee",
+        "log": "e5b97cb50e7775edd2aa20dc0e15c5ade4daedff0afb9c86fb1d746b97dd06e3"
+      },
+      "batch-022": {
+        "ledger": "88b8c8a4f622e8ee8014ba52d7ccc6ccca0b8a47417d284ed1fd45ffff87f97e",
+        "log": "63632937f1cc2cbc1d804104a2b546db6bde262b286d3a13835c53e389278d5e"
+      },
+      "batch-023": {
+        "ledger": "83579e35aed10d94ebdd2818cbbd0355b6179f65b516520f1057d7fce768de01",
+        "log": "7dd6a119cb88f175420ea6d3199faf252e6c471982e58d6d3fe3887d9b60b904"
+      },
+      "batch-024": {
+        "ledger": "b8cf2078a149a662f107eb7859c49d539fe6303fe5663d09473be371fcb6ee13",
+        "log": "f2a1e8ed5e16080f1e41a7bd6a06fa0b7803453df57d9e887e793d0434ff36d7"
+      },
+      "batch-025": {
+        "ledger": "4bc92152a222ff4702da229580775d2e7f3bc16aaab1303125a2d0c66e6dcf42",
+        "log": "f720b0f15e1143bbc591edc08c127bc8a0f2ea15981591a95ac0e95cd1c97934"
+      },
+      "batch-026": {
+        "ledger": "7cd8075bcf1752dd0e56933b67f022197924801c2e47bdd62b09a3126839099f",
+        "log": "7b71f89622b6a155ab25b8d851c5323914fd9dd15b59a39af873f3e2b871f46f"
+      },
+      "batch-027": {
+        "ledger": "9b1a0dd901e61b6de131fbcd24b59669932d9457be0cce98f240816ebed07bb2",
+        "log": "c02b919fcf1409d4fea6adcea0e5ececcb1f550a688c7845ea148c3c405a2484"
+      },
+      "batch-028": {
+        "ledger": "d2108b032a63935864859279940c1f12ed5c029a9fcf5662d92a4151703045e2",
+        "log": "7088a2b7ec0173b181efd9088fb996a5e49ed929461b96bd860c7b31487f4fb1"
+      },
+      "batch-029": {
+        "ledger": "251a0970518d13e533cad7d87a906a26192ed2c7009744ae655d57fc275749e8",
+        "log": "f9a4a937d65d302f715300d74faac22f514ffd1083407b80bc394216fa0593b7"
+      },
+      "batch-030": {
+        "ledger": "a2c4e61c560d7842fdb50a0345d448b8ae901d95a65e53b955b872df839837e5",
+        "log": "d11cf2be2b1a0d1e3323d3d060576b0b00553e9c3c7bebabeb734205d0768fbe"
+      },
+      "batch-031": {
+        "ledger": "50d5368bb4ae54a8793e7579556eb489946022c2d9170d78e247732d7a11d476",
+        "log": "442796c8dac8065b1378f80e2fa91379889a14960a1663aa35860e50f36a8a9e"
+      },
+      "batch-032": {
+        "ledger": "b9dc8942dc5b03930b653a620588197bbed8881d5e892d3e180afad4ab893eed",
+        "log": "4de23b3dfe499d98391ec016afa9e770e33bfdc638b8bb7bbd7b3c7c5a6a4f52"
+      },
+      "batch-033": {
+        "ledger": "59293d968e9859cc8d197254030b1e09d1065fce2554caffd2f5ec2a03b8e5a7",
+        "log": "7a3d363a92a731a631c0d202f3cd9e84bac39ed0477a447e2e59d11899019917"
+      },
+      "batch-034": {
+        "ledger": "193b1b0a7a4360af91f31b4d6a20dc171685b15c884c13ae3657b6e39d334302",
+        "log": "768d94ff340f67adf0da4814a378a8717b91ef7dd466b5eb7c048259d12a0708"
+      },
+      "batch-035": {
+        "ledger": "ca4494e62f3b583d889a6858cd66e8a4a2269f78da4be610687fdbf63c2924a8",
+        "log": "5fa3ae84d9048a130e93368d3b1cf53c9248a905d4026f7afba6ecb9e664b814"
+      },
+      "batch-036": {
+        "ledger": "2e8e5f17f2fe6498543da6623dbfd7d6bd3940fd41e41f7f7fd9f98baf8dc447",
+        "log": "55bf221319ce5dd26ff373a6b6d88ff9f55629a2a6ec575c305dab1936d3875b"
+      },
+      "batch-037": {
+        "ledger": "bede7cb37e39e134257b08e6479279277863da91c26c3565a0f782e7252d6485",
+        "log": "ca2b6b12d04f1b52e76d937f460bf1c227781f81b399f256df4703f2ac717573"
+      },
+      "batch-038": {
+        "ledger": "ac45d12dd5094335a28b00f6b6da0dfd27c56a022cfeb0c2d86dcf314eca5c5f",
+        "log": "3ce20e9985531cdc62fe8b33832fec2d025b7a3b14dd3dad9c0f4068f992ad1d"
+      },
+      "batch-039": {
+        "ledger": "220659996a2429a007f622f76a911d18c0b9a179e7b51f5e22171816ad4e093e",
+        "log": "1d9ae7c57ff96722e3f78e14276830171b692da5ec6df425ffaf8c9a2b0a9df0"
+      },
+      "batch-040": {
+        "ledger": "ff966c9558d64a01ee3c9cc196dd6360108805e8b168651764fe0089058026bd",
+        "log": "7ddd354173f1fee8fdc83c1be18bc2d075a2d1ce0d467bb5277bcc26f692c381"
+      }
+    },
+    "batch_hash_manifest_sha256": "6d02bb538cabb9008c1c04dda34820394d4806c9b2f99a308be96c2c8b475037",
+    "batch_hash_manifest_encoding": "UTF-8 sorted-key compact JSON of batch_sha256."
+  },
+  "publication": {
+    "package_published_by_this_certificate": false,
+    "source_enabled_run_certified_here": false
+  }
+}
