@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -44,7 +45,7 @@ def use_iterative_methods(
     log_prob: bool = True,
     solves: bool = True,
 ) -> Iterator[None]:
-    if tol <= 0 or max_iter < 1:
+    if not math.isfinite(tol) or tol <= 0 or max_iter < 1:
         raise ValueError("Iterative tolerance and maximum iterations must be positive.")
     config = IterativeSettings(
         tol,

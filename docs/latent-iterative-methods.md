@@ -1,4 +1,4 @@
-# Latent Kronecker iterative Tensor inference
+# Latent Kronecker iterative inference
 
 Tensor `LatentKroneckerGP.use_iterative_methods` accepts the source's
 `tol`, `max_iter`, `covar_root_decomposition`, `log_prob` and `solves`
@@ -35,5 +35,32 @@ The iterative test suite checks forced-CG values and query derivatives against
 the unmodified reference, full first and mixed second derivatives against
 independent dense algebra, complete masked-grid sample covariance, actual
 stochastic probes, shared/zero right-hand sides and iteration-limit behavior.
-This Tensor checkpoint does not claim completion of the separate native
-lists/NumPy solver route.
+
+The native lists/NumPy/CPU-Tensor route also captures these scoped settings.
+It uses native Jacobi-preconditioned CG and fully reorthogonalized Lanczos
+quadrature, including complete and masked grids, parameter fitting, posterior
+moments, feature/time query adjoints, and Matheron sampling. Native posterior
+and deep-copy snapshots retain the settings after the scope exits; parameter
+updates made inside nested scopes remain effective after normal or exceptional
+exit. Native inference continues to use float64 and does not import Torch.
+Its covariance snapshots are dense, as on the Tensor route.
+
+Native trace probes are retained Rademacher draws with an independent seed,
+which keeps an optimizer's stochastic objective reproducible between calls.
+Native MLL gradients use the inverse-trace estimator of iterative Gaussian MLL
+backward; a stochastic log-determinant estimate is not an exact objective or a
+bitwise replay of another implementation's probes. Zero trace samples with
+full quadrature checks exact values and every raw-parameter derivative against
+independent dense inference. Native query derivatives use the implicit Gaussian
+solve adjoint; selecting the Tensor backend retains the full higher-order
+iteration graph. CG honors the requested iteration limit even above the matrix
+size, refreshing its true residual when finite precision requires a restart.
+
+Validation includes native solver edge cases, independent spectral/probe
+quadrature, all solver/log-probability flag combinations, mean/kernel/noise
+priors, posterior and sampling query adjoints, array-kind and nested-scope
+protocols, Torch 2.14 CPU, and execution with reference packages unavailable.
+Strict source controls use configurations whose iterative errors satisfy the
+asserted moment/gradient tolerances; tighter requested source tolerances can
+reach its division guard and emit nonconvergence warnings. Those failed audit
+trials remain preserved separately from the successful controls.

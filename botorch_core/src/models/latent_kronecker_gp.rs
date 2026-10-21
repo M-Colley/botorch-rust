@@ -6,6 +6,10 @@
 
 use std::ops::Range;
 use std::sync::OnceLock;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use rand::rngs::StdRng;
 
@@ -25,7 +29,9 @@ use crate::transforms::input::{ChainedInputTransform, TransformMode};
 use crate::transforms::OutcomeTransformChoice;
 use crate::{Matrix, Vector};
 
+mod iterative;
 mod matheron;
+pub use iterative::IterativeOptions;
 
 /// Modules and fitted transforms of a latent Kronecker GP.
 #[derive(Clone, Debug)]
@@ -66,6 +72,9 @@ pub struct LatentKroneckerGP {
     raw: Vec<f64>,
     cache: OnceLock<std::result::Result<Backend, BotorchError>>,
     masked_cholesky: OnceLock<std::result::Result<CholeskyFactor, BotorchError>>,
+    iterative: Option<IterativeOptions>,
+    iterative_covariance: OnceLock<std::result::Result<Matrix, BotorchError>>,
+    iteration_limit: Arc<AtomicBool>,
 }
 
 fn row_values(matrix: &Matrix) -> Vec<f64> {
@@ -174,6 +183,9 @@ impl LatentKroneckerGP {
             raw,
             cache: OnceLock::new(),
             masked_cholesky: OnceLock::new(),
+            iterative: None,
+            iterative_covariance: OnceLock::new(),
+            iteration_limit: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -216,6 +228,8 @@ impl LatentKroneckerGP {
         self.raw = raw.to_vec();
         self.cache = OnceLock::new();
         self.masked_cholesky = OnceLock::new();
+        self.iterative_covariance = OnceLock::new();
+        self.iteration_limit = Arc::new(AtomicBool::new(false));
         Ok(())
     }
     /// Names and sizes of all parameters.
@@ -344,6 +358,13 @@ impl LatentKroneckerGP {
             .map_err(Clone::clone)
     }
     fn solve_observed(&self, rhs: &Vector) -> Result<Vector> {
+        if self.iterative_enabled(false) {
+            let solved = self.iterative_solve(
+                self.iterative_covariance()?,
+                &Matrix::from_column_slice(rhs.len(), 1, rhs.as_slice()),
+            )?;
+            return Ok(solved.column(0).into_owned());
+        }
         match self.backend()? {
             Backend::Full(model) => Ok(Vector::from_vec(row_values(&model.solve_training(
                 &Matrix::from_row_slice(self.x.nrows(), self.t.nrows(), rhs.as_slice()),
@@ -375,6 +396,9 @@ impl LatentKroneckerGP {
             return Err(BotorchError::InvalidArgument(
                 "invalid raw parameters".into(),
             ));
+        }
+        if self.iterative_enabled(false) || self.iterative_enabled(true) {
+            return self.iterative_mll(raw, with_grad);
         }
         let owned;
         let backend = if raw == self.raw {
@@ -463,6 +487,9 @@ impl LatentKroneckerGP {
     pub fn posterior_grid(&self, x: &Matrix, t: &Matrix) -> Result<Posterior> {
         Self::validate_t(t)?;
         let xt = self.transformed(x)?;
+        if self.iterative_enabled(false) {
+            return self.iterative_posterior(&xt, t);
+        }
         let mut posterior = match self.backend()? {
             Backend::Full(model) if t == &self.t => {
                 let source = model.posterior(&xt, false)?;
@@ -491,6 +518,9 @@ impl LatentKroneckerGP {
     /// Analytic derivatives with respect to raw feature inputs on an X x T grid.
     pub fn posterior_grid_with_grad(&self, x: &Matrix, t: &Matrix) -> Result<JointPosteriorGrad> {
         Self::validate_t(t)?;
+        if self.iterative_enabled(false) {
+            return self.iterative_posterior_with_grad(x, t);
+        }
         let xt = self.transformed(x)?;
         let cartesian = cartesian_inputs(&xt, t);
         let dense;

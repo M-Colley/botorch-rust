@@ -6,7 +6,7 @@ use botorch_core::fit::{FitOptions, FitStatus, Fittable};
 use botorch_core::models::approximate_gp::VariationalMean;
 use botorch_core::models::gp::ConstantMeanSpec;
 use botorch_core::models::latent_kronecker_gp::{
-    LatentKroneckerFit, LatentKroneckerGP, LatentKroneckerGPOptions,
+    IterativeOptions, LatentKroneckerFit, LatentKroneckerGP, LatentKroneckerGPOptions,
 };
 use botorch_core::optim::fit::fit_gpytorch_mll_torch;
 use botorch_core::optim::minimize::TorchMinimizeOptions;
@@ -41,6 +41,17 @@ impl PyLatentKroneckerGP {
         Self {
             inner: RwLock::new(Arc::new(value)),
         }
+    }
+    fn warn_iteration_limit(py: Python<'_>, model: &LatentKroneckerGP) -> PyResult<()> {
+        if model.take_iterative_warning() {
+            let category = py
+                .import("botorch_rs.exceptions.warnings")?
+                .getattr("NumericsWarning")?;
+            py.import("warnings")?.call_method1("warn", (
+                "Conjugate gradients reached the iteration limit before the requested tolerance.", category,
+            ))?;
+        }
+        Ok(())
     }
 }
 
@@ -126,6 +137,33 @@ impl PyLatentKroneckerGP {
     fn raw_parameters(&self) -> Vec<f64> {
         self.get().raw_parameters().to_vec()
     }
+    #[pyo3(signature=(*,tol=0.01,max_iter=10000,solves=true,log_prob=true,max_cholesky_size=800,num_trace_samples=10,max_lanczos_quadrature_iterations=20,seed=0))]
+    #[allow(clippy::too_many_arguments)]
+    fn with_iterative_options(
+        &self,
+        tol: f64,
+        max_iter: usize,
+        solves: bool,
+        log_prob: bool,
+        max_cholesky_size: usize,
+        num_trace_samples: usize,
+        max_lanczos_quadrature_iterations: usize,
+        seed: u64,
+    ) -> PyResult<Self> {
+        self.get()
+            .with_iterative_options(IterativeOptions {
+                tol,
+                max_iter,
+                solves,
+                log_prob,
+                max_cholesky_size,
+                num_trace_samples,
+                max_lanczos_quadrature_iterations,
+                seed,
+            })
+            .map(Self::wrap)
+            .into_py_result()
+    }
     fn set_raw_parameters(&self, raw: Vec<f64>) -> PyResult<()> {
         let mut m = (*self.get()).clone();
         m.set_raw_parameters(&raw).into_py_result()?;
@@ -198,9 +236,9 @@ impl PyLatentKroneckerGP {
     fn mll(&self, py: Python<'_>, raw: Option<Vec<f64>>) -> PyResult<ArrayOut> {
         let m = self.get();
         let raw = raw.unwrap_or_else(|| m.raw_parameters().to_vec());
-        threads::run(py, || m.mll_value_and_grad(&raw, false))
-            .map(|r| (vec![r.0], vec![]))
-            .into_py_result()
+        let result = threads::run(py, || m.mll_value_and_grad(&raw, false)).into_py_result()?;
+        Self::warn_iteration_limit(py, &m)?;
+        Ok((vec![result.0], vec![]))
     }
     #[pyo3(signature=(raw=None))]
     fn mll_value_and_grad(
@@ -210,15 +248,16 @@ impl PyLatentKroneckerGP {
     ) -> PyResult<(ArrayOut, Vec<f64>)> {
         let m = self.get();
         let raw = raw.unwrap_or_else(|| m.raw_parameters().to_vec());
-        threads::run(py, || m.mll_value_and_grad(&raw, true))
-            .map(|(v, g)| ((vec![v], vec![]), g))
-            .into_py_result()
+        let (v, g) = threads::run(py, || m.mll_value_and_grad(&raw, true)).into_py_result()?;
+        Self::warn_iteration_limit(py, &m)?;
+        Ok(((vec![v], vec![]), g))
     }
     fn posterior_grid(&self, py: Python<'_>, x: Array, t: Array) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let x = x.matrix("X")?;
         let t = t.matrix("T")?;
         let m = self.get();
         let posterior = threads::run(py, || m.posterior_grid(&x, &t)).into_py_result()?;
+        Self::warn_iteration_limit(py, &m)?;
         Ok((
             ArrayBuf(
                 posterior.mean.as_slice().to_vec(),
@@ -232,9 +271,9 @@ impl PyLatentKroneckerGP {
         let t = t.matrix("T")?;
         let base = base.matrix("base_samples")?;
         let m = self.get();
-        threads::run(py, || m.samples(&x, &t, &base))
-            .map(|s| matrix_out(&s).into())
-            .into_py_result()
+        let result = threads::run(py, || m.samples(&x, &t, &base)).into_py_result()?;
+        Self::warn_iteration_limit(py, &m)?;
+        Ok(matrix_out(&result).into())
     }
     fn posterior_grid_vjp(
         &self,
@@ -249,9 +288,10 @@ impl PyLatentKroneckerGP {
         let mean = botorch_core::Vector::from_vec(mean_adjoint.0);
         let covariance = covariance_adjoint.matrix("covariance_adjoint")?;
         let model = self.get();
-        threads::run(py, || model.posterior_grid_vjp(&x, &t, &mean, &covariance))
-            .map(|(x, t)| (matrix_out(&x).into(), matrix_out(&t).into()))
-            .into_py_result()
+        let (x, t) = threads::run(py, || model.posterior_grid_vjp(&x, &t, &mean, &covariance))
+            .into_py_result()?;
+        Self::warn_iteration_limit(py, &model)?;
+        Ok((matrix_out(&x).into(), matrix_out(&t).into()))
     }
     fn samples_vjp(
         &self,
@@ -266,9 +306,10 @@ impl PyLatentKroneckerGP {
         let base = base.matrix("base_samples")?;
         let adjoint = adjoint.matrix("adjoint")?;
         let model = self.get();
-        threads::run(py, || model.samples_vjp(&x, &t, &base, &adjoint))
-            .map(|(x, t)| (matrix_out(&x).into(), matrix_out(&t).into()))
-            .into_py_result()
+        let (x, t) =
+            threads::run(py, || model.samples_vjp(&x, &t, &base, &adjoint)).into_py_result()?;
+        Self::warn_iteration_limit(py, &model)?;
+        Ok((matrix_out(&x).into(), matrix_out(&t).into()))
     }
     #[pyo3(signature=(maxcor=None,pgtol=None,ftol=None,maxiter=None,maxfun=None,maxls=None,max_attempts=None,seed=None))]
     #[allow(clippy::too_many_arguments)]
@@ -299,6 +340,7 @@ impl PyLatentKroneckerGP {
             model: (*self.get()).clone(),
         };
         let r = threads::run(py, || fit.fit_mll(options)).into_py_result()?;
+        Self::warn_iteration_limit(py, &fit.model)?;
         self.set(fit.model);
         let status = match r.status {
             FitStatus::Success => "SUCCESS",
@@ -352,6 +394,7 @@ impl PyLatentKroneckerGP {
             fit_gpytorch_mll_torch(&mut fit, mask.as_deref(), bounds.as_deref(), &options, None)
         })
         .into_py_result()?;
+        Self::warn_iteration_limit(py, &fit.model)?;
         self.set(fit.model);
         Ok((r.step, r.fval, r.status.value(), r.runtime, r.message))
     }

@@ -6,6 +6,8 @@ import copy
 import math
 import sys
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -424,10 +426,38 @@ class LatentKroneckerGP(GPyTorchModel, FantasizeMixin):
     def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
         raise NotImplementedError("Conditioning currently not supported for LatentKroneckerGP.")
 
-    def use_iterative_methods(self, *args: Any, **kwargs: Any) -> Any:
-        raise UnsupportedError(
-            "LatentKroneckerGP uses native exact solves; iterative solver settings are not yet supported."
-        )
+    @contextmanager
+    def use_iterative_methods(
+        self,
+        tol: float = 0.01,
+        max_iter: int = 10000,
+        covar_root_decomposition: bool = False,
+        log_prob: bool = True,
+        solves: bool = True,
+    ) -> Iterator[None]:
+        from botorch_rs.models._structured_iterative import current, use_iterative_methods
+
+        with use_iterative_methods(tol, max_iter, covar_root_decomposition, log_prob, solves):
+            config = current()
+            assert config is not None
+            previous = self._rs
+            self._rs = previous.with_iterative_options(
+                tol=config.tol,
+                max_iter=config.max_iter,
+                solves=config.solves,
+                log_prob=config.log_prob,
+                max_cholesky_size=config.max_cholesky_size,
+                num_trace_samples=config.num_trace_samples,
+                max_lanczos_quadrature_iterations=config.max_lanczos_quadrature_iterations,
+            )
+            try:
+                yield
+            finally:
+                # Fitting or parameter assignments inside the scope remain effective.
+                raw = self._rs.raw_parameters()
+                self._rs = previous
+                if raw != previous.raw_parameters():
+                    previous.set_raw_parameters(raw)
 
     def __deepcopy__(self, memo: dict[int, Any]) -> LatentKroneckerGP:
         new = self.__class__.__new__(self.__class__)

@@ -5,7 +5,7 @@ use crate::linalg::cholesky_backward;
 use crate::models::matheron::{cross_self_query_vjp, kronecker_vjp};
 
 impl LatentKroneckerGP {
-    fn feature_pullback(&self, x: &Matrix, transformed: &Matrix) -> Result<Matrix> {
+    pub(super) fn feature_pullback(&self, x: &Matrix, transformed: &Matrix) -> Result<Matrix> {
         let Some(chain) = &self.options.input_transform else {
             return Ok(transformed.clone());
         };
@@ -34,6 +34,9 @@ impl LatentKroneckerGP {
             return Err(BotorchError::DimensionMismatch(
                 "Grid posterior adjoints have inconsistent shapes".into(),
             ));
+        }
+        if self.iterative_enabled(false) {
+            return self.iterative_grid_vjp(x, t, mean, covariance);
         }
         let dense;
         let model = match self.backend()? {

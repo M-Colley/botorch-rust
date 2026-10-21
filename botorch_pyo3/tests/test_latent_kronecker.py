@@ -107,8 +107,8 @@ def test_explicit_invalid_and_unsupported_options() -> None:
     with pytest.raises(UnsupportedError, match="kernels"):
         LatentKroneckerGP(X, T, Y, covar_module_T=object())
     model = LatentKroneckerGP(X, T, Y)
-    with pytest.raises(UnsupportedError, match="iterative"):
-        model.use_iterative_methods()
+    with model.use_iterative_methods():
+        assert model._rs.num_observed == 12
     with pytest.raises(NotImplementedError, match="Observation noise"):
         model.posterior(X, observation_noise=True)
     with pytest.raises(NotImplementedError, match="Posterior transforms"):
