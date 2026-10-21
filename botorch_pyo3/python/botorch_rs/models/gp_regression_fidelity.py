@@ -28,6 +28,7 @@ from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.kernels import Kernel, ProductKernel, ScaleKernel
 from botorch_rs.likelihoods import Likelihood
 from botorch_rs.means import ConstantMean
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.kernels.downsampling import DownsamplingKernel
 from botorch_rs.models.kernels.exponential_decay import ExponentialDecayKernel
@@ -73,7 +74,7 @@ class SingleTaskMultiFidelityGP(SingleTaskGP):
             )
             modules = (
                 any(
-                    isinstance(kwargs.get(k), torch.nn.Module)
+                    requires_tensor_backend(kwargs.get(k))
                     for k in (
                         "covar_module",
                         "likelihood",

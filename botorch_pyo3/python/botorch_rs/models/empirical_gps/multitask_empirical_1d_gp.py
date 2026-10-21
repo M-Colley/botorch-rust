@@ -14,6 +14,7 @@ from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.kernels import Kernel
 from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood
 from botorch_rs.means import Mean
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.empirical_gps.empirical_1d_gp import (
     BaseAugmentedEmpiricalKernel,
     EmpiricalOneDimensionalGP,
@@ -263,7 +264,7 @@ class MultiTaskEmpiricalOneDimensionalGP(EmpiricalOneDimensionalGP, MultiTaskGPy
         selected = _use_tensor_backend(values, backend) or (
             backend == "auto"
             and torch is not None
-            and any(isinstance(module, torch.nn.Module) for module in modules)
+            and any(requires_tensor_backend(module) for module in modules)
         )
         if cls is MultiTaskEmpiricalOneDimensionalGP and selected:
             from botorch_rs.models.empirical_gps._torch_multitask import TensorTaskEmpiricalGP

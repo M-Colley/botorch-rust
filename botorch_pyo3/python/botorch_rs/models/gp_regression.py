@@ -16,6 +16,7 @@ from botorch_rs.exceptions.warnings import InputDataWarning
 from botorch_rs.kernels import Kernel
 from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood, Likelihood
 from botorch_rs.means import ConstantMean
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.gpytorch import BatchedMultiOutputGPyTorchModel
 from botorch_rs.models.transforms._torch_input import has_tensor_state as _input_has_tensor_state
 from botorch_rs.models.transforms.input import (
@@ -307,7 +308,7 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
                     or (
                         torch is not None
                         and any(
-                            isinstance(module, torch.nn.Module)
+                            requires_tensor_backend(module)
                             or (
                                 isinstance(module, InputTransform)
                                 and _input_has_tensor_state(module)

@@ -11,6 +11,7 @@ from botorch_rs._arrays import to_flat
 from botorch_rs.constraints import GreaterThan
 from botorch_rs.kernels import Kernel, ScaleKernel
 from botorch_rs.likelihoods import Likelihood
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.kernels.categorical import CategoricalKernel
 from botorch_rs.models.transforms.input import InputTransform
@@ -74,7 +75,7 @@ class MixedSingleTaskGP(SingleTaskGP):
             )
             modules = (
                 any(
-                    isinstance(kwargs.get(k), torch.nn.Module)
+                    requires_tensor_backend(kwargs.get(k))
                     for k in ("likelihood", "input_transform", "outcome_transform")
                 )
                 if torch

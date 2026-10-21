@@ -18,6 +18,7 @@ from botorch_rs.kernels import Kernel
 from botorch_rs.likelihoods import GaussianLikelihood
 from botorch_rs.means import ConstantMean, Mean, ZeroMean
 from botorch_rs.mlls import MarginalLogLikelihood
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.empirical_gps.utils import (
     ExperimentDataset,
     UniqueInputs,
@@ -40,7 +41,7 @@ def _torch_em_requested(backend: str, values: Any, modules: Any = ()) -> bool:
             for value in values
             if value is not None
         )
-        or any(isinstance(module, torch.nn.Module) for module in modules if module is not None)
+        or any(requires_tensor_backend(module) for module in modules if module is not None)
     )
 
 

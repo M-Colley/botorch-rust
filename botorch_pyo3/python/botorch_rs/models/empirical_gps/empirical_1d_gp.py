@@ -22,6 +22,7 @@ from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.kernels import AdditiveKernel, Kernel
 from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood
 from botorch_rs.means import Mean
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.empirical_gps.utils import (
     _moveaxis,
     _reshape,
@@ -414,9 +415,7 @@ class EmpiricalOneDimensionalGP(GPyTorchModel, FantasizeMixin):
             backend,
         )
         if backend == "auto" and torch is not None:
-            use_tensor = use_tensor or any(
-                isinstance(module, torch.nn.Module) for module in modules
-            )
+            use_tensor = use_tensor or any(requires_tensor_backend(module) for module in modules)
         if use_tensor:
             from botorch_rs.models.empirical_gps._torch_backend import (
                 TensorCorrelatedGP,

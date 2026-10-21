@@ -28,6 +28,7 @@ from botorch_rs.likelihoods import (
     Likelihood,
 )
 from botorch_rs.means import ConstantMean, MultitaskMean
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.gp_regression import _is_tensor_factory_target
 from botorch_rs.models.gpytorch import GPyTorchModel, MultiTaskGPyTorchModel
 from botorch_rs.models.transforms.outcome import Standardize, is_plain_standardize
@@ -124,7 +125,7 @@ class MultiTaskGP(MultiTaskGPyTorchModel):
                     )
                     or (
                         torch is not None
-                        and any(isinstance(module, torch.nn.Module) for module in modules)
+                        and any(requires_tensor_backend(module) for module in modules)
                     )
                 )
             ):
@@ -843,7 +844,7 @@ class KroneckerMultiTaskGP(GPyTorchModel):
             )
             modules = (
                 any(
-                    isinstance(kwargs.get(k), torch.nn.Module)
+                    requires_tensor_backend(kwargs.get(k))
                     for k in (
                         "likelihood",
                         "data_covar_module",

@@ -34,6 +34,7 @@ from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.kernels import AdditiveKernel, Kernel, MaternKernel, ScaleKernel, _check_batch_shape
 from botorch_rs.likelihoods import GaussianLikelihood
 from botorch_rs.means import ConstantMean
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.transforms.input import InputTransform
 from botorch_rs.models.utils.gpytorch_modules import (
@@ -55,7 +56,7 @@ def _use_torch_backend(backend: str, *values: Any) -> bool:
         backend == "auto"
         and torch is not None
         and any(
-            isinstance(value, torch.nn.Module)
+            requires_tensor_backend(value)
             or (
                 isinstance(value, torch.Tensor)
                 and (value.device.type != "cpu" or value.requires_grad)

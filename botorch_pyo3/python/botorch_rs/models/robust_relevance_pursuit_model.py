@@ -10,6 +10,7 @@ from typing import Any, cast
 from botorch_rs._arrays import to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.likelihoods import Likelihood
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.likelihoods.sparse_outlier_noise import (
     SparseOutlierGaussianLikelihood,
@@ -191,7 +192,7 @@ class RobustRelevancePursuitSingleTaskGP(SingleTaskGP, RobustRelevancePursuitMix
                     )
                     or (
                         torch is not None
-                        and any(isinstance(module, torch.nn.Module) for module in modules)
+                        and any(requires_tensor_backend(module) for module in modules)
                     )
                 )
             )

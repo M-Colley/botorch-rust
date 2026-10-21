@@ -40,7 +40,11 @@ def has_tensor_state(transform: Any) -> bool:
         if id(value) in seen:
             return False
         seen.add(id(value))
-        if isinstance(value, torch.nn.Parameter) or isinstance(value, torch.nn.Module):
+        if isinstance(value, torch.nn.Module):
+            from botorch_rs.models._backend_selection import requires_tensor_backend
+
+            return requires_tensor_backend(value)
+        if isinstance(value, torch.nn.Parameter):
             return True
         if isinstance(value, torch.Tensor):
             return value.requires_grad or value.device.type != "cpu"

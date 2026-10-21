@@ -11,6 +11,7 @@ from typing import Any
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_flat, kind_of, to_flat
 from botorch_rs.kernels import AdditiveKernel, Kernel, MaternKernel, ScaleKernel, _KernelList
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.hierarchical.utils import get_blocks_with_paths
 from botorch_rs.models.map_saas import add_saas_prior
@@ -32,7 +33,7 @@ def _torch_requested(backend: str, *values: Any) -> bool:
     return any(
         getattr(value, "requires_grad", False)
         or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
-        or (torch is not None and isinstance(value, torch.nn.Module))
+        or (torch is not None and requires_tensor_backend(value))
         for value in values
     )
 
