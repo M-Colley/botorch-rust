@@ -7,6 +7,7 @@ the port's model.posterior. No upstream acquisition or model is delegated to.
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import math
 import warnings
@@ -111,13 +112,19 @@ _ACTIVE_LEARNING = frozenset(
 _BAYESIAN_ACTIVE_LEARNING = frozenset({"qBayesianActiveLearningByDisagreement"})
 _TYPES: dict[type, type] = {}
 _LOG_2PI = math.log(2 * math.pi)
+_BASE_FAMILIES = frozenset(
+    {
+        "AcquisitionFunction",
+        "AnalyticAcquisitionFunction",
+        "MCAcquisitionFunction",
+        "SampleReducingMCAcquisitionFunction",
+    }
+)
 
 
-def tensor_acquisition(public_class: type) -> Any:
-    """Allocate a graph-native subtype without invoking a native constructor."""
-    if (
-        public_class.__name__
-        not in _ANALYTIC
+def _registered_family(public_class: type) -> type:
+    names = (
+        _ANALYTIC
         | _MC
         | _MULTI_OBJECTIVE
         | _LOOKAHEAD
@@ -129,12 +136,116 @@ def tensor_acquisition(public_class: type) -> Any:
         | _ACTIVE_LEARNING
         | _NOISY_ANALYTIC
         | _BAYESIAN_ACTIVE_LEARNING
-        or not public_class.__module__.startswith("botorch_rs.acquisition.")
-    ):
-        raise UnsupportedError(f"{public_class.__name__} does not yet support backend='torch'.")
+        | _BASE_FAMILIES
+    )
+    for candidate in public_class.__mro__:
+        if candidate.__name__ not in names or not candidate.__module__.startswith(
+            "botorch_rs.acquisition."
+        ):
+            continue
+        module = importlib.import_module(candidate.__module__)
+        if getattr(module, candidate.__name__, None) is candidate:
+            return candidate
+    raise UnsupportedError(f"{public_class.__name__} does not yet support backend='torch'.")
+
+
+def _user_defines(public_class: type, family: type, method: str) -> bool:
+    for candidate in public_class.__mro__:
+        if candidate is family:
+            break
+        value = candidate.__dict__.get(method)
+        if value is not None:
+            return not getattr(value, "__isabstractmethod__", False)
+    return False
+
+
+def _rebuild_tensor_acquisition(public_class: type, state: Any) -> Any:
+    instance = tensor_acquisition(public_class)
+    instance.__setstate__(state)
+    return instance
+
+
+def _reduce_tensor_acquisition(self: Any, protocol: int) -> Any:
+    return _rebuild_tensor_acquisition, (self._tensor_user_class, self.__getstate__())
+
+
+class _TensorCustomAcquisition(nn.Module):
+    """Module and pending-point protocol for a caller-defined forward method."""
+
+    _tensor_backend = "torch"
+
+    def __init__(self, model: Any) -> None:
+        nn.Module.__init__(self)
+        self.model = model
+        self.register_buffer("_X_pending", None)
+
+    @property
+    def X_pending(self) -> Any:
+        return self._X_pending
+
+    @X_pending.setter
+    def X_pending(self, value: Any) -> None:
+        self.set_X_pending(value)
+
+    def set_X_pending(self, X_pending: Any = None) -> None:
+        if X_pending is not None:
+            if not isinstance(X_pending, Tensor) or X_pending.ndim < 2:
+                raise ValueError("X_pending must be a tensor with at least two dimensions.")
+            if X_pending.requires_grad:
+                warnings.warn(
+                    "Pending points are copied without gradients.", BotorchWarning, stacklevel=2
+                )
+            X_pending = X_pending.detach().clone()
+        self._X_pending = X_pending
+
+
+def tensor_acquisition(public_class: type) -> Any:
+    """Allocate a graph-native subtype without invoking a native constructor."""
+    return object.__new__(_tensor_acquisition_type(public_class))
+
+
+def _tensor_acquisition_type(public_class: type, internal: bool = False) -> type:
+    if public_class.__dict__.get("_is_tensor_acquisition_type", False):
+        return public_class
+    family = _registered_family(public_class)
+    if family.__name__ in _BASE_FAMILIES and not internal:
+        method = (
+            "_sample_forward"
+            if family.__name__ == "SampleReducingMCAcquisitionFunction"
+            else "forward"
+        )
+        if not _user_defines(public_class, family, method):
+            raise TypeError(
+                f"Can't instantiate abstract class {public_class.__name__} with abstract method {method}"
+            )
     subtype = _TYPES.get(public_class)
+    if subtype is None and family is not public_class:
+        attributes: dict[str, Any] = {
+            "__module__": __name__,
+            "_public_class": family,
+            "_tensor_user_class": public_class,
+            "_is_tensor_acquisition_type": True,
+            "_tensor_user_reductions": frozenset(
+                method
+                for method in ("_sample_reduction", "_q_reduction")
+                if _user_defines(public_class, family, method)
+            ),
+        }
+        if not any(_user_defines(public_class, family, m) for m in ("__reduce__", "__reduce_ex__")):
+            attributes["__reduce_ex__"] = _reduce_tensor_acquisition
+        subtype = type(
+            f"Torch{public_class.__name__}",
+            (public_class, _tensor_acquisition_type(family, internal=True)),
+            attributes,
+        )
+        _TYPES[public_class] = subtype
+        return subtype
     if subtype is None:
-        mixin: type = _TensorAcquisition
+        mixin: type = (
+            _TensorCustomAcquisition
+            if public_class.__name__ == "AcquisitionFunction"
+            else _TensorAcquisition
+        )
         if public_class.__name__ in _EXTRA_MULTI_OBJECTIVE:
             from botorch_rs.acquisition._torch_backend_mo_extra import (
                 TensorAnalyticHypervolume,
@@ -256,11 +367,15 @@ def tensor_acquisition(public_class: type) -> Any:
         subtype = type(
             name,
             (mixin, public_class),
-            {"__module__": __name__, "_public_class": public_class},
+            {
+                "__module__": __name__,
+                "_public_class": public_class,
+                "_is_tensor_acquisition_type": True,
+            },
         )
         _TYPES[public_class] = subtype
         globals()[name] = subtype
-    return object.__new__(subtype)
+    return subtype
 
 
 def _as_tensor(value: Any, like: Tensor) -> Tensor:
@@ -370,8 +485,12 @@ class _TensorAcquisition(nn.Module):
         values.pop("self")
         self._name = name
         self._tensor_backend = "torch"
-        self._is_analytic = name in _ANALYTIC
-        self._log = name.startswith("Log") or name.startswith("qLog")
+        self._is_analytic = name in _ANALYTIC or name == "AnalyticAcquisitionFunction"
+        self._log = (
+            bool(getattr(type(self), "_log", False))
+            if name in _BASE_FAMILIES
+            else name.startswith("Log") or name.startswith("qLog")
+        )
         self.model = values["model"]
         self.posterior_transform = values.get("posterior_transform")
         self.maximize = bool(values.get("maximize", True))
@@ -422,6 +541,11 @@ class _TensorAcquisition(nn.Module):
         self.sampler = values.get("sampler")
         if self.sampler is None:
             self.sampler = SobolQMCNormalSampler(sample_shape=(512,))
+        self._sample_reduction_fn = values.get("sample_reduction")
+        self._q_reduction_fn = values.get("q_reduction")
+        if self._log and name not in _BASE_FAMILIES:
+            self._sample_reduction_fn = self._default_log_sample_reduction
+            self._q_reduction_fn = self._default_log_q_reduction
         self.set_X_pending(values.get("X_pending"))
         if name in _NOISY:
             self._init_noisy(values)
@@ -495,6 +619,8 @@ class _TensorAcquisition(nn.Module):
 
     def _analytic_forward(self, X: Tensor) -> Tensor:
         name = self._name
+        if name == "AnalyticAcquisitionFunction":
+            raise NotImplementedError("A custom analytic acquisition must define forward.")
         mean, sigma = self._mean_and_sigma(X, compute_sigma=name != "PosteriorMean")
         if mean.shape[-1] != 1:
             raise UnsupportedError("The posterior transform must produce one output.")
@@ -605,6 +731,26 @@ class _TensorAcquisition(nn.Module):
         sample_dims = tuple(range(len(self.sample_shape)))
         if self._preference_ensemble:
             sample_dims += (-1,)
+        overrides = getattr(self, "_tensor_user_reductions", ())
+        if (
+            self._name in _BASE_FAMILIES
+            or self._sample_reduction_fn is not None
+            or self._q_reduction_fn is not None
+            or overrides
+        ):
+            if "_q_reduction" in overrides:
+                q_values = self._q_reduction(utilities)
+            else:
+                q_fn = torch.amax if self._q_reduction_fn is None else self._q_reduction_fn
+                q_values = q_fn(utilities, dim=-1)
+            if "_sample_reduction" in overrides:
+                value = self._sample_reduction(q_values)
+            else:
+                sample_fn = (
+                    torch.mean if self._sample_reduction_fn is None else self._sample_reduction_fn
+                )
+                value = sample_fn(q_values, dim=sample_dims)
+            return _average_ensemble(value, self.model, self._log)
         if is_ensemble(self.model):
             sample_dims += (-2 if self._preference_ensemble else -1,)
         if self._log:
@@ -614,6 +760,25 @@ class _TensorAcquisition(nn.Module):
             q_values = (fatmax if self.fat else smooth_amax)(utilities, dim=-1, tau=tau)
             return _logmeanexp(q_values, sample_dims)
         return utilities.amax(dim=-1).mean(dim=sample_dims)
+
+    def _default_log_q_reduction(self, values: Tensor, *, dim: int) -> Tensor:
+        from botorch_rs.acquisition._torch_reductions import fatmax, smooth_amax
+
+        return (fatmax if self.fat else smooth_amax)(
+            values, dim=dim, tau=_as_tensor(self.tau_max, values)
+        )
+
+    def _q_reduction(self, values: Tensor) -> Tensor:
+        fn = torch.amax if self._q_reduction_fn is None else self._q_reduction_fn
+        return fn(values, dim=-1)
+
+    def _sample_reduction(self, values: Tensor) -> Tensor:
+        fn = torch.mean if self._sample_reduction_fn is None else self._sample_reduction_fn
+        return fn(values, dim=tuple(range(len(self.sample_shape))))
+
+    @staticmethod
+    def _default_log_sample_reduction(values: Tensor, *, dim: tuple[int, ...]) -> Tensor:
+        return _logmeanexp(values, dim)
 
     def _apply_constraints(self, acqval: Tensor, samples: Tensor) -> Tensor:
         if self._constraints is None:
@@ -626,6 +791,8 @@ class _TensorAcquisition(nn.Module):
         return acqval + indicator if self._log else acqval * indicator
 
     def _sample_forward(self, obj: Tensor) -> Tensor:
+        if self._name in _BASE_FAMILIES:
+            raise NotImplementedError("A custom MC acquisition must define _sample_forward.")
         return self._utilities(
             obj, best_f=self.compute_best_f(obj) if self._name in _NOISY else None
         )

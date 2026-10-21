@@ -361,7 +361,7 @@ class AcquisitionFunction:
         @functools.wraps(init)
         def __init__(self: Any, *args: Any, **kw: Any) -> None:
             model = args[0] if args else kw.get("model")
-            if _is_ensemble_model(model):
+            if _is_ensemble_model(model) and getattr(model, "_tensor_backend", None) != "torch":
                 _init_on_ensemble(self, init, args, kw)
                 return
             init(self, *args, **kw)
