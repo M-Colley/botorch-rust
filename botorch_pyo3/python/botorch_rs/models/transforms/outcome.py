@@ -415,11 +415,12 @@ class Standardize(OutcomeTransform):
     def cuda(self, device: Any = None) -> Standardize:
         import torch
 
-        target = (
-            torch.device("cuda", device)
-            if device is None or isinstance(device, int)
-            else torch.device(device)
-        )
+        if device is None:
+            target = torch.device("cuda")
+        elif isinstance(device, int):
+            target = torch.device("cuda", device)
+        else:
+            target = torch.device(device)
         if target.type != "cuda":
             raise ValueError("cuda() requires a CUDA device.")
         return self.to(device=target)
