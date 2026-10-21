@@ -1,0 +1,700 @@
+{
+  "schema_version": 1,
+  "recorded_at_utc": "2026-10-21T21:34:30.918065+00:00",
+  "scope": "Independent audit of completed CI run 39674851321; no rerun or implementation changes.",
+  "repository": "https://github.com/M-Colley/botorch-rust",
+  "run": {
+    "id": 39674851321,
+    "run_number": 76,
+    "run_attempt": 1,
+    "event": "pull_request",
+    "head_branch": "codex/complete-botorch-port",
+    "head_sha": "258ff6b544159b2c5e2797c331e39f1095ab7a3d",
+    "status": "completed",
+    "conclusion": "success",
+    "created_at": "2026-10-21T20:58:05Z",
+    "updated_at": "2026-10-21T21:28:32Z",
+    "html_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39674851321",
+    "path": ".github/workflows/ci.yml"
+  },
+  "checkout": {
+    "event_head_commit": "258ff6b544159b2c5e2797c331e39f1095ab7a3d",
+    "actual_pull_request_merge_commit": "9df43bd22bf015103e08b039b070f0ce1606cdfc",
+    "merge_parents": [
+      "4f2435e1ca5e44c36a4a376311a57fba4901b074",
+      "258ff6b544159b2c5e2797c331e39f1095ab7a3d"
+    ],
+    "event_head_tree": "e69dea6aabd6b1e09aa4fca99de400cf118d9149",
+    "actual_merge_tree": "e69dea6aabd6b1e09aa4fca99de400cf118d9149",
+    "full_tree_identity_verified": true,
+    "all_eleven_job_logs_confirm_same_merge_checkout": true
+  },
+  "jobs": [
+    {
+      "id": 119482653433,
+      "name": "Python 3.13 (ubuntu-latest, numpy + torch)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39674851321/job/119482653433",
+      "started_at": "2026-10-21T20:59:43Z",
+      "completed_at": "2026-10-21T21:04:14Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "verified_steps": [
+        {
+          "number": 9,
+          "name": "Build and install botorch-rust (maturin)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 11,
+          "name": "Strict pinned core API inventory",
+          "status": "completed",
+          "conclusion": "skipped"
+        },
+        {
+          "number": 12,
+          "name": "Tests",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 13,
+          "name": "Equivalence suite (BoTorch)",
+          "status": "completed",
+          "conclusion": "skipped"
+        }
+      ],
+      "downloaded_log": {
+        "path": "D:/botorch-ci-258-audit/job-119482653433.log",
+        "bytes": 207663,
+        "sha256": "1b931764b374802809917e4bf4e0408386378f501b875bdc208bc82883d7a271"
+      }
+    },
+    {
+      "id": 119482653865,
+      "name": "Python lint",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39674851321/job/119482653865",
+      "started_at": "2026-10-21T20:59:42Z",
+      "completed_at": "2026-10-21T21:00:02Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "verified_steps": [
+        {
+          "number": 5,
+          "name": "ruff",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 6,
+          "name": "mypy",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "downloaded_log": {
+        "path": "D:/botorch-ci-258-audit/job-119482653865.log",
+        "bytes": 25638,
+        "sha256": "a8f1633a0d2e5aeeacf4865c6640aa2505e225ee7e850b51bb69589a6b7ea8e8"
+      }
+    },
+    {
+      "id": 119482653928,
+      "name": "Rust (macos-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39674851321/job/119482653928",
+      "started_at": "2026-10-21T21:04:43Z",
+      "completed_at": "2026-10-21T21:07:31Z",
+      "labels": [
+        "macos-latest"
+      ],
+      "verified_steps": [
+        {
+          "number": 5,
+          "name": "rustfmt",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 6,
+          "name": "clippy",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 7,
+          "name": "Tests (unit, BoTorch parity fixtures, doctests)",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "downloaded_log": {
+        "path": "D:/botorch-ci-258-audit/job-119482653928.log",
+        "bytes": 127420,
+        "sha256": "b61079959333716af2512676c39ea10c91b37fc69455e1191152d47c94d57923"
+      }
+    },
+    {
+      "id": 119482653977,
+      "name": "Rust (ubuntu-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39674851321/job/119482653977",
+      "started_at": "2026-10-21T20:59:42Z",
+      "completed_at": "2026-10-21T21:03:09Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "verified_steps": [
+        {
+          "number": 5,
+          "name": "rustfmt",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 6,
+          "name": "clippy",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 7,
+          "name": "Tests (unit, BoTorch parity fixtures, doctests)",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "downloaded_log": {
+        "path": "D:/botorch-ci-258-audit/job-119482653977.log",
+        "bytes": 122636,
+        "sha256": "53e37ab66520ce4b7a71308454dfcde3974de4394af8912e2d554bc27c1feb77"
+      }
+    },
+    {
+      "id": 119482654026,
+      "name": "Python 3.13 (macos-latest, numpy)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39674851321/job/119482654026",
+      "started_at": "2026-10-21T20:59:43Z",
+      "completed_at": "2026-10-21T21:02:54Z",
+      "labels": [
+        "macos-latest"
+      ],
+      "verified_steps": [
+        {
+          "number": 9,
+          "name": "Build and install botorch-rust (maturin)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 11,
+          "name": "Strict pinned core API inventory",
+          "status": "completed",
+          "conclusion": "skipped"
+        },
+        {
+          "number": 12,
+          "name": "Tests",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 13,
+          "name": "Equivalence suite (BoTorch)",
+          "status": "completed",
+          "conclusion": "skipped"
+        }
+      ],
+      "downloaded_log": {
+        "path": "D:/botorch-ci-258-audit/job-119482654026.log",
+        "bytes": 134258,
+        "sha256": "b67851df6cf16681c4e426251e9da524b6d6a348089f7d8edd0f7468351e7d56"
+      }
+    },
+    {
+      "id": 119482654045,
+      "name": "Python 3.11 (ubuntu-latest, lists)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39674851321/job/119482654045",
+      "started_at": "2026-10-21T20:59:42Z",
+      "completed_at": "2026-10-21T21:02:48Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "verified_steps": [
+        {
+          "number": 9,
+          "name": "Build and install botorch-rust (maturin)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 11,
+          "name": "Strict pinned core API inventory",
+          "status": "completed",
+          "conclusion": "skipped"
+        },
+        {
+          "number": 12,
+          "name": "Tests",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 13,
+          "name": "Equivalence suite (BoTorch)",
+          "status": "completed",
+          "conclusion": "skipped"
+        }
+      ],
+      "downloaded_log": {
+        "path": "D:/botorch-ci-258-audit/job-119482654045.log",
+        "bytes": 129399,
+        "sha256": "cfc648b3d622f562f58c6439aa75dbbbae96f941d0ebab7af457c7740ae162db"
+      }
+    },
+    {
+      "id": 119482654097,
+      "name": "Python 3.15 (ubuntu-latest, numpy + torch)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39674851321/job/119482654097",
+      "started_at": "2026-10-21T20:59:43Z",
+      "completed_at": "2026-10-21T21:04:20Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "verified_steps": [
+        {
+          "number": 9,
+          "name": "Build and install botorch-rust (maturin)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 11,
+          "name": "Strict pinned core API inventory",
+          "status": "completed",
+          "conclusion": "skipped"
+        },
+        {
+          "number": 12,
+          "name": "Tests",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 13,
+          "name": "Equivalence suite (BoTorch)",
+          "status": "completed",
+          "conclusion": "skipped"
+        }
+      ],
+      "downloaded_log": {
+        "path": "D:/botorch-ci-258-audit/job-119482654097.log",
+        "bytes": 208322,
+        "sha256": "6beee4baa17b7f1209bffc298b95a7c757b87bfabd14e0a2ad7b9bcb97de554f"
+      }
+    },
+    {
+      "id": 119482654106,
+      "name": "Python 3.12 (ubuntu-latest, BoTorch parity)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39674851321/job/119482654106",
+      "started_at": "2026-10-21T20:59:43Z",
+      "completed_at": "2026-10-21T21:28:32Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "verified_steps": [
+        {
+          "number": 9,
+          "name": "Build and install botorch-rust (maturin)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 11,
+          "name": "Strict pinned core API inventory",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 12,
+          "name": "Tests",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 13,
+          "name": "Equivalence suite (BoTorch)",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "downloaded_log": {
+        "path": "D:/botorch-ci-258-audit/source-job-119482654106.log",
+        "bytes": 858190,
+        "sha256": "2b74044188bc89c4da1215f4303e19bc3882644c88eb10642c19d69ebf97b616"
+      }
+    },
+    {
+      "id": 119482654128,
+      "name": "Python 3.12 (windows-latest, numpy)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39674851321/job/119482654128",
+      "started_at": "2026-10-21T20:59:43Z",
+      "completed_at": "2026-10-21T21:03:58Z",
+      "labels": [
+        "windows-latest"
+      ],
+      "verified_steps": [
+        {
+          "number": 9,
+          "name": "Build and install botorch-rust (maturin)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 11,
+          "name": "Strict pinned core API inventory",
+          "status": "completed",
+          "conclusion": "skipped"
+        },
+        {
+          "number": 12,
+          "name": "Tests",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 13,
+          "name": "Equivalence suite (BoTorch)",
+          "status": "completed",
+          "conclusion": "skipped"
+        }
+      ],
+      "downloaded_log": {
+        "path": "D:/botorch-ci-258-audit/job-119482654128.log",
+        "bytes": 131446,
+        "sha256": "6d6ecb3b260f567e6e251ccfce02a137a78bf818b9b56bc03e5efd138decf395"
+      }
+    },
+    {
+      "id": 119482654426,
+      "name": "Python 3.15 (windows-latest, numpy)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39674851321/job/119482654426",
+      "started_at": "2026-10-21T20:59:43Z",
+      "completed_at": "2026-10-21T21:06:01Z",
+      "labels": [
+        "windows-latest"
+      ],
+      "verified_steps": [
+        {
+          "number": 9,
+          "name": "Build and install botorch-rust (maturin)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 11,
+          "name": "Strict pinned core API inventory",
+          "status": "completed",
+          "conclusion": "skipped"
+        },
+        {
+          "number": 12,
+          "name": "Tests",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 13,
+          "name": "Equivalence suite (BoTorch)",
+          "status": "completed",
+          "conclusion": "skipped"
+        }
+      ],
+      "downloaded_log": {
+        "path": "D:/botorch-ci-258-audit/job-119482654426.log",
+        "bytes": 131620,
+        "sha256": "c5db8d20adb3f1117eb1b300fc86993074ece206ca46f5fc9930d6df9eea8ea3"
+      }
+    },
+    {
+      "id": 119482654507,
+      "name": "Rust (windows-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39674851321/job/119482654507",
+      "started_at": "2026-10-21T20:59:43Z",
+      "completed_at": "2026-10-21T21:05:48Z",
+      "labels": [
+        "windows-latest"
+      ],
+      "verified_steps": [
+        {
+          "number": 5,
+          "name": "rustfmt",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 6,
+          "name": "clippy",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 7,
+          "name": "Tests (unit, BoTorch parity fixtures, doctests)",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "downloaded_log": {
+        "path": "D:/botorch-ci-258-audit/job-119482654507.log",
+        "bytes": 123537,
+        "sha256": "5938baae6dff69018ee1deaec5be0c6468ce27688bd6c975b42a42a321b3295e"
+      }
+    }
+  ],
+  "all_eleven_jobs_successful": true,
+  "pinned_source_lane": {
+    "job_id": 119482654106,
+    "platform": "ubuntu-latest",
+    "execution_device_scope": "CPU; installed Torch is 2.14.1+cpu. CUDA tests skipped as reported in the log.",
+    "python": "CPython 3.12.15",
+    "port_version": "0.3.0",
+    "port_origin": "/opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/botorch_rs/__init__.py",
+    "source_repository": "https://github.com/meta-pytorch/botorch",
+    "source_commit": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "source_installed_version": "0.1.dev1+gb0dd01be6",
+    "gpytorch": "1.15.2",
+    "torch": "2.14.1+cpu",
+    "reference_installed_from": "./.reference/botorch[fully_bayesian]",
+    "source_required_environment": {
+      "BOTORCH_RS_REQUIRE_BOTORCH": "1"
+    },
+    "source_required_environment_evidence": "The committed CI workflow sets this for both the parity Tests and Equivalence suite steps.",
+    "strict_public_symbol_inventory": {
+      "command": "python scripts/api_coverage.py --require-full --out api-coverage-ci.md --json-out api-coverage-ci.json",
+      "public_classes_and_functions": 776,
+      "present": 776,
+      "step_conclusion": "success",
+      "meaning": "Pinned public symbol inventory, not exhaustive configuration or behavior equivalence.",
+      "log_evidence": {
+        "line": 1073,
+        "text": "2026-10-21T21:03:49.3697278Z 776 of 776 public BoTorch classes and functions are in botorch_rs; wrote api-coverage-ci.md"
+      }
+    },
+    "broad_tests": {
+      "command": "python -m pytest tests -q -rs -m \"not equivalence\"",
+      "working_directory": "botorch_pyo3",
+      "passed": 10054,
+      "skipped": 1171,
+      "deselected": 1237,
+      "warnings": 1842,
+      "failed": 0,
+      "duration_seconds": 1007.03,
+      "step_conclusion": "success",
+      "log_evidence": {
+        "line": 6450,
+        "text": "2026-10-21T21:20:39.2246371Z 10054 passed, 1171 skipped, 1237 deselected, 1842 warnings in 1007.03s (0:16:47)"
+      }
+    },
+    "equivalence_tests": {
+      "command": "python -m pytest tests -q -rs -m equivalence",
+      "working_directory": "botorch_pyo3",
+      "passed": 1222,
+      "skipped": 15,
+      "deselected": 11225,
+      "warnings": 1,
+      "failed": 0,
+      "duration_seconds": 457.19,
+      "step_conclusion": "success",
+      "log_evidence": {
+        "line": 7605,
+        "text": "2026-10-21T21:28:23.2864172Z 1222 passed, 15 skipped, 11225 deselected, 1 warning in 457.19s (0:07:37)"
+      },
+      "skip_reasons": [
+        {
+          "count": 7,
+          "test_file": "tests/test_equivalence_9_optim.py",
+          "line": 194,
+          "reason": "needs a continuous dimension besides the discrete and categorical ones",
+          "log_line": 7600
+        },
+        {
+          "count": 1,
+          "test_file": "tests/test_equivalence_mo_entropy.py",
+          "line": 288,
+          "reason": "BoTorch's path models do not support lists of multi-output models",
+          "log_line": 7601
+        },
+        {
+          "count": 2,
+          "test_file": "tests/test_equivalence_mo_entropy.py",
+          "line": 389,
+          "reason": "BoTorch's path models do not support lists of multi-output models",
+          "log_line": 7602
+        },
+        {
+          "count": 1,
+          "test_file": "tests/test_equivalence_mo_entropy.py",
+          "line": 477,
+          "reason": "BoTorch's path models do not support lists of multi-output models",
+          "log_line": 7603
+        },
+        {
+          "count": 4,
+          "test_file": "tests/test_equivalence_so_acquisition.py",
+          "line": 310,
+          "reason": "single-output models only (as in BoTorch)",
+          "log_line": 7604
+        }
+      ]
+    },
+    "version_and_origin_evidence": [
+      {
+        "line": 177,
+        "text": "2026-10-21T20:59:49.1916134Z Successfully set up CPython (3.12.15)"
+      },
+      {
+        "line": 1050,
+        "text": "2026-10-21T21:03:43.9571394Z botorch_rs 0.3.0 /opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/botorch_rs/__init__.py"
+      },
+      {
+        "line": 1053,
+        "text": "2026-10-21T21:03:46.0978591Z botorch 0.1.dev1+gb0dd01be6 gpytorch 1.15.2 torch 2.14.1+cpu"
+      },
+      {
+        "line": 818,
+        "text": "2026-10-21T21:00:36.2635719Z HEAD is now at b0dd01b Re-index outputs in outcome transforms' subset_output (#3380)"
+      },
+      {
+        "line": 821,
+        "text": "2026-10-21T21:00:36.2731713Z b0dd01be61d517c387e234903a6e2cc38c057ea2"
+      }
+    ],
+    "ci_built_wheel": {
+      "filename": "botorch_rust-0.3.0-cp311-abi3-linux_x86_64.whl",
+      "sha256_reported_by_pip": "f24782b5b6245f719397b31c61d6ce5dcf4cac9ab9032fc8a540da6eb392e3d2",
+      "digest_scope": "Wheel creation digest printed by pip in this CI job; the wheel was not independently downloaded for this audit.",
+      "log_evidence": {
+        "line": 1020,
+        "text": "2026-10-21T21:03:42.6162262Z   Created wheel for botorch-rust: filename=botorch_rust-0.3.0-cp311-abi3-linux_x86_64.whl size=7631401 sha256=f24782b5b6245f719397b31c61d6ce5dcf4cac9ab9032fc8a540da6eb392e3d2"
+      }
+    }
+  },
+  "committed_source_stability": {
+    "selection": "Every tracked path except README.md and docs/**; compare exact Git mode/type/blob identifiers by path.",
+    "manifest_encoding": "Sorted entries: git-mode + space + object-type + space + object-id + TAB + path + LF, UTF-8.",
+    "candidate_snapshot": {
+      "commit": "258ff6b544159b2c5e2797c331e39f1095ab7a3d",
+      "selected_tracked_paths": 1293,
+      "git_object_manifest_sha256": "bdf4902da900ac31eac5ac8a7a298683fff46926d73fe875f4ed0c51e233295f"
+    },
+    "audited_root_snapshot": {
+      "commit": "194efd51f3cdd6b701830460c15dcd290b14b844",
+      "selected_tracked_paths": 1293,
+      "git_object_manifest_sha256": "bdf4902da900ac31eac5ac8a7a298683fff46926d73fe875f4ed0c51e233295f"
+    },
+    "selected_path_sets_and_git_object_entries_identical": true,
+    "entire_committed_diff": [
+      {
+        "status": "M",
+        "path": "README.md"
+      },
+      {
+        "status": "M",
+        "path": "docs/api_coverage.json"
+      },
+      {
+        "status": "M",
+        "path": "docs/api_coverage.md"
+      },
+      {
+        "status": "A",
+        "path": "docs/native-030-verification.md"
+      },
+      {
+        "status": "M",
+        "path": "docs/roadmap.md"
+      },
+      {
+        "status": "M",
+        "path": "docs/torch-backend.md"
+      },
+      {
+        "status": "A",
+        "path": "docs/verification-native-030-2026-10-21.json"
+      },
+      {
+        "status": "A",
+        "path": "docs/verification-reference-blocked-030-2026-10-21.json"
+      }
+    ],
+    "working_tree_excluded": "Foreign dirty and untracked working-tree files are excluded; this attests committed snapshots only."
+  },
+  "artifact_scope_and_limits": [
+    "CI Python jobs build and install their own platform extensions; Rust jobs build their own native test artifacts.",
+    "These CI results do not attest byte identity with the local Windows extension SHA256 8fa0323b0b1cf80ab4e35dee8216de497586c3213b8489a79abf5bf492ee3675; that artifact has a separate native verification report.",
+    "CPU pinned-source lane counts are recorded per pytest invocation and are not added to local Windows, CUDA, reference-blocked, or other CI job counts.",
+    "A successful job and a complete pinned symbol inventory do not prove equivalence of every possible input, configuration, or caller-defined module.",
+    "This audit does not publish the package, certify the pending local full GPU run, or replace earlier failed/canceled CI evidence."
+  ],
+  "evidence_acquisition": {
+    "commands": [
+      "gh api repos/M-Colley/botorch-rust/actions/runs/39674851321",
+      "gh api repos/M-Colley/botorch-rust/actions/runs/39674851321/jobs?per_page=100",
+      "gh api repos/M-Colley/botorch-rust/actions/jobs/119482654106",
+      "gh api repos/M-Colley/botorch-rust/actions/jobs/<each of the 11 job IDs>/logs",
+      "gh api repos/M-Colley/botorch-rust/git/commits/9df43bd22bf015103e08b039b070f0ce1606cdfc",
+      "git ls-tree -rz --full-tree <candidate and audited root commits>",
+      "git diff --name-status 258ff6b544159b2c5e2797c331e39f1095ab7a3d <audited root commit>",
+      "git show 258ff6b544159b2c5e2797c331e39f1095ab7a3d:.github/workflows/ci.yml"
+    ],
+    "metadata_receipts": [
+      {
+        "path": "D:/botorch-ci-258-audit/run.json",
+        "bytes": 13051,
+        "sha256": "0d5b97c21bac29e0cc5169bb4b9e77dc1290d627fec95ea18fd9761b394a0c5c"
+      },
+      {
+        "path": "D:/botorch-ci-258-audit/jobs.json",
+        "bytes": 39438,
+        "sha256": "351acb1fa5ae3ec1a8d8eb46b31dd93c2776a3b42828831aafa6da203e4d3e1b"
+      },
+      {
+        "path": "D:/botorch-ci-258-audit/source-job.json",
+        "bytes": 4194,
+        "sha256": "5f9f841f8768b4fc4a39705dd870db6a9d73b32f6cc2b495eaaaffe32499a69b"
+      },
+      {
+        "path": "D:/botorch-ci-258-audit/merge-commit.json",
+        "bytes": 2676,
+        "sha256": "afa3c03c6b45dc4d191661629ec8bd19a261667a49a9206daaa21e5aecc62f79"
+      }
+    ],
+    "workflow_git_blob": "7a05768aa5dcc69dd6ee7c739a201db74ea5c8f3",
+    "workflow_sha256": "bb1c1a339b67f7501c716e7330b0c28231c68ead47519b50363fe611f5d02111",
+    "log_hash_scope": "SHA256 of the downloaded local job-log bytes; timestamps and all log content are retained.",
+    "prior_evidence_preserved": true
+  }
+}
