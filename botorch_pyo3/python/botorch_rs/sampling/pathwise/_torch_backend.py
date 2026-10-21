@@ -19,8 +19,15 @@ from botorch_rs.models._torch_backend import TorchSingleTaskGP
 from botorch_rs.models._torch_backend_modules import TorchScaleKernel, TorchStationaryKernel
 from botorch_rs.models._torch_backend_variational import TorchSingleTaskVariationalGP
 from botorch_rs.models.deterministic import MatheronPathModel
-from botorch_rs.sampling.pathwise.features.maps import KernelEvaluationMap, KernelFeatureMap
-from botorch_rs.sampling.pathwise.paths import GeneralizedLinearPath, PathList
+from botorch_rs.sampling.pathwise._torch_modules import (
+    TorchEvaluationFeatureMap,
+    TorchLinearPathModule,
+    TorchPathDictModule,
+    TorchTransformedModule,
+    register_tensor,
+)
+from botorch_rs.sampling.pathwise.features.maps import KernelFeatureMap
+from botorch_rs.sampling.pathwise.paths import PathList
 from botorch_rs.sampling.pathwise.posterior_samplers import MatheronPath
 
 
@@ -76,9 +83,11 @@ def _leaf(kernel: Any, num_inputs: int) -> tuple[Any, int]:
     return kernel, num_inputs if kernel.active_dims is None else kernel.active_dims.numel()
 
 
-class TorchKernelFeatureMap(KernelFeatureMap):
+class TorchKernelFeatureMap(TorchTransformedModule, KernelFeatureMap):
     def __init__(self, kernel: Any, weight: Tensor) -> None:
-        self.kernel, self.weight = kernel, weight
+        nn.Module.__init__(self)
+        self.kernel = kernel
+        register_tensor(self, "weight", weight)
         self.bias, self.input_transform, self.output_transform = None, None, None
         self._num_features = 2 * weight.shape[-2]
 
@@ -108,7 +117,7 @@ class TorchKernelFeatureMap(KernelFeatureMap):
         return features * torch.as_tensor(scale, dtype=x.dtype, device=x.device).sqrt()
 
 
-class TorchKernelEvaluationMap(KernelEvaluationMap):
+class TorchKernelEvaluationMap(TorchEvaluationFeatureMap):
     def forward(self, x: Any, **kwargs: Any) -> Tensor:  # type: ignore[override]
         if kwargs:
             raise UnsupportedError(f"Unsupported kernel evaluation options: {sorted(kwargs)}.")
@@ -116,7 +125,7 @@ class TorchKernelEvaluationMap(KernelEvaluationMap):
         return result if isinstance(result, Tensor) else result.to_dense()
 
 
-class TorchGeneralizedLinearPath(GeneralizedLinearPath):
+class TorchGeneralizedLinearPath(TorchLinearPathModule):
     _tensor_backend = "torch"
 
     def forward(self, x: Tensor, **kwargs: Any) -> Tensor:
@@ -127,15 +136,39 @@ class TorchGeneralizedLinearPath(GeneralizedLinearPath):
         return out if self.bias_module is None else out + self.bias_module(x)
 
 
-class TorchMatheronPath(MatheronPath):
+class TorchMatheronPath(TorchPathDictModule, MatheronPath):
     _tensor_backend = "torch"
     _draw_record: list[tuple[Tensor, Tensor, Tensor]]
+
+    def __init__(
+        self,
+        prior_paths: Any,
+        update_paths: Any,
+        input_transform: Any = None,
+        output_transform: Any = None,
+    ) -> None:
+        from botorch_rs.sampling.pathwise.posterior_samplers import _sum_paths
+
+        TorchPathDictModule.__init__(
+            self,
+            {"prior_paths": prior_paths, "update_paths": update_paths},
+            _sum_paths,
+            input_transform,
+            output_transform,
+        )
 
     @property
     def draws(self) -> Any:
         if not hasattr(self, "_draw_record"):
             raise UnsupportedError("Explicitly composed paths do not have a joint draw record.")
         return self._draw_record
+
+    def _apply(self, fn: Any, recurse: bool = True) -> Any:
+        record = self.__dict__.get("_draw_record")
+        nn.Module._apply(self, fn, recurse)
+        if record is not None:
+            self._draw_record = [tuple(fn(value) for value in draw) for draw in record]
+        return self
 
 
 class TorchMatheronPathModel(nn.Module, MatheronPathModel):
@@ -250,17 +283,34 @@ def _fit_transforms(model: Any) -> None:
         model._fit_transform_graphs()
 
 
+class _OutcomePathTransform(nn.Module):
+    _model: Any
+
+    def __init__(self, model: Any) -> None:
+        super().__init__()
+        # Register the inverse transform itself, without adding the entire GP
+        # to the path's parameter tree. Pickle retains the shared model alias.
+        object.__setattr__(self, "_model", model)
+        self.transform = model.outcome_transform
+        self.num_outputs = model.num_outputs
+        self.register_buffer("_like", model._train_X.new_empty(0), persistent=False)
+
+    def forward(self, values: Tensor) -> Tensor:
+        model = self._model
+        # Refresh live calibration graphs only while the path and source model
+        # still share a device/dtype. Explicit path migration retains its fitted
+        # inverse statistics, as a migrated reference path does.
+        if model._train_X.device == self._like.device and model._train_X.dtype == self._like.dtype:
+            _fit_transforms(model)
+        outcomes = values.unsqueeze(-1) if self.num_outputs == 1 else values.transpose(-1, -2)
+        result = self.transform.untransform(outcomes)[0]
+        return result.squeeze(-1) if self.num_outputs == 1 else result.transpose(-1, -2)
+
+
 def _outcome(model: Any) -> Any:
-    if getattr(model, "outcome_transform", None) is None:
-        return None
-
-    def untransform(values: Tensor) -> Tensor:
-        _fit_transforms(model)
-        outcomes = values.unsqueeze(-1) if model.num_outputs == 1 else values.transpose(-1, -2)
-        result = model.outcome_transform.untransform(outcomes)[0]
-        return result.squeeze(-1) if model.num_outputs == 1 else result.transpose(-1, -2)
-
-    return untransform
+    return (
+        None if getattr(model, "outcome_transform", None) is None else _OutcomePathTransform(model)
+    )
 
 
 def _draw_components(
@@ -595,7 +645,7 @@ def tensor_matheron_paths(
             noise = noise.reshape(sample_values.shape)
     update = tensor_gaussian_update(model, sample_values, DEFAULT, None, noise, value)
     path = TorchMatheronPath(prior, update, output_transform=_outcome(model))
-    path.join = lambda values: sum(values[1:], values[0])
+    path.join = sum
     frequencies, weights = prior.feature_map.weight, prior.weight
     path._draw_record = (
         [(frequencies, weights, noise)]

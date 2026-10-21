@@ -35,8 +35,9 @@ Replacing/deleting dictionary entries or replacing a transform now evaluates
 the current composition. Previously those edits were silently ignored.
 `forward` returns the sum before the outer outcome untransform, matching
 BoTorch. The factory snapshots the fitted outcome transform, and
-`OutcomeUntransformer(Standardize(...))` uses native affine operations so
-editing a composed path preserves query gradients through standardization.
+`OutcomeUntransformer(Standardize(...))` uses native affine operations for array
+paths and the actual Tensor inverse for device paths, retaining calibration
+graphs as well as path-value derivatives.
 
 Validation covers list, NumPy, and Torch values; official constructor values,
 batch and ensemble layouts; query/weight/frequency gradients; explicit bias
@@ -44,8 +45,19 @@ and transform graphs; compositions of native prior/update paths; dictionary
 edits; single/multiple-output standardization; outcome-transform snapshot
 independence; deep copy; and explicit-callable serialization.
 
-These classes remain array-oriented wrappers rather than `torch.nn.Module`
-subclasses; they do not provide automatic Torch parameter registration.
+Tensor generalized-linear paths, Tensor feature maps, and compositions of
+Torch modules are actual `torch.nn.Module` instances. They retain supplied
+Parameter identities, register ordinary path weights and feature arrays as
+buffers, and register their kernel, bias, transform and component modules.
+Forward hooks see transformed inputs and the output before the outer inverse,
+matching the source mixin. State dictionaries, explicit dtype/device migration,
+whole-object serialization with picklable callables, and shared component aliases
+are covered separately from numerical parity. Generated device paths use
+picklable joins and inverse-transform modules, and migrate their explicit draw
+records with the path. Array constructors keep their native wrappers and do not
+require importing Torch. Direct array-transform descriptors retain their own
+module protocols; this checkpoint does not certify every inherited Torch API.
+
 Factory-produced native generalized-linear paths still expose their existing
 fixed weight/draw metadata and reject assignment to their immutable native
 weight snapshots. Their feature metadata is not a replacement for the fully

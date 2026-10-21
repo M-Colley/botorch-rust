@@ -53,6 +53,13 @@ class FeatureMap(TransformedModuleMixin, TensorTransform):
 class KernelEvaluationMap(FeatureMap):
     """Features obtained by evaluating a kernel against fixed points."""
 
+    def __new__(cls, kernel: Any = None, points: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if cls is KernelEvaluationMap and is_torch_tensor(points):
+            from botorch_rs.sampling.pathwise._torch_modules import TorchEvaluationFeatureMap
+
+            return object.__new__(TorchEvaluationFeatureMap)
+        return object.__new__(cls)
+
     def __init__(
         self, kernel: Any, points: Any, input_transform: Any = None, output_transform: Any = None
     ) -> None:
@@ -83,6 +90,13 @@ class KernelFeatureMap(FeatureMap):
     """An affine feature map ``x @ weight.T + bias``, with optional transforms."""
 
     kernel: Any
+
+    def __new__(cls, kernel: Any = None, weight: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if cls is KernelFeatureMap and is_torch_tensor(weight):
+            from botorch_rs.sampling.pathwise._torch_modules import TorchAffineFeatureMap
+
+            return object.__new__(TorchAffineFeatureMap)
+        return object.__new__(cls)
 
     def __init__(
         self,

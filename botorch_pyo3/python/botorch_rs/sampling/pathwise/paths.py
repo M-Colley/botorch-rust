@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any
 
@@ -58,6 +59,15 @@ class SamplePath:
 class PathDict(SamplePath):
     """A dictionary of sample paths whose outputs are combined by ``join``
     (a dict of the outputs if ``join`` is ``None``)."""
+
+    def __new__(cls, paths: Any = None, *args: Any, **kwargs: Any) -> Any:
+        torch = sys.modules.get("torch")
+        if cls is PathDict and torch is not None:
+            if all(isinstance(path, torch.nn.Module) for path in (paths or {}).values()):
+                from botorch_rs.sampling.pathwise._torch_modules import TorchPathDictModule
+
+                return object.__new__(TorchPathDictModule)
+        return object.__new__(cls)
 
     def __init__(
         self,
@@ -110,6 +120,22 @@ class PathList(SamplePath):
     """A list of sample paths whose outputs are combined by ``join`` (a list
     of the outputs if ``join`` is ``None``)."""
 
+    def __new__(cls, paths: Any = None, *args: Any, **kwargs: Any) -> Any:
+        torch = sys.modules.get("torch")
+        if cls is PathList and torch is not None:
+            paths = [] if paths is None else list(paths)
+            if all(isinstance(path, torch.nn.Module) for path in paths):
+                from botorch_rs.sampling.pathwise._torch_modules import TorchPathListModule
+
+                result: Any = object.__new__(TorchPathListModule)
+                result.__dict__["_constructor_paths"] = paths
+                return result
+            # A one-shot iterable must remain available to the public initializer.
+            result = object.__new__(cls)
+            result.__dict__["_constructor_paths"] = paths
+            return result
+        return object.__new__(cls)
+
     def __init__(
         self,
         paths: Iterable[SamplePath] | None = None,
@@ -122,7 +148,7 @@ class PathList(SamplePath):
         self.join = join
         self.input_transform = input_transform
         self.output_transform = output_transform
-        self.paths: list[SamplePath] = list(paths or [])
+        self.paths: list[SamplePath] = list(self.__dict__.pop("_constructor_paths", paths) or [])
 
     def forward(self, x: Any, **kwargs: Any) -> Any:
         out = [path(x, **kwargs) for path in self.paths]

@@ -24,6 +24,7 @@ from __future__ import annotations
 import copy
 import functools
 import math
+import sys
 from collections.abc import Sequence
 from typing import Any
 
@@ -56,6 +57,19 @@ class MatheronPath(_RsPaths, PathDict):
     """
 
     _native_components: dict[str, Any]
+
+    def __new__(
+        cls, prior_paths: Any = None, update_paths: Any = None, *args: Any, **kwargs: Any
+    ) -> Any:
+        torch = sys.modules.get("torch")
+        if cls is MatheronPath and torch is not None:
+            if isinstance(prior_paths, torch.nn.Module) and isinstance(
+                update_paths, torch.nn.Module
+            ):
+                from botorch_rs.sampling.pathwise._torch_backend import TorchMatheronPath
+
+                return object.__new__(TorchMatheronPath)
+        return object.__new__(cls)
 
     def __init__(
         self,
