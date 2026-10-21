@@ -326,3 +326,14 @@ def test_public_elementwise_posterior_samples_keep_higher_graphs(device, kind, m
         actual = posterior.rsample_from_base_samples(torch.Size([4]), normals)
         torch.testing.assert_close(actual, expected)
         _compare_gradients(actual.sin(), expected.sin(), (mean, scale))
+        if kind == "Log":
+            variance = scale.square().expand_as(mean)
+            expected_mean = (mean + 0.5 * variance).exp()
+            expected_variance = variance.expm1() * (2 * mean + variance).exp()
+            torch.testing.assert_close(posterior.mean, expected_mean)
+            torch.testing.assert_close(posterior.variance, expected_variance)
+            _compare_gradients(
+                posterior.mean + posterior.variance,
+                expected_mean + expected_variance,
+                (mean, scale),
+            )

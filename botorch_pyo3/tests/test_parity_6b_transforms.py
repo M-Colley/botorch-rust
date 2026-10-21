@@ -155,7 +155,11 @@ def check_inverse_power_domain(
             CHECK.check(f"{quantity}: finite entries", actual[finite], expected[finite], tol)
 
 
-def test_inverse_power_domain_does_not_hide_finite_errors_or_different_nonfinite_classes() -> None:
+def test_inverse_power_domain_does_not_hide_finite_errors_or_different_nonfinite_classes(
+    monkeypatch,
+) -> None:
+    # Intentionally rejected comparisons must not enter the actual parity ledger.
+    monkeypatch.setattr(CHECK, "record", lambda *args, **kwargs: None)
     for actual, expected in (
         ([1.0, math.nan], [1.1, math.nan]),
         ([1.0, math.inf], [1.0, math.nan]),

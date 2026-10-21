@@ -34,8 +34,12 @@ The [stricter equivalence audit](verification-equivalence-audit-2026-10-21.json)
 at `30c1c95` executed all 1,237 selected cases exactly once: 1,201 passed,
 15 skipped and 21 failed. Twenty ensemble cases pass after the device repair;
 the remaining inverse-power domain case now classifies undefined values
-separately from finite numerical comparisons. A fresh frozen equivalence run
-at `f943100` is in progress. The failed baseline remains preserved as failed.
+separately from finite numerical comparisons. The
+[fresh frozen equivalence run](verification-equivalence-f943100-2026-10-21.json)
+at `f943100` passes 1,222 cases with 15 recorded skips and no failures. Exact
+selected-case accounting and all source/native/reference fingerprints remain
+stable. The failed baseline remains preserved as failed, and subsequent changes
+remain outside the new checkpoint.
 The complete behavior/configuration audit is still open, including remaining
 variational strategies, specialized fitting extensions, custom module protocols,
 and acquisition approximation/cache configurations. A new release and Unity
