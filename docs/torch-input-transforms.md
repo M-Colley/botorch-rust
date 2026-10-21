@@ -215,9 +215,18 @@ CUDA cases. The generic source fixed-noise multitask fantasy defect encountered
 during these probes is already addressed in existing BoTorch #3374; supported
 learned-noise source configurations establish the phase comparisons.
 
-Remaining finite audit items are ordinary multitask transforms that change
-training feature width (including task-column relocation), appropriate CPU
-automatic fallback from native-only limits, and actual GPyTorch-specific
+Ordinary multitask construction now derives its feature count, task column,
+labels and default kernel from transformed training coordinates. Source-first
+train-only FilterFeatures and AppendFeatures cases establish supported width
+changes: eval queries already use the selected/augmented feature space. The
+source itself classifies query task columns before transforming them, so this
+does not claim arbitrary simultaneous training/query width relocation.
+Four dense Gaussian controls verify complete data/query/parameter Hessians.
+CPU auto selection routes configurations outside the native MT transform
+support to Tensor inference, including non-Normalize inputs and nonlinear
+outcomes. Explicit backend="native" retains its documented limits.
+
+The remaining finite Input audit item is actual GPyTorch-specific
 Warp/imputation prior/constraint calls. A native-only limitation is not a
-missing Tensor implementation; source-supported configurations must remain
+missing Tensor implementation; source-supported configurations remain
 available through the Tensor backend before claiming full package coverage.

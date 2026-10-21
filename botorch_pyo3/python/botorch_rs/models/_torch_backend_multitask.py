@@ -247,12 +247,25 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         self._validate_data(train_X, train_Y, train_Yvar)
         if train_X.ndim != 2 or train_Y.shape[-1] != 1:
             raise ValueError("MultiTaskGP requires unbatched train_X (n,d+1) and train_Y (n,1).")
-        d = train_X.shape[-1] - 1
+        self.input_transform = build_input_transform(input_transform, train_X.shape[-1], train_X)
+        with torch.no_grad():
+            outcome_inputs = (
+                train_X
+                if self.input_transform is None
+                else getattr(self.input_transform, "preprocess_transform", self.input_transform)(
+                    train_X
+                )
+            )
+        if outcome_inputs.shape[-2] != train_Y.shape[-2]:
+            raise ValueError(
+                "The training input transform must preserve the number of target rows."
+            )
+        d = outcome_inputs.shape[-1] - 1
         if d < 1 or not (-(d + 1) <= task_feature <= d):
             raise ValueError(f"task_feature must be between {-d - 1} and {d}.")
         self._task_feature = task_feature % (d + 1)
         self.num_non_task_features = d
-        raw_tasks = train_X[..., self._task_feature]
+        raw_tasks = outcome_inputs[..., self._task_feature]
         if not bool(((raw_tasks >= 0) & (raw_tasks == raw_tasks.long())).all()):
             raise ValueError("Task labels must be nonnegative integers.")
         observed = raw_tasks.long().unique(sorted=True).tolist()
@@ -323,15 +336,6 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
                 device=train_X.device,
             ),
         )
-        self.input_transform = build_input_transform(input_transform, d + 1, train_X)
-        with torch.no_grad():
-            outcome_inputs = (
-                train_X
-                if self.input_transform is None
-                else getattr(self.input_transform, "preprocess_transform", self.input_transform)(
-                    train_X
-                )
-            )
         self.outcome_transform = build_outcome_transform(
             outcome_transform, 1, train_Y, train_X=outcome_inputs
         )
@@ -426,6 +430,9 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         return X, Y, noise
 
     def _check_task_transform(self, original: Any, transformed: Any) -> None:
+        if original.shape[-1] != transformed.shape[-1]:
+            self._map_tasks(transformed[..., self._task_feature])
+            return
         count = original.shape[-2]
         if count == 0:
             return
@@ -483,6 +490,8 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         inputs = getattr(self, "_conditioned_train_X", None)
         if inputs is None:
             inputs = self._train_X
+            if inputs.shape[-1] != self.num_non_task_features + 1:
+                inputs = self._training_values()[0]
         result = (
             fixed_noise if fixed_noise is not None else self._noise_at(self._mapped_inputs(inputs))
         )
@@ -494,6 +503,8 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         inputs = getattr(self, "_conditioned_train_X", None)
         if inputs is None:
             inputs = self._train_X
+            if inputs.shape[-1] != self.num_non_task_features + 1:
+                inputs = self._training_values()[0]
         train_tasks = self._mapped_inputs(inputs)[..., self._task_feature].long()
         mask = train_tasks.unsqueeze(-1) == torch.arange(self.num_tasks, device=mapped_X.device)
         counts = mask.sum(-2)
@@ -870,11 +881,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             return conditioned
         if kwargs:
             raise UnsupportedError(f"Unsupported conditioning arguments: {sorted(kwargs)}.")
-        if (
-            not isinstance(X, torch.Tensor)
-            or X.ndim < 2
-            or X.shape[-1] != self.num_non_task_features + 1
-        ):
+        if not isinstance(X, torch.Tensor) or X.ndim < 2 or X.shape[-1] != self._train_X.shape[-1]:
             raise ValueError("Multitask conditioning requires inputs including the task feature.")
         if not isinstance(Y, torch.Tensor):
             raise TypeError("Conditioning targets must be a Tensor.")
@@ -889,7 +896,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             raise ValueError("Conditioning data must have the model dtype and device.")
         if not bool(torch.isfinite(X).all() & torch.isfinite(Y).all()):
             raise ValueError("Conditioning data must be finite.")
-        self._map_tasks(X[..., self._task_feature])
+        self._map_tasks(transformed[..., self._task_feature])
         if noise is not None:
             if (
                 not isinstance(noise, torch.Tensor)
@@ -957,7 +964,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
                 (previous.expand(*batch, previous.shape[-1]), extra.expand(*batch, Y.shape[-2])),
                 dim=-1,
             )
-        tasks = model._map_tasks(model._train_X[..., self._task_feature]).long()
+        tasks = model._map_tasks(model._conditioned_train_X[..., self._task_feature]).long()
         observed = (tasks.reshape(-1, 1) == torch.arange(self.num_tasks, device=X.device)).any(0)
         model._observed_task_indices = observed.nonzero().squeeze(-1)
         model._unobserved_task_indices = (~observed).nonzero().squeeze(-1)

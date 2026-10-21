@@ -115,6 +115,40 @@ class MultiTaskGP(MultiTaskGPyTorchModel):
                     "outcome_transform",
                 )
             ) + tuple(args[2:])
+            # Native MT inference accepts plain Normalize and Standardize.
+            # Keep other source-supported configurations available on CPU
+            # through Tensor inference instead of selecting a native rejection.
+            tensor_configuration = False
+            if torch is not None and isinstance(train_X, torch.Tensor):
+                from botorch_rs.models.transforms.input import Normalize
+
+                input_transform = kwargs.get(
+                    "input_transform", args[10] if len(args) > 10 else None
+                )
+                outcome_transform = kwargs.get(
+                    "outcome_transform", args[9] if len(args) > 9 else DEFAULT
+                )
+                supplied_likelihood = kwargs.get("likelihood", args[4] if len(args) > 4 else None)
+                yvar = kwargs.get("train_Yvar", args[1] if len(args) > 1 else None)
+                tensor_configuration = (
+                    (
+                        input_transform is not None
+                        and (
+                            not isinstance(input_transform, Normalize)
+                            or bool(input_transform.batch_shape)
+                            or not input_transform._native
+                        )
+                    )
+                    or (
+                        not _is_default(outcome_transform)
+                        and outcome_transform is not None
+                        and (
+                            not isinstance(outcome_transform, Standardize)
+                            or not is_plain_standardize(outcome_transform)
+                        )
+                    )
+                    or (supplied_likelihood is not None and yvar is not None)
+                )
             if backend == "torch" or (
                 backend == "auto"
                 and (
@@ -127,6 +161,7 @@ class MultiTaskGP(MultiTaskGPyTorchModel):
                         torch is not None
                         and any(requires_tensor_backend(module) for module in modules)
                     )
+                    or tensor_configuration
                 )
             ):
                 from botorch_rs.models._torch_backend_multitask import TorchMultiTaskGP
