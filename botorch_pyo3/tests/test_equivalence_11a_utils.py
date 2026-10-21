@@ -41,12 +41,11 @@ torch = pytest.importorskip("torch")
 import botorch.utils.probability.utils as bt_pu  # noqa: E402
 import botorch.utils.safe_math as bt_sm  # noqa: E402
 import test_parity_11a_utils as p11a  # noqa: E402
-from so_acquisition_helpers import check_against_twins, twin  # noqa: E402
 from trajectory_reference import portable_trajectory_grid  # noqa: E402
 
 import botorch_rs.utils.probability.utils as rs_pu  # noqa: E402
 import botorch_rs.utils.safe_math as rs_sm  # noqa: E402
-from parity_helpers import Checker, ModelSpec, model_pair, values_and_grads  # noqa: E402
+from parity_helpers import Checker, ModelSpec, model_pair, rel_err, values_and_grads  # noqa: E402
 
 pytestmark = [pytest.mark.equivalence, pytest.mark.filterwarnings("ignore")]
 
@@ -239,6 +238,23 @@ MC_NAMES = [
 ]
 
 
+def _check_iid_joint_fixture(model: Any, baseline: Any, candidates: Any) -> None:
+    """Keep sampler comparisons away from duplicate-row Cholesky decisions."""
+    joint = torch.cat([baseline.expand(*candidates.shape[:-2], *baseline.shape), candidates], -2)
+    distance_sq = (joint.unsqueeze(-2) - joint.unsqueeze(-3)).square().sum(-1)
+    diagonal = torch.eye(joint.shape[-2], dtype=torch.bool, device=joint.device)
+    assert bool((distance_sq.masked_fill(diagonal, torch.inf) > 0).all()), (
+        "IID sampler fixture contains duplicate joint query points"
+    )
+    covariance = model.posterior(joint).distribution.covariance_matrix.detach()
+    eigenvalues = torch.linalg.eigvalsh(covariance)
+    floor = 64 * torch.finfo(covariance.dtype).eps * eigenvalues[..., -1]
+    assert bool((eigenvalues[..., 0] > floor).all()), (
+        "IID sampler fixture requires a positive-definite joint posterior",
+        eigenvalues,
+    )
+
+
 @pytest.mark.parametrize("seed", SEEDS)
 def test_iid_sampler_sweep(seed: int) -> None:
     import botorch.acquisition as bta
@@ -267,22 +283,59 @@ def test_iid_sampler_sweep(seed: int) -> None:
     S = r.choice([16, 64])
     sseed = r.randint(0, 1000)
     a = getattr(rsa, name)(rs, sampler=RsIID(torch.Size([S]), seed=sseed), **kw)
-    Xc = torch.rand(r.randint(1, 4), r.randint(1, 3), spec.d, generator=gen(seed), dtype=DT)
+    # Training data also starts with Generator(seed). Reusing it here repeats
+    # baseline points exactly, making qNEI's joint covariance singular and
+    # comparing arbitrary jitter decisions instead of the IID sampler law.
+    Xc = torch.rand(r.randint(1, 4), r.randint(1, 3), spec.d, generator=gen(1000 + seed), dtype=DT)
     if "X_baseline" in kw:
-        # The joint posterior over the training points and the candidates is
-        # nearly singular: compared with BoTorch's twins (see
-        # so_acquisition_helpers.check_against_twins).
-        def outcome(k: int) -> tuple[Any, Any]:
-            e = getattr(bta, name)(twin(bt, k), sampler=BtIID(torch.Size([S]), seed=sseed), **kw)
-            return values_and_grads(e, Xc)
-
-        check_against_twins(CHECK, f"IIDNormalSampler {name}", values_and_grads(a, Xc), outcome)
-        return
+        _check_iid_joint_fixture(bt, X, Xc)
     e = getattr(bta, name)(bt, sampler=BtIID(torch.Size([S]), seed=sseed), **kw)
     CHECK.check(f"IIDNormalSampler {name}", a(Xc), e(Xc), TOL)
     (ga,) = grad_of(a, Xc)
     (ge,) = grad_of(e, Xc)
     CHECK.check(f"IIDNormalSampler {name} grad", ga, ge, GTOL)
+
+
+def test_iid_joint_fixture_rejects_duplicate_queries() -> None:
+    spec = ModelSpec(n=10, d=3, fixed_noise=True)
+    bt, _, baseline = model_pair(spec, seed=5)
+    with pytest.raises(AssertionError, match="duplicate joint query points"):
+        _check_iid_joint_fixture(bt, baseline, baseline[:3].unsqueeze(0))
+    with pytest.raises(AssertionError, match="positive-definite joint posterior"):
+        _check_iid_joint_fixture(bt, baseline, baseline[:3].unsqueeze(0) + 1e-14)
+    candidates = torch.rand(2, 3, 3, generator=gen(1005), dtype=DT)
+    _check_iid_joint_fixture(bt, baseline, candidates)
+
+
+def test_iid_sampler_strict_comparison_rejects_corruption() -> None:
+    import botorch.acquisition as bta
+    from botorch.sampling import IIDNormalSampler as BtIID
+
+    import botorch_rs.acquisition as rsa
+    from botorch_rs.sampling import IIDNormalSampler as RsIID
+
+    bt, rs, baseline = model_pair(ModelSpec(n=10, d=3, fixed_noise=True), seed=5)
+    candidates = torch.rand(2, 3, 3, generator=gen(1005), dtype=DT)
+    _check_iid_joint_fixture(bt, baseline, candidates)
+    kwargs = {"X_baseline": baseline, "prune_baseline": False, "cache_root": False}
+    source = bta.qNoisyExpectedImprovement(bt, sampler=BtIID(torch.Size([64]), seed=794), **kwargs)
+    native = rsa.qNoisyExpectedImprovement(rs, sampler=RsIID(torch.Size([64]), seed=794), **kwargs)
+    expected = values_and_grads(source, candidates)
+    actual = values_and_grads(native, candidates)
+    for index, tolerance in enumerate((TOL, GTOL)):
+        assert rel_err(actual[index], expected[index]) <= tolerance
+        corrupted = actual[index] + 1e-3
+        assert rel_err(corrupted, expected[index]) > tolerance
+    native_normals, shape = native.sampler._rs.base_samples(
+        baseline.shape[-2] + candidates.shape[-2]
+    )
+    native_normals = torch.tensor(native_normals, dtype=DT).reshape(shape)
+    assert torch.equal(native_normals.reshape(64, -1), source.sampler.base_samples.reshape(64, -1))
+    wrong_sampler = rsa.qNoisyExpectedImprovement(
+        rs, sampler=RsIID(torch.Size([64]), seed=795), **kwargs
+    )
+    wrong = values_and_grads(wrong_sampler, candidates)
+    assert rel_err(wrong[0], expected[0]) > TOL
 
 
 @pytest.mark.parametrize("seed", SEEDS)
