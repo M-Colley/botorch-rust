@@ -27,7 +27,7 @@
 //! cached lazily and invalidated whenever the hyperparameters change.
 
 use std::ops::Range;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::constraints::{Constraint, GreaterThan};
 use crate::error::{BotorchError, Result};
@@ -46,6 +46,8 @@ use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
 use crate::{Matrix, Vector};
 
 pub mod additive;
+#[cfg(test)]
+mod cache_tests;
 mod conditioning;
 mod lookahead;
 mod noiseless_fantasy;
@@ -387,7 +389,10 @@ pub struct SingleTaskGP {
     /// only enters the predictions, not the marginal log likelihood.
     point_noise: Option<Vec<Option<f64>>>,
     sparse_outlier_noise: Option<super::relevance_pursuit::SparseOutlierState>,
-    cache: OnceLock<std::result::Result<PredictionCache, BotorchError>>,
+    // Clones are immutable prediction snapshots until a setter installs a new
+    // cache. Sharing the lazy cell retains its initialization even if a short-
+    // lived posterior snapshot is the first object that evaluates the model.
+    cache: Arc<OnceLock<std::result::Result<PredictionCache, BotorchError>>>,
 }
 
 fn check_finite(m: &Matrix, what: &str) -> Result<()> {
@@ -626,7 +631,7 @@ impl SingleTaskGP {
             hyperparameters,
             point_noise: None,
             sparse_outlier_noise: None,
-            cache: OnceLock::new(),
+            cache: Arc::new(OnceLock::new()),
         })
     }
 
@@ -648,7 +653,7 @@ impl SingleTaskGP {
             s.validate(self.num_train())?;
         }
         self.sparse_outlier_noise = state;
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 
@@ -697,7 +702,7 @@ impl SingleTaskGP {
             self.likelihood = Likelihood::FixedNoise { noise };
             self.train_yvar = original_variance;
         }
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 
@@ -896,7 +901,7 @@ impl SingleTaskGP {
                 ))
             }
         }
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 
@@ -961,7 +966,7 @@ impl SingleTaskGP {
             self.train_x_tf = x_tf;
         }
         self.hyperparameters = hyperparameters;
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 

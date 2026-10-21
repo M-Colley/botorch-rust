@@ -4,7 +4,7 @@
 //! with the same hyperparameters and (eval-mode) transforms, trained on the
 //! observed points with fantasized targets and a tiny fixed noise.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use super::{Likelihood, PredictionCache, SingleTaskGP};
 use crate::error::{BotorchError, Result};
@@ -94,7 +94,7 @@ impl SingleTaskGP {
                     hyperparameters: self.hyperparameters.clone(),
                     sparse_outlier_noise: None,
                     point_noise: None,
-                    cache: OnceLock::from(Ok(cache)),
+                    cache: Arc::new(OnceLock::from(Ok(cache))),
                 })
             })
             .collect()

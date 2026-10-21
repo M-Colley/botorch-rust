@@ -373,7 +373,7 @@ impl SingleTaskGP {
                     hyperparameters: self.hyperparameters.clone(),
                     point_noise: point_noise.clone(),
                     sparse_outlier_noise: None,
-                    cache: OnceLock::from(Ok(new_cache)),
+                    cache: Arc::new(OnceLock::from(Ok(new_cache))),
                 })
             })
             .collect()
@@ -832,7 +832,7 @@ mod tests {
             assert_eq!(cond.num_train(), 12);
             // Reference: a full factorization of the enlarged training data.
             let mut reference = cond.clone();
-            reference.cache = OnceLock::new();
+            reference.cache = Arc::new(OnceLock::new());
             let xt = Matrix::from_row_slice(4, 2, &[0.2, 0.2, 0.5, 0.6, 0.9, 0.1, 0.33, 0.12]);
             let a = cond.posterior(&xt, true).unwrap();
             let b = reference.posterior(&xt, true).unwrap();
