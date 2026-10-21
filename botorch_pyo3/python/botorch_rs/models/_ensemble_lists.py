@@ -31,10 +31,10 @@ def _ensemble_parts(model_list: Any) -> list[list[Any] | None] | None:
         parts.append(members)
     if not sizes:
         return None
-    if len(sizes) > 1:
+    if len(sizes - {1}) > 1:
         raise UnsupportedError(
             f"The ensembles of a model list have different sizes {sorted(sizes)}: BoTorch "
-            "broadcasts their ensemble dimensions, which requires equal sizes."
+            "broadcasts their ensemble dimensions, which requires equal or singleton sizes."
         )
     return parts
 
@@ -48,12 +48,12 @@ def members_method(model_list: Any) -> Callable[[], list[Any]]:
     def members() -> list[Any]:
         parts = _ensemble_parts(model_list)
         assert parts is not None
-        size = next(len(p) for p in parts if p is not None)
+        size = max(len(p) for p in parts if p is not None)
         cls = type(model_list)
         return [
             cls(
                 *[
-                    p[s] if p is not None else m
+                    p[0 if len(p) == 1 else s] if p is not None else m
                     for m, p in zip(model_list.models, parts, strict=True)
                 ]
             )

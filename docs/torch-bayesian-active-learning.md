@@ -24,8 +24,7 @@ component-by-component Gaussian-density oracle checks unscalarized joint
 covariance layout and multidimensional MC reduction. Training inputs, targets,
 fixed noise, query, posterior-transform weights, and loaded parameters retain
 first and second derivatives. A single-component mixture has zero information
-gain and finite second derivatives. These changes do not extend the existing
-native CPU BALD restriction on multi-output or ModelList models.
+gain and finite second derivatives.
 
 An additional CPU/CUDA control compares the unscalarized ModelList directly
 with the pinned source using the same flattened Gaussian root coordinates.
@@ -34,3 +33,21 @@ public `q x m` base-normal array; accounting for that permutation makes
 values and query gradients agree at the existing strict tolerances. The
 metadata mutation alone is therefore not established as an upstream bug,
 and no PR was filed for it.
+
+The native CPU path now also accepts scalarized fully Bayesian ModelLists.
+Each MCMC component is the native joint model of the corresponding members,
+then the requested scalarizing posterior transform is applied before the
+existing Rust information-gain and query-adjoint calculation. Singleton
+component batches broadcast across larger component batches; incompatible
+non-singleton sizes still fail. IID and Sobol normal samplers are accepted,
+including explicit IID normals, seeded redraws when q changes, pending
+points and public cache reuse. Native gradients through supplied base
+normals require the Tensor backend and raise an explicit error otherwise.
+Unscalarized native multi-output BALD remains outside this scalar core path;
+the Tensor backend provides the joint calculation described above.
+
+Eighteen new native tests compare two kernel families, equal/singleton
+MCMC sizes, pending points, and both normal samplers with pinned official
+values and query gradients. They also check seeded IID cache contents,
+list/NumPy/Torch query parity, cache replacement and precise boundary
+errors. The complete native/Tensor BALD set passes 38 cases.
