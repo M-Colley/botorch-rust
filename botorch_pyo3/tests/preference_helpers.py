@@ -173,10 +173,15 @@ def cholesky_ambiguous(A: Any) -> bool:
     differently whether to add jitter; both decisions follow BoTorch's
     algorithm."""
     A = torch.as_tensor(A, dtype=DT).detach()
+    if not bool(torch.isfinite(A).all()):
+        return False
     n = A.shape[-1]
     ev = torch.linalg.eigvalsh(A)
-    bound = 20 * n**1.5 * UNIT_ROUNDOFF * float(ev.abs().max())
-    return bool(float(ev[0].abs()) <= bound)
+    norm = float(ev.abs().max())
+    bound = 20 * n**1.5 * UNIT_ROUNDOFF * norm
+    # An exact zero matrix has no relative roundoff budget and cannot have a
+    # successful Cholesky outcome merely by changing operation order.
+    return 0 < bound < math.inf and bool(float(ev[0].abs()) <= bound)
 
 
 #: The relative accuracy of the Cholesky factor of a positive semidefinite
@@ -196,9 +201,9 @@ class BtJitterDecisions:
 
     Each Cholesky attempt with an ambiguous outcome gets an index (in call
     order; ``ambiguous`` counts them); the attempts in ``flip`` take the other
-    outcome. A flipped failure is a success on the matrix itself (factorized
-    as ``A + 2 |lambda_min| I``, which differs from ``A`` by rounding only), a
-    flipped success adds the next jitter as BoTorch does after a failure."""
+    outcome. A flipped failure uses a representable positive diagonal margin
+    within the existing Demmel roundoff budget; a flipped success adds the
+    next jitter as BoTorch does after a failure."""
 
     def __init__(self, flip: frozenset[int] = frozenset()) -> None:
         self.flip = flip
@@ -223,12 +228,35 @@ class BtJitterDecisions:
 
     @staticmethod
     def _factor(A: Any) -> Any:
+        if not bool(torch.isfinite(A).all()):
+            raise ValueError("The preference jitter oracle requires a finite matrix.")
         L, info = torch.linalg.cholesky_ex(A)
         if bool((info == 0).all()):
             return L
-        lam = torch.linalg.eigvalsh(A)[..., :1].abs().unsqueeze(-1)
+        if not cholesky_ambiguous(A.reshape(A.shape[-2:])):
+            # Preserve failure for truly indefinite matrices and exact zero.
+            return torch.linalg.cholesky(A)
+        ev = torch.linalg.eigvalsh(A.detach())
+        norm = ev.abs().amax(dim=-1, keepdim=True).unsqueeze(-1)
+        bound = 20 * A.shape[-1] ** 1.5 * UNIT_ROUNDOFF * norm
+        # 2 |lambda_min| can be zero or disappear when added to a diagonal.
+        # eps ||A|| is representable at its scale. Keep every retry inside
+        # the same ambiguity budget that admitted the alternate decision.
+        representable_step = torch.nextafter(norm, torch.full_like(norm, math.inf)) - norm
+        minimum_margin = torch.maximum(torch.finfo(A.dtype).eps * norm, representable_step)
+        margin = torch.minimum(
+            torch.maximum(2 * ev[..., :1].abs().unsqueeze(-1), minimum_margin), bound
+        )
         eye = torch.eye(A.shape[-1], dtype=A.dtype, device=A.device)
-        return torch.linalg.cholesky(A + 2 * lam * eye)
+        max_attempts = 1 + math.ceil(math.log2(10 * A.shape[-1] ** 1.5))
+        for _ in range(max_attempts):
+            L, info = torch.linalg.cholesky_ex(A + margin * eye)
+            if bool((info == 0).all()):
+                return L
+            if bool((margin >= bound).all()):
+                return torch.linalg.cholesky(A + margin * eye)
+            margin = torch.minimum(2 * margin, bound)
+        return torch.linalg.cholesky(A + margin * eye)
 
     def ensure_psd_with_jitter(
         self, matrix: Any, scale: Any = 1.0, jitter: float = 1e-8, max_tries: int = 3

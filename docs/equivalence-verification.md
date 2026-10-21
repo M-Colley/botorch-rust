@@ -38,6 +38,17 @@ values/first derivatives and independent Gaussian identities or convergent
 finite differences. Such cases do not certify the defective source derivative.
 Confirmed repairs are linked in `upstream-pull-requests.md`.
 
+The post-release Linux Torch 2.14.1 CPU run exposed a preference test-oracle
+failure while exploring the alternate outcome of an ambiguous Cholesky
+decision. Its `2 * abs(lambda_min)` diagonal shift can be zero for a valid
+rank-one covariance. Unmodified source handles that matrix with ordinary
+jitter. The test helper now uses a representable positive margin, increasing
+it only within the existing Demmel roundoff budget and a finite attempt
+limit. New controls cover scaled rank-one matrices, unchanged positive-definite
+values/gradients, exact-zero and unrepresentable budgets, and rejection of
+genuinely indefinite/nonfinite matrices. The comparison tolerances, source,
+runtime package and published 0.3.0 tag remain unchanged by this repair.
+
 The stricter audit exposed one randomized `Power(2)` transform fixture with
 negative Gaussian latent draws. Its inverse is a square root, so these samples
 and the affected acquisition gradients are undefined in both implementations.

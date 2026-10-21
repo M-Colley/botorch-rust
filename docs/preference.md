@@ -207,6 +207,13 @@ Jacobian evaluations on Windows and 2 on Linux.
   1e-9 / 1e-8, BoTorch's result for the other outcome
   (`preference_helpers.BtJitterDecisions` replays BoTorch's decisions with
   the ambiguous ones flipped).
+  The test oracle's alternate successful factor uses a representable
+  `eps * ||A||` positive margin when `2 * abs(lambda_min)` is zero or too
+  small to change the diagonal. Retries remain inside that same Demmel
+  budget. Exact-zero and nonfinite matrices are not ambiguous; genuinely
+  indefinite matrices still fail. This repairs a test-helper Cholesky
+  failure observed in the post-release Linux Torch 2.14.1 CPU run, without
+  changing either implementation or the comparison tolerances.
 - **Sample-based quantities** (qEUBO, BALD) of a t-batch whose factorized
   posterior covariance is singular within rounding: the Cholesky factor of
   a singular matrix is Hoelder continuous with exponent 1/2, so a
