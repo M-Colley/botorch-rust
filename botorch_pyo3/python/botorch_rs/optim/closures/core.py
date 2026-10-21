@@ -41,20 +41,29 @@ class ForwardBackwardClosure:
     def __call__(self, **kwargs: Any) -> tuple[Any, tuple[Any, ...]]:
         native = _native(self.forward)
         if native is not None:
+            from botorch_rs.mlls import _persistent_parameter
             from botorch_rs.optim.closures.model_closures import _grads_out
 
             value, grads = native.value_and_grad(list(self.parameters), **kwargs)
-            return value, _grads_out(self.parameters, grads)
-        import torch
+            gradients = _grads_out(self.parameters, grads)
+            out = []
+            for parameter, gradient in zip(self.parameters.values(), gradients, strict=True):
+                if _persistent_parameter(parameter):
+                    if not hasattr(value, "detach"):
+                        value = parameter.new_tensor(value)
+                    if parameter.requires_grad:
+                        parameter.grad = gradient
+                    elif parameter.grad is not None:
+                        parameter.grad.zero_()
+                    gradient = parameter.grad
+                out.append(gradient)
+            return value, tuple(out)
+        from botorch_rs.utils.context_managers import zero_grad_ctx
 
-        for p in self.parameters.values():
-            p.grad = None
-        value = self.forward(**kwargs).sum()
-        value.backward()
-        grads = tuple(param.grad for param in self.parameters.values())
-        for p in self.parameters.values():
-            p.grad = None
-        return value, tuple(g if g is None else torch.as_tensor(g) for g in grads)
+        with zero_grad_ctx(self.parameters):
+            value = self.forward(**kwargs).sum()
+            value.backward()
+            return value, tuple(param.grad for param in self.parameters.values())
 
 
 class NdarrayOptimizationClosure:

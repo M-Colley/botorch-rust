@@ -93,7 +93,8 @@ def test_external_elbo_closure_cycles_actual_batches_and_matches_reference_gradi
         torch.testing.assert_close(actual, expected, atol=1e-10, rtol=1e-9)
         for name, actual_gradient in zip(dict(mll.named_parameters()), gradients, strict=True):
             torch.testing.assert_close(actual_gradient, ref_gradients[name], atol=2e-9, rtol=2e-8)
-        assert all(p.grad is None for p in mll.parameters())
+        for parameter, gradient in zip(mll.parameters(), gradients, strict=True):
+            assert parameter.grad is gradient
 
 
 @pytest.mark.parametrize("device", DEVICES)

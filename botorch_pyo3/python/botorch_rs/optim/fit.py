@@ -212,7 +212,13 @@ def fit_gpytorch_mll_scipy(
         return _fit_generic_scipy(
             mll, parameters, bounds, closure, closure_kwargs, method, options, callback, timeout_sec
         )
-    if _is_approximate(mll):
+    if _is_approximate(mll) and (
+        closure is None
+        and closure_kwargs is None
+        and method == "L-BFGS-B"
+        and callback is None
+        and timeout_sec is None
+    ):
         return _fit_scipy_approximate(
             mll, parameters, bounds, closure, closure_kwargs, method, options, callback, timeout_sec
         )
@@ -524,31 +530,27 @@ def fit_gpytorch_mll_torch(
             and callback is None
             and (stopping_criterion is None or type(stopping_criterion) is ExpMAStoppingCriterion)
         )
-        if not native:
-            raise UnsupportedError(
-                "botorch_rs fits a variational ELBO with Adam (torch.optim.Adam or a "
-                "functools.partial of it), the default closure and ExpMAStoppingCriterion."
+        if native:
+            assert adam is not None
+            if step_limit is None and stopping_criterion is None and timeout_sec is None:
+                raise RuntimeError("No termination conditions were given.")
+            mll.model._outer._ensure_initialized()
+            mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
+            stopping = None if stopping_criterion is None else stopping_criterion._native_args()
+            result = _result(
+                mll._rs.fit_torch(
+                    float(mll.num_data),
+                    float(mll.beta),
+                    mask=mask,
+                    bounds=flat_bounds,
+                    step_limit=step_limit,
+                    stopping=stopping,
+                    timeout_sec=timeout_sec,
+                    **adam,
+                )
             )
-        assert adam is not None
-        if step_limit is None and stopping_criterion is None and timeout_sec is None:
-            raise RuntimeError("No termination conditions were given.")
-        mll.model._outer._ensure_initialized()
-        mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
-        stopping = None if stopping_criterion is None else stopping_criterion._native_args()
-        result = _result(
-            mll._rs.fit_torch(
-                float(mll.num_data),
-                float(mll.beta),
-                mask=mask,
-                bounds=flat_bounds,
-                step_limit=step_limit,
-                stopping=stopping,
-                timeout_sec=timeout_sec,
-                **adam,
-            )
-        )
-        mll.model._outer._sync_torch_parameters()
-        return result
+            mll.model._outer._sync_torch_parameters()
+            return result
     stopping_native = (
         stopping_criterion is None or type(stopping_criterion) is ExpMAStoppingCriterion
     )
@@ -614,7 +616,7 @@ def _fit_generic_torch(
     )
     from botorch_rs.optim.utils.model_utils import get_parameters_and_bounds
 
-    param_dict, bounds_dict = get_parameters_and_bounds(mll)
+    param_dict, bounds_dict = get_parameters_and_bounds(mll, requires_grad=True)
     names = list(param_dict if parameters is None else parameters)
     state: Any = None
     if closure is None:
@@ -639,7 +641,7 @@ def _fit_generic_torch(
         closure = tensor_closure
         opt_parameters: dict[str, Any] = tensors
     else:
-        opt_parameters = dict(parameters or {})
+        opt_parameters = dict(param_dict if parameters is None else parameters)
     if closure_kwargs is not None:
         closure = functools.partial(closure, **closure_kwargs)
     result = torch_minimize(

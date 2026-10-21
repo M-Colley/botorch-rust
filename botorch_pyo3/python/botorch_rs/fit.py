@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Any, cast
+from typing import Any
 
 from botorch_rs._arrays import to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
@@ -18,7 +18,7 @@ from botorch_rs.mlls import (
 
 # scipy L-BFGS-B options understood by the fit (``optimizer_kwargs["options"]``).
 _LBFGSB_OPTIONS = {"maxiter", "maxfun", "ftol", "gtol", "maxcor", "maxls"}
-_IGNORED_OPTIONS = {"disp", "iprint"}
+_IGNORED_OPTIONS = {"disp", "iprint", "eps", "finite_diff_rel_step"}
 
 
 def fit_gpytorch_mll(
@@ -50,14 +50,16 @@ def fit_gpytorch_mll(
     Args:
         mll: An ``ExactMarginalLogLikelihood`` of a ``SingleTaskGP`` or a
             ``SumMarginalLogLikelihood`` of a ``ModelListGP``.
-        closure, optimizer, closure_kwargs: Must be ``None`` (only the default
-            L-BFGS-B optimizer is available).
+        closure: Optional forward/backward closure returning loss and gradients.
+        optimizer: Optional callable following the model-fitting optimizer protocol.
+        closure_kwargs: Keyword arguments bound to the supplied/default closure.
         optimizer_kwargs: ``{"options": {...}}`` with any of scipy's L-BFGS-B
             options ``maxiter`` (default 15000), ``maxfun`` (15000), ``ftol``
             (2.22e-9), ``gtol`` (1e-5), ``maxcor`` (10) and ``maxls`` (20).
-        **kwargs: ``max_attempts``; ``seed`` (botorch_rs only) seeds the prior
-            samples of retries (default 0). Other keyword arguments are
-            ignored, as by BoTorch's fallback fitting routine.
+        **kwargs: ``max_attempts``, ``pick_best_of_all_attempts``,
+            ``warning_handler`` and ``caught_exception_types`` control retries
+            and state rollback. ``seed`` (botorch_rs only) seeds prior draws.
+            Other keyword arguments are ignored, as by BoTorch's fallback.
 
     Returns:
         ``mll``, in evaluation mode.
@@ -65,12 +67,10 @@ def fit_gpytorch_mll(
     from botorch_rs.models.empirical_gps.em_coordinate_ascent import KLPriorFitMLL
     from botorch_rs.models.empirical_gps.em_empirical_gp import EMEmpiricalMarginalLogLikelihood
     from botorch_rs.models.empirical_gps.shared_gp import _SharedSumMarginalLogLikelihood
-    from botorch_rs.models.robust_relevance_pursuit_model import RobustRelevancePursuitMixin
 
-    if getattr(getattr(mll, "model", None), "_tensor_backend", None) == "torch" and isinstance(
-        mll.model, RobustRelevancePursuitMixin
-    ):
-        return mll.model.custom_fit(
+    custom_fit = getattr(getattr(mll, "model", None), "custom_fit", None)
+    if callable(custom_fit):
+        return custom_fit(
             mll,
             closure=closure,
             optimizer=optimizer,
@@ -80,47 +80,48 @@ def fit_gpytorch_mll(
         )
 
     if getattr(getattr(mll, "model", None), "_tensor_backend", None) == "torch":
-        from botorch_rs.optim.fit import fit_gpytorch_mll_scipy, fit_gpytorch_mll_torch
-
         if getattr(mll.model, "_is_fully_bayesian", False):
             raise UnsupportedError(
                 "Fully Bayesian Torch models use loaded MCMC samples, not MAP fitting."
             )
-        selected = fit_gpytorch_mll_scipy if optimizer is None else optimizer
-        if selected not in (fit_gpytorch_mll_scipy, fit_gpytorch_mll_torch):
-            raise UnsupportedError(
-                "Choose fit_gpytorch_mll_scipy or fit_gpytorch_mll_torch for the Torch backend."
-            )
-        mll.train()
-        result = selected(
-            mll, closure=closure, closure_kwargs=closure_kwargs, **dict(optimizer_kwargs or {})
-        )
-        mll._fit_result = {
-            "fval": result.fval,
-            "nit": result.step,
-            "status": result.status.name,
-            "message": result.message,
-            "runtime": result.runtime,
-        }
-        return mll.eval()
+        return _fit_generic(mll, closure, optimizer, closure_kwargs, optimizer_kwargs, kwargs)
 
     if isinstance(
         mll, (KLPriorFitMLL, EMEmpiricalMarginalLogLikelihood, _SharedSumMarginalLogLikelihood)
     ):
         return mll._fit(closure, optimizer, closure_kwargs, optimizer_kwargs, **kwargs)
 
-    if isinstance(getattr(mll, "model", None), RobustRelevancePursuitMixin):
-        return cast(
-            MarginalLogLikelihood,
-            mll.model.custom_fit(
-                mll,
-                closure=closure,
-                optimizer=optimizer,
-                closure_kwargs=closure_kwargs,
-                optimizer_kwargs=optimizer_kwargs,
-                **kwargs,
-            ),
+    generic = (
+        closure is not None
+        or closure_kwargs is not None
+        or any(key in kwargs for key in ("warning_handler", "caught_exception_types"))
+        or (
+            optimizer is not None
+            and callable(optimizer)
+            and getattr(optimizer, "__name__", None)
+            not in ("fit_gpytorch_mll_scipy", "fit_gpytorch_mll_torch")
         )
+        or any(
+            value is not None
+            for name, value in (optimizer_kwargs or {}).items()
+            if name in ("bounds", "parameters", "callback", "timeout_sec", "closure_kwargs")
+        )
+        or (optimizer_kwargs or {}).get("method", "L-BFGS-B") != "L-BFGS-B"
+        or bool(
+            set((optimizer_kwargs or {}).get("options") or {}) - _LBFGSB_OPTIONS - _IGNORED_OPTIONS
+        )
+        or (
+            isinstance(mll, _ApproximateMarginalLogLikelihood)
+            and (
+                kwargs.get("data_loader") is not None
+                or kwargs.get("pick_best_of_all_attempts", False)
+            )
+        )
+    )
+    if generic:
+        if not isinstance(mll, MarginalLogLikelihood):
+            raise UnsupportedError("fit_gpytorch_mll requires a botorch_rs MarginalLogLikelihood.")
+        return _fit_generic(mll, closure, optimizer, closure_kwargs, optimizer_kwargs, kwargs)
     if isinstance(mll, SumMarginalLogLikelihood):
         mll.train()
         results = []
@@ -233,6 +234,48 @@ def fit_gpytorch_mll(
     return mll.eval()
 
 
+def _fit_generic(
+    mll: Any,
+    closure: Any,
+    optimizer: Any,
+    closure_kwargs: dict[str, Any] | None,
+    optimizer_kwargs: dict[str, Any] | None,
+    kwargs: dict[str, Any],
+) -> MarginalLogLikelihood:
+    from botorch_rs._fit_fallback import fit_fallback
+    from botorch_rs.optim.fit import fit_gpytorch_mll_scipy, fit_gpytorch_mll_torch
+
+    if isinstance(mll, _ApproximateMarginalLogLikelihood):
+        data_loader = kwargs.pop("data_loader", None)
+        full_batch_limit = int(kwargs.pop("full_batch_limit", 1024))
+        if data_loader is not None:
+            if closure is not None:
+                raise UnsupportedError("Only one of `data_loader` or `closure` may be passed.")
+            from botorch_rs.optim.closures import get_loss_closure_with_grads
+            from botorch_rs.optim.utils.model_utils import get_parameters
+
+            closure = get_loss_closure_with_grads(
+                mll, get_parameters(mll, requires_grad=True), data_loader
+            )
+        if optimizer is None:
+            n = int(to_flat(mll.model.train_targets, "train_targets")[1][0])
+            optimizer = (
+                fit_gpytorch_mll_scipy
+                if closure is None and n <= full_batch_limit
+                else fit_gpytorch_mll_torch
+            )
+    elif optimizer is None:
+        optimizer = fit_gpytorch_mll_scipy
+    return fit_fallback(
+        mll,
+        optimizer,
+        closure=closure,
+        closure_kwargs=closure_kwargs,
+        optimizer_kwargs=optimizer_kwargs,
+        **kwargs,
+    )
+
+
 def _fit_with_optimizer(
     mll: Any,
     optimizer: Any,
@@ -317,7 +360,8 @@ def fit_fully_bayesian_model_nuts(
         disable_progbar: A boolean indicating whether to print the progress
             bar and diagnostics during MCMC (ignored: botorch_rs prints none).
         jit_compile: Whether to use jit (ignored on the compiled native backend;
-            True is explicitly unsupported on the eager Torch backend).
+            Accepted for compatibility; it is a legacy no-op in the pinned
+            reference. The Torch sampler is eager and the native sampler compiled).
         seed: Random seed. botorch_rs draws its random numbers from a seeded
             xoshiro256++ generator, not from JAX's PRNG, so the samples
             differ from BoTorch's for the same seed. The Torch backend uses a
