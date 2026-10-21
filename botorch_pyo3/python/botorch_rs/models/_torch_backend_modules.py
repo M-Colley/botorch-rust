@@ -1343,7 +1343,7 @@ class TorchStandardize(nn.Module):
         return result.train(self.training)
 
 
-def _elementwise_outcome(value: Tensor, kind: str, power: float, inverse: bool) -> Tensor:
+def _elementwise_outcome(value: Tensor, kind: str, power: Any, inverse: bool) -> Tensor:
     if kind == "Log":
         return value.exp() if inverse else value.log()
     if kind == "Power":
@@ -1368,10 +1368,14 @@ class TorchElementwiseOutcome(nn.Module):
 
     def __init__(self, source: Any, m: int) -> None:
         super().__init__()
-        self.kind = type(source).__name__
+        self.kind = getattr(source, "_name", type(source).__name__)
         self._m = m
-        self.power = float(getattr(source, "power", 1))
-        if self.kind == "Power" and (not math.isfinite(self.power) or self.power == 0):
+        power = getattr(source, "power", 1)
+        self.power = power if isinstance(power, Tensor) else float(power)
+        if self.kind == "Power" and (
+            not bool(torch.isfinite(torch.as_tensor(self.power)).all())
+            or bool((torch.as_tensor(self.power) == 0).any())
+        ):
             raise ValueError(
                 "Power must be finite and nonzero for an invertible outcome transform."
             )
@@ -1576,6 +1580,13 @@ def build_outcome_transform(
     if source is None:
         return None
     like = train_Y if train_Y is not None else train_X
+    if isinstance(source, nn.Module) and getattr(type(source), "_torch_outcome_factory", False):
+        source.to(like)
+        if train_Y is not None:
+            source.train()
+            with torch.no_grad():
+                source(train_Y, X=train_X)
+        return source.eval()
     if source is DEFAULT or type(source).__name__ == "_DefaultType":
         if like is None:
             raise ValueError("An outcome transform requires train_Y or train_X for dtype/device.")

@@ -262,7 +262,9 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
                 kwargs.get("input_transform"),
                 kwargs.get("outcome_transform"),
             )
-            modules = any(isinstance(v, torch.nn.Module) for v in components) if torch else False
+            from botorch_rs.models._backend_selection import requires_tensor_backend
+
+            modules = any(requires_tensor_backend(v) for v in components) if torch else False
             if backend == "torch" or (backend == "auto" and (requested or modules)):
                 from botorch_rs.models._torch_backend_higher_order import TorchHigherOrderGP
 

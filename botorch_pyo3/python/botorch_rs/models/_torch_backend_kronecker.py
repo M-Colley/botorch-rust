@@ -25,6 +25,7 @@ from botorch_rs.models._torch_backend_modules import (
     module_log_prior,
 )
 from botorch_rs.models.multitask import KroneckerMultiTaskGP
+from botorch_rs.models.transforms.outcome import Standardize
 from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
 from botorch_rs.posteriors.multitask import MultitaskGPPosterior
 
@@ -406,7 +407,7 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         self.input_transform = build_input_transform(input_transform, train_X.shape[-1], train_X)
         self.outcome_transform = build_outcome_transform(outcome_transform, tasks, train_Y)
         if self.outcome_transform is not None and not isinstance(
-            self.outcome_transform, TorchStandardize
+            self.outcome_transform, (TorchStandardize, Standardize)
         ):
             raise UnsupportedError(
                 "Structured Tensor outcomes currently support Standardize or None."

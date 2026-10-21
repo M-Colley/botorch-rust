@@ -201,10 +201,6 @@ class TensorStandardizeState(nn.Module):
         from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
         from botorch_rs.posteriors.transformed import TransformedPosterior
 
-        if self._outputs is not None:
-            raise NotImplementedError(
-                "Standardize does not yet support output selection for untransform_posterior"
-            )
         if not bool(self._is_trained):
             raise RuntimeError("Standardize must be fitted before untransform_posterior.")
         if posterior.mean.shape[-1] != self._m and not self._requires_X:

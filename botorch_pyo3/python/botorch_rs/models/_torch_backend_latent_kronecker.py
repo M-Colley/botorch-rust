@@ -25,6 +25,7 @@ from botorch_rs.models._torch_backend_modules import (
     module_log_prior,
 )
 from botorch_rs.models.latent_kronecker_gp import LatentKroneckerGP
+from botorch_rs.models.transforms.outcome import Standardize
 from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
 from botorch_rs.posteriors.latent_kronecker import LatentKroneckerGPPosterior
 from botorch_rs.utils.types import DEFAULT
@@ -214,7 +215,7 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             outcome_transform, 1, self._transform_fit_Y
         )
         if self.outcome_transform is not None and not isinstance(
-            self.outcome_transform, TorchStandardize
+            self.outcome_transform, (TorchStandardize, Standardize)
         ):
             raise UnsupportedError(
                 "Tensor LatentKronecker outcomes currently support Standardize(m=1) or None."

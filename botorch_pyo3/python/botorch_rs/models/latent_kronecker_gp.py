@@ -79,8 +79,10 @@ class LatentKroneckerGP(GPyTorchModel, FantasizeMixin):
                 or getattr(getattr(v, "device", None), "type", "cpu") != "cpu"
                 for v in (train_X, train_T, train_Y)
             )
+            from botorch_rs.models._backend_selection import requires_tensor_backend
+
             modules = (
-                any(isinstance(v, torch.nn.Module) for v in (*args, *kwargs.values()))
+                any(requires_tensor_backend(v) for v in (*args, *kwargs.values()))
                 if torch
                 else False
             )
@@ -151,7 +153,11 @@ class LatentKroneckerGP(GPyTorchModel, FantasizeMixin):
         outcome = None
         if outcome_transform is not None:
             if (
-                type(outcome_transform) is not Standardize
+                (
+                    getattr(type(outcome_transform), "_native_port_descriptor", None)
+                    or type(outcome_transform)
+                )
+                is not Standardize
                 or outcome_transform.batch_shape
                 or outcome_transform._m != 1
             ):

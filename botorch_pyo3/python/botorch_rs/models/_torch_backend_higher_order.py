@@ -216,7 +216,11 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
         ):
             self.register_buffer(name, value)
         self.input_transform = build_input_transform(input_transform, train_X.shape[-1], train_X)
-        if (
+        if isinstance(outcome_transform, FlattenedStandardize) and isinstance(
+            outcome_transform, nn.Module
+        ):
+            self.outcome_transform = outcome_transform.to(train_X)
+        elif (
             outcome_transform is DEFAULT
             or type(outcome_transform).__name__ == "_DefaultType"
             or isinstance(outcome_transform, Standardize)

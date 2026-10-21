@@ -16,8 +16,9 @@ def validate_native_outcome(transform: Any) -> None:
     """Allow scalar Standardize compositions with their actual native law."""
     if transform is None:
         return
+    transform_type: Any = getattr(type(transform), "_native_port_descriptor", type(transform))
     if isinstance(transform, ChainedOutcomeTransform) and all(
-        getattr(type(transform), name) is getattr(ChainedOutcomeTransform, name)
+        getattr(transform_type, name) is getattr(ChainedOutcomeTransform, name)
         for name in ("forward", "__call__", "untransform", "_output_steps")
     ):
         for child in transform.values():
@@ -25,10 +26,10 @@ def validate_native_outcome(transform: Any) -> None:
         return
     if (
         isinstance(transform, Standardize)
-        and type(transform).forward is Standardize.forward
-        and type(transform).untransform is Standardize.untransform
-        and type(transform).__call__ is Standardize.__call__
-        and type(transform)._output_steps is Standardize._output_steps
+        and transform_type.forward is Standardize.forward
+        and transform_type.untransform is Standardize.untransform
+        and transform_type.__call__ is Standardize.__call__
+        and transform_type._output_steps is Standardize._output_steps
         and transform._m == 1
     ):
         return

@@ -109,6 +109,10 @@ currently uses dense exact factorization; its structured performance work is
 still pending. Loaded MCMC values become registered leaves, matching the
 reference loader. Markov-chain choices are not differentiated.
 
+Public outcome transforms participate in actual Torch module graphs, with
+registered state, hooks, serialization, and device migration; see
+[public outcome module protocols](torch-outcome-modules.md).
+
 The acquisition backend covers EI, LogEI, PI, LogPI, UCB, posterior mean and
 standard deviation; constrained EI/LogEI and log feasibility; weighted q means;
 the standard scalar MC improvement, regret, confidence-bound and standard

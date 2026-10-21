@@ -122,7 +122,7 @@ def test_direct_standardize_state_roundtrip_migration_and_native_transfer(device
         restored.cuda(torch.device("cuda", torch.cuda.current_device()))
         assert restored.means.device.type == "cuda"
         restored.cpu()
-    with pytest.raises(ValueError, match="CUDA device"):
+    with pytest.raises((ValueError, RuntimeError), match="[Cc][Uu][Dd][Aa] device"):
         restored.cuda("cpu")
     # Returning explicitly to an array API is a numerical state transfer,
     # while subsequent Tensor calls retain the stored destination device.
