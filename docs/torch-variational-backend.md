@@ -114,7 +114,27 @@ Independent dense RBF formulas check all mixed second data/parameter
 derivatives on CPU/CUDA. These extra distributions require `backend="torch"`;
 the native CPU Cholesky family still rejects them explicitly.
 
+`UnwhitenedVariationalStrategy` is also supported with each of these three
+families. Its inducing values are in GP coordinates. Predictions use the
+full inducing prior covariance and the difference between variational and
+prior means; its Gaussian KL (or Delta/MAP regularizer) uses the actual
+inducing prior. Training retains the reference's diagonal conditional
+residual plus full variational covariance contribution; evaluation retains
+the full conditional residual. The implementation follows the pinned
+reference's distinct conditional-prior jitter during training and its
+uncached `add_jitter(1e-3)` prior during evaluation. Inducing-point equality
+returns the Gaussian variational law exactly. The reference rejects a Delta
+law at exactly its inducing points and does not register default unwhitened
+Matheron updates; these cases raise explicitly here too.
+
+Automatic backend selection recognizes the new port family/strategy specs,
+actual Tensor module components, and model batches on CPU float64 even when
+the training data does not require gradients. Positional options are included.
+Explicit `backend="native"` preserves its supported Cholesky/whitened scope
+and rejects other configurations.
+
 Other variational distributions, strategies and non-Gaussian observations
-remain unsupported configurations. Reallocation cannot resize the variational family.
+remain unsupported configurations. Unwhitened pseudo-points and online
+fantasy conversion are not implemented. Reallocation cannot resize the variational family.
 It does not imply GPU support for arbitrary `ApproximateGPyTorchModel` wrappers
 or every other approximate-model family.

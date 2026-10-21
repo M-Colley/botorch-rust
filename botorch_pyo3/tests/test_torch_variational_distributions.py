@@ -26,7 +26,16 @@ DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 FAMILIES = ["MeanFieldVariationalDistribution", "DeltaVariationalDistribution"]
 
 
-def _model(device, family, reference=False, outputs=1, batch=False, external=False, graph=False):
+def _model(
+    device,
+    family,
+    reference=False,
+    outputs=1,
+    batch=False,
+    external=False,
+    graph=False,
+    strategy="whitened",
+):
     x = torch.linspace(0.1, 0.9, 10, dtype=torch.double, device=device).reshape(5, 2)
     y = x[:, :1].sin()
     if outputs > 1:
@@ -65,7 +74,10 @@ def _model(device, family, reference=False, outputs=1, batch=False, external=Fal
         variational_distribution=source,
         outcome_transform=None,
         **({} if reference else {"backend": "torch"}),
-        **({"variational_strategy": gpytorch.variational.VariationalStrategy} if external else {}),
+        variational_strategy=getattr(
+            gpytorch.variational if reference or external else variational,
+            "VariationalStrategy" if strategy == "whitened" else "UnwhitenedVariationalStrategy",
+        ),
     ).to(x)
     strategy = model.model.variational_strategy
     base = strategy.base_variational_strategy if outputs > 1 else strategy

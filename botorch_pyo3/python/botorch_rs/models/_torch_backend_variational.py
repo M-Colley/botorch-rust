@@ -32,6 +32,7 @@ from botorch_rs.variational import (
     CholeskyVariationalDistribution,
     DeltaVariationalDistribution,
     MeanFieldVariationalDistribution,
+    UnwhitenedVariationalStrategy,
     VariationalStrategy,
 )
 
@@ -113,6 +114,8 @@ class _TorchCholeskyDistribution(_TorchBaseDistribution):
                     dtype=self.variational_mean.dtype,
                     device=self.variational_mean.device,
                 )
+                if prior_dist is None
+                else _rs.tensor_psd_safe_cholesky(prior_dist.covariance_matrix)
             )
 
     def forward(self) -> Any:
@@ -220,7 +223,9 @@ class _TorchVariationalStrategy(nn.Module):
     variational_params_initialized: Tensor
     _variational_distribution: _TorchBaseDistribution
 
-    def __init__(self, owner: Any, points: Tensor, distribution: Any, learn: bool) -> None:
+    def __init__(
+        self, owner: Any, points: Tensor, distribution: Any, learn: bool, whitened: bool = True
+    ) -> None:
         super().__init__()
         object.__setattr__(self, "_owner_ref", weakref.ref(owner))
         self.learn_inducing_locations = learn
@@ -234,6 +239,8 @@ class _TorchVariationalStrategy(nn.Module):
             torch.tensor(0, dtype=torch.uint8, device=points.device),
         )
         self._jitter_val: float | None = None
+        self.whitened = whitened
+        self._kl_prior_jitter = 1e-3
 
     @property
     def jitter_val(self) -> float:
@@ -255,6 +262,8 @@ class _TorchVariationalStrategy(nn.Module):
 
     @property
     def prior_distribution(self) -> Any:
+        if not self.whitened:
+            return self._inducing_prior(1e-3)
         mean = torch.zeros_like(self._variational_distribution.variational_mean)
         n = mean.shape[-1]
         return TorchGPyTorchPosterior(
@@ -264,16 +273,56 @@ class _TorchVariationalStrategy(nn.Module):
 
     def _initialize(self) -> None:
         if not bool(self.variational_params_initialized):
-            self._variational_distribution.initialize_variational_distribution()
+            self._variational_distribution.initialize_variational_distribution(
+                None if self.whitened else self.prior_distribution
+            )
             self.variational_params_initialized.fill_(1)
 
+    def train(self, mode: bool = True) -> Any:
+        if (self.training and not mode) or mode:
+            self._kl_prior_jitter = 1e-3
+        return super().train(mode)
+
+    def _inducing_prior(self, jitter: float) -> Any:
+        owner = self._owner_ref()
+        points = self.inducing_points
+        inducing = points if points.ndim == owner._train_X.ndim + 1 else owner._augment(points)
+        mean = owner.model.mean_module(inducing)
+        covariance = _dense(owner.model.covar_module(inducing, inducing))
+        covariance = covariance + jitter * torch.eye(
+            points.shape[-2], dtype=points.dtype, device=points.device
+        )
+        return TorchGPyTorchPosterior(mean.unsqueeze(-1), covariance).distribution
+
     def kl_divergence(self) -> Tensor:
+        if not self.whitened:
+            distribution = self._variational_distribution
+            prior = self._inducing_prior(self._kl_prior_jitter)
+            delta = distribution.variational_mean - prior.mean
+            root = _rs.tensor_psd_safe_cholesky(prior.covariance_matrix)
+            quadratic = (delta * torch.cholesky_solve(delta.unsqueeze(-1), root).squeeze(-1)).sum(
+                -1
+            )
+            logdet = 2 * root.diagonal(dim1=-2, dim2=-1).log().sum(-1)
+            if isinstance(distribution, _TorchDeltaDistribution):
+                return 0.5 * (quadratic + logdet + delta.shape[-1] * math.log(2 * math.pi))
+            covariance = distribution.covariance_matrix()
+            trace = torch.cholesky_solve(covariance, root).diagonal(dim1=-2, dim2=-1).sum(-1)
+            return 0.5 * (
+                quadratic
+                + trace
+                - delta.shape[-1]
+                + logdet
+                - torch.linalg.slogdet(covariance).logabsdet
+            )
         return self._variational_distribution.kl_divergence()
 
     def forward(self, X: Tensor, prior: bool = False) -> Any:
         owner = self._owner_ref()
         if prior:
             return owner._prior_output(X, multitask=owner.num_outputs > 1)
+        if self.training:
+            self._kl_prior_jitter = 1e-3
         self._initialize()
         return owner._variational_output(X)
 
@@ -482,13 +531,15 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         if num_outputs <= 0:
             raise ValueError("num_outputs must be positive.")
         gpytorch = sys.modules.get("gpytorch")
-        external_strategy = None if gpytorch is None else gpytorch.variational.VariationalStrategy
-        if variational_strategy is not VariationalStrategy and (
-            external_strategy is None or variational_strategy is not external_strategy
-        ):
+        strategies = {VariationalStrategy: True, UnwhitenedVariationalStrategy: False}
+        if gpytorch is not None:
+            strategies[gpytorch.variational.VariationalStrategy] = True
+            strategies[gpytorch.variational.UnwhitenedVariationalStrategy] = False
+        if variational_strategy not in strategies:
             raise UnsupportedError(
-                "Torch variational models currently support the whitened VariationalStrategy only."
+                "Torch variational models support VariationalStrategy and UnwhitenedVariationalStrategy."
             )
+        whitened = strategies[variational_strategy]
         distribution_family = _distribution_family(variational_distribution)
         if getattr(variational_distribution, "_owner", None) is not None:
             raise UnsupportedError(
@@ -576,7 +627,9 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         distribution = distribution_class(
             points.shape[-2], self._aug_batch_shape, train_X, variational_distribution
         )
-        strategy = _TorchVariationalStrategy(self, points, distribution, learn_inducing_points)
+        strategy = _TorchVariationalStrategy(
+            self, points, distribution, learn_inducing_points, whitened=whitened
+        )
         self.model = _TorchVariationalInner(
             self,
             covariance,
@@ -690,6 +743,8 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         )
 
     def _variational_output(self, X: Tensor) -> Any:
+        if not self._strategy.whitened:
+            return self._unwhitened_output(X)
         X = X.clone()
         augmented = self._augment(X)
         strategy = self._strategy
@@ -723,6 +778,58 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
                 torch.diag_embed(variance_update) if diagonal_only else interpolation.mT @ update
             )
             return prior + delta + jitter * torch.eye(N, dtype=X.dtype, device=X.device)
+
+        return _TorchVariationalOutput(self, mean, variance, covariance)
+
+    def _unwhitened_output(self, X: Tensor) -> Any:
+        X = X.clone()
+        augmented = self._augment(X)
+        strategy = self._strategy
+        distribution = strategy._variational_distribution
+        points = strategy.inducing_points
+        inducing = points if points.ndim == self._train_X.ndim + 1 else self._augment(points)
+        covariance_q = distribution.covariance_matrix()
+        if torch.equal(augmented, inducing):
+            if isinstance(distribution, _TorchDeltaDistribution):
+                raise RuntimeError(
+                    "The reference unwhitened Delta strategy has no covariance at its inducing points."
+                )
+            return _TorchVariationalOutput(
+                self,
+                distribution.variational_mean,
+                covariance_q.diagonal(dim1=-2, dim2=-1),
+                lambda: covariance_q,
+            )
+        kernel, mean_module = self.model.covar_module, self.model.mean_module
+        m = points.shape[-2]
+        kzz = _dense(kernel(inducing, inducing)) + strategy.jitter_val * torch.eye(
+            m, dtype=X.dtype, device=X.device
+        )
+        root = _rs.tensor_psd_safe_cholesky(kzz)
+        kzx = _dense(kernel(inducing, augmented))
+        interpolation = torch.cholesky_solve(kzx, root)
+        mean = mean_module(augmented) + (
+            interpolation.mT @ (distribution.variational_mean - mean_module(inducing)).unsqueeze(-1)
+        ).squeeze(-1)
+        residual = _dense(kernel(augmented, augmented, diag=True)) - (kzx * interpolation).sum(-2)
+        training = self.model.training
+        variance = (residual.clamp_min(0) if training else residual) + (
+            interpolation * (covariance_q @ interpolation)
+        ).sum(-2)
+        # The pinned strategy uses the conditional prior during training,
+        # while its uncached evaluation prior uses add_jitter(1e-3).
+        strategy._kl_prior_jitter = strategy.jitter_val if training else 1e-3
+        parameters = {name: value.clone() for name, value in kernel.named_parameters()}
+        buffers = {name: value.clone() for name, value in kernel.named_buffers()}
+
+        def covariance() -> Tensor:
+            correction = interpolation.mT @ covariance_q @ interpolation
+            if training:
+                return correction + torch.diag_embed(residual.clamp_min(0))
+            prior = _dense(
+                torch.func.functional_call(kernel, (parameters, buffers), (augmented, augmented))
+            )
+            return correction + prior - kzx.mT @ interpolation
 
         return _TorchVariationalOutput(self, mean, variance, covariance)
 

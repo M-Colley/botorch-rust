@@ -456,6 +456,10 @@ def _variational_update(
     model.eval()
     _fit_transforms(model)
     strategy, modules = model._strategy, model.model
+    if not strategy.whitened:
+        raise NotImplementedError(
+            "The reference Matheron dispatcher does not register UnwhitenedVariationalStrategy updates."
+        )
     points = strategy.inducing_points  # Already in transformed input coordinates.
     batch = tuple(modules.covar_module.batch_shape)
     if (

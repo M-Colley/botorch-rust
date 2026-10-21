@@ -356,6 +356,14 @@ class VariationalStrategy(_VariationalStrategy):
         return "VariationalStrategy()"
 
 
+class UnwhitenedVariationalStrategy(VariationalStrategy):
+    """Tensor-backend inducing variables in original, unwhitened GP coordinates.
+
+    Pass this class to ``SingleTaskVariationalGP(backend="torch")``. Native
+    CPU variational models retain the whitened strategy only.
+    """
+
+
 class IndependentMultitaskVariationalStrategy(_VariationalStrategy):
     """GPyTorch's ``IndependentMultitaskVariationalStrategy``: independent
     outputs as the batch dimension of a base strategy (``task_dim=-1``)."""
@@ -387,5 +395,6 @@ __all__ = [
     "DeltaVariationalDistribution",
     "IndependentMultitaskVariationalStrategy",
     "MeanFieldVariationalDistribution",
+    "UnwhitenedVariationalStrategy",
     "VariationalStrategy",
 ]

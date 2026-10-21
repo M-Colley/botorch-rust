@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 import warnings
 from collections.abc import Iterator
 from typing import Any
@@ -1037,12 +1038,57 @@ class SingleTaskVariationalGP(ApproximateGPyTorchModel):
         if cls is SingleTaskVariationalGP:
             if backend not in ("auto", "native", "torch"):
                 raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+            from botorch_rs.variational import (
+                DeltaVariationalDistribution,
+                MeanFieldVariationalDistribution,
+            )
+
+            names = (
+                "likelihood",
+                "num_outputs",
+                "learn_inducing_points",
+                "covar_module",
+                "mean_module",
+                "variational_distribution",
+                "variational_strategy",
+                "inducing_points",
+                "inducing_point_allocator",
+                "outcome_transform",
+                "input_transform",
+            )
+            components = dict(zip(names, args, strict=False))
+            components.update(kwargs)
+            torch = sys.modules.get("torch")
+            tensor_input = torch is not None and isinstance(train_X, torch.Tensor)
+            needs_tensor_configuration = tensor_input and (
+                train_X.ndim > 2
+                or isinstance(
+                    components.get("variational_distribution"),
+                    (MeanFieldVariationalDistribution, DeltaVariationalDistribution),
+                )
+                or components.get("variational_strategy", VariationalStrategy)
+                is not VariationalStrategy
+                or any(
+                    torch is not None and isinstance(components.get(name), torch.nn.Module)
+                    for name in (
+                        "likelihood",
+                        "covar_module",
+                        "mean_module",
+                        "variational_distribution",
+                        "input_transform",
+                        "outcome_transform",
+                    )
+                )
+            )
             tensor_backend = backend == "torch" or (
                 backend == "auto"
-                and any(
-                    getattr(value, "requires_grad", False)
-                    or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
-                    for value in (train_X, train_Y, kwargs.get("inducing_points"))
+                and (
+                    needs_tensor_configuration
+                    or any(
+                        getattr(value, "requires_grad", False)
+                        or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
+                        for value in (train_X, train_Y, components.get("inducing_points"))
+                    )
                 )
             )
             if tensor_backend:
