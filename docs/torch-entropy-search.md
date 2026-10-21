@@ -16,8 +16,8 @@ support greedy batch filling. Multifidelity MES supports projection, trace
 observations and cost weighting; multifidelity GIBBON supports projection and
 costs, and rejects trace observations. Initially batched GIBBON and fully Bayesian
 mixtures remain explicit boundaries. MES observation/fantasy
-samplers currently require one sample dimension, and MES requires at least two
-observation samples for its control-variate estimate.
+samplers currently require one sample dimension. A single observation sample
+uses the finite zero-control-coefficient fallback described below.
 
 Thompson maxima and Gumbel fitting run on device. The Gumbel sampler solves the
 independent Gaussian maximum's three quantiles with batched log-CDF bisection.
@@ -70,6 +70,9 @@ derivatives, and complete initial data/parameter derivatives with its
 `propagate_grads` setting enabled. The reference's fantasy method requires
 shared pending locations to be explicitly expanded over the initial model
 batch to satisfy its input-rank check; the port accepts shared raw locations.
+The distinct source rank-check repair is proposed in
+[GPyTorch #2830](https://github.com/cornellius-gp/gpytorch/pull/2830), with
+independent dense conditioning controls for fully and partially shared locations.
 Source comparisons use one pending fantasy. Independent component averaging
 checks multiple model axes and three fantasies, including every active
 data/query/max-sample/parameter gradient and Hessian-vector product. It also
