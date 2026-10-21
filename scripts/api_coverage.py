@@ -279,9 +279,7 @@ def report(entries: list[Entry], community: list[Entry], errors: dict[str, str])
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--out", type=Path, default=Path("docs/api_coverage.md"))
-    parser.add_argument(
-        "--json-out", type=Path, help="Write a machine-readable API gap inventory."
-    )
+    parser.add_argument("--json-out", type=Path, help="Write a machine-readable API gap inventory.")
     parser.add_argument(
         "--minimum-coverage",
         type=float,
@@ -307,9 +305,7 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(report(entries, community, errors), encoding="utf-8")
     n, k = len(entries), sum(e.ported for e in entries)
-    print(
-        f"{k} of {n} public BoTorch classes and functions are in botorch_rs; wrote {args.out}"
-    )
+    print(f"{k} of {n} public BoTorch classes and functions are in botorch_rs; wrote {args.out}")
     missing = [e for e in entries if not e.ported or e.missing_params or e.missing_members]
     core_errors = {name: error for name, error in errors.items() if name.startswith("botorch.")}
     if args.json_out is not None:
