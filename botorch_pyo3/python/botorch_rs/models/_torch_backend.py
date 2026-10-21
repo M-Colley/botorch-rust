@@ -69,6 +69,7 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         self._transform_fit_versions: dict[int, Any] = {}
         self._validate_data(train_X, train_Y, train_Yvar)
         self._output_count = train_Y.shape[-1]
+        self._is_custom_likelihood = likelihood is not None
         self.register_buffer("_train_X", train_X)
         self.register_buffer("_train_Y", train_Y)
         self.register_buffer("_train_Yvar", train_Yvar)
@@ -249,6 +250,10 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             Y, noise = outcome(Y, noise, X=self._train_X)
         if noise is not None and clamp_noise:
             noise = noise.clamp_min(1e-4 if noise.dtype == torch.float32 else 1e-6)
+        if getattr(self, "_is_custom_likelihood", False):
+            # As in SingleTaskGP, a supplied likelihood owns observation
+            # noise even when constructor Yvar was also supplied.
+            noise = None
         return (
             self._augment_X(X),
             self._augment_Y(Y),
@@ -336,6 +341,14 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         X: Any,
         observation_noise: Any = False,
     ) -> Any:
+        from botorch_rs.models._torch_gaussian_likelihood import is_fixed_noise, uses_marginal
+
+        if uses_marginal(self.likelihood) or (
+            getattr(self, "_is_custom_likelihood", False) and is_fixed_noise(self.likelihood)
+        ):
+            from botorch_rs.models._torch_fully_bayesian_likelihood import posterior_tensors
+
+            return posterior_tensors(self, X, observation_noise)
         if not isinstance(X, torch.Tensor) or X.ndim < 2 or X.shape[-1] != self._train_X.shape[-1]:
             raise ValueError("X must be a Tensor with shape (..., q, d).")
         if X.dtype != self._train_X.dtype or X.device != self._train_X.device:
@@ -464,7 +477,11 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
                 result = result + module_log_prior(module, self._aug_batch_shape)
         return result
 
-    def _exact_mll(self, output: Any = None, target: Any = None) -> Any:
+    def _exact_mll(
+        self, output: Any = None, target: Any = None, *params: Any, **kwargs: Any
+    ) -> Any:
+        from botorch_rs.models._torch_gaussian_likelihood import gaussian_marginal, uses_marginal
+
         if output is None:
             X, Y, fixed_noise = self._training_values()
             if type(self).forward is TorchSingleTaskGP.forward:
@@ -473,12 +490,27 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
                 prior = torch.nn.Module.__call__(self, self.train_inputs[0] if self.training else X)
                 mean, covariance = prior.mean, prior.covariance_matrix
         else:
-            _, _, fixed_noise = self._training_values()
+            X, _, fixed_noise = self._training_values()
             Y = self.train_targets if target is None else target
             mean, covariance = output.mean, output.covariance_matrix
-        value = _rs.tensor_exact_mll(
-            Y, covariance, mean, self._training_noise(Y, fixed_noise), normalize=False
-        )
+        if uses_marginal(self.likelihood):
+            mean, covariance = gaussian_marginal(
+                self.likelihood,
+                mean,
+                covariance,
+                X,
+                training=True,
+                params=params or None,
+                kwargs=kwargs,
+            )
+            noise = torch.zeros_like(mean)
+        else:
+            if params or kwargs:
+                raise TypeError(
+                    "Additional likelihood arguments require a supplied Gaussian marginal."
+                )
+            noise = self._training_noise(Y, fixed_noise)
+        value = _rs.tensor_exact_mll(Y, covariance, mean, noise, normalize=False)
         return (value + self._log_prior()) / Y.shape[-1]
 
     def set_train_data(self, inputs: Any = None, targets: Any = None, strict: bool = True) -> None:
@@ -495,6 +527,14 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         self._transform_fit_X, self._transform_fit_Y = X, Y
 
     def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
+        if getattr(self, "_is_custom_likelihood", False):
+            from botorch_rs.models._torch_gaussian_likelihood import (
+                condition_fixed_likelihood,
+                is_fixed_noise,
+            )
+
+            if is_fixed_noise(self.likelihood):
+                return condition_fixed_likelihood(self, X, Y, noise, **kwargs)
         if kwargs:
             raise UnsupportedError(f"Unsupported conditioning arguments: {sorted(kwargs)}.")
         if X.shape[-2] != Y.shape[-2] or Y.shape[-1] != self.num_outputs:
@@ -555,6 +595,16 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             raise UnsupportedError(f"Unsupported fantasy arguments: {sorted(kwargs)}.")
         if isinstance(observation_noise, bool):
             raise TypeError("fantasize observation_noise must be None or a Tensor.")
+        if observation_noise is None and getattr(self, "_is_custom_likelihood", False):
+            from botorch_rs.models._torch_gaussian_likelihood import is_fixed_noise
+
+            if is_fixed_noise(self.likelihood):
+                observation_noise = self.likelihood.noise
+                observation_noise = (
+                    observation_noise.transpose(-1, -2)
+                    if self.num_outputs > 1
+                    else observation_noise.unsqueeze(-1)
+                ).mean(-2, keepdim=True)
         posterior = self.posterior(
             X, observation_noise=True if observation_noise is None else observation_noise
         )

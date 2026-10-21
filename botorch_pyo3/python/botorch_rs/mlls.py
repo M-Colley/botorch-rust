@@ -193,10 +193,13 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
         """The MLL values (shape ``_aug_batch_shape``, of the model's array type)."""
         if getattr(self.model, "_tensor_backend", None) == "torch":
             if kwargs or len(args) > 2:
-                raise TypeError(
-                    "Call mll(), or mll(model(*model.train_inputs), model.train_targets)."
-                )
-            return self.model._exact_mll(*args)
+                from botorch_rs.models._torch_gaussian_likelihood import uses_marginal
+
+                if not isinstance(self.model, SingleTaskGP) or not uses_marginal(self.likelihood):
+                    raise TypeError(
+                        "Additional likelihood arguments require a supplied Gaussian marginal."
+                    )
+            return self.model._exact_mll(*args, **kwargs)
         if args or kwargs:
             raise UnsupportedError(
                 "botorch_rs evaluates the MLL on the model's training data: call `mll()` "

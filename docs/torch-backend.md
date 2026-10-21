@@ -15,7 +15,8 @@ Development after the frozen release adds [generic fitting protocols](fitting-pr
 [device pruning and constraint utilities](torch-baseline-pruning.md),
 [cached sampling and model-fit metrics](torch-low-rank-evaluation.md),
 [probit variational observations](torch-variational-probit.md),
-[custom acquisition subclasses](torch-acquisition-subclasses.md), and
+[custom acquisition subclasses](torch-acquisition-subclasses.md),
+[supplied exact Gaussian likelihoods](torch-exact-gaussian-likelihood.md), and
 [binary hypervolume partitioning](torch-hypervolume-partitioning.md).
 Caller-defined model modules are covered by the
 [custom Torch model protocol](torch-custom-models.md).

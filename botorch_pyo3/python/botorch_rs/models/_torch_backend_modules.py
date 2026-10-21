@@ -997,10 +997,18 @@ def build_likelihood(
         get_gaussian_likelihood_with_lognormal_prior,
     )
 
-    if source is not None and train_Yvar_transformed is not None:
-        raise UnsupportedError(
-            "Specify either a learned likelihood or train_Yvar for the Torch backend."
-        )
+    if isinstance(source, nn.Module):
+        from botorch_rs.models._torch_gaussian_likelihood import is_gpytorch_gaussian
+
+        if isinstance(
+            source, (TorchGaussianLikelihood, TorchFixedNoiseLikelihood)
+        ) or is_gpytorch_gaussian(source):
+            return source
+        raise UnsupportedError("Exact inference requires a Gaussian likelihood marginal.")
+    if source is not None:
+        if type(source) is GaussianLikelihood:
+            return TorchGaussianLikelihood(source, train_X)
+        raise UnsupportedError("Torch backend likelihoods require a supported Gaussian marginal.")
     if train_Yvar_transformed is not None:
         # The model already moves the output axis into augmented batch shape:
         # (..., n) for one output; (..., m, n) for multiple outputs.
@@ -1010,11 +1018,7 @@ def build_likelihood(
         )
     if source is None:
         source = get_gaussian_likelihood_with_lognormal_prior(batch_shape=aug_batch_shape)
-    if type(source) is GaussianLikelihood:
-        return TorchGaussianLikelihood(source, train_X)
-    raise UnsupportedError(
-        "Torch backend likelihoods currently support GaussianLikelihood or train_Yvar."
-    )
+    return TorchGaussianLikelihood(source, train_X)
 
 
 class TorchNormalize(nn.Module):
