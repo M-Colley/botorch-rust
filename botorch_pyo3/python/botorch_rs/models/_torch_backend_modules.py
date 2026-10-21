@@ -1121,12 +1121,20 @@ class TorchWarp(_TorchModule):
             "indices", torch.tensor(source.indices, dtype=torch.long, device=train_X.device)
         )
         self._normalize = TorchNormalize(source._normalize, d, train_X)
+        if source._model is None:
+            from botorch_rs.models.transforms._torch_input import warp_parameters
+
+            warp_parameters(source, train_X)
         for i in (0, 1):
             name = f"concentration{i}"
             original = getattr(source, name)
             self.register_parameter(
                 name,
-                nn.Parameter(
+                original
+                if isinstance(original, nn.Parameter)
+                and original.dtype == train_X.dtype
+                and original.device == train_X.device
+                else nn.Parameter(
                     _tensor(original, train_X).clone(),
                     requires_grad=not isinstance(original, nn.Parameter) or original.requires_grad,
                 ),

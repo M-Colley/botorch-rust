@@ -38,6 +38,7 @@ from botorch_rs._arrays import (
 from botorch_rs._buffers import NativeBufferModule
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.exceptions.warnings import UserInputWarning
+from botorch_rs.models.transforms import _torch_input
 from botorch_rs.models.utils.assorted import fantasize as _fantasize
 
 
@@ -57,6 +58,8 @@ def _indices_list(indices: Any, name: str = "indices") -> list[int] | None:
         return None
     if isinstance(indices, slice):
         return None
+    if _torch_input.is_tensor(indices):
+        return [int(v) for v in indices.reshape(-1)]
     data, shape = to_flat(indices, name)
     return [int(v) for v in data]
 
@@ -109,6 +112,27 @@ class InputTransform(NativeBufferModule):
 
     def __call__(self, X: Any) -> Any:
         return self.forward(X)
+
+    def parameters(self, recurse: bool = True) -> Iterator[Any]:
+        for _, parameter in self.named_parameters(recurse=recurse):
+            yield parameter
+
+    def named_parameters(
+        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
+    ) -> Iterator[tuple[str, Any]]:
+        seen: set[int] = set()
+        for name, parameter in self.__dict__.get("_direct_parameters", {}).items():
+            seen.add(id(parameter))
+            yield f"{prefix}.{name}" if prefix else name, parameter
+        if recurse:
+            children = self.__dict__.get("_transforms", self.__dict__.get("transforms", {}))
+            items = children.items() if isinstance(children, dict) else enumerate(children)
+            for name, child in items:
+                for child_name, parameter in child.named_parameters():
+                    if not remove_duplicate or id(parameter) not in seen:
+                        seen.add(id(parameter))
+                        key = f"{name}.{child_name}"
+                        yield f"{prefix}.{key}" if prefix else key, parameter
 
     def transform(self, X: Any) -> Any:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -269,8 +293,17 @@ class AffineInputTransform(ReversibleInputTransform):
         self.reverse = bool(reverse)
         self.training = True
         k = d if idx is None else len(idx)
-        coef, cshape = _row(coefficient, "coefficient")
-        off, oshape = _row(offset, "offset")
+        cshape: tuple[int, ...]
+        oshape: tuple[int, ...]
+        if _torch_input.is_tensor(coefficient) or _torch_input.is_tensor(offset):
+            like = coefficient if _torch_input.is_tensor(coefficient) else offset
+            self._coefficient = _torch_input._tensor(coefficient, like)
+            self._offset = _torch_input._tensor(offset, like)
+            coef, cshape = [1.0] * k, (k,)
+            off, oshape = [0.0] * k, (k,)
+        else:
+            coef, cshape = _row(coefficient, "coefficient")
+            off, oshape = _row(offset, "offset")
         self._kind = first_kind(coefficient, offset)
         bshape = tuple(int(b) for b in (batch_shape or ()))
         nb = math.prod(bshape)
@@ -328,6 +361,9 @@ class AffineInputTransform(ReversibleInputTransform):
         return self._make_step(b)
 
     def _stat(self, which: int) -> Any:
+        tensor = _torch_input.affine_stat(self, which)
+        if tensor is not None:
+            return tensor
         k = len(self._coefs[0])
         data: list[float] = []
         for s in self._steps:
@@ -357,6 +393,9 @@ class AffineInputTransform(ReversibleInputTransform):
             )
 
     def _apply(self, X: Any, inverse: bool) -> Any:
+        if _torch_input.is_tensor(X):
+            return _torch_input.affine_apply(self, X, inverse)
+        _torch_input.sync_affine_native(self)
         kind = kind_of(X)
         data, shape = _check_flat_matrix(X)
         self._check_shape(shape)
@@ -368,6 +407,7 @@ class AffineInputTransform(ReversibleInputTransform):
         if not self.batch_shape:
             if learn:
                 self._steps = [self._steps[0].fit((data, shape))]
+                _torch_input.clear_affine_tensor_state(self)
             step = self._steps[0]
             out = step.untransform((data, shape)) if inverse else step.transform((data, shape))
             return from_pair(out, kind)
@@ -396,6 +436,7 @@ class AffineInputTransform(ReversibleInputTransform):
                     pts.extend(values[s : s + block])
                 fitted.append(self._steps[b].fit((pts, (lead * n, d))))
             self._steps = fitted
+            _torch_input.clear_affine_tensor_state(self)
         out: list[float] = [0.0] * len(values)
         for b in range(nb):
             pts = []
@@ -428,6 +469,7 @@ class AffineInputTransform(ReversibleInputTransform):
         return self._apply(X, inverse=True)
 
     def _state(self) -> Any:
+        _torch_input.sync_affine_native(self)
         return (
             self._d,
             self._idx,
@@ -441,6 +483,7 @@ class AffineInputTransform(ReversibleInputTransform):
         return self.batch_shape or None
 
     def _model_steps(self, d: int, prefix: str, batch: int | None) -> list[_Step]:
+        _torch_input.sync_affine_native(self)
         if d != self._d:
             raise BotorchTensorDimensionError(
                 f"Wrong input dimension. Received {d}, expected {self._d}."
@@ -449,6 +492,7 @@ class AffineInputTransform(ReversibleInputTransform):
         return [_Step(step, self.training, prefix, self)]
 
     def _set_state(self, state: Any, batch: int | None, kind: ArrayKind) -> None:
+        _torch_input.clear_affine_tensor_state(self)
         self._steps[0 if batch is None else batch] = state
         if self._kind.lib == "list":
             self._kind = kind
@@ -490,9 +534,21 @@ class Normalize(AffineInputTransform):
         self.almost_zero = almost_zero
         shape = tuple(int(b) for b in (batch_shape or ()))
         native_bounds: Any = None
+        coefficient: Any
+        offset: Any
         if idx is not None:
             idx = [i + d if i < 0 else i for i in idx]
-        if bounds is not None:
+        if _torch_input.is_tensor(bounds):
+            selected = bounds if idx is None or bounds.shape[-1] != d else bounds[..., idx]
+            if selected.ndim < 2 or selected.shape[-2:] != (2, k):
+                raise BotorchTensorDimensionError(
+                    f"Dimensions of provided `bounds` are incompatible with transform_dimension = {k}!"
+                )
+            if selected.ndim > 2:
+                shape = tuple(selected.shape[:-2])
+            coefficient = (selected[..., 1, :] - selected[..., 0, :]).unsqueeze(-2)
+            offset = selected[..., :1, :] + (0.5 - center) * coefficient
+        elif bounds is not None:
             bdata, bshape = to_flat(bounds, "bounds")
             if idx is not None and bshape[-1] == d:
                 # bounds[..., indices]
@@ -517,8 +573,8 @@ class Normalize(AffineInputTransform):
                 c = [h - lb for lb, h in zip(lo, hi, strict=True)]
                 coefs.extend(c)
                 offs.extend(lb + (0.5 - center) * ci for lb, ci in zip(lo, c, strict=True))
-            coefficient: Any = coefs
-            offset: Any = offs
+            coefficient = coefs
+            offset = offs
         else:
             coefficient = [1.0] * k
             offset = [0.0] * k
@@ -575,6 +631,17 @@ class Normalize(AffineInputTransform):
     def _kind_args(self) -> dict[str, Any]:
         return {"min_range": self.min_range, "center": self.center}
 
+    @property
+    def _rs(self) -> Any:
+        # Some native models consume the plain descriptor directly rather
+        # than chain_spec. Export only at that explicit native boundary.
+        _torch_input.sync_affine_native(self)
+        return self._native_rs
+
+    @_rs.setter
+    def _rs(self, value: Any) -> None:
+        self._native_rs = value
+
     _kind_name = "normalize"
 
     # -- state -------------------------------------------------------------
@@ -582,6 +649,7 @@ class Normalize(AffineInputTransform):
     def _set_fitted(self, fitted: Any, kind: ArrayKind) -> None:
         """Receives the native ``Normalize`` fitted by a model (the plain
         configuration, or a ``MultiTaskGP``'s with ``indices``)."""
+        _torch_input.clear_affine_tensor_state(self)
         self._rs = fitted
         if kind.lib != "list" or self._kind.lib == "list":
             self._kind = kind
@@ -602,6 +670,11 @@ class Normalize(AffineInputTransform):
     @property
     def bounds(self) -> Any:
         r"""The normalization bounds, shape ``batch_shape x 2 x d``."""
+        tensor = _torch_input.affine_stat(self, 0)
+        if tensor is not None:
+            import torch
+
+            return torch.cat((tensor, tensor + self.coefficient), dim=-2)
         if self._plain:
             return from_pair(self._rs.bounds, self._kind)
         off = to_flat(self.offset, "offset")[0]
@@ -617,12 +690,18 @@ class Normalize(AffineInputTransform):
 
     @property
     def offset(self) -> Any:
+        tensor = _torch_input.affine_stat(self, 0)
+        if tensor is not None:
+            return tensor
         if self._plain:
             return from_pair(self._rs.offset, self._kind)
         return super().offset
 
     @property
     def coefficient(self) -> Any:
+        tensor = _torch_input.affine_stat(self, 1)
+        if tensor is not None:
+            return tensor
         if self._plain:
             return from_pair(self._rs.coefficient, self._kind)
         return super().coefficient
@@ -636,6 +715,9 @@ class Normalize(AffineInputTransform):
         return self.coefficient
 
     def _apply(self, X: Any, inverse: bool) -> Any:
+        if _torch_input.is_tensor(X):
+            return _torch_input.affine_apply(self, X, inverse)
+        _torch_input.sync_affine_native(self)
         if not self._plain:
             return super()._apply(X, inverse)
         kind = first_kind(X)
@@ -646,6 +728,8 @@ class Normalize(AffineInputTransform):
         return from_pair(out, kind)
 
     def forward(self, X: Any) -> Any:
+        if _torch_input.is_tensor(X):
+            return super().forward(X)
         if self._plain:
             return self.transform(X)
         return super().forward(X)
@@ -666,6 +750,8 @@ class Normalize(AffineInputTransform):
             self._steps = [self._make_step_from(s, b) for b, s in enumerate(self._steps)]
 
     def preprocess_transform(self, X: Any) -> Any:
+        if _torch_input.is_tensor(X):
+            return super().preprocess_transform(X)
         if self._plain:
             if not self.transform_on_train:
                 return X
@@ -683,6 +769,9 @@ class Normalize(AffineInputTransform):
         un-shifted bounds and ``center``, as with meta-pytorch/botorch#3389)."""
         bounds = self.bounds
         if self.center != 0.5:
+            if _torch_input.is_tensor(bounds):
+                bounds = bounds - (0.5 - self.center) * self.coefficient
+                return {**self._init_args(bounds), "bounds": bounds}
             data, shape = to_flat(bounds, "bounds")
             coef = to_flat(self.coefficient, "coefficient")[0]
             k = shape[-1]
@@ -692,6 +781,9 @@ class Normalize(AffineInputTransform):
                 b = (r // 2) * k
                 out.extend(data[r * k + j] - shift[b + j] for j in range(k))
             bounds = from_flat(out, shape, self._kind)
+        return self._init_args(bounds)
+
+    def _init_args(self, bounds: Any) -> dict[str, Any]:
         return {
             "d": self._d,
             "indices": self.indices,
@@ -707,6 +799,7 @@ class Normalize(AffineInputTransform):
         }
 
     def _model_steps(self, d: int, prefix: str, batch: int | None) -> list[_Step]:
+        _torch_input.sync_affine_native(self)
         if self._plain:
             if self.batch_shape:
                 raise UnsupportedError(
@@ -830,6 +923,8 @@ class Round(InputTransform):
 
     def transform(self, X: Any) -> Any:
         r"""Discretize the inputs (``batch_shape x n x d``)."""
+        if _torch_input.is_tensor(X):
+            return _torch_input.round_apply(self, X)
         kind = kind_of(X)
         flat = _check_flat_matrix(X)
         return from_pair(self._step().transform(flat), kind)
@@ -886,9 +981,13 @@ class Log10(ReversibleInputTransform):
         return _rs.InputStep.log10(list(self.indices), reverse, self._flags())
 
     def _transform(self, X: Any) -> Any:
+        if _torch_input.is_tensor(X):
+            return _torch_input.log10_apply(self, X, False)
         return from_pair(self._step(False).transform(_check_flat_matrix(X)), kind_of(X))
 
     def _untransform(self, X: Any) -> Any:
+        if _torch_input.is_tensor(X):
+            return _torch_input.log10_apply(self, X, True)
         return from_pair(self._step(False).untransform(_check_flat_matrix(X)), kind_of(X))
 
     def _state(self) -> Any:
@@ -948,7 +1047,7 @@ class Warp(ReversibleInputTransform):
         self.concentration1_prior = concentration1_prior
         self._normalize = Normalize(d=d, indices=idx, bounds=bounds)
         self._bounds = None
-        if bounds is not None:
+        if bounds is not None and not _torch_input.is_tensor(bounds):
             data, shape = to_flat(bounds, "bounds")
             cols = shape[-1]
             lo = [float(v) for v in data[:cols]]
@@ -983,7 +1082,16 @@ class Warp(ReversibleInputTransform):
             c1 = list(self._model._raw_param(self._prefix + "concentration1"))
             nb = len(c0) // k
             return [c0[b * k : (b + 1) * k] + c1[b * k : (b + 1) * k] for b in range(nb)]
-        return [list(s.params) for s in self._steps]
+        result = [list(s.params) for s in self._steps]
+        parameters = self.__dict__.get("_direct_parameters", {})
+        k = len(self.indices)
+        for i in (0, 1):
+            parameter = parameters.get(f"concentration{i}")
+            if parameter is not None:
+                values, _ = to_flat(parameter)
+                for b, row in enumerate(result):
+                    row[i * k : (i + 1) * k] = values[b * k : (b + 1) * k]
+        return result
 
     def _param_shape(self) -> tuple[int, ...]:
         k = len(self.indices)
@@ -993,15 +1101,37 @@ class Warp(ReversibleInputTransform):
         getter = getattr(self._model, "_raw_param_array", None)
         if getter is not None:
             return getter(self._prefix + f"concentration{i}")
+        parameter = self.__dict__.get("_direct_parameters", {}).get(f"concentration{i}")
+        if parameter is not None:
+            return parameter
         k = len(self.indices)
         data: list[float] = []
-        for c in self._concentrations():
+        rows = (
+            [list(step.params) for step in self._steps]
+            if self.__dict__.get("_direct_parameters")
+            else self._concentrations()
+        )
+        for c in rows:
             data.extend(c[i * k : (i + 1) * k])
         return from_flat(data, self._param_shape(), self._kind)
 
     def _set(self, i: int, value: Any) -> None:
         if self._model is not None:
             self._model._set_raw_param(self._prefix + f"concentration{i}", value)
+            return
+        parameters = self.__dict__.get("_direct_parameters", {})
+        if _torch_input.is_tensor(value) or parameters:
+            import torch
+
+            if isinstance(value, torch.nn.Parameter):
+                if tuple(value.shape) != self._param_shape():
+                    raise ValueError(f"concentration{i} must have shape {self._param_shape()}.")
+                self.__dict__.setdefault("_direct_parameters", {})[f"concentration{i}"] = value
+            else:
+                like = value if _torch_input.is_tensor(value) else next(iter(parameters.values()))
+                parameters = _torch_input.warp_parameters(self, like)
+                with torch.no_grad():
+                    parameters[f"concentration{i}"].copy_(_torch_input._tensor(value, like))
             return
         from botorch_rs._arrays import broadcast_to
 
@@ -1045,16 +1175,41 @@ class Warp(ReversibleInputTransform):
             setattr(self, name, value)
         return self
 
-    def named_parameters(self) -> Iterator[tuple[str, Any]]:
-        yield "concentration0", self.concentration0
-        yield "concentration1", self.concentration1
+    def named_parameters(
+        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
+    ) -> Iterator[tuple[str, Any]]:
+        for i in (0, 1):
+            name = f"concentration{i}"
+            yield f"{prefix}.{name}" if prefix else name, self._get(i)
 
     # -- application ---------------------------------------------------------
 
     def _current_steps(self) -> list[Any]:
+        if _torch_input.is_tensor(getattr(self._normalize, "_coefficient", None)):
+            bounds = self._bounds
+            if not self._normalize.learn_bounds or not self.training:
+                values, shape = to_flat(self._normalize.bounds)
+                k = shape[-1]
+                bounds = (list(values[:k]), list(values[k : 2 * k]))
+            return [
+                _rs.InputStep.warp(
+                    self._d,
+                    self.indices,
+                    self._eps,
+                    bounds,
+                    self.concentration0_prior._rs if self.concentration0_prior else None,
+                    self.concentration1_prior._rs if self.concentration1_prior else None,
+                    self.reverse,
+                    self._flags(),
+                    batched=bool(self.batch_shape),
+                ).with_params(parameters)
+                for parameters in self._concentrations()
+            ]
         return [s.with_params(c) for s, c in zip(self._steps, self._concentrations(), strict=True)]
 
     def _apply(self, X: Any, inverse: bool) -> Any:
+        if _torch_input.is_tensor(X):
+            return _torch_input.warp_apply(self, X, inverse)
         from botorch_rs._arrays import broadcast_shapes, broadcast_to
 
         kind = kind_of(X)
@@ -1123,7 +1278,15 @@ class Warp(ReversibleInputTransform):
         return self._apply(X, inverse=not self.reverse)
 
     def _state(self) -> Any:
-        return (list(self.indices), self._eps, self._concentrations(), self._bounds)
+        return (
+            list(self.indices),
+            self._eps,
+            self._concentrations(),
+            self._bounds,
+            self._normalize._state()
+            if _torch_input.is_tensor(getattr(self._normalize, "_coefficient", None))
+            else None,
+        )
 
     # -- models ----------------------------------------------------------------
 
@@ -1144,6 +1307,7 @@ class Warp(ReversibleInputTransform):
 
     def _set_state(self, state: Any, batch: int | None, kind: ArrayKind) -> None:
         # The fitted normalization is shared by the batch elements.
+        _torch_input.clear_affine_tensor_state(self._normalize)
         self._steps = [state.with_params(list(s.params)) for s in self._steps]
 
     def _bind(self, model: Any, prefix: str) -> None:
@@ -1294,6 +1458,13 @@ class InteractionFeatures(AppendFeatures):
         return _rs.InputStep.interaction(self._indices_for(d))
 
     def transform(self, X: Any) -> Any:
+        if _torch_input.is_tensor(X):
+            from botorch_rs.models.transforms.utils import interaction_features
+
+            selected = X if self.indices is None else X[..., self.indices]
+            import torch
+
+            return torch.cat((X, interaction_features(selected).squeeze(-2)), dim=-1)
         kind = kind_of(X)
         data, shape = _check_flat_matrix(X)
         return from_pair(self._step_for(shape[-1]).transform((data, shape)), kind)
@@ -1332,6 +1503,8 @@ class FilterFeatures(InputTransform):
 
     def transform(self, X: Any) -> Any:
         r"""Keep only the features ``feature_indices``."""
+        if _torch_input.is_tensor(X):
+            return X[..., self._idx]
         kind = kind_of(X)
         flat = _check_flat_matrix(X)
         return from_pair(self._step().transform(flat), kind)
@@ -1359,7 +1532,7 @@ def _int_indices(x: Any) -> tuple[list[int], tuple[int, ...]]:
         torch = importlib.import_module("torch")
         if x.dtype != torch.int64:
             raise ValueError("`feature_indices` tensor must be int64/long!")
-        return [int(v) for v in x.reshape(-1).tolist()], tuple(x.shape)
+        return [int(v) for v in x.reshape(-1)], tuple(x.shape)
     data, shape = to_flat(x, "feature_indices")
     if any(float(v) != int(v) for v in data):
         raise ValueError("`feature_indices` tensor must be int64/long!")
