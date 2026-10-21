@@ -183,5 +183,5 @@ def test_exact_gp_external_data_remains_explicitly_unsupported():
         torch.tensor([[0.0], [1.0]], dtype=torch.double),
     )
     mll = ExactMarginalLogLikelihood(model.likelihood, model)
-    with pytest.raises(UnsupportedError, match="variational ELBO"):
+    with pytest.raises(UnsupportedError, match="backend='torch'"):
         get_loss_closure(mll, [(torch.ones(2, 1), torch.ones(2))])

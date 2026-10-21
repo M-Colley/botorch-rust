@@ -29,6 +29,16 @@ including 18 native exact/variational array-kind regressions. These verify real
 parameter changes and objective improvement with callbacks and custom closures;
 they caught and repaired truncated bounds and a missing Rust-state connection.
 
+External-data closures now also evaluate Tensor exact MLLs and caller-supplied
+model/MLL protocols, including multiple model inputs, additional targets and
+closure keyword arguments. Iterators restart after an epoch and reject malformed
+or empty batches. Eight new CPU/CUDA cases compare external exact loss values,
+complete gradients and directional Hessians and exercise actual optimizer steps.
+The Hessian oracle uses central differences of the reference's first derivatives:
+its optimized RBF kernel loses a lengthscale derivative term in double backward.
+Native exact MLL closures continue to use stored data; select `backend="torch"`
+for the external-data exact-GP interface.
+
 This work does not imply support for every model-specific fitting extension.
-Specialized empirical models and external-data closure configurations still
-need their separate behavior audit.
+Specialized empirical models and other external-data closure configurations
+still need their separate behavior audit.

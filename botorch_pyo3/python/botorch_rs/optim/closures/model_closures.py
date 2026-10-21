@@ -77,7 +77,7 @@ class _ExternalVariationalData:
         self.data_loader = data_loader
         self._batches = iter(data_loader)
 
-    def _batch(self) -> Sequence[Any]:
+    def _batch(self, *, single_target: bool = True) -> Sequence[Any]:
         try:
             batch = next(self._batches)
         except StopIteration:
@@ -91,7 +91,9 @@ class _ExternalVariationalData:
                 f"Expected `data_loader` to generate a batch of tensors, but found {type(batch)}."
             )
         num_inputs = len(self.mll.model.train_inputs)
-        if len(batch) != num_inputs + 1:
+        if not single_target and len(batch) <= num_inputs:
+            raise ValueError("Each minibatch must contain model inputs and at least one target.")
+        if single_target and len(batch) != num_inputs + 1:
             raise ValueError("Each variational minibatch must contain the inputs and targets.")
         return batch
 
@@ -144,6 +146,16 @@ class _ExternalTorchVariationalLossClosure(_ExternalVariationalData):
         return -self.mll(self.mll.model(*batch[:-1]), batch[-1])
 
 
+class _ExternalLossClosure(_ExternalVariationalData):
+    """Evaluate the supplied model/MLL protocol on each complete minibatch."""
+
+    def __call__(self, **kwargs: Any) -> Any:
+        batch = self._batch(single_target=False)
+        num_inputs = len(self.mll.model.train_inputs)
+        output = self.mll.model(*batch[:num_inputs])
+        return -self.mll(output, *batch[num_inputs:], **kwargs)
+
+
 def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
     r"""Factory function for creating loss closures from marginal log
     likelihoods (BoTorch's ``get_loss_closure``).
@@ -151,9 +163,10 @@ def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
     Args:
         mll: A botorch_rs ``MarginalLogLikelihood`` whose negative defines
             the loss (an MLL or model with ``compute_custom_loss`` uses that).
-        data_loader: Optional iterable of minibatches for a variational
-            ELBO. Batches contain the model inputs followed by targets; the
-            iterator restarts after each epoch. Exact MLLs use stored data.
+        data_loader: Optional iterable of minibatches. Batches contain model
+            inputs followed by targets; the iterator restarts after each epoch.
+            Tensor exact/variational and caller-supplied MLLs evaluate external
+            batches. Native exact MLLs use their stored training data.
 
     Returns:
         A closure that takes zero positional arguments and returns the
@@ -171,12 +184,16 @@ def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
 
         return custom
     if data_loader is not None:
-        from botorch_rs.mlls import _ApproximateMarginalLogLikelihood
+        from botorch_rs.mlls import MarginalLogLikelihood, _ApproximateMarginalLogLikelihood
 
         if not isinstance(mll, _ApproximateMarginalLogLikelihood):
+            if getattr(model, "_tensor_backend", None) == "torch" or not isinstance(
+                mll, MarginalLogLikelihood
+            ):
+                return _ExternalLossClosure(mll, data_loader)
             raise UnsupportedError(
-                "External-data loss closures currently require a variational ELBO; "
-                "exact GP MLLs evaluate their stored training data."
+                "Native exact-GP closures evaluate stored training data; "
+                "use backend='torch' for external-data exact-GP closures."
             )
         if not mll.combine_terms:
             raise UnsupportedError("External-data ELBO closures require combine_terms=True.")
