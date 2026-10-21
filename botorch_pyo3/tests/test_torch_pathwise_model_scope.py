@@ -113,7 +113,9 @@ def test_structured_custom_callbacks_match_source_and_retain_leaves(device, fami
             calls.append(("prior", model))
             return path_type(gain, query.new_zeros(()), sample_shape)
 
-        def update(model, sample_values, target_values, calls=calls, gain=update_gain, path_type=Path):
+        def update(
+            model, sample_values, target_values, calls=calls, gain=update_gain, path_type=Path
+        ):
             calls.append(("update", model, sample_values, target_values))
             return path_type(gain, sample_values.mean() + target_values.mean(), (2,))
 
