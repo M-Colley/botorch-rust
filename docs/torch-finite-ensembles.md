@@ -37,6 +37,8 @@ For batch-specific member weights, variance uses a separate denominator
 reference sums squared weights across all batches, producing infinite
 variance for two batches each weighted `[0.5, 0.5, 0]`. The port uses the
 independent weighted-variance law.
+The source repair and regressions are submitted in
+[BoTorch #3518](https://github.com/meta-pytorch/botorch/pull/3518).
 
 Identical ensemble members can place analytic acquisitions far into the
 normal tail. Tensor LogEI now evaluates that tail using Laplace's
