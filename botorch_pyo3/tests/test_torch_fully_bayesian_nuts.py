@@ -258,7 +258,6 @@ def test_public_nuts_fit_has_device_samples_and_prediction_graphs(
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_public_nuts_replay_and_failure_preserves_loaded_state(device, reference_run):
-    from botorch_rs.exceptions.errors import UnsupportedError
     from botorch_rs.fit import fit_fully_bayesian_model_nuts
     from botorch_rs.models.fully_bayesian import SaasFullyBayesianSingleTaskGP
 
@@ -286,7 +285,6 @@ def test_public_nuts_replay_and_failure_preserves_loaded_state(device, reference
         ({"thinning": 0}, ValueError),
         ({"warmup_steps": -1}, ValueError),
         ({"draws": []}, ValueError),
-        ({"jit_compile": True}, UnsupportedError),
         ({"draws": [], "init_params": reference_run.z0}, ValueError),
         ({"draws": [], "init_params": [float("nan")] * len(reference_run.z0)}, ValueError),
     ]

@@ -35,6 +35,8 @@ from typing import Any
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import (
     ArrayKind,
+    broadcast_shapes,
+    broadcast_to,
     from_flat,
     kind_from_dtype,
     kind_of,
@@ -946,13 +948,45 @@ class AbstractFullyBayesianSingleTaskGP(SingleTaskGP):
         raise AttributeError(f"'{type(self).__name__}' object has no attribute 'fantasize'")
 
     def forward(self, X: Any) -> Any:
-        """The prior of the batched GP at ``X`` (BoTorch's ``forward``; not
-        supported by botorch_rs, use ``posterior``)."""
+        """The prior law of the loaded components, in transformed outcome units.
+
+        As in BoTorch, training mode applies the input transform; evaluation
+        mode expects inputs already in the kernel's coordinate system.
+        """
         self._check_if_fitted()
-        raise UnsupportedError(
-            "The forward pass of a fully Bayesian model is not supported by botorch_rs; use "
-            "`posterior`."
-        )
+        kind = kind_of(X)
+        if kind.lib == "torch":
+            from botorch_rs.models._torch_backend_modules import (
+                build_input_transform,
+                build_kernel,
+                build_mean,
+            )
+            from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+
+            if self.training and (transform := getattr(self, "input_transform", None)) is not None:
+                # Retain the native transform's fitted state as well as the
+                # query graph. Tensor modules evaluate the same port algebra.
+                self.transform_inputs(X)
+                module = build_input_transform(transform, X.shape[-1], X)
+                assert module is not None
+                X = module.train()(X)
+            kernel = build_kernel(self.covar_module, X.shape[-1], self.batch_shape, X)
+            mean = build_mean(self.mean_module, self.batch_shape, X)(X)
+            return TorchGPyTorchPosterior(mean.unsqueeze(-1), kernel(X, X)).distribution
+
+        from botorch_rs.posteriors.gpytorch import _MomentPosterior
+
+        if self.training:
+            X = self.transform_inputs(X)
+        covariance = to_flat(self.covar_module(X), "covariance")
+        shape = to_flat(X, "X")[1]
+        batch = broadcast_shapes(tuple(shape[:-2]), self.batch_shape)
+        if batch is None:
+            raise RuntimeError("Query and MCMC batch dimensions do not broadcast.")
+        constant, constant_shape = to_flat(self.mean_module.constant, "constant")
+        mean_shape = (*batch, shape[-2])
+        mean = broadcast_to(constant, (*constant_shape, 1), mean_shape)
+        return _MomentPosterior((mean, mean_shape), covariance, kind).distribution
 
     def posterior(
         self,

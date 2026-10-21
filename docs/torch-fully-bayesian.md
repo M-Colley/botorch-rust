@@ -89,8 +89,9 @@ warps, and prediction/data/parameter first and second derivatives after fitting.
 Markov transitions, random/discrete tree choices and fitted MCMC draws are
 intentionally detached, as in standard MCMC. The potential itself and loaded
 component predictions support full Torch graphs. Invalid fitting requests leave
-previously loaded components intact. `jit_compile=True` explicitly raises on
-the eager Tensor sampler; the native sampler remains compiled. Progress bars
+previously loaded components intact. The legacy `jit_compile` flag is accepted
+as a no-op, matching pinned BoTorch `b0dd01be`, whose fitter never reads it.
+The Tensor sampler remains eager; the native sampler is compiled. Progress bars
 are currently omitted by both backends. MAP MLL fitting is explicitly rejected
 for fully Bayesian classes; ordinary MAP SAAS models are a separate family.
 Training inputs remain `n x d` with single-output `n x 1` observations, matching
@@ -114,6 +115,16 @@ using common `q`-dimensional normals, the parity tests construct an independent
 dense GPyTorch MVN from the official posterior's existing mean and covariance.
 Original reference models supply all compared moments. This oracle selects the
 same canonical square root; it is not a workaround for a reference defect.
+
+The loaded scalar families also expose `forward(X)` as their prior Gaussian
+law, separately from conditioned prediction through `posterior(X)`. As in
+the pinned source, training mode (`train(reset=False)`) applies the input
+transform, while evaluation mode expects inputs in kernel coordinates.
+The returned law uses transformed outcome units. Native list/NumPy priors
+evaluate their covariance and draw samples in Rust. Torch query inputs use
+the port's Tensor modules and preserve tested query gradients and Hessian-vector
+products. These Tensor prior modules are snapshots of native model parameters;
+use the Torch model backend for persistent model-parameter graphs.
 
 For a one-input linear model queried at two points, the latent covariance is
 rank one. Even when both libraries select dense roots, roundoff in its zero

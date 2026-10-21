@@ -793,10 +793,8 @@ def fit_torch_fully_bayesian_nuts(
     """Fit a Tensor model without resetting previously loaded draws on failure."""
     if torch.is_inference_mode_enabled():
         raise UnsupportedError("NUTS needs autograd and cannot run under torch.inference_mode.")
-    if jit_compile:
-        raise UnsupportedError(
-            "Torch NUTS currently uses eager Tensor operations; jit_compile=True is unsupported."
-        )
+    # Pinned BoTorch accepts this legacy flag but does not pass it to its
+    # NumPyro implementation. Preserve that accepted no-op on this backend.
     if (
         any(
             type(value) is not int
