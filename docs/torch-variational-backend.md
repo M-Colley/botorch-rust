@@ -44,7 +44,12 @@ closure.
 
 Single and independent multiple outputs are supported, including batched
 training with automatic or explicit inducing points. Default multioutput observations use
-rank-zero multitask Gaussian noise, with global and task variances. Gaussian
+rank-zero multitask Gaussian noise, with global and task variances. Positive-rank
+`MultitaskGaussianLikelihood` also supports learned task factors, full cross-task
+noise in predictive/marginal covariances, and all first/second noise-factor
+derivatives. The expected ELBO log-likelihood and sample-conditional distribution
+use the task-noise diagonal, matching GPyTorch's variational likelihood semantics.
+Gaussian
 noise, variational means/factors, inducing locations, kernel parameters, means,
 training inputs/targets and posterior queries participate in the Torch graph.
 Fitted transform graphs are recomputed from the original training data when
@@ -85,8 +90,13 @@ allocator incorrectly uses the first model's hyperparameters for every batch.
 The regression compares each batch against the reference's standalone pivot
 routine with that batch's actual covariance.
 
+Twelve additional CPU/CUDA cases compare rank-zero, rank-one and full-rank task
+noise against independent GPyTorch/BoTorch likelihood, posterior and ELBO calls.
+They check complete first parameter derivatives, noise Hessians, noisy posterior
+query/parameter derivatives and the sample-conditional event shape.
+
 This checkpoint does not implement other variational distributions or
-strategies, non-Gaussian observations or rank-positive multitask noise. Those
+strategies or non-Gaussian observations. Those
 configurations raise `UnsupportedError`. Reallocation cannot resize the variational family.
 It does not imply GPU support for arbitrary `ApproximateGPyTorchModel` wrappers
 or every other approximate-model family.

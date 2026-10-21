@@ -13,9 +13,11 @@ from torch import Tensor, nn
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.mlls import VariationalELBO
+from botorch_rs.models._torch_backend_kronecker import (
+    TorchMultitaskGaussianLikelihood,
+    tensor_kron,
+)
 from botorch_rs.models._torch_backend_modules import (
-    TorchConstraint,
-    _TorchModule,
     build_input_transform,
     build_kernel,
     build_likelihood,
@@ -183,49 +185,13 @@ class _TorchVariationalInner(nn.Module):
         return self._outer._prior_output(X, multitask=False)
 
 
-class _TorchMultitaskNoise(_TorchModule):
+class _TorchMultitaskNoise(TorchMultitaskGaussianLikelihood):
     def __init__(self, source: Any, like: Tensor) -> None:
-        super().__init__(like)
-        if source.rank != 0:
-            raise UnsupportedError(
-                "The Torch variational backend currently supports rank-zero multitask observation noise."
-            )
-        self.num_tasks = source.num_tasks
-        self.rank = 0
-        self.has_global_noise = True
-        self.has_task_noise = True
-        self.batch_shape = torch.Size()
-        self.raw_noise_constraint = TorchConstraint(source.noise_constraint, like)
-        self.raw_task_noises_constraint = TorchConstraint(source.noise_constraint, like)
-        initial = source.noise_constraint.initial_value
-        self.raw_noise = nn.Parameter(like.new_full((1,), 0 if initial is None else initial))
-        self.raw_task_noises = nn.Parameter(
-            like.new_full((self.num_tasks,), 0 if initial is None else initial)
-        )
-        self._register_prior("noise_prior", source.noise_prior, "noise", 1)
-        self._register_prior("task_noises_prior", source.noise_prior, "task_noises", 1)
-        if getattr(source, "_model", None) is not None:
-            self._assign("raw_noise", source.raw_noise)
-            self._assign("raw_task_noises", source.raw_task_noises)
-
-    @property
-    def noise(self) -> Tensor:
-        return self.raw_noise_constraint.transform(self.raw_noise)
-
-    @noise.setter
-    def noise(self, value: Any) -> None:
-        self._assign("raw_noise", value, self.raw_noise_constraint)
-
-    @property
-    def task_noises(self) -> Tensor:
-        return self.raw_task_noises_constraint.transform(self.raw_task_noises)
-
-    @task_noises.setter
-    def task_noises(self, value: Any) -> None:
-        self._assign("raw_task_noises", value, self.raw_task_noises_constraint)
+        super().__init__(source.num_tasks, source.rank, (), like, source)
 
     def noise_for(self, n: int) -> Tensor:
-        return (self.noise + self.task_noises).unsqueeze(-1).expand(self.num_tasks, n)
+        diagonal = self.noise_matrix().diagonal(dim1=-2, dim2=-1)
+        return diagonal.unsqueeze(-1).expand(*diagonal.shape, n)
 
     def forward(self, distribution: Any, noise: Tensor | None = None, **kwargs: Any) -> Any:
         if kwargs:
@@ -234,14 +200,21 @@ class _TorchMultitaskNoise(_TorchModule):
         n = mean.shape[-2]
         variances = self.noise_for(n).transpose(-1, -2) if noise is None else noise
         if isinstance(distribution, Tensor):
-            return torch.distributions.Normal(mean, variances.sqrt())
+            return torch.distributions.Independent(
+                torch.distributions.Normal(mean, variances.sqrt()), 1
+            )
         covariance = distribution.covariance_matrix
         if getattr(distribution, "_interleaved", True):
             m = self.num_tasks
             covariance = torch.einsum(
                 "...itju->...tiuj", covariance.reshape(*covariance.shape[:-2], n, m, n, m)
             ).reshape(*covariance.shape[:-2], m * n, m * n)
-        covariance = covariance + torch.diag_embed(variances.transpose(-1, -2).flatten(-2))
+        addition = (
+            tensor_kron(self.noise_matrix(), torch.eye(n, device=mean.device, dtype=mean.dtype))
+            if noise is None
+            else torch.diag_embed(variances.transpose(-1, -2).flatten(-2))
+        )
+        covariance = covariance + addition
         return TorchGPyTorchPosterior(mean, covariance).distribution
 
 
@@ -404,7 +377,7 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
                 or likelihood.num_tasks != num_outputs
             ):
                 raise UnsupportedError(
-                    "Multiple variational outputs require a rank-zero MultitaskGaussianLikelihood with the matching number of tasks."
+                    "Multiple variational outputs require a MultitaskGaussianLikelihood with the matching number of tasks."
                 )
             self.likelihood = _TorchMultitaskNoise(likelihood, train_X)
         else:
@@ -637,19 +610,26 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         transformed = X if self.input_transform is None else self.input_transform(X)
         output = self.model(transformed)
         blocks = output._blocks()
+        covariance = independent_covariance(blocks) if self.num_outputs > 1 else blocks
         if observation_noise is not False:
-            noise = (
-                self.likelihood.noise_for(X.shape[-2])
-                if observation_noise is True
-                else observation_noise.movedim(-1, -2)
-                if self.num_outputs > 1
-                else observation_noise.squeeze(-1)
-            )
-            blocks = blocks + torch.diag_embed(noise)
+            if observation_noise is True and self.num_outputs > 1:
+                covariance = covariance + tensor_kron(
+                    self.likelihood.noise_matrix(),
+                    torch.eye(X.shape[-2], device=X.device, dtype=X.dtype),
+                )
+            else:
+                noise = (
+                    self.likelihood.noise_for(X.shape[-2])
+                    if observation_noise is True
+                    else observation_noise.movedim(-1, -2)
+                    if self.num_outputs > 1
+                    else observation_noise.squeeze(-1)
+                )
+                covariance = covariance + torch.diag_embed(
+                    noise.flatten(-2) if self.num_outputs > 1 else noise
+                )
         mean = output.mean if self.num_outputs > 1 else output.mean.unsqueeze(-1)
-        posterior = TorchGPyTorchPosterior(
-            mean, independent_covariance(blocks) if self.num_outputs > 1 else blocks
-        )
+        posterior = TorchGPyTorchPosterior(mean, covariance)
         transform = self.outcome_transform
         if output_indices is not None:
             posterior = posterior.subset_output(output_indices)
