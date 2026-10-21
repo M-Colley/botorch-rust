@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import copy
 import math
-import warnings
 
 import pytest
 
@@ -292,7 +291,21 @@ def test_errors() -> None:
     mll = VariationalELBO(model.likelihood, model.model, num_data=12)
     with pytest.raises(TypeError, match="iterable"):
         fit_gpytorch_mll(mll, data_loader=object())
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        with pytest.raises(UnsupportedError, match="closures"):
-            fit_gpytorch_mll(mll, closure=lambda: None)
+
+
+def test_malformed_variational_fitting_closure() -> None:
+    pytest.importorskip("torch")
+    pytest.importorskip("scipy")
+    from botorch_rs.optim.fit import fit_gpytorch_mll_scipy
+
+    X, Y = _data("torch")
+    model = SingleTaskVariationalGP(X, Y, inducing_points=3)
+    mll = VariationalELBO(model.likelihood, model.model, num_data=12)
+    # Use real Tensor leaves and a valid optimizer protocol, so the error
+    # concerns the malformed closure return rather than parameter conversion.
+    with pytest.raises(TypeError, match="NoneType"):
+        fit_gpytorch_mll(
+            mll,
+            closure=lambda: None,
+            optimizer=fit_gpytorch_mll_scipy,
+        )
