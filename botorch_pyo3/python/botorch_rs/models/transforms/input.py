@@ -1099,10 +1099,25 @@ class Warp(ReversibleInputTransform):
         return (*self.batch_shape, 1, k) if self.batch_shape else (k,)
 
     def _get(self, i: int) -> Any:
-        getter = getattr(self._model, "_raw_param_array", None)
-        if getter is not None:
-            return getter(self._prefix + f"concentration{i}")
         parameter = self.__dict__.get("_direct_parameters", {}).get(f"concentration{i}")
+        if self._model is not None:
+            name = self._prefix + f"concentration{i}"
+            getter = getattr(self._model, "_raw_param_array", None)
+            value = (
+                getter(name)
+                if getter is not None
+                else from_flat(list(self._model._raw_param(name)), self._param_shape(), self._kind)
+            )
+            if parameter is not None and value is not parameter:
+                import torch
+
+                # A native fit or MLL trial updates the bound owner. Refresh
+                # the caller's existing leaf instead of exposing old values
+                # or replacing a Parameter held by its optimizer.
+                with torch.no_grad():
+                    parameter.copy_(_torch_input._tensor(value, parameter).reshape_as(parameter))
+                return parameter
+            return value
         if parameter is not None:
             return parameter
         k = len(self.indices)

@@ -124,7 +124,7 @@ def sync_affine_native(transform: Any) -> None:
         data, shape = to_flat(getattr(transform, name), name)
         setattr(transform, attribute, transform._expand(list(data), tuple(shape), k, nb, name))
     transform._steps = [transform._make_step(b) for b in range(nb)]
-    if getattr(transform, "_plain", False):
+    if getattr(transform, "_native", False):
         bounds = []
         for off, coef in zip(transform._offs, transform._coefs, strict=True):
             bounds.extend(off)

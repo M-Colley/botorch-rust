@@ -130,6 +130,7 @@ def test_native_batched_warp_state_mll_and_global_gradients(kind, per_member, ch
 @pytest.mark.parametrize("per_member", [False, True])
 def test_batched_warp_query_adjoints_and_changed_trial_concentrations(batch, per_member):
     bm, rm, bw, rw = models(batch=batch, per_member=per_member, chained=True)
+    held0, held1 = rw.concentration0, rw.concentration1
     c0, c1 = bw.concentration0.detach() + 0.15, bw.concentration1.detach() - 0.1
     bw._set_concentration(0, c0)
     bw._set_concentration(1, c1)
@@ -147,6 +148,8 @@ def test_batched_warp_query_adjoints_and_changed_trial_concentrations(batch, per
     )
     assert_close(rw.concentration0, c0)
     assert_close(rw.concentration1, c1)
+    assert rw.concentration0 is held0
+    assert rw.concentration1 is held1
     offset = (2 * torch.arange(math.prod(batch), dtype=torch.float64)).reshape(*batch, 1, 1)
     query = (
         torch.tensor([[0.22, 0.31], [0.61, 0.44]], dtype=torch.float64) + offset

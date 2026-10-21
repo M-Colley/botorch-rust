@@ -132,6 +132,7 @@ def test_warped_posterior_and_query_adjoint(chained, tree, priors):
 
 def test_trial_concentrations_change_training_covariance_and_native_gradient():
     bm, rm, bw, rw = models()
+    held0, held1 = rw.concentration0, rw.concentration1
     previous = torch.as_tensor(rm.covar).clone()
     c0 = torch.tensor([1.1, 0.7], dtype=torch.float64)
     c1 = torch.tensor([0.9, 1.3], dtype=torch.float64)
@@ -151,6 +152,8 @@ def test_trial_concentrations_change_training_covariance_and_native_gradient():
     )
     assert_close(rw.concentration0, c0)
     assert_close(rw.concentration1, c1)
+    assert rw.concentration0 is held0
+    assert rw.concentration1 is held1
 
 
 @pytest.mark.parametrize("training", [False, True])

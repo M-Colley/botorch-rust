@@ -40,6 +40,14 @@ parameters with the caller's transform. Numerical calls do not export data to
 native arrays; exporting state to an array call or native model is an explicit
 boundary. Fitted normalization and concentration values survive that boundary.
 
+Native owner updates also refresh a Warp's existing direct concentration leaves
+when read: MLL trial values and fitted values are authoritative, and held
+Parameter identities remain unchanged. Selected-column Normalize objects export
+their current Tensor coefficient/offset pair to the native descriptor used by
+MultiTaskGP, as well as to generic native chains. These two state-boundary
+regressions are checked independently and against the original eleven failing
+native Pairwise/fully Bayesian multitask parity cases.
+
 Forty-six CPU/CUDA cases compare values, fitted state, first derivatives and
 mixed Hessian-vector products against official BoTorch
 `b0dd01be61d517c387e234903a6e2cc38c057ea2`. They include reversed/selected/batched

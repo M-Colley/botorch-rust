@@ -237,3 +237,36 @@ def test_list_bounds_materialize_both_tensor_statistics_atomically(device, plain
         X.detach(), Y, input_transform=Normalize(3, bounds=bounds, **options), backend="native"
     )
     torch.testing.assert_close(native.transform_inputs(X), expected, atol=3e-13, rtol=3e-12)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_selected_tensor_normalize_exports_current_native_descriptor(device):
+    from botorch_rs._arrays import from_pair, to_flat
+
+    X = _X(device).detach()
+    bounds = X.new_tensor([[0.1, -0.2, 0.15], [0.9, 1.2, 0.95]])
+    transform = Normalize(3, indices=[2, 0], bounds=bounds)
+    expected = (X[..., [2, 0]] - bounds[0, [2, 0]]) / (bounds[1, [2, 0]] - bounds[0, [2, 0]])
+    native = from_pair(transform._rs.transform(to_flat(X[..., [2, 0]])), transform._kind)
+    torch.testing.assert_close(native, expected)
+    # Selected-column native descriptors must receive direct Tensor updates.
+    transform._coefficient = transform._coefficient * 1.4
+    native = from_pair(transform._rs.transform(to_flat(X[..., [2, 0]])), transform._kind)
+    torch.testing.assert_close(native, expected / 1.4)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_native_pairwise_owner_refreshes_existing_warp_leaf(device):
+    from botorch_rs.models.pairwise_gp import PairwiseGP
+
+    X = _X(device).detach()
+    warp = Warp(3, [2, 0])
+    warp(X)
+    held0, held1 = warp.concentration0, warp.concentration1
+    model = PairwiseGP(X, [[0, 1], [2, 1], [2, 3]], input_transform=warp, backend="native")
+    raw = list(model._rs.raw_parameters())
+    raw[-4:] = [1.3, 0.8, 0.9, 1.2]
+    model._rs.set_raw_parameters(raw)
+    assert warp.concentration0 is held0 and warp.concentration1 is held1
+    torch.testing.assert_close(held0, X.new_tensor([1.3, 0.8]))
+    torch.testing.assert_close(held1, X.new_tensor([0.9, 1.2]))
