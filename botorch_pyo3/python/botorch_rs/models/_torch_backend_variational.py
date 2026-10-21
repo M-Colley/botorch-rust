@@ -34,6 +34,7 @@ from botorch_rs.variational import (
     CholeskyVariationalDistribution,
     CiqVariationalStrategy,
     DeltaVariationalDistribution,
+    LargeBatchVariationalStrategy,
     MeanFieldVariationalDistribution,
     UnwhitenedVariationalStrategy,
     VariationalStrategy,
@@ -383,14 +384,14 @@ class _TorchVariationalStrategy(nn.Module):
             - torch.linalg.slogdet(covariance).logabsdet
         )
 
-    def forward(self, X: Tensor, prior: bool = False) -> Any:
+    def forward(self, X: Tensor, prior: bool = False, diag: bool = True) -> Any:
         owner = self._owner_ref()
         if prior:
             return owner._prior_output(X, multitask=owner.num_outputs > 1)
         if self.training:
             self._kl_prior_jitter = 1e-3
         self._initialize()
-        return owner._variational_output(X)
+        return owner._variational_output(X, diag=diag)
 
 
 class _TorchIndependentStrategy(nn.Module):
@@ -403,8 +404,8 @@ class _TorchIndependentStrategy(nn.Module):
     def kl_divergence(self, moments: tuple[Tensor, Tensor, bool] | None = None) -> Tensor:
         return self.base_variational_strategy.kl_divergence(moments).sum(-1)
 
-    def forward(self, X: Tensor, prior: bool = False) -> Any:
-        return self.base_variational_strategy(X, prior=prior)
+    def forward(self, X: Tensor, prior: bool = False, diag: bool = True) -> Any:
+        return self.base_variational_strategy(X, prior=prior, diag=False)
 
 
 class _TorchVariationalInner(nn.Module):
@@ -434,8 +435,8 @@ class _TorchVariationalInner(nn.Module):
         target = self._outer._training_targets()
         return target.squeeze(-1) if self._outer.num_outputs == 1 else target
 
-    def __call__(self, X: Tensor, prior: bool = False) -> Any:
-        return self.variational_strategy(X, prior=prior)
+    def __call__(self, X: Tensor, prior: bool = False, diag: bool = True) -> Any:
+        return self.variational_strategy(X, prior=prior, diag=diag)
 
     def forward(self, X: Tensor) -> Any:
         return self._outer._prior_output(X, multitask=False)
@@ -638,9 +639,11 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             UnwhitenedVariationalStrategy: False,
             BatchDecoupledVariationalStrategy: True,
             CiqVariationalStrategy: True,
+            LargeBatchVariationalStrategy: True,
         }
         decoupled_types = {BatchDecoupledVariationalStrategy}
         ciq_types = {CiqVariationalStrategy}
+        large_batch_types = {LargeBatchVariationalStrategy}
         if gpytorch is not None:
             strategies[gpytorch.variational.VariationalStrategy] = True
             strategies[gpytorch.variational.UnwhitenedVariationalStrategy] = False
@@ -648,6 +651,8 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             decoupled_types.add(gpytorch.variational.BatchDecoupledVariationalStrategy)
             strategies[gpytorch.variational.CiqVariationalStrategy] = True
             ciq_types.add(gpytorch.variational.CiqVariationalStrategy)
+            strategies[gpytorch.variational.LargeBatchVariationalStrategy] = True
+            large_batch_types.add(gpytorch.variational.LargeBatchVariationalStrategy)
         canonical = next((kind for kind in strategies if strategy_class is kind), None)
         self._uses_caller_strategy = canonical is None
         if self._uses_caller_strategy:
@@ -877,6 +882,14 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             strategy = TorchCiqVariationalStrategy(
                 self, points, distribution, learn_inducing_points
             )
+        elif variational_strategy in large_batch_types:
+            from botorch_rs.models._torch_backend_variational_large_batch import (
+                TorchLargeBatchVariationalStrategy,
+            )
+
+            strategy = TorchLargeBatchVariationalStrategy(
+                self, points, distribution, learn_inducing_points
+            )
         else:
             strategy = _TorchVariationalStrategy(
                 self, points, distribution, learn_inducing_points, whitened=whitened
@@ -1068,7 +1081,9 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             independent=not multitask,
         )
 
-    def _variational_output(self, X: Tensor) -> Any:
+    def _variational_output(self, X: Tensor, diag: bool = True) -> Any:
+        if getattr(self._strategy, "grouped_middle", False):
+            return self._strategy.variational_output(X, diag=diag)
         if getattr(self._strategy, "decoupled", False) or getattr(
             self._strategy, "symmetric_whitening", False
         ):
@@ -1100,7 +1115,7 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         variance = _dense(kernel(augmented, augmented, diag=True)) + jitter + variance_update
         parameters = {name: value.clone() for name, value in kernel.named_parameters()}
         buffers = {name: value.clone() for name, value in kernel.named_buffers()}
-        diagonal_only = self.model.training and self.num_outputs == 1 and N > M
+        diagonal_only = diag and self.model.training and self.num_outputs == 1 and N > M
 
         def covariance() -> Tensor:
             prior = _dense(

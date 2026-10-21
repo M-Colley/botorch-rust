@@ -96,6 +96,34 @@ NaN masked-calibration derivative is checked explicitly as the known
 [BoTorch #3520](https://github.com/meta-pytorch/botorch/pull/3520) defect;
 it is not used as a correct calibration-gradient oracle.
 
+## Grouped large-batch prediction
+
+`LargeBatchVariationalStrategy`, supplied either as a port specification or
+as the actual canonical GPyTorch class, uses the port's grouped algorithm.
+It factors the inducing covariance in float64, solves for the mean weights
+and the inducing-sized covariance middle term, then multiplies those factors
+by the cross covariance. None of its three triangular solves has one RHS
+column per query point. Canonical inference does not import GPyTorch or
+BoTorch. Caller subclasses still retain their actual component protocol.
+
+Scalar training predictions retain the source's diagonal correction even
+when the query has fewer rows than inducing points; evaluation, multiple
+outputs and explicit `diag=False` retain the full correction. Float32 input
+models use float64 grouped systems and cast the updates back as in the
+source. All grouping and quadratic-form operations use ordinary Torch
+autograd, including higher derivatives; they avoid the external cached
+custom-backward defect reported in
+[GPyTorch #2829](https://github.com/cornellius-gp/gpytorch/pull/2829).
+
+Predictions snapshot their evaluated law and later calls reflect parameter
+changes. The implementation recomputes its small grouped systems instead of
+retaining detached inference factors across calls, so each call retains the
+active parameter graph. The regression module
+`test_torch_variational_large_batch.py` checks source float32/float64 values
+and every first derivative, independent dense-Gaussian all-leaf HVPs,
+training/evaluation covariance modes, grouped solve dimensions, device-only
+execution, snapshots, state loading, deepcopy and whole-model pickle.
+
 ## Source constructor boundaries
 
 Constructor compatibility is separate from implementing every strategy in

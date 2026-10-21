@@ -377,6 +377,15 @@ class CiqVariationalStrategy(VariationalStrategy):
     """Symmetric inverse-root whitening through device-resident contour quadrature."""
 
 
+class LargeBatchVariationalStrategy(VariationalStrategy):
+    """Tensor strategy grouping inducing-sized systems in float64.
+
+    The grouped mean/covariance factors avoid a triangular solve with one
+    right-hand-side column per query point. Ordinary Torch operations retain
+    higher derivatives on CPU and CUDA.
+    """
+
+
 class IndependentMultitaskVariationalStrategy(_VariationalStrategy):
     """GPyTorch's ``IndependentMultitaskVariationalStrategy``: independent
     outputs as the batch dimension of a base strategy (``task_dim=-1``)."""
