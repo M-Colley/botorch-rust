@@ -238,8 +238,8 @@ def test_masks_shape_changes_and_explicit_boundaries(device):
     with pytest.raises(ValueError, match="finite observation"):
         LatentKroneckerGP(X, T, torch.full_like(Y, float("nan")), backend="torch")
     a = LatentKroneckerGP(X, T, Y, backend="torch")
-    with pytest.raises(UnsupportedError, match="iterative"):
-        a.use_iterative_methods()
+    with a.use_iterative_methods():
+        assert torch.isfinite(a.posterior(Q).mean).all()
     with pytest.raises(UnsupportedError, match="latent outputs"):
         a.posterior(Q, observation_noise=True)
     a._train_Y[0, 0, 0] = float("nan")

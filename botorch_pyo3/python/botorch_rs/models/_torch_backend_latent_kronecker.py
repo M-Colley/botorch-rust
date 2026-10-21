@@ -54,6 +54,9 @@ class TorchLatentKroneckerPosterior(TorchGPyTorchPosterior, LatentKroneckerGPPos
         self._joint_tensor, self._cross, self._train_covariance = joint, cross, train_covariance
         self._targets, self._train_mean, self._test_mean = targets, train_mean, test_mean
         self._noise, self._mask, self._location, self._scale = noise, mask, location, scale
+        from botorch_rs.models._structured_iterative import IterativeSettings, current
+
+        self._iterative_settings = current() or IterativeSettings(solves=False, log_prob=False)
         self._nfull = mask.numel()
         self._nobserved = int(mask.sum())
 
@@ -98,9 +101,12 @@ class TorchLatentKroneckerPosterior(TorchGPyTorchPosterior, LatentKroneckerGPPos
         residual = (
             self._targets - self._train_mean - prior[..., : self._nfull][..., self._mask] - epsilon
         )
-        factor = torch.linalg.cholesky(self._train_covariance + self._noise)
-        update = self._cross.transpose(-1, -2) @ torch.cholesky_solve(
-            residual.unsqueeze(-1), factor
+        from botorch_rs.models._torch_structured_iterative import solve
+
+        update = self._cross.transpose(-1, -2) @ solve(
+            self._train_covariance + self._noise,
+            residual.unsqueeze(-1),
+            self._iterative_settings,
         )
         value = self._test_mean + prior[..., self._nfull :] + update.squeeze(-1)
         return value.reshape(*shape, *self._batch, self._q, self._m) * self._scale + self._location
@@ -360,6 +366,12 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         mean, covariance = scalar_observed_law(
             self.likelihood, mean, covariance, (X, T), params=params, kwargs=kwargs
         )
+        from botorch_rs.models._structured_iterative import current
+
+        if current() is not None:
+            from botorch_rs.models._torch_structured_iterative import log_prob
+
+            return (log_prob(target, mean, covariance) + self._log_prior()) / target.shape[-1]
         return (
             _rs.tensor_exact_mll(target, covariance, mean, torch.zeros_like(target))
             + self._log_prior()
@@ -440,10 +452,20 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         )
         noise = observed_covariance - covariance
         mean_train = observed_mean
-        factor, alpha = _rs.tensor_exact_gp_factor(
-            targets, observed_covariance, mean_train, torch.zeros_like(targets)
-        )
-        mean, cov = _rs.tensor_exact_gp_predict(factor, alpha, cross, test, mean_test)
+        from botorch_rs.models._structured_iterative import current
+        from botorch_rs.models._torch_structured_iterative import enabled, solve
+
+        if enabled(observed_covariance, "solves", current()):
+            rhs = torch.cat(((targets - mean_train).unsqueeze(-1), cross), dim=-1)
+            solved = solve(observed_covariance, rhs)
+            mean = mean_test + (cross.transpose(-1, -2) @ solved[..., :1]).squeeze(-1)
+            cov = test - cross.transpose(-1, -2) @ solved[..., 1:]
+            cov = (cov + cov.transpose(-1, -2)) * 0.5
+        else:
+            factor, alpha = _rs.tensor_exact_gp_factor(
+                targets, observed_covariance, mean_train, torch.zeros_like(targets)
+            )
+            mean, cov = _rs.tensor_exact_gp_predict(factor, alpha, cross, test, mean_test)
         q, t = query.shape[-2], T.shape[-2]
         mean = mean.reshape(*batch, q, t)
         location, scale = 0.0, 1.0
@@ -510,10 +532,17 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             torch.Size(base_samples.shape[:count]), base_samples
         )
 
-    def use_iterative_methods(self, *args: Any, **kwargs: Any) -> Any:
-        raise UnsupportedError(
-            "Tensor LatentKronecker currently uses exact dense solves; iterative settings are unsupported."
-        )
+    def use_iterative_methods(
+        self,
+        tol: float = 0.01,
+        max_iter: int = 10000,
+        covar_root_decomposition: bool = False,
+        log_prob: bool = True,
+        solves: bool = True,
+    ) -> Any:
+        from botorch_rs.models._structured_iterative import use_iterative_methods
+
+        return use_iterative_methods(tol, max_iter, covar_root_decomposition, log_prob, solves)
 
     def condition_on_observations(
         self, X: Tensor, Y: Tensor, noise: Any = None, **kwargs: Any
