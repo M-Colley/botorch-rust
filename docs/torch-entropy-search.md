@@ -466,9 +466,17 @@ observation-noise parameters intentionally do not enter this latent update.
 Independent multi-output variational prior paths match the reference.
 Its Matheron sampler fails on `IndependentMultitaskVariationalStrategy`
 because that wrapper has no direct `inducing_points` attribute; the port
-reports this same unsupported strategy explicitly. Structured/fully Bayesian
-device path updates and arbitrary custom prior/update strategies remain
-explicit unsupported configurations. As with the native path model and reference,
+reports this same unsupported strategy explicitly. Loaded Matérn and SAAS fully
+Bayesian device paths preserve their MCMC batch, including both ensemble query
+layouts; synchronized unmodified-source draws verify values and query VJPs.
+Explicit custom prior/update callbacks also work for source-supported exact
+models, including KroneckerMultiTaskGP and HigherOrderGP. Their callback values,
+leaf identities and mixed Hessians match the source in CPU/CUDA controls.
+The default Fourier generator still requires RBF/Matérn kernels (optionally
+scaled), so structured kernels without a registered feature generator need
+explicit callbacks. The source LatentKroneckerGP host rejects even callbacks
+because it destructures two training inputs as one; this configuration is not
+a source-supported pathwise call. As with the native path model and reference,
 MatheronPathModel requires single-output components in a ModelList.
 Random Sobol uniforms originate from Torch's CPU Sobol generator; only new
 random numbers are transferred, and all normal transforms/inference run
