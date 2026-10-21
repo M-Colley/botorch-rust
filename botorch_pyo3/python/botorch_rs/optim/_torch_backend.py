@@ -6,7 +6,7 @@ import functools
 from typing import Any
 
 
-def parameter_bounds(module: Any) -> dict[str, tuple[float | None, float | None]]:
+def parameter_bounds(module: Any) -> dict[str, tuple[Any, Any]]:
     model = getattr(module, "model", module)
     roots = list(getattr(model, "models", (model,)))
     likelihood = getattr(module, "likelihood", None)
@@ -15,6 +15,18 @@ def parameter_bounds(module: Any) -> dict[str, tuple[float | None, float | None]
     by_identity = {}
     for root in roots:
         for _, child in root.named_modules():
+            constraint_for_name = getattr(child, "constraint_for_parameter_name", None)
+            if constraint_for_name is not None:
+                for name, value in child.named_parameters(recurse=False):
+                    constraint = constraint_for_name(name)
+                    if constraint is not None and not constraint.enforced:
+                        # Untransformed constraints bound the actual raw leaf.
+                        # Keep elementwise bounds on their original device;
+                        # transformed constraints instead act in constrained space.
+                        by_identity[id(value)] = (
+                            constraint.lower_bound,
+                            constraint.upper_bound,
+                        )
             method = getattr(child, "raw_parameter_bounds", None)
             if method is None:
                 continue
@@ -52,9 +64,10 @@ def fit_torch(
         else dict(parameters)
     )
     if not parameters:
+        loss = -mll().sum() if closure is None else closure(**(closure_kwargs or {}))[0]
         return OptimizationResult(
             0,
-            float(-mll().sum().detach()),
+            float(loss.detach()),
             OptimizationStatus.SUCCESS,
             message="No trainable parameters.",
         )

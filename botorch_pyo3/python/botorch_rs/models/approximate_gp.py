@@ -538,6 +538,24 @@ class ApproximateGPyTorchModel(GPyTorchModel):
 
     _has_train_inputs = False
 
+    def __new__(cls, model: Any = None, *args: Any, **kwargs: Any) -> Any:
+        from botorch_rs.models.gp_regression import _is_tensor_factory_target
+
+        torch = sys.modules.get("torch")
+        if (
+            _is_tensor_factory_target(cls, ApproximateGPyTorchModel)
+            and torch is not None
+            and isinstance(model, torch.nn.Module)
+        ):
+            from botorch_rs.models._torch_backend_approximate import TorchApproximateGPyTorchModel
+
+            if cls is ApproximateGPyTorchModel:
+                return object.__new__(TorchApproximateGPyTorchModel)
+            from botorch_rs.models._torch_model_subclasses import model_type
+
+            return object.__new__(model_type(cls, TorchApproximateGPyTorchModel))
+        return object.__new__(cls)
+
     def __init__(
         self,
         model: _SingleTaskVariationalGP | None = None,

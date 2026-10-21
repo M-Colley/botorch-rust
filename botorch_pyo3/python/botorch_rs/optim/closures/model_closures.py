@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from botorch_rs._arrays import from_flat, kind_of, to_flat
+from botorch_rs._tensor_mll import is_tensor_mll
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.optim.closures.core import ForwardBackwardClosure
 
@@ -104,7 +105,15 @@ class _ExternalVariationalData:
             raise TypeError(
                 f"Expected `data_loader` to generate a batch of tensors, but found {type(batch)}."
             )
-        num_inputs = len(self.mll.model.train_inputs)
+        inputs = getattr(self.mll.model, "train_inputs", None)
+        if inputs is None:
+            if not single_target:
+                raise TypeError(
+                    "The model must expose train_inputs for a multiple-target data loader."
+                )
+            num_inputs = len(batch) - 1
+        else:
+            num_inputs = len(inputs)
         if not single_target and len(batch) <= num_inputs:
             raise ValueError("Each minibatch must contain model inputs and at least one target.")
         if single_target and len(batch) != num_inputs + 1:
@@ -189,7 +198,7 @@ def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
     if hasattr(mll, "compute_custom_loss"):
         return mll.compute_custom_loss
     model = getattr(mll, "model", None)
-    if getattr(model, "_tensor_backend", None) == "torch" and data_loader is None:
+    if is_tensor_mll(mll) and data_loader is None:
         return lambda: -mll()
     if model is not None and hasattr(model, "compute_custom_loss"):
 
@@ -201,9 +210,7 @@ def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
         from botorch_rs.mlls import MarginalLogLikelihood, _ApproximateMarginalLogLikelihood
 
         if not isinstance(mll, _ApproximateMarginalLogLikelihood):
-            if getattr(model, "_tensor_backend", None) == "torch" or not isinstance(
-                mll, MarginalLogLikelihood
-            ):
+            if is_tensor_mll(mll) or not isinstance(mll, MarginalLogLikelihood):
                 return _ExternalLossClosure(mll, data_loader)
             raise UnsupportedError(
                 "Native exact-GP closures evaluate stored training data; "
@@ -211,7 +218,7 @@ def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
             )
         if not mll.combine_terms:
             raise UnsupportedError("External-data ELBO closures require combine_terms=True.")
-        if getattr(model, "_tensor_backend", None) == "torch":
+        if is_tensor_mll(mll):
             return _ExternalTorchVariationalLossClosure(mll, data_loader)
         return _ExternalVariationalLossClosure(mll, data_loader)
     return MllLossClosure(mll)

@@ -87,7 +87,9 @@ def fit_fallback(
     if not callable(optimizer):
         raise TypeError("optimizer must be callable")
     mll.train()
-    roots = _roots(mll.model)
+    # A supplied approximate model need not register its separate likelihood.
+    # Both are real children of this Tensor MLL and must roll back together.
+    roots = [mll] if getattr(mll, "_external_model_protocol", False) else _roots(mll.model)
     for root in roots:
         initialize = getattr(root, "_ensure_initialized", None)
         if initialize is not None:

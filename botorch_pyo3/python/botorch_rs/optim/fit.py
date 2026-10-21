@@ -20,6 +20,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
+from botorch_rs._tensor_mll import is_tensor_mll
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import OptimizationWarning
 from botorch_rs.optim.core import (
@@ -208,7 +209,7 @@ def fit_gpytorch_mll_scipy(
     Returns:
         The final OptimizationResult.
     """
-    if getattr(getattr(mll, "model", None), "_tensor_backend", None) == "torch":
+    if is_tensor_mll(mll):
         return _fit_generic_scipy(
             mll, parameters, bounds, closure, closure_kwargs, method, options, callback, timeout_sec
         )
@@ -363,7 +364,7 @@ def _fit_generic_scipy(
         closure = get_loss_closure_with_grads(mll, parameters=parameters)
     if closure_kwargs is not None:
         closure = functools.partial(closure, **closure_kwargs)
-    if getattr(getattr(mll, "model", None), "_tensor_backend", None) != "torch":
+    if not is_tensor_mll(mll):
         closure = _native_state_closure(mll, closure, parameters)
     return scipy_minimize(
         closure=closure,
@@ -457,7 +458,7 @@ def fit_gpytorch_mll_torch(
     """
     if stopping_criterion is DEFAULT:
         stopping_criterion = ExpMAStoppingCriterion()
-    if getattr(getattr(mll, "model", None), "_tensor_backend", None) == "torch":
+    if is_tensor_mll(mll):
         from botorch_rs.optim._torch_backend import fit_torch
 
         return fit_torch(

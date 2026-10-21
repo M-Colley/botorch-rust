@@ -7,6 +7,7 @@ import warnings
 from typing import Any
 
 from botorch_rs._arrays import to_flat
+from botorch_rs._tensor_mll import is_tensor_mll
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import OptimizationWarning
 from botorch_rs.mlls import (
@@ -95,7 +96,7 @@ def fit_gpytorch_mll(
         mll._fit_result = results
         return mll.eval()
 
-    if getattr(getattr(mll, "model", None), "_tensor_backend", None) == "torch":
+    if is_tensor_mll(mll):
         if getattr(mll.model, "_is_fully_bayesian", False):
             raise UnsupportedError(
                 "Fully Bayesian Torch models use loaded MCMC samples, not MAP fitting."
@@ -274,7 +275,7 @@ def _fit_generic(
                 mll, get_parameters(mll, requires_grad=True), data_loader
             )
         if optimizer is None:
-            n = int(to_flat(mll.model.train_targets, "train_targets")[1][0])
+            n = int(mll.model.train_targets.shape[0]) if closure is None else full_batch_limit + 1
             optimizer = (
                 fit_gpytorch_mll_scipy
                 if closure is None and n <= full_batch_limit

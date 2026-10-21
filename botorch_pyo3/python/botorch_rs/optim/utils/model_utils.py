@@ -15,6 +15,7 @@ from collections.abc import Callable, Iterator
 from re import Pattern
 from typing import Any, NamedTuple
 
+from botorch_rs._tensor_mll import is_tensor_mll
 from botorch_rs.exceptions.errors import UnsupportedError
 
 
@@ -130,9 +131,10 @@ def _entries(module: Any) -> list[_Entry]:
     return entries
 
 
-def _named_parameters(module: Any) -> Iterator[tuple[str, Any, tuple[float, float]]]:
+def _named_parameters(module: Any) -> Iterator[tuple[str, Any, tuple[Any, Any]]]:
     """``(name, value, raw bounds)`` with BoTorch's names and order."""
-    if getattr(getattr(module, "model", module), "_tensor_backend", None) == "torch":
+    torch = sys.modules.get("torch")
+    if is_tensor_mll(module) or (torch is not None and isinstance(module, torch.nn.Module)):
         from botorch_rs.optim._torch_backend import parameter_bounds
 
         bounds = parameter_bounds(module)
@@ -184,7 +186,7 @@ def get_parameters_and_bounds(
     requires_grad: bool | None = None,
     name_filter: Callable[[str], bool] | None = None,
     default_bounds: tuple[float, float] = (-math.inf, math.inf),
-) -> tuple[dict[str, Any], dict[str, tuple[float | None, float | None]]]:
+) -> tuple[dict[str, Any], dict[str, tuple[Any, Any]]]:
     r"""The parameters of a model or marginal log likelihood and the bounds of
     the constrained ones in the raw space (BoTorch's
     ``get_parameters_and_bounds``).
@@ -193,18 +195,20 @@ def get_parameters_and_bounds(
         A dictionary of parameters and a dictionary of parameter bounds.
     """
     params: dict[str, Any] = {}
-    bounds: dict[str, tuple[float | None, float | None]] = {}
+    bounds: dict[str, tuple[Any, Any]] = {}
     for name, value, (lo, hi) in _named_parameters(module):
         if requires_grad is not None and _requires_grad(value) != requires_grad:
             continue
         if name_filter and not name_filter(name):
             continue
         params[name] = value
-        if lo == -math.inf and hi == math.inf:
+        unbounded_lower = isinstance(lo, (int, float)) and lo == -math.inf
+        unbounded_upper = isinstance(hi, (int, float)) and hi == math.inf
+        if unbounded_lower and unbounded_upper:
             continue
         bounds[name] = (
-            default_bounds[0] if lo == -math.inf else lo,
-            default_bounds[1] if hi == math.inf else hi,
+            default_bounds[0] if unbounded_lower else lo,
+            default_bounds[1] if unbounded_upper else hi,
         )
     return params, bounds
 
@@ -251,7 +255,10 @@ def sample_all_priors(model: Any, max_retries: int = 100, seed: int | None = Non
     seeds the draws."""
     from botorch_rs import _botorch_rs as _rs
 
-    if getattr(model, "_tensor_backend", None) == "torch":
+    torch = sys.modules.get("torch")
+    if getattr(model, "_tensor_backend", None) == "torch" or (
+        torch is not None and isinstance(model, torch.nn.Module)
+    ):
         _sample_tensor_priors(model, max_retries, seed)
         return
     custom = getattr(model, "_sample_all_priors", None)

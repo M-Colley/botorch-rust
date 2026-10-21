@@ -87,8 +87,8 @@ def scipy_minimize(
     import numpy as np
     from scipy.optimize import minimize
 
-    from botorch_rs._arrays import to_flat
     from botorch_rs.optim.closures import NdarrayOptimizationClosure
+    from botorch_rs.optim.utils.numpy_utils import get_bounds_as_ndarray
 
     start_time = monotonic()
     wrapped = (
@@ -96,15 +96,7 @@ def scipy_minimize(
         if isinstance(closure, NdarrayOptimizationClosure)
         else NdarrayOptimizationClosure(closure, parameters)
     )
-    bounds_np = None
-    if bounds is not None:
-        lower, upper = [], []
-        for name, p in parameters.items():
-            lo, hi = bounds.get(name, (None, None))
-            size = len(to_flat(p, name)[0])
-            lower.extend([-np.inf if lo is None else float(lo)] * size)
-            upper.extend([np.inf if hi is None else float(hi)] * size)
-        bounds_np = list(zip(lower, upper, strict=True))
+    bounds_np = None if bounds is None else get_bounds_as_ndarray(parameters, bounds)
     counter = count(1)
 
     class _Timeout(Exception):

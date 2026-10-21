@@ -530,10 +530,24 @@ class VariationalELBO(_ApproximateMarginalLogLikelihood):
         beta: float = 1.0,
         combine_terms: bool = True,
     ) -> Any:
+        torch = sys.modules.get("torch")
         if cls is VariationalELBO and getattr(model, "_tensor_backend", None) == "torch":
-            from botorch_rs.models._torch_backend_variational import TorchVariationalELBO
+            from botorch_rs.models._torch_backend_variational import (
+                TorchVariationalELBO,
+                _TorchVariationalInner,
+            )
 
-            return object.__new__(TorchVariationalELBO)
+            if isinstance(model, _TorchVariationalInner):
+                return object.__new__(TorchVariationalELBO)
+        if (
+            cls is VariationalELBO
+            and torch is not None
+            and isinstance(model, torch.nn.Module)
+            and hasattr(model, "variational_strategy")
+        ):
+            from botorch_rs.models._torch_module_elbo import TorchModuleVariationalELBO
+
+            return object.__new__(TorchModuleVariationalELBO)
         return object.__new__(cls)
 
 
