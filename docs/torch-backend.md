@@ -44,6 +44,13 @@ at `f943100` passes 1,222 cases with 15 recorded skips and no failures. Exact
 selected-case accounting and all source/native/reference fingerprints remain
 stable. The failed baseline remains preserved as failed, and subsequent changes
 remain outside the new checkpoint.
+The later [cross-platform CI checkpoint](verification-main-ci-4560b50-2026-10-21.json)
+at `4560b50` passes all 11 jobs. Its pinned-reference broad phase passes 9,145
+cases with 818 skips; its separate equivalence phase passes 1,222 with 15 skips.
+The earlier 21 deliberate nonfinite-state/domain comparison failures are repaired
+with explicit validity checks and a negative control rejecting shared computed
+NaNs. This CI checkpoint precedes the latest direct-transform, structured-call
+and native-cache changes and does not certify a new wheel.
 The complete behavior/configuration audit is still open, including remaining
 variational strategies, specialized fitting extensions, custom module protocols,
 and acquisition approximation/cache configurations. A new release and Unity

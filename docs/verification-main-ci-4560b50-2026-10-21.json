@@ -1,0 +1,130 @@
+{
+  "scope": "Historical cross-platform CI checkpoint; subsequent source changes and a new wheel are not certified",
+  "source_revision": "4560b50134cc718764df71d2c0404fa3e7bd07d5",
+  "reference_revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+  "run_url": "https://github.com/M-Colley/botorch-rust/actions/runs/39632127388",
+  "created_utc": "2026-10-21T16:08:47Z",
+  "updated_utc": "2026-10-21T16:37:05Z",
+  "status": "completed",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "name": "Python lint",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39632127388/job/119332872506",
+      "started_utc": "2026-10-21T16:08:51Z",
+      "completed_utc": "2026-10-21T16:09:07Z"
+    },
+    {
+      "name": "Python 3.11 (ubuntu-latest, lists)",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39632127388/job/119332872649",
+      "started_utc": "2026-10-21T16:08:52Z",
+      "completed_utc": "2026-10-21T16:12:24Z"
+    },
+    {
+      "name": "Python 3.13 (ubuntu-latest, numpy + torch)",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39632127388/job/119332872801",
+      "started_utc": "2026-10-21T16:08:51Z",
+      "completed_utc": "2026-10-21T16:12:43Z"
+    },
+    {
+      "name": "Python 3.13 (macos-latest, numpy)",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39632127388/job/119332872857",
+      "started_utc": "2026-10-21T16:08:52Z",
+      "completed_utc": "2026-10-21T16:13:01Z"
+    },
+    {
+      "name": "Python 3.15 (windows-latest, numpy)",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39632127388/job/119332872886",
+      "started_utc": "2026-10-21T16:08:50Z",
+      "completed_utc": "2026-10-21T16:16:14Z"
+    },
+    {
+      "name": "Rust (ubuntu-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39632127388/job/119332872915",
+      "started_utc": "2026-10-21T16:08:51Z",
+      "completed_utc": "2026-10-21T16:11:01Z"
+    },
+    {
+      "name": "Python 3.12 (windows-latest, numpy)",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39632127388/job/119332872926",
+      "started_utc": "2026-10-21T16:08:50Z",
+      "completed_utc": "2026-10-21T16:15:55Z"
+    },
+    {
+      "name": "Rust (macos-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39632127388/job/119332873063",
+      "started_utc": "2026-10-21T16:08:52Z",
+      "completed_utc": "2026-10-21T16:11:43Z"
+    },
+    {
+      "name": "Python 3.12 (ubuntu-latest, BoTorch parity)",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39632127388/job/119332873100",
+      "started_utc": "2026-10-21T16:08:51Z",
+      "completed_utc": "2026-10-21T16:37:04Z"
+    },
+    {
+      "name": "Python 3.15 (ubuntu-latest, numpy + torch)",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39632127388/job/119332873131",
+      "started_utc": "2026-10-21T16:08:51Z",
+      "completed_utc": "2026-10-21T16:14:16Z"
+    },
+    {
+      "name": "Rust (windows-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39632127388/job/119332873169",
+      "started_utc": "2026-10-21T16:08:53Z",
+      "completed_utc": "2026-10-21T16:15:34Z"
+    }
+  ],
+  "pinned_reference_python": {
+    "broad": {
+      "passed": 9145,
+      "skipped": 818,
+      "failed": 0,
+      "deselected": 1237
+    },
+    "equivalence": {
+      "passed": 1222,
+      "skipped": 15,
+      "failed": 0,
+      "deselected": 9963
+    },
+    "collected_cases": 11200,
+    "exact_case_ids_recorded": false,
+    "note": "Complementary phase counts are recorded; this CI receipt does not claim the frozen local audit exact-case-ID/fingerprint certificate."
+  },
+  "public_name_inventory": {
+    "available": 776,
+    "total": 776,
+    "behavioral_coverage_measure": false
+  },
+  "ci_log": {
+    "path": "target/ci-4560b50-passed-2026-10-21.log",
+    "sha256": "1f203b5d573ef4f0fa3aa765c95ac848ac69818cd40d698ee48103d23254fa84"
+  },
+  "complete_scope": false,
+  "release_certificate": false,
+  "new_package_published": false,
+  "unity_updated": false
+}
