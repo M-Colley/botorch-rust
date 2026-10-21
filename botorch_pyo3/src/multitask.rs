@@ -746,7 +746,7 @@ impl PyMultiTaskGP {
         y: Array,
         noise: Option<Array>,
     ) -> PyResult<Self> {
-        let model = self.single("condition_on_observations")?;
+        let state = self.state();
         let (xb, xs) = x.batches("X")?;
         let (yb, ys) = y.batches("Y")?;
         let nz = noise.map(|v| v.batches("noise")).transpose()?;
@@ -754,30 +754,36 @@ impl PyMultiTaskGP {
         let nb = nz.as_ref().map_or(&empty, |(b, _)| b);
         let out = broadcast_shapes(&xb, &yb)
             .and_then(|s| broadcast_shapes(&s, nb))
+            .and_then(|s| broadcast_shapes(&s, &state.batch_shape))
             .ok_or_else(|| {
                 dimension_error(format!(
-                    "The batch shapes of X ({xb:?}), Y ({yb:?}) and the noise ({nb:?}) are not \
-                     broadcastable."
+                    "The batch shapes of X ({xb:?}), Y ({yb:?}), noise ({nb:?}) and \
+                     model ({:?}) are not broadcastable.",
+                    state.batch_shape
                 ))
             })?;
         let ix = broadcast_indices(&xb, &out);
         let iy = broadcast_indices(&yb, &out);
         let inz = broadcast_indices(nb, &out);
+        let im = broadcast_indices(&state.batch_shape, &out);
         let models = threads::run(py, || -> botorch_core::Result<Vec<Arc<MultiTaskGP>>> {
             let mut slots: Vec<Option<Arc<MultiTaskGP>>> = vec![None; ix.len()];
             // Elements with the same inputs (and noise) share the update.
-            let mut groups: std::collections::BTreeMap<(usize, usize), Vec<usize>> =
+            let mut groups: std::collections::BTreeMap<(usize, usize, usize), Vec<usize>> =
                 std::collections::BTreeMap::new();
             for r in 0..ix.len() {
-                groups.entry((ix[r], inz[r])).or_default().push(r);
+                groups.entry((im[r], ix[r], inz[r])).or_default().push(r);
             }
-            for ((a, b), members) in groups {
+            for ((model_index, a, b), members) in groups {
                 let noise_vec: Option<Vec<f64>> = nz
                     .as_ref()
                     .map(|(_, mats)| mats[b].column(0).iter().copied().collect());
                 let yy: Vec<Matrix> = members.iter().map(|&r| ys[iy[r]].clone()).collect();
-                let conditioned =
-                    model.condition_on_observations_many(&xs[a], &yy, noise_vec.as_deref())?;
+                let conditioned = state.models[model_index].condition_on_observations_many(
+                    &xs[a],
+                    &yy,
+                    noise_vec.as_deref(),
+                )?;
                 for (&r, c) in members.iter().zip(conditioned) {
                     slots[r] = Some(Arc::new(c));
                 }
