@@ -628,6 +628,24 @@ impl MultiTaskGP {
         self.outcome_transform.as_ref()
     }
 
+    /// Replace the fitted inverse map without refitting stored targets or noise.
+    ///
+    /// # Errors
+    /// The supplied map must be fitted and have one scalar output.
+    pub fn set_fitted_outcome_state(&mut self, transform: Option<Standardize>) -> Result<bool> {
+        if transform
+            .as_ref()
+            .is_some_and(|st| !st.is_trained() || st.means().len() != 1)
+        {
+            return Err(BotorchError::InvalidArgument(
+                "A fitted scalar outcome map is required".into(),
+            ));
+        }
+        let changed = self.outcome_transform != transform;
+        self.outcome_transform = transform;
+        Ok(changed)
+    }
+
     /// A copy whose posterior is over other output tasks (task values).
     ///
     /// # Errors

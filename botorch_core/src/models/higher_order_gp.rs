@@ -223,6 +223,23 @@ pub struct HigherOrderGP {
 }
 
 impl HigherOrderGP {
+    /// Replace the fitted inverse affine map without refitting targets or noise.
+    ///
+    /// # Errors
+    /// The offset must be finite and the scale finite and positive.
+    pub fn set_fitted_outcome_affine(&mut self, outcome: Option<(f64, f64)>) -> Result<bool> {
+        if outcome.is_some_and(|(offset, scale)| {
+            !offset.is_finite() || !scale.is_finite() || scale <= 0.0
+        }) {
+            return Err(BotorchError::InvalidArgument(
+                "Invalid fitted outcome statistics".into(),
+            ));
+        }
+        let changed = self.options.outcome != outcome;
+        self.options.outcome = outcome;
+        Ok(changed)
+    }
+
     /// A model from the transformed training inputs `train_x` (`n × d'`),
     /// the (standardized) targets `train_y` (`n × S`, row-major over
     /// `target_shape`), the number of latent coordinates of every output

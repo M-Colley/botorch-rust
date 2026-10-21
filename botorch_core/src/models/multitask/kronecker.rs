@@ -350,6 +350,24 @@ impl KroneckerMultiTaskGP {
         self.outcome_transform.as_ref()
     }
 
+    /// Replace fitted task-wise inverse statistics without refitting training data.
+    ///
+    /// # Errors
+    /// The supplied map must be fitted and have one statistic per task.
+    pub fn set_fitted_outcome_state(&mut self, transform: Option<Standardize>) -> Result<bool> {
+        if transform
+            .as_ref()
+            .is_some_and(|st| !st.is_trained() || st.means().len() != self.train_y.ncols())
+        {
+            return Err(BotorchError::InvalidArgument(
+                "A fitted outcome map with one statistic per task is required".into(),
+            ));
+        }
+        let changed = self.outcome_transform != transform;
+        self.outcome_transform = transform;
+        Ok(changed)
+    }
+
     // ------------------------------------------------------------------
     // Hyperparameters
     // ------------------------------------------------------------------

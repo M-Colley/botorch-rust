@@ -56,6 +56,41 @@ type FitSummary = (
 /// A posterior transform received from Python: `(weights, offset)`.
 type TransformArg = (Vec<f64>, f64);
 
+pub(crate) fn unbatched_fitted_outcome_state(
+    standardize: Option<PyRef<'_, PyStandardize>>,
+    chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+) -> PyResult<Option<botorch_core::Standardize>> {
+    if chains.is_some() {
+        return Err(unsupported(
+            "This native model requires a fitted affine outcome map.",
+        ));
+    }
+    standardize
+        .map(|st| {
+            if st.inner.len() != 1 || !st.inner[0].is_trained() {
+                return Err(dimension_error(
+                    "An unbatched fitted outcome map is required.",
+                ));
+            }
+            Ok(st.inner[0].clone())
+        })
+        .transpose()
+}
+
+pub(crate) fn scalar_fitted_outcome_state(
+    standardize: Option<PyRef<'_, PyStandardize>>,
+    chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+) -> PyResult<Option<(f64, f64)>> {
+    unbatched_fitted_outcome_state(standardize, chains)?
+        .map(|st| {
+            if st.means().len() != 1 {
+                return Err(dimension_error("A scalar fitted outcome map is required."));
+            }
+            Ok((st.means()[0], st.stdvs()[0]))
+        })
+        .transpose()
+}
+
 fn status_name(status: FitStatus) -> &'static str {
     match status {
         FitStatus::Success => "SUCCESS",
@@ -1137,6 +1172,70 @@ impl PySingleTaskGP {
             })
             .collect::<PyResult<Vec<_>>>()
             .map(Some)
+    }
+
+    /// Update fitted inverse statistics without refitting stored training data.
+    #[pyo3(signature=(standardize=None, chains=None))]
+    fn _set_fitted_outcome_state(
+        &self,
+        standardize: Option<PyRef<'_, PyStandardize>>,
+        chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+    ) -> PyResult<()> {
+        let current = self.snapshot();
+        let fitted = standardize
+            .map(|st| {
+                let batch =
+                    broadcast_shapes(&st.batch_shape, current.batch_shape()).ok_or_else(|| {
+                        dimension_error("Outcome map and model batches do not broadcast.")
+                    })?;
+                if batch != current.batch_shape() {
+                    return Err(dimension_error(
+                        "Outcome map changes the model batch shape.",
+                    ));
+                }
+                let mut result = Vec::with_capacity(current.num_elements());
+                for b in broadcast_indices(&st.batch_shape, &batch) {
+                    let stats = st
+                        .inner
+                        .get(b)
+                        .ok_or_else(|| dimension_error("Missing fitted outcome statistics."))?;
+                    if !stats.is_trained() || stats.means().len() != current.num_outputs() {
+                        return Err(dimension_error(
+                            "Fitted outcome statistics must match the output count.",
+                        ));
+                    }
+                    for t in 0..current.num_outputs() {
+                        result.push(
+                            botorch_core::Standardize::fitted(
+                                vec![stats.means()[t]],
+                                vec![stats.stdvs()[t]],
+                                stats.min_stdv(),
+                            )
+                            .into_py_result()?,
+                        );
+                    }
+                }
+                Ok(result)
+            })
+            .transpose()?;
+        let chains = chains.map(|values| {
+            values
+                .into_iter()
+                .map(|steps| {
+                    botorch_core::transforms::outcome::OutcomeChain::new(
+                        steps.into_iter().map(|step| step.inner.clone()).collect(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        let mut next = (*current).clone();
+        if next
+            .set_fitted_outcome_states(fitted.as_deref(), chains.as_deref())
+            .into_py_result()?
+        {
+            self.replace(next);
+        }
+        Ok(())
     }
 
     /// The fitted outcome transform, if any (statistics of shape

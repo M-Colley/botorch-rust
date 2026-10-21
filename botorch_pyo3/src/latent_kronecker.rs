@@ -57,6 +57,20 @@ impl PyLatentKroneckerGP {
 
 #[pymethods]
 impl PyLatentKroneckerGP {
+    #[pyo3(signature=(standardize=None, chains=None))]
+    fn _set_fitted_outcome_state(
+        &self,
+        standardize: Option<PyRef<'_, crate::transforms::PyStandardize>>,
+        chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+    ) -> PyResult<()> {
+        let outcome = crate::models::scalar_fitted_outcome_state(standardize, chains)?;
+        let mut next = (*self.get()).clone();
+        if next.set_fitted_outcome_affine(outcome).into_py_result()? {
+            self.set(next);
+        }
+        Ok(())
+    }
+
     #[new]
     #[pyo3(signature=(train_x, train_t, train_y, dim, covar_x, covar_t, noise, raw, mean_x="zero", mean_t="zero", mean_x_prior=None, mean_t_prior=None, mean_x_constraint=None, mean_t_constraint=None, input_chain=None, input_chain_training=None, input_chain_prefixes=None, raw_train_x=None, outcome=None))]
     #[allow(clippy::too_many_arguments)]

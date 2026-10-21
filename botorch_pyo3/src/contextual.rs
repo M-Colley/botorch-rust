@@ -352,6 +352,20 @@ impl PyLCEMGP {
         .map(Some)
     }
 
+    #[pyo3(signature=(standardize=None, chains=None))]
+    fn _set_fitted_outcome_state(
+        &self,
+        standardize: Option<PyRef<'_, PyStandardize>>,
+        chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+    ) -> PyResult<()> {
+        let transform = crate::models::unbatched_fitted_outcome_state(standardize, chains)?;
+        let mut next = (*self.snapshot()).clone();
+        if next.set_fitted_outcome_state(transform).into_py_result()? {
+            self.replace(next);
+        }
+        Ok(())
+    }
+
     /// The data kernel configuration.
     fn covar_module(&self) -> PyKernelSpec {
         PyKernelSpec {

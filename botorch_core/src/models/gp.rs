@@ -51,6 +51,7 @@ mod cache_tests;
 mod conditioning;
 mod lookahead;
 mod noiseless_fantasy;
+mod outcome;
 mod parameter_grad;
 
 pub(crate) use conditioning::{FantasyAdjoint, FantasyGp, FantasyPosterior};

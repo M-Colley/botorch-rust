@@ -95,6 +95,23 @@ pub fn cartesian_inputs(x: &Matrix, t: &Matrix) -> Matrix {
 }
 
 impl LatentKroneckerGP {
+    /// Replace the fitted inverse affine map without refitting targets or noise.
+    ///
+    /// # Errors
+    /// The offset must be finite and the scale finite and positive.
+    pub fn set_fitted_outcome_affine(&mut self, outcome: Option<(f64, f64)>) -> Result<bool> {
+        if outcome.is_some_and(|(offset, scale)| {
+            !offset.is_finite() || !scale.is_finite() || scale <= 0.0
+        }) {
+            return Err(BotorchError::InvalidArgument(
+                "Invalid fitted outcome statistics".into(),
+            ));
+        }
+        let changed = self.options.outcome != outcome;
+        self.options.outcome = outcome;
+        Ok(changed)
+    }
+
     /// Build from transformed X, scalar time inputs, and standardized observations.
     /// Nonfinite Y entries are missing; every other shape/value must be valid.
     pub fn new(

@@ -62,6 +62,20 @@ impl PyHigherOrderGP {
 
 #[pymethods]
 impl PyHigherOrderGP {
+    #[pyo3(signature=(standardize=None, chains=None))]
+    fn _set_fitted_outcome_state(
+        &self,
+        standardize: Option<PyRef<'_, crate::transforms::PyStandardize>>,
+        chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+    ) -> PyResult<()> {
+        let outcome = crate::models::scalar_fitted_outcome_state(standardize, chains)?;
+        let mut next = (*self.get()).clone();
+        if next.set_fitted_outcome_affine(outcome).into_py_result()? {
+            self.set(next);
+        }
+        Ok(())
+    }
+
     /// A model from the transformed training inputs `train_x` (`n x d'`),
     /// the standardized flattened targets `train_y` (`n x S`), the target
     /// shape, the numbers of latent coordinates, the kernel trees (on the

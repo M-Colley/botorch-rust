@@ -536,6 +536,39 @@ impl BatchedMultiOutputGP {
         &mut self.models
     }
 
+    /// Replace each element's fitted inverse map without refitting targets or
+    /// observation noise. Maps are ordered by batch element, then output.
+    ///
+    /// # Errors
+    /// Incorrect map counts, unfitted maps, or both representations supplied.
+    /// Failure is atomic across all elements.
+    pub fn set_fitted_outcome_states(
+        &mut self,
+        standardize: Option<&[Standardize]>,
+        chains: Option<&[crate::transforms::outcome::OutcomeChain]>,
+    ) -> Result<bool> {
+        if standardize.is_some() && chains.is_some()
+            || standardize.is_some_and(|v| v.len() != self.models.len())
+            || chains.is_some_and(|v| v.len() != self.models.len())
+        {
+            return Err(BotorchError::DimensionMismatch(
+                "Supply one fitted outcome map per GP element".into(),
+            ));
+        }
+        let mut models = self.models.clone();
+        let mut changed = false;
+        for (i, model) in models.iter_mut().enumerate() {
+            changed |= model.set_fitted_outcome_state(
+                standardize.map(|v| v[i].clone()),
+                chains.map(|v| v[i].clone()),
+            )?;
+        }
+        if changed {
+            self.models = models;
+        }
+        Ok(changed)
+    }
+
     /// Configures sparse outlier noise on an unbatched, single-output GP.
     pub fn set_sparse_outlier_noise(
         &mut self,
