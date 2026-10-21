@@ -397,4 +397,7 @@ class TensorMaxValueEntropy(_TensorAcquisition):
         gain = self._compute_information_gain(evaluated, mean, variance, cross)
         if self._multi_fidelity:
             gain = self.cost_aware_utility(X=X, deltas=gain, sampler=self.cost_sampler)
-        return gain.mean(0)
+        result = gain.mean(0)
+        if getattr(self.model, "_is_ensemble", False):
+            result = result.mean(-1)
+        return result

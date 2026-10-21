@@ -14,8 +14,10 @@ three-dimensional training baseline is rejected. Queries have `batch_shape x 1 x
 shape, including multiple query batch dimensions. Pending-point fantasies
 support greedy batch filling. Multifidelity MES supports projection, trace
 observations and cost weighting; multifidelity GIBBON supports projection and
-costs, and rejects trace observations. Initially batched GIBBON and fully Bayesian
-mixtures remain explicit boundaries. MES observation/fantasy
+costs, and rejects trace observations. Initially batched GIBBON remains an
+explicit source boundary. MES supports loaded fully Bayesian mixtures without
+pending observations, averaging their actual component estimates. The source
+models do not expose a fantasy method for pending observations. MES observation/fantasy
 samplers currently require one sample dimension. A single observation sample
 uses the finite zero-control-coefficient fallback described below.
 
@@ -87,6 +89,24 @@ checks multiple model axes and three fantasies, including every active
 data/query/max-sample/parameter gradient and Hessian-vector product. It also
 forbids inference-data host conversions during construction, conditioning
 and double backward. No batched MES speed claim is established.
+
+Fully Bayesian MES and multifidelity MES retain the implicit MCMC component
+axis separately from observation and maximum-sample axes, then reduce both
+the component and singleton fantasy dimensions. The 30-case CPU/CUDA suite
+checks all three scalar fully Bayesian families, component-wise values and
+complete data/query/max-sample/parameter gradients and mixed HVPs. Unmodified
+source acquisitions evaluated separately for each component provide an
+additional independent value/query-gradient oracle. All 15 available cases
+pass on Torch 2.14.1 CPU, and 14 independent cases pass with reference packages
+blocked. No mixture MES speed claim is established.
+
+The source's direct mixture acquisition incorrectly derives the broadcast
+rank from the input rather than the posterior mean: unequal observation and
+maximum-sample counts raise, and equal counts silently combine the wrong axes.
+Both source defects are asserted separately from the independent component
+oracle. [BoTorch #3529](https://github.com/meta-pytorch/botorch/pull/3529)
+proposes deriving the shape from the actual posterior batch dimensions;
+the repaired upstream family passes 10 tests and 16 CPU/CUDA subcases.
 
 ## Verified reference defects and concrete repairs
 
