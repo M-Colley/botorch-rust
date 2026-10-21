@@ -333,6 +333,7 @@ fn nei(
         model.clone(),
         baseline,
         QLogNoisyExpectedImprovementOptions {
+            cache_root: false,
             sampler: sampler_from(base),
             x_pending: pending,
             prune_baseline: false,

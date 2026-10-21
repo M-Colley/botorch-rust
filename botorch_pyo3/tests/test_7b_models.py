@@ -373,6 +373,9 @@ def test_ensemble_model_errors() -> None:
             return torch.stack([X.sum(-1, keepdim=True), X.prod(-1, keepdim=True)], dim=-3)
 
     m = Ens()
+    # These checks exercise the native callback adapter's dimension and sampler
+    # validation. Caller-defined Torch Model modules also have a device route.
+    m._tensor_backend = "native"
     with pytest.raises(UnsupportedError, match="do not support observation noise"):
         m.posterior(torch.rand(2, 3, dtype=torch.float64), observation_noise=torch.ones(2, 1))
     with pytest.raises(UnsupportedError, match="input dimension"):

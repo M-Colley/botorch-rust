@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, NamedTuple
 
+from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_flat, kind_of, to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
+from botorch_rs.posteriors.fully_bayesian import GaussianMixturePosterior
+from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 
 
 class CVFolds(NamedTuple):
@@ -151,4 +155,212 @@ def batch_cross_validation(
     )
 
 
-__all__ = ["CVFolds", "CVResults", "batch_cross_validation", "gen_loo_cv_folds"]
+class _DiagonalPosterior(GPyTorchPosterior):
+    """Independent Gaussian marginals with the normal posterior sampling API."""
+
+    def __init__(self, mean: Any, variance: Any, kind: Any) -> None:
+        mu, shape = to_flat(mean, "mean")
+        var, vshape = to_flat(variance, "variance")
+        if shape != vshape:
+            raise ValueError("mean and variance must have the same shape")
+        super().__init__(None, ([], (*shape[:-2], shape[-2], 0)), kind, False, shape[-1])
+        self._mean_data = list(mu)
+        self._variance_data = list(var)
+        self._marginals = (list(mu), [max(v, 1e-10) for v in var])
+
+    def _samples(self, z: Any) -> Any:
+        return _rs.SingleTaskGP.diagonal_samples(
+            self._mean_data, self._variance_data, z, self._q * self._m
+        )
+
+    def _get_joint(self) -> Any:
+        if self._joint is None:
+            q, m = self._q, self._m
+            qm = q * m
+            covariance = [0.0] * (math.prod(self._batch) * qm * qm)
+            for b in range(math.prod(self._batch)):
+                for t in range(m):
+                    for i in range(q):
+                        j = t * q + i
+                        covariance[b * qm * qm + j * qm + j] = self._variance_data[
+                            b * qm + i * m + t
+                        ]
+            self._joint = (
+                (self._mean_data, (*self._batch, q, m)),
+                (covariance, (*self._batch, qm, qm)),
+            )
+        return self._joint
+
+
+def _reshape(value: Any, shape: tuple[int, ...]) -> Any:
+    return from_flat(to_flat(value, "value")[0], shape, kind_of(value))
+
+
+def efficient_loo_cv(
+    model: Any, observation_noise: bool = True, untransform: bool = True
+) -> CVResults:
+    r"""Leave-one-out predictions without refitting, using one cached training
+    factorization per output and batch element. Results have shape
+    ``batch_shape x n x 1 x m``, as in BoTorch. Supports exact independent
+    output GPs, including fixed noise and input and outcome transforms.
+    """
+    from botorch_rs.posteriors.transformed import TransformedPosterior
+
+    if not isinstance(getattr(model, "_rs", None), _rs.SingleTaskGP):
+        raise UnsupportedError("efficient_loo_cv requires an exact SingleTaskGP model.")
+    model.eval()
+    kind = model._kind
+    mean, variance, targets, noise = model._rs.loo_predictions(bool(observation_noise))
+    shape = tuple(mean[1])
+    folds = (*shape[:-1], 1, shape[-1])
+    mu = from_flat(mean[0], shape, kind)
+    var = from_flat(variance[0], shape, kind)
+    observed = from_flat(targets[0], shape, kind)
+    observed_noise = from_flat(noise[0], shape, kind) if noise is not None else None
+    posterior: Any = _DiagonalPosterior(_reshape(mu, folds), _reshape(var, folds), kind)
+    transform = getattr(model, "outcome_transform", None) if untransform else None
+    if transform is not None:
+        xdata, xshape = model._rs.transformed_train_inputs()
+        training_x = from_flat(xdata, tuple(xshape), kind)
+        observed, observed_noise = transform.untransform(observed, observed_noise, X=training_x)
+        if transform._is_linear:
+            mu, var = transform.untransform(mu, var, X=training_x)
+            posterior = _DiagonalPosterior(_reshape(mu, folds), _reshape(var, folds), kind)
+        else:
+            # Lay folds out as q while untransforming, so transform batch
+            # statistics broadcast against the model batch dimensions.
+            transformed = transform.untransform_posterior(
+                _DiagonalPosterior(mu, var, kind), X=training_x
+            )
+
+            def sample_transform(samples: Any) -> Any:
+                data, sshape = to_flat(samples, "samples")
+                squeezed = from_flat(data, (*sshape[:-2], sshape[-1]), kind)
+                output, _ = transform.untransform(squeezed, X=training_x)
+                return _reshape(output, tuple(sshape))
+
+            posterior = TransformedPosterior(
+                posterior,
+                sample_transform=sample_transform,
+                mean_transform=lambda m, v: _reshape(transformed.mean, folds),
+                variance_transform=lambda m, v: _reshape(transformed.variance, folds),
+            )
+    return CVResults(
+        model,
+        posterior,
+        _reshape(observed, folds),
+        _reshape(observed_noise, folds) if observed_noise is not None else None,
+    )
+
+
+def ensemble_loo_cv(
+    model: Any, observation_noise: bool = True, untransform: bool = True
+) -> CVResults:
+    """Leave-one-out predictions for exact GP ensembles, with the component
+    axis at ``MCMC_DIM=-3`` and a ``GaussianMixturePosterior``.
+    """
+    if not getattr(model, "_is_ensemble", False):
+        raise UnsupportedError("ensemble_loo_cv requires an ensemble model.")
+    if not isinstance(getattr(model, "_rs", None), _rs.SingleTaskGP):
+        raise UnsupportedError("ensemble_loo_cv requires an ensemble of exact SingleTaskGPs.")
+    model.eval()
+    kind = model._kind
+    mean, variance, targets, noise = model._rs.loo_predictions(bool(observation_noise))
+    native_shape = tuple(mean[1])
+    if len(native_shape) < 3 or native_shape[-3] == 0:
+        raise UnsupportedError("Expected an ensemble batch dimension for LOO predictions.")
+
+    def check_shared(value: Any, name: str) -> None:
+        data, shape = value
+        count, n, m = shape[-3:]
+        size = n * m
+        for b in range(math.prod(shape[:-3])):
+            start = b * count * size
+            first = list(data[start : start + size])
+            if any(
+                list(data[start + k * size : start + (k + 1) * size]) != first
+                for k in range(1, count)
+            ):
+                raise UnsupportedError(f"Ensemble members have different {name}.")
+
+    check_shared(targets, "train_Y")
+    if noise is not None:
+        check_shared(noise, "observation noise")
+
+    def as_folds(value: Any) -> Any:
+        data, shape = to_flat(value, "value")
+        count, n, m = shape[-3:]
+        return from_flat(
+            [
+                data[((b * count + k) * n + i) * m + t]
+                for b in range(math.prod(shape[:-3]))
+                for i in range(n)
+                for k in range(count)
+                for t in range(m)
+            ],
+            (*shape[:-3], n, count, 1, m),
+            kind,
+        )
+
+    def as_native(value: Any) -> Any:
+        data, shape = to_flat(value, "value")
+        n, count, _, m = shape[-4:]
+        return from_flat(
+            [
+                data[((b * n + i) * count + k) * m + t]
+                for b in range(math.prod(shape[:-4]))
+                for k in range(count)
+                for i in range(n)
+                for t in range(m)
+            ],
+            (*shape[:-4], count, n, m),
+            kind,
+        )
+
+    mu = from_flat(mean[0], native_shape, kind)
+    var = from_flat(variance[0], native_shape, kind)
+    observed = from_flat(targets[0], native_shape, kind)
+    observed_noise = from_flat(noise[0], native_shape, kind) if noise is not None else None
+    transform = getattr(model, "outcome_transform", None) if untransform else None
+    if transform is not None:
+        observed, observed_noise = transform.untransform(observed, observed_noise)
+    if transform is not None and transform._is_linear:
+        mu, var = transform.untransform(mu, var)
+    posterior: Any = _DiagonalMixturePosterior(as_folds(mu), as_folds(var), kind)
+    if transform is not None and not transform._is_linear:
+        from botorch_rs.posteriors.transformed import TransformedPosterior
+
+        transformed = transform.untransform_posterior(_DiagonalPosterior(mu, var, kind))
+        posterior = TransformedPosterior(
+            posterior,
+            sample_transform=lambda s: as_folds(transform.untransform(as_native(s))[0]),
+            mean_transform=lambda m, v: as_folds(transformed.mean),
+            variance_transform=lambda m, v: as_folds(transformed.variance),
+        )
+    return CVResults(
+        model,
+        posterior,
+        as_folds(observed),
+        as_folds(observed_noise) if observed_noise is not None else None,
+    )
+
+
+class _DiagonalMixturePosterior(_DiagonalPosterior, GaussianMixturePosterior):
+    pass
+
+
+def loo_cv(model: Any, observation_noise: bool = True, untransform: bool = True) -> CVResults:
+    """Compute efficient LOO predictions for an exact GP or GP ensemble."""
+    function = ensemble_loo_cv if getattr(model, "_is_ensemble", False) else efficient_loo_cv
+    return function(model, observation_noise=observation_noise, untransform=untransform)
+
+
+__all__ = [
+    "CVFolds",
+    "CVResults",
+    "batch_cross_validation",
+    "gen_loo_cv_folds",
+    "efficient_loo_cv",
+    "ensemble_loo_cv",
+    "loo_cv",
+]

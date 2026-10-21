@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use crate::error::{BotorchError, Result};
 use crate::models::batched::{block_diagonal, block_diagonal_grad};
+use crate::models::fantasize::{broadcast_indices, broadcast_shapes};
 use crate::models::model::check_vjp_shapes_expanded;
 use crate::models::{BatchedMultiOutputGP, Model, SingleTaskGP};
 use crate::posterior::{JointPosteriorGrad, PointPosteriors, Posterior};
@@ -22,11 +23,13 @@ use crate::{Matrix, Vector};
 ///
 /// Sub-models are shared through `Arc`s, so cloning a list is cheap; fitting
 /// replaces the fitted sub-models (copy on write). All sub-models must have
-/// the same input dimension and batch shape.
+/// the same input dimension and broadcastable batch shapes.
 #[derive(Clone, Debug)]
 pub struct ModelListGP {
     models: Vec<Arc<BatchedMultiOutputGP>>,
     num_outputs: usize,
+    batch_shape: Vec<usize>,
+    child_batch_indices: Vec<Vec<usize>>,
 }
 
 impl ModelListGP {
@@ -35,7 +38,7 @@ impl ModelListGP {
     /// # Errors
     /// [`BotorchError::InvalidArgument`] for an empty list and
     /// [`BotorchError::DimensionMismatch`] if the input dimensions or batch
-    /// shapes differ.
+    /// shapes do not broadcast.
     pub fn new(models: Vec<BatchedMultiOutputGP>) -> Result<Self> {
         Self::from_shared(models.into_iter().map(Arc::new).collect())
     }
@@ -50,20 +53,23 @@ impl ModelListGP {
                 "ModelListGP requires at least one model".into(),
             ));
         };
-        let (d, batch) = (first.dim(), first.batch_shape().to_vec());
+        let d = first.dim();
+        let shapes = models.iter().map(|m| m.batch_shape()).collect::<Vec<_>>();
+        let batch_shape = broadcast_shapes(&shapes).ok_or_else(|| {
+            BotorchError::DimensionMismatch(format!(
+                "sub-model batch shapes must broadcast, got {shapes:?}"
+            ))
+        })?;
+        let child_batch_indices = shapes
+            .iter()
+            .map(|shape| broadcast_indices(shape, &batch_shape))
+            .collect();
         for (i, m) in models.iter().enumerate() {
             if m.dim() != d {
                 return Err(BotorchError::DimensionMismatch(format!(
                     "all sub-models must have the same input dimension: model 0 has d = {d}, \
                      model {i} has d = {}",
                     m.dim()
-                )));
-            }
-            if m.batch_shape() != batch.as_slice() {
-                return Err(BotorchError::DimensionMismatch(format!(
-                    "all sub-models must have the same batch shape: model 0 has {batch:?}, \
-                     model {i} has {:?}",
-                    m.batch_shape()
                 )));
             }
             if m.points_per_input() != first.points_per_input() {
@@ -79,6 +85,8 @@ impl ModelListGP {
         Ok(Self {
             models,
             num_outputs,
+            batch_shape,
+            child_batch_indices,
         })
     }
 
@@ -130,9 +138,23 @@ impl ModelListGP {
         self.models[0].dim()
     }
 
-    /// The common batch shape of the sub-models.
+    /// The broadcast batch shape of the sub-models.
     pub fn batch_shape(&self) -> &[usize] {
-        self.models[0].batch_shape()
+        &self.batch_shape
+    }
+
+    /// Original child batch element used by a broadcast parent element.
+    ///
+    /// # Errors
+    /// Out-of-range child or parent batch indices.
+    pub fn child_batch_index(&self, child: usize, batch: usize) -> Result<usize> {
+        self.child_batch_indices
+            .get(child)
+            .and_then(|indices| indices.get(batch))
+            .copied()
+            .ok_or_else(|| {
+                BotorchError::DimensionMismatch("model list batch index out of range".into())
+            })
     }
 
     /// The common number of posterior points per input point (see
@@ -168,13 +190,11 @@ impl ModelListGP {
         x: &Matrix,
         observation_noise: bool,
     ) -> Result<Posterior> {
-        if self.models.len() == 1 {
-            return self.models[0].posterior_at(batch, x, observation_noise);
-        }
         let parts = self
             .models
             .iter()
-            .map(|m| m.posterior_at(batch, x, observation_noise))
+            .enumerate()
+            .map(|(i, m)| m.posterior_at(self.child_batch_index(i, batch)?, x, observation_noise))
             .collect::<Result<Vec<_>>>()?;
         Ok(block_diagonal(&parts))
     }
@@ -193,7 +213,10 @@ impl ModelListGP {
         let parts = self
             .models
             .iter()
-            .map(|m| m.point_posteriors_at(batch, x, observation_noise))
+            .enumerate()
+            .map(|(i, m)| {
+                m.point_posteriors_at(self.child_batch_index(i, batch)?, x, observation_noise)
+            })
             .collect::<Result<Vec<_>>>()?;
         Ok(concat_point_posteriors(&parts))
     }
@@ -240,6 +263,40 @@ pub(crate) fn concat_point_posteriors(parts: &[PointPosteriors]) -> PointPosteri
 }
 
 impl Model for ModelListGP {
+    fn posterior_parameter_vjp(
+        &self,
+        x: &Matrix,
+        mean_adjoint: &Vector,
+        covariance_adjoint: &Matrix,
+        observation_noise: bool,
+    ) -> Result<Vector> {
+        self.require_unbatched()?;
+        check_vjp_shapes_expanded(
+            x,
+            &(0..x.nrows()),
+            mean_adjoint,
+            covariance_adjoint,
+            self.num_outputs,
+            self.points_per_input(),
+        )?;
+        let q = x.nrows() * self.points_per_input();
+        let mut offset = 0;
+        let mut values = Vec::new();
+        for child in &self.models {
+            let size = q * child.num_outputs();
+            let gradient = child.posterior_parameter_vjp(
+                x,
+                &mean_adjoint.rows(offset, size).into_owned(),
+                &covariance_adjoint
+                    .view((offset, offset), (size, size))
+                    .into_owned(),
+                observation_noise,
+            )?;
+            values.extend_from_slice(gradient.as_slice());
+            offset += size;
+        }
+        Ok(Vector::from_vec(values))
+    }
     fn dim(&self) -> usize {
         ModelListGP::dim(self)
     }
@@ -422,5 +479,46 @@ mod tests {
         .unwrap()
         .into();
         assert!(ModelListGP::new(vec![a, single]).is_err());
+    }
+
+    #[test]
+    fn broadcast_parent_batches_map_to_original_child_elements() {
+        let make = |shape: Vec<usize>, shift: f64| {
+            let n = shape.iter().product();
+            BatchedMultiOutputGP::new(
+                (0..n)
+                    .map(|_| Matrix::from_column_slice(3, 1, &[0.1, 0.4, 0.8]))
+                    .collect(),
+                (0..n)
+                    .map(|i| Matrix::from_column_slice(3, 1, &[shift + i as f64, 0.2, 0.7]))
+                    .collect(),
+                shape,
+                Default::default(),
+            )
+            .unwrap()
+        };
+        let first = make(vec![2, 1], 0.1);
+        let second = make(vec![3], 0.3);
+        let list = ModelListGP::new(vec![first.clone(), second.clone()]).unwrap();
+        assert_eq!(list.batch_shape(), &[2, 3]);
+        let points = Matrix::from_column_slice(2, 1, &[0.2, 0.6]);
+        for b in 0..6 {
+            assert_eq!(list.child_batch_index(0, b).unwrap(), b / 3);
+            assert_eq!(list.child_batch_index(1, b).unwrap(), b % 3);
+            let posterior = list.posterior_at(b, &points, false).unwrap();
+            assert_eq!(
+                posterior.select_outputs(&[0]).unwrap().mean,
+                first.posterior_at(b / 3, &points, false).unwrap().mean
+            );
+            assert_eq!(
+                posterior.select_outputs(&[1]).unwrap().covariance,
+                second
+                    .posterior_at(b % 3, &points, false)
+                    .unwrap()
+                    .covariance
+            );
+        }
+        assert!(list.posterior_at(6, &points, false).is_err());
+        assert!(ModelListGP::new(vec![first, make(vec![3, 1], 0.2)]).is_err());
     }
 }

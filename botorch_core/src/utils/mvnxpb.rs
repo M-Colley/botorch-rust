@@ -31,7 +31,7 @@
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
-use crate::acquisition::dual::Scalar;
+use crate::acquisition::dual::{Dual, Scalar};
 use crate::error::{BotorchError, Result};
 use crate::Matrix;
 
@@ -250,8 +250,6 @@ pub(crate) fn bvnu<S: Scalar>(r: S, h: S, k: S) -> S {
         (-k).ndtr()
     } else if y_free {
         (-h).ndtr()
-    } else if r.value() == 0.0 {
-        (-h).ndtr() * (-k).ndtr()
     } else if r.value().abs() >= 0.925 {
         bvnu_taylor(r, h, k)
     } else {
@@ -320,6 +318,12 @@ pub(crate) fn bvnmom_generic<S: Scalar>(r: S, xl: S, yl: S, xu: S, yu: S, p: S) 
 /// `bvnmom`).
 pub fn bvnmom(r: f64, xl: f64, yl: f64, xu: f64, yu: f64) -> (f64, f64) {
     let p = bvn(r, xl, yl, xu, yu);
+    bvnmom_generic(r, xl, yl, xu, yu, p)
+}
+
+/// [`bvnmom`] given the probability `p` of the rectangle (BoTorch's
+/// `bvnmom(..., p=p)`).
+pub fn bvnmom_with_p(r: f64, xl: f64, yl: f64, xu: f64, yu: f64, p: f64) -> (f64, f64) {
     bvnmom_generic(r, xl, yl, xu, yu, p)
 }
 
@@ -532,6 +536,67 @@ pub fn mvnxpb_log_prob(cov: &Matrix, bounds: &Matrix) -> Result<f64> {
     Ok(mvnxpb_generic(&c, &b))
 }
 
+/// [`mvnxpb_log_prob`] and its derivatives with respect to the covariance
+/// (`n × n`; BoTorch reads the lower triangle, so the upper triangle gets no
+/// gradient, as in PyTorch's autograd) and the bounds (`n × 2`), by
+/// forward-mode dual numbers in chunks of 16 tangents.
+///
+/// # Errors
+/// [`BotorchError::DimensionMismatch`] for inputs of the wrong shapes.
+pub fn mvnxpb_log_prob_with_grad(cov: &Matrix, bounds: &Matrix) -> Result<(f64, Matrix, Matrix)> {
+    const CHUNK: usize = 16;
+    let value = mvnxpb_log_prob(cov, bounds)?;
+    let n = cov.nrows();
+    // Tangent k: the lower-triangle entries of the covariance, then the bounds.
+    let mut targets: Vec<(bool, usize, usize)> = Vec::new();
+    for r in 0..n {
+        for c in 0..=r {
+            targets.push((true, r, c));
+        }
+    }
+    for r in 0..n {
+        for c in 0..2 {
+            targets.push((false, r, c));
+        }
+    }
+    let mut g_cov = Matrix::zeros(n, n);
+    let mut g_bounds = Matrix::zeros(n, 2);
+    for chunk in targets.chunks(CHUNK) {
+        let k = chunk.len();
+        let tangent =
+            |is_cov: bool, r: usize, c: usize| chunk.iter().position(|t| *t == (is_cov, r, c));
+        let cv: Vec<Vec<Dual<CHUNK>>> = (0..n)
+            .map(|r| {
+                (0..n)
+                    .map(|c| match tangent(true, r, c).filter(|_| c <= r) {
+                        Some(i) => Dual::variable(cov[(r, c)], i, k),
+                        // The upper triangle is not read.
+                        None => Dual::constant(cov[(r, c)], k),
+                    })
+                    .collect()
+            })
+            .collect();
+        let bd: Vec<[Dual<CHUNK>; 2]> = (0..n)
+            .map(|r| {
+                let mk = |c: usize| match tangent(false, r, c) {
+                    Some(i) => Dual::variable(bounds[(r, c)], i, k),
+                    None => Dual::constant(bounds[(r, c)], k),
+                };
+                [mk(0), mk(1)]
+            })
+            .collect();
+        let d = mvnxpb_generic(&cv, &bd);
+        for (i, &(is_cov, r, c)) in chunk.iter().enumerate() {
+            if is_cov {
+                g_cov[(r, c)] = d.g[i];
+            } else {
+                g_bounds[(r, c)] = d.g[i];
+            }
+        }
+    }
+    Ok((value, g_cov, g_bounds))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,6 +645,30 @@ mod tests {
             let e = 0.25 + r_asin(r) / (2.0 * PI);
             assert!((p - e).abs() < 1e-14, "{r}: {p} vs {e}");
         }
+    }
+
+    #[test]
+    fn independence_retains_correlation_derivative() {
+        use crate::utils::probability::{ndtr, phi};
+
+        let h = 0.4;
+        let k = -0.2;
+        let r = Dual::<1>::variable(0.0, 0, 1);
+        let probability = bvnu(r, Dual::constant(h, 1), Dual::constant(k, 1));
+        assert_eq!(probability.v, ndtr(-h) * ndtr(-k));
+        // Plackett's identity: d/dr P(X>h,Y>k) is the bivariate
+        // normal density at (h,k), which factors at independence.
+        let expected = phi(h) * phi(k);
+        assert!((probability.g[0] / expected - 1.0).abs() < 2e-15);
+        let rectangle = bvn_generic(
+            r,
+            Dual::constant(-0.3, 1),
+            Dual::constant(0.2, 1),
+            Dual::constant(1.1, 1),
+            Dual::constant(1.5, 1),
+        );
+        let expected = (phi(-0.3) - phi(1.1)) * (phi(0.2) - phi(1.5));
+        assert!((rectangle.g[0] / expected - 1.0).abs() < 3e-15);
     }
 
     fn r_asin(r: f64) -> f64 {

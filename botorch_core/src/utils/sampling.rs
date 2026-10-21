@@ -121,10 +121,9 @@ impl SobolEngine {
     /// # Errors
     /// [`BotorchError::InvalidArgument`] if `start + n > 2¹⁶`.
     pub fn draw(&self, n: usize, start: usize) -> Result<Matrix> {
-        if start + n > SOBOL_MAX_SAMPLES {
+        if start > SOBOL_MAX_SAMPLES || n > SOBOL_MAX_SAMPLES - start {
             return Err(BotorchError::InvalidArgument(format!(
-                "at most {SOBOL_MAX_SAMPLES} Sobol points are supported, requested {}",
-                start + n
+                "at most {SOBOL_MAX_SAMPLES} Sobol points are supported, requested {n} starting at {start}"
             )));
         }
         Ok(Matrix::from_fn(n, self.dim, |i, j| {

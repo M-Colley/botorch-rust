@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 from collections.abc import Iterator
 from typing import Any
 
@@ -27,9 +28,10 @@ from botorch_rs.likelihoods import (
     Likelihood,
 )
 from botorch_rs.means import ConstantMean, MultitaskMean
-from botorch_rs.models.model import Model
+from botorch_rs.models._backend_selection import requires_tensor_backend
+from botorch_rs.models.gp_regression import _is_tensor_factory_target
+from botorch_rs.models.gpytorch import GPyTorchModel, MultiTaskGPyTorchModel
 from botorch_rs.models.transforms.outcome import Standardize, is_plain_standardize
-from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 from botorch_rs.utils.types import DEFAULT
 
 
@@ -46,7 +48,7 @@ def _int_list(values: Any, name: str) -> list[int] | None:
     return [int(v) for v in data]
 
 
-class MultiTaskGP(Model):
+class MultiTaskGP(MultiTaskGPyTorchModel):
     r"""Multi-task exact GP with an ICM (intrinsic coregionalization model)
     kernel (BoTorch's ``MultiTaskGP``), see Bonilla et al. (2007) and Swersky
     et al. (2013).
@@ -91,6 +93,85 @@ class MultiTaskGP(Model):
 
     _supports_batched_models = False
     _supports_cache_root = False
+    #: Whether ``eval()`` sets the task factors of tasks without data to the
+    #: observed mean (not for the samples of a fully Bayesian model).
+    _eval_unobserved_tasks = True
+
+    def __new__(cls, train_X: Any = None, train_Y: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if _is_tensor_factory_target(cls, MultiTaskGP):
+            backend = kwargs.get("backend", "auto")
+            if backend not in ("auto", "native", "torch"):
+                raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+            torch = sys.modules.get("torch")
+            values = (train_X, train_Y, kwargs.get("train_Yvar"), *args[1:2])
+            modules = tuple(
+                kwargs.get(name)
+                for name in (
+                    "mean_module",
+                    "covar_module",
+                    "likelihood",
+                    "task_covar_prior",
+                    "input_transform",
+                    "outcome_transform",
+                )
+            ) + tuple(args[2:])
+            # Native MT inference accepts plain Normalize and Standardize.
+            # Keep other source-supported configurations available on CPU
+            # through Tensor inference instead of selecting a native rejection.
+            tensor_configuration = False
+            if torch is not None and isinstance(train_X, torch.Tensor):
+                from botorch_rs.models.transforms.input import Normalize
+
+                input_transform = kwargs.get(
+                    "input_transform", args[10] if len(args) > 10 else None
+                )
+                outcome_transform = kwargs.get(
+                    "outcome_transform", args[9] if len(args) > 9 else DEFAULT
+                )
+                supplied_likelihood = kwargs.get("likelihood", args[4] if len(args) > 4 else None)
+                yvar = kwargs.get("train_Yvar", args[1] if len(args) > 1 else None)
+                tensor_configuration = (
+                    (
+                        input_transform is not None
+                        and (
+                            not isinstance(input_transform, Normalize)
+                            or bool(input_transform.batch_shape)
+                            or not input_transform._native
+                        )
+                    )
+                    or (
+                        not _is_default(outcome_transform)
+                        and outcome_transform is not None
+                        and (
+                            not isinstance(outcome_transform, Standardize)
+                            or not is_plain_standardize(outcome_transform)
+                        )
+                    )
+                    or (supplied_likelihood is not None and yvar is not None)
+                )
+            if backend == "torch" or (
+                backend == "auto"
+                and (
+                    any(
+                        getattr(value, "requires_grad", False)
+                        or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
+                        for value in values
+                    )
+                    or (
+                        torch is not None
+                        and any(requires_tensor_backend(module) for module in modules)
+                    )
+                    or tensor_configuration
+                )
+            ):
+                from botorch_rs.models._torch_backend_multitask import TorchMultiTaskGP
+
+                if cls is MultiTaskGP:
+                    return object.__new__(TorchMultiTaskGP)
+                from botorch_rs.models._torch_model_subclasses import model_type
+
+                return object.__new__(model_type(cls, TorchMultiTaskGP))
+        return object.__new__(cls)
 
     def __init__(
         self,
@@ -108,9 +189,10 @@ class MultiTaskGP(Model):
         outcome_transform: Any = DEFAULT,
         input_transform: Any = None,
         validate_task_values: bool = True,
+        *,
+        backend: str = "auto",
     ) -> None:
         from botorch_rs.models.gp_regression import _validate_tensor_args
-        from botorch_rs.models.kernels.positive_index import PositiveIndexKernel
         from botorch_rs.models.transforms.input import Normalize
         from botorch_rs.models.utils.gpytorch_modules import (
             get_covar_module_with_dim_scaled_prior,
@@ -250,12 +332,7 @@ class MultiTaskGP(Model):
         if _is_default(task_covar_prior):
             task_covar_prior = BetaPrior(concentration1=2.5, concentration0=1.5)
         self._rank = int(rank) if rank is not None else num_tasks
-        task_kernel = PositiveIndexKernel(
-            num_tasks=num_tasks,
-            rank=self._rank,
-            task_prior=task_covar_prior,
-            active_dims=[tf],
-        )
+        task_kernel = self._make_task_covar_module(num_tasks, self._rank, task_covar_prior, tf)
         self._rs = _rs.MultiTaskGP(
             x,
             y,
@@ -324,6 +401,20 @@ class MultiTaskGP(Model):
             ot_obj._set_fitted(fitted_ot, kind_of(train_Y))
             self.outcome_transform = ot_obj
         self.training = True
+
+    def _make_task_covar_module(
+        self, num_tasks: int, rank: int, task_covar_prior: Any, task_feature: int
+    ) -> Kernel:
+        """The task kernel: BoTorch's ``PositiveIndexKernel`` (the samples of
+        a fully Bayesian multi-task GP use an ``IndexKernel`` instead)."""
+        from botorch_rs.models.kernels.positive_index import PositiveIndexKernel
+
+        return PositiveIndexKernel(
+            num_tasks=num_tasks,
+            rank=rank,
+            task_prior=task_covar_prior,
+            active_dims=[task_feature],
+        )
 
     # -- tasks -------------------------------------------------------------
 
@@ -403,11 +494,14 @@ class MultiTaskGP(Model):
         """Evaluation mode. As in BoTorch, the rows of the task kernel's
         ``covar_factor`` of tasks without training data become the mean of
         the observed tasks' rows (``posterior`` calls ``eval()``)."""
-        if self._unobserved_task_indices:
+        if self._unobserved_task_indices and self._eval_unobserved_tasks:
             self._rs.eval_unobserved()
         return self.train(False)
 
     def train(self, mode: bool = True) -> MultiTaskGP:
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         self.training = mode
         for name in ("input_transform", "outcome_transform"):
             tf = getattr(self, name, None)
@@ -415,65 +509,14 @@ class MultiTaskGP(Model):
                 tf.train(mode)
         return self
 
-    # -- posterior ---------------------------------------------------------
-
-    def posterior(
-        self,
-        X: Any,
-        output_indices: list[int] | None = None,
-        observation_noise: Any = False,
-        posterior_transform: Any = None,
-        **kwargs: Any,
-    ) -> GPyTorchPosterior:
-        r"""The posterior at ``X`` in the original outcome space.
-
-        ``X`` (``batch_shape x q x d``) without the task column gives the
-        posterior over the output tasks (``output_indices``: other task
-        values), a ``MultitaskMultivariateNormal`` in BoTorch's output-major
-        layout for several tasks. With the task column (``... x (d + 1)``),
-        the posterior is single-output over the given tasks.
-        ``observation_noise=True`` adds the noise level of each point's task
-        (for fixed noise, the mean training noise of the task).
-        """
-        from botorch_rs.acquisition.objective import transform_arg
-
-        if not isinstance(observation_noise, bool):
-            raise NotImplementedError(
-                "Passing a tensor of observations is not supported by MultiTaskGP."
-            )
-        kind = kind_of(X)
-        flat = to_flat(X, "X")
-        d = self.num_non_task_features
-        if len(flat[1]) < 2 or flat[1][-1] not in (d, d + 1):
-            raise BotorchTensorDimensionError(
-                f"Expected X to be `batch_shape x q x d` with d = {d} (or d + 1 with the task "
-                f"feature), got shape {tuple(flat[1])}."
-            )
-        if flat[1][-1] == d + 1:
-            if output_indices is not None:
-                raise ValueError("`output_indices` must be None when `X` includes task features.")
-            cols = d + 1
-            self._check_task_values(
-                sorted({flat[0][i + self._task_feature] for i in range(0, len(flat[0]), cols)})
-            )
-            self.eval()
-            source = _rs.multitask_task_inputs_model(self._rs)
-            num_outputs = 1
-        else:
-            tasks = None if output_indices is None else [int(t) for t in output_indices]
-            self._check_task_values([float(t) for t in (tasks or self._output_tasks)])
-            self.eval()
-            source = _rs.multitask_model(self._rs, tasks)
-            num_outputs = len(tasks) if tasks is not None else self._num_outputs
-        return GPyTorchPosterior(
-            source,
-            flat,
-            kind,
-            observation_noise,
-            num_outputs=num_outputs,
-            model_batch_shape=self.batch_shape,
-            transform=transform_arg(posterior_transform),
+    def _native_task_source(self, tasks: list[int] | None, includes_task_feature: bool) -> Any:
+        return (
+            _rs.multitask_task_inputs_model(self._rs)
+            if includes_task_feature
+            else _rs.multitask_model(self._rs, tasks)
         )
+
+    # -- posterior ---------------------------------------------------------
 
     def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:
         """The model handle that acquisition functions are built on (over the
@@ -484,9 +527,6 @@ class MultiTaskGP(Model):
         return _rs.multitask_model(
             self._rs, None, transform_arg(posterior_transform, self.num_outputs)
         )
-
-    def subset_output(self, idcs: list[int]) -> Any:
-        raise UnsupportedError("Subsetting outputs is not supported by `MultiTaskGPyTorchModel`.")
 
     # -- conditioning and fantasies ------------------------------------------
 
@@ -525,6 +565,9 @@ class MultiTaskGP(Model):
         As in BoTorch, the model must be in eval mode (e.g. after a call of
         ``posterior``).
         """
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
         if self.training:
@@ -561,7 +604,7 @@ class MultiTaskGP(Model):
         ``n_f x batch_shape``. As in BoTorch, ``observation_noise`` tensors and
         fixed-noise models are not supported (``NotImplementedError``)."""
         from botorch_rs.exceptions.errors import DeprecationError
-        from botorch_rs.sampling.normal import SobolQMCNormalSampler
+        from botorch_rs.sampling.normal import NormalMCSampler
 
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
@@ -569,8 +612,10 @@ class MultiTaskGP(Model):
             raise DeprecationError(
                 "`fantasize` no longer accepts a boolean for `observation_noise`."
             )
-        if not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        if not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         x = to_flat(X, "X")
         d = self.num_non_task_features
         if len(x[1]) >= 2 and x[1][-1] == d:
@@ -784,7 +829,7 @@ class MultiTaskGP(Model):
         )
 
 
-class KroneckerMultiTaskGP(Model):
+class KroneckerMultiTaskGP(GPyTorchModel):
     r"""Multi-task GP with Kronecker structure, using an ICM kernel (BoTorch's
     ``KroneckerMultiTaskGP``), for the "block design": all ``m`` tasks
     (the columns of ``train_Y``) are observed at all ``n`` training points.
@@ -821,6 +866,46 @@ class KroneckerMultiTaskGP(Model):
 
     _supports_cache_root = False
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if _is_tensor_factory_target(cls, KroneckerMultiTaskGP):
+            if backend not in {"auto", "native", "torch"}:
+                raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+            torch = sys.modules.get("torch")
+            requested = any(
+                getattr(v, "requires_grad", False)
+                or getattr(getattr(v, "device", None), "type", "cpu") != "cpu"
+                for v in (train_X, train_Y)
+            )
+            modules = (
+                any(
+                    requires_tensor_backend(kwargs.get(k))
+                    for k in (
+                        "likelihood",
+                        "data_covar_module",
+                        "input_transform",
+                        "outcome_transform",
+                    )
+                )
+                if torch
+                else False
+            )
+            if backend == "torch" or (backend == "auto" and (requested or modules)):
+                from botorch_rs.models._torch_backend_kronecker import TorchKroneckerMultiTaskGP
+
+                if cls is KroneckerMultiTaskGP:
+                    return object.__new__(TorchKroneckerMultiTaskGP)
+                from botorch_rs.models._torch_model_subclasses import model_type
+
+                return object.__new__(model_type(cls, TorchKroneckerMultiTaskGP))
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -834,6 +919,8 @@ class KroneckerMultiTaskGP(Model):
         **kwargs: Any,
     ) -> None:
         import math as _math
+
+        kwargs.pop("backend", None)
 
         from botorch_rs.kernels import MultitaskKernel
         from botorch_rs.likelihoods import MultitaskGaussianLikelihood
@@ -982,6 +1069,22 @@ class KroneckerMultiTaskGP(Model):
         data, shape = self._rs.transformed_train_targets()
         return from_flat(data, tuple(shape), self._kind)
 
+    @property
+    def train_full_covar(self) -> Any:
+        """Cached noiseless `Kxx ⊗ Ktt` in transformed training units.
+
+        Returns a dense array in the model's input array type, with rows
+        and columns ordered by training point then task.
+        """
+        data, shape = self._rs.train_full_covar()
+        return from_flat(data, tuple(shape), self._kind)
+
+    @property
+    def predictive_mean_cache(self) -> Any:
+        """Cached `(Ktrain + noise)⁻¹ (train_targets - train_mean)` solve."""
+        data, shape = self._rs.predictive_mean_cache()
+        return from_flat(data, tuple(shape), self._kind)
+
     def train(self, mode: bool = True) -> KroneckerMultiTaskGP:
         self.training = mode
         for name in ("input_transform", "outcome_transform"):
@@ -1031,14 +1134,15 @@ class KroneckerMultiTaskGP(Model):
         if ot is not None:
             scales = [float(v) for v in to_flat(ot.stdvs, "stdvs")[0]]
         return MultitaskGPPosterior(
-            _rs.kronecker_model(self._rs),
-            self._rs,
-            flat,
-            kind,
-            observation_noise,
+            source=_rs.kronecker_model(self._rs),
+            model_rs=self._rs,
+            X=flat,
+            kind=kind,
+            observation_noise=observation_noise,
             num_outputs=self.num_outputs,
             num_train=self._rs.num_train,
             scales=scales,
+            query_inputs=X,
         )
 
     def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:

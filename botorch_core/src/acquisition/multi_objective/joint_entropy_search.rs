@@ -293,7 +293,14 @@ impl Boxes {
     /// `V_jm = g¹ φ(g¹) - g⁰ φ(g⁰)`.
     #[inline]
     fn v(&self, idx: usize) -> f64 {
-        self.g[1][idx] * self.pdf[1][idx] - self.g[0][idx] * self.pdf[0][idx]
+        let moment = |k: usize| {
+            if self.g[k][idx].is_infinite() {
+                0.0
+            } else {
+                self.g[k][idx] * self.pdf[k][idx]
+            }
+        };
+        moment(1) - moment(0)
     }
 
     /// `G_jm = φ(g¹) - φ(g⁰)`.
@@ -323,6 +330,12 @@ impl Boxes {
             for k in 0..2 {
                 let sign = if k == 1 { 1.0 } else { -1.0 };
                 let (gk, pk) = (self.g[k][idx], self.pdf[k][idx]);
+                // Fixed infinite endpoints have exact CDF limits and zero
+                // derivatives with respect to finite Gaussian parameters.
+                // Do not form their indeterminate 0*infinity adjoints.
+                if gk.is_infinite() {
+                    continue;
+                }
                 // d(g φ(g))/dg = φ - g² φ; dφ/dg = -g φ (autograd of exp(log_prob)).
                 let mut g_bar = a.g[k][idx] + sign * wm_bar * normal_cdf_grad(gk);
                 g_bar += sign * a.v[idx] * (pk + gk * (pk * -gk));
@@ -750,6 +763,9 @@ fn entropy_monte_carlo(
                 for k in 0..2 {
                     let sign = if k == 1 { 1.0 } else { -1.0 };
                     let gn = st.gn[k][idx];
+                    if gn.is_infinite() {
+                        continue;
+                    }
                     let gn_bar = sign * wm_bar * normal_cdf_grad(gn);
                     // g' = (g - ρ z) / d.
                     ba.g[k][idx] += gn_bar / denom[t];
@@ -1765,6 +1781,133 @@ impl AcquisitionFunction for QLowerBoundMultiObjectiveJointEntropySearch {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn infinite_full_space_has_gaussian_entropy_and_adjoints() {
+        let cells = CellBounds::new(
+            vec![1],
+            1,
+            2,
+            vec![f64::NEG_INFINITY; 2],
+            vec![f64::INFINITY; 2],
+        )
+        .unwrap();
+        let stats = EntropyStatistics {
+            mean: Matrix::from_row_slice(1, 2, &[0.2, 0.3]),
+            variance: Matrix::from_row_slice(1, 2, &[0.7, 0.8]),
+            observation_noise: Matrix::from_element(1, 2, 0.1),
+        };
+        for kind in [
+            EstimationType::Noiseless,
+            EstimationType::LowerBound,
+            EstimationType::LowerBound2,
+        ] {
+            let (value, gradient) = compute_entropy_with_grad(kind, &cells, &stats, None).unwrap();
+            let jitter: f64 = if kind == EstimationType::LowerBound {
+                1e-6
+            } else {
+                0.0
+            };
+            let expected = entropy_constant(2) + 0.5 * ((0.8 + jitter).ln() + (0.9 + jitter).ln());
+            assert!((value - expected).abs() < 2e-14);
+            for output in 0..2 {
+                let total_variance = stats.variance[(0, output)] + 0.1 + jitter;
+                assert!(gradient.mean[(0, output)].abs() < 2e-14);
+                for bar in [&gradient.variance, &gradient.observation_noise] {
+                    assert!((bar[(0, output)] - 0.5 / total_variance).abs() < 2e-14);
+                }
+            }
+        }
+        let expected = entropy_constant(2) + 0.5 * (0.8_f64.ln() + 0.9_f64.ln());
+        // Antithetic unit normal draws have their exact Gaussian second
+        // moments, so this MC estimate also equals the Gaussian entropy.
+        let samples = vec![Matrix::from_fn(2, 2, |sample, output| {
+            let sign = if sample == output { 1.0 } else { -1.0 };
+            stats.mean[(0, output)] + (stats.variance[(0, output)] + 0.1).sqrt() * sign
+        })];
+        let density = Matrix::from_element(2, 1, -expected);
+        let (value, gradient) = compute_entropy_with_grad(
+            EstimationType::MonteCarlo,
+            &cells,
+            &stats,
+            Some((&samples, &density)),
+        )
+        .unwrap();
+        assert!((value - expected).abs() < 2e-14);
+        for bar in [
+            &gradient.mean,
+            &gradient.variance,
+            &gradient.observation_noise,
+        ] {
+            assert!(bar.iter().all(|g| g.abs() < 2e-14));
+        }
+        assert!(gradient.samples.unwrap()[0].iter().all(|g| g.abs() < 2e-14));
+        assert!(gradient
+            .samples_log_prob
+            .unwrap()
+            .iter()
+            .all(|g| (*g + 0.5).abs() < 2e-14));
+    }
+
+    #[test]
+    fn infinite_half_line_retains_finite_boundary_adjoints() {
+        let cells = CellBounds::new(vec![1], 1, 1, vec![f64::NEG_INFINITY], vec![0.9]).unwrap();
+        let stats = EntropyStatistics {
+            mean: Matrix::from_element(1, 1, 0.2),
+            variance: Matrix::from_element(1, 1, 0.7),
+            observation_noise: Matrix::from_element(1, 1, 0.1),
+        };
+        let threshold = 0.7 / 0.7_f64.sqrt();
+        let expected = entropy_constant(1) + 0.5 * 0.8_f64.ln() + normal_cdf(threshold).ln()
+            - 0.5 * threshold * normal_log_prob(threshold).exp() / normal_cdf(threshold);
+        let (value, _) =
+            compute_entropy_with_grad(EstimationType::Noiseless, &cells, &stats, None).unwrap();
+        assert!((value - expected).abs() < 1e-14);
+        let samples = vec![Matrix::from_row_slice(2, 1, &[0.1, 0.4])];
+        let density = Matrix::from_column_slice(2, 1, &[-0.4, -0.5]);
+        for kind in [
+            EstimationType::Noiseless,
+            EstimationType::LowerBound,
+            EstimationType::LowerBound2,
+            EstimationType::MonteCarlo,
+        ] {
+            let mc = (kind == EstimationType::MonteCarlo).then_some((samples.as_slice(), &density));
+            let (value, gradient) = compute_entropy_with_grad(kind, &cells, &stats, mc).unwrap();
+            assert!(value.is_finite());
+            for which in 0..3 {
+                let mut plus = stats.clone();
+                let mut minus = stats.clone();
+                let bar = match which {
+                    0 => {
+                        plus.mean[(0, 0)] += 1e-6;
+                        minus.mean[(0, 0)] -= 1e-6;
+                        gradient.mean[(0, 0)]
+                    }
+                    1 => {
+                        plus.variance[(0, 0)] += 1e-6;
+                        minus.variance[(0, 0)] -= 1e-6;
+                        gradient.variance[(0, 0)]
+                    }
+                    _ => {
+                        plus.observation_noise[(0, 0)] += 1e-6;
+                        minus.observation_noise[(0, 0)] -= 1e-6;
+                        gradient.observation_noise[(0, 0)]
+                    }
+                };
+                let finite_difference = (compute_entropy_with_grad(kind, &cells, &plus, mc)
+                    .unwrap()
+                    .0
+                    - compute_entropy_with_grad(kind, &cells, &minus, mc)
+                        .unwrap()
+                        .0)
+                    / 2e-6;
+                assert!(
+                    (bar - finite_difference).abs() < 2e-8,
+                    "{kind:?} {which}: {bar} != {finite_difference}"
+                );
+            }
+        }
+    }
 
     /// Random cells, statistics and MC inputs of one point.
     fn inputs(

@@ -4,6 +4,7 @@ evaluating it, used by cost-aware and multi-fidelity acquisition functions."""
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -75,9 +76,21 @@ class InverseCostWeightedUtility(CostAwareUtility):
     another model callable on torch tensors (e.g. BoTorch's
     ``GenericDeterministicModel``). Without ``cost_objective``, the costs of a
     single-output cost model are used as they are and those of several
-    outputs are summed. ``use_mean=False`` (samples of the cost) is
-    supported for deterministic cost models, whose samples are their values.
+    outputs are summed. Tensor calls preserve device and full autograd;
+    ``use_mean=False`` draws actual cost posterior samples with the supplied
+    sampler. Native array calls retain their deterministic-cost sampling scope.
     """
+
+    _native_cost_objective: Any
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        if cls is InverseCostWeightedUtility and sys.modules.get("torch") is not None:
+            from botorch_rs.acquisition._torch_backend_cost_aware import (
+                TorchInverseCostWeightedUtility,
+            )
+
+            return object.__new__(TorchInverseCostWeightedUtility)
+        return object.__new__(cls)
 
     def __init__(
         self,
@@ -89,20 +102,37 @@ class InverseCostWeightedUtility(CostAwareUtility):
         from botorch_rs.acquisition.objective import GenericMCObjective, IdentityMCObjective
 
         self.cost_model = cost_model
-        handle = cost_model_handle(cost_model)
         if cost_objective is None:
             self.cost_objective: Any = (
                 IdentityMCObjective()
-                if handle.num_outputs == 1
+                if int(getattr(cost_model, "num_outputs", 1)) == 1
                 else GenericMCObjective(lambda Y, X=None: Y.sum(dim=-1))
             )
         else:
             self.cost_objective = cost_objective
         self._use_mean = use_mean
         self._log = log
-        self._rs_utility = _rs.CostAwareUtility.inverse_cost_weighted(
-            handle, bool(use_mean), cost_objective, bool(log)
+        # An optional Torch objective is already registered as cost_objective.
+        # Keep the native adapter alias out of nn.Module's child registry.
+        self.__dict__["_native_cost_objective"] = cost_objective
+        self._native_utility: Any = None
+
+    @property
+    def _rs_utility(self) -> Any:
+        from botorch_rs.models.cost import DeterministicCostModel
+
+        mutable_cost = (
+            isinstance(self.cost_model, DeterministicCostModel)
+            and getattr(self.cost_model, "_tensor_backend", None) == "torch"
         )
+        if self._native_utility is None or mutable_cost:
+            self._native_utility = _rs.CostAwareUtility.inverse_cost_weighted(
+                cost_model_handle(self.cost_model),
+                bool(self._use_mean),
+                self._native_cost_objective,
+                bool(self._log),
+            )
+        return self._native_utility
 
     def forward(
         self,
@@ -115,50 +145,15 @@ class InverseCostWeightedUtility(CostAwareUtility):
         improvements ``deltas`` at the candidate sets ``X``."""
         if not self._use_mean and sampler is None:
             raise RuntimeError("Must provide `sampler` if `use_mean=False`")
+        if is_torch_tensor(X) or is_torch_tensor(deltas):
+            from botorch_rs.acquisition._torch_backend_cost_aware import tensor_inverse_cost
+
+            return tensor_inverse_cost(self, X, deltas, sampler, X_evaluation_mask)
         x, d = _utility_args(X, deltas)
         mask = _mask_arg(X_evaluation_mask)
         kind = first_kind(deltas, X)
-        torch_grad = False
-        if is_torch_tensor(X) or is_torch_tensor(deltas):
-            import torch
-
-            torch_grad = torch.is_grad_enabled() and (
-                getattr(X, "requires_grad", False) or getattr(deltas, "requires_grad", False)
-            )
-        if torch_grad:
-            return _utility_autograd(self._rs_utility, X, deltas, mask)
         values, _ = self._rs_utility.forward(x, d, mask)
         return from_pair(values, kind)
-
-
-def _utility_autograd(rs: Any, X: Any, deltas: Any, mask: Any) -> Any:
-    """The utilities connected to torch's autograd graph (gradients from
-    Rust)."""
-    import torch
-
-    from botorch_rs._arrays import kind_of
-
-    X_t = torch.as_tensor(X)
-    d_t = torch.as_tensor(deltas)
-
-    class _Fn(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx: Any, Xa: Any, da: Any) -> Any:  # type: ignore[override]
-            ctx.save_for_backward(Xa, da)
-            x, d = _utility_args(Xa, da)
-            values, _ = rs.forward(x, d, mask)
-            return from_pair(values, kind_of(da))
-
-        @staticmethod
-        def backward(ctx: Any, grad_output: Any) -> Any:  # type: ignore[override]
-            Xa, da = ctx.saved_tensors
-            x, d = _utility_args(Xa, da)
-            _, grads = rs.forward(x, d, mask, to_flat(grad_output.contiguous()))
-            dbar, xbar = grads
-            gx = from_pair(xbar, kind_of(Xa)).reshape(Xa.shape)
-            return gx, from_pair(dbar, kind_of(da))
-
-    return _Fn.apply(X_t, d_t)
 
 
 __all__ = ["CostAwareUtility", "GenericCostAwareUtility", "InverseCostWeightedUtility"]

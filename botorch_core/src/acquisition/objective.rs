@@ -372,6 +372,28 @@ impl ScalarizedModel {
 }
 
 impl Model for ScalarizedModel {
+    fn posterior_parameter_vjp(
+        &self,
+        x: &Matrix,
+        mean_adjoint: &Vector,
+        covariance_adjoint: &Matrix,
+        observation_noise: bool,
+    ) -> Result<Vector> {
+        crate::models::model::check_vjp_shapes_expanded(
+            x,
+            &(0..x.nrows()),
+            mean_adjoint,
+            covariance_adjoint,
+            1,
+            self.points_per_input(),
+        )?;
+        if self.moments {
+            return Err(BotorchError::Unsupported("Parameter gradients of moment-matched nonlinear scalarization are not supported by native acquisitions".into()));
+        }
+        let (mean, covariance) = self.transform.pull_back(mean_adjoint, covariance_adjoint);
+        self.model
+            .posterior_parameter_vjp(x, &mean, &covariance, observation_noise)
+    }
     fn dim(&self) -> usize {
         self.model.dim()
     }
@@ -452,7 +474,7 @@ impl Model for ScalarizedModel {
             }
             return Ok(PointPosteriors::single_output(&mean, &var));
         }
-        let pp = self.model.point_posteriors(x)?;
+        let pp = self.model.point_posteriors_joint(x)?;
         self.transform.transform_point_posteriors(&pp)
     }
 
@@ -460,7 +482,7 @@ impl Model for ScalarizedModel {
         if self.moments {
             return self.moment_posterior(x);
         }
-        let g = self.model.point_posterior_with_grad(x)?;
+        let g = self.model.point_posterior_joint_with_grad(x)?;
         self.transform.transform_grad(&g)
     }
 }

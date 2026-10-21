@@ -8,21 +8,38 @@
 //! arrays and nested lists, and provides BoTorch's module layout, class names
 //! and argument handling on top of the classes defined here. Errors map onto
 //! the exception hierarchy of `botorch_rs.exceptions` ([`errors`]), and every
-//! computation runs with the GIL released ([`threads`]).
+//! CPU numerical computations release the GIL ([`threads`]). The optional
+//! [`binding_torch`] functions dispatch Torch tensor operations while preserving
+//! the caller's device and higher-order autograd graph.
 
 use pyo3::prelude::*;
 
 mod acquisition;
+mod additive;
+mod approximate;
 mod arrays;
+mod batched_lbfgsb;
+mod binding_torch;
 mod callbacks;
 mod composite;
 mod contextual;
 mod deterministic;
+mod em_gp;
+mod em_kl;
+mod em_model;
+mod em_shared;
+mod empirical;
+mod empirical_models;
 mod errors;
 mod fantasize;
+mod fully_bayesian;
+mod heterogeneous;
+
+mod higher_order;
 mod hvkg;
 mod input_perturbation;
 mod kernel_trees;
+mod latent_kronecker;
 mod lookahead;
 mod mo_acquisition;
 mod mo_entropy;
@@ -38,6 +55,7 @@ mod optim_ext;
 mod pathwise;
 mod polytope;
 mod preference;
+mod probability;
 mod risk_measures;
 mod sampling;
 mod so_acquisition;
@@ -53,6 +71,17 @@ mod transforms;
 #[pymodule]
 #[pyo3(name = "_botorch_rs")]
 fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    additive::register(m)?;
+    models::posterior_autograd::register(m)?;
+    batched_lbfgsb::register(m)?;
+    binding_torch::register(m)?;
+    m.add_function(wrap_pyfunction!(heterogeneous::target_task_model, m)?)?;
+    empirical::register(m)?;
+    em_kl::register(m)?;
+    empirical_models::register(m)?;
+    em_gp::register(m)?;
+    em_model::register(m)?;
+    em_shared::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // Models and their components.
     m.add_class::<models::PySingleTaskGP>()?;
@@ -73,6 +102,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     // Acquisition functions and their optimization.
     m.add_class::<acquisition::PyAcquisitionFunction>()?;
+    m.add_class::<acquisition::PyAcquisitionParameterTape>()?;
     m.add_function(wrap_pyfunction!(acquisition::prune_inferior_points_py, m)?)?;
     m.add_function(wrap_pyfunction!(optim::optimize_acqf, m)?)?;
     m.add_function(wrap_pyfunction!(optim::gen_batch_initial_conditions_py, m)?)?;
@@ -81,6 +111,9 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(optim::evaluate_feasibility_py, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::project_linear_equalities_py, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::equality_projection_vjp_py, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::project_feasible_space_py, m)?)?;
     // Polytope sampling.
     m.add_class::<polytope::PyHitAndRunPolytopeSampler>()?;
     m.add_function(wrap_pyfunction!(polytope::get_polytope_samples_py, m)?)?;
@@ -116,6 +149,10 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     risk_measures::register(m)?;
     momf::register(m)?;
     nsga2::register(m)?;
+    // Approximate GP models and inducing point allocators (phase 10c).
+    approximate::register(m)?;
+    higher_order::register(m)?;
+    latent_kronecker::register(m)?;
     // Fantasy models, cost models and the hypervolume knowledge gradient.
     fantasize::register(m)?;
     hvkg::register(m)?;
@@ -139,7 +176,12 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     multitask::register(m)?;
     // Models of phase 7b (deterministic models, ensembles).
     models_7b::register(m)?;
+    // Fully Bayesian GPs and NUTS (phase 10a).
+    fully_bayesian::register(m)?;
     // Preference learning (phase 10b).
     preference::register(m)?;
+    // Probability and safe-math utilities, samplers and test functions of
+    // phase 11a.
+    probability::register(m)?;
     Ok(())
 }

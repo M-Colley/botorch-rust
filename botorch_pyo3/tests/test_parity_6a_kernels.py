@@ -258,12 +258,24 @@ def test_periodic_kernel_at_vanishing_lengthscales_matches_gpytorch(raw: float) 
     _copy_kernel_params(kb, kr)
     with torch.no_grad():
         CHECK.check("kernel: periodic, vanishing lengthscale", kr(x), kb(x).to_dense(), VALUE_TOL)
-        CHECK.check(
-            "kernel: periodic, vanishing lengthscale",
-            kr(x, diag=True),
-            kb(x, diag=True),
-            VALUE_TOL,
-        )
+        actual_diagonal, expected_diagonal = kr(x, diag=True), kb(x, diag=True)
+        if bool((kb.lengthscale == 0).any()):
+            # Softplus underflow has reached an exactly zero, invalid physical
+            # lengthscale. The aligned diagonal is 0/0 in both APIs. Compare
+            # this undefined-domain classification rather than numerical error.
+            assert bool(actual_diagonal.isnan().all() and expected_diagonal.isnan().all())
+            CHECK.record(
+                "kernel: periodic, exactly zero lengthscale (undefined domain only)",
+                float(expected_diagonal.numel()),
+                None,
+            )
+        else:
+            CHECK.check(
+                "kernel: periodic, vanishing lengthscale diagonal",
+                actual_diagonal,
+                expected_diagonal,
+                VALUE_TOL,
+            )
 
 
 def test_downsampling_diag_with_several_inputs_is_the_full_diagonal() -> None:

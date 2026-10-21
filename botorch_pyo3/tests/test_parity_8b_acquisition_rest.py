@@ -298,10 +298,9 @@ def test_infeasible_cost_and_best_feasible_objective_match_botorch() -> None:
 def test_registry_matches_botorch() -> None:
     names_bt = {c.__name__ for c in bic.ACQF_INPUT_CONSTRUCTOR_REGISTRY}
     names_rs = {c.__name__ for c in ric.ACQF_INPUT_CONSTRUCTOR_REGISTRY}
-    # The constructor of the acquisition function botorch_rs does not have
-    # (fully Bayesian models) is missing; the preference constructors came
-    # with phase 10b.
-    assert names_bt - names_rs == {"qBayesianActiveLearningByDisagreement"}
+    # Every constructor of BoTorch's registry is registered (BALD with
+    # phase 10a, the preference constructors with phase 10b).
+    assert names_bt - names_rs == set()
     assert names_rs <= names_bt
     for cls in ric.ACQF_INPUT_CONSTRUCTOR_REGISTRY:
         fb = bic.ACQF_INPUT_CONSTRUCTOR_REGISTRY[_bt_cls(cls.__name__)]
@@ -1007,9 +1006,9 @@ def test_noisy_mo_values_from_constructors(name: str) -> None:
         kb["scalarization_weights"] = kr["scalarization_weights"] = torch.tensor(
             [0.3, 0.7], dtype=DT
         )
-        # The base samples of BoTorch's cached-root sampler differ (as in
-        # test_parity_mo_acquisition).
-        kb["cache_root"] = False
+        # The explicit normals target the full joint posterior root in
+        # both implementations (as in test_parity_mo_acquisition).
+        kb["cache_root"] = kr["cache_root"] = False
     else:
         kb["ref_point"] = kr["ref_point"] = torch.tensor([0.5, 1.0], dtype=DT)
     with synced_draws(seed):

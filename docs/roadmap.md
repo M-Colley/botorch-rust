@@ -1,16 +1,30 @@
-# Roadmap to a full port
+# Port coverage and native follow-up work
 
-botorch-rust 0.2.0 covers 398 of BoTorch's 776 public classes and functions
-([coverage report](api_coverage.md)): the GP core with kernel trees, priors and
-all input and outcome transforms; multi-task, multi-fidelity, mixed, MAP SAAS,
-ensemble, deterministic and contextual models; the single-objective
-acquisition functions (except `qMultiStepLookahead` and the input
-constructors) and all of `botorch.acquisition.multi_objective`; acquisition
-optimization and candidate generation; and pathwise sampling. The goal is the whole of BoTorch, with every ported component
-tested for equivalence like the existing ones (Rust fixtures generated with
-BoTorch, live side-by-side tests, randomized sweeps). This file orders the
-remaining work. Foundations come first, because most models and acquisition
-functions build on them.
+botorch-rust 0.3.0's implementation includes the GP core
+with kernel trees, priors and all input and outcome transforms; multi-task,
+multi-fidelity, mixed, MAP SAAS, ensemble, deterministic and contextual
+models; fully Bayesian GPs and NUTS; preference, variational and higher-order
+GPs; the single-objective acquisition functions and all of
+`botorch.acquisition.multi_objective`; acquisition optimization; efficient
+leave-one-out cross-validation; probability utilities and samplers.
+The generated [coverage report](api_coverage.md) and
+[JSON gap inventory](api_coverage.json) record public names and missing API
+members against a pinned official BoTorch revision. Symbol availability
+does not prove that every configuration, gradient or algorithm is supported.
+The main-package implementation has Rust fixture, live source, randomized,
+device and higher-derivative checks. The current release gate is documented in
+the [backend guide](torch-backend.md). The phase notes below retain the native
+CPU implementation history and its algorithm/configuration follow-ups. Native
+restrictions are separate from the Tensor routes that provide device and
+autograd behavior; the availability inventory alone proves neither.
+
+The [integrated Tensor release](torch-backend.md#release-verification) includes
+specialized and empirical models, scalar/multitask device NUTS, entropy and
+lookahead acquisitions, and continuous/mixed/discrete device optimization.
+Supported paths retain training-data, query and parameter graphs, including
+higher derivatives. The phase notes below primarily describe the native CPU
+route and its remaining configurations. The linked backend and family notes
+retain the exact configuration and performance limits.
 
 ## Phase 6: modeling building blocks
 
@@ -18,8 +32,8 @@ functions build on them.
   Kernel trees in `SingleTaskGP`, the GPyTorch kernels (Matérn ν = 0.5, 1.5,
   2.5, RBF, RQ, periodic, linear, polynomial, cosine, `IndexKernel`), BoTorch's
   own kernels, the Normal / Uniform / half-Cauchy / half-normal / LKJ / Beta
-  priors and `LessThan`. Remaining: the kernels of later model phases,
-  `SmoothedBoxPrior` and other priors, `last_dim_is_batch`.
+  priors and `LessThan`. Standard kernel trees now also support native
+  `last_dim_is_batch`; specialized kernel feature modes remain explicit.
 - **6b: transforms (done; [details](transforms.md)).** All 35 names of
   `botorch.models.transforms`: the input transforms (`Normalize` in full,
   `InputStandardize`, `Warp`, `Round`, `AppendFeatures`, `FilterFeatures`,
@@ -37,8 +51,9 @@ functions build on them.
 - **7a: multi-task models (done; [details](multitask.md)).** `MultiTaskGP`
   and `KroneckerMultiTaskGP`, with `MultitaskGaussianLikelihood`,
   `HadamardGaussianLikelihood`, `MultitaskKernel` and `SmoothedBoxPrior`.
-  Remaining: `HeterogeneousMTGP` and its kernels, batched training data,
-  candidates with the task column.
+  `HeterogeneousMTGP` and its composite kernels are also integrated
+  ([details](heterogeneous-multitask.md)). Specialized batching and transform
+  combinations remain documented per model.
 - **7b: other models (done; [details](models.md)).** Ported:
   - `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`;
   - the MAP SAAS models: `get_map_saas_model`, `AdditiveMapSaasSingleTaskGP`,
@@ -49,7 +64,6 @@ functions build on them.
     `fantasize` for these models.
 
   Remaining:
-  - the per-component posteriors of `OrthogonalAdditiveGP`;
   - the knowledge gradient, entropy search and multi-objective acquisition
     functions on ensemble models.
 
@@ -68,13 +82,14 @@ Ported, with equivalence tests ([details](single-objective-acquisition.md)):
 Also ported (phase 8b, [details](acquisition-construction.md)): the input
 constructors with `get_acquisition_function`, `qMultiStepLookahead`,
 `SampleReducingMCAcquisitionFunction` as a public base class, and t-batched
-max-value samplers and fixed features.
+max-value samplers and fixed features. BALD, analytic EUBO and qEUBO input
+constructors and pairwise/fully Bayesian active-learning acquisitions are
+integrated with Phase 10.
 
 Remaining:
-- the input constructors of BALD and EUBO (with Phase 10);
-- `qMultiStepLookahead` with other value functions and models;
-- the active learning that needs pairwise or fully Bayesian models
-  (Phase 10).
+
+- `qMultiStepLookahead` with value functions and model combinations outside
+  its documented native or Tensor scope.
 
 ## Phase 9: optimization and candidate generation (done; [details](optimization.md))
 
@@ -87,39 +102,105 @@ Ported:
 - fitting with torch optimizers, the closures and stopping criteria;
 - `batch_cross_validation`.
 
-Remaining:
-- `acq_function_sequence`;
-- `loo_cv`, `efficient_loo_cv` and `ensemble_loo_cv`;
-- `data_loader` closures.
+Sequential acquisition sequences now optimize each acquisition through the
+native candidate generator and restore pending points after failures
+([scope and upstream fixes](sequence-optimization.md)). Variational
+`data_loader` closures now evaluate external minibatches with native ELBO
+gradients and cycle epochs ([scope](variational-data-loader-closures.md)).
+External-data closures for exact GPs remain unsupported.
+
+`loo_cv`, `efficient_loo_cv` and `ensemble_loo_cv` now use native cached
+factorizations, with batched independent outputs, fixed noise, outcome
+untransforms and ensemble sample transforms. They keep the existing model
+hyperparameters, as in BoTorch; `batch_cross_validation` refits each fold.
 
 ## Phase 10: fully Bayesian, preference and approximate models
 
-- `SaasFullyBayesianSingleTaskGP` (NUTS, reusing an existing Rust NUTS
-  implementation such as `nuts-rs`), the linear and multi-task fully Bayesian
-  models, and BALD.
+- Fully Bayesian single-task, linear and multi-task GPs, native NUTS and
+  BALD are integrated ([implementation and parity notes](drafts/10a-fully-bayesian.md)).
 - `PairwiseGP` with its Laplace MLL and likelihoods, EUBO and the preference
-  BALD (done; [details](preference.md)). Remaining: `LearnedObjective` in the
-  Monte-Carlo acquisition functions, learned input transforms in
-  `PairwiseGP`.
-- `SingleTaskVariationalGP` with the inducing-point allocators.
-- `HigherOrderGP`, `LatentKroneckerGP`, the contextual `SACGP` / `LCEAGP`,
-  `HeterogeneousMTGP`, relevance pursuit, and the empirical and hierarchical
-  GP packages.
+  BALD (done; [details](preference.md)). `LearnedObjective` is integrated
+  with native Monte Carlo acquisitions, including expanded preference
+  samples and a joint-law noisy-improvement correction
+  ([scope](learned-objective-acquisitions.md)). Native learned Warp transforms,
+  including shared/per-member batches and Laplace fitting, are integrated
+  ([scope](pairwise-input-transforms.md)); the
+  [Tensor preference model](torch-pairwise-gp.md) has separate device graph notes.
+- `SingleTaskVariationalGP` with the inducing-point allocators and
+  `HigherOrderGP` are integrated ([details and limits](approximate-models.md)).
+- `LatentKroneckerGP`, contextual `SACGP` / `LCEAGP` and hierarchical
+  conditional GPs are integrated with explicit configuration limits
+  ([Kronecker](latent-kronecker.md), [SAC](contextual-sac.md),
+  [LCEA](contextual-lcea.md), [hierarchical](hierarchical-models.md)).
+- Native empirical covariance, basis, interpolation, PSD and shrinkage helpers
+  are integrated ([utilities](empirical-gp-utils.md)).
+- Scalar, independent/correlated-output and heterogeneous multitask empirical
+  GPs are integrated ([models](empirical-gp-models.md)).
+- Relevance pursuit, robust GPs and sparse-outlier likelihoods are integrated
+  ([scope and upstream fixes](relevance-pursuit.md)).
+- Native additive-component inference is integrated
+  ([details](additive-components.md)).
+- EM empirical prior pretraining, historical likelihoods, exact target
+  conditioning, shared-kernel fitting, coordinate ascent and native
+  differentiation through cold and warm EM reruns and learned explicit
+  inducing locations are integrated. Moving historical index grids remains
+  configuration work
+  ([details](empirical-gp-models.md)).
 
 ## Phase 11: the rest
 
-- `botorch.utils.probability` (bivariate and truncated multivariate normal,
-  linear-ellipsoid sampling) and the remaining utilities.
-- Samplers other than Sobol (`IIDNormalSampler`, ...).
-- The remaining test functions: multi-fidelity, constrained single-objective
-  and sensitivity analysis.
+- Probability utilities, including bivariate and truncated multivariate
+  normals, MVNXPB and linear elliptical slice sampling, are integrated.
+- IID, normal QMC, multivariate QMC, forked RNG and list samplers are
+  integrated. Native QMC engines retain their stream state and perform
+  multivariate projection in Rust.
+- Multi-fidelity, constrained single-objective and sensitivity-analysis
+  test functions are integrated ([scope and verification](drafts/11a-utils.md)).
+- Resumable native batched L-BFGS-B and atomic training target/noise replacement
+  are integrated ([solver](batched-lbfgsb.md), [model state](model-training-state.md)).
+- Gaussian and structured Matheron posterior query adjoints,
+  supplied-distribution/operator constructors, public path constructors, and
+  fully Bayesian NumPyro effect-handler interfaces are integrated
+  ([paths](pathwise-public-constructors.md),
+  [optional trace interface](numpyro-trace-interoperability.md)).
+  Specialized fantasy-batch and model-state configurations remain explicit.
+- Lazy JAX conversion adapters, a validated atomic LCBench cache/loader with
+  native log scaling, and native-aware optimization mocks are integrated.
 - `botorch_community`.
+
+For an explicit completeness check, run
+`python scripts/api_coverage.py --require-full --json-out docs/api_coverage.json`.
+This core API check now passes against the pinned official reference: 776
+public names, no missing audited constructor parameters or public members.
+It exits unsuccessfully if those gaps recur. This is an API milestone; the
+numerical parity suites, documented configuration limits and release
+benchmarks remain separate requirements. `botorch_community` is tracked
+separately.
 
 ## Cross-cutting
 
 - Batched models and batched box decompositions in the multi-objective
   acquisition functions.
-- Autograd through models: posteriors as torch tensors with gradients with
-  respect to the hyperparameters, not only the inputs.
+- Parameter autograd is integrated for ordinary CPU Torch `SingleTaskGP`
+  posterior moments, samples and exact MLLs, including joint Gaussian model
+  lists and summed MLLs. Variational GPs also expose persistent Torch leaves
+  and full-data/minibatch ELBO gradients. Common analytic/scalar MC
+  acquisitions and qNEI/qLogNEI/qLogNParEGO now attach native parameter
+  tapes for unbatched ordinary GP sources. Noisy tapes preserve the actual
+  cached/joint path and its detached baseline quantities
+  ([scope](noisy-acquisition-parameter-gradients.md)). Extend native CPU posterior
+  parameter graphs to specialized models and parameter tapes to other acquisition
+  families ([posterior scope](posterior-parameter-gradients.md),
+  [acquisition scope](acquisition-parameter-gradients.md)).
 - Faster dense linear algebra for larger n. At n = 300, fitting is only 1.4×
   faster than BoTorch, which uses multithreaded BLAS/LAPACK.
+- Native CPU training-data and fantasy-data autograd. Gradients to stored
+  training inputs and targets remain unavailable on that route;
+  `propagate_grads(True)` does not change it. Supported Tensor model paths
+  already retain these graphs, with the family-specific scope documented in
+  [the current backend notes](torch-backend.md).
+
+Correctness deviations and reproductions are indexed in
+[correctness-findings.md](correctness-findings.md). Public symbol availability
+is not completion: missing parameters/members and numerical, tensor-autograd,
+configuration and performance coverage remain separate work.

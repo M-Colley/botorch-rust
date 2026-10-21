@@ -1064,6 +1064,7 @@ fn parity_qlognparego() {
                 Arc::clone(&model),
                 &xb,
                 QLogNParEGOOptions {
+                    cache_root: false,
                     scalarization_weights: Some(c.weights.clone()),
                     sampler: Some(sampler(&f.draws, f.num_samples)),
                     objective: objective_of(&c.objective, model.as_ref(), &xb),

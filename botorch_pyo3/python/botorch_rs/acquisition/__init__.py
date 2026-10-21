@@ -1,12 +1,18 @@
 """Acquisition functions (``botorch.acquisition``)."""
 
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, OneShotAcquisitionFunction
+from botorch_rs.acquisition.acquisition import (
+    AcquisitionFunction,
+    MCSamplerMixin,
+    MultiModelAcquisitionFunction,
+    OneShotAcquisitionFunction,
+)
 from botorch_rs.acquisition.active_learning import (
     PairwiseMCPosteriorVariance,
     qNegIntegratedPosteriorVariance,
 )
 from botorch_rs.acquisition.analytic import (
     AnalyticAcquisitionFunction,
+    ConstrainedAnalyticAcquisitionFunctionMixin,
     ConstrainedExpectedImprovement,
     ExpectedImprovement,
     LogConstrainedExpectedImprovement,
@@ -22,6 +28,7 @@ from botorch_rs.acquisition.analytic import (
     UpperConfidenceBound,
     qAnalyticProbabilityOfImprovement,
 )
+from botorch_rs.acquisition.bayesian_active_learning import qBayesianActiveLearningByDisagreement
 from botorch_rs.acquisition.composite import CallableAcquisitionFunction, WeightedLogMeanExp
 from botorch_rs.acquisition.cost_aware import (
     CostAwareUtility,
@@ -68,6 +75,7 @@ from botorch_rs.acquisition.multi_step_lookahead import qMultiStepLookahead
 from botorch_rs.acquisition.multioutput_acquisition import MultiOutputAcquisitionFunction
 from botorch_rs.acquisition.objective import (
     ConstrainedMCObjective,
+    ExpectationPosteriorTransform,
     GenericMCObjective,
     IdentityMCObjective,
     LearnedObjective,
@@ -108,6 +116,7 @@ __all__ = [
     "ConstrainedMCObjective",
     "CostAwareUtility",
     "DecoupledAcquisitionFunction",
+    "ExpectationPosteriorTransform",
     "ExpectedImprovement",
     "FixedFeatureAcquisitionFunction",
     "GaussianPenalty",
@@ -132,6 +141,9 @@ __all__ = [
     "LogProbabilityOfImprovement",
     "MCAcquisitionFunction",
     "MCAcquisitionObjective",
+    "MCSamplerMixin",
+    "MultiModelAcquisitionFunction",
+    "ConstrainedAnalyticAcquisitionFunctionMixin",
     "MaxValueBase",
     "MultiOutputAcquisitionFunction",
     "OneShotAcquisitionFunction",
@@ -172,6 +184,7 @@ __all__ = [
     "qMultiFidelityKnowledgeGradient",
     "qMultiFidelityLowerBoundMaxValueEntropy",
     "qMultiFidelityMaxValueEntropy",
+    "qBayesianActiveLearningByDisagreement",
     "qNegIntegratedPosteriorVariance",
     "qNoisyExpectedImprovement",
     "qPosteriorStandardDeviation",

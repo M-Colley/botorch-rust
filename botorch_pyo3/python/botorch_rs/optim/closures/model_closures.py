@@ -1,15 +1,17 @@
 """Model-based closures (``botorch.optim.closures.model_closures``).
 
-The loss closure of a botorch_rs marginal log likelihood evaluates the
-negative MLL (and its gradient) in Rust; the closures with gradients return
-the gradients of the selected parameters, computed analytically.
+Native model closures evaluate the negative MLL and its analytical gradients
+in Rust. Tensor-backend closures retain the device-resident Torch loss graph;
+closures with gradients return derivatives of the selected Parameters.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from botorch_rs._arrays import from_flat, kind_of, to_flat
+from botorch_rs._tensor_mll import is_tensor_mll
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.optim.closures.core import ForwardBackwardClosure
 
@@ -33,20 +35,42 @@ class MllLossClosure:
         data, shape = to_flat(values, "mll")
         return from_flat([-v for v in data], shape, kind_of(values))
 
-    def value_and_grad(self, names: list[str]) -> tuple[float, dict[str, list[float]]]:
+    def value_and_grad(
+        self, names: list[str], **kwargs: Any
+    ) -> tuple[float, dict[str, list[float]]]:
         """The summed loss and its gradient with respect to the parameters
         ``names`` (flat values per parameter)."""
         from botorch_rs.optim.utils.model_utils import _entries
 
+        if kwargs:
+            raise UnsupportedError(f"Unsupported closure keyword arguments: {sorted(kwargs)}.")
         entries = {e.name: e for e in _entries(self.mll)}
+        if getattr(self.mll, "_rs_custom_objective", False):
+            # KL, EM and globally shared likelihoods have their own analytic
+            # objective. Evaluating the ordinary GP MLL would optimize a
+            # different law (and shared offsets do not belong to each child).
+            value, gradient = self.mll.value_and_grad()
+            return -value, {
+                name: [
+                    -g
+                    for g in gradient[
+                        entries[name].offset : entries[name].offset + entries[name].size
+                    ]
+                ]
+                for name in names
+            }
         total = 0.0
         grads: dict[str, list[float]] = {}
         cache: dict[int, list[float]] = {}
         for model in {id(e.model): e.model for e in entries.values()}.values():
-            from botorch_rs.mlls import _forward_pass
+            from botorch_rs.mlls import _ApproximateMarginalLogLikelihood, _forward_pass
 
             _forward_pass(model)
-            (values, shape), grad = model._rs.mll_value_and_grad(None)
+            if isinstance(model, _ApproximateMarginalLogLikelihood):
+                value, grad = model.value_and_grad()
+                values = [value]
+            else:
+                (values, shape), grad = model._rs.mll_value_and_grad(None)
             total += -sum(values)
             cache[id(model)] = [-g for g in grad]
         k = len(getattr(self.mll, "mlls", [None]))
@@ -60,6 +84,101 @@ class MllLossClosure:
         return total, grads
 
 
+class _ExternalVariationalData:
+    """A checked minibatch iterator that restarts after each epoch."""
+
+    def __init__(self, mll: Any, data_loader: Any) -> None:
+        self.mll = mll
+        self.data_loader = data_loader
+        self._batches = iter(data_loader)
+
+    def _batch(self, *, single_target: bool = True) -> Sequence[Any]:
+        try:
+            batch = next(self._batches)
+        except StopIteration:
+            self._batches = iter(self.data_loader)
+            try:
+                batch = next(self._batches)
+            except StopIteration:
+                raise ValueError("data_loader must yield at least one minibatch.") from None
+        if not isinstance(batch, Sequence):
+            raise TypeError(
+                f"Expected `data_loader` to generate a batch of tensors, but found {type(batch)}."
+            )
+        inputs = getattr(self.mll.model, "train_inputs", None)
+        if inputs is None:
+            if not single_target:
+                raise TypeError(
+                    "The model must expose train_inputs for a multiple-target data loader."
+                )
+            num_inputs = len(batch) - 1
+        else:
+            num_inputs = len(inputs)
+        if not single_target and len(batch) <= num_inputs:
+            raise ValueError("Each minibatch must contain model inputs and at least one target.")
+        if single_target and len(batch) != num_inputs + 1:
+            raise ValueError("Each variational minibatch must contain the inputs and targets.")
+        return batch
+
+
+class _ExternalVariationalLossClosure(MllLossClosure, _ExternalVariationalData):
+    """Cycle actual minibatches and evaluate their ELBO/gradient in Rust."""
+
+    def __init__(self, mll: Any, data_loader: Any) -> None:
+        _ExternalVariationalData.__init__(self, mll, data_loader)
+
+    def _data(self) -> tuple[Any, Any]:
+        batch = self._batch()
+        num_inputs = len(self.mll.model.train_inputs)
+        output = self.mll.model(*batch[:num_inputs])
+        return self.mll._elbo_data(output, batch[-1])
+
+    def __call__(self, **kwargs: Any) -> Any:
+        if kwargs:
+            raise UnsupportedError(f"Unsupported closure keyword arguments: {sorted(kwargs)}.")
+        x, y = self._data()
+        ll, kl, lp = self.mll._rs.elbo(x, y, float(self.mll.num_data), float(self.mll.beta))
+        return from_flat([-(ll - kl + lp)], (), self.mll._kind)
+
+    def value_and_grad(
+        self, names: list[str], **kwargs: Any
+    ) -> tuple[float, dict[str, list[float]]]:
+        from botorch_rs.optim.utils.model_utils import _entries
+
+        if kwargs:
+            raise UnsupportedError(f"Unsupported closure keyword arguments: {sorted(kwargs)}.")
+        x, y = self._data()
+        value, gradient = self.mll._rs.elbo_value_and_grad_on_data(
+            x, y, float(self.mll.num_data), float(self.mll.beta)
+        )
+        entries = {entry.name: entry for entry in _entries(self.mll)}
+        grads = {}
+        for name in names:
+            entry = entries[name]
+            grads[name] = [-g for g in gradient[entry.offset : entry.offset + entry.size]]
+        return -float(value), grads
+
+
+class _ExternalTorchVariationalLossClosure(_ExternalVariationalData):
+    """Return the actual differentiable loss of each Tensor minibatch."""
+
+    def __call__(self, **kwargs: Any) -> Any:
+        if kwargs:
+            raise UnsupportedError(f"Unsupported closure keyword arguments: {sorted(kwargs)}.")
+        batch = self._batch()
+        return -self.mll(self.mll.model(*batch[:-1]), batch[-1])
+
+
+class _ExternalLossClosure(_ExternalVariationalData):
+    """Evaluate the supplied model/MLL protocol on each complete minibatch."""
+
+    def __call__(self, **kwargs: Any) -> Any:
+        batch = self._batch(single_target=False)
+        num_inputs = len(self.mll.model.train_inputs)
+        output = self.mll.model(*batch[:num_inputs])
+        return -self.mll(output, *batch[num_inputs:], **kwargs)
+
+
 def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
     r"""Factory function for creating loss closures from marginal log
     likelihoods (BoTorch's ``get_loss_closure``).
@@ -67,8 +186,10 @@ def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
     Args:
         mll: A botorch_rs ``MarginalLogLikelihood`` whose negative defines
             the loss (an MLL or model with ``compute_custom_loss`` uses that).
-        data_loader: Not supported (botorch_rs evaluates the MLL on the
-            model's training data).
+        data_loader: Optional iterable of minibatches. Batches contain model
+            inputs followed by targets; the iterator restarts after each epoch.
+            Tensor exact/variational and caller-supplied MLLs evaluate external
+            batches. Native exact MLLs use their stored training data.
 
     Returns:
         A closure that takes zero positional arguments and returns the
@@ -77,6 +198,8 @@ def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
     if hasattr(mll, "compute_custom_loss"):
         return mll.compute_custom_loss
     model = getattr(mll, "model", None)
+    if is_tensor_mll(mll) and data_loader is None:
+        return lambda: -mll()
     if model is not None and hasattr(model, "compute_custom_loss"):
 
         def custom(**kwargs: Any) -> Any:
@@ -84,7 +207,20 @@ def get_loss_closure(mll: Any, data_loader: Any = None) -> Any:
 
         return custom
     if data_loader is not None:
-        raise UnsupportedError("`data_loader` is not supported by botorch_rs.")
+        from botorch_rs.mlls import MarginalLogLikelihood, _ApproximateMarginalLogLikelihood
+
+        if not isinstance(mll, _ApproximateMarginalLogLikelihood):
+            if is_tensor_mll(mll) or not isinstance(mll, MarginalLogLikelihood):
+                return _ExternalLossClosure(mll, data_loader)
+            raise UnsupportedError(
+                "Native exact-GP closures evaluate stored training data; "
+                "use backend='torch' for external-data exact-GP closures."
+            )
+        if not mll.combine_terms:
+            raise UnsupportedError("External-data ELBO closures require combine_terms=True.")
+        if is_tensor_mll(mll):
+            return _ExternalTorchVariationalLossClosure(mll, data_loader)
+        return _ExternalVariationalLossClosure(mll, data_loader)
     return MllLossClosure(mll)
 
 

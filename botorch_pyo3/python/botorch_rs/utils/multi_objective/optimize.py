@@ -20,7 +20,9 @@ is evaluated through Python (torch), as in BoTorch.
 
 from __future__ import annotations
 
+import importlib
 import random
+import sys
 import warnings
 from collections.abc import Callable
 from typing import Any
@@ -211,4 +213,222 @@ def _post_process(
     return from_flat(x_out, (len(keep), d), kind), from_flat(y_out, (len(keep), m), kind)
 
 
-__all__ = ["optimize_with_nsgaii"]
+def _pymoo_base(module: str, name: str) -> type:
+    """pymoo's ``Problem`` / ``Repair`` base class if pymoo is installed (as
+    in BoTorch), else ``object``."""
+    try:
+        mod = importlib.import_module(module)
+    except ImportError:
+        return object
+    return getattr(mod, name)
+
+
+def _build_pymoo_classes() -> dict[str, type]:
+    """``DiscreteParameterRepair`` and ``BotorchPymooProblem``, subclasses of
+    pymoo's ``Repair`` and ``Problem`` if pymoo is installed (imported on
+    first access)."""
+    _Repair: Any = _pymoo_base("pymoo.core.repair", "Repair")
+    _Problem: Any = _pymoo_base("pymoo.core.problem", "Problem")
+
+    class DiscreteParameterRepair(_Repair):  # type: ignore[misc]
+        """Pymoo Repair operator that rounds discrete parameters to valid values.
+
+        This repair operator is applied after each generation to ensure that
+        discrete parameters are snapped to their nearest allowed values.
+
+        A subclass of pymoo's ``Repair`` if pymoo is installed; botorch_rs's
+        NSGA-II does not need it.
+        """
+
+        def __init__(
+            self,
+            discrete_choices: dict[int, list[float]],
+        ) -> None:
+            """Initialize the repair operator.
+
+            Args:
+                discrete_choices: A mapping from dimension index to allowed discrete
+                    values. Only dimensions in this mapping will be rounded.
+            """
+            if _Repair is not object:
+                super().__init__()
+            self.discrete_choices = discrete_choices
+
+        def _do(self, problem: Any, X: Any, **kwargs: Any) -> Any:
+            """Round discrete dimensions to nearest allowed values.
+
+            Args:
+                problem: The pymoo Problem instance.
+                X: A ``pop_size x n_var`` array of candidate solutions.
+                **kwargs: Additional keyword arguments.
+
+            Returns:
+                The repaired array with discrete dimensions rounded.
+            """
+            np = sys.modules.get("numpy")
+            if np is not None and isinstance(X, np.ndarray):
+                for dim, allowed_values in self.discrete_choices.items():
+                    allowed = np.array(allowed_values)
+                    vals = X[:, dim]
+                    distances = np.abs(vals[:, np.newaxis] - allowed[np.newaxis, :])
+                    nearest_idx = np.argmin(distances, axis=1)
+                    X[:, dim] = allowed[nearest_idx]
+                return X
+            for row in X:
+                for dim, allowed_values in self.discrete_choices.items():
+                    v = float(row[dim])
+                    best = min(range(len(allowed_values)), key=lambda k: abs(v - allowed_values[k]))
+                    row[dim] = allowed_values[best]
+            return X
+
+        if _Repair is object:
+
+            def do(self, problem: Any, X: Any, **kwargs: Any) -> Any:
+                """Applies the repair (pymoo's ``Repair.do`` without pymoo)."""
+                return self._do(problem, X, **kwargs)
+
+    class BotorchPymooProblem(_Problem):  # type: ignore[misc]
+        def __init__(
+            self,
+            n_var: int,
+            n_obj: int,
+            xl: Any,
+            xu: Any,
+            acqf: Any,
+            dtype: Any = None,
+            device: Any = None,
+            ref_point: Any = None,
+            objective: Any = None,
+            constraints: list[Callable[[Any], Any]] | None = None,
+            inequality_constraints: list[tuple[Any, Any, float]] | None = None,
+        ) -> None:
+            """PyMOO problem for optimizing the model posterior mean using NSGA-II.
+
+            This is instantiated and used within ``optimize_with_nsgaii`` to define
+            the optimization problem to interface with pymoo.
+
+            This assumes maximization of all objectives.
+
+            A subclass of pymoo's ``Problem`` if pymoo is installed (else a plain
+            class with ``_evaluate``); botorch_rs's ``optimize_with_nsgaii`` runs
+            NSGA-II natively and does not use it.
+
+            Args:
+                n_var: The number of tunable parameters (``d``).
+                n_obj: The number of objectives.
+                xl: A ``d``-dim np.ndarray of lower bounds for each tunable parameter.
+                xu: A ``d``-dim np.ndarray of upper bounds for each tunable parameter.
+                acqf: A MultiOutputAcquisitionFunction.
+                dtype: The torch dtype.
+                device: The torch device.
+                ref_point: A list or tensor with ``m`` elements representing the
+                    reference point (in the outcome space), which is treated as a
+                    lower bound on the objectives, after applying ``objective`` to
+                    the samples.
+                objective: The MCMultiOutputObjective under which the samples are
+                    evaluated. Defaults to ``IdentityMultiOutputObjective()``.
+                    This can be used to determine which outputs of the
+                    MultiOutputAcquisitionFunction should be used as
+                    objectives/constraints in NSGA-II.
+                constraints: A list of callables, each mapping a Tensor of dimension
+                    ``sample_shape x batch-shape x q x m`` to a Tensor of dimension
+                    ``sample_shape x batch-shape x q``, where negative values imply
+                    feasibility.
+                inequality_constraints: A list of tuples (indices, coefficients, rhs),
+                    representing inequality constraints of the form
+                    ``sum_i (X[indices[i]] * coefficients[i]) >= rhs``. These are
+                    parameter-space constraints (as opposed to outcome-space
+                    constraints).
+            """
+            num_constraints = 0 if constraints is None else len(constraints)
+            if ref_point is not None:
+                num_constraints += len(to_flat(ref_point, "ref_point")[0])
+            if inequality_constraints is not None:
+                num_constraints += len(inequality_constraints)
+            if _Problem is not object:
+                np = importlib.import_module("numpy")
+                super().__init__(
+                    n_var=n_var,
+                    n_obj=n_obj,
+                    n_ieq_constr=num_constraints,
+                    xl=xl,
+                    xu=xu,
+                    type_var=np.double,
+                )
+            else:
+                self.n_var = n_var
+                self.n_obj = n_obj
+                self.n_ieq_constr = num_constraints
+                self.xl = xl
+                self.xu = xu
+            from botorch_rs.acquisition.multi_objective.objective import (
+                IdentityMCMultiOutputObjective,
+            )
+
+            self.botorch_acqf = acqf
+            self.botorch_ref_point = ref_point
+            self.botorch_objective = (
+                IdentityMCMultiOutputObjective() if objective is None else objective
+            )
+            self.botorch_constraints = constraints
+            self.botorch_inequality_constraints = inequality_constraints
+            self.torch_dtype = dtype
+            self.torch_device = device
+
+        def _evaluate(self, x: Any, out: dict[str, Any], *args: Any, **kwargs: Any) -> None:
+            """Evaluate x with respect to the objective/constraints."""
+            torch = importlib.import_module("torch")
+            X = torch.as_tensor(x).to(
+                dtype=self.torch_dtype or torch.float64, device=self.torch_device
+            )
+            with torch.no_grad():
+                # eval in batch mode, since all we need is the mean and this helps
+                # avoid ill-conditioning
+                y = self.botorch_acqf(X=X.unsqueeze(-2))
+            obj = self.botorch_objective(y)
+            # negate the objectives, since we want to maximize this function
+            out["F"] = -obj.cpu().numpy()
+            constraint_vals = None
+            if self.botorch_constraints is not None:
+                constraint_vals = torch.stack([c(y) for c in self.botorch_constraints], dim=-1)
+            if self.botorch_ref_point is not None:
+                # add constraints for the ref point
+                ref_constraints = torch.as_tensor(self.botorch_ref_point).to(obj) - obj
+                if constraint_vals is not None:
+                    constraint_vals = torch.cat([constraint_vals, ref_constraints], dim=-1)
+                else:
+                    constraint_vals = ref_constraints
+            if self.botorch_inequality_constraints is not None:
+                ineq_constraint_vals = []
+                for indices, coefficients, rhs in self.botorch_inequality_constraints:
+                    lhs = (
+                        X[:, torch.as_tensor(indices)] * torch.as_tensor(coefficients).to(X)
+                    ).sum(dim=-1)
+                    # Transform to G(x) <= 0 form: rhs - lhs <= 0
+                    ineq_constraint_vals.append(rhs - lhs)
+                ineq_constraints = torch.stack(ineq_constraint_vals, dim=-1)
+                if constraint_vals is not None:
+                    constraint_vals = torch.cat([constraint_vals, ineq_constraints], dim=-1)
+                else:
+                    constraint_vals = ineq_constraints
+            if constraint_vals is not None:
+                out["G"] = constraint_vals.cpu().numpy()
+
+    for cls in (DiscreteParameterRepair, BotorchPymooProblem):
+        cls.__module__ = __name__
+        cls.__qualname__ = cls.__name__
+    return {
+        "DiscreteParameterRepair": DiscreteParameterRepair,
+        "BotorchPymooProblem": BotorchPymooProblem,
+    }
+
+
+def __getattr__(name: str) -> Any:
+    if name in ("DiscreteParameterRepair", "BotorchPymooProblem"):
+        classes = _build_pymoo_classes()
+        globals().update(classes)
+        return classes[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = ["BotorchPymooProblem", "DiscreteParameterRepair", "optimize_with_nsgaii"]  # noqa: F822 (created lazily by __getattr__)

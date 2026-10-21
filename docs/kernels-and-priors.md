@@ -1,5 +1,156 @@
 # Kernels, priors and constraints
 
+`IntegratedWhiteNoiseKernel(order=p)` is available from
+`botorch_rs.models.kernels` and its `integrated_white_noise` module. This
+parameterless native kernel supports positive integration orders, scalar
+time inputs, `active_dims`, kernel and input batches, composition, exact GP
+likelihood gradients, and analytic posterior input gradients. The first order
+is Brownian motion; higher orders integrate it repeatedly. Use `ScaleKernel`
+to learn its covariance scale. Inputs represent nonnegative times.
+
+The implementation was checked against the official BoTorch source at
+revision `b0dd01be6`. Its `diag=True` branch ignores the second input set;
+the port instead returns the diagonal of the actual cross-covariance.
+`test_integrated_white_noise.py` checks this correction against the full
+official kernel matrix. When the installed BoTorch predates this kernel,
+set `BOTORCH_RS_REFERENCE_ROOT` to an official checkout to run live parity
+tests. Rust tests additionally verify closed forms, positive semidefiniteness,
+input gradients by finite differences and high orders without overflowing
+factorials.
+
+The official diagonal bug can be reproduced with double-precision scalar
+inputs `x1=[[0.2]]`, `x2=[[0.5]]` and `order=2`: `k(x1,x2,diag=True)` returns
+`0.002666666666666667`, while `k(x1,x2).to_dense().diagonal()` returns the
+correct value `0.008666666666666666`. The proposed upstream fix replaces the
+early diagonal return with elementwise minimum and maximum, then evaluates
+the existing shared polynomial sum. For integration orders above one, choose
+one consistent polynomial region to retain correct coincident higher derivatives:
+
+```python
+if diag:
+    left, right = x1_squeezed, x2_squeezed
+else:
+    left, right = x1_squeezed.unsqueeze(-1), x2_squeezed.unsqueeze(-2)
+if self.order == 1:
+    min_val, max_val = torch.minimum(left, right), torch.maximum(left, right)
+else:
+    lower_branch = left <= right
+    min_val = torch.where(lower_branch, left, right)
+    max_val = torch.where(lower_branch, right, left)
+# Keep the existing diff and polynomial sum below this branch.
+```
+
+The official reference checkout and the separate local BoTorch audit fork
+are preserved; this proposed upstream patch has not been applied there.
+
+### Device-resident integrated Wiener graphs
+
+`IntegratedWhiteNoiseKernel(..., backend="torch")` is an ordinary Tensor
+module with active dimensions and declared batch broadcasting. It is also
+converted automatically when used inside a Torch GP or kernel tree. The
+parameterless covariance polynomial runs as port-owned device Tensor operations;
+no query is copied to the native CPU/f64 numerical model. Composition with
+`ScaleKernel` supplies a persistent learnable scale. Full and aligned cross-input
+diagonals, scalar feature batching, float32/float64 CPU/CUDA, and full GP fitting
+and data/parameter derivative graphs are supported.
+
+The original min/max source formula has an additional, independently verified
+coincident-Hessian defect. For `order=2`, independent scalar leaves `s=t=1`
+give `d²k/ds²=0.5` and `d²k/dsdt=0.5`. The continuous polynomial limits are
+respectively **0** and **1**, from `k=s²(3t-s)/6` when `s<=t`. Independently
+splitting both min/max gradients in half at the tie is responsible. Selecting
+the same region with `torch.where` for both ordered times preserves all
+derivatives through the kernel's smoothness order `2*order-2`; either region
+has the same derivatives through that order at the diagonal. This does not
+assert differentiability beyond that order. Brownian covariance (`order=1`)
+is genuinely nonsmooth at independent equal times and retains Torch's symmetric
+first-derivative convention.
+
+`tests/test_torch_wiener.py` adds 31 cases for CPU/CUDA, both float precisions,
+orders 1–6, direct source values/derivatives away from ties, corrected cross
+diagonals, coincident `gradcheck`/`gradgradcheck`, and the highest smooth mixed
+derivative (which recovers Brownian covariance). Scaled/active-dimension exact
+GP tests cover posterior/source parity, repeated training-data and parameter
+first/second graphs, and an actual Adam update. Inputs must be finite,
+nonnegative scalar times after active-dimension selection.
+
+## Native feature batches
+
+Kernel calls support `last_dim_is_batch=True` for RBF, Matérn, rational
+quadratic, periodic, linear, polynomial, cosine and categorical kernels,
+including Scale, Additive and Product trees. Rust evaluates one native
+kernel view per selected feature, preserving ARD entries, constraints and
+the declared `active_dims` order. Child feature counts broadcast, including
+a single-feature child shared across the other child's feature batches.
+Full covariances and diagonals retain their point axes and support ordinary
+kernel/input batch broadcasting. Empty NumPy/Torch input batches preserve
+the feature and point dimensions.
+
+The tests compare list, NumPy and Torch results with GPyTorch, and compare
+the affected upstream bug cases below with independent formulas or the
+diagonal of the actual full covariance. Native Rust tests independently
+check ARD values, selected-feature ordering and composite broadcasting.
+Specialized kernels without an implemented featurewise interpretation raise
+`UnsupportedError`. Kernel calls continue to return dense arrays.
+
+## Verified upstream feature-batch bugs
+
+The categorical reproduction uses official BoTorch `b0dd01be6`, with GPyTorch
+`1.15.2` for the lazy composite reproduction. The proposed
+[categorical patch](patches/botorch-categorical-feature-axis.patch) changes only
+the full-covariance feature-axis permutation; the reference checkout and the
+user's separate audit fork remain unchanged. `git apply --check` succeeds
+against the pinned official checkout. Tests apply the patch to an isolated
+copy and compare its outputs with independent per-feature categorical
+covariances, including kernel/input batches and reordered active dimensions.
+
+`CategoricalKernel.forward` constructs distances shaped `... x N x M x D`,
+then uses `transpose(-3, -1)` for `last_dim_is_batch=True`. That produces
+`... x D x M x N`, reversing the point axes. For `x=[[0],[1]]` and
+`y=[[1],[2],[0]]`, the expected feature covariance has shape `1 x 2 x 3`,
+while the original forward returns `1 x 3 x 2`; lazy evaluation raises an
+expected-shape error. With equal-sized but different inputs the shape passes
+validation and the returned cross-covariance is silently transposed. Replacing
+that permutation with `movedim(-1, -3)` produces `... x D x N x M`. The
+separate `diag=True` branch already uses the correct permutation.
+For equal-sized `x=[[0],[1]]`, `y=[[1],[2]]` and
+`c=exp(-1/lengthscale)`, the correct matrix is `[[c,c],[1,c]]`, while the
+original returns `[[c,1],[c,c]]`.
+
+GPyTorch's lazy composite shape inference has a separate issue. With 3D
+inputs, `RBFKernel(active_dims=[0,2]) + RBFKernel(active_dims=[1,2])`
+produces two feature covariance batches, while its lazy wrapper assumes
+three from the unsliced input width. For `x.shape=(2,3)` and
+`y.shape=(3,3)`, `.to_dense()` raises an error comparing expected shape
+`(3,2,3)` with actual `(2,2,3)`. The same call succeeds inside
+`gpytorch.settings.lazily_evaluate_kernels(False)` and equals the sum of the
+two child feature batches. This eager setting is an upstream workaround.
+The library fix should derive the lazy feature count by broadcasting child
+selected-feature widths, respecting `ScaleKernel.forward`'s bypass of its
+base kernel's active-dimension selection. The native port uses the actual
+child feature-batch widths and preserves the correct point axes.
+
+GPyTorch `1.15.2` also mishandles feature diagonals when the selected feature
+count equals the point count. `RBFKernel(ard_num_dims=3)` on two inputs of
+shape `(3,3)` returns a correct `(3,3)` feature diagonal from `forward`, but
+`__call__(..., diag=True, last_dim_is_batch=True)` mistakes that tensor for a
+full covariance matrix and extracts another diagonal, returning only `(3,)`.
+The postprocessing heuristic compares output rank to input rank without
+accounting for the added feature axis. A fix should test the full covariance
+rank including that feature axis before extracting its diagonal. Computing
+the diagonal of the full feature covariance is a correct reference workaround.
+The categorical patch does not change this separate shared-wrapper issue.
+The replacement guard should include both input and kernel batch broadcasting:
+
+```python
+batch = torch.broadcast_shapes(x1_.shape[:-2], x2_.shape[:-2], self.batch_shape)
+full_covar_ndim = len(batch) + 2 + int(last_dim_is_batch)
+if res.dim() == full_covar_ndim and res.shape[-2:] == torch.Size(
+    (x1_.size(-2), x2_.size(-2))
+):
+    res = res.diagonal(dim1=-1, dim2=-2)
+```
+
 `SingleTaskGP` (one or several outputs, batched, in a `ModelListGP`) takes any
 tree of GPyTorch's and BoTorch's kernels as `covar_module`: `ScaleKernel`
 around any kernel, `AdditiveKernel` and `ProductKernel` (also `k1 + k2` and
@@ -77,7 +228,8 @@ default model: not specific to this phase).
   inducing-point kernels, ...), priors (`SmoothedBoxPrior`,
   `MultivariateNormalPrior`, `HorseshoePrior`) and prior transforms: not in
   the 6a scope; `SmoothedBoxPrior` comes with `MultiTaskGP` (phase 7).
-- `last_dim_is_batch`, `LinearOperator` results of kernel calls.
+- Feature-batch modes of specialized kernels and `LinearOperator` results
+  of kernel calls.
 - One kernel object used twice in a tree (GPyTorch shares its parameters):
   `UnsupportedError`.
 - Kernel batch shapes other than the model's `_aug_batch_shape` (GPyTorch

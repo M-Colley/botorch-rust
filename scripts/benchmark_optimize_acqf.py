@@ -66,7 +66,9 @@ def main() -> None:
         for s in range(repeats):
             acqf = make_acqf()
             t = time.perf_counter()
-            _, v = optimize_acqf(acqf, bounds, q=q, num_restarts=10, raw_samples=512, options={"seed": s})
+            _, v = optimize_acqf(
+                acqf, bounds, q=q, num_restarts=10, raw_samples=512, options={"seed": s}
+            )
             times.append(time.perf_counter() - t)
             values.append(v.item())
         times.sort()

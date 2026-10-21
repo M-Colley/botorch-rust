@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+from abc import ABC, abstractmethod
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -64,6 +65,7 @@ def is_acquisition_model(model: Any) -> bool:
     ``AffineDeterministicModel``, ``FixedSingleSampleModel``) or a
     ``ModelList`` of them (and, internally, the moments of an
     ``EnsembleModel``)."""
+    from botorch_rs.models.approximate_gp import ApproximateGPyTorchModel
     from botorch_rs.models.deterministic import (
         AffineDeterministicModel,
         FixedSingleSampleModel,
@@ -77,6 +79,7 @@ def is_acquisition_model(model: Any) -> bool:
     return isinstance(
         model,
         (
+            ApproximateGPyTorchModel,
             SingleTaskGP,
             ModelListGP,
             MultiTaskGP,
@@ -124,6 +127,12 @@ ENSEMBLE_ACQUISITION_FUNCTIONS = frozenset(
         "qPosteriorStandardDeviation",
         "qNoisyExpectedImprovement",
         "qLogNoisyExpectedImprovement",
+        # Multi-objective (lists of fully Bayesian GPs, phase 10a): BoTorch's
+        # `marginalize_dim` / `average_over_ensemble_models`.
+        "qExpectedHypervolumeImprovement",
+        "qNoisyExpectedHypervolumeImprovement",
+        "qLogExpectedHypervolumeImprovement",
+        "qLogNoisyExpectedHypervolumeImprovement",
     }
 )
 
@@ -166,6 +175,9 @@ def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any])
 
     cls = type(self)
     model: Any = args[0] if args else kwargs.get("model")
+    fully_bayesian_error = getattr(cls, "_FULLY_BAYESIAN_ERROR", None)
+    if fully_bayesian_error is not None and getattr(model, "_is_fully_bayesian", False):
+        raise NotImplementedError(fully_bayesian_error)
     if not hasattr(model, "_ensemble_members") and _supports_ensemble(
         cls, _GAUSSIAN_MOMENT_ACQUISITION_FUNCTIONS
     ):
@@ -182,7 +194,7 @@ def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any])
     if not _supports_ensemble(cls):
         raise UnsupportedError(
             f"{cls.__name__} does not support ensemble models (EnsembleMapSaasSingleTaskGP, "
-            "EnsembleModel) in botorch_rs; supported are "
+            "EnsembleModel, fully Bayesian GPs) in botorch_rs; supported are "
             f"{sorted(ENSEMBLE_ACQUISITION_FUNCTIONS)} (and, on an EnsembleModel, the analytic "
             f"acquisition functions {sorted(_GAUSSIAN_MOMENT_ACQUISITION_FUNCTIONS)})."
         )
@@ -210,6 +222,19 @@ def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any])
     members, weights, sampler = model._ensemble_acquisition(arguments.get("sampler"))
     if "sampler" in names:
         arguments["sampler"] = sampler
+    if "marginalize_dim" in names:
+        # The ensemble dimension (BoTorch's MCMC_DIM) is the only one
+        # botorch_rs marginalizes; the members have none.
+        if arguments.get("marginalize_dim") not in (None, -3):
+            raise UnsupportedError(
+                "botorch_rs marginalizes the ensemble dimension of an ensemble model "
+                "(marginalize_dim=-3)."
+            )
+        arguments["marginalize_dim"] = None
+    prepare = getattr(cls, "_prepare_ensemble", None)
+    if prepare is not None and not deterministic_members:
+        # Class-specific arguments of the members (e.g. qLogNParEGO's).
+        prepare(init, model, members, arguments, model_name)
     if "prune_baseline" in names:
         prune = arguments.get("prune_baseline", names["prune_baseline"].default)
         if prune:
@@ -220,16 +245,37 @@ def _init_on_ensemble(self: Any, init: Any, args: tuple, kwargs: dict[str, Any])
                         "posterior transform or constraints is not supported by botorch_rs; "
                         "pass prune_baseline=False."
                     )
-            arguments["X_baseline"] = _prune_ensemble(
-                model, arguments["X_baseline"], members=members
-            )
+            if "ref_point" in names:
+                from botorch_rs.acquisition.multi_objective.utils import (
+                    _prune_ensemble_multi_objective,
+                )
+
+                arguments["X_baseline"] = _prune_ensemble_multi_objective(
+                    model, arguments["X_baseline"], arguments["ref_point"], members=members
+                )
+            else:
+                arguments["X_baseline"] = _prune_ensemble(
+                    model, arguments["X_baseline"], members=members
+                )
             arguments["prune_baseline"] = False
+    # One `best_f` per member (BoTorch broadcasts a `best_f` with one value
+    # per MCMC sample against the ensemble dimension, e.g. that of
+    # `get_acquisition_function` from the samples' posterior means).
+    per_member: list[dict[str, Any]] = [{} for _ in members]
+    best_f = arguments.get("best_f")
+    if best_f is not None and not deterministic_members and len(members) > 1:
+        values, _ = to_flat(best_f, "best_f")
+        if len(values) == len(members):
+            kind = kind_of(best_f)
+            per_member = [{"best_f": from_flat([v], (), kind)} for v in values]
     objs = []
-    for member in members:
+    for member, own in zip(members, per_member, strict=True):
         obj = object.__new__(cls)
-        init(obj, **{**arguments, model_name: member}, **extra)
+        init(obj, **{**arguments, model_name: member, **own}, **extra)
         objs.append(obj)
     self.__dict__.update(objs[0].__dict__)
+    if per_member[0]:
+        self.best_f = best_f
     self.model = model
     if "sampler" in names and not deterministic_members:
         self.sampler = sampler
@@ -245,6 +291,32 @@ def _is_ensemble_model(model: Any) -> bool:
     """Whether acquisition functions average over the members of ``model``
     (an ``EnsembleMapSaasSingleTaskGP`` or an ``EnsembleModel``)."""
     return hasattr(model, "_ensemble_acquisition")
+
+
+class MCSamplerMixin:
+    """Sampler functionality shared by Monte Carlo acquisition functions.
+
+    A missing sampler is selected lazily from the posterior type by
+    ``get_sampler``, and reused on subsequent calls.
+    """
+
+    _default_sample_shape = (512,)
+
+    def __init__(self, sampler: Any = None) -> None:
+        self.sampler = sampler
+
+    def get_posterior_samples(self, posterior: Any) -> Any:
+        """Draw posterior samples with the configured or lazily chosen sampler."""
+        if self.sampler is None:
+            from botorch_rs.sampling.get_sampler import get_sampler
+
+            self.sampler = get_sampler(posterior=posterior, sample_shape=self._default_sample_shape)
+        return self.sampler(posterior=posterior)
+
+    @property
+    def sample_shape(self) -> Any:
+        """The sampler's sample shape, or the default before lazy selection."""
+        return self._default_sample_shape if self.sampler is None else self.sampler.sample_shape
 
 
 class AcquisitionFunction:
@@ -266,6 +338,20 @@ class AcquisitionFunction:
     _rs: _rs.AcquisitionFunction
     _log: bool = False
 
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        model = args[0] if args else kwargs.get("model")
+        if model is None:
+            model = kwargs.get("pref_model")
+        if model is None:
+            model = kwargs.get("acq_function", kwargs.get("base_value_function"))
+        if model is None:
+            model = kwargs.get("raw_acqf")
+        if getattr(model, "_tensor_backend", None) == "torch":
+            from botorch_rs.acquisition._torch_backend_acquisition import tensor_acquisition
+
+            return tensor_acquisition(cls)
+        return object.__new__(cls)
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         init = cls.__dict__.get("__init__")
@@ -275,10 +361,18 @@ class AcquisitionFunction:
         @functools.wraps(init)
         def __init__(self: Any, *args: Any, **kw: Any) -> None:
             model = args[0] if args else kw.get("model")
-            if _is_ensemble_model(model):
+            if _is_ensemble_model(model) and getattr(model, "_tensor_backend", None) != "torch":
                 _init_on_ensemble(self, init, args, kw)
                 return
             init(self, *args, **kw)
+            # Native wrappers reuse the wrapped acquisition's original model
+            # law, which may predate the model's current parameter state.
+            for argument in (*args, *kw.values()):
+                if isinstance(argument, AcquisitionFunction):
+                    inherited = argument.__dict__.get("_parameter_snapshot")
+                    if inherited is not None and inherited.model is self.model:
+                        self._parameter_snapshot = inherited
+                        break
 
         __init__._ensemble_aware = True  # type: ignore[attr-defined]
         cls.__init__ = __init__  # type: ignore[method-assign]
@@ -293,10 +387,17 @@ class AcquisitionFunction:
             )
         self.model = model
         self._pending_kind: ArrayKind = model._kind
+        from botorch_rs.acquisition._parameter_autograd import capture
+
+        self._parameter_snapshot = capture(model)
 
     def _model_handle(self, posterior_transform: Any = None) -> _RsModel:
         """The model seen through ``posterior_transform`` (if given)."""
-        return self.model._acquisition_model(posterior_transform)
+        native = self.model._acquisition_model(posterior_transform)
+        from botorch_rs.acquisition._parameter_autograd import capture
+
+        self._parameter_snapshot = capture(self.model)
+        return native
 
     def _candidates(self, X: Any) -> tuple[Flat, ArrayKind, tuple[int, ...]]:
         """``X`` as a flat ``batch x q x d`` array, its kind and original shape."""
@@ -314,9 +415,22 @@ class AcquisitionFunction:
 
     def forward(self, X: Any) -> Any:
         """Acquisition values at ``X`` (shape ``batch_shape``)."""
+        snapshot = self.__dict__.get("_parameter_snapshot")
+        if snapshot is not None and not self.__dict__.get("_ensemble_acqfs"):
+            snapshot.validate(self.model)
         if is_torch_tensor(X) and X.dim() >= 2:
             from botorch_rs import _torch_autograd
 
+            if snapshot is not None and not self.__dict__.get("_ensemble_acqfs"):
+                import torch
+
+                if torch.is_grad_enabled() and any(p.requires_grad for _, p in snapshot.entries):
+                    from botorch_rs.acquisition._parameter_autograd import evaluate
+
+                    X3 = X if X.dim() > 2 else X.unsqueeze(0)
+                    result = evaluate(self, X3, snapshot)
+                    self._after_evaluation()
+                    return result
             if _torch_autograd.requires_grad(X):
                 X3 = X if X.dim() > 2 else X.unsqueeze(0)
                 out = _torch_autograd.evaluate(self._rs, X3)
@@ -333,8 +447,37 @@ class AcquisitionFunction:
     def value_and_grad(self, X: Any) -> tuple[Any, Any]:
         """Acquisition values (shape ``batch_shape``) and their gradients with
         respect to ``X`` (shape of ``X``) -- a botorch_rs extension."""
+        if getattr(self, "_tensor_backend", None) == "torch":
+            import torch
+
+            with torch.enable_grad():
+                variable = X if X.requires_grad else X.detach().requires_grad_(True)
+                value = self(variable)
+                gradient = torch.autograd.grad(value.sum(), variable, create_graph=True)[0]
+            return value, gradient
+        snapshot = self.__dict__.get("_parameter_snapshot")
+        if snapshot is not None and not self.__dict__.get("_ensemble_acqfs"):
+            snapshot.validate(self.model)
         flat, kind, shape = self._candidates(X)
-        (values, batch), (grads, _) = self._rs.forward_with_grad(flat)
+        use_tape = False
+        if (
+            snapshot is not None
+            and snapshot.model_error is None
+            and not self.__dict__.get("_ensemble_acqfs")
+            and is_torch_tensor(X)
+            and self._rs.supports_parameter_gradients
+        ):
+            import torch
+
+            use_tape = torch.is_grad_enabled() and any(p.requires_grad for _, p in snapshot.entries)
+        if use_tape:
+            # Match forward's Gaussian-adjoint evaluation exactly: the optimized
+            # query-only analytic route can differ by a few float64 ULPs.
+            (values, batch), gradient, _ = self._rs.forward_with_adjoint_tape(flat, True)
+            assert gradient is not None
+            grads, _ = gradient
+        else:
+            (values, batch), (grads, _) = self._rs.forward_with_grad(flat)
         self._after_evaluation()
         return from_flat(values, batch, kind), from_flat(grads, shape, kind)
 
@@ -356,6 +499,18 @@ class AcquisitionFunction:
         return f"{type(self).__name__}()"
 
 
+class MultiModelAcquisitionFunction(AcquisitionFunction, ABC):
+    """Base for custom acquisition functions using a dictionary of models."""
+
+    def __init__(self, model_dict: Any) -> None:
+        self.model_dict = model_dict
+
+    @abstractmethod
+    def forward(self, X: Any) -> Any:
+        """Evaluate the custom acquisition function using ``model_dict``."""
+        raise NotImplementedError
+
+
 class OneShotAcquisitionFunction(AcquisitionFunction):
     """Base class of the one-shot acquisition functions (e.g. the hypervolume
     knowledge gradient), whose candidate sets are augmented by auxiliary
@@ -368,4 +523,10 @@ class OneShotAcquisitionFunction(AcquisitionFunction):
         raise NotImplementedError
 
 
-__all__ = ["ENSEMBLE_ACQUISITION_FUNCTIONS", "AcquisitionFunction", "OneShotAcquisitionFunction"]
+__all__ = [
+    "ENSEMBLE_ACQUISITION_FUNCTIONS",
+    "AcquisitionFunction",
+    "MCSamplerMixin",
+    "MultiModelAcquisitionFunction",
+    "OneShotAcquisitionFunction",
+]

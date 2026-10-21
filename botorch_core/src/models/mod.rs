@@ -19,20 +19,38 @@
 //! The first three can be conditioned on new observations and fantasized
 //! (`condition_on_observations`, `fantasize`; see [`fantasize`]).
 
+pub mod approximate_gp;
 pub mod batched;
 pub mod contextual_multioutput;
 pub mod cost;
 pub mod deterministic;
+pub mod em_differentiation;
+pub mod em_gp;
+mod em_inducing;
+pub mod em_kl;
+pub mod em_model;
+pub mod em_shared;
+pub mod empirical;
 pub mod ensemble;
 pub mod fantasize;
 pub mod gp;
+pub mod heterogeneous;
+pub mod higher_order_gp;
+pub mod inducing_point_allocators;
+pub mod latent_kronecker_gp;
 pub mod likelihoods;
+mod matheron;
 pub mod model;
+pub mod model_batch;
 pub mod model_list;
 pub mod model_list_dyn;
 pub mod multitask;
 pub mod pairwise_gp;
+pub mod relevance_pursuit;
 
+pub use approximate_gp::{
+    SingleTaskVariationalGP, SingleTaskVariationalGPOptions, VariationalLikelihood, VariationalMean,
+};
 pub use batched::{BatchedInputTransform, BatchedMultiOutputGP, BatchedMultiOutputGPOptions};
 pub use contextual_multioutput::{LCEMGPOptions, LcemParameters, LcemTaskInputs, LCEMGP};
 pub use deterministic::{AffineDeterministicModel, FixedSingleSampleModel, PosteriorMeanModel};
@@ -43,6 +61,7 @@ pub use gp::{
     ConstantMeanSpec, GaussianLikelihoodSpec, Hyperparameters, Likelihood, ParameterLayout,
     SingleTaskGP, SingleTaskGPOptions, MIN_FIXED_NOISE, MIN_INFERRED_NOISE_LEVEL,
 };
+pub use higher_order_gp::{HigherOrderGP, HigherOrderGPOptions};
 pub use model::Model;
 pub use model_list::ModelListGP;
 pub use model_list_dyn::ModelList;

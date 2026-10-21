@@ -573,9 +573,7 @@ def test_cross_validation(kind: str) -> None:
 
 
 def test_unsupported_and_errors(model: SingleTaskGP) -> None:
-    with pytest.raises(UnsupportedError):
-        optimize_acqf(logei(model), BOUNDS, 1, 2, raw_samples=8, options={"with_grad": False})
-    with pytest.raises(UnsupportedError):
+    with pytest.raises(ValueError, match="sequence requires sequential"):
         optimize_acqf(
             logei(model), BOUNDS, 1, 2, raw_samples=8, acq_function_sequence=[logei(model)]
         )

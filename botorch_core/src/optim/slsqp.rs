@@ -409,8 +409,57 @@ pub fn project_to_feasible_space(
     if constraints.is_empty() || sets.is_empty() {
         return Ok(sets.to_vec());
     }
+    let rows = sets.len() * sets[0].nrows();
+    let fixed = fixed_features
+        .iter()
+        .map(|(&index, &value)| (index, vec![value; rows]))
+        .collect();
+    project_to_feasible_space_with_fixed_values(
+        sets,
+        bounds,
+        constraints,
+        &fixed,
+        CONSTRAINT_TOLERANCE,
+    )
+}
+
+/// Feasible-space projection with per-row fixed values and a dtype-specific
+/// SLSQP tolerance. Fixed feature vectors contain one value per point, in
+/// candidate-set-major order.
+///
+/// # Errors
+/// The errors of [`project_to_feasible_space`], plus inconsistent candidate,
+/// bound or fixed-value dimensions.
+pub fn project_to_feasible_space_with_fixed_values(
+    sets: &[Matrix],
+    bounds: &Matrix,
+    constraints: &ParameterConstraints,
+    fixed_features: &BTreeMap<usize, Vec<f64>>,
+    tolerance: f64,
+) -> Result<Vec<Matrix>> {
+    if sets.is_empty() {
+        return Ok(Vec::new());
+    }
     let b = sets.len();
     let (q, d) = sets[0].shape();
+    if q == 0 || d == 0 || bounds.shape() != (2, d) || sets.iter().any(|x| x.shape() != (q, d)) {
+        return Err(BotorchError::DimensionMismatch(
+            "inconsistent projection candidates or bounds".into(),
+        ));
+    }
+    constraints.validate(q, d)?;
+    if !tolerance.is_finite() || tolerance <= 0.0 {
+        return Err(BotorchError::InvalidArgument(
+            "projection tolerance must be finite and positive".into(),
+        ));
+    }
+    if (0..d).any(|j| {
+        bounds[(0, j)].is_nan() || bounds[(1, j)].is_nan() || bounds[(0, j)] > bounds[(1, j)]
+    }) {
+        return Err(BotorchError::InvalidArgument(
+            "Lower bounds cannot exceed upper bounds or contain NaN.".into(),
+        ));
+    }
     let n = b * q * d;
     let target: Vec<f64> = sets
         .iter()
@@ -418,10 +467,15 @@ pub fn project_to_feasible_space(
         .collect();
     let mut lower: Vec<f64> = (0..n).map(|i| bounds[(0, i % d)]).collect();
     let mut upper: Vec<f64> = (0..n).map(|i| bounds[(1, i % d)]).collect();
-    for (&k, &v) in fixed_features {
-        for r in 0..b * q {
-            lower[r * d + k] = v;
-            upper[r * d + k] = v;
+    for (&k, values) in fixed_features {
+        if k >= d || values.len() != b * q || values.iter().any(|value| !value.is_finite()) {
+            return Err(BotorchError::InvalidArgument(
+                "invalid fixed feature index or per-row values".into(),
+            ));
+        }
+        for (r, &value) in values.iter().enumerate() {
+            lower[r * d + k] = value;
+            upper[r * d + k] = value;
         }
     }
     let mut x0 = Vec::with_capacity(n);
@@ -483,7 +537,7 @@ pub fn project_to_feasible_space(
     };
     let kraft = KraftOptions {
         maxiter: 100,
-        acc: CONSTRAINT_TOLERANCE,
+        acc: tolerance,
     };
     let res = minimize_kraft(evaluate, &x0, &lower, &upper, meq, m, &kraft)?;
     if !res.success() {
@@ -491,6 +545,23 @@ pub fn project_to_feasible_space(
             "Optimization failed: {}",
             res.message()
         )));
+    }
+    let final_constraints = evaluate(&res.x, false)?.c;
+    let constraints_satisfied = final_constraints.iter().enumerate().all(|(i, value)| {
+        value.is_finite()
+            && if i < meq {
+                value.abs() <= tolerance
+            } else {
+                *value >= -tolerance
+            }
+    });
+    let bounds_satisfied = res.x.iter().enumerate().all(|(i, value)| {
+        value.is_finite() && *value >= lower[i] - tolerance && *value <= upper[i] + tolerance
+    });
+    if !constraints_satisfied || !bounds_satisfied {
+        return Err(BotorchError::CandidateGeneration(
+            "Optimization failed: SLSQP returned an infeasible projection.".into(),
+        ));
     }
     Ok(to_sets(&res.x))
 }
@@ -501,6 +572,53 @@ mod tests {
     use std::sync::Arc;
 
     use crate::optim::parameter_constraints::FnNonlinearConstraint;
+
+    #[test]
+    fn projection_respects_different_fixed_values_per_row() {
+        let bounds = Matrix::from_row_slice(2, 2, &[0.0, 0.0, 1.0, 1.0]);
+        let constraints = ParameterConstraints {
+            inequality: vec![
+                LinearConstraint::intra_point(vec![0, 1], vec![1.0, 1.0], 1.2).unwrap(),
+            ],
+            ..Default::default()
+        };
+        let sets = vec![
+            Matrix::from_row_slice(1, 2, &[0.2, 0.2]),
+            Matrix::from_row_slice(1, 2, &[0.8, 0.1]),
+        ];
+        let mut fixed: BTreeMap<usize, Vec<f64>> = [(0, vec![0.3, 0.7])].into_iter().collect();
+        let projected =
+            project_to_feasible_space_with_fixed_values(&sets, &bounds, &constraints, &fixed, 1e-8)
+                .unwrap();
+        assert!((projected[0][(0, 0)] - 0.3).abs() < 1e-12);
+        assert!((projected[0][(0, 1)] - 0.9).abs() < 1e-8);
+        assert!((projected[1][(0, 1)] - 0.5).abs() < 1e-8);
+        fixed.insert(1, vec![0.9, 0.5]);
+        assert!(project_to_feasible_space_with_fixed_values(
+            &sets,
+            &bounds,
+            &constraints,
+            &fixed,
+            1e-8
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn projection_rejects_an_infeasible_success_status() {
+        let bounds = Matrix::from_row_slice(2, 1, &[0.0, 1.0]);
+        let constraints = ParameterConstraints {
+            inequality: vec![LinearConstraint::intra_point(vec![0], vec![1.0], 2.0).unwrap()],
+            ..Default::default()
+        };
+        assert!(project_to_feasible_space(
+            &[Matrix::from_row_slice(1, 1, &[0.2])],
+            &bounds,
+            &constraints,
+            &BTreeMap::new(),
+        )
+        .is_err());
+    }
 
     #[test]
     fn projection_reaches_the_feasible_set() {

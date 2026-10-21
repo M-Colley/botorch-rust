@@ -66,6 +66,7 @@ from botorch.optim import parameter_constraints as bt_pc  # noqa: E402
 from botorch.sampling.normal import SobolQMCNormalSampler as BtSampler  # noqa: E402
 from botorch.test_functions.synthetic import Hartmann  # noqa: E402
 from botorch.utils import sampling as bt_sampling  # noqa: E402
+from botorch.utils.objective import apply_constraints as bt_apply_constraints  # noqa: E402
 
 from botorch_rs.acquisition import logei as rs_logei  # noqa: E402
 from botorch_rs.acquisition import monte_carlo as rs_mc  # noqa: E402
@@ -349,6 +350,7 @@ def test_qlognei_objectives_and_constraints(
                 warnings.simplefilter("always")
                 a_rs = rs_logei.qLogNoisyExpectedImprovement(
                     rs,
+                    cache_root=False,
                     sampler=s_rs,
                     objective=o_rs,
                     lower_bound_points=lb_points,
@@ -464,6 +466,23 @@ def test_objectives_called_directly() -> None:
     X = torch.rand(2, 3, 4, generator=g, dtype=DT)
     w = _t([0.7, -1.2])
     cons = [lambda Y: Y[..., 1] - 0.1, lambda Y: Y[..., 0] ** 2 - 1.0]
+    cost, eta = _t(1.5), _t([0.05, 0.2])
+
+    def corrected_constrained_reference(samples: Any, X: Any = None) -> Any:
+        # Pinned BoTorch b0dd01be drops X in ConstrainedMCObjective.forward.
+        # PR #3498 forwards it to the objective. Evaluate that one-line repair
+        # explicitly with upstream constraint math; never patch the checkout.
+        return bt_apply_constraints(
+            obj=generic_objective(samples, X=X),
+            constraints=cons,
+            samples=samples,
+            infeasible_cost=cost,
+            eta=eta,
+        )
+
+    constrained = rs_objective.ConstrainedMCObjective(
+        generic_objective, cons, infeasible_cost=cost, eta=eta
+    )
     pairs = [
         (bt_objective.IdentityMCObjective(), rs_objective.IdentityMCObjective(), Y[..., :1]),
         (bt_objective.LinearMCObjective(w), rs_objective.LinearMCObjective(w), Y),
@@ -473,12 +492,8 @@ def test_objectives_called_directly() -> None:
             Y,
         ),
         (
-            bt_objective.ConstrainedMCObjective(
-                generic_objective, cons, infeasible_cost=_t(1.5), eta=_t([0.05, 0.2])
-            ),
-            rs_objective.ConstrainedMCObjective(
-                generic_objective, cons, infeasible_cost=_t(1.5), eta=_t([0.05, 0.2])
-            ),
+            corrected_constrained_reference,
+            constrained,
             Y,
         ),
     ]
@@ -489,6 +504,37 @@ def test_objectives_called_directly() -> None:
             o_bt(samples, X=X),
             1e-14,
         )
+    # Preserve the unmodified pinned-source reproduction: X is accepted but
+    # ignored. The port intentionally follows the repaired public contract.
+    original = bt_objective.ConstrainedMCObjective(
+        generic_objective, cons, infeasible_cost=cost, eta=eta
+    )
+    torch.testing.assert_close(original(Y, X=X), original(Y), rtol=0, atol=0)
+    assert not torch.allclose(original(Y, X=X), corrected_constrained_reference(Y, X=X))
+
+    differentiable_Y = Y.detach().clone().requires_grad_()
+    differentiable_X = X.detach().clone().requires_grad_()
+    actual = constrained(differentiable_Y, X=differentiable_X)
+    expected = corrected_constrained_reference(differentiable_Y, X=differentiable_X)
+    leaves = differentiable_Y, differentiable_X
+    actual_grad = torch.autograd.grad(actual.square().sum(), leaves, create_graph=True)
+    expected_grad = torch.autograd.grad(expected.square().sum(), leaves, create_graph=True)
+    for left, right in zip(actual_grad, expected_grad, strict=True):
+        torch.testing.assert_close(left, right, rtol=1e-12, atol=1e-12)
+    assert actual_grad[1].abs().max() > 0
+    actual_second = torch.autograd.grad(sum(g.square().sum() for g in actual_grad), leaves)
+    expected_second = torch.autograd.grad(sum(g.square().sum() for g in expected_grad), leaves)
+    for left, right in zip(actual_second, expected_second, strict=True):
+        torch.testing.assert_close(left, right, rtol=1e-11, atol=1e-11)
+    assert (
+        torch.autograd.grad(
+            original(differentiable_Y, X=differentiable_X).sum(),
+            differentiable_X,
+            allow_unused=True,
+        )[0]
+        is None
+    )
+
     with pytest.raises(RuntimeError) as e_bt:
         bt_objective.LinearMCObjective(w)(Y[..., :1])
     with pytest.raises(RuntimeError) as e_rs:

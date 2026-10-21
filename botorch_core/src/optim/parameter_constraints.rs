@@ -472,7 +472,7 @@ pub(crate) fn unfixed_constraints(
 ///
 /// # Errors
 /// [`BotorchError::Runtime`] if `A Aᵀ` is singular (as `torch.linalg.solve`).
-pub(crate) fn project_to_equality_constraints(
+pub fn project_to_equality_constraints(
     x: &Matrix,
     equality: &[LinearConstraint],
 ) -> Result<Matrix> {
@@ -485,11 +485,11 @@ pub(crate) fn project_to_equality_constraints(
     let mut a = Matrix::zeros(k, d);
     let mut b = crate::Vector::zeros(k);
     for (i, c) in intra.iter().enumerate() {
+        c.validate(x.nrows(), d)?;
         if let ConstraintIndices::IntraPoint(idx) = &c.indices {
-            // `A[i, indices] = coefficients` (the last duplicate wins, as in
-            // torch's indexed assignment).
+            // Each repeated feature contributes a term to the declared sum.
             for (&j, &coef) in idx.iter().zip(&c.coefficients) {
-                a[(i, j)] = coef;
+                a[(i, j)] += coef;
             }
         }
         b[i] = c.rhs;
@@ -513,9 +513,180 @@ pub(crate) fn project_to_equality_constraints(
     Ok(out)
 }
 
+/// Adjoint of the equality projection with respect to points, coefficients
+/// and right-hand sides. Inter-point constraints have zero adjoints, since
+/// the projection only operates on intra-point equalities.
+#[derive(Clone, Debug)]
+pub struct EqualityProjectionGrad {
+    /// Adjoint of the input points.
+    pub points: Matrix,
+    /// Coefficient adjoints in the order of each input constraint.
+    pub coefficients: Vec<Vec<f64>>,
+    /// Right-hand-side adjoints in input constraint order.
+    pub rhs: Vec<f64>,
+}
+
+/// Reverse derivative of [`project_to_equality_constraints`].
+///
+/// # Errors
+/// The errors of the projection, and [`BotorchError::DimensionMismatch`]
+/// when the output adjoint does not have the shape of `x`.
+pub fn equality_projection_vjp(
+    x: &Matrix,
+    equality: &[LinearConstraint],
+    output_adjoint: &Matrix,
+) -> Result<EqualityProjectionGrad> {
+    if output_adjoint.shape() != x.shape() {
+        return Err(BotorchError::DimensionMismatch(
+            "projection input and output adjoint shapes must agree".into(),
+        ));
+    }
+    let intra: Vec<(usize, &LinearConstraint)> = equality
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.is_inter_point())
+        .collect();
+    let mut result = EqualityProjectionGrad {
+        points: output_adjoint.clone(),
+        coefficients: equality
+            .iter()
+            .map(|c| vec![0.0; c.coefficients.len()])
+            .collect(),
+        rhs: vec![0.0; equality.len()],
+    };
+    if intra.is_empty() {
+        return Ok(result);
+    }
+    let d = x.ncols();
+    let k = intra.len();
+    let mut a = Matrix::zeros(k, d);
+    let mut b = crate::Vector::zeros(k);
+    for (row, (_, c)) in intra.iter().enumerate() {
+        c.validate(x.nrows(), d)?;
+        if let ConstraintIndices::IntraPoint(indices) = &c.indices {
+            for (&column, &coefficient) in indices.iter().zip(&c.coefficients) {
+                a[(row, column)] += coefficient;
+            }
+        }
+        b[row] = c.rhs;
+    }
+    let lu = (&a * a.transpose()).lu();
+    if !lu.is_invertible() {
+        return Err(BotorchError::Runtime(
+            "linalg.solve: The solver failed because the input matrix is singular.".into(),
+        ));
+    }
+    let mut ga = Matrix::zeros(k, d);
+    let mut gb = crate::Vector::zeros(k);
+    for row in 0..x.nrows() {
+        let point = x.row(row).transpose();
+        let adjoint = output_adjoint.row(row).transpose();
+        let lambda = lu.solve(&(&b - &a * &point)).expect("invertible");
+        let u = lu.solve(&(&a * &adjoint)).expect("invertible");
+        let projected = &point + a.transpose() * &lambda;
+        let gx = adjoint - a.transpose() * &u;
+        result.points.row_mut(row).copy_from(&gx.transpose());
+        ga += &lambda * gx.transpose() - &u * projected.transpose();
+        gb += u;
+    }
+    for (row, (original, c)) in intra.iter().enumerate() {
+        if let ConstraintIndices::IntraPoint(indices) = &c.indices {
+            // Each coefficient contributes additively to its matrix column,
+            // so every occurrence gathers that column's adjoint.
+            result.coefficients[*original] =
+                indices.iter().map(|&column| ga[(row, column)]).collect();
+        }
+        result.rhs[*original] = gb[row];
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equality_projection_has_closed_form_adjoint() {
+        let x = Matrix::from_row_slice(1, 2, &[0.2, 0.4]);
+        let equality =
+            vec![LinearConstraint::intra_point(vec![0, 1], vec![1.0, 1.0], 1.2).unwrap()];
+        let projected = project_to_equality_constraints(&x, &equality).unwrap();
+        assert!((projected[(0, 0)] - 0.5).abs() < 1e-15);
+        assert!((projected[(0, 1)] - 0.7).abs() < 1e-15);
+        let adjoint = Matrix::from_row_slice(1, 2, &[1.0, 2.0]);
+        let grad = equality_projection_vjp(&x, &equality, &adjoint).unwrap();
+        assert!((grad.points[(0, 0)] + 0.5).abs() < 1e-15);
+        assert!((grad.points[(0, 1)] - 0.5).abs() < 1e-15);
+        assert!((grad.rhs[0] - 1.5).abs() < 1e-15);
+        for coefficient in &grad.coefficients[0] {
+            assert!((coefficient + 0.9).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn equality_projection_sums_duplicates_and_matches_all_finite_differences() {
+        let x = Matrix::from_row_slice(2, 3, &[0.2, 0.3, 0.8, 0.6, 0.4, 0.1]);
+        let coefficients = vec![1.2, -0.7, 0.8];
+        let rhs = 0.4;
+        let constraint = |coefficients: Vec<f64>, rhs| {
+            LinearConstraint::intra_point(vec![0, 0, 2], coefficients, rhs).unwrap()
+        };
+        let equality = vec![constraint(coefficients.clone(), rhs)];
+        let projected = project_to_equality_constraints(&x, &equality).unwrap();
+        let a = [0.5, 0.0, 0.8];
+        let norm_squared = a.iter().map(|value| value * value).sum::<f64>();
+        for row in 0..x.nrows() {
+            let residual = rhs
+                - (0..3)
+                    .map(|column| a[column] * x[(row, column)])
+                    .sum::<f64>();
+            for column in 0..3 {
+                let expected = x[(row, column)] + a[column] * residual / norm_squared;
+                assert!((projected[(row, column)] - expected).abs() < 1e-14);
+            }
+            let lhs = coefficients[0] * projected[(row, 0)]
+                + coefficients[1] * projected[(row, 0)]
+                + coefficients[2] * projected[(row, 2)];
+            assert!((lhs - rhs).abs() < 1e-14);
+        }
+        let adjoint = Matrix::from_row_slice(2, 3, &[0.7, -0.3, 1.1, 0.4, 0.8, -0.2]);
+        let gradient = equality_projection_vjp(&x, &equality, &adjoint).unwrap();
+        let loss = |points: &Matrix, coefficients: Vec<f64>, rhs| {
+            let output =
+                project_to_equality_constraints(points, &[constraint(coefficients, rhs)]).unwrap();
+            output
+                .iter()
+                .zip(adjoint.iter())
+                .map(|(value, bar)| value * bar)
+                .sum::<f64>()
+        };
+        let step = 1e-6;
+        for row in 0..x.nrows() {
+            for column in 0..x.ncols() {
+                let mut plus = x.clone();
+                let mut minus = x.clone();
+                plus[(row, column)] += step;
+                minus[(row, column)] -= step;
+                let numerical = (loss(&plus, coefficients.clone(), rhs)
+                    - loss(&minus, coefficients.clone(), rhs))
+                    / (2.0 * step);
+                assert!((gradient.points[(row, column)] - numerical).abs() < 1e-9);
+            }
+        }
+        for column in 0..coefficients.len() {
+            let mut plus = coefficients.clone();
+            let mut minus = coefficients.clone();
+            plus[column] += step;
+            minus[column] -= step;
+            let numerical = (loss(&x, plus, rhs) - loss(&x, minus, rhs)) / (2.0 * step);
+            assert!((gradient.coefficients[0][column] - numerical).abs() < 1e-9);
+        }
+        let numerical = (loss(&x, coefficients.clone(), rhs + step)
+            - loss(&x, coefficients, rhs - step))
+            / (2.0 * step);
+        assert!((gradient.rhs[0] - numerical).abs() < 1e-9);
+        assert!((gradient.coefficients[0][0] - gradient.coefficients[0][1]).abs() < 1e-15);
+    }
 
     #[test]
     fn rows_feasibility_and_fixed_features() {

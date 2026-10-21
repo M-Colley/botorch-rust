@@ -22,9 +22,13 @@ Differences to BoTorch main:
   conditional entropy of every point uses that point's marginal density, and
   the entropy of the observations includes the constant ``0.5 (1 + log 2 pi)``
   of every point; BoTorch pairs every point's truncation with the joint
-  density of the batch and adds the constant once. Both agree for ``q = 1``.
+  density of the batch and adds the constant once. These two corrections do
+  not affect ``q = 1``.
 * The noise of the noiseless conditioning also enters the conditioned
   models' posterior mean (meta-pytorch/botorch#3396).
+* The ``"MC"`` conditional Gaussian CDF divides by ``sqrt(1 - rho**2)``
+  (the conditional standard deviation), whereas pinned BoTorch b0dd01be
+  divides by the conditional variance.
 """
 
 from __future__ import annotations
@@ -33,11 +37,11 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import to_flat
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
+from botorch_rs.acquisition.acquisition import AcquisitionFunction, MCSamplerMixin, pending_arg
 from botorch_rs.acquisition.objective import transform_arg
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.model_list_gp_regression import ModelListGP
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
 #: BoTorch's noise variance of the noiseless conditioning on the optima.
 MIN_INFERRED_NOISE_LEVEL = 1e-4
@@ -72,7 +76,15 @@ def _matrix(value: Any, name: str, cols: int | None = None) -> Any:
     return data, tuple(shape)
 
 
-class qJointEntropySearch(AcquisitionFunction):
+#: BoTorch's error for fully Bayesian GPs.
+FULLY_BAYESIAN_ERROR_MSG = (
+    "JES is not yet available with Fully Bayesian GPs. Track the issue, "
+    "which regards conditioning on a number of optima on a collection "
+    "of models, in detail at https://github.com/meta-pytorch/botorch/issues/1680"
+)
+
+
+class qJointEntropySearch(AcquisitionFunction, MCSamplerMixin):
     r"""The acquisition function for the Joint Entropy Search, where the
     batches ``q > 1`` are supported through the lower bound formulation.
 
@@ -89,6 +101,9 @@ class qJointEntropySearch(AcquisitionFunction):
     botorch_rs extension (keyword-only): the ``sampler`` of the ``"MC"``
     estimate (default: ``num_samples`` Sobol samples).
     """
+
+    #: Raised for fully Bayesian GPs (BoTorch's ``NotImplementedError``).
+    _FULLY_BAYESIAN_ERROR = FULLY_BAYESIAN_ERROR_MSG
 
     def __init__(
         self,
@@ -108,8 +123,10 @@ class qJointEntropySearch(AcquisitionFunction):
         super().__init__(model)
         if sampler is None:
             sampler = SobolQMCNormalSampler(sample_shape=(num_samples,))
-        elif not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        elif not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         self.sampler = sampler
         self.optimal_inputs = optimal_inputs
         self.optimal_outputs = optimal_outputs

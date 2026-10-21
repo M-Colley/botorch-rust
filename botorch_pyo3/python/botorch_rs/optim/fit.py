@@ -20,6 +20,8 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
+from botorch_rs._tensor_mll import is_tensor_mll
+from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import OptimizationWarning
 from botorch_rs.optim.core import (
     OptimizationResult,
@@ -39,9 +41,98 @@ def _native_model(mll: Any) -> Any:
     from botorch_rs.mlls import ExactMarginalLogLikelihood
     from botorch_rs.models.gp_regression import SingleTaskGP
 
-    if isinstance(mll, ExactMarginalLogLikelihood) and isinstance(mll.model, SingleTaskGP):
+    if (
+        isinstance(mll, ExactMarginalLogLikelihood)
+        and isinstance(mll.model, SingleTaskGP)
+        and getattr(mll.model, "_tensor_backend", None) != "torch"
+    ):
         return mll.model
     return None
+
+
+def _is_approximate(mll: Any) -> bool:
+    """Whether ``mll`` is a botorch_rs variational ELBO."""
+    from botorch_rs.mlls import _ApproximateMarginalLogLikelihood
+
+    return isinstance(mll, _ApproximateMarginalLogLikelihood)
+
+
+def _is_higher_order(mll: Any) -> bool:
+    from botorch_rs.mlls import ExactMarginalLogLikelihood
+    from botorch_rs.models.empirical_gps.em_empirical_gp import EMEmpiricalMarginalLogLikelihood
+    from botorch_rs.models.empirical_gps.empirical_1d_gp import EmpiricalOneDimensionalGP
+    from botorch_rs.models.empirical_gps.shared_gp import _SharedSumMarginalLogLikelihood
+    from botorch_rs.models.higher_order_gp import HigherOrderGP
+    from botorch_rs.models.latent_kronecker_gp import LatentKroneckerGP
+
+    if isinstance(mll, (EMEmpiricalMarginalLogLikelihood, _SharedSumMarginalLogLikelihood)):
+        mll._validate_fit()
+        return True
+    return isinstance(mll, ExactMarginalLogLikelihood) and isinstance(
+        mll.model, (HigherOrderGP, LatentKroneckerGP, EmpiricalOneDimensionalGP)
+    )
+
+
+def _native_fit_backend(mll: Any) -> Any:
+    return mll._rs if getattr(mll, "_rs_shared_fit", False) else mll.model._rs
+
+
+def _fit_scipy_approximate(
+    mll: Any,
+    parameters: Any,
+    bounds: Any,
+    closure: Any,
+    closure_kwargs: Any,
+    method: str,
+    options: dict[str, Any] | None,
+    callback: Any,
+    timeout_sec: float | None,
+) -> OptimizationResult:
+    """One native L-BFGS-B run on the selected variational parameters."""
+    if (
+        closure is not None
+        or closure_kwargs is not None
+        or method != "L-BFGS-B"
+        or callback is not None
+        or timeout_sec is not None
+    ):
+        raise UnsupportedError(
+            "botorch_rs fits a variational ELBO with native L-BFGS-B (no "
+            "custom closures, callbacks or timeouts)."
+        )
+    opts = dict(options or {})
+    kwargs: dict[str, Any] = {}
+    for key in ("maxiter", "maxfun", "maxcor", "maxls"):
+        if key in opts:
+            kwargs[key] = int(opts.pop(key))
+    if "ftol" in opts:
+        kwargs["ftol"] = float(opts.pop("ftol"))
+    if "gtol" in opts:
+        kwargs["pgtol"] = float(opts.pop("gtol"))
+    for key in ("disp", "iprint"):
+        opts.pop(key, None)
+    if opts:
+        warnings.warn(
+            f"Unknown solver options: {', '.join(sorted(opts))}", UserWarning, stacklevel=3
+        )
+    mll.model._outer._ensure_initialized()
+    mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
+    loss, nit, _, status, message, _ = mll._rs.fit(
+        float(mll.num_data),
+        float(mll.beta),
+        max_attempts=1,
+        mask=mask,
+        bounds=flat_bounds,
+        **kwargs,
+    )
+    mll.model._outer._sync_torch_parameters()
+    result = OptimizationResult(
+        step=int(nit),
+        fval=float(loss),
+        status=OptimizationStatus[status],
+        message=message,
+    )
+    return result
 
 
 def _mask_and_bounds(
@@ -50,9 +141,11 @@ def _mask_and_bounds(
     bounds: dict[str, tuple[float | None, float | None]] | None,
 ) -> tuple[list[bool] | None, list[tuple[float, float]] | None]:
     """The flat mask of the optimized raw parameters and the flat bounds."""
-    from botorch_rs.optim.utils.model_utils import _entries
+    from botorch_rs.optim.utils.model_utils import _entries, _requires_grad
 
     entries = _entries(mll)
+    if parameters is None and any(not _requires_grad(e.value) for e in entries):
+        parameters = {e.name: e.value for e in entries if _requires_grad(e.value)}
     known = {e.name for e in entries}
     if parameters is not None:
         unknown = [n for n in parameters if n not in known]
@@ -116,6 +209,51 @@ def fit_gpytorch_mll_scipy(
     Returns:
         The final OptimizationResult.
     """
+    if is_tensor_mll(mll):
+        return _fit_generic_scipy(
+            mll, parameters, bounds, closure, closure_kwargs, method, options, callback, timeout_sec
+        )
+    if _is_approximate(mll) and (
+        closure is None
+        and closure_kwargs is None
+        and method == "L-BFGS-B"
+        and callback is None
+        and timeout_sec is None
+    ):
+        return _fit_scipy_approximate(
+            mll, parameters, bounds, closure, closure_kwargs, method, options, callback, timeout_sec
+        )
+    if (
+        _is_higher_order(mll)
+        and ((parameters is None and bounds is None) or getattr(mll, "_rs_em_fit", False))
+        and closure is None
+        and closure_kwargs is None
+        and method == "L-BFGS-B"
+        and callback is None
+        and timeout_sec is None
+    ):
+        opts = dict(options or {})
+        hogp_kwargs: dict[str, Any] = {}
+        for key in ("maxiter", "maxfun", "maxcor", "maxls", "ftol"):
+            if key in opts:
+                hogp_kwargs[key] = opts.pop(key)
+        if "gtol" in opts:
+            hogp_kwargs["pgtol"] = opts.pop("gtol")
+        for key in ("disp", "iprint"):
+            opts.pop(key, None)
+        if opts:
+            raise UnsupportedError(f"Unsupported L-BFGS-B options: {sorted(opts)}.")
+        if getattr(mll, "_rs_em_fit", False):
+            mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
+            hogp_kwargs.update(mask=mask, bounds=flat_bounds)
+        loss, nit, _, status, message, _ = _native_fit_backend(mll).fit(
+            max_attempts=1, **hogp_kwargs
+        )
+        if getattr(mll, "_rs_em_fit", False):
+            mll.model._sync_em_state(force=True)
+        return OptimizationResult(
+            step=int(nit), fval=float(loss), status=OptimizationStatus[status], message=message
+        )
     model = _native_model(mll)
     native = (
         model is not None
@@ -218,7 +356,7 @@ def _fit_generic_scipy(
     from botorch_rs.optim.closures import get_loss_closure_with_grads
     from botorch_rs.optim.utils.model_utils import get_parameters_and_bounds
 
-    _parameters, _bounds = get_parameters_and_bounds(mll)
+    _parameters, _bounds = get_parameters_and_bounds(mll, requires_grad=True)
     bounds = _bounds if bounds is None else {**_bounds, **bounds}
     if parameters is None:
         parameters = dict(_parameters)
@@ -226,6 +364,8 @@ def _fit_generic_scipy(
         closure = get_loss_closure_with_grads(mll, parameters=parameters)
     if closure_kwargs is not None:
         closure = functools.partial(closure, **closure_kwargs)
+    if not is_tensor_mll(mll):
+        closure = _native_state_closure(mll, closure, parameters)
     return scipy_minimize(
         closure=closure,
         parameters=parameters,
@@ -235,6 +375,16 @@ def _fit_generic_scipy(
         callback=callback,
         timeout_sec=timeout_sec,
     )
+
+
+def _native_state_closure(mll: Any, closure: Any, parameters: dict[str, Any]) -> Any:
+    """Keep Rust parameter state available even behind a caller's closure."""
+    from botorch_rs.optim.closures import NdarrayOptimizationClosure
+    from botorch_rs.optim.closures.model_closures import MllLossClosure
+
+    wrapped = NdarrayOptimizationClosure(closure, parameters)
+    wrapped._native = MllLossClosure(mll)
+    return wrapped
 
 
 def _adam_kwargs(optimizer: Any) -> dict[str, Any] | None:
@@ -308,8 +458,88 @@ def fit_gpytorch_mll_torch(
     """
     if stopping_criterion is DEFAULT:
         stopping_criterion = ExpMAStoppingCriterion()
+    if is_tensor_mll(mll):
+        from botorch_rs.optim._torch_backend import fit_torch
+
+        return fit_torch(
+            mll,
+            parameters,
+            bounds,
+            closure,
+            closure_kwargs,
+            step_limit,
+            stopping_criterion,
+            optimizer,
+            scheduler,
+            callback,
+            timeout_sec,
+        )
     model = _native_model(mll)
     adam = _adam_kwargs(optimizer)
+    if _is_higher_order(mll):
+        native = (
+            closure is None
+            and closure_kwargs is None
+            and adam is not None
+            and scheduler is None
+            and callback is None
+            and (stopping_criterion is None or type(stopping_criterion) is ExpMAStoppingCriterion)
+        )
+        if native:
+            assert adam is not None
+            if step_limit is None and stopping_criterion is None and timeout_sec is None:
+                raise RuntimeError("No termination conditions were given.")
+            mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
+            if not getattr(mll.model, "_learn_latent_pars", True):
+                if mask is None:
+                    mask = [True] * len(mll.model._rs.raw_parameters())
+                for name, (off, size) in mll.model._offsets().items():
+                    if "latent_parameters" in name:
+                        mask[off : off + size] = [False] * size
+            stopping = None if stopping_criterion is None else stopping_criterion._native_args()
+            result = _result(
+                _native_fit_backend(mll).fit_torch(
+                    mask=mask,
+                    bounds=flat_bounds,
+                    step_limit=step_limit,
+                    stopping=stopping,
+                    timeout_sec=timeout_sec,
+                    **adam,
+                )
+            )
+            if getattr(mll, "_rs_em_fit", False):
+                mll.model._sync_em_state(force=True)
+            return result
+    if _is_approximate(mll):
+        native = (
+            closure is None
+            and closure_kwargs is None
+            and adam is not None
+            and scheduler is None
+            and callback is None
+            and (stopping_criterion is None or type(stopping_criterion) is ExpMAStoppingCriterion)
+        )
+        if native:
+            assert adam is not None
+            if step_limit is None and stopping_criterion is None and timeout_sec is None:
+                raise RuntimeError("No termination conditions were given.")
+            mll.model._outer._ensure_initialized()
+            mask, flat_bounds = _mask_and_bounds(mll, parameters, bounds)
+            stopping = None if stopping_criterion is None else stopping_criterion._native_args()
+            result = _result(
+                mll._rs.fit_torch(
+                    float(mll.num_data),
+                    float(mll.beta),
+                    mask=mask,
+                    bounds=flat_bounds,
+                    step_limit=step_limit,
+                    stopping=stopping,
+                    timeout_sec=timeout_sec,
+                    **adam,
+                )
+            )
+            mll.model._outer._sync_torch_parameters()
+            return result
     stopping_native = (
         stopping_criterion is None or type(stopping_criterion) is ExpMAStoppingCriterion
     )
@@ -370,19 +600,30 @@ def _fit_generic_torch(
     import torch
 
     from botorch_rs.optim.closures import (
-        NdarrayOptimizationClosure,
         get_loss_closure_with_grads,
     )
     from botorch_rs.optim.utils.model_utils import get_parameters_and_bounds
 
-    param_dict, bounds_dict = get_parameters_and_bounds(mll)
+    param_dict, bounds_dict = get_parameters_and_bounds(mll, requires_grad=True)
     names = list(param_dict if parameters is None else parameters)
     state: Any = None
-    if closure is None:
-        native = get_loss_closure_with_grads(mll, {n: param_dict[n] for n in names})
-        state = NdarrayOptimizationClosure(native, {n: param_dict[n] for n in names})
+    selected = dict(param_dict if parameters is None else parameters)
+    if closure is None or any(
+        not isinstance(value, torch.nn.Parameter) for value in selected.values()
+    ):
+        # Native array/Tensor descriptors are snapshots, rather than optimizer
+        # leaves linked to Rust state. Bridge them even for a caller's closure.
+        native = (
+            get_loss_closure_with_grads(mll, {n: param_dict[n] for n in names})
+            if closure is None
+            else closure
+        )
+        state = _native_state_closure(mll, native, selected)
         tensors = {
-            n: torch.tensor(param_dict[n], dtype=torch.float64).clone().requires_grad_(True)
+            n: torch.as_tensor(selected[n], dtype=torch.float64)
+            .detach()
+            .clone()
+            .requires_grad_(True)
             for n in names
         }
 
@@ -400,7 +641,7 @@ def _fit_generic_torch(
         closure = tensor_closure
         opt_parameters: dict[str, Any] = tensors
     else:
-        opt_parameters = dict(parameters or {})
+        opt_parameters = selected
     if closure_kwargs is not None:
         closure = functools.partial(closure, **closure_kwargs)
     result = torch_minimize(

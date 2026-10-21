@@ -303,6 +303,13 @@ class PenalizedMCObjective(GenericMCObjective):
         penalty_obj = self.penalty_objective(X)
         if self.expand_dim is not None:
             penalty_obj = penalty_obj.unsqueeze(self.expand_dim)
+        else:
+            from botorch_rs.acquisition.objective import _tensor_outcome_ensemble
+
+            if _tensor_outcome_ensemble.get():
+                penalty_obj = penalty_obj.unsqueeze(-2)
+            if self._tensor_preference_ensemble:
+                penalty_obj = penalty_obj.unsqueeze(-2)
         if obj.ndim == 1:
             penalty_obj = penalty_obj.squeeze(dim=0)
         return obj - self.regularization_parameter * penalty_obj

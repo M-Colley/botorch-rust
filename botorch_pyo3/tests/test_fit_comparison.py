@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pytest
@@ -29,10 +30,28 @@ from parity_helpers import (  # noqa: E402
     FIT_Z,
     FitOutcome,
     rank_bound_k,
+    rel_err,
     two_stage_fit_comparisons,
 )
 
 pytestmark = pytest.mark.filterwarnings("ignore")
+
+
+@pytest.mark.parametrize("left,right", [(math.nan, math.nan), (math.nan, 1.0), (1.0, math.nan)])
+def test_numeric_equivalence_rejects_nan_even_when_both_implementations_return_it(left, right):
+    assert math.isinf(rel_err([left], [right]))
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+@pytest.mark.parametrize("port_invalid", [False, True])
+def test_fit_equivalence_rejects_nonfinite_successful_first_attempts(value, port_invalid):
+    def fit_twin(t):
+        valid, invalid = ([0.1, 0.2], 1), ([0.1, value], 1)
+        return (valid, invalid) if port_invalid else (invalid, valid)
+
+    with pytest.raises(AssertionError, match="Nonfinite loss"):
+        two_stage_fit_comparisons("invalid first-attempt success", fit_twin, 0)
+
 
 #: First-attempt losses of BoTorch and botorch_rs on the model (twin 0) and
 #: 64 twins of the 6b case ``warp_priors_bounds`` on CI's Linux runner (torch

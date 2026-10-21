@@ -112,15 +112,11 @@ def _single_threaded_torch() -> Iterator[None]:
 
 
 def _grad_err(a: Any, e: Any) -> float:
-    """Gradient error relative to the largest component; NaNs must match
-    (BoTorch's gradients of t-batches with NaN samples, e.g. of ``Power``
-    transforms at negative base samples, are NaN)."""
+    """Gradient error relative to the largest component; reject nonfinite data."""
     a, e = torch.as_tensor(a, dtype=DT).reshape(-1), torch.as_tensor(e, dtype=DT).reshape(-1)
     assert a.shape == e.shape
-    nan_a, nan_e = torch.isnan(a), torch.isnan(e)
-    if not torch.equal(nan_a, nan_e):
+    if not bool(torch.isfinite(a).all() and torch.isfinite(e).all()):
         return math.inf
-    a, e = a[~nan_e], e[~nan_e]
     if e.numel() == 0:
         return 0.0
     scale = max(e.abs().max().item(), 1e-300)
@@ -131,6 +127,83 @@ def check_grad(quantity: str, a: Any, e: Any, tol: float = GRAD_TOL) -> None:
     err = _grad_err(a, e)
     CHECK.record(quantity, err, tol)
     assert err <= tol, (quantity, err)
+
+
+def check_inverse_power_domain(
+    quantity: str, actual: Any, expected: Any, tol: float, *, gradient: bool = False
+) -> None:
+    """Check undefined inverse-power classes separately from finite numerics.
+
+    Power(2)'s inverse is a square root. A Gaussian can draw a negative latent
+    outcome, where both its transformed sample and derivatives are undefined.
+    Matching NaNs establish this domain behavior, never zero numerical error.
+    """
+    actual, expected = torch.as_tensor(actual), torch.as_tensor(expected)
+    assert actual.shape == expected.shape
+    for classify in (torch.isnan, torch.isposinf, torch.isneginf):
+        assert torch.equal(classify(actual), classify(expected)), quantity
+    finite = torch.isfinite(expected)
+    CHECK.record(
+        f"{quantity}: undefined inverse-power entries (domain behavior only)",
+        float((~finite).sum()),
+        None,
+    )
+    if bool(finite.any()):
+        if gradient:
+            check_grad(f"{quantity}: finite entries", actual[finite], expected[finite], tol)
+        else:
+            CHECK.check(f"{quantity}: finite entries", actual[finite], expected[finite], tol)
+
+
+def test_inverse_power_domain_does_not_hide_finite_errors_or_different_nonfinite_classes(
+    monkeypatch,
+) -> None:
+    # Intentionally rejected comparisons must not enter the actual parity ledger.
+    monkeypatch.setattr(CHECK, "record", lambda *args, **kwargs: None)
+    for actual, expected in (
+        ([1.0, math.nan], [1.1, math.nan]),
+        ([1.0, math.inf], [1.0, math.nan]),
+        ([1.0, -math.inf], [1.0, math.inf]),
+        ([1.0, math.nan], [1.0, 0.0]),
+    ):
+        with pytest.raises(AssertionError):
+            check_inverse_power_domain(
+                "intentional invalid power comparison", actual, expected, VALUE_TOL
+            )
+    assert math.isinf(_grad_err([math.nan], [math.nan]))
+
+
+def test_inverse_power_defined_samples_and_full_higher_graphs() -> None:
+    from botorch.posteriors.gpytorch import GPyTorchPosterior as ReferencePosterior
+    from gpytorch.distributions import MultivariateNormal
+
+    from botorch_rs.models.transforms.outcome import Power
+    from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+
+    x = torch.tensor([[0.2], [0.5], [0.8]], dtype=DT, requires_grad=True)
+    mean = 2 + 0.2 * x
+    covariance = 0.1 * torch.eye(3, dtype=DT) + 0.02 * x @ x.mT
+    normals = torch.linspace(-0.6, 0.7, 12, dtype=DT).reshape(4, 3)
+    actual = Power(2).untransform_posterior(TorchGPyTorchPosterior(mean, covariance))
+    reference = build_outcome([{"type": "Power", "power": 2}], "bt", 1).untransform_posterior(
+        ReferencePosterior(MultivariateNormal(mean.squeeze(-1), covariance))
+    )
+    samples = actual.rsample_from_base_samples(torch.Size([4]), normals)
+    source_samples = reference.rsample_from_base_samples(torch.Size([4]), normals)
+    latent = mean.squeeze(-1) + (torch.linalg.cholesky(covariance) @ normals.unsqueeze(-1)).squeeze(
+        -1
+    )
+    assert bool((latent > 0).all())
+    expected = latent.sqrt().unsqueeze(-1)
+    CHECK.check("inverse power: defined common-normal samples", samples, source_samples, VALUE_TOL)
+    gradients = []
+    for value in (samples, source_samples, expected):
+        first = torch.autograd.grad(value.sin().sum(), x, create_graph=True, retain_graph=True)[0]
+        gradients.append(first)
+    check_grad("inverse power: defined source sample gradient", gradients[0], gradients[1])
+    first_higher = torch.autograd.grad(gradients[0].square().sum(), x, retain_graph=True)[0]
+    expected_higher = torch.autograd.grad(gradients[2].square().sum(), x)[0]
+    check_grad("inverse power: defined independent sample Hessian", first_higher, expected_higher)
 
 
 # ---------------------------------------------------------------------------
@@ -422,19 +495,34 @@ def _moments(post: Any) -> tuple[Any, Any] | None:
         return None
 
 
-def compare_mc(label: str, make_bt: Any, make_rs: Any, X: Any, num: int = 32) -> None:
+def compare_mc(
+    label: str,
+    make_bt: Any,
+    make_rs: Any,
+    X: Any,
+    num: int = 32,
+    *,
+    inverse_power_domain: bool = False,
+) -> None:
     """A Monte-Carlo acquisition function with BoTorch's base samples."""
     sb = BtSampler(sample_shape=torch.Size([num]), seed=0)
     vb, gb = values_and_grads(make_bt(sb), X)
     sr = RsSampler(sample_shape=torch.Size([num]), seed=0)
     sr.base_samples = sb.base_samples.clone()
     vr, gr = values_and_grads(make_rs(sr), X)
-    CHECK.check(f"{label}", vr, vb, VALUE_TOL)
-    check_grad(f"{label} d / dx", gr, gb)
+    if inverse_power_domain:
+        check_inverse_power_domain(label, vr, vb, VALUE_TOL)
+        check_inverse_power_domain(f"{label} d / dx", gr, gb, GRAD_TOL, gradient=True)
+    else:
+        CHECK.check(f"{label}", vr, vb, VALUE_TOL)
+        check_grad(f"{label} d / dx", gr, gb)
 
 
 def compare_posteriors(bt: Any, rs: Any, opts: dict[str, Any], outcome: Any, seed: int) -> None:
     bt.eval()
+    inverse_power_domain = outcome != "default" and any(
+        step["type"] == "Power" and not (1 / step["power"]).is_integer() for step in (outcome or [])
+    )
     m = opts.get("m", 1)
     Xq = query_points(opts, 4, seed)
     # q = 1 posteriors (batch of 4 points), with and without noise.
@@ -458,7 +546,13 @@ def compare_posteriors(bt: Any, rs: Any, opts: dict[str, Any], outcome: Any, see
         )
         sb = pb.rsample_from_base_samples(torch.Size([8]), Z)
         sr = pr.rsample_from_base_samples(torch.Size([8]), Z)
-    CHECK.check("posterior: samples (identical base samples)", sr, sb, VALUE_TOL)
+    if inverse_power_domain:
+        assert bool(torch.isfinite(sb).any()), (
+            "Joint samples must include defined inverse-power values"
+        )
+        check_inverse_power_domain("posterior: samples", sr, sb, VALUE_TOL)
+    else:
+        CHECK.check("posterior: samples (identical base samples)", sr, sb, VALUE_TOL)
     if m != 1 or opts.get("append") or opts.get("one_to_many"):
         return
     # Acquisition functions.
@@ -479,12 +573,14 @@ def compare_posteriors(bt: Any, rs: Any, opts: dict[str, Any], outcome: Any, see
         lambda s: BtQEI(bt, best_f=best_f, sampler=s),
         lambda s: RsQEI(rs, best_f=best_f, sampler=s),
         X2,
+        inverse_power_domain=inverse_power_domain,
     )
     compare_mc(
         "acquisition: qSimpleRegret",
         lambda s: BtQSR(bt, sampler=s),
         lambda s: RsQSR(rs, sampler=s),
         X2,
+        inverse_power_domain=inverse_power_domain,
     )
 
 
@@ -1000,13 +1096,15 @@ def test_transforms_on_phase7_models_match_botorch(name: str) -> None:
             check_grad("phase 7 models: ExpectedImprovement d / dx", gr, gb)
 
 
-def test_unsupported_transforms_on_phase7_models() -> None:
-    """Transforms that the phase-7 models do not support raise
+def test_native_transform_guards_on_phase7_models() -> None:
+    """Explicit native-backend transform limits raise
     ``UnsupportedError`` (a ``NotImplementedError``): an outcome transform
     other than ``Standardize`` on an ``EnsembleMapSaasSingleTaskGP`` (whose
     posterior BoTorch cannot build either: a ``TransformedPosterior`` has no
-    ``distribution``), and transforms other than ``Normalize`` /
-    ``Standardize`` on the multi-task GPs (supported by BoTorch, not ported)."""
+    ``distribution``), and unsupported native multi-task configurations.
+    The source-supported Tensor configurations have separate parity coverage;
+    automatic backend selection now routes those configurations to Tensor.
+    """
     from botorch.models.map_saas import EnsembleMapSaasSingleTaskGP as BtEnsembleSaas
 
     from botorch_rs.exceptions.errors import UnsupportedError
@@ -1031,7 +1129,11 @@ def test_unsupported_transforms_on_phase7_models() -> None:
     Xt[:, 2] = (torch.arange(14) % 2).to(DT)
     with pytest.raises(UnsupportedError, match="not supported by MultiTaskGP"):
         RsMultiTask(
-            Xt, Y, task_feature=-1, outcome_transform=build_outcome([{"type": "Log"}], "rs", 1)
+            Xt,
+            Y,
+            task_feature=-1,
+            outcome_transform=build_outcome([{"type": "Log"}], "rs", 1),
+            backend="native",
         )
     with pytest.raises(UnsupportedError, match="not supported by MultiTaskGP"):
         RsMultiTask(
@@ -1039,6 +1141,7 @@ def test_unsupported_transforms_on_phase7_models() -> None:
             Y,
             task_feature=-1,
             input_transform=build_input([{"type": "Warp", "d": 3, "indices": [0]}], "rs"),
+            backend="native",
         )
     with pytest.raises(UnsupportedError, match="center=0.5"):
         RsMultiTask(
@@ -1046,10 +1149,16 @@ def test_unsupported_transforms_on_phase7_models() -> None:
             Y,
             task_feature=-1,
             input_transform=build_input([{"type": "Normalize", "d": 3, "center": 0.0}], "rs"),
+            backend="native",
         )
     Y2 = torch.cat([Y, -Y], -1)
     with pytest.raises(UnsupportedError, match="Standardize"):
-        RsKronecker(X, Y2, outcome_transform=build_outcome([{"type": "Log"}], "rs", 2))
+        RsKronecker(
+            X,
+            Y2,
+            outcome_transform=build_outcome([{"type": "Log"}], "rs", 2),
+            backend="native",
+        )
 
 
 # ---------------------------------------------------------------------------

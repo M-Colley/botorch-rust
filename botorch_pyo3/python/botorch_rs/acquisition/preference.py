@@ -36,7 +36,7 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_flat, is_torch_tensor, kind_of, to_flat
-from botorch_rs.acquisition.acquisition import AcquisitionFunction
+from botorch_rs.acquisition.acquisition import AcquisitionFunction, MCSamplerMixin
 from botorch_rs.acquisition.monte_carlo import MCAcquisitionFunction
 from botorch_rs.exceptions.errors import UnsupportedError
 
@@ -189,7 +189,7 @@ def _standard_normal(shape: tuple[int, ...], X: Any) -> tuple[list[float], tuple
     return [random.gauss(0.0, 1.0) for _ in range(n)], shape
 
 
-class PairwiseBayesianActiveLearningByDisagreement(AcquisitionFunction):
+class PairwiseBayesianActiveLearningByDisagreement(AcquisitionFunction, MCSamplerMixin):
     r"""MC Bayesian Active Learning by Disagreement"""
 
     def __init__(
@@ -226,6 +226,7 @@ class PairwiseBayesianActiveLearningByDisagreement(AcquisitionFunction):
             )
         self.outcome_model = outcome_model
         self.num_samples = num_samples
+        MCSamplerMixin.__init__(self)
         self.std_noise = std_noise
         self._bald = _rs.PairwiseBALD(
             self._model_handle(None),

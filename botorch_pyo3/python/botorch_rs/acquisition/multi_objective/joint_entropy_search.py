@@ -23,11 +23,11 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import from_pair, kind_of, to_flat
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
+from botorch_rs._arrays import from_pair, is_torch_tensor, kind_of, to_flat
+from botorch_rs.acquisition.acquisition import AcquisitionFunction, MCSamplerMixin, pending_arg
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.model_list_gp_regression import ModelListGP
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
 #: The entropy estimates.
 ESTIMATION_TYPES = ("0", "LB", "LB2", "MC")
@@ -37,7 +37,7 @@ def _check_ndim(x: Any, ndim: int) -> bool:
     return x is None or len(to_flat(x)[1]) == ndim
 
 
-class LowerBoundMultiObjectiveEntropySearch(AcquisitionFunction):
+class LowerBoundMultiObjectiveEntropySearch(AcquisitionFunction, MCSamplerMixin):
     r"""Base class of the lower bound multi-objective entropy search
     acquisition functions (MES and JES).
 
@@ -91,8 +91,10 @@ class LowerBoundMultiObjectiveEntropySearch(AcquisitionFunction):
         self.estimation_type = estimation_type
         if sampler is None:
             sampler = SobolQMCNormalSampler(sample_shape=[num_samples])
-        elif not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        elif not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         self.sampler = sampler
         self._cells = cells
         self._pending = pending_arg(X_pending, self._model_dim())
@@ -169,6 +171,36 @@ def _entropy(
     samples: Any = None,
     samples_log_prob: Any = None,
 ) -> Any:
+    inputs = (hypercell_bounds, mean, variance, observation_noise, samples, samples_log_prob)
+    if any(is_torch_tensor(value) and (value.requires_grad or value.is_cuda) for value in inputs):
+        import torch
+
+        from botorch_rs.acquisition import _torch_backend_mo_entropy as tensor_entropy
+
+        like = (
+            mean
+            if is_torch_tensor(mean)
+            else next(value for value in inputs if is_torch_tensor(value))
+        )
+        cells, mu, var, noise = (
+            torch.as_tensor(value, dtype=like.dtype, device=like.device) for value in inputs[:4]
+        )
+        arguments = dict(hypercell_bounds=cells, mean=mu, variance=var, observation_noise=noise)
+        if estimation_type == "0":
+            return tensor_entropy._compute_entropy_noiseless(**arguments)
+        if estimation_type in ("LB", "LB2"):
+            return tensor_entropy._compute_entropy_upper_bound(
+                **arguments, only_diagonal=estimation_type == "LB2"
+            )
+        if samples is None or samples_log_prob is None:
+            raise ValueError("Monte Carlo entropy requires samples and their log probabilities.")
+        return tensor_entropy._compute_entropy_monte_carlo(
+            **arguments,
+            samples=torch.as_tensor(samples, dtype=like.dtype, device=like.device),
+            samples_log_prob=torch.as_tensor(
+                samples_log_prob, dtype=like.dtype, device=like.device
+            ),
+        )
     values = _rs.compute_entropy(
         estimation_type,
         to_flat(hypercell_bounds, "hypercell_bounds"),

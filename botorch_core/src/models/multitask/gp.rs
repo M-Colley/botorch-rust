@@ -88,6 +88,9 @@ use crate::priors::Prior;
 use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
 use crate::{Matrix, Vector};
 
+mod outcome;
+mod warp;
+
 /// `log(2π)`.
 const LN_2PI: f64 = 1.837_877_066_409_345_3;
 
@@ -281,8 +284,10 @@ struct AugPoints {
     tasks: Vec<usize>,
     src: Vec<usize>,
     /// For every column of the user's inputs: the kernel column and the
-    /// chain-rule factor of the input transform (`None`: the task column).
-    cols: Vec<Option<(usize, f64)>>,
+    /// input transform (`None`: the task column).
+    cols: Vec<Option<usize>>,
+    /// Row-dependent diagonal input-transform Jacobians on full inputs.
+    factors: Matrix,
     /// Number of user input rows.
     num_inputs: usize,
 }
@@ -299,6 +304,8 @@ pub struct MultiTaskGP {
     validate: bool,
     input_transform: Option<Normalize>,
     input_indices: Option<Vec<usize>>,
+    input_warp: Option<warp::InputWarp>,
+    input_feature_offsets: Vec<(usize, f64)>,
     outcome_transform: Option<Standardize>,
     /// Kernel inputs of the training rows.
     train_kx: Matrix,
@@ -491,6 +498,8 @@ impl MultiTaskGP {
             validate: options.validate_task_values,
             input_transform,
             input_indices,
+            input_warp: None,
+            input_feature_offsets: Vec::new(),
             outcome_transform,
             train_kx,
             train_tasks,
@@ -617,6 +626,24 @@ impl MultiTaskGP {
     /// The fitted outcome transform, if any.
     pub fn outcome_transform(&self) -> Option<&Standardize> {
         self.outcome_transform.as_ref()
+    }
+
+    /// Replace the fitted inverse map without refitting stored targets or noise.
+    ///
+    /// # Errors
+    /// The supplied map must be fitted and have one scalar output.
+    pub fn set_fitted_outcome_state(&mut self, transform: Option<Standardize>) -> Result<bool> {
+        if transform
+            .as_ref()
+            .is_some_and(|st| !st.is_trained() || st.means().len() != 1)
+        {
+            return Err(BotorchError::InvalidArgument(
+                "A fitted scalar outcome map is required".into(),
+            ));
+        }
+        let changed = self.outcome_transform != transform;
+        self.outcome_transform = transform;
+        Ok(changed)
     }
 
     /// A copy whose posterior is over other output tasks (task values).
@@ -881,11 +908,17 @@ impl MultiTaskGP {
 
     /// The input transform applied to full inputs (`... × (d + 1)`).
     fn transform_full(&self, x: &Matrix) -> Result<Matrix> {
-        apply_input_transform(
+        let normalized = apply_input_transform(
             self.input_transform.as_ref(),
             self.input_indices.as_deref(),
             x,
-        )
+        )?;
+        let mut transformed = match &self.input_warp {
+            Some(warp) => warp.apply(&normalized),
+            None => normalized,
+        };
+        self.apply_feature_offsets(&mut transformed);
+        Ok(transformed)
     }
 
     /// `∂x̃_c/∂x_c` of the input transform for every column `c` of the full
@@ -938,7 +971,7 @@ impl MultiTaskGP {
                 let cols = (0..d)
                     .map(|k| {
                         let c = if k < tf { k } else { k + 1 };
-                        Some((c, factors[c]))
+                        Some(c)
                     })
                     .collect();
                 (full, src, cols)
@@ -951,19 +984,32 @@ impl MultiTaskGP {
                         x.ncols()
                     )));
                 }
-                let cols = (0..=d)
-                    .map(|c| (c != tf).then_some((c, factors[c])))
-                    .collect();
+                let cols = (0..=d).map(|c| (c != tf).then_some(c)).collect();
                 (x.clone(), (0..x.nrows()).collect(), cols)
             }
         };
-        let xt = self.transform_full(&full)?;
+        let normalized = apply_input_transform(
+            self.input_transform.as_ref(),
+            self.input_indices.as_deref(),
+            &full,
+        )?;
+        let mut jacobian = Matrix::from_fn(full.nrows(), full.ncols(), |_, c| factors[c]);
+        let mut xt = match &self.input_warp {
+            Some(warp) => {
+                let (values, derivative) = warp.with_factors(&normalized);
+                jacobian.component_mul_assign(&derivative);
+                values
+            }
+            None => normalized,
+        };
+        self.apply_feature_offsets(&mut xt);
         let (kx, tasks) = map_task_column(&self.layout, &xt, self.validate)?;
         Ok(AugPoints {
             kx,
             tasks,
             src,
             cols,
+            factors: jacobian,
             num_inputs: x.nrows(),
         })
     }
@@ -1402,7 +1448,8 @@ impl MultiTaskGP {
             let dk_alpha = dks[a].tr_mul(&c.alpha);
             let dk_w = dks[a].tr_mul(&w);
             for (kcol, entry) in aug.cols.iter().enumerate() {
-                let Some((cc, f)) = *entry else { continue };
+                let Some(cc) = *entry else { continue };
+                let f = aug.factors[(a, cc)];
                 let j = p * din + kcol;
                 dmean[j][a] += sd * dk_alpha[cc] * f;
                 for b in 0..nn {
@@ -1454,7 +1501,8 @@ impl MultiTaskGP {
             let (_, dkk) = c.kernel.cross_with_grad(&prep, a, &prep);
             g += dkk.tr_mul(&a_col) * 2.0;
             for (kcol, entry) in aug.cols.iter().enumerate() {
-                if let Some((cc, f)) = *entry {
+                if let Some(cc) = *entry {
+                    let f = aug.factors[(a, cc)];
                     out[(p - rows.start, kcol)] += g[cc] * f;
                 }
             }

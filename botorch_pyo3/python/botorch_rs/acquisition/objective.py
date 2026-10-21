@@ -14,11 +14,26 @@ are accepted as well.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from botorch_rs._arrays import as_float, from_flat, is_torch_tensor, kind_of, to_flat
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
+
+_tensor_outcome_ensemble: ContextVar[bool] = ContextVar(
+    "botorch_rs_tensor_outcome_ensemble", default=False
+)
+
+
+@contextmanager
+def _tensor_objective_context(outcome_ensemble: bool) -> Iterator[None]:
+    token = _tensor_outcome_ensemble.set(outcome_ensemble)
+    try:
+        yield
+    finally:
+        _tensor_outcome_ensemble.reset(token)
 
 
 def _clamp_min_zero(x: Any) -> Any:
@@ -66,7 +81,7 @@ class ScalarizedPosteriorTransform(PosteriorTransform):
 
     scalarize = True
 
-    def __init__(self, weights: Any, offset: float = 0.0) -> None:
+    def __init__(self, weights: Any, offset: Any = 0.0) -> None:
         data, shape = to_flat(weights, "weights")
         if len(shape) != 1:
             raise ValueError("weights must be a one-dimensional tensor.")
@@ -83,8 +98,8 @@ class ScalarizedPosteriorTransform(PosteriorTransform):
             import torch
 
             # BoTorch's ``offset + Y @ weights`` (the same rounding).
-            w = torch.as_tensor(self._weights, dtype=Y.dtype, device=Y.device)
-            return self._offset + Y @ w
+            w = torch.as_tensor(self.weights, dtype=Y.dtype, device=Y.device)
+            return self.offset + Y @ w
         data, shape = to_flat(Y, "Y")
         if not shape or shape[-1] != m:
             raise BotorchTensorDimensionError(
@@ -98,31 +113,110 @@ class ScalarizedPosteriorTransform(PosteriorTransform):
 
     def forward(self, posterior: Any, X: Any = None) -> Any:
         """The scalarized (single-output) posterior of a botorch_rs posterior."""
-        from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
+        from botorch_rs.posteriors.gpytorch import scalarize_posterior
 
-        if not isinstance(posterior, GPyTorchPosterior):
-            raise UnsupportedError("ScalarizedPosteriorTransform requires a botorch_rs posterior.")
-        if posterior._transform is not None:
-            raise UnsupportedError("The posterior has already been transformed.")
-        if posterior._m != len(self._weights):
-            raise RuntimeError(
-                "Output shape not equal to that of weights. Output shape is "
-                f"{posterior._m} and weights are {len(self._weights)}"
-            )
-        return GPyTorchPosterior(
-            posterior._rs,
-            posterior._x,
-            posterior._kind,
-            posterior._observation_noise,
-            num_outputs=posterior._m,
-            model_batch_shape=posterior._batch,
-            output_indices=posterior._output_indices,
-            transform=(self._weights, self._offset),
-            points_per_input=posterior._points_per_input,
+        offset = (
+            self.offset if getattr(posterior, "_tensor_backend", None) == "torch" else self._offset
         )
+        return scalarize_posterior(posterior, self.weights, offset)
 
     def __repr__(self) -> str:
         return f"ScalarizedPosteriorTransform(weights={self._weights}, offset={self._offset})"
+
+
+def _reshape_array(value: Any, shape: tuple[int, ...]) -> Any:
+    """Reshape without numerical work or detaching tensor gradients."""
+    if hasattr(value, "reshape"):
+        return value.reshape(shape)
+    return from_flat(to_flat(value)[0], shape, kind_of(value))
+
+
+class ExpectationPosteriorTransform(PosteriorTransform):
+    r"""Weighted expectations over consecutive blocks of ``n_w`` points.
+
+    Maps ``batch x (q * n_w) x m`` Gaussian posteriors to
+    ``batch x q x m`` posteriors, retaining all cross-output covariances.
+    Normalization and moment contractions run in Rust. As in BoTorch,
+    interleaved multitask posteriors are unsupported. Every weight column
+    must have a positive finite sum (invalid zero-sum columns raise instead
+    of producing the NaNs returned by official BoTorch b0dd01be6).
+
+    ``evaluate`` propagates tensor gradients through outcomes and weights.
+    Gaussian posterior moments follow the native model API's value semantics.
+    Compiled acquisition functions currently accept scalarization transforms
+    only; this transform can be applied directly or in ``model.posterior``.
+    """
+
+    def __init__(self, n_w: int, weights: Any = None) -> None:
+        import math
+
+        from botorch_rs import _ops
+
+        if not isinstance(n_w, int) or isinstance(n_w, bool) or n_w <= 0:
+            raise ValueError("`n_w` must be a positive integer.")
+        if weights is None:
+            weights = [[1.0] for _ in range(n_w)]
+        values, shape = to_flat(weights, "weights")
+        if len(shape) != 2 or shape[0] != n_w or shape[1] == 0:
+            raise ValueError("`weights` must be a tensor of size `n_w x m`.")
+        if any(v < 0 or not math.isfinite(v) for v in values):
+            raise ValueError("`weights` must be non-negative and finite.")
+        totals = _ops.reduce("sum", weights, dim=0, keepdim=True)
+        if any(v <= 0 or not math.isfinite(v) for v in to_flat(totals)[0]):
+            raise ValueError("Every weight column must have a positive finite sum.")
+        self.weights = _ops.apply("div_raw", weights, totals)
+        self.n_w = n_w
+
+    def evaluate(self, Y: Any, X: Any = None) -> Any:
+        from botorch_rs import _ops
+
+        _, shape = to_flat(Y, "Y")
+        if len(shape) < 2 or shape[-2] % self.n_w:
+            raise BotorchTensorDimensionError("The number of outcomes must be divisible by n_w.")
+        m = shape[-1]
+        if to_flat(self.weights)[1][-1] not in (1, m):
+            raise BotorchTensorDimensionError("The weights must have one column or m columns.")
+        blocks = _reshape_array(Y, (*shape[:-2], shape[-2] // self.n_w, self.n_w, m))
+        weighted = _ops.apply("mul_raw", blocks, self.weights, kind=kind_of(Y))
+        return _ops.reduce("sum", weighted, dim=-2)
+
+    def forward(self, posterior: Any, X: Any = None) -> Any:
+        from botorch_rs import _ops
+        from botorch_rs.posteriors.gpytorch import GPyTorchPosterior, _MomentPosterior
+
+        if not isinstance(posterior, GPyTorchPosterior):
+            raise UnsupportedError(
+                "ExpectationPosteriorTransform requires a native Gaussian posterior."
+            )
+        if posterior._is_mt and posterior._interleaved_mt:
+            raise UnsupportedError(
+                "`ExpectationPosteriorTransform` does not support interleaved posteriors."
+            )
+        nw, m, nq = self.n_w, posterior._m, posterior._q
+        if nq % nw:
+            raise BotorchTensorDimensionError(
+                "The number of posterior points must be divisible by n_w."
+            )
+        q, batch, kind = nq // nw, posterior._batch, posterior._kind
+        mean = self.evaluate(posterior.mean)
+        _, cov = posterior._get_joint()
+        covariance = from_flat(cov[0], tuple(cov[1]), kind)
+        covariance = _reshape_array(covariance, (*batch, m, q, nw, m, q, nw))
+        data, wshape = to_flat(self.weights)
+        wm = wshape[-1]
+        # Structural transpose only; weighted arithmetic stays in Rust.
+        transposed = from_flat(
+            [data[i * wm + t] for t in range(wm) for i in range(nw)], (wm, nw), kind
+        )
+        left = _reshape_array(transposed, (*(1 for _ in batch), wm, 1, nw, 1, 1, 1))
+        right = _reshape_array(transposed, (*(1 for _ in batch), 1, 1, 1, wm, 1, nw))
+        weighted = _ops.apply("mul_raw", _ops.apply("mul_raw", covariance, left), right)
+        reduced = _ops.reduce("sum", weighted, dim=(-4, -1))
+        covariance = _reshape_array(reduced, (*batch, q * m, q * m))
+        mu = to_flat(mean)
+        if m == 1:
+            mu = (mu[0], (*batch, q))
+        return _MomentPosterior(mu, to_flat(covariance), kind, num_outputs=m)
 
 
 def transform_arg(
@@ -152,11 +246,15 @@ def transform_arg(
 
 def _q_batch_check(output: Any, X: Any, is_mo: bool) -> None:
     q_batch_idx = -2 if is_mo else -1
-    if X is not None and tuple(output.shape)[q_batch_idx] != tuple(X.shape)[-2]:
+    if X is None:
+        return
+    output_shape = tuple(output.shape) if hasattr(output, "shape") else to_flat(output, "output")[1]
+    x_shape = tuple(X.shape) if hasattr(X, "shape") else to_flat(X, "X")[1]
+    if output_shape[q_batch_idx] != x_shape[-2]:
         raise RuntimeError(
             "The q-batch shape of the objective values does not agree with "
-            f"the q-batch shape of X. Got {tuple(output.shape)[q_batch_idx]} and "
-            f"{tuple(X.shape)[-2]}. This may happen if you used a one-to-many input "
+            f"the q-batch shape of X. Got {output_shape[q_batch_idx]} and "
+            f"{x_shape[-2]}. This may happen if you used a one-to-many input "
             "transform but forgot to use a corresponding objective."
         )
 
@@ -205,7 +303,11 @@ class IdentityMCObjective(MCAcquisitionObjective):
     """
 
     def forward(self, samples: Any, X: Any = None) -> Any:
-        return samples.squeeze(-1)
+        if is_torch_tensor(samples):
+            return samples.squeeze(-1)
+        data, shape = to_flat(samples, "samples")
+        target = shape[:-1] if shape and shape[-1] == 1 else shape
+        return from_flat(data, target, kind_of(samples))
 
     def _spec(self) -> tuple[Any, ...]:
         return ("identity",)
@@ -238,7 +340,7 @@ class LinearMCObjective(MCAcquisitionObjective):
         if is_torch_tensor(samples):
             import torch
 
-            w = torch.as_tensor(self._weights, dtype=samples.dtype, device=samples.device)
+            w = torch.as_tensor(self.weights, dtype=samples.dtype, device=samples.device)
             return torch.einsum("...m, m", [samples, w])
         import numpy as np
 
@@ -267,6 +369,10 @@ class GenericMCObjective(MCAcquisitionObjective):
 
     def __init__(self, objective: Callable[..., Any]) -> None:
         self.objective = objective
+
+    @property
+    def _tensor_preference_ensemble(self) -> bool:
+        return bool(getattr(self.objective, "_tensor_preference_ensemble", False))
 
     def forward(self, samples: Any, X: Any = None) -> Any:
         return self.objective(samples, X=X)
@@ -317,7 +423,15 @@ class ConstrainedMCObjective(GenericMCObjective):
     def forward(self, samples: Any, X: Any = None) -> Any:
         import torch
 
-        obj = self.objective(samples, X=None)
+        from botorch_rs.acquisition.utils import repeat_to_match_aug_dim
+
+        obj = self.objective(samples, X=X)
+        if is_torch_tensor(samples):
+            from botorch_rs.acquisition._torch_backend_acquisition import _objective_samples
+
+            samples = _objective_samples(samples, obj, 1, self._tensor_preference_ensemble)
+        else:
+            samples = repeat_to_match_aug_dim(samples, obj)
         if len(self._eta) != len(self.constraints):
             raise ValueError(
                 "Number of provided constraints and number of provided etas do not match."
@@ -417,6 +531,27 @@ def is_constrained_objective(objective: Any) -> bool:
     )
 
 
+def _requires_joint_sampling(objective: Any) -> bool:
+    """Whether baseline and candidate utilities share a stochastic GP draw."""
+    names = [c.__name__ for c in type(objective).__mro__] if objective is not None else []
+    if "LearnedObjective" in names:
+        return getattr(objective, "sampler", None) is not None or bool(
+            _objective_batch_shape(objective)
+        )
+    if any(name in names for name in ("ConstrainedMCObjective", "PenalizedMCObjective")):
+        return _requires_joint_sampling(objective.objective)
+    return False
+
+
+def _objective_batch_shape(objective: Any) -> tuple[int, ...]:
+    names = [c.__name__ for c in type(objective).__mro__] if objective is not None else []
+    if "LearnedObjective" in names:
+        return tuple(objective.pref_model.batch_shape or ())
+    if any(name in names for name in ("ConstrainedMCObjective", "PenalizedMCObjective")):
+        return _objective_batch_shape(objective.objective)
+    return ()
+
+
 def constraints_arg(
     constraints: Sequence[Callable[[Any], Any]] | None, eta: Any
 ) -> tuple[list[Any] | None, list[float] | None]:
@@ -460,7 +595,9 @@ def _is_deterministic_model(model: Any) -> bool:
     return isinstance(model, DeterministicModel)
 
 
-def _learned_samples_autograd(handle: Any, Y: Any, z: Any, out_shape: tuple[int, ...]) -> Any:
+def _learned_samples_autograd(
+    handle: Any, Y: Any, z: Any, out_shape: tuple[int, ...], model_index: int | None = None
+) -> Any:
     """``LearnedObjective``'s samples connected to torch's autograd (the
     exact vector-Jacobian product of the preference posterior's samples
     with respect to the outcome samples, from Rust)."""
@@ -472,16 +609,18 @@ def _learned_samples_autograd(handle: Any, Y: Any, z: Any, out_shape: tuple[int,
         @staticmethod
         def forward(ctx: Any, Yt: Any) -> Any:  # type: ignore[override]
             ctx.save_for_backward(Yt)
-            (vals, _), _ = _rs.learned_objective_samples(handle, to_flat(Yt), z)
-            return torch.tensor(vals, dtype=Yt.dtype).reshape(out_shape)
+            (vals, _), _ = _rs.learned_objective_samples(
+                handle, to_flat(Yt), z, model_index=model_index
+            )
+            return torch.tensor(vals, dtype=Yt.dtype, device=Yt.device).reshape(out_shape)
 
         @staticmethod
         def backward(ctx: Any, grad_out: Any) -> Any:  # type: ignore[override]
             (Yt,) = ctx.saved_tensors
             adj = to_flat(grad_out.reshape(out_shape))
-            _, grads = _rs.learned_objective_samples(handle, to_flat(Yt), z, adj)
+            _, grads = _rs.learned_objective_samples(handle, to_flat(Yt), z, adj, model_index)
             assert grads is not None
-            return torch.tensor(list(grads[0]), dtype=Yt.dtype).reshape(Yt.shape)
+            return torch.tensor(list(grads[0]), dtype=Yt.dtype, device=Yt.device).reshape(Yt.shape)
 
     return _LearnedSamples.apply(Y)
 
@@ -496,8 +635,9 @@ class LearnedObjective(MCAcquisitionObjective):
     The preference posterior is sampled in Rust with the base samples of an
     ``IIDNormalSampler`` (torch's draws for ``seed``, as in BoTorch), and its
     exact vector-Jacobian product connects the result to torch's autograd.
-    botorch_rs's Monte-Carlo acquisition functions do not accept it (its
-    values have ``sample_shape`` times more samples than its input).
+    Monte-Carlo acquisition functions retain its additional preference-sample
+    axis in their native utility reductions and contract its exact native
+    preference-posterior adjoint through the outcome-model samples.
 
     Example:
         >>> train_X = torch.rand(2, 2)
@@ -561,68 +701,180 @@ class LearnedObjective(MCAcquisitionObjective):
             A ``(sample_size * num_samples) x batch_shape x q``-dim Tensor of
             objective values sampled from utility posterior using ``pref_model``.
         """
-        import math
         import warnings
 
-        from botorch_rs import _botorch_rs as _rs
         from botorch_rs.exceptions.warnings import InputDataWarning
 
         if is_torch_tensor(samples):
             import torch
 
-            if samples.dtype != torch.float64:
+            if (
+                samples.dtype != torch.float64
+                and torch.float64 in self.pref_model.dtypes_of_buffers
+            ):
                 warnings.warn(
                     LEARNED_OBJECTIVE_PREF_MODEL_MIXED_DTYPE_WARN,
                     InputDataWarning,
                     stacklevel=2,
                 )
                 samples = samples.to(torch.float64)
+        from botorch_rs._torch_bridge import objective_context
+
+        context = objective_context()
+        pref_batch = tuple(self.pref_model.batch_shape or ())
+        if pref_batch and context is not None:
+            if context[0] is None:
+                raise UnsupportedError(
+                    "Batched learned objectives require explicit per-candidate member dispatch; "
+                    "native optimization without a selected preference member is unsupported."
+                )
+            import math
+
+            from botorch_rs._arrays import broadcast_to
+
+            candidate_batch, index = context[0]
+            shape = tuple(samples.shape)
+            axes = len(pref_batch) if index is None else len(candidate_batch)
+            inputs = samples.reshape(shape[0], *((1,) * axes), *shape[-2:])
+            selected = None
+            if index is not None:
+                indices = broadcast_to(
+                    list(range(math.prod(pref_batch))), pref_batch, candidate_batch
+                )
+                selected = int(indices[index])
+            values = self._native_samples(inputs, selected)
+            if index is not None:
+                return values.reshape(-1, 1, shape[-2])
+            p = 1 if self.sampler is None else math.prod(self.sampler.sample_shape)
+            values = values.reshape(p, shape[0], *pref_batch, shape[-2])
+            order = (0, *range(2, 2 + len(pref_batch)), 1, 2 + len(pref_batch))
+            return values.permute(order).reshape(-1, 1, shape[-2])
+        return self._native_samples(samples)
+
+    @property
+    def _tensor_preference_ensemble(self) -> bool:
+        from botorch_rs.utils.transforms import is_ensemble
+
+        return getattr(self.pref_model, "_tensor_backend", None) == "torch" and is_ensemble(
+            self.pref_model
+        )
+
+    def _native_samples(self, samples: Any, model_index: int | None = None) -> Any:
+        import math
+
+        if getattr(self.pref_model, "_tensor_backend", None) == "torch":
+            if not is_torch_tensor(samples):
+                raise TypeError("A Torch preference model requires Tensor outcome samples.")
+            if samples.ndim < 3:
+                raise ValueError("samples should have at least 3 dimensions.")
+            if model_index is not None:
+                raise UnsupportedError(
+                    "Selected native preference-member callbacks require a native preference "
+                    "model; use a Torch outcome model for device-resident learned utilities."
+                )
+            from botorch_rs.utils.transforms import is_ensemble
+
+            # Isolate the outcome MCMC axis from ordinary preference batches.
+            # Preserve leading outcome MC so common normals retain their public
+            # sharing pattern. Restore the member axis after posterior sampling.
+            outcome_ensemble = _tensor_outcome_ensemble.get()
+            preference_ensemble = is_ensemble(self.pref_model)
+            if outcome_ensemble:
+                samples = samples.movedim(-3, 1)
+            missing = (
+                len(self.pref_model.batch_shape)
+                - int(preference_ensemble)
+                - (samples.ndim - (4 if outcome_ensemble else 3))
+            )
+            if missing > 0:
+                prefix = 2 if outcome_ensemble else 1
+                samples = samples.reshape(
+                    *samples.shape[:prefix], *((1,) * missing), *samples.shape[prefix:]
+                )
+            posterior = self.pref_model.posterior(samples)
+            axes = 0 if self.sampler is None else len(self.sampler.sample_shape)
+            utility = (
+                posterior.mean.squeeze(-1)
+                if self.sampler is None
+                else self.sampler(posterior).squeeze(-1)
+            )
+            if outcome_ensemble:
+                utility = utility.movedim(axes + 1, -3 if preference_ensemble else -2)
+            if self.sampler is None:
+                return utility
+            # Preference MC dimensions combine with the first outcome MC axis;
+            # both independent MCMC axes remain available to utility reduction.
+            return utility.reshape(-1, *utility.shape[axes + 1 :])
+
+        from botorch_rs import _botorch_rs as _rs
+
         shape = tuple(to_flat(samples, "samples")[1])
         if len(shape) < 3:
             raise ValueError("samples should have at least 3 dimensions.")
-        posterior = self.pref_model.posterior(samples)
         if self.sampler is None:
-            data, mshape = to_flat(posterior.mean, "mean")
-            return from_flat(data, mshape[:-1], kind_of(samples))
-        # The sampler's base samples (sample_shape x S x 1 ... x q, shared
-        # by the t-batches), broadcast to every set of outcome samples.
-        self.sampler(posterior)
-        z_col, _ = to_flat(self.sampler.base_samples, "base_samples")
-        n = math.prod(self.sampler.sample_shape)
-        s0 = shape[0]
-        nb = math.prod(shape[1:-2])
+            from botorch_rs.models.deterministic import GenericDeterministicModel
+
+            if isinstance(self.pref_model, GenericDeterministicModel):
+                if model_index is not None:
+                    raise UnsupportedError(
+                        "Batched caller-defined deterministic preferences require explicit utility selection."
+                    )
+                # Explicit caller-defined utilities retain their Torch graph
+                # and need no extra native input-dimension annotation.
+                mean = self.pref_model.posterior(samples).mean
+                if is_torch_tensor(mean):
+                    return mean.squeeze(-1)
+                data, mshape = to_flat(mean, "mean")
+                return from_flat(data, mshape[:-1], kind_of(samples))
+        from botorch_rs._arrays import broadcast_shapes
+
+        batch = broadcast_shapes(
+            shape[:-2], () if model_index is not None else tuple(self.pref_model.batch_shape)
+        )
+        if batch is None:
+            raise BotorchTensorDimensionError(
+                f"Outcome sample batch {shape[:-2]} does not broadcast with preference model "
+                f"batch {tuple(self.pref_model.batch_shape)}."
+            )
+        s0 = batch[0]
+        nb = math.prod(batch[1:])
         q = shape[-2]
-        z: list[float] = []
-        for i in range(n):
-            for s in range(s0):
-                block = list(z_col[(i * s0 + s) * q : (i * s0 + s + 1) * q])
-                for _ in range(nb):
-                    z.extend(block)
-        zpair = (z, (n, s0 * nb, q))
+        if self.sampler is None:
+            n = 1
+            z = [0.0] * (s0 * nb * q)
+        else:
+            posterior = self.pref_model.posterior(samples)
+            # Preference draws retain the outcome MC axis, and are shared
+            # across t-batches, as in BoTorch's batch_range_override.
+            self.sampler._construct_base_samples(posterior)
+            z_col, _ = to_flat(self.sampler.base_samples, "base_samples")
+            n = math.prod(self.sampler.sample_shape)
+            z = []
+            for i in range(n):
+                for s in range(s0):
+                    block = list(z_col[(i * s0 + s) * q : (i * s0 + s + 1) * q])
+                    for _ in range(nb):
+                        z.extend(block)
+        zpair = (z, (n, *batch, q))
         handle = self.pref_model._acquisition_model(None)
-        out_shape = (n * s0, *shape[1:-2], q)
+        out_shape = (n * s0, *batch[1:], q)
         if is_torch_tensor(samples) and samples.requires_grad:
             import torch
 
             if torch.is_grad_enabled():
-                Y = samples.reshape(s0 * nb, q, shape[-1])
-                return _learned_samples_autograd(handle, Y, zpair, out_shape)
-        flat = to_flat(samples, "samples")
-        y = (flat[0], (s0 * nb, q, shape[-1]))
-        (vals, _), _ = _rs.learned_objective_samples(handle, y, zpair)
+                return _learned_samples_autograd(handle, samples, zpair, out_shape, model_index)
+        (vals, _), _ = _rs.learned_objective_samples(
+            handle, to_flat(samples, "samples"), zpair, model_index=model_index
+        )
         return from_flat(vals, out_shape, kind_of(samples))
 
     def _spec(self) -> tuple[Any, ...]:
-        raise UnsupportedError(
-            "LearnedObjective is not supported in botorch_rs's Monte-Carlo acquisition "
-            "functions: its values have sample_shape times more samples than the posterior "
-            "samples. Use it directly, or qExpectedUtilityOfBestOption with the preference "
-            "model."
-        )
+        return ("callable", self)
 
 
 __all__ = [
     "ConstrainedMCObjective",
+    "ExpectationPosteriorTransform",
     "GenericMCObjective",
     "IdentityMCObjective",
     "LearnedObjective",

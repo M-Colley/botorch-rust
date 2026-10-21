@@ -605,6 +605,75 @@ impl MVaR {
     }
 }
 
+/// Component-wise mapping of supplied MVaR points to the samples attaining
+/// each component. With an adjoint, returns its exact sample VJP instead.
+/// Unattained components produce NaN values and zero sample derivatives,
+/// matching BoTorch's masked mean (including its zero-count convention).
+pub fn mvar_make_differentiable(
+    prepared: &Matrix,
+    mvars: &Matrix,
+    adjoint: Option<&Matrix>,
+) -> Result<Matrix> {
+    let (nw, m) = prepared.shape();
+    let k = mvars.nrows();
+    if mvars.ncols() != m || adjoint.is_some_and(|bar| bar.shape() != mvars.shape()) {
+        return Err(BotorchError::DimensionMismatch(
+            "prepared samples and MVaR points must have equal output dimensions; adjoint must match MVaR shape".into(),
+        ));
+    }
+    let mut result = if adjoint.is_some() {
+        Matrix::zeros(nw, m)
+    } else {
+        Matrix::zeros(k, m)
+    };
+    for j in 0..k {
+        for t in 0..m {
+            let value = mvars[(j, t)];
+            let mut count = 0;
+            let mut sum = 0.0;
+            for i in 0..nw {
+                if prepared[(i, t)] == value {
+                    count += 1;
+                    sum += prepared[(i, t)];
+                }
+            }
+            if let Some(bar) = adjoint {
+                if count != 0 {
+                    let weight = bar[(j, t)] / count as f64;
+                    for i in 0..nw {
+                        if prepared[(i, t)] == value {
+                            result[(i, t)] += weight;
+                        }
+                    }
+                }
+            } else {
+                result[(j, t)] = sum / count as f64;
+            }
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod component_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn tied_components_share_adjoint_and_unattained_components_have_zero_derivative() {
+        let samples = Matrix::from_row_slice(3, 2, &[1., 2., 1., 4., 3., 2.]);
+        let points = Matrix::from_row_slice(2, 2, &[1., 2., 7., 4.]);
+        let mapped = mvar_make_differentiable(&samples, &points, None).unwrap();
+        assert_eq!(mapped[(0, 0)], 1.);
+        assert!(mapped[(1, 0)].is_nan());
+        let bar = Matrix::from_row_slice(2, 2, &[2., 6., 9., 5.]);
+        let gradient = mvar_make_differentiable(&samples, &points, Some(&bar)).unwrap();
+        assert_eq!(
+            gradient,
+            Matrix::from_row_slice(3, 2, &[1., 3., 1., 5., 0., 3.])
+        );
+    }
+}
+
 impl McMultiOutputObjective for MVaR {
     fn evaluate(
         &self,

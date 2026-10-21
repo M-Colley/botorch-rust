@@ -2,23 +2,64 @@
 
 from __future__ import annotations
 
+import sys
+from abc import ABC, abstractmethod
 from typing import Any
 
+from botorch_rs._buffers import NativeBufferModule
 from botorch_rs.exceptions.errors import UnsupportedError
 
 
-class Model:
+class Model(NativeBufferModule):
     """Abstract base class of botorch_rs models."""
 
     training: bool = True
 
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        # Native families own their allocation paths. A caller-defined Model
+        # follows the source's Torch Module protocol when Torch is in use.
+        if not cls.__module__.startswith("botorch_rs.") and sys.modules.get("torch") is not None:
+            from botorch_rs.models._torch_model_subclasses import custom_model
+
+            return custom_model(cls)
+        return object.__new__(cls)
+
+    @property
+    def dtypes_of_buffers(self) -> set[Any]:
+        """Dtypes of registered buffers, including supported native state.
+
+        Native-only state is read as tensor snapshots in its logical public
+        dtype. Registered Torch child buffers retain identity; training data
+        and model parameters are not registered buffers.
+        """
+        return {buffer.dtype for buffer in self.buffers()}
+
     def train(self, mode: bool = True) -> Model:
         """Sets the training flag (for API compatibility; it has no effect)."""
+        torch = sys.modules.get("torch")
+        if torch is not None and isinstance(self, torch.nn.Module):
+            return torch.nn.Module.train(self, mode)
         self.training = mode
         return self
 
     def eval(self) -> Model:
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         return self.train(False)
+
+    def transform_inputs(self, X: Any, input_transform: Any = None) -> Any:
+        """Apply an explicit input transform, or the model's transform.
+
+        Transforms preserve the caller's array type and run their numerical
+        operations in Rust. Without a transform, return ``X`` unchanged.
+        """
+        tf = (
+            input_transform
+            if input_transform is not None
+            else getattr(self, "input_transform", None)
+        )
+        return X if tf is None else tf(X)
 
     def posterior(self, X: Any, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover
         raise NotImplementedError
@@ -26,6 +67,11 @@ class Model:
     @property
     def num_outputs(self) -> int:  # pragma: no cover - abstract
         raise NotImplementedError
+
+    @property
+    def batch_shape(self) -> tuple[int, ...] | None:
+        """Batch dimensions of the model, supplied by concrete subclasses."""
+        raise NotImplementedError(f"{self.__class__.__name__} does not define batch_shape property")
 
     def subset_output(self, idcs: list[int]) -> Model:
         r"""Subset the model along the output dimension.
@@ -77,7 +123,7 @@ def _check_unsupported_kwargs(kwargs: dict[str, Any]) -> None:
         raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
 
 
-class FantasizeMixin:
+class FantasizeMixin(ABC):
     """
     Mixin to add a ``fantasize`` method to a ``Model``.
 
@@ -94,6 +140,21 @@ class FantasizeMixin:
         model = ModelThatCanFantasize(...)
         model.fantasize(X, sampler)
     """
+
+    @abstractmethod
+    def condition_on_observations(self, X: Any, Y: Any, **kwargs: Any) -> Any:
+        """Condition the implementing model on sampled observations."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def posterior(self, X: Any, *args: Any, **kwargs: Any) -> Any:
+        """Return a posterior accepted by the supplied sampler."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def transform_inputs(self, X: Any, input_transform: Any = None) -> Any:
+        """Apply the implementing model's input transform."""
+        raise NotImplementedError
 
     def fantasize(
         self,
@@ -124,19 +185,51 @@ class FantasizeMixin:
         Returns:
             The constructed fantasy model.
         """
+        from botorch_rs import _ops, settings
+        from botorch_rs._arrays import kind_of
         from botorch_rs.exceptions.errors import DeprecationError
+        from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood
+        from botorch_rs.models.utils.assorted import fantasize
 
         if isinstance(observation_noise, bool):
             raise DeprecationError(
                 "`fantasize` no longer accepts a boolean for `observation_noise`."
             )
-        post_X = self.posterior(  # type: ignore[attr-defined]
-            X, observation_noise=True if observation_noise is None else observation_noise
-        )
-        Y_fantasized = sampler(post_X)
-        if observation_noise is not None:
-            kwargs["noise"] = observation_noise
-        return self.condition_on_observations(X=X, Y=Y_fantasized, **kwargs)  # type: ignore[attr-defined]
+        if observation_noise is None and isinstance(
+            getattr(self, "likelihood", None), FixedNoiseGaussianLikelihood
+        ):
+            noise = self.likelihood.noise  # type: ignore[attr-defined]
+            noise = (
+                _ops.transpose(noise)
+                if self.num_outputs > 1  # type: ignore[attr-defined]
+                else _ops.getitem(noise, (Ellipsis, None))
+            )
+            observation_noise = _ops.reduce("mean", noise, dim=-2, keepdim=True)
+        sample_shape = tuple(sampler.sample_shape)
+        if _ops.shape_of(X)[-2] == 0:
+            output_shape = (
+                sample_shape
+                + _ops.shape_of(X)[:-2]
+                + tuple(self.batch_shape or ())  # type: ignore[attr-defined]
+                + (0, self.num_outputs)  # type: ignore[attr-defined]
+            )
+            Y_fantasized = _ops.full(output_shape, 0.0, kind_of(X))
+            if observation_noise is not None:
+                kwargs["noise"] = _ops.expand(observation_noise, output_shape[len(sample_shape) :])
+            return self.condition_on_observations(X=X, Y=Y_fantasized, **kwargs)
+        propagate_grads = kwargs.pop("propagate_grads", False)
+        with fantasize():
+            with settings.propagate_grads(propagate_grads):
+                post_X = self.posterior(
+                    X,
+                    observation_noise=True if observation_noise is None else observation_noise,
+                )
+            Y_fantasized = sampler(post_X)
+            if observation_noise is not None:
+                kwargs["noise"] = _ops.expand(
+                    observation_noise, _ops.shape_of(Y_fantasized)[len(sample_shape) :]
+                )
+            return self.condition_on_observations(X=X, Y=Y_fantasized, **kwargs)
 
 
 class ModelList(Model):
@@ -168,6 +261,20 @@ class ModelList(Model):
         """
         self.models: list[Any] = list(models)
         self.training = True
+
+    @property
+    def _ensemble_members(self) -> Any:
+        """With ensemble sub-models (e.g. fully Bayesian GPs): the lists of
+        their members of the same index (``AttributeError`` otherwise)."""
+        from botorch_rs.models._ensemble_lists import members_method
+
+        return members_method(self)
+
+    @property
+    def _ensemble_acquisition(self) -> Any:
+        from botorch_rs.models._ensemble_lists import acquisition_method
+
+        return acquisition_method(self)
 
     def _get_group_subset_indices(self, idcs: list[int] | None) -> dict[int, list[int] | None]:
         r"""Convert global subset indices to indices for the individual models.
@@ -286,7 +393,7 @@ class ModelList(Model):
             return subset_models[0]
         return self.__class__(*subset_models)
 
-    def transform_inputs(self, X: Any) -> list[Any]:
+    def transform_inputs(self, X: Any) -> list[Any]:  # type: ignore[override]
         r"""Individually transform the inputs for each model.
 
         Args:

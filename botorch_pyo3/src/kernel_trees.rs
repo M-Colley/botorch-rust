@@ -3,13 +3,59 @@
 //! `botorch_rs.kernels` and `botorch_rs.models.kernels` build and pass to a
 //! `SingleTaskGP` as its `covar_module`.
 
-use botorch_core::kernels::{KernelNode, MatrixPrior, TreeKernel};
+use crate::errors::value_error;
+use botorch_core::kernels::contextual::{LceaSpec, LceaState};
+use botorch_core::kernels::empirical::EmpiricalBasisSpec;
+use botorch_core::kernels::{KernelNode, KernelType, MatrixPrior, TreeKernel};
 use botorch_core::Matrix;
 use pyo3::prelude::*;
 
-use crate::arrays::{Array, ArrayBuf};
-use crate::errors::{dimension_error, IntoPyResult};
+use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
+use crate::errors::{dimension_error, unsupported, IntoPyResult};
 use crate::specs::{kind_from_name, kind_name, PyConstraint, PyKernelSpec, PyPrior};
+
+fn evaluate_tree(
+    node: &KernelNode,
+    raw: &[f64],
+    a: &Matrix,
+    b: Option<&Matrix>,
+    diag: bool,
+) -> botorch_core::Result<ArrayBuf> {
+    let kern = TreeKernel::build(node, raw, a.ncols())?;
+    let pa = kern.prepare(a)?;
+    let n = a.nrows();
+    let other = match b {
+        Some(b) if b != a => Some(kern.prepare(b)?),
+        _ => None,
+    };
+    if diag {
+        let values = match &other {
+            Some(pb) => {
+                if pb.len() != n {
+                    return Err(botorch_core::BotorchError::DimensionMismatch(
+                        "diag=True requires x1 and x2 with the same number of points".into(),
+                    ));
+                }
+                let k = kern.cross(&pa, pb);
+                (0..n).map(|i| k[(i, i)]).collect()
+            }
+            None => (0..n).map(|i| kern.diag_mode(&pa, i)).collect(),
+        };
+        return Ok(ArrayBuf(values, vec![n]));
+    }
+    let k: Matrix = match &other {
+        Some(pb) => kern.cross(&pa, pb),
+        None => kern.symmetric(&pa),
+    };
+    let (n1, n2) = k.shape();
+    let mut data = Vec::with_capacity(n1 * n2);
+    for i in 0..n1 {
+        for j in 0..n2 {
+            data.push(k[(i, j)]);
+        }
+    }
+    Ok(ArrayBuf(data, vec![n1, n2]))
+}
 
 /// A kernel (tree) configuration: the kernel class, its parameters with
 /// constraints and priors, `active_dims` and sub-kernels.
@@ -22,6 +68,13 @@ pub struct PyKernelNode {
 impl PyKernelNode {
     fn wrap(inner: KernelNode) -> Self {
         Self { inner }
+    }
+
+    fn lcea_spec(&self) -> PyResult<&LceaSpec> {
+        match self.inner.kind() {
+            KernelType::ContextualLcea(spec) => Ok(spec),
+            _ => Err(unsupported("requires a native LCEAKernel node")),
+        }
     }
 }
 
@@ -43,6 +96,42 @@ impl PyKernelNode {
     #[pyo3(signature = (kind, ard_num_dims=None))]
     fn stationary(kind: &str, ard_num_dims: Option<usize>) -> PyResult<Self> {
         KernelNode::stationary(kind_from_name(kind)?, ard_num_dims)
+            .into_py_result()
+            .map(Self::wrap)
+    }
+
+    #[staticmethod]
+    fn activation(conditions: Vec<(usize, f64)>) -> PyResult<Self> {
+        KernelNode::activation(conditions)
+            .into_py_result()
+            .map(Self::wrap)
+    }
+
+    /// Native heterogeneous multitask spatial gates and combinatorial child.
+    #[staticmethod]
+    fn heterogeneous(
+        task_feature: isize,
+        binary_map: Vec<Vec<bool>>,
+        spatial: Vec<PyRef<'_, PyKernelNode>>,
+        combinatorial: PyRef<'_, PyKernelNode>,
+        use_combinatorial: bool,
+    ) -> PyResult<Self> {
+        KernelNode::heterogeneous(
+            task_feature,
+            binary_map,
+            spatial.iter().map(|node| node.inner.clone()).collect(),
+            combinatorial.inner.clone(),
+            use_combinatorial,
+        )
+        .into_py_result()
+        .map(Self::wrap)
+    }
+
+    /// Compose an enclosing feature selection with every leaf of a composite.
+    fn with_parent_active_dims(&self, dims: Vec<usize>) -> PyResult<Self> {
+        self.inner
+            .clone()
+            .with_parent_active_dims(&dims)
             .into_py_result()
             .map(Self::wrap)
     }
@@ -124,6 +213,15 @@ impl PyKernelNode {
         Self::wrap(KernelNode::downsampling())
     }
 
+    /// Integrated white noise on scalar time inputs (no parameters).
+    #[staticmethod]
+    #[pyo3(signature = (order=1))]
+    fn integrated_white_noise(order: usize) -> PyResult<Self> {
+        KernelNode::integrated_white_noise(order)
+            .map(Self::wrap)
+            .into_py_result()
+    }
+
     /// BoTorch's `ExponentialDecayKernel`.
     #[staticmethod]
     #[pyo3(signature = (ard_num_dims=None))]
@@ -185,8 +283,109 @@ impl PyKernelNode {
 
     /// `ScaleKernel(base)`.
     #[staticmethod]
+    #[pyo3(signature=(knots,tables,weights,learn_weights,denominator,group_column=None,independent=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn empirical_basis(
+        knots: Vec<Vec<f64>>,
+        tables: Vec<Array>,
+        weights: Vec<f64>,
+        learn_weights: bool,
+        denominator: f64,
+        group_column: Option<usize>,
+        independent: bool,
+    ) -> PyResult<Self> {
+        let tables = tables
+            .into_iter()
+            .map(|a| {
+                let count = a.1.iter().try_fold(1usize, |n, &d| n.checked_mul(d));
+                if count != Some(a.0.len()) {
+                    return Err(value_error(
+                        "empirical basis array length differs from declared shape",
+                    ));
+                }
+                a.matrix("basis table")
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        KernelNode::empirical_basis(EmpiricalBasisSpec {
+            knots,
+            tables,
+            weights,
+            learn_weights,
+            denominator,
+            group_column,
+            independent,
+        })
+        .map(Self::wrap)
+        .into_py_result()
+    }
+
+    /// `ScaleKernel(base)`.
+    #[staticmethod]
     fn scale(base: PyRef<'_, PyKernelNode>) -> Self {
         Self::wrap(KernelNode::scale(base.inner.clone()))
+    }
+
+    /// Structural additive contextual kernel with a shared RBF base.
+    #[staticmethod]
+    fn contextual_sac(
+        decomposition: Vec<(String, Vec<usize>)>,
+        base: PyRef<'_, PyKernelNode>,
+    ) -> PyResult<Self> {
+        KernelNode::contextual_sac(decomposition, base.inner.clone())
+            .into_py_result()
+            .map(Self::wrap)
+    }
+
+    /// LCEA with shared spatial and embedding RBF parameters.
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (contexts,categorical,embedding_shapes,fixed_embeddings,context_weights,task,base))]
+    fn contextual_lcea(
+        contexts: Vec<Vec<usize>>,
+        categorical: Vec<Vec<usize>>,
+        embedding_shapes: Vec<(usize, usize)>,
+        fixed_embeddings: Array,
+        context_weights: Option<Vec<f64>>,
+        task: PyRef<'_, PyKernelNode>,
+        base: PyRef<'_, PyKernelNode>,
+    ) -> PyResult<Self> {
+        let spec = LceaSpec {
+            contexts,
+            categorical,
+            embedding_shapes,
+            fixed_embeddings: fixed_embeddings.matrix("fixed_embeddings")?,
+            context_weights,
+        };
+        KernelNode::contextual_lcea(spec, task.inner.clone(), base.inner.clone())
+            .into_py_result()
+            .map(Self::wrap)
+    }
+
+    /// Native max-norm update of the shared embedding tables.
+    fn contextual_lcea_normalize(&self, mut raw: Vec<f64>) -> PyResult<Vec<f64>> {
+        self.lcea_spec()?
+            .normalize_parameters(&mut raw)
+            .into_py_result()?;
+        Ok(raw)
+    }
+
+    /// Effective learned plus fixed context embeddings.
+    fn contextual_lcea_embeddings(&self, raw: Vec<f64>) -> PyResult<ArrayOut> {
+        if raw.len() != self.inner.num_raw() {
+            return Err(dimension_error("inconsistent LCEA raw parameters"));
+        }
+        let actual = self.inner.transform_all(&raw);
+        Ok(matrix_out(&self.lcea_spec()?.embeddings(&actual)))
+    }
+
+    /// Native context covariance, including the amplitude outer product.
+    fn contextual_lcea_covariance(&self, raw: Vec<f64>) -> PyResult<ArrayOut> {
+        if raw.len() != self.inner.num_raw() {
+            return Err(dimension_error("inconsistent LCEA raw parameters"));
+        }
+        let actual = self.inner.transform_all(&raw);
+        let state = LceaState::new(self.lcea_spec()?, &actual, 0).into_py_result()?;
+        Ok(matrix_out(state.context_covariance()))
     }
 
     /// `AdditiveKernel(*kernels)`.
@@ -348,7 +547,14 @@ impl PyKernelNode {
     /// The kernel matrix `K(x1, x2)` (`n1 × n2`), or the `diag=True` values
     /// `k(x1_i, x1_i)` if `diag`, with the raw parameter values `raw` (flat,
     /// one model element) for inputs with `x1.shape[-1]` columns.
-    #[pyo3(signature = (raw, x1, x2=None, diag=false))]
+    fn feature_batch_size(&self, input_dim: usize) -> PyResult<usize> {
+        self.inner
+            .feature_batch_nodes(&vec![0.0; self.inner.num_raw()], input_dim)
+            .map(|plans| plans.len())
+            .into_py_result()
+    }
+
+    #[pyo3(signature = (raw, x1, x2=None, diag=false, last_dim_is_batch=false))]
     fn evaluate(
         &self,
         py: Python<'_>,
@@ -356,6 +562,7 @@ impl PyKernelNode {
         x1: Array,
         x2: Option<Array>,
         diag: bool,
+        last_dim_is_batch: bool,
     ) -> PyResult<ArrayBuf> {
         let a = x1.matrix("x1")?;
         let b = match &x2 {
@@ -372,43 +579,68 @@ impl PyKernelNode {
         }
         let node = &self.inner;
         let out = crate::threads::run(py, || -> botorch_core::Result<ArrayBuf> {
-            let kern = TreeKernel::build(node, &raw, d)?;
-            let pa = kern.prepare(&a)?;
-            let n = a.nrows();
-            let other = match &b {
-                Some(b) if b != &a => Some(kern.prepare(b)?),
-                _ => None,
-            };
-            if diag {
-                let values = match &other {
-                    Some(pb) => {
-                        if pb.len() != n {
-                            return Err(botorch_core::BotorchError::DimensionMismatch(
-                                "diag=True requires x1 and x2 with the same number of points"
-                                    .into(),
-                            ));
-                        }
-                        let k = kern.cross(&pa, pb);
-                        (0..n).map(|i| k[(i, i)]).collect()
-                    }
-                    None => (0..n).map(|i| kern.diag_mode(&pa, i)).collect(),
-                };
-                return Ok(ArrayBuf(values, vec![n]));
+            if !last_dim_is_batch {
+                return evaluate_tree(node, &raw, &a, b.as_ref(), diag);
             }
-            let k: Matrix = match &other {
-                Some(pb) => kern.cross(&pa, pb),
-                None => kern.symmetric(&pa),
-            };
-            let (n1, n2) = k.shape();
-            let mut data = Vec::with_capacity(n1 * n2);
-            for i in 0..n1 {
-                for j in 0..n2 {
-                    data.push(k[(i, j)]);
-                }
+            let plans = node.feature_batch_nodes(&raw, d)?;
+            let mut shape = vec![plans.len(), a.nrows()];
+            if !diag {
+                shape.push(b.as_ref().unwrap_or(&a).nrows());
             }
-            Ok(ArrayBuf(data, vec![n1, n2]))
+            let mut data = Vec::new();
+            for (feature, parameters) in plans {
+                data.extend(evaluate_tree(&feature, &parameters, &a, b.as_ref(), diag)?.0);
+            }
+            Ok(ArrayBuf(data, shape))
         });
         out.into_py_result()
+    }
+
+    /// Input adjoints of `K(x1, x2)` without allocating its dense Jacobian.
+    fn evaluate_vjp(
+        &self,
+        py: Python<'_>,
+        raw: Vec<f64>,
+        x1: Array,
+        x2: Array,
+        adjoint: Array,
+    ) -> PyResult<(ArrayBuf, ArrayBuf)> {
+        let a = x1.matrix("x1")?;
+        let b = x2.matrix("x2")?;
+        let g = adjoint.matrix("adjoint")?;
+        if a.ncols() != b.ncols() || g.shape() != (a.nrows(), b.nrows()) {
+            return Err(dimension_error(
+                "Kernel adjoint and input dimensions do not match",
+            ));
+        }
+        crate::threads::run(py, || -> botorch_core::Result<_> {
+            let kern = TreeKernel::build(&self.inner, &raw, a.ncols())?;
+            let pa = kern.prepare(&a)?;
+            let pb = kern.prepare(&b)?;
+            let mut ga = Matrix::zeros(a.nrows(), a.ncols());
+            let mut gb = Matrix::zeros(b.nrows(), b.ncols());
+            for i in 0..a.nrows() {
+                let (_, dg) = kern.cross_with_grad(&pa, i, &pb);
+                for j in 0..b.nrows() {
+                    for d in 0..a.ncols() {
+                        ga[(i, d)] += g[(i, j)] * dg[(j, d)];
+                    }
+                }
+            }
+            for j in 0..b.nrows() {
+                let (_, dg) = kern.cross_with_grad(&pb, j, &pa);
+                for i in 0..a.nrows() {
+                    for d in 0..b.ncols() {
+                        gb[(j, d)] += g[(i, j)] * dg[(i, d)];
+                    }
+                }
+            }
+            Ok((
+                crate::arrays::matrix_out(&ga).into(),
+                crate::arrays::matrix_out(&gb).into(),
+            ))
+        })
+        .into_py_result()
     }
 
     /// The log density of the priors and its gradient with respect to the raw

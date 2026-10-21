@@ -1,0 +1,123 @@
+{
+  "created_utc": "2026-10-21T16:32:08.629860+00:00",
+  "scope": "Candidate native cache validation; not a complete-package release certificate",
+  "native_code_revision": "567245c3c020e4b058f1e4c0cd1acec0b3f5dec8",
+  "benchmark_script_revision": "06282f4355b4a607b416959d04aca3637eda49d7",
+  "native_extension": "C:\\Users\\Mark\\Desktop\\botorch-rs-p11a\\target\\complete-port-native-prediction-v8-3b7c95aa0721\\_botorch_rs.pyd",
+  "native_sha256": "3b7c95aa07214afaf759badf111dec3b8a781e476fedd1006c65e5782709f04f",
+  "build_manifest": "C:\\Users\\Mark\\Desktop\\botorch-rs-p11a\\target\\complete-port-native-prediction-v8-3b7c95aa0721\\build-manifest.json",
+  "build_manifest_sha256": "ef4cd4cb8c1a560b18feef3102e3097379ace6cfec4f49b2f5512faad66bca47",
+  "build_command": [
+    "cargo",
+    "build",
+    "-p",
+    "botorch_pyo3",
+    "--release",
+    "--locked",
+    "-j",
+    "1"
+  ],
+  "build_environment": {
+    "CARGO_TARGET_DIR": "D:/botorch-rs-build/complete-port",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "native_input_files": 302,
+  "native_inputs_before_after_equal": true,
+  "current_native_inputs_match_build": true,
+  "native_inputs_lf_fingerprint_sha256": "40d1762dd256c0d0b772c273ed55e267821865fd47c2cbd1a276cc89538ac257",
+  "compiler": {
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)"
+  },
+  "workspace_test_command": [
+    "cargo",
+    "test",
+    "--workspace",
+    "--locked",
+    "-j",
+    "1"
+  ],
+  "workspace_test_results": {
+    "passed": 546,
+    "groups": 46,
+    "failed": 0,
+    "ignored": 0
+  },
+  "clippy_command": [
+    "cargo",
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--locked",
+    "-j",
+    "1",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "clippy_passed": true,
+  "format_command": [
+    "cargo",
+    "fmt",
+    "--all",
+    "--check"
+  ],
+  "format_passed": true,
+  "python_extension_sha256": "3b7c95aa07214afaf759badf111dec3b8a781e476fedd1006c65e5782709f04f",
+  "python_results": {
+    "passed": 161,
+    "failed": 0
+  },
+  "python_test_files": [
+    "test_native_prediction_snapshots.py",
+    "test_posterior_snapshot.py",
+    "test_posterior_query_autograd.py",
+    "test_posterior_parameter_gradients.py",
+    "test_optim_projections.py"
+  ],
+  "preserved_v7_development_native_sha256": "5082562554ee625b394d6fcaaa976d6d27c89a65eb5b7a4e338a24d075b78c66",
+  "preserved_v4_production_native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf",
+  "hardware": {
+    "processor": "Intel(R) Core(TM) Ultra 7 155H",
+    "cores": 16,
+    "logical_processors": 22
+  },
+  "logs": {
+    "workspace": {
+      "path": "C:\\Users\\Mark\\Desktop\\botorch-rs-p11a\\target\\native-prediction-v8-workspace.log",
+      "sha256": "08dc2f98e455f8a83da01cc7a4cd59c360a3d9a3bc4ce35ef0c69661ddb2ebaa"
+    },
+    "clippy": {
+      "path": "C:\\Users\\Mark\\Desktop\\botorch-rs-p11a\\target\\native-prediction-v8-clippy.log",
+      "sha256": "a7682a16b37d1181ac55cc0a0fa524447c61c1e1474c0b2f33a8ef4db798d69a"
+    },
+    "python": {
+      "path": "C:\\Users\\Mark\\Desktop\\botorch-rs-p11a\\target\\native-prediction-v8-python.log",
+      "sha256": "139625906defee1b809fbd09bc98b2b1a74588ded5a3687cff4aaa27fe073433"
+    },
+    "build": {
+      "path": "C:\\Users\\Mark\\Desktop\\botorch-rs-p11a\\target\\native-prediction-v8-release-build.log",
+      "sha256": "3c1b245e8da3975e5931c9425e5118d9cbdaa225179137959686fe101e5043d5"
+    },
+    "before_benchmark": {
+      "path": "C:\\Users\\Mark\\Desktop\\botorch-rs-p11a\\target\\native-prediction-v4-release-controlled.log",
+      "sha256": "35b0ba50868a5345b37d97d7613e2dd5edddd5cf55afa98ef94892b292c2ece1"
+    },
+    "after_benchmark": {
+      "path": "C:\\Users\\Mark\\Desktop\\botorch-rs-p11a\\target\\native-prediction-v8-release-controlled.log",
+      "sha256": "cd097797ef4ef3cc5084f8c58e1d165d85ebacafa86f1a225a04742a1b4b888f"
+    }
+  },
+  "benchmark_reports": {
+    "before": {
+      "path": "docs/benchmarks/native-prediction-cache-before-2026-10-21.json",
+      "sha256": "953d4ac82d1999d35a014eaac49ac6beb62793291298d211ef9e282791517466"
+    },
+    "after": {
+      "path": "docs/benchmarks/native-prediction-cache-after-2026-10-21.json",
+      "sha256": "e1e7232e67998dc2e958b338ff6f3581ed1243026535dcbdf4e34965325a971f"
+    }
+  }
+}

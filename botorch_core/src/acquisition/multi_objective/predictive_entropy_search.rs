@@ -17,8 +17,7 @@
 //!
 //! The computation follows BoTorch's step by step: the same jitters, the
 //! successive halving of the damping factor until the damped natural
-//! covariance has a Cholesky factorization (with BoTorch's test of the
-//! factorization's `info` codes), the convergence test on the relative
+//! covariance has a Cholesky factorization, the convergence test on the relative
 //! changes of the means and covariances, the fallback to the previous
 //! factors when an update produces NaNs or a singular 2 × 2 matrix, and the
 //! clamps of `log_cdf_robust`. Gradients are the exact derivatives of the
@@ -38,6 +37,9 @@
 //!   of candidate sets jointly, and a NaN in the update of one candidate set
 //!   (or the failure of a Cholesky factorization of one set) changes the
 //!   fallback and damping decisions of all others.
+//! * Every nonzero Cholesky `info` code is a failure. The pinned reference
+//!   checks whether the sum exceeds one and can accept a failed first pivot
+//!   (`info = 1`) with a finite invalid factor.
 //!
 //! As in BoTorch, the observation noise at the candidates enters the
 //! predictive covariance of the factors (BoTorch computes both predictive
@@ -775,7 +777,7 @@ pub fn update_marginals(
 /// (halved, and set to zero below 1e-3, where the damped natural covariance
 /// has no Cholesky factorization) and the Cholesky factors of the damped
 /// natural covariances (of the jittered ones after a retry), with BoTorch's
-/// test of the sum of the `info` codes of all elements.
+/// test of the `info` codes, corrected to reject every nonzero code.
 ///
 /// # Errors
 /// [`BotorchError::InvalidArgument`] with BoTorch's message if the previous
@@ -797,7 +799,7 @@ pub fn update_damping(
         .par_iter()
         .map(|c| cholesky_ex(&with_jitter(c)).1)
         .sum();
-    if infos > 1 {
+    if infos != 0 {
         return Err(BotorchError::InvalidArgument(NOT_PSD_MESSAGE.into()));
     }
     let mut df = damping.to_vec();
@@ -816,7 +818,7 @@ pub fn update_damping(
     loop {
         let info_sum: usize = res.iter().map(|(_, i)| i).sum();
         let nans = res.iter().any(|(l, _)| l.iter().any(|v| v.is_nan()));
-        if info_sum <= 1 && !nans {
+        if info_sum == 0 && !nans {
             break;
         }
         df = df
@@ -1356,5 +1358,30 @@ impl AcquisitionFunction for QMultiObjectivePredictiveEntropySearch {
         }
         *self.x_pending.write().unwrap_or_else(|e| e.into_inner()) = x_pending.cloned();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod damping_regression_tests {
+    use super::*;
+
+    #[test]
+    fn failed_first_pivot_is_damped_instead_of_accepted() {
+        let previous = Matrix::identity(2, 2);
+        let proposal = Matrix::from_diagonal(&Vector::from_vec(vec![-1.0, 1.0]));
+        let jitter = 1e-4;
+        let (damping, roots) = update_damping(&[&previous], &[&proposal], &[1.0], jitter)
+            .expect("halving recovers a positive matrix");
+        assert_eq!(damping, vec![0.5]);
+        let expected = (&previous + proposal) * 0.5 + &previous * jitter;
+        let reconstructed = &roots[0] * roots[0].transpose();
+        assert!((reconstructed - expected).norm() < 1e-14);
+    }
+
+    #[test]
+    fn invalid_previous_first_pivot_is_rejected() {
+        let previous = Matrix::from_diagonal(&Vector::from_vec(vec![-1.0, 1.0]));
+        let proposal = Matrix::identity(2, 2);
+        assert!(update_damping(&[&previous], &[&proposal], &[1.0], 1e-4).is_err());
     }
 }

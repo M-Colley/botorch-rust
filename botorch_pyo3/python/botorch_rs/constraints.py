@@ -21,6 +21,7 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import as_float
+from botorch_rs._buffers import NativeBufferModule, _default_dtype
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.priors import _float32
 
@@ -68,7 +69,7 @@ def _inverse_name(inv_transform: Any) -> str | None:
     return name
 
 
-class Interval:
+class Interval(NativeBufferModule):
     """``lower_bound <= value <= upper_bound``
     (``gpytorch.constraints.Interval``).
 
@@ -225,6 +226,7 @@ def _from_rs(constraint: _rs.Constraint) -> Interval:
     cls = classes.get(constraint.kind, Interval)
     obj = cls.__new__(cls)
     obj._rs = constraint
+    obj._buffer_factory_dtype = _default_dtype()
     return obj
 
 

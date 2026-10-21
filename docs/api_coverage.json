@@ -1,0 +1,14 @@
+{
+  "date": "2026-10-21",
+  "reference_version": "0.18.2.dev41+gb0dd01be6",
+  "reference_commit": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+  "rust_version": "0.3.0",
+  "public_symbols": 776,
+  "available_symbols": 776,
+  "availability_percent": 100.0,
+  "api_gaps": [],
+  "import_errors": {
+    "botorch_community.models.prior_fitted_network": "ModuleNotFoundError: No module named 'pfns'"
+  },
+  "note": "Symbol availability is not proof of numerical parity, supported configurations, autograd compatibility or performance."
+}

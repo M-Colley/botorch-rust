@@ -20,11 +20,20 @@ one-to-many input transform (``InputPerturbation``) the samples have
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
+from contextvars import ContextVar
 from typing import Any
 
 from botorch_rs._arrays import ArrayKind, FloatData, from_flat, to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
+
+_OBJECTIVE_CONTEXT: ContextVar[Any] = ContextVar("botorch_rs_objective_context", default=None)
+
+
+def objective_context() -> Any:
+    """Private native acquisition context; None outside an objective callback."""
+    return _OBJECTIVE_CONTEXT.get()
 
 
 def _torch() -> Any:
@@ -54,7 +63,8 @@ def forward(
     shape: tuple[int, int, int],
     x: tuple[Sequence[float], int] | None,
     with_grad: bool,
-) -> tuple[FloatData, Any]:
+    context: Any = None,
+) -> tuple[FloatData, int, Any]:
     """Evaluates an objective (``fn(samples, X=X)``) or a constraint
     (``fn(samples)``) on posterior samples; returns the values (``S x n``,
     row-major) and a handle for :func:`backward`."""
@@ -69,17 +79,30 @@ def forward(
         Y.requires_grad_(True)
         if X is not None:
             X.requires_grad_(True)
-    with torch.enable_grad() if with_grad else torch.no_grad():
-        out = fn(Y, X=X) if kind == "objective" else fn(Y)
-        out = torch.as_tensor(out, dtype=torch.float64)
-    if out.numel() == 0 or out.numel() % s != 0 or out.numel() > s * n:
+    token = _OBJECTIVE_CONTEXT.set((context,))
+    try:
+        with torch.enable_grad() if with_grad else torch.no_grad():
+            out = fn(Y, X=X) if kind == "objective" else fn(Y)
+            out = torch.as_tensor(out, dtype=torch.float64)
+    finally:
+        _OBJECTIVE_CONTEXT.reset(token)
+    points = int(out.shape[-1]) if out.ndim else 0
+    count = out.numel() // points if points else 0
+    if (
+        not points
+        or points > n
+        or not count
+        or count % s
+        or (out.ndim > 2 and math.prod(out.shape[1:-1]) != 1)
+        or (kind != "objective" and count != s)
+    ):
         raise RuntimeError(
             f"The {kind} returned values of shape {tuple(out.shape)}, expected "
             f"{(s, 1, n)} (`sample_shape x batch_shape x q`)."
         )
     values = to_flat(out, kind)[0]
     handle = (out, Y, X) if with_grad else None
-    return values, handle
+    return values, count, handle
 
 
 def forward_mo(

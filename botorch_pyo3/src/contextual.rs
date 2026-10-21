@@ -96,6 +96,18 @@ fn matrices(arrays: Vec<Array>, name: &str) -> PyResult<Vec<Matrix>> {
     arrays.iter().map(|a| a.matrix(name)).collect()
 }
 
+fn observation_noise(noise: Option<Array>) -> PyResult<Option<Vec<f64>>> {
+    noise
+        .map(|array| {
+            let matrix = array.matrix("noise")?;
+            if matrix.ncols() != 1 {
+                return Err(dimension_error("noise must have shape (n, 1)."));
+            }
+            Ok(matrix.column(0).iter().copied().collect())
+        })
+        .transpose()
+}
+
 #[pymethods]
 impl PyLCEMGP {
     /// Builds the model from `train_x` (`n x (d + 1)` with the task column
@@ -177,6 +189,52 @@ impl PyLCEMGP {
         Self {
             inner: RwLock::new(Arc::new((*self.snapshot()).clone())),
         }
+    }
+
+    /// Condition on original-space targets and optional transformed-space noise.
+    #[pyo3(signature = (x, y, noise=None))]
+    fn condition_on_observations(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        y: Array,
+        noise: Option<Array>,
+    ) -> PyResult<Self> {
+        let (x, y) = (x.matrix("X")?, y.matrix("Y")?);
+        let values = observation_noise(noise)?;
+        let model = self.snapshot();
+        let conditioned = threads::run(py, || {
+            model.condition_on_observations(&x, &y, values.as_deref())
+        })
+        .into_py_result()?;
+        Ok(Self {
+            inner: RwLock::new(Arc::new(conditioned)),
+        })
+    }
+
+    /// Multiple targets at shared inputs reuse the native covariance factor.
+    #[pyo3(signature = (x, ys, noise=None))]
+    fn condition_on_observations_many(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        ys: Vec<Array>,
+        noise: Option<Array>,
+    ) -> PyResult<Vec<Self>> {
+        let x = x.matrix("X")?;
+        let ys = matrices(ys, "Y")?;
+        let values = observation_noise(noise)?;
+        let model = self.snapshot();
+        let conditioned = threads::run(py, || {
+            model.condition_on_observations_many(&x, &ys, values.as_deref())
+        })
+        .into_py_result()?;
+        Ok(conditioned
+            .into_iter()
+            .map(|m| Self {
+                inner: RwLock::new(Arc::new(m)),
+            })
+            .collect())
     }
 
     // ------------------------------------------------------------------
@@ -292,6 +350,20 @@ impl PyLCEMGP {
             Vec::new(),
         )
         .map(Some)
+    }
+
+    #[pyo3(signature=(standardize=None, chains=None))]
+    fn _set_fitted_outcome_state(
+        &self,
+        standardize: Option<PyRef<'_, PyStandardize>>,
+        chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+    ) -> PyResult<()> {
+        let transform = crate::models::unbatched_fitted_outcome_state(standardize, chains)?;
+        let mut next = (*self.snapshot()).clone();
+        if next.set_fitted_outcome_state(transform).into_py_result()? {
+            self.replace(next);
+        }
+        Ok(())
     }
 
     /// The data kernel configuration.

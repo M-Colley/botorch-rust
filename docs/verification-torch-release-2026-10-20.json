@@ -1,0 +1,170 @@
+{
+  "recorded_utc": "2026-10-20T08:44:22.637780+00:00",
+  "status": "validation_passed_for_documented_scope",
+  "behavioral_parity_complete": false,
+  "gpu_coverage_complete": false,
+  "scope": "Official main BoTorch package, pinned reference; native CPU backend plus documented device-resident Torch model, posterior, sampler, acquisition and optimization families. Community excluded.",
+  "source_revision": "ae2b60c0f617cfebb18eecc00f0b6b3c05c6d573",
+  "native_source_revision": "52c03c690fb85c7fa9417901f890e58fd7d18d22",
+  "official_reference_revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+  "environment": {
+    "platform": "Windows-11-10.0.26300-SP0",
+    "python": "3.13.12",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "torch": "2.13.0+cu132",
+    "cuda_device": "NVIDIA GeForce RTX 4050 Laptop GPU"
+  },
+  "artifact": {
+    "wheel": "target/tensor-final-v2-wheels/botorch_rust-0.2.0-cp311-abi3-win_amd64.whl",
+    "wheel_sha256": "bd921ece0414946febe3dafb621fb357ecba0e639a7c5e2ee9b301253e870ab3",
+    "native_sha256": "e8f199976d9da3106e7697f05c6bfe17d7c501ec291a167c96ed30a2f8ad8283",
+    "source_files_matching_wheel": 265,
+    "source_mismatches": [],
+    "bytecode_cache_files": [],
+    "duplicate_archive_members": [],
+    "installed_prefix": "target/tensor-final-v2-release-python",
+    "source_checkout_extension_sha256": "e8f199976d9da3106e7697f05c6bfe17d7c501ec291a167c96ed30a2f8ad8283",
+    "source_checkout_cuda_first_and_second_derivatives_finite": true
+  },
+  "api_inventory": {
+    "available": 776,
+    "audited": 776,
+    "gaps": [],
+    "core_import_errors": {},
+    "community_included": false,
+    "meaning": "Symbol availability is not proof of numerical parity, supported configurations, autograd compatibility or performance."
+  },
+  "native_tests": {
+    "passed": 522,
+    "failed": 0,
+    "ignored": 0,
+    "groups": 46,
+    "command": "cargo test --workspace --locked"
+  },
+  "python_tests": {
+    "valid": true,
+    "errors": [],
+    "canonical_case_count": 8730,
+    "canonical_case_ids_sha256": "4e9cb633fedc9aa00c7038ffdeb574324203dc2e6575d82e249de606bf26b11f",
+    "case_ids_exactly_once": true,
+    "phase_totals": {
+      "broad": {
+        "passed": 7463,
+        "skipped": 32
+      },
+      "equivalence": {
+        "passed": 1220,
+        "skipped": 15
+      }
+    },
+    "totals": {
+      "passed": 8683,
+      "skipped": 47
+    },
+    "collection_skips": [],
+    "fingerprints": {
+      "native_sha256": "e8f199976d9da3106e7697f05c6bfe17d7c501ec291a167c96ed30a2f8ad8283",
+      "python_sources_sha256": "951ecbdc9cdb25c6c9309cef05065e09cd68e3a0c9bf6af9b236d77b7e4a6190",
+      "python_source_files": 265,
+      "helper_sha256": "a112abc5a1af50d63115f6b722e6efaac6ee1c305d086cbec9feb04aa2a5e046",
+      "source_revision": "ae2b60c0f617cfebb18eecc00f0b6b3c05c6d573",
+      "reference_revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+      "source_tree_status": "",
+      "reference_tree_status": ""
+    },
+    "native_sha256": "e8f199976d9da3106e7697f05c6bfe17d7c501ec291a167c96ed30a2f8ad8283",
+    "python_sources_sha256": "951ecbdc9cdb25c6c9309cef05065e09cd68e3a0c9bf6af9b236d77b7e4a6190",
+    "helper_sha256": "a112abc5a1af50d63115f6b722e6efaac6ee1c305d086cbec9feb04aa2a5e046",
+    "source_revision": "ae2b60c0f617cfebb18eecc00f0b6b3c05c6d573",
+    "reference_revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "package_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-final-v2-release-python\\botorch_rs\\__init__.py",
+    "native_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-final-v2-release-python\\botorch_rs\\_botorch_rs.pyd",
+    "python_executable": "C:\\Users\\Mark\\miniconda3\\python.exe",
+    "torch": "2.13.0+cu132",
+    "cuda_device": "NVIDIA GeForce RTX 4050 Laptop GPU",
+    "verified_utc": "2026-10-20T08:42:44.304378+00:00",
+    "phase_reports": {
+      "broad": {
+        "path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-final-v2-broad.json",
+        "sha256": "7e8729cdd0e2c3b27d0140c4755d33696f42c3fc06ba0ed72f28b7004db5cb8e"
+      },
+      "equivalence": {
+        "path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-final-v2-equivalence.json",
+        "sha256": "099834e55b9a7ce21a08cced914fe952c7f6c47f26545d8d21570df58effb84b"
+      }
+    },
+    "pair_verifier_sha256": "a8d265e7b88e5f442f5471801cfc8eca93b5d5f3f0ba43655b297b86a77aa8bf"
+  },
+  "checks": {
+    "clippy_warnings_as_errors": "passed; native source unchanged since the checked 52c03c6 tree",
+    "rustfmt": "passed",
+    "ruff_check_and_format": "passed (472 selected files)",
+    "mypy": "passed (264 source files)",
+    "installed_wheel_matches_python_sources": true,
+    "compiled_source_checkout_cuda_smoke": "passed"
+  },
+  "performance": [
+    {
+      "report": "benchmarks/tensor-packed-prediction-2026-10-20-float64.json",
+      "dtype": "float64",
+      "scope": "interleaved shuffled warmed no_grad posterior mean+variance; CUDA synchronized before and after each timed call; excludes construction, fitting, imports, first training factor",
+      "speedup_reference_over_port": [
+        {
+          "train_n": 32,
+          "cpu": 1.4697221070095396,
+          "cuda": 1.4108534732094713
+        },
+        {
+          "train_n": 256,
+          "cpu": 1.2593825413996838,
+          "cuda": 1.697786822691427
+        },
+        {
+          "train_n": 1024,
+          "cpu": 1.5285434086920615,
+          "cuda": 0.971657439038756
+        }
+      ]
+    },
+    {
+      "report": "benchmarks/tensor-packed-prediction-2026-10-20-float32.json",
+      "dtype": "float32",
+      "scope": "interleaved shuffled warmed no_grad posterior mean+variance; CUDA synchronized before and after each timed call; excludes construction, fitting, imports, first training factor",
+      "speedup_reference_over_port": [
+        {
+          "train_n": 32,
+          "cpu": 1.5858600583090379,
+          "cuda": 1.4833048133034967
+        },
+        {
+          "train_n": 256,
+          "cpu": 1.2478791833690688,
+          "cuda": 1.6032129980375154
+        },
+        {
+          "train_n": 1024,
+          "cpu": 1.0182650100438955,
+          "cuda": 1.3909285332382817
+        }
+      ]
+    }
+  ],
+  "coverage_notes": "torch-backend.md",
+  "correctness_findings_and_solutions": "correctness-findings.md",
+  "remaining_limits": [
+    "GPU execution is not complete for specialized model and entropy/search acquisition families.",
+    "Tensor MultiTaskGP conditioning/fantasies and unsupported custom priors/likelihood configurations remain outside the implemented scope.",
+    "Torch fully Bayesian models support loaded-MCMC inference; Tensor-backend NUTS and MAP fitting are explicitly unsupported.",
+    "Native CPU semantics remain separate from full Torch graph semantics; select backend=\"torch\" explicitly for CPU higher-order/query-only requests.",
+    "Noisy Tensor acquisitions use full-joint sampling when root caching is requested, with an explicit fallback warning.",
+    "Torch optimization requires feasible provided/custom initial conditions for parameter constraints; specialized mixed/discrete/cyclic paths, model-batched restart selection, parallel SciPy mode, aggregation and batch_limit need further work.",
+    "KG evaluate holds optimized inner decisions fixed; augmented one-shot KG retains the full functional graph.",
+    "The 776-name availability audit is not a claim of complete behavioral or GPU parity."
+  ],
+  "reproduce_python": {
+    "setup": "Build/install the wheel into a fresh prefix and provide the pinned official reference checkout. The verifier sets subprocess PYTHONPATH, reference-root and single-thread settings and disables ambient pytest options/plugins.",
+    "broad": "python scripts/verify_python_release.py --package-root target/tensor-final-v2-release-python --native-sha256 e8f199976d9da3106e7697f05c6bfe17d7c501ec291a167c96ed30a2f8ad8283 --phase broad --report target/tensor-final-v2-broad.json",
+    "equivalence": "python scripts/verify_python_release.py --package-root target/tensor-final-v2-release-python --native-sha256 e8f199976d9da3106e7697f05c6bfe17d7c501ec291a167c96ed30a2f8ad8283 --phase equivalence --report target/tensor-final-v2-equivalence.json",
+    "certificate": "python scripts/verify_python_release_pair.py --broad target/tensor-final-v2-broad.json --equivalence target/tensor-final-v2-equivalence.json --report target/tensor-final-v2-certificate.json"
+  }
+}

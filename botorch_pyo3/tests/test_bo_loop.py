@@ -100,10 +100,13 @@ def test_bo_loop_steps_match_botorch() -> None:
     """
     importorskip_botorch()
     torch = pytest.importorskip("torch")
+    pytest.importorskip("botorch")
     from botorch.acquisition import LogExpectedImprovement as BtLogEI
     from botorch.fit import fit_gpytorch_mll as bt_fit
     from botorch.models import SingleTaskGP as BtSingleTaskGP
     from botorch.optim import optimize_acqf as bt_optimize_acqf
+
+    pytest.importorskip("gpytorch")
     from gpytorch.mlls import ExactMarginalLogLikelihood as BtMLL
 
     def bt_loss_of(model: Any) -> float:

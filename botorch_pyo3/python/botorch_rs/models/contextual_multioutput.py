@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 from collections.abc import Iterator
 from typing import Any
 
@@ -21,11 +22,14 @@ from botorch_rs.exceptions.errors import BotorchTensorDimensionError, Unsupporte
 from botorch_rs.kernels import Kernel, RBFKernel
 from botorch_rs.likelihoods import HadamardGaussianLikelihood
 from botorch_rs.means import MultitaskMean
-from botorch_rs.models.gp_regression import _is_default, _validate_tensor_args
+from botorch_rs.models.gp_regression import (
+    _is_default,
+    _is_tensor_factory_target,
+    _validate_tensor_args,
+)
 from botorch_rs.models.multitask import MultiTaskGP
 from botorch_rs.models.transforms.outcome import Standardize, is_plain_standardize
 from botorch_rs.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
-from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 from botorch_rs.utils.types import DEFAULT
 
 
@@ -202,6 +206,46 @@ class LCEMGP(MultiTaskGP):
 
     _rs: _botorch_rs.LCEMGP  # type: ignore[assignment]
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        selected = _use_torch_backend(backend, train_X, train_Y, *args, *kwargs.values())
+        torch = sys.modules.get("torch")
+        tensor_only_options = any(
+            kwargs.get(name, args[index] if len(args) > index else None) is not None
+            for index, name in (
+                (1, "train_Yvar"),
+                (2, "mean_module"),
+                (4, "likelihood"),
+                (11, "input_transform"),
+            )
+        )
+        if _is_tensor_factory_target(cls, LCEMGP) and (
+            selected
+            or (
+                backend == "auto"
+                and torch is not None
+                and isinstance(train_X, torch.Tensor)
+                and isinstance(train_Y, torch.Tensor)
+                and tensor_only_options
+            )
+        ):
+            from botorch_rs.models._torch_backend_lcem import TorchLCEMGP
+
+            if cls is LCEMGP:
+                return object.__new__(TorchLCEMGP)
+            from botorch_rs.models._torch_model_subclasses import model_type
+
+            return object.__new__(model_type(cls, TorchLCEMGP))
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -220,6 +264,7 @@ class LCEMGP(MultiTaskGP):
         input_transform: Any = None,
         *,
         seed: int | None = None,
+        backend: str = "auto",
     ) -> None:
         self._init(
             train_X,
@@ -389,11 +434,11 @@ class LCEMGP(MultiTaskGP):
 
     @property
     def batch_shape(self) -> tuple[int, ...]:
-        return ()
+        return tuple(getattr(self._rs, "batch_shape", ()))
 
     @property
     def _input_batch_shape(self) -> tuple[int, ...]:
-        return ()
+        return self.batch_shape
 
     @property
     def _aug_batch_shape(self) -> tuple[int, ...]:
@@ -449,6 +494,17 @@ class LCEMGP(MultiTaskGP):
             out.extend(data[r * k + c] for r in rows for c in rows)
         return from_flat(out, (*ishape[:-2], n, n), kind_of(task_idcs))
 
+    def _native_task_source(self, tasks: list[int] | None, includes_task_feature: bool) -> Any:
+        from botorch_rs.models._lcemgp_conditioning import _LcemFantasyState
+
+        if isinstance(self._rs, _LcemFantasyState):
+            return self._rs.model_handle(tasks, includes_task_feature)
+        return (
+            _rs.Model.from_lcemgp_task_inputs(self._rs)
+            if includes_task_feature
+            else _rs.Model.from_lcemgp(self._rs, tasks)
+        )
+
     # -- posterior ---------------------------------------------------------
 
     def _check_task_values(self, values: list[float]) -> None:
@@ -467,65 +523,6 @@ class LCEMGP(MultiTaskGP):
                 f"{longs - self._expected_task_values}."
             )
 
-    def posterior(
-        self,
-        X: Any,
-        output_indices: list[int] | None = None,
-        observation_noise: Any = False,
-        posterior_transform: Any = None,
-        **kwargs: Any,
-    ) -> GPyTorchPosterior:
-        r"""The posterior at ``X`` in the original outcome space.
-
-        ``X`` (``batch_shape x q x d``) without the task column gives the
-        posterior over the output tasks (``output_indices``: other task
-        values), a ``MultitaskMultivariateNormal`` in BoTorch's output-major
-        layout for several tasks. With the task column (``... x (d + 1)``),
-        the posterior is single-output over the given tasks.
-        ``observation_noise=True`` adds the noise level of each point's task.
-        """
-        from botorch_rs.acquisition.objective import transform_arg
-
-        if not isinstance(observation_noise, bool):
-            raise NotImplementedError(
-                "Passing a tensor of observations is not supported by MultiTaskGP."
-            )
-        kind = kind_of(X)
-        flat = to_flat(X, "X")
-        d = self.num_non_task_features
-        if len(flat[1]) < 2 or flat[1][-1] not in (d, d + 1):
-            raise BotorchTensorDimensionError(
-                f"Expected X to be `batch_shape x q x d` with d = {d} (or d + 1 with the task "
-                f"feature), got shape {tuple(flat[1])}."
-            )
-        # BoTorch's posterior calls eval() and runs a forward pass first.
-        self.eval()
-        self._forward_pass()
-        if flat[1][-1] == d + 1:
-            if output_indices is not None:
-                raise ValueError("`output_indices` must be None when `X` includes task features.")
-            cols = d + 1
-            self._check_task_values(
-                [flat[0][i + self._task_feature] for i in range(0, len(flat[0]), cols)]
-            )
-            source = _rs.Model.from_lcemgp_task_inputs(self._rs)
-            num_outputs = 1
-        else:
-            tasks = None if output_indices is None else [int(t) for t in output_indices]
-            if tasks is not None:
-                self._check_task_values([float(t) for t in tasks])
-            source = _rs.Model.from_lcemgp(self._rs, tasks)
-            num_outputs = len(tasks) if tasks is not None else self._num_outputs
-        return GPyTorchPosterior(
-            source,
-            flat,
-            kind,
-            observation_noise,
-            num_outputs=num_outputs,
-            model_batch_shape=(),
-            transform=transform_arg(posterior_transform),
-        )
-
     def _acquisition_model(self, posterior_transform: Any = None) -> _botorch_rs.Model:
         """The model handle that acquisition functions are built on."""
         from botorch_rs.acquisition.objective import transform_arg
@@ -534,24 +531,55 @@ class LCEMGP(MultiTaskGP):
         # calls `eval()` and runs a forward pass.
         self.eval()
         self._forward_pass()
+        from botorch_rs.models._lcemgp_conditioning import _LcemFantasyState
+
+        if isinstance(self._rs, _LcemFantasyState):
+            return self._rs.model_handle(
+                None, False, transform_arg(posterior_transform, self.num_outputs)
+            )
         return _rs.Model.from_lcemgp(
             self._rs, None, transform_arg(posterior_transform, self.num_outputs)
         )
 
-    def subset_output(self, idcs: list[int]) -> Any:
-        raise UnsupportedError("Subsetting outputs is not supported by `MultiTaskGPyTorchModel`.")
-
     def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
-        raise UnsupportedError(
-            "condition_on_observations is not supported for LCEMGP in botorch_rs."
-        )
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
+        from botorch_rs.models._lcemgp_conditioning import condition
+
+        return condition(self, X, Y, noise, **kwargs)
 
     def fantasize(self, X: Any, sampler: Any, observation_noise: Any = None, **kwargs: Any) -> Any:
-        raise UnsupportedError("fantasize is not supported for LCEMGP in botorch_rs.")
+        from botorch_rs.models._lcemgp_conditioning import fantasize
+
+        return fantasize(self, X, sampler, observation_noise, **kwargs)
 
     @classmethod
-    def construct_inputs(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:  # type: ignore[override]
-        raise UnsupportedError("LCEMGP.construct_inputs is not ported to botorch_rs.")
+    def construct_inputs(  # type: ignore[override]
+        cls,
+        training_data: Any,
+        task_feature: int,
+        output_tasks: list[int] | None = None,
+        context_cat_feature: Any = None,
+        context_emb_feature: Any = None,
+        embs_dim_list: list[int] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Construct contextual model arguments without copying dataset tensors."""
+        inputs = super().construct_inputs(
+            training_data=training_data,
+            task_feature=task_feature,
+            output_tasks=output_tasks,
+            **kwargs,
+        )
+        for name, value in (
+            ("context_cat_feature", context_cat_feature),
+            ("context_emb_feature", context_emb_feature),
+            ("embs_dim_list", embs_dim_list),
+        ):
+            if value is not None:
+                inputs[name] = value
+        return inputs
 
     # -- parameters --------------------------------------------------------
 
@@ -623,6 +651,9 @@ class LCEMGP(MultiTaskGP):
         return self.train(False)
 
     def train(self, mode: bool = True) -> LCEMGP:
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         self.training = mode
         tf = getattr(self, "outcome_transform", None)
         if tf is not None:

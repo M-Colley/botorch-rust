@@ -7,6 +7,7 @@ from typing import Any
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs.constraints import Positive
 from botorch_rs.kernels import Kernel, _properties
+from botorch_rs.models.hierarchical.conditional_kernel_gp import _torch_requested
 
 
 class InfiniteWidthBNNKernel(Kernel):
@@ -26,6 +27,13 @@ class InfiniteWidthBNNKernel(Kernel):
         ("raw_bias_var", "raw_bias_var_constraint", None),
     )
 
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        if cls is InfiniteWidthBNNKernel and _torch_requested(backend):
+            from botorch_rs.models._torch_backend_neural import TorchInfiniteWidthBNNKernel
+
+            return object.__new__(TorchInfiniteWidthBNNKernel)
+        return object.__new__(cls)
+
     def __init__(
         self,
         depth: int = 3,
@@ -33,6 +41,8 @@ class InfiniteWidthBNNKernel(Kernel):
         active_dims: Any = None,
         acos_eps: float = 1e-7,
         device: Any = None,
+        *,
+        backend: str = "auto",
     ) -> None:
         super().__init__(batch_shape=batch_shape, active_dims=active_dims)
         self.depth = int(depth)
@@ -45,6 +55,10 @@ class InfiniteWidthBNNKernel(Kernel):
 
     raw_weight_var, weight_var = _properties("raw_weight_var")
     raw_bias_var, bias_var = _properties("raw_bias_var")
+
+    def k(self, x1: Any, x2: Any) -> Any:
+        """Full arc-cosine covariance, using the native layer recursion."""
+        return self(x1, x2)
 
 
 __all__ = ["InfiniteWidthBNNKernel"]

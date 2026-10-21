@@ -32,13 +32,40 @@ from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import as_float, from_flat, kind_of, to_flat
+from botorch_rs._buffers import NativeBufferModule, _default_dtype
 from botorch_rs.exceptions.errors import UnsupportedError
 
 
-class Prior:
+class Prior(NativeBufferModule):
     """Base class of the priors."""
 
     _rs: _rs.Prior
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = self.__dict__.copy()
+        native = state.pop("_rs", None)
+        if native is not None:
+            state["_pickle_prior_state"] = _rs.em_prior_state(native)
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        state = state.copy()
+        native = state.pop("_pickle_prior_state", None)
+        self.__dict__.update(state)
+        if native is not None:
+            name, parameters, float32, torch_log = native
+            names = {
+                "LogNormal": "log_normal",
+                "Gamma": "gamma",
+                "Normal": "normal",
+                "Uniform": "uniform",
+                "HalfNormal": "half_normal",
+                "HalfCauchy": "half_cauchy",
+                "Beta": "beta",
+                "SmoothedBox": "smoothed_box",
+            }
+            prior = getattr(_rs.Prior, names[name])(*parameters, float32=float32)
+            self._rs = prior if torch_log is None else prior.with_torch_log(torch_log)
 
     def log_prob(self, x: Any) -> Any:
         """The log density at ``x`` (elementwise for arrays)."""
@@ -406,8 +433,13 @@ def _from_rs(prior: _rs.Prior | None) -> Prior | None:
         from botorch_rs.models.utils.priors import BetaPrior
 
         obj = BetaPrior.__new__(BetaPrior)
-        obj.concentration1, obj.concentration0 = params
+        obj._a, obj._b = params
+        obj._kind = kind_of(0.0)
+        obj._batch_shape = ()
+        obj._validate_args = False
+        obj._transform = None
     obj._rs = prior
+    obj._buffer_factory_dtype = _default_dtype()
     return obj
 
 

@@ -1,0 +1,435 @@
+//! Native latent Kronecker GP bindings.
+
+use std::sync::{Arc, RwLock};
+
+use botorch_core::fit::{FitOptions, FitStatus, Fittable};
+use botorch_core::models::approximate_gp::VariationalMean;
+use botorch_core::models::gp::ConstantMeanSpec;
+use botorch_core::models::latent_kronecker_gp::{
+    IterativeOptions, LatentKroneckerFit, LatentKroneckerGP, LatentKroneckerGPOptions,
+};
+use botorch_core::optim::fit::fit_gpytorch_mll_torch;
+use botorch_core::optim::minimize::TorchMinimizeOptions;
+use botorch_core::optim::{AdamOptions, ExpMaStoppingCriterion};
+use botorch_core::transforms::input::ChainedInputTransform;
+use botorch_core::Model;
+use pyo3::prelude::*;
+use rand::rngs::StdRng;
+
+use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
+use crate::errors::{value_error, IntoPyResult};
+use crate::kernel_trees::PyKernelNode;
+use crate::models::PyModel;
+use crate::specs::{PyConstraint, PyLikelihoodSpec, PyPrior};
+use crate::threads;
+
+type TorchFitSummary = (usize, f64, u8, Option<f64>, Option<String>);
+
+/// Native latent Kronecker model, shared by immutable prediction handles.
+#[pyclass(frozen, name = "LatentKroneckerGP", module = "botorch_rs._botorch_rs")]
+pub struct PyLatentKroneckerGP {
+    inner: RwLock<Arc<LatentKroneckerGP>>,
+}
+impl PyLatentKroneckerGP {
+    fn get(&self) -> Arc<LatentKroneckerGP> {
+        Arc::clone(&self.inner.read().unwrap_or_else(|e| e.into_inner()))
+    }
+    fn set(&self, value: LatentKroneckerGP) {
+        *self.inner.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(value);
+    }
+    fn wrap(value: LatentKroneckerGP) -> Self {
+        Self {
+            inner: RwLock::new(Arc::new(value)),
+        }
+    }
+    fn warn_iteration_limit(py: Python<'_>, model: &LatentKroneckerGP) -> PyResult<()> {
+        if model.take_iterative_warning() {
+            let category = py
+                .import("botorch_rs.exceptions.warnings")?
+                .getattr("NumericsWarning")?;
+            py.import("warnings")?.call_method1("warn", (
+                "Conjugate gradients reached the iteration limit before the requested tolerance.", category,
+            ))?;
+        }
+        Ok(())
+    }
+}
+
+#[pymethods]
+impl PyLatentKroneckerGP {
+    #[pyo3(signature=(standardize=None, chains=None))]
+    fn _set_fitted_outcome_state(
+        &self,
+        standardize: Option<PyRef<'_, crate::transforms::PyStandardize>>,
+        chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+    ) -> PyResult<()> {
+        let outcome = crate::models::scalar_fitted_outcome_state(standardize, chains)?;
+        let mut next = (*self.get()).clone();
+        if next.set_fitted_outcome_affine(outcome).into_py_result()? {
+            self.set(next);
+        }
+        Ok(())
+    }
+
+    #[new]
+    #[pyo3(signature=(train_x, train_t, train_y, dim, covar_x, covar_t, noise, raw, mean_x="zero", mean_t="zero", mean_x_prior=None, mean_t_prior=None, mean_x_constraint=None, mean_t_constraint=None, input_chain=None, input_chain_training=None, input_chain_prefixes=None, raw_train_x=None, outcome=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        train_x: Array,
+        train_t: Array,
+        train_y: Array,
+        dim: usize,
+        covar_x: PyRef<'_, PyKernelNode>,
+        covar_t: PyRef<'_, PyKernelNode>,
+        noise: PyRef<'_, PyLikelihoodSpec>,
+        raw: Vec<f64>,
+        mean_x: &str,
+        mean_t: &str,
+        mean_x_prior: Option<PyRef<'_, PyPrior>>,
+        mean_t_prior: Option<PyRef<'_, PyPrior>>,
+        mean_x_constraint: Option<PyRef<'_, PyConstraint>>,
+        mean_t_constraint: Option<PyRef<'_, PyConstraint>>,
+        input_chain: Option<Vec<Bound<'_, PyAny>>>,
+        input_chain_training: Option<Vec<bool>>,
+        input_chain_prefixes: Option<Vec<String>>,
+        raw_train_x: Option<Array>,
+        outcome: Option<(f64, f64)>,
+    ) -> PyResult<Self> {
+        let mean = |name: &str,
+                    prior: Option<PyRef<'_, PyPrior>>,
+                    constraint: Option<PyRef<'_, PyConstraint>>|
+         -> PyResult<VariationalMean> {
+            match name {
+                "zero" => Ok(VariationalMean::Zero),
+                "constant" => Ok(VariationalMean::Constant(ConstantMeanSpec {
+                    prior: prior.map(|p| p.inner),
+                    constraint: constraint.map(|c| c.inner),
+                })),
+                _ => Err(value_error(
+                    "only zero and constant mean factors are supported",
+                )),
+            }
+        };
+        let input_transform: Option<ChainedInputTransform> = match input_chain {
+            Some(steps) => {
+                let mut chain = crate::input_perturbation::chain_of(
+                    &steps,
+                    input_chain_training,
+                    input_chain_prefixes,
+                )?;
+                chain
+                    .fit(
+                        &raw_train_x
+                            .ok_or_else(|| value_error("an input chain requires raw_train_x"))?
+                            .matrix("train_X")?,
+                    )
+                    .into_py_result()?;
+                Some(chain)
+            }
+            None => None,
+        };
+        let options = LatentKroneckerGPOptions {
+            covar_x: covar_x.inner.clone(),
+            covar_t: covar_t.inner.clone(),
+            mean_x: mean(mean_x, mean_x_prior, mean_x_constraint)?,
+            mean_t: mean(mean_t, mean_t_prior, mean_t_constraint)?,
+            noise: noise.inner,
+            input_transform,
+            outcome,
+        };
+        LatentKroneckerGP::new(
+            train_x.matrix("train_X")?,
+            train_t.matrix("train_T")?,
+            train_y.matrix("train_Y")?,
+            dim,
+            Some(raw),
+            options,
+        )
+        .map(Self::wrap)
+        .into_py_result()
+    }
+    fn raw_parameters(&self) -> Vec<f64> {
+        self.get().raw_parameters().to_vec()
+    }
+    #[pyo3(signature=(*,tol=0.01,max_iter=10000,solves=true,log_prob=true,max_cholesky_size=800,num_trace_samples=10,max_lanczos_quadrature_iterations=20,seed=0))]
+    #[allow(clippy::too_many_arguments)]
+    fn with_iterative_options(
+        &self,
+        tol: f64,
+        max_iter: usize,
+        solves: bool,
+        log_prob: bool,
+        max_cholesky_size: usize,
+        num_trace_samples: usize,
+        max_lanczos_quadrature_iterations: usize,
+        seed: u64,
+    ) -> PyResult<Self> {
+        self.get()
+            .with_iterative_options(IterativeOptions {
+                tol,
+                max_iter,
+                solves,
+                log_prob,
+                max_cholesky_size,
+                num_trace_samples,
+                max_lanczos_quadrature_iterations,
+                seed,
+            })
+            .map(Self::wrap)
+            .into_py_result()
+    }
+    fn set_raw_parameters(&self, raw: Vec<f64>) -> PyResult<()> {
+        let mut m = (*self.get()).clone();
+        m.set_raw_parameters(&raw).into_py_result()?;
+        self.set(m);
+        Ok(())
+    }
+    fn parameter_names(&self) -> Vec<(String, usize)> {
+        self.get().parameter_names()
+    }
+    fn raw_parameter_bounds(&self) -> Vec<(f64, f64)> {
+        self.get().raw_parameter_bounds()
+    }
+    #[getter]
+    fn noise(&self) -> Vec<f64> {
+        vec![self.get().noise()]
+    }
+    fn set_noise(&self, value: Array) -> PyResult<()> {
+        if value.0.len() != 1 {
+            return Err(value_error("noise must be scalar"));
+        }
+        let mut m = (*self.get()).clone();
+        let mut raw = m.raw_parameters().to_vec();
+        raw[0] = m
+            .options()
+            .noise
+            .noise_constraint
+            .inverse_transform(value.0[0]);
+        m.set_raw_parameters(&raw).into_py_result()?;
+        self.set(m);
+        Ok(())
+    }
+    #[getter]
+    fn aug_batch_shape(&self) -> Vec<usize> {
+        vec![]
+    }
+    #[getter]
+    fn dim(&self) -> usize {
+        Model::dim(&*self.get())
+    }
+    #[getter]
+    fn num_train(&self) -> usize {
+        self.get().train_inputs().nrows()
+    }
+    #[getter]
+    fn num_observed(&self) -> usize {
+        self.get().observed_indices().len()
+    }
+    #[getter]
+    fn complete_grid(&self) -> bool {
+        self.get().is_complete()
+    }
+    fn observed_indices(&self) -> Vec<usize> {
+        self.get().observed_indices().to_vec()
+    }
+    fn train_inputs(&self) -> ArrayOut {
+        matrix_out(self.get().train_inputs())
+    }
+    fn train_t(&self) -> ArrayOut {
+        matrix_out(self.get().train_t())
+    }
+    fn train_targets(&self) -> ArrayOut {
+        let m = self.get();
+        let y = m.train_targets();
+        (y.as_slice().to_vec(), vec![y.len()])
+    }
+    fn model_handle(&self) -> PyModel {
+        PyModel { inner: self.get() }
+    }
+    #[pyo3(signature=(raw=None))]
+    fn mll(&self, py: Python<'_>, raw: Option<Vec<f64>>) -> PyResult<ArrayOut> {
+        let m = self.get();
+        let raw = raw.unwrap_or_else(|| m.raw_parameters().to_vec());
+        let result = threads::run(py, || m.mll_value_and_grad(&raw, false)).into_py_result()?;
+        Self::warn_iteration_limit(py, &m)?;
+        Ok((vec![result.0], vec![]))
+    }
+    #[pyo3(signature=(raw=None))]
+    fn mll_value_and_grad(
+        &self,
+        py: Python<'_>,
+        raw: Option<Vec<f64>>,
+    ) -> PyResult<(ArrayOut, Vec<f64>)> {
+        let m = self.get();
+        let raw = raw.unwrap_or_else(|| m.raw_parameters().to_vec());
+        let (v, g) = threads::run(py, || m.mll_value_and_grad(&raw, true)).into_py_result()?;
+        Self::warn_iteration_limit(py, &m)?;
+        Ok(((vec![v], vec![]), g))
+    }
+    fn posterior_grid(&self, py: Python<'_>, x: Array, t: Array) -> PyResult<(ArrayBuf, ArrayBuf)> {
+        let x = x.matrix("X")?;
+        let t = t.matrix("T")?;
+        let m = self.get();
+        let posterior = threads::run(py, || m.posterior_grid(&x, &t)).into_py_result()?;
+        Self::warn_iteration_limit(py, &m)?;
+        Ok((
+            ArrayBuf(
+                posterior.mean.as_slice().to_vec(),
+                vec![x.nrows(), t.nrows()],
+            ),
+            matrix_out(&posterior.covariance).into(),
+        ))
+    }
+    fn samples(&self, py: Python<'_>, x: Array, t: Array, base: Array) -> PyResult<ArrayBuf> {
+        let x = x.matrix("X")?;
+        let t = t.matrix("T")?;
+        let base = base.matrix("base_samples")?;
+        let m = self.get();
+        let result = threads::run(py, || m.samples(&x, &t, &base)).into_py_result()?;
+        Self::warn_iteration_limit(py, &m)?;
+        Ok(matrix_out(&result).into())
+    }
+    fn posterior_grid_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        t: Array,
+        mean_adjoint: Array,
+        covariance_adjoint: Array,
+    ) -> PyResult<(ArrayBuf, ArrayBuf)> {
+        let x = x.matrix("X")?;
+        let t = t.matrix("T")?;
+        let mean = botorch_core::Vector::from_vec(mean_adjoint.0);
+        let covariance = covariance_adjoint.matrix("covariance_adjoint")?;
+        let model = self.get();
+        let (x, t) = threads::run(py, || model.posterior_grid_vjp(&x, &t, &mean, &covariance))
+            .into_py_result()?;
+        Self::warn_iteration_limit(py, &model)?;
+        Ok((matrix_out(&x).into(), matrix_out(&t).into()))
+    }
+    fn samples_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        t: Array,
+        base: Array,
+        adjoint: Array,
+    ) -> PyResult<(ArrayBuf, ArrayBuf)> {
+        let x = x.matrix("X")?;
+        let t = t.matrix("T")?;
+        let base = base.matrix("base_samples")?;
+        let adjoint = adjoint.matrix("adjoint")?;
+        let model = self.get();
+        let (x, t) =
+            threads::run(py, || model.samples_vjp(&x, &t, &base, &adjoint)).into_py_result()?;
+        Self::warn_iteration_limit(py, &model)?;
+        Ok((matrix_out(&x).into(), matrix_out(&t).into()))
+    }
+    #[pyo3(signature=(maxcor=None,pgtol=None,ftol=None,maxiter=None,maxfun=None,maxls=None,max_attempts=None,seed=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit(
+        &self,
+        py: Python<'_>,
+        maxcor: Option<usize>,
+        pgtol: Option<f64>,
+        ftol: Option<f64>,
+        maxiter: Option<usize>,
+        maxfun: Option<usize>,
+        maxls: Option<usize>,
+        max_attempts: Option<usize>,
+        seed: Option<u64>,
+    ) -> PyResult<(f64, usize, usize, &'static str, String, usize)> {
+        let d = FitOptions::default();
+        let options = FitOptions {
+            maxcor: maxcor.unwrap_or(d.maxcor),
+            pgtol: pgtol.unwrap_or(d.pgtol),
+            ftol: ftol.unwrap_or(d.ftol),
+            maxiter: maxiter.unwrap_or(d.maxiter),
+            maxfun: maxfun.unwrap_or(d.maxfun),
+            maxls: maxls.unwrap_or(d.maxls),
+            max_attempts: max_attempts.unwrap_or(d.max_attempts),
+            seed: seed.unwrap_or(d.seed),
+        };
+        let mut fit = LatentKroneckerFit {
+            model: (*self.get()).clone(),
+        };
+        let r = threads::run(py, || fit.fit_mll(options)).into_py_result()?;
+        Self::warn_iteration_limit(py, &fit.model)?;
+        self.set(fit.model);
+        let status = match r.status {
+            FitStatus::Success => "SUCCESS",
+            FitStatus::Stopped => "STOPPED",
+            FitStatus::Failure => "FAILURE",
+        };
+        Ok((
+            r.loss,
+            r.iterations,
+            r.evaluations,
+            status,
+            r.message,
+            r.attempts,
+        ))
+    }
+    #[pyo3(signature=(mask=None,bounds=None,step_limit=None,stopping=None,timeout_sec=None,lr=0.001,betas=(0.9,0.999),eps=1e-8,weight_decay=0.0,amsgrad=false,maximize=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit_torch(
+        &self,
+        py: Python<'_>,
+        mask: Option<Vec<bool>>,
+        bounds: Option<Vec<(f64, f64)>>,
+        step_limit: Option<usize>,
+        stopping: Option<(usize, bool, usize, f64, f64)>,
+        timeout_sec: Option<f64>,
+        lr: f64,
+        betas: (f64, f64),
+        eps: f64,
+        weight_decay: f64,
+        amsgrad: bool,
+        maximize: bool,
+    ) -> PyResult<TorchFitSummary> {
+        let options = TorchMinimizeOptions {
+            adam: AdamOptions {
+                lr,
+                betas,
+                eps,
+                weight_decay,
+                amsgrad,
+                maximize,
+            },
+            step_limit,
+            timeout_sec,
+            stopping_criterion: stopping
+                .map(|s| ExpMaStoppingCriterion::new(s.0, s.1, s.2, s.3, s.4)),
+        };
+        let mut fit = LatentKroneckerFit {
+            model: (*self.get()).clone(),
+        };
+        let r = threads::run(py, || {
+            fit_gpytorch_mll_torch(&mut fit, mask.as_deref(), bounds.as_deref(), &options, None)
+        })
+        .into_py_result()?;
+        Self::warn_iteration_limit(py, &fit.model)?;
+        self.set(fit.model);
+        Ok((r.step, r.fval, r.status.value(), r.runtime, r.message))
+    }
+    #[pyo3(signature=(seed=None))]
+    fn sample_all_priors(&self, seed: Option<u64>) -> PyResult<()> {
+        use rand::SeedableRng;
+        let mut m = (*self.get()).clone();
+        let mut rng =
+            StdRng::seed_from_u64(seed.unwrap_or_else(botorch_core::utils::sampling::random_seed));
+        let raw = m.sample_all_priors(m.raw_parameters(), &mut rng);
+        m.set_raw_parameters(&raw).into_py_result()?;
+        self.set(m);
+        Ok(())
+    }
+    fn copy(&self) -> Self {
+        Self {
+            inner: RwLock::new(self.get()),
+        }
+    }
+}
+
+pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyLatentKroneckerGP>()
+}

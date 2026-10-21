@@ -1,0 +1,473 @@
+//! Graph-preserving Torch tensor algebra, dispatched without a libtorch ABI.
+//!
+//! Tensor values stay on their original device. PyO3 dispatches ordinary Torch
+//! operations, so Torch owns both the numerical kernels and the autograd graph,
+//! including higher derivatives. Torch is imported only when a function is used.
+
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
+
+use crate::errors::{dimension_error, unsupported, value_error};
+
+mod kernels;
+
+type Tensor<'py> = Bound<'py, PyAny>;
+type TensorPair<'py> = (Tensor<'py>, Tensor<'py>);
+
+fn torch_module(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
+    py.import("torch")
+}
+
+fn require_tensor(torch: &Bound<'_, PyModule>, tensor: &Tensor<'_>, name: &str) -> PyResult<()> {
+    if !tensor.is_instance(&torch.getattr("Tensor")?)? {
+        return Err(value_error(format!("{name} must be a Torch tensor")));
+    }
+    if !tensor
+        .call_method0("is_floating_point")?
+        .extract::<bool>()?
+    {
+        return Err(value_error(format!(
+            "{name} must be a real floating-point tensor"
+        )));
+    }
+    Ok(())
+}
+
+fn shape(tensor: &Tensor<'_>) -> PyResult<Vec<usize>> {
+    tensor.getattr("shape")?.extract()
+}
+
+fn transpose<'py>(tensor: &Tensor<'py>) -> PyResult<Tensor<'py>> {
+    tensor.call_method1("transpose", (-1, -2))
+}
+
+fn diagonal<'py>(tensor: &Tensor<'py>) -> PyResult<Tensor<'py>> {
+    tensor.call_method1("diagonal", (0, -2, -1))
+}
+
+fn add_diagonal<'py>(
+    torch: &Bound<'py, PyModule>,
+    matrix: &Tensor<'py>,
+    values: &Tensor<'py>,
+    jitter: f64,
+) -> PyResult<Tensor<'py>> {
+    let zeros = torch.call_method1("zeros_like", (diagonal(matrix)?,))?;
+    let diag = values.add(zeros)?.add(jitter)?.call_method0("diag_embed")?;
+    matrix.add(diag)
+}
+
+fn validate_jitter(jitter: f64) -> PyResult<()> {
+    if !jitter.is_finite() || jitter < 0.0 {
+        return Err(value_error("jitter must be finite and nonnegative"));
+    }
+    Ok(())
+}
+
+fn check_training_shapes(targets: &Tensor<'_>, covariance: &Tensor<'_>) -> PyResult<usize> {
+    let ys = shape(targets)?;
+    let ks = shape(covariance)?;
+    let Some(&n) = ys.last() else {
+        return Err(dimension_error("train_y must have shape batch_shape x n"));
+    };
+    if ks.len() < 2 || ks[ks.len() - 2..] != [n, n] {
+        return Err(dimension_error(format!(
+            "k_train must end in {n} x {n}; got {ks:?}"
+        )));
+    }
+    Ok(n)
+}
+
+/// Pack query-only batch dimensions into RHS columns. Broadcasting a large
+/// triangular factor over those dimensions materializes one n-by-n factor per
+/// query batch in Torch's solver; a single multi-RHS solve avoids that copy.
+fn solve_query_blocks<'py>(
+    torch: &Bound<'py, PyModule>,
+    chol: &Tensor<'py>,
+    cross: &Tensor<'py>,
+) -> PyResult<Tensor<'py>> {
+    let (factor_shape, cross_shape) = (shape(chol)?, shape(cross)?);
+    let kwargs = PyDict::new(torch.py());
+    kwargs.set_item("upper", false)?;
+    let extra = cross_shape.len().saturating_sub(factor_shape.len());
+    let linalg = torch.getattr("linalg")?;
+    if extra == 0 || cross_shape[..extra].iter().product::<usize>() <= 1 {
+        return linalg.call_method("solve_triangular", (chol, cross), Some(&kwargs));
+    }
+    let rank = cross_shape.len();
+    let factor_batches = factor_shape.len() - 2;
+    let (n, q) = (cross_shape[rank - 2], cross_shape[rank - 1]);
+    let columns = cross_shape[..extra]
+        .iter()
+        .try_fold(q, |size, width| size.checked_mul(*width))
+        .ok_or_else(|| dimension_error("Packed query dimensions overflow"))?;
+    let permutation: Vec<usize> = (extra..rank - 1)
+        .chain(0..extra)
+        .chain([rank - 1])
+        .collect();
+    let mut packed_shape = cross_shape[extra..rank - 2].to_vec();
+    packed_shape.extend([n, columns]);
+    let packed = cross
+        .call_method1("permute", (permutation,))?
+        .call_method1("reshape", (packed_shape,))?;
+    let solved = linalg.call_method("solve_triangular", (chol, packed), Some(&kwargs))?;
+    let solved_shape = shape(&solved)?;
+    let mut expanded_shape = solved_shape[..factor_batches].to_vec();
+    expanded_shape.push(n);
+    expanded_shape.extend_from_slice(&cross_shape[..extra]);
+    expanded_shape.push(q);
+    let inverse: Vec<usize> = (factor_batches + 1..factor_batches + 1 + extra)
+        .chain(0..factor_batches + 1)
+        .chain([rank - 1])
+        .collect();
+    solved
+        .call_method1("reshape", (expanded_shape,))?
+        .call_method1("permute", (inverse,))
+}
+
+/// Dense RBF or Matern covariance using only differentiable Torch operations.
+#[pyfunction]
+#[pyo3(signature = (kind, x1, x2, lengthscale=None, nu=2.5, diag=false, last_dim_is_batch=false, parameters=None))]
+#[allow(clippy::too_many_arguments)]
+fn tensor_kernel<'py>(
+    py: Python<'py>,
+    kind: &str,
+    x1: &Tensor<'py>,
+    x2: &Tensor<'py>,
+    lengthscale: Option<&Tensor<'py>>,
+    nu: f64,
+    diag: bool,
+    last_dim_is_batch: bool,
+    parameters: Option<&Bound<'py, PyDict>>,
+) -> PyResult<Tensor<'py>> {
+    let torch = torch_module(py)?;
+    require_tensor(&torch, x1, "x1")?;
+    require_tensor(&torch, x2, "x2")?;
+    let (s1, s2) = (shape(x1)?, shape(x2)?);
+    if s1.len() < 2 || s2.len() < 2 || s1.last() != s2.last() {
+        return Err(dimension_error("Kernel inputs must end in n x d and m x d"));
+    }
+    if diag && s1[s1.len() - 2] != s2[s2.len() - 2] {
+        return Err(dimension_error(
+            "diag=True requires equal numbers of kernel input rows",
+        ));
+    }
+    if !matches!(kind.to_ascii_lowercase().as_str(), "rbf" | "matern") {
+        return kernels::evaluate(
+            &torch,
+            kind,
+            x1,
+            x2,
+            lengthscale,
+            diag,
+            last_dim_is_batch,
+            parameters,
+        );
+    }
+    if parameters.is_some_and(|p| !p.is_empty()) {
+        return Err(value_error(
+            "RBF/Matern kernel parameters use lengthscale and nu arguments",
+        ));
+    }
+    let (mut a, mut b) = if let Some(ls) = lengthscale {
+        require_tensor(&torch, ls, "lengthscale")?;
+        (x1.div(ls)?, x2.div(ls)?)
+    } else {
+        (x1.clone(), x2.clone())
+    };
+    if last_dim_is_batch {
+        a = transpose(&a)?.call_method1("unsqueeze", (-1,))?;
+        b = transpose(&b)?.call_method1("unsqueeze", (-1,))?;
+    }
+    let difference = if diag {
+        a.sub(b)?
+    } else {
+        a.call_method1("unsqueeze", (-2,))?
+            .sub(b.call_method1("unsqueeze", (-3,))?)?
+    };
+    let squared = difference
+        .call_method0("square")?
+        .call_method1("sum", (-1,))?;
+    match kind.to_ascii_lowercase().as_str() {
+        "rbf" => squared.mul(-0.5)?.call_method0("exp"),
+        "matern" => {
+            // Avoid sqrt(0)'s undefined adjoints in the unselected branch. At
+            // coincidence use the exact Taylor terms required for the existing
+            // derivatives: Matern-3/2 is C2, Matern-5/2 is C4 in the inputs.
+            let radius = squared
+                .call_method1("clamp_min", (1e-30,))?
+                .call_method0("sqrt")?;
+            let (full, at_zero) = if nu == 0.5 {
+                (
+                    radius.neg()?.call_method0("exp")?,
+                    squared.mul(0.0)?.add(1.0)?,
+                )
+            } else if nu == 1.5 {
+                let scaled = radius.mul(3.0_f64.sqrt())?;
+                (
+                    scaled.add(1.0)?.mul(scaled.neg()?.call_method0("exp")?)?,
+                    squared.mul(-1.5)?.add(1.0)?,
+                )
+            } else if nu == 2.5 {
+                let scaled = radius.mul(5.0_f64.sqrt())?;
+                (
+                    scaled
+                        .add(1.0)?
+                        .add(squared.mul(5.0 / 3.0)?)?
+                        .mul(scaled.neg()?.call_method0("exp")?)?,
+                    squared
+                        .mul(-5.0 / 6.0)?
+                        .add(1.0)?
+                        .add(squared.call_method0("square")?.mul(25.0 / 24.0)?)?,
+                )
+            } else {
+                return Err(unsupported(
+                    "Tensor Matern kernels require nu in {0.5, 1.5, 2.5}",
+                ));
+            };
+            torch.call_method1(
+                "where",
+                (squared.call_method1("eq", (0.0,))?, at_zero, full),
+            )
+        }
+        _ => Err(unsupported(format!(
+            "Tensor kernel {kind:?} is not implemented"
+        ))),
+    }
+}
+
+/// Condition a Gaussian using covariance blocks; independent outputs are batches.
+#[pyfunction]
+#[pyo3(signature = (train_y, k_train, k_train_query, k_query, train_mean, query_mean, train_noise, jitter=0.0, observation_noise=None))]
+#[allow(clippy::too_many_arguments)]
+fn tensor_exact_gp_posterior<'py>(
+    py: Python<'py>,
+    train_y: &Tensor<'py>,
+    k_train: &Tensor<'py>,
+    k_train_query: &Tensor<'py>,
+    k_query: &Tensor<'py>,
+    train_mean: &Tensor<'py>,
+    query_mean: &Tensor<'py>,
+    train_noise: &Tensor<'py>,
+    jitter: f64,
+    observation_noise: Option<&Tensor<'py>>,
+) -> PyResult<TensorPair<'py>> {
+    let (chol, alpha) =
+        tensor_exact_gp_factor(py, train_y, k_train, train_mean, train_noise, jitter)?;
+    tensor_exact_gp_predict(
+        py,
+        &chol,
+        &alpha,
+        k_train_query,
+        k_query,
+        query_mean,
+        observation_noise,
+    )
+}
+
+/// Factor the noisy training covariance and solve for its residual weights.
+#[pyfunction]
+#[pyo3(signature = (train_y, k_train, train_mean, train_noise, jitter=0.0))]
+fn tensor_exact_gp_factor<'py>(
+    py: Python<'py>,
+    train_y: &Tensor<'py>,
+    k_train: &Tensor<'py>,
+    train_mean: &Tensor<'py>,
+    train_noise: &Tensor<'py>,
+    jitter: f64,
+) -> PyResult<TensorPair<'py>> {
+    validate_jitter(jitter)?;
+    let torch = torch_module(py)?;
+    for (name, tensor) in [
+        ("train_y", train_y),
+        ("k_train", k_train),
+        ("train_mean", train_mean),
+        ("train_noise", train_noise),
+    ] {
+        require_tensor(&torch, tensor, name)?;
+    }
+    check_training_shapes(train_y, k_train)?;
+    let covariance = add_diagonal(&torch, k_train, train_noise, jitter)?;
+    // No hidden retry/jitter policy: a failed Cholesky raises Torch's own error.
+    let lower = torch
+        .getattr("linalg")?
+        .call_method1("cholesky", (&covariance,))?;
+    let residual = train_y.sub(train_mean)?.call_method1("unsqueeze", (-1,))?;
+    let alpha = torch
+        .call_method1("cholesky_solve", (residual, &lower))?
+        .call_method1("squeeze", (-1,))?;
+    Ok((lower, alpha))
+}
+
+/// Predict from existing factors without rebuilding the training covariance.
+#[pyfunction]
+#[pyo3(signature = (chol, alpha, k_train_query, k_query, query_mean, observation_noise=None))]
+fn tensor_exact_gp_predict<'py>(
+    py: Python<'py>,
+    chol: &Tensor<'py>,
+    alpha: &Tensor<'py>,
+    k_train_query: &Tensor<'py>,
+    k_query: &Tensor<'py>,
+    query_mean: &Tensor<'py>,
+    observation_noise: Option<&Tensor<'py>>,
+) -> PyResult<TensorPair<'py>> {
+    let torch = torch_module(py)?;
+    for (name, tensor) in [
+        ("chol", chol),
+        ("alpha", alpha),
+        ("k_train_query", k_train_query),
+        ("k_query", k_query),
+        ("query_mean", query_mean),
+    ] {
+        require_tensor(&torch, tensor, name)?;
+    }
+    let factor_shape = shape(chol)?;
+    let alpha_shape = shape(alpha)?;
+    if factor_shape.len() < 2
+        || factor_shape[factor_shape.len() - 2] != factor_shape[factor_shape.len() - 1]
+        || alpha_shape.last() != factor_shape.last()
+    {
+        return Err(dimension_error(
+            "chol must end in n x n and alpha must end in n",
+        ));
+    }
+    let n = factor_shape[factor_shape.len() - 1];
+    let (cross, query) = (shape(k_train_query)?, shape(k_query)?);
+    if cross.len() < 2
+        || query.len() < 2
+        || cross[cross.len() - 2] != n
+        || cross[cross.len() - 1] != query[query.len() - 1]
+        || query[query.len() - 2] != query[query.len() - 1]
+    {
+        return Err(dimension_error(
+            "Covariance blocks must end in n x n, n x q, q x q",
+        ));
+    }
+    let mean = transpose(k_train_query)?
+        .matmul(alpha.call_method1("unsqueeze", (-1,))?)?
+        .call_method1("squeeze", (-1,))?
+        .add(query_mean)?;
+    let solved = solve_query_blocks(&torch, chol, k_train_query)?;
+    let mut covariance = k_query.sub(transpose(&solved)?.matmul(&solved)?)?;
+    if let Some(noise) = observation_noise {
+        require_tensor(&torch, noise, "observation_noise")?;
+        covariance = add_diagonal(&torch, &covariance, noise, 0.0)?;
+    }
+    Ok((mean, covariance))
+}
+
+/// Exact Gaussian log likelihood, optionally divided by the training-set size.
+#[pyfunction]
+#[pyo3(signature = (train_y, k_train, train_mean, train_noise, jitter=0.0, normalize=false))]
+fn tensor_exact_mll<'py>(
+    py: Python<'py>,
+    train_y: &Tensor<'py>,
+    k_train: &Tensor<'py>,
+    train_mean: &Tensor<'py>,
+    train_noise: &Tensor<'py>,
+    jitter: f64,
+    normalize: bool,
+) -> PyResult<Tensor<'py>> {
+    let n = check_training_shapes(train_y, k_train)?;
+    if normalize && n == 0 {
+        return Err(value_error(
+            "Cannot normalize a log likelihood with no training points",
+        ));
+    }
+    let (lower, alpha) =
+        tensor_exact_gp_factor(py, train_y, k_train, train_mean, train_noise, jitter)?;
+    let residual = train_y.sub(train_mean)?;
+    let quadratic = residual.mul(alpha)?.call_method1("sum", (-1,))?;
+    let logdet_half = diagonal(&lower)?
+        .call_method0("log")?
+        .call_method1("sum", (-1,))?;
+    let value = quadratic
+        .mul(-0.5)?
+        .sub(logdet_half)?
+        .sub(0.5 * n as f64 * (2.0 * std::f64::consts::PI).ln())?;
+    if normalize {
+        value.div(n as f64)
+    } else {
+        Ok(value)
+    }
+}
+
+/// Cholesky with adaptive diagonal jitter only for failing batch members.
+#[pyfunction]
+#[pyo3(signature = (matrix, jitter=None, max_tries=3))]
+fn tensor_psd_safe_cholesky<'py>(
+    py: Python<'py>,
+    matrix: &Tensor<'py>,
+    jitter: Option<f64>,
+    max_tries: usize,
+) -> PyResult<Tensor<'py>> {
+    let torch = torch_module(py)?;
+    require_tensor(&torch, matrix, "matrix")?;
+    let sizes = shape(matrix)?;
+    if sizes.len() < 2 || sizes[sizes.len() - 2] != sizes[sizes.len() - 1] {
+        return Err(dimension_error("matrix must end in n x n"));
+    }
+    let jitter = match jitter {
+        Some(value) => value,
+        None => {
+            if matrix.getattr("dtype")?.eq(torch.getattr("float64")?)? {
+                1e-8
+            } else {
+                1e-6
+            }
+        }
+    };
+    validate_jitter(jitter)?;
+    let linalg = torch.getattr("linalg")?;
+    let factor = |value: &Tensor<'py>| -> PyResult<TensorPair<'py>> {
+        let result = linalg.call_method1("cholesky_ex", (value,))?;
+        Ok((result.get_item(0)?, result.get_item(1)?))
+    };
+    let (mut lower, mut info) = factor(matrix)?;
+    // Only the small factorization-status tensor is synchronized for control
+    // flow. Matrix values, factors and their autograd graphs remain on device.
+    if !info.call_method0("any")?.is_truthy()? {
+        return Ok(lower);
+    }
+    let mut additions = torch.call_method1("zeros_like", (diagonal(matrix)?,))?;
+    let mut previous_jitter = 0.0;
+    let mut current_jitter = jitter;
+    for _ in 0..max_tries {
+        let failing = info
+            .call_method1("gt", (0,))?
+            .call_method1("to", (matrix.getattr("dtype")?,))?
+            .call_method1("unsqueeze", (-1,))?;
+        additions = additions.add(failing.mul(current_jitter - previous_jitter)?)?;
+        let candidate = matrix.add(additions.call_method0("diag_embed")?)?;
+        let category = py
+            .import("botorch_rs.exceptions.warnings")?
+            .getattr("NumericsWarning")?;
+        py.import("warnings")?.call_method1(
+            "warn",
+            (
+                format!("A not p.d., added jitter of {current_jitter:.1e} to the diagonal"),
+                category,
+            ),
+        )?;
+        (lower, info) = factor(&candidate)?;
+        if !info.call_method0("any")?.is_truthy()? {
+            return Ok(lower);
+        }
+        previous_jitter = current_jitter;
+        current_jitter *= 10.0;
+    }
+    Err(crate::errors::to_pyerr(
+        botorch_core::BotorchError::NotPsd {
+            jitter: previous_jitter,
+        },
+    ))
+}
+
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(tensor_kernel, m)?)?;
+    m.add_function(wrap_pyfunction!(tensor_exact_gp_posterior, m)?)?;
+    m.add_function(wrap_pyfunction!(tensor_exact_gp_factor, m)?)?;
+    m.add_function(wrap_pyfunction!(tensor_exact_gp_predict, m)?)?;
+    m.add_function(wrap_pyfunction!(tensor_exact_mll, m)?)?;
+    m.add_function(wrap_pyfunction!(tensor_psd_safe_cholesky, m)?)?;
+    Ok(())
+}

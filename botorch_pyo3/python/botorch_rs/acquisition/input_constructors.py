@@ -24,9 +24,6 @@ deterministic results). The fixed sample ``w`` of the outcome model of
 the EUBO constructors is ``torch.randn(pref_model.dim) * sample_multiplier``
 with torch's global generator (BoTorch's draw), or Python's ``random``
 without torch.
-
-Not ported: the constructor of ``qBayesianActiveLearningByDisagreement``,
-which botorch_rs does not have yet.
 """
 
 from __future__ import annotations
@@ -59,6 +56,9 @@ from botorch_rs.acquisition.analytic import (
     PosteriorMean,
     ProbabilityOfImprovement,
     UpperConfidenceBound,
+)
+from botorch_rs.acquisition.bayesian_active_learning import (
+    qBayesianActiveLearningByDisagreement,
 )
 from botorch_rs.acquisition.cost_aware import InverseCostWeightedUtility
 from botorch_rs.acquisition.fixed_feature import FixedFeatureAcquisitionFunction
@@ -123,7 +123,7 @@ from botorch_rs.acquisition.utils import (
 from botorch_rs.exceptions.errors import BotorchError, UnsupportedError
 from botorch_rs.models.cost import AffineFidelityCostModel
 from botorch_rs.models.deterministic import FixedSingleSampleModel
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import IIDNormalSampler, SobolQMCNormalSampler
 from botorch_rs.utils.datasets import SupervisedDataset
 
 ACQF_INPUT_CONSTRUCTOR_REGISTRY: dict[Any, Callable[..., dict[str, Any]]] = {}
@@ -1097,14 +1097,9 @@ def construct_inputs_qUCB(
 
 
 def _get_sampler(mc_samples: int, qmc: bool) -> Any:
-    """Set up MC sampler for q(N)EHVI (botorch_rs has only the
-    ``SobolQMCNormalSampler``)."""
-    # initialize the sampler
-    if qmc:
-        return SobolQMCNormalSampler(sample_shape=(mc_samples,))
-    raise UnsupportedError(
-        "qmc=False (an IIDNormalSampler) is not supported by botorch_rs; use qmc=True."
-    )
+    """Set up the requested QMC or IID sampler for q(N)EHVI."""
+    sampler_cls = SobolQMCNormalSampler if qmc else IIDNormalSampler
+    return sampler_cls(sample_shape=(mc_samples,))
 
 
 def _is_gpytorch_model(model: Any) -> bool:
@@ -2190,15 +2185,13 @@ def optimize_objective(
         if objective is None:
             acq_function = PosteriorMean(model=model, posterior_transform=posterior_transform)
         else:
-            if not qmc:
-                raise UnsupportedError(
-                    "qmc=False (an IIDNormalSampler) is not supported by botorch_rs; use qmc=True."
-                )
+            sampler_cls = SobolQMCNormalSampler if qmc else IIDNormalSampler
+            sampler: Any = sampler_cls(sample_shape=(mc_samples,), seed=seed_inner)
             acq_function = qSimpleRegret(
                 model=model,
                 objective=objective,
                 posterior_transform=posterior_transform,
-                sampler=SobolQMCNormalSampler(sample_shape=(mc_samples,), seed=seed_inner),
+                sampler=sampler,
             )
 
     d = _shape(bounds)[-1]
@@ -2296,6 +2289,24 @@ def construct_inputs_qJES(
         "X_pending": X_pending,
         "estimation_type": estimation_type,
         "num_samples": num_samples,
+    }
+    return inputs
+
+
+@acqf_input_constructor(qBayesianActiveLearningByDisagreement)
+def construct_inputs_BALD(
+    model: Any,
+    X_pending: Any = None,
+    sampler: Any = None,
+    posterior_transform: Any = None,
+) -> dict[str, Any]:
+    """Construct inputs for ``qBayesianActiveLearningByDisagreement`` (a
+    fully Bayesian model)."""
+    inputs = {
+        "model": model,
+        "X_pending": X_pending,
+        "sampler": sampler,
+        "posterior_transform": posterior_transform,
     }
     return inputs
 
@@ -2416,6 +2427,7 @@ __all__ = [
     "ACQF_INPUT_CONSTRUCTOR_REGISTRY",
     "acqf_input_constructor",
     "allow_only_specific_variable_kwargs",
+    "construct_inputs_BALD",
     "construct_inputs_EHVI",
     "construct_inputs_LogPF",
     "construct_inputs_NIPV",

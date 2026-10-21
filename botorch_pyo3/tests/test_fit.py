@@ -39,16 +39,8 @@ def test_fit_options() -> None:
     assert mll._fit_result["nit"] == 2
     fit_gpytorch_mll(mll, optimizer_kwargs={"method": "L-BFGS-B"}, max_attempts=2, seed=1)
     assert mll._fit_result["status"] == "SUCCESS"
-    for kwargs in (
-        {"closure": lambda: None},
-        {"optimizer": object()},
-        {"optimizer_kwargs": {"method": "Adam"}},
-        {"optimizer_kwargs": {"options": {"unknown": 1}}},
-        {"optimizer_kwargs": {"timeout_sec": 1.0}},
-        {"pick_best_of_all_attempts": True},
-    ):
-        with pytest.raises(UnsupportedError):
-            fit_gpytorch_mll(mll, **kwargs)
+    with pytest.raises(UnsupportedError):
+        fit_gpytorch_mll(mll, optimizer=object())
     with pytest.raises(BotorchRsError):
         fit_gpytorch_mll(mll, max_attempts=0)
     with pytest.raises(UnsupportedError):
@@ -64,6 +56,12 @@ def test_mll_requires_the_model_likelihood() -> None:
     mll = ExactMarginalLogLikelihood(model.likelihood, model)
     with pytest.raises(UnsupportedError):
         mll(object(), object())
+
+
+@pytest.mark.parametrize("invalid", [object(), None, {}, 1])
+def test_fit_rejects_unrelated_objects_before_model_dispatch(invalid) -> None:
+    with pytest.raises(UnsupportedError, match="requires a botorch_rs"):
+        fit_gpytorch_mll(invalid)
 
 
 def test_mll_gradient_matches_finite_differences() -> None:

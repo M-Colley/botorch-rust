@@ -10,6 +10,7 @@
 //! new snapshot (copy on write), so the GIL can be released during heavy work
 //! without data races.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use botorch_core::acquisition::{ScalarizedModel, ScalarizedPosteriorTransform};
@@ -32,6 +33,9 @@ use crate::threads;
 use crate::transforms::{numel, PyNormalize, PyStandardize};
 use pyo3::IntoPyObjectExt;
 
+mod parameter_grad;
+pub mod posterior_autograd;
+
 /// Rows per parallel work item of the marginal posterior.
 const MARGINAL_CHUNK: usize = 256;
 
@@ -52,6 +56,41 @@ type FitSummary = (
 /// A posterior transform received from Python: `(weights, offset)`.
 type TransformArg = (Vec<f64>, f64);
 
+pub(crate) fn unbatched_fitted_outcome_state(
+    standardize: Option<PyRef<'_, PyStandardize>>,
+    chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+) -> PyResult<Option<botorch_core::Standardize>> {
+    if chains.is_some() {
+        return Err(unsupported(
+            "This native model requires a fitted affine outcome map.",
+        ));
+    }
+    standardize
+        .map(|st| {
+            if st.inner.len() != 1 || !st.inner[0].is_trained() {
+                return Err(dimension_error(
+                    "An unbatched fitted outcome map is required.",
+                ));
+            }
+            Ok(st.inner[0].clone())
+        })
+        .transpose()
+}
+
+pub(crate) fn scalar_fitted_outcome_state(
+    standardize: Option<PyRef<'_, PyStandardize>>,
+    chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+) -> PyResult<Option<(f64, f64)>> {
+    unbatched_fitted_outcome_state(standardize, chains)?
+        .map(|st| {
+            if st.means().len() != 1 {
+                return Err(dimension_error("A scalar fitted outcome map is required."));
+            }
+            Ok((st.means()[0], st.stdvs()[0]))
+        })
+        .transpose()
+}
+
 fn status_name(status: FitStatus) -> &'static str {
     match status {
         FitStatus::Success => "SUCCESS",
@@ -62,7 +101,7 @@ fn status_name(status: FitStatus) -> &'static str {
 
 /// A model evaluated per model batch element: a `SingleTaskGP`, a
 /// `ModelListGP`, or any unbatched model (e.g. an `LCEMGP` or a list of them).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum ModelRef {
     Gp(Arc<BatchedMultiOutputGP>),
     List(ModelListGP),
@@ -144,32 +183,17 @@ impl ModelRef {
             ModelRef::Dyn(m) if !noise => {
                 m.batch_element(b).unwrap_or(m.as_ref()).point_posteriors(x)
             }
-            ModelRef::Dyn(m) => {
-                let m = m.batch_element(b).unwrap_or(m.as_ref());
-                // Every point on its own, with observation noise.
-                let k = m.num_outputs();
-                let mut mean = Matrix::zeros(x.nrows(), k);
-                let mut cov = Matrix::zeros(x.nrows(), k * k);
-                for i in 0..x.nrows() {
-                    let p = m.posterior(&x.rows(i, 1).into_owned(), true)?;
-                    for a in 0..k {
-                        mean[(i, a)] = p.mean[a];
-                        for c in 0..k {
-                            cov[(i, a * k + c)] = p.covariance[(a, c)];
-                        }
-                    }
-                }
-                Ok(PointPosteriors {
-                    mean,
-                    covariance: cov,
-                })
-            }
+            ModelRef::Dyn(m) => m
+                .batch_element(b)
+                .unwrap_or(m.as_ref())
+                .point_posteriors_with_noise(x),
         }
     }
 }
 
 /// BoTorch's `output_indices` and `posterior_transform` applied to the
 /// posteriors of a model.
+#[derive(Clone, Debug)]
 struct View {
     outputs: Option<Vec<usize>>,
     transform: Option<ScalarizedPosteriorTransform>,
@@ -617,6 +641,7 @@ fn summary(r: &BatchedFitResult) -> FitSummary {
 #[pyclass(frozen, name = "SingleTaskGP", module = "botorch_rs._botorch_rs")]
 pub struct PySingleTaskGP {
     inner: RwLock<Arc<BatchedMultiOutputGP>>,
+    parameter_state_version: AtomicU64,
 }
 
 impl PySingleTaskGP {
@@ -624,6 +649,7 @@ impl PySingleTaskGP {
     pub(crate) fn from_model(model: BatchedMultiOutputGP) -> Self {
         Self {
             inner: RwLock::new(Arc::new(model)),
+            parameter_state_version: AtomicU64::new(0),
         }
     }
 
@@ -634,6 +660,7 @@ impl PySingleTaskGP {
 
     fn replace(&self, model: BatchedMultiOutputGP) {
         *self.inner.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(model);
+        self.parameter_state_version.fetch_add(1, Ordering::Release);
     }
 
     /// Replaces the model (after a fit).
@@ -836,6 +863,7 @@ impl PySingleTaskGP {
             .into_py_result()?;
         Ok(Self {
             inner: RwLock::new(Arc::new(model)),
+            parameter_state_version: AtomicU64::new(0),
         })
     }
 
@@ -843,6 +871,7 @@ impl PySingleTaskGP {
     fn copy(&self) -> Self {
         Self {
             inner: RwLock::new(Arc::new((*self.snapshot()).clone())),
+            parameter_state_version: AtomicU64::new(0),
         }
     }
 
@@ -958,6 +987,97 @@ impl PySingleTaskGP {
         ArrayBuf(data, shape)
     }
 
+    /// Efficient leave-one-out moments and observations in transformed space,
+    /// all laid out as `batch x n x m`.
+    #[pyo3(signature = (observation_noise=true))]
+    fn loo_predictions(
+        &self,
+        py: Python<'_>,
+        observation_noise: bool,
+    ) -> PyResult<(ArrayBuf, ArrayBuf, ArrayBuf, Option<ArrayBuf>)> {
+        let model = self.snapshot();
+        let m = model.num_outputs();
+        let n = model.num_train();
+        let mut shape = model.batch_shape().to_vec();
+        shape.extend([n, m]);
+        let fixed = model.train_yvar(0).is_some();
+        let (mean, variance, targets, noise) = threads::run(py, || -> botorch_core::Result<_> {
+            let results = model
+                .models()
+                .par_iter()
+                .map(|gp| gp.loo_predictions(observation_noise))
+                .collect::<botorch_core::Result<Vec<_>>>()?;
+            let mut mean = Vec::with_capacity(model.batch_size() * n * m);
+            let mut variance = Vec::with_capacity(mean.capacity());
+            let mut targets = Vec::with_capacity(mean.capacity());
+            let mut noise = Vec::with_capacity(mean.capacity());
+            let noises: Vec<_> = model
+                .models()
+                .iter()
+                .map(|gp| gp.likelihood_noise())
+                .collect();
+            for b in 0..model.batch_size() {
+                for i in 0..n {
+                    for t in 0..m {
+                        let gp = model.model(b, t);
+                        let (mu, var) = &results[b * m + t];
+                        mean.push(mu[i]);
+                        variance.push(var[i]);
+                        targets.push(gp.transformed_train_targets()[i]);
+                        if fixed {
+                            noise.push(noises[b * m + t][i]);
+                        }
+                    }
+                }
+            }
+            Ok((mean, variance, targets, noise))
+        })
+        .into_py_result()?;
+        Ok((
+            ArrayBuf(mean, shape.clone()),
+            ArrayBuf(variance, shape.clone()),
+            ArrayBuf(targets, shape.clone()),
+            fixed.then_some(ArrayBuf(noise, shape)),
+        ))
+    }
+
+    /// Samples of independent Gaussian marginals, with collapsed or full
+    /// batch base samples. Used by the leave-one-out posterior.
+    #[staticmethod]
+    fn diagonal_samples(
+        py: Python<'_>,
+        mean: Vec<f64>,
+        variance: Vec<f64>,
+        base: Array,
+        qm: usize,
+    ) -> PyResult<Vec<f64>> {
+        if qm == 0 || !mean.len().is_multiple_of(qm) || variance.len() != mean.len() {
+            return Err(dimension_error("inconsistent diagonal posterior shape"));
+        }
+        let shape = &base.1;
+        let samples = shape.first().copied().unwrap_or(0);
+        let collapsed = shape.as_slice() == [samples, qm];
+        if !collapsed && shape.as_slice() != [samples, mean.len() / qm, qm] {
+            return Err(dimension_error(
+                "invalid diagonal posterior base sample shape",
+            ));
+        }
+        Ok(threads::run(py, || {
+            let mut out = Vec::with_capacity(samples * mean.len());
+            for s in 0..samples {
+                for i in 0..mean.len() {
+                    let z = if collapsed {
+                        base.0[s * qm + i % qm]
+                    } else {
+                        base.0[s * mean.len() + i]
+                    };
+                    out.push(mean[i] + variance[i].max(0.0).sqrt() * z);
+                }
+            }
+            out
+        }))
+    }
+
     /// The fitted input transform, if any.
     fn input_transform(&self) -> Option<PyNormalize> {
         let m = self.snapshot();
@@ -1054,6 +1174,70 @@ impl PySingleTaskGP {
             .map(Some)
     }
 
+    /// Update fitted inverse statistics without refitting stored training data.
+    #[pyo3(signature=(standardize=None, chains=None))]
+    fn _set_fitted_outcome_state(
+        &self,
+        standardize: Option<PyRef<'_, PyStandardize>>,
+        chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+    ) -> PyResult<()> {
+        let current = self.snapshot();
+        let fitted = standardize
+            .map(|st| {
+                let batch =
+                    broadcast_shapes(&st.batch_shape, current.batch_shape()).ok_or_else(|| {
+                        dimension_error("Outcome map and model batches do not broadcast.")
+                    })?;
+                if batch != current.batch_shape() {
+                    return Err(dimension_error(
+                        "Outcome map changes the model batch shape.",
+                    ));
+                }
+                let mut result = Vec::with_capacity(current.num_elements());
+                for b in broadcast_indices(&st.batch_shape, &batch) {
+                    let stats = st
+                        .inner
+                        .get(b)
+                        .ok_or_else(|| dimension_error("Missing fitted outcome statistics."))?;
+                    if !stats.is_trained() || stats.means().len() != current.num_outputs() {
+                        return Err(dimension_error(
+                            "Fitted outcome statistics must match the output count.",
+                        ));
+                    }
+                    for t in 0..current.num_outputs() {
+                        result.push(
+                            botorch_core::Standardize::fitted(
+                                vec![stats.means()[t]],
+                                vec![stats.stdvs()[t]],
+                                stats.min_stdv(),
+                            )
+                            .into_py_result()?,
+                        );
+                    }
+                }
+                Ok(result)
+            })
+            .transpose()?;
+        let chains = chains.map(|values| {
+            values
+                .into_iter()
+                .map(|steps| {
+                    botorch_core::transforms::outcome::OutcomeChain::new(
+                        steps.into_iter().map(|step| step.inner.clone()).collect(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        let mut next = (*current).clone();
+        if next
+            .set_fitted_outcome_states(fitted.as_deref(), chains.as_deref())
+            .into_py_result()?
+        {
+            self.replace(next);
+        }
+        Ok(())
+    }
+
     /// The fitted outcome transform, if any (statistics of shape
     /// `batch_shape x 1 x m`).
     fn outcome_transform(&self) -> PyResult<Option<PyStandardize>> {
@@ -1123,6 +1307,88 @@ impl PySingleTaskGP {
     /// The raw hyperparameters in flat order (BoTorch's `named_parameters()`).
     fn raw_parameters(&self) -> Vec<f64> {
         self.snapshot().raw_parameters().as_slice().to_vec()
+    }
+
+    #[getter]
+    fn parameter_state_version(&self) -> u64 {
+        self.parameter_state_version.load(Ordering::Acquire)
+    }
+
+    #[pyo3(signature = (x, base_samples, adjoint, observation_noise=false, output_indices=None, transform=None, base=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn posterior_samples_parameter_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        base_samples: Array,
+        adjoint: Array,
+        observation_noise: bool,
+        output_indices: Option<Vec<usize>>,
+        transform: Option<TransformArg>,
+        base: bool,
+    ) -> PyResult<ArrayBuf> {
+        let model = self.snapshot();
+        threads::run(py, || {
+            posterior_autograd::sample_parameter_vjp(
+                ModelRef::Gp(model),
+                &x,
+                &base_samples,
+                &adjoint,
+                observation_noise,
+                output_indices,
+                transform,
+                base,
+            )
+        })
+    }
+
+    #[pyo3(signature = (x, adjoint, mode, observation_noise=false, output_indices=None, transform=None, base=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn posterior_moment_parameter_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        adjoint: Array,
+        mode: &str,
+        observation_noise: bool,
+        output_indices: Option<Vec<usize>>,
+        transform: Option<TransformArg>,
+        base: bool,
+    ) -> PyResult<ArrayBuf> {
+        let model = self.snapshot();
+        threads::run(py, || {
+            posterior_autograd::moment_parameter_vjp(
+                ModelRef::Gp(model),
+                &x,
+                &adjoint,
+                mode,
+                observation_noise,
+                output_indices,
+                transform,
+                base,
+            )
+        })
+    }
+
+    #[pyo3(signature = (x, mean_adjoint, covariance_adjoint, observation_noise=false))]
+    fn posterior_parameter_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        mean_adjoint: Array,
+        covariance_adjoint: Array,
+        observation_noise: bool,
+    ) -> PyResult<ArrayBuf> {
+        let model = self.snapshot();
+        threads::run(py, || {
+            parameter_grad::parameter_vjp(
+                &model,
+                &x,
+                &mean_adjoint,
+                &covariance_adjoint,
+                observation_noise,
+            )
+        })
     }
 
     /// Sets the raw hyperparameters from a flat vector.
@@ -1324,6 +1590,93 @@ impl PySingleTaskGP {
     // Marginal log likelihood and fitting
     // ------------------------------------------------------------------
 
+    /// Replaces transformed training targets and optional fixed noise.
+    #[pyo3(signature = (targets, fixed_noise=None, strict=true))]
+    fn replace_transformed_train_data(
+        &self,
+        targets: Array,
+        fixed_noise: Option<Array>,
+        strict: bool,
+    ) -> PyResult<()> {
+        let model = self.snapshot();
+        let mut shape = model.aug_batch_shape();
+        shape.push(model.num_train());
+        let size = model.num_elements() * model.num_train();
+        if targets.0.len() != size
+            || (strict && targets.1 != shape)
+            || fixed_noise
+                .as_ref()
+                .is_some_and(|v| v.0.len() != size || (strict && v.1 != shape))
+        {
+            return Err(dimension_error(format!("replacement targets/noise must have shape {shape:?}; changing n requires new training inputs")));
+        }
+        let n = model.num_train();
+        let values = targets.0.chunks(n).map(Vector::from_column_slice).collect();
+        let noise = fixed_noise.map(|v| v.0.chunks(n).map(Vector::from_column_slice).collect());
+        self.update(|m| m.replace_transformed_train_data(values, noise))
+    }
+
+    /// Installs sparse outlier variances, invalidating cached training factors.
+    #[pyo3(signature = (support, raw, convex=true, lower=0.0, upper=0.999, prior=None))]
+    fn set_sparse_outlier_noise(
+        &self,
+        support: Vec<usize>,
+        raw: Vec<f64>,
+        convex: bool,
+        lower: f64,
+        upper: f64,
+        prior: Option<PyRef<'_, PyPrior>>,
+    ) -> PyResult<()> {
+        let state = botorch_core::models::relevance_pursuit::SparseOutlierState {
+            support,
+            raw,
+            convex,
+            bounds: (lower, upper),
+            prior: prior.map(|p| p.inner),
+        };
+        self.update(|m| m.set_sparse_outlier_noise(state))
+    }
+
+    /// Current outlier support and active raw variances.
+    fn sparse_outlier_state(&self) -> PyResult<(Vec<usize>, Vec<f64>)> {
+        let model = self.snapshot();
+        let state = model.models()[0]
+            .sparse_outlier_noise()
+            .ok_or_else(|| value_error("model has no sparse outlier noise"))?;
+        Ok((state.support.clone(), state.raw.clone()))
+    }
+
+    /// LOO expansion criterion (all observation indices).
+    fn sparse_outlier_expansion(&self, py: Python<'_>, loo: bool) -> PyResult<Vec<f64>> {
+        let model = self.snapshot();
+        threads::run(py, || {
+            let model = &model.models()[0];
+            if loo {
+                return model.relevance_expansion_objective();
+            }
+            let mut trial = model.clone();
+            let mut state = model
+                .sparse_outlier_noise()
+                .ok_or_else(|| {
+                    botorch_core::BotorchError::InvalidArgument(
+                        "model has no sparse outlier noise".into(),
+                    )
+                })?
+                .clone();
+            let mut dense = vec![0.0; model.num_train()];
+            for (&i, &r) in state.support.iter().zip(&state.raw) {
+                dense[i] = r;
+            }
+            state.support = (0..model.num_train()).collect();
+            state.raw = dense;
+            trial.set_sparse_outlier_noise(Some(state))?;
+            let (_, _, gradient) = botorch_core::mll::ExactMarginalLogLikelihood::new(&trial)
+                .value_and_rho_grad(trial.raw_parameters().as_slice())?;
+            Ok(gradient.as_slice().to_vec())
+        })
+        .into_py_result()
+    }
+
     /// The exact MLL of every element (divided by `n`, priors included, as in
     /// GPyTorch) at the current or the given flat raw hyperparameters, with
     /// shape `_aug_batch_shape`.
@@ -1350,6 +1703,31 @@ impl PySingleTaskGP {
         let params = raw_parameters.unwrap_or_else(|| model.raw_parameters().as_slice().to_vec());
         let (v, g) = threads::run(py, || model.mll_values_and_grad(&params)).into_py_result()?;
         Ok(((v, model.aug_batch_shape()), g.as_slice().to_vec()))
+    }
+
+    /// Weighted per-element MLL pullback in the original flat raw layout.
+    fn mll_parameter_vjp(&self, py: Python<'_>, adjoint: Array) -> PyResult<ArrayBuf> {
+        let model = self.snapshot();
+        if adjoint.1 != model.aug_batch_shape() || adjoint.0.len() != model.num_elements() {
+            return Err(dimension_error(
+                "MLL adjoints must match the model's augmented batch shape",
+            ));
+        }
+        let (_, mut gradient) = threads::run(py, || {
+            model.mll_values_and_grad(model.raw_parameters().as_slice())
+        })
+        .into_py_result()?;
+        let mut offset = 0;
+        for (_, count) in model.models()[0].parameter_names() {
+            for element in 0..model.num_elements() {
+                for k in 0..count {
+                    gradient[offset + element * count + k] *= adjoint.0[element];
+                }
+            }
+            offset += model.num_elements() * count;
+        }
+        let size = gradient.len();
+        Ok(ArrayBuf(gradient.as_slice().to_vec(), vec![size]))
     }
 
     /// Fits the hyperparameters by maximizing the MLL with L-BFGS-B
@@ -1404,6 +1782,60 @@ pub struct PyModelListGP {
 
 #[pymethods]
 impl PyModelListGP {
+    #[pyo3(signature = (x, adjoint, mode, observation_noise=false, output_indices=None, transform=None, base=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn posterior_moment_parameter_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        adjoint: Array,
+        mode: &str,
+        observation_noise: bool,
+        output_indices: Option<Vec<usize>>,
+        transform: Option<TransformArg>,
+        base: bool,
+    ) -> PyResult<ArrayBuf> {
+        threads::run(py, || {
+            posterior_autograd::moment_parameter_vjp(
+                ModelRef::List(self.inner.clone()),
+                &x,
+                &adjoint,
+                mode,
+                observation_noise,
+                output_indices,
+                transform,
+                base,
+            )
+        })
+    }
+
+    #[pyo3(signature = (x, base_samples, adjoint, observation_noise=false, output_indices=None, transform=None, base=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn posterior_samples_parameter_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        base_samples: Array,
+        adjoint: Array,
+        observation_noise: bool,
+        output_indices: Option<Vec<usize>>,
+        transform: Option<TransformArg>,
+        base: bool,
+    ) -> PyResult<ArrayBuf> {
+        threads::run(py, || {
+            posterior_autograd::sample_parameter_vjp(
+                ModelRef::List(self.inner.clone()),
+                &x,
+                &base_samples,
+                &adjoint,
+                observation_noise,
+                output_indices,
+                transform,
+                base,
+            )
+        })
+    }
+
     /// A list of the current snapshots of `models`.
     #[new]
     fn new(models: Vec<PyRef<'_, PySingleTaskGP>>) -> PyResult<Self> {
@@ -1524,6 +1956,21 @@ fn with_transform(
 
 #[pymethods]
 impl PyModel {
+    /// Independent native snapshots sharing model batch dimensions.
+    #[staticmethod]
+    fn from_batch_models(
+        models: Vec<PyRef<'_, PyModel>>,
+        batch_shape: Vec<usize>,
+    ) -> PyResult<Self> {
+        let batch = botorch_core::models::model_batch::ModelBatch::new(
+            models.iter().map(|m| Arc::clone(&m.inner)).collect(),
+            batch_shape,
+        )
+        .into_py_result()?;
+        Ok(Self {
+            inner: Arc::new(batch),
+        })
+    }
     /// The current snapshot of a `SingleTaskGP`, seen through the posterior
     /// transform `(weights, offset)` if given.
     #[staticmethod]
@@ -1532,7 +1979,28 @@ impl PyModel {
         model: PyRef<'_, PySingleTaskGP>,
         transform: Option<TransformArg>,
     ) -> PyResult<Self> {
-        let m: Arc<dyn Model> = model.snapshot();
+        let snapshot = model.snapshot();
+        let m: Arc<dyn Model> = if snapshot.batch_shape().is_empty() {
+            snapshot
+        } else {
+            // Preserve native member inference (including transforms and
+            // cached training solves) behind the generic Model protocol.
+            let members = (0..snapshot.batch_size())
+                .map(|b| {
+                    snapshot
+                        .batch_element(b)
+                        .map(|m| Arc::new(m) as Arc<dyn Model>)
+                })
+                .collect::<botorch_core::Result<Vec<_>>>()
+                .into_py_result()?;
+            Arc::new(
+                botorch_core::models::model_batch::ModelBatch::new(
+                    members,
+                    snapshot.batch_shape().to_vec(),
+                )
+                .into_py_result()?,
+            )
+        };
         Ok(Self {
             inner: with_transform(m, transform)?,
         })

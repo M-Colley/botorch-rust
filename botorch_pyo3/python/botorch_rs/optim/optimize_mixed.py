@@ -16,11 +16,19 @@ reproducibility (BoTorch uses torch's global generator).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import Flat, first_kind, from_flat, from_pair, kind_of, to_flat
+from botorch_rs._arrays import (
+    Flat,
+    first_kind,
+    from_flat,
+    from_pair,
+    is_torch_tensor,
+    kind_of,
+    to_flat,
+)
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.optim.optimize import (
     OptimizeAcqfInputs,
@@ -70,8 +78,8 @@ _NO_RELAXATION = 2**62
 
 
 def should_use_mixed_alternating_optimizer(
-    discrete_dims: Mapping[int, Sequence[float]] | None = None,
-    cat_dims: Mapping[int, Sequence[float]] | None = None,
+    discrete_dims: Mapping[int, Any] | None = None,
+    cat_dims: Mapping[int, Any] | None = None,
 ) -> bool:
     r"""Whether to use ``optimize_acqf_mixed_alternating`` for a mixed (not
     fully discrete) search space: if the discrete and categorical dimensions
@@ -88,7 +96,7 @@ def should_use_mixed_alternating_optimizer(
     return n_combos > ALTERNATING_OPTIMIZER_THRESHOLD
 
 
-def _dims(dims: Mapping[int, Sequence[float]] | None) -> dict[int, list[float]]:
+def _dims(dims: Mapping[int, Any] | None) -> dict[int, list[float]]:
     return {
         int(k): [float(v) for v in to_flat(vals, "values")[0]] for k, vals in (dims or {}).items()
     }
@@ -158,7 +166,7 @@ def _problem(
     )
 
 
-def round_discrete_dims(X: Any, discrete_dims: Mapping[int, Sequence[float]]) -> Any:
+def round_discrete_dims(X: Any, discrete_dims: Mapping[int, Any]) -> Any:
     r"""Round the discrete dimensions of an array to the nearest allowed
     values (BoTorch's ``round_discrete_dims``; the first value on ties).
 
@@ -167,17 +175,23 @@ def round_discrete_dims(X: Any, discrete_dims: Mapping[int, Sequence[float]]) ->
         discrete_dims: A dictionary mapping indices of discrete dimensions to
             a list of allowed values for that dimension.
     """
+    if is_torch_tensor(X):
+        from botorch_rs.optim._torch_acq_mixed import round_dims
+
+        return round_dims(X, discrete_dims)
     out = _rs.round_discrete_dims_py(to_flat(X, "X"), _dims(discrete_dims))
     return from_pair(out, kind_of(X))
 
 
-def get_nearest_neighbors(
-    current_x: Any, bounds: Any, discrete_dims: Mapping[int, Sequence[float]]
-) -> Any:
+def get_nearest_neighbors(current_x: Any, bounds: Any, discrete_dims: Mapping[int, Any]) -> Any:
     r"""All 1-Manhattan distance neighbors of ``current_x`` (a ``d`` array)
     in the discrete dimensions (BoTorch's ``get_nearest_neighbors``), as a
     ``num_neighbors x d`` array, sorted like ``torch.unique(dim=0)`` in the
     index space of the allowed values."""
+    if is_torch_tensor(current_x):
+        from botorch_rs.optim._torch_acq_mixed import nearest
+
+        return nearest(current_x, bounds, discrete_dims)
     x = [float(v) for v in to_flat(current_x, "current_x")[0]]
     rows = _rs.get_nearest_neighbors_py(x, to_flat(bounds, "bounds"), _dims(discrete_dims))
     return from_flat([v for r in rows for v in r], (len(rows), len(x)), kind_of(current_x))
@@ -185,7 +199,7 @@ def get_nearest_neighbors(
 
 def get_categorical_neighbors(
     current_x: Any,
-    cat_dims: Mapping[int, Sequence[float]],
+    cat_dims: Mapping[int, Any],
     max_num_cat_values: int = MAX_DISCRETE_VALUES,
     *,
     seed: int | None = None,
@@ -194,6 +208,10 @@ def get_categorical_neighbors(
     dimensions (BoTorch's ``get_categorical_neighbors``); dimensions with
     more than ``max_num_cat_values`` values contribute a random sample of
     that many other values (``seed``, botorch_rs only, seeds it)."""
+    if is_torch_tensor(current_x):
+        from botorch_rs.optim._torch_acq_mixed import _stream, categorical
+
+        return categorical(current_x, cat_dims, max_num_cat_values, _stream(current_x, seed))
     x = [float(v) for v in to_flat(current_x, "current_x")[0]]
     rows = _rs.get_categorical_neighbors_py(
         x, _dims(cat_dims), int(max_num_cat_values), None if seed is None else int(seed)
@@ -204,8 +222,8 @@ def get_categorical_neighbors(
 def get_spray_points(
     X_baseline: Any,
     cont_dims: Any,
-    discrete_dims: Mapping[int, Sequence[float]],
-    cat_dims: Mapping[int, Sequence[float]],
+    discrete_dims: Mapping[int, Any],
+    cat_dims: Mapping[int, Any],
     bounds: Any,
     num_spray_points: int,
     std_cont_perturbation: float = STD_CONT_PERTURBATION,
@@ -220,6 +238,19 @@ def get_spray_points(
     Returns:
         A ``(n * num_spray_points) x d`` array.
     """
+    if is_torch_tensor(X_baseline):
+        from botorch_rs.optim._torch_acq_mixed import _stream, spray
+
+        return spray(
+            X_baseline,
+            cont_dims,
+            discrete_dims,
+            cat_dims,
+            bounds,
+            num_spray_points,
+            std_cont_perturbation,
+            _stream(X_baseline, seed),
+        )
     out = _rs.get_spray_points_py(
         to_flat(X_baseline, "X_baseline"),
         [int(v) for v in to_flat(cont_dims, "cont_dims")[0]],
@@ -235,8 +266,8 @@ def get_spray_points(
 
 def sample_feasible_points(
     opt_inputs: OptimizeAcqfInputs,
-    discrete_dims: Mapping[int, Sequence[float]],
-    cat_dims: Mapping[int, Sequence[float]],
+    discrete_dims: Mapping[int, Any],
+    cat_dims: Mapping[int, Any],
     num_points: int,
     *,
     seed: int | None = None,
@@ -245,6 +276,10 @@ def sample_feasible_points(
     ``sample_feasible_points``): Sobol points (or hit-and-run samples of the
     constraint polytope) with the discrete dimensions rounded and the fixed
     features set; infeasible points are removed (10 tries)."""
+    if getattr(opt_inputs.acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_acq_mixed import feasible_points
+
+        return feasible_points(opt_inputs, discrete_dims, cat_dims, num_points, seed)
     problem, _, kind = _problem(opt_inputs, _dims(discrete_dims), _dims(cat_dims))
     out = problem.sample_feasible_points(int(num_points), None if seed is None else int(seed))
     return from_pair(out, kind)
@@ -264,8 +299,8 @@ def _num_spray(options: dict[str, Any] | None, discrete_dims: dict[int, list[flo
 
 def generate_starting_points(
     opt_inputs: OptimizeAcqfInputs,
-    discrete_dims: Mapping[int, Sequence[float]],
-    cat_dims: Mapping[int, Sequence[float]],
+    discrete_dims: Mapping[int, Any],
+    cat_dims: Mapping[int, Any],
     cont_dims: Any,
     *,
     seed: int | None = None,
@@ -283,6 +318,10 @@ def generate_starting_points(
         A ``num_restarts x d`` array of starting points and their
         ``num_restarts`` acquisition values.
     """
+    if getattr(opt_inputs.acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_acq_mixed import starting_points
+
+        return starting_points(opt_inputs, discrete_dims, cat_dims, cont_dims, seed)
     dd, cd = _dims(discrete_dims), _dims(cat_dims)
     xb = None
     if _num_spray(opt_inputs.options, dd) > 0:
@@ -295,8 +334,8 @@ def generate_starting_points(
 
 def discrete_step(
     opt_inputs: OptimizeAcqfInputs,
-    discrete_dims: Mapping[int, Sequence[float]],
-    cat_dims: Mapping[int, Sequence[float]],
+    discrete_dims: Mapping[int, Any],
+    cat_dims: Mapping[int, Any],
     current_x: Any,
     *,
     seed: int | None = None,
@@ -309,6 +348,10 @@ def discrete_step(
     Returns:
         The ``b x d`` points and their ``b`` acquisition values.
     """
+    if getattr(opt_inputs.acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_acq_mixed import discrete_step as tensor_discrete_step
+
+        return tensor_discrete_step(opt_inputs, discrete_dims, cat_dims, current_x, seed)
     problem, _, kind = _problem(opt_inputs, _dims(discrete_dims), _dims(cat_dims))
     x, values = problem.discrete_step(to_flat(current_x, "current_x"), seed)
     k = kind_of(current_x)
@@ -330,6 +373,10 @@ def continuous_step(
     Returns:
         The ``b x d`` points and their ``b`` acquisition values.
     """
+    if getattr(opt_inputs.acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_acq_mixed import continuous_step as tensor_continuous_step
+
+        return tensor_continuous_step(opt_inputs, discrete_dims, cat_dims, current_x)
     if opt_inputs.return_best_only:
         raise UnsupportedError("`continuous_step` does not support `return_best_only=True`.")
     problem, _, _ = _problem(opt_inputs, _index_dims(discrete_dims), _index_dims(cat_dims))
@@ -345,8 +392,8 @@ _NATIVE_GENERATE_STARTING_POINTS = generate_starting_points
 def optimize_acqf_mixed_alternating(
     acq_function: Any,
     bounds: Any,
-    discrete_dims: Mapping[int, Sequence[float]] | None = None,
-    cat_dims: Mapping[int, Sequence[float]] | None = None,
+    discrete_dims: Mapping[int, Any] | None = None,
+    cat_dims: Mapping[int, Any] | None = None,
     options: dict[str, Any] | None = None,
     q: int = 1,
     raw_samples: int = RAW_SAMPLES,
@@ -406,6 +453,10 @@ def optimize_acqf_mixed_alternating(
         A ``q x d`` array of candidates and their joint acquisition value
         (``None`` if ``return_acq_values=False``).
     """
+    if getattr(acq_function, "_tensor_backend", None) == "torch":
+        from botorch_rs.optim._torch_acq_mixed import optimize as tensor_optimize
+
+        return tensor_optimize(locals())
     if sequential is False:
         raise NotImplementedError(
             "`optimize_acqf_mixed_alternating` only supports sequential optimization."
@@ -549,6 +600,11 @@ def optimize_acqf_mixed_alternating(
 def complement_indices_like(indices: Any, d: int) -> Any:
     r"""The complement indices ``{range(d) \ indices}`` as an integer array
     like ``indices`` (BoTorch's ``complement_indices_like``)."""
+    if is_torch_tensor(indices):
+        import torch
+
+        values = torch.arange(d, dtype=indices.dtype, device=indices.device)
+        return values[(values[:, None] != indices).all(-1)]
     idx = [int(v) for v in to_flat(indices, "indices")[0]]
     out = complement_indices(idx, d)
     k = kind_of(indices)

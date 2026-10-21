@@ -119,6 +119,31 @@ impl CholeskyFactor {
         inv
     }
 
+    /// The diagonal of `(L Lᵀ)⁻¹`, using one scratch column of `L⁻¹`.
+    /// The updates walk contiguous columns of `L`, avoiding both a dense
+    /// inverse and the strided row access of a dot-product triangular solve.
+    pub fn inverse_diagonal(&self) -> Vector {
+        let n = self.dim();
+        let mut diagonal = Vector::zeros(n);
+        let mut work = vec![0.0; n];
+        for j in 0..n {
+            work[j..].fill(0.0);
+            work[j] = 1.0;
+            let mut squared_norm = 0.0;
+            for k in j..n {
+                let value = work[k] / self.l[(k, k)];
+                squared_norm += value * value;
+                let column = self.l.column(k);
+                for (rhs, &coefficient) in work[k + 1..].iter_mut().zip(&column.as_slice()[k + 1..])
+                {
+                    *rhs -= coefficient * value;
+                }
+            }
+            diagonal[j] = squared_norm;
+        }
+        diagonal
+    }
+
     /// Returns `(L Lᵀ)⁻¹`, i.e. the inverse of the (jittered) factorized matrix.
     pub fn inverse(&self) -> Matrix {
         let linv = self.inverse_factor();

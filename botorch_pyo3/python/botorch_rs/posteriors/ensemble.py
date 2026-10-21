@@ -8,7 +8,7 @@ import math
 import random
 from typing import Any
 
-from botorch_rs._arrays import LIST, from_flat, kind_of, to_flat
+from botorch_rs._arrays import LIST, from_flat, is_torch_tensor, kind_of, to_flat
 from botorch_rs.posteriors.gpytorch import Posterior
 
 
@@ -28,6 +28,13 @@ class EnsemblePosterior(Posterior):
     The quantities are computed from ``values`` (``(b) x s x q x m``) with
     the array type of ``values``.
     """
+
+    def __new__(cls, values: Any = None, weights: Any = None) -> Any:
+        if cls is EnsemblePosterior and is_torch_tensor(values):
+            from botorch_rs.posteriors._torch_ensemble import TorchEnsemblePosterior
+
+            return object.__new__(TorchEnsemblePosterior)
+        return object.__new__(cls)
 
     def __init__(self, values: Any, weights: Any = None) -> None:
         r"""

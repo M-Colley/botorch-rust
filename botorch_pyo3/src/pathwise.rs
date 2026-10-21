@@ -21,6 +21,7 @@ use rayon::prelude::*;
 use crate::arrays::{matrix_out, Array, ArrayBuf};
 use crate::errors::{value_error, IntoPyResult};
 use crate::models::PyModel;
+use crate::specs::kind_from_name;
 use crate::threads;
 
 /// Explicit draws of one output: `(frequencies, weights, noise)`.
@@ -459,11 +460,126 @@ pub fn gaussian_update_py(
     .into_py_result()
 }
 
+/// Batched matrix products for independently callable feature maps. The Python
+/// adapter expands broadcast batch axes before crossing the boundary.
+#[pyfunction]
+pub fn feature_matmul(py: Python<'_>, a: Array, b: Array) -> PyResult<ArrayBuf> {
+    if a.1.len() < 2 || b.1.len() < 2 {
+        return Err(value_error(
+            "feature matrices must have at least two dimensions",
+        ));
+    }
+    let na = a.1.len();
+    let nb = b.1.len();
+    let (r, k, c) = (a.1[na - 2], a.1[na - 1], b.1[nb - 1]);
+    if b.1[nb - 2] != k || a.1[..na - 2] != b.1[..nb - 2] {
+        return Err(value_error(
+            "feature matrix dimensions or expanded batches do not match",
+        ));
+    }
+    if a.0.len() != a.1.iter().product::<usize>() || b.0.len() != b.1.iter().product::<usize>() {
+        return Err(value_error("feature matrix data do not match their shapes"));
+    }
+    let batch = a.1[..na - 2].iter().product::<usize>();
+    let mut shape = a.1[..na - 2].to_vec();
+    shape.extend([r, c]);
+    let values = threads::run(py, || {
+        (0..batch)
+            .flat_map(|i| {
+                let x = Matrix::from_row_slice(r, k, &a.0[i * r * k..(i + 1) * r * k]);
+                let y = Matrix::from_row_slice(k, c, &b.0[i * k * c..(i + 1) * k * c]);
+                matrix_out(&(x * y)).0
+            })
+            .collect()
+    });
+    Ok(ArrayBuf(values, shape))
+}
+
+/// Solve `(L L^T) w = errors` for independently expanded batch vectors.
+/// The adapter broadcasts the sample/model axes before crossing the boundary.
+#[pyfunction]
+pub fn pathwise_cholesky_solve(
+    py: Python<'_>,
+    scale_tril: Array,
+    errors: Array,
+) -> PyResult<ArrayBuf> {
+    let shape_size = |shape: &[usize]| {
+        shape.iter().try_fold(1usize, |size, &axis| {
+            size.checked_mul(axis)
+                .ok_or_else(|| value_error("pathwise array shape product overflows"))
+        })
+    };
+    let Some((&n, batch_shape)) = errors.1.split_last() else {
+        return Err(value_error(
+            "pathwise errors must have at least one dimension",
+        ));
+    };
+    let mut expected = batch_shape.to_vec();
+    expected.extend([n, n]);
+    if scale_tril.1 != expected
+        || shape_size(&scale_tril.1)? != scale_tril.0.len()
+        || shape_size(&errors.1)? != errors.0.len()
+    {
+        return Err(value_error(
+            "pathwise factor/errors shapes or raw data lengths do not match",
+        ));
+    }
+    if scale_tril.0.iter().chain(&errors.0).any(|x| !x.is_finite()) {
+        return Err(value_error("pathwise factors and errors must be finite"));
+    }
+    let batch = shape_size(batch_shape)?;
+    for b in 0..batch {
+        if (0..n).any(|i| scale_tril.0[b * n * n + i * n + i] <= 0.0) {
+            return Err(value_error(
+                "pathwise factors must have a positive diagonal",
+            ));
+        }
+    }
+    let values = threads::run(py, || {
+        let mut result = Vec::with_capacity(errors.0.len());
+        for b in 0..batch {
+            let factor = Matrix::from_row_slice(n, n, &scale_tril.0[b * n * n..(b + 1) * n * n]);
+            let mut rhs = Matrix::from_column_slice(n, 1, &errors.0[b * n..(b + 1) * n]);
+            factor.solve_lower_triangular_unchecked_mut(&mut rhs);
+            factor.tr_solve_lower_triangular_unchecked_mut(&mut rhs);
+            result.extend(rhs.iter().copied());
+        }
+        result
+    });
+    Ok(ArrayBuf(values, errors.1))
+}
+
+/// Native spectral draws (normal QMC for RBF, multivariate Student-t for Matérn).
+#[pyfunction]
+#[pyo3(signature = (kind, num_inputs, num_features, seed=None))]
+pub fn feature_frequencies(
+    py: Python<'_>,
+    kind: &str,
+    num_inputs: usize,
+    num_features: usize,
+    seed: Option<u64>,
+) -> PyResult<ArrayBuf> {
+    let family = kind_from_name(kind)?;
+    threads::run(py, || {
+        botorch_core::sampling::pathwise::utils::draw_fourier_frequencies(
+            family,
+            num_inputs,
+            num_features,
+            seed.unwrap_or_else(random_seed),
+        )
+    })
+    .into_py_result()
+    .map(|m| matrix_out(&m).into())
+}
+
 /// Registers the classes and functions of this module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySamplePaths>()?;
     m.add_function(wrap_pyfunction!(draw_matheron_paths_py, m)?)?;
     m.add_function(wrap_pyfunction!(draw_kernel_feature_paths_py, m)?)?;
     m.add_function(wrap_pyfunction!(gaussian_update_py, m)?)?;
+    m.add_function(wrap_pyfunction!(feature_matmul, m)?)?;
+    m.add_function(wrap_pyfunction!(pathwise_cholesky_solve, m)?)?;
+    m.add_function(wrap_pyfunction!(feature_frequencies, m)?)?;
     Ok(())
 }

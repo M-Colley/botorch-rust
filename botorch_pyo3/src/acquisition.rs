@@ -15,7 +15,7 @@
 //! callables with one temperature each (and optionally BoTorch's
 //! per-constraint `fat` list) for outcome constraints.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use botorch_core::acquisition::{
     prune_inferior_points, AcquisitionFunction, ConstrainedExpectedImprovement,
@@ -25,17 +25,18 @@ use botorch_core::acquisition::{
     ProbabilityOfImprovement, PruneOptions, QExpectedImprovement, QLogExpectedImprovement,
     QLogExpectedImprovementOptions, QLogNoisyExpectedImprovement,
     QLogNoisyExpectedImprovementOptions, QLogProbabilityOfFeasibility,
-    QLogProbabilityOfFeasibilityOptions, QLowerConfidenceBound, QPosteriorStandardDeviation,
-    QProbabilityOfImprovement, QSimpleRegret, QUpperConfidenceBound, UpperConfidenceBound,
+    QLogProbabilityOfFeasibilityOptions, QLowerConfidenceBound, QNoisyExpectedImprovement,
+    QPosteriorStandardDeviation, QProbabilityOfImprovement, QSimpleRegret, QUpperConfidenceBound,
+    UpperConfidenceBound,
 };
 use botorch_core::utils::objective::{McConstraint, OutcomeConstraints};
 use botorch_core::{Matrix, Model, Vector};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
-use crate::arrays::{matrix_out, Array, ArrayBuf, ArrayOut};
+use crate::arrays::{broadcast_shapes, matrix_out, Array, ArrayBuf, ArrayOut};
 use crate::callbacks::PyCallback;
-use crate::errors::{unsupported, value_error, IntoPyResult};
+use crate::errors::{dimension_error, unsupported, value_error, IntoPyResult};
 use crate::models::PyModel;
 use crate::sampling::PySobolQMCNormalSampler;
 use crate::threads;
@@ -51,7 +52,58 @@ pub struct PyAcquisitionFunction {
     pub inner: Arc<dyn AcquisitionFunction>,
     /// The same object when it is a qLogNEI (for its baseline accessors).
     nei: Option<Arc<QLogNoisyExpectedImprovement>>,
+    linear_nei: Option<Arc<QNoisyExpectedImprovement>>,
+    last_incumbents: Mutex<Option<ArrayBuf>>,
     name: &'static str,
+    objective_batch: Vec<usize>,
+}
+
+/// Immutable reverse tape from one parallel acquisition evaluation.
+#[pyclass(
+    frozen,
+    name = "AcquisitionParameterTape",
+    module = "botorch_rs._botorch_rs"
+)]
+pub struct PyAcquisitionParameterTape {
+    records: Vec<botorch_core::acquisition::adjoints::ParameterAdjoints>,
+    batch_shape: Vec<usize>,
+}
+
+#[pymethods]
+impl PyAcquisitionParameterTape {
+    fn parameter_vjp(
+        &self,
+        py: Python<'_>,
+        weights: Array,
+        parameter_count: usize,
+    ) -> PyResult<ArrayBuf> {
+        if weights.1 != self.batch_shape || weights.0.len() != self.records.len() {
+            return Err(crate::errors::dimension_error(
+                "Acquisition adjoints must match candidate batch shape",
+            ));
+        }
+        let gradient = threads::run(py, || {
+            let mut gradient = Vector::zeros(parameter_count);
+            for (record, &weight) in self.records.iter().zip(&weights.0) {
+                if weight == 0.0 {
+                    continue;
+                }
+                let part = record.parameter_vjp(weight)?;
+                if part.len() != parameter_count {
+                    return Err(botorch_core::BotorchError::DimensionMismatch(
+                        "Acquisition tape parameter layout differs from its captured leaves".into(),
+                    ));
+                }
+                gradient += part;
+            }
+            Ok(gradient)
+        })
+        .into_py_result()?;
+        Ok(ArrayBuf(
+            gradient.as_slice().to_vec(),
+            vec![parameter_count],
+        ))
+    }
 }
 
 impl PyAcquisitionFunction {
@@ -59,7 +111,10 @@ impl PyAcquisitionFunction {
         Self {
             inner,
             nei: None,
+            linear_nei: None,
+            last_incumbents: Mutex::new(None),
             name,
+            objective_batch: Vec::new(),
         }
     }
 
@@ -73,8 +128,87 @@ impl PyAcquisitionFunction {
         Self {
             inner,
             nei: Some(nei),
+            linear_nei: None,
+            last_incumbents: Mutex::new(None),
             name,
+            objective_batch: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_linear_nei(nei: Arc<QNoisyExpectedImprovement>) -> Self {
+        Self {
+            inner: nei.clone(),
+            nei: None,
+            linear_nei: Some(nei),
+            last_incumbents: Mutex::new(None),
+            name: "qNoisyExpectedImprovement",
+            objective_batch: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_objective_batch(mut self, shape: Option<Vec<usize>>) -> Self {
+        self.objective_batch = shape.unwrap_or_default();
+        self
+    }
+
+    fn check_objective_batch(&self, batch: &[usize]) -> PyResult<()> {
+        if !self.objective_batch.is_empty()
+            && broadcast_shapes(batch, &self.objective_batch).as_deref() != Some(batch)
+        {
+            return Err(dimension_error(format!(
+                "candidate batch {batch:?} must include the learned preference batch {:?}; expand X explicitly",
+                self.objective_batch
+            )));
+        }
+        Ok(())
+    }
+
+    fn in_objective_batch<T>(&self, batch: &[usize], index: usize, f: impl FnOnce() -> T) -> T {
+        if self.objective_batch.is_empty() {
+            f()
+        } else {
+            crate::callbacks::context::with_context(batch, Some(index), f)
+        }
+    }
+
+    fn captured_evaluation(
+        &self,
+        x: &Matrix,
+        with_grad: bool,
+    ) -> botorch_core::Result<(f64, Option<Matrix>, Vec<f64>)> {
+        match (&self.nei, &self.linear_nei) {
+            (Some(nei), _) => nei.forward_with_incumbents(x, with_grad),
+            (_, Some(nei)) => nei.forward_with_incumbents(x, with_grad),
+            _ => unreachable!("capture is only requested for NEI acquisition functions"),
+        }
+    }
+
+    fn store_incumbents(&self, best: &[Vec<f64>], batch: &[usize]) {
+        let samples = best.first().map_or_else(
+            || {
+                self.nei.as_ref().map_or_else(
+                    || {
+                        self.linear_nei
+                            .as_ref()
+                            .map_or(0, |n| n.sampler().num_samples())
+                    },
+                    |n| n.sampler().num_samples(),
+                )
+            },
+            Vec::len,
+        );
+        let mut values = Vec::with_capacity(samples * best.len());
+        for sample in 0..samples {
+            for candidate in best {
+                values.push(candidate[sample]);
+            }
+        }
+        let mut shape = vec![samples];
+        shape.extend_from_slice(batch);
+        *self
+            .last_incumbents
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(ArrayBuf(values, shape));
     }
 
     fn nei(&self) -> PyResult<&Arc<QLogNoisyExpectedImprovement>> {
@@ -265,6 +399,7 @@ impl PyAcquisitionFunction {
         constraints=None,
         eta=None,
         fat_list=None,
+        objective_batch_shape=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn monte_carlo(
@@ -282,6 +417,7 @@ impl PyAcquisitionFunction {
         constraints: Option<Vec<Py<PyAny>>>,
         eta: Option<Vec<f64>>,
         fat_list: Option<Vec<Option<bool>>>,
+        objective_batch_shape: Option<Vec<usize>>,
     ) -> PyResult<Self> {
         let name = static_name(name, &MONTE_CARLO)?;
         let m = model_of(&model);
@@ -333,7 +469,7 @@ impl PyAcquisitionFunction {
             }
             _ => Arc::new(QSimpleRegret::new(m, options).into_py_result()?),
         };
-        Ok(Self::new_plain(inner, name))
+        Ok(Self::new_plain(inner, name).with_objective_batch(objective_batch_shape))
     }
 
     /// `qLogProbabilityOfFeasibility(model, constraints, ...)` with outcome
@@ -444,6 +580,7 @@ impl PyAcquisitionFunction {
         x_pending=None,
         fat=true,
         prune_baseline=true,
+        cache_root=true,
         prune_num_samples=2048,
         prune_max_frac=1.0,
         prune_seed=None,
@@ -455,6 +592,7 @@ impl PyAcquisitionFunction {
         eta=None,
         fat_list=None,
         lower_bound_points=None,
+        objective_batch_shape=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn q_log_noisy_expected_improvement(
@@ -465,6 +603,7 @@ impl PyAcquisitionFunction {
         x_pending: Option<Array>,
         fat: bool,
         prune_baseline: bool,
+        cache_root: bool,
         prune_num_samples: usize,
         prune_max_frac: f64,
         prune_seed: Option<u64>,
@@ -476,6 +615,7 @@ impl PyAcquisitionFunction {
         eta: Option<Vec<f64>>,
         fat_list: Option<Vec<Option<bool>>>,
         lower_bound_points: Option<Array>,
+        objective_batch_shape: Option<Vec<usize>>,
     ) -> PyResult<Self> {
         let m = model_of(&model);
         let x_baseline = x_baseline.matrix("X_baseline")?;
@@ -484,6 +624,7 @@ impl PyAcquisitionFunction {
             x_pending: x_pending.map(|p| p.matrix("X_pending")).transpose()?,
             fat,
             prune_baseline,
+            cache_root,
             prune_options: PruneOptions {
                 num_samples: prune_num_samples,
                 max_frac: prune_max_frac,
@@ -501,15 +642,16 @@ impl PyAcquisitionFunction {
                 .transpose()?,
         };
         let acqf = threads::run(py, || {
-            QLogNoisyExpectedImprovement::new(m, &x_baseline, options)
+            crate::callbacks::context::with_context(&[], None, || {
+                QLogNoisyExpectedImprovement::new(m, &x_baseline, options)
+            })
         })
         .into_py_result()?;
         let acqf = Arc::new(acqf);
-        Ok(Self {
-            inner: acqf.clone(),
-            nei: Some(acqf),
-            name: "qLogNoisyExpectedImprovement",
-        })
+        Ok(
+            Self::with_nei(acqf.clone(), acqf, "qLogNoisyExpectedImprovement")
+                .with_objective_batch(objective_batch_shape),
+        )
     }
 
     /// The BoTorch class name.
@@ -545,30 +687,166 @@ impl PyAcquisitionFunction {
     /// Values at the candidate sets `X` (`... x q x d`); shape `...`.
     fn forward(&self, py: Python<'_>, x: Array) -> PyResult<ArrayBuf> {
         let (batch, sets) = candidate_sets(&x)?;
-        let acqf = &self.inner;
-        let values = threads::run(py, || acqf.forward_many(&sets)).into_py_result()?;
+        self.check_objective_batch(&batch)?;
+        if self.nei.is_some() || self.linear_nei.is_some() {
+            let results = threads::run(py, || {
+                sets.par_iter()
+                    .enumerate()
+                    .map(|(i, s)| {
+                        self.in_objective_batch(&batch, i, || self.captured_evaluation(s, false))
+                    })
+                    .collect::<botorch_core::Result<Vec<_>>>()
+            })
+            .into_py_result()?;
+            self.store_incumbents(
+                &results.iter().map(|r| r.2.clone()).collect::<Vec<_>>(),
+                &batch,
+            );
+            return Ok(ArrayBuf(results.into_iter().map(|r| r.0).collect(), batch));
+        }
+        let values = threads::run(py, || {
+            if self.objective_batch.is_empty() {
+                self.inner.forward_many(&sets)
+            } else {
+                sets.par_iter()
+                    .enumerate()
+                    .map(|(i, s)| self.in_objective_batch(&batch, i, || self.inner.forward(s)))
+                    .collect()
+            }
+        })
+        .into_py_result()?;
         Ok(ArrayBuf(values, batch))
     }
 
-    /// Values (shape `...`) and gradients (shape of `X`) at the candidate
-    /// sets `X` (`... x q x d`).
+    /// Values and exact native input gradients; NEI state is captured in
+    /// candidate order after parallel evaluation, never in a shared worker slot.
     fn forward_with_grad(&self, py: Python<'_>, x: Array) -> PyResult<(ArrayBuf, ArrayBuf)> {
         let (batch, sets) = candidate_sets(&x)?;
-        let acqf = &self.inner;
+        self.check_objective_batch(&batch)?;
+        let capture = self.nei.is_some() || self.linear_nei.is_some();
         let results = threads::run(py, || {
             sets.par_iter()
-                .map(|s| acqf.forward_with_grad(s))
+                .enumerate()
+                .map(|(i, s)| {
+                    self.in_objective_batch(&batch, i, || {
+                        if capture {
+                            self.captured_evaluation(s, true)
+                        } else {
+                            self.inner
+                                .forward_with_grad(s)
+                                .map(|(v, g)| (v, Some(g), Vec::new()))
+                        }
+                    })
+                })
                 .collect::<botorch_core::Result<Vec<_>>>()
         })
         .into_py_result()?;
+        if capture {
+            self.store_incumbents(
+                &results.iter().map(|r| r.2.clone()).collect::<Vec<_>>(),
+                &batch,
+            );
+        }
         let mut values = Vec::with_capacity(results.len());
         let mut grads = Vec::with_capacity(x.0.len());
-        for (v, g) in &results {
-            values.push(*v);
-            let (data, _) = matrix_out(g);
+        for (v, g, _) in results {
+            values.push(v);
+            let (data, _) = matrix_out(&g.expect("gradient requested"));
             grads.extend(data);
         }
         Ok((ArrayBuf(values, batch), ArrayBuf(grads, x.1.clone())))
+    }
+
+    #[getter]
+    fn supports_parameter_gradients(&self) -> bool {
+        self.inner.supports_parameter_gradients()
+    }
+
+    #[pyo3(signature = (x, query_gradient=false))]
+    fn forward_with_adjoint_tape(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        query_gradient: bool,
+    ) -> PyResult<(ArrayBuf, Option<ArrayBuf>, PyAcquisitionParameterTape)> {
+        let (batch, sets) = candidate_sets(&x)?;
+        self.check_objective_batch(&batch)?;
+        let capture = self.nei.is_some() || self.linear_nei.is_some();
+        let results = threads::run(py, || {
+            sets.par_iter()
+                .enumerate()
+                .map(|(index, points)| {
+                    self.in_objective_batch(&batch, index, || match (&self.nei, &self.linear_nei) {
+                        (Some(nei), _) => {
+                            nei.forward_with_adjoints_and_incumbents(points, query_gradient)
+                        }
+                        (_, Some(nei)) => {
+                            nei.forward_with_adjoints_and_incumbents(points, query_gradient)
+                        }
+                        _ => self
+                            .inner
+                            .forward_with_adjoints(points, query_gradient)
+                            .map(|result| (result, Vec::new())),
+                    })
+                })
+                .collect::<botorch_core::Result<Vec<_>>>()
+        })
+        .into_py_result()?;
+        if capture {
+            self.store_incumbents(
+                &results
+                    .iter()
+                    .map(|(_, best)| best.clone())
+                    .collect::<Vec<_>>(),
+                &batch,
+            );
+        }
+        let mut values = Vec::with_capacity(results.len());
+        let mut gradients = Vec::new();
+        let mut records = Vec::with_capacity(results.len());
+        for (result, _) in results {
+            values.push(result.value);
+            if let Some(gradient) = result.query_gradient {
+                gradients.extend(matrix_out(&gradient).0);
+            }
+            records.push(result.posterior);
+        }
+        let tape = PyAcquisitionParameterTape {
+            records,
+            batch_shape: batch.clone(),
+        };
+        Ok((
+            ArrayBuf(values, batch),
+            query_gradient.then_some(ArrayBuf(gradients, x.1)),
+            tape,
+        ))
+    }
+
+    /// Cached-baseline incumbents, available before evaluation when enabled.
+    fn baseline_best_f(&self) -> Option<Vec<f64>> {
+        self.nei
+            .as_ref()
+            .and_then(|n| n.baseline_best_f())
+            .or_else(|| {
+                self.linear_nei
+                    .as_ref()
+                    .and_then(|n| n.baseline_best_f().map(<[f64]>::to_vec))
+            })
+    }
+
+    /// Exact incumbents from the last completed forward, shaped sample x batch.
+    fn last_baseline_best_f(&self) -> Option<ArrayBuf> {
+        self.last_incumbents
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|v| ArrayBuf(v.0.clone(), v.1.clone()))
+    }
+
+    #[getter]
+    fn cache_root(&self) -> bool {
+        self.nei.as_ref().is_some_and(|n| n.cache_root())
+            || self.linear_nei.as_ref().is_some_and(|n| n.cache_root())
     }
 
     /// The pending points (`m x d`), if any.
@@ -581,7 +859,12 @@ impl PyAcquisitionFunction {
     fn set_x_pending(&self, py: Python<'_>, x_pending: Option<Array>) -> PyResult<()> {
         let x_pending = x_pending.map(|p| p.matrix("X_pending")).transpose()?;
         let acqf = &self.inner;
-        threads::run(py, || acqf.set_x_pending(x_pending.as_ref())).into_py_result()
+        threads::run(py, || acqf.set_x_pending(x_pending.as_ref())).into_py_result()?;
+        *self
+            .last_incumbents
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        Ok(())
     }
 
     /// The (pruned) baseline of a qLogNEI (`n x d`).
@@ -648,7 +931,11 @@ pub fn prune_inferior_points_py(
         objective: objective_of(objective.as_ref())?,
         constraints: constraints.map(constraint_callbacks),
     };
-    let pruned =
-        threads::run(py, || prune_inferior_points(m.as_ref(), &x, &options)).into_py_result()?;
+    let pruned = threads::run(py, || {
+        crate::callbacks::context::with_context(&[], None, || {
+            prune_inferior_points(m.as_ref(), &x, &options)
+        })
+    })
+    .into_py_result()?;
     Ok(matrix_out(&pruned))
 }

@@ -118,7 +118,7 @@ def _unflat(data: list, shp: tuple) -> Any:
 
 
 def test_registry_and_errors() -> None:
-    assert len(ic.ACQF_INPUT_CONSTRUCTOR_REGISTRY) == 35  # 33 of phase 8b, 2 of phase 10b
+    assert len(ic.ACQF_INPUT_CONSTRUCTOR_REGISTRY) == 36  # 33 of 8b, 2 of 10b, 1 of 10a
     for cls in ic.ACQF_INPUT_CONSTRUCTOR_REGISTRY:
         assert callable(get_acqf_input_constructor(cls))
 
@@ -248,8 +248,9 @@ def test_multi_fidelity_and_reference_point_errors() -> None:
     assert ic._construct_constraint_dict_from_tuple(
         ([[0.0, -2.0]], [[1.0]]), ExpectedImprovement
     ) == {1: (-0.5, None)}
-    with pytest.raises(UnsupportedError, match="IIDNormalSampler"):
-        ic._get_sampler(mc_samples=8, qmc=False)
+    from botorch_rs.sampling.normal import IIDNormalSampler
+
+    assert isinstance(ic._get_sampler(mc_samples=8, qmc=False), IIDNormalSampler)
     model, X, Y = _model("list", m=2)
     with pytest.raises(NotImplementedError, match="outcome constraints"):
         ic.construct_inputs_EHVI(

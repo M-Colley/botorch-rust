@@ -1,0 +1,81 @@
+# Device categorical, fidelity and task kernels
+
+`CategoricalKernel`, `DownsamplingKernel`, `ExponentialDecayKernel`,
+`LinearTruncatedFidelityKernel`, and `PositiveIndexKernel` accept
+`backend="torch"`. A CUDA `device` selects this backend automatically. Native
+kernel descriptors supplied to a Torch GP are converted once at construction.
+Their covariance, priors, parameter optimization, and first and higher
+derivatives remain on the Tensor device. Categorical and task indices are
+discrete; continuous derivatives with respect to their labels are undefined.
+
+The factories retain the public kernel class, actual persistent Torch parameters,
+constraints, arbitrary kernel/input batch broadcasting, active dimensions, and
+aligned diagonal evaluation. Categorical, decay, downsampling and task kernels
+support feature batches. Linear truncated fidelity retains its physical fidelity
+axis contract, both one- and two-fidelity formulas, shared child identities, and
+user-supplied differentiable Torch subkernels. Dotted `initialize` names reach
+the actual child without replacing its parameter. User modules retain their own
+autograd capabilities; a GPyTorch module using `cdist` may still reject higher
+derivatives independently of the port.
+
+Positive task covariance supports positive low-rank factors, diagonal variance,
+optional target-unit normalization, scalar correlation priors, and matrix LKJ
+priors. LKJ log density is evaluated once per correlation matrix, plus the sum
+of marginal-scale log densities, matching the corrected native law. Density,
+MLL fitting, Cholesky, and matrix-prior draws use device Tensor operations with
+first and higher parameter derivatives. No runtime numerical path calls BoTorch
+or transfers a covariance matrix to the CPU.
+
+Prior sampling is parameter initialization. A general LKJ covariance draw cannot
+usually be represented by an elementwise-positive fixed-rank factor, especially
+with target-unit normalization. `sample_all_priors` therefore projects such a
+draw through its Cholesky factor, positive factor floor and positive residual
+diagonal, before the kernel's normalization. The resulting kernel is positive
+definite, but this projected initialization is not an exact pushforward sample
+from the unrestricted LKJ covariance distribution. Scalar correlation draws
+likewise use the existing positive-correlation projection convention.
+
+`test_torch_kernel_catalogue.py` covers CPU and CUDA official-source values,
+parameter gradients, full Hessian-vector graphs, feature batches, safe invalid
+task indices, shared-tree conversion, initialization, actual Adam updates and
+custom child priors. Matrix density is independently compared with the native
+Rust scalar law; no comparison relies on GPyTorch's previously reported
+vector-valued LKJ covariance-density defect. Source reference is official BoTorch
+`b0dd01be61d517c387e234903a6e2cc38c057ea2`.
+
+## Core covariance compatibility constructors
+
+The public RBF, Matérn, rational-quadratic, periodic, linear, polynomial, cosine,
+scale, additive, product, index and multitask constructors in `botorch_rs.kernels`
+also accept `backend="torch"`. A CUDA `device` or an existing Torch child selects
+that backend automatically. Legacy CPU construction keeps its native default.
+Explicit factories retain public class identity, persistent parameters, priors,
+constraints, active dimensions and dtype/device metadata. `+`, `*` and explicit
+composites preserve shared child identities, so priors and optimizer parameters
+are counted once. State dictionaries, deep copies, and module serialization
+preserve the device modules.
+
+Generic IndexKernel supports unconstrained factors, including rank zero's
+diagonal-only law, arbitrary task batches and safe discrete gathers. Native CPU KernelNode and Tensor kernels both support this diagonal-only
+parameterization. A full-rank generic IndexKernel can initialize an LKJ
+covariance draw exactly by splitting a positive diagonal from its Cholesky
+factor. Lower-rank matrix draws use projected initialization. This differs
+from PositiveIndexKernel, whose positive-factor and optional unit-scale
+restrictions generally require projection even with full rank.
+
+MultitaskKernel returns the interleaved input-by-task Kronecker covariance,
+including a full aligned diagonal and model/input batch broadcasting. As in
+GPyTorch, it rejects `last_dim_is_batch=True`. This is a covariance module;
+correlated multi-output inference is provided by KroneckerMultiTaskGP rather
+than the independent-output SingleTaskGP. Native IndexKernel and MultitaskKernel
+descriptors are converted genuinely when a Torch model requests them. Tests
+compare official GPyTorch covariance/parameter/input derivatives, independent
+Kronecker indexing, actual GP fitting and higher derivatives on CPU and CUDA.
+
+The Tensor multitask implementation applies the data child's active dimensions
+and broadcasts existing task batches rather than repeating their sizes. The
+corresponding GPyTorch defects are already tracked in
+[GPyTorch #2809](https://github.com/cornellius-gp/gpytorch/pull/2809) and
+[GPyTorch #2817](https://github.com/cornellius-gp/gpytorch/pull/2817). Four additional
+CPU/CUDA cases compare these configurations with independent explicit Kronecker
+products and all input/parameter first and second derivatives.

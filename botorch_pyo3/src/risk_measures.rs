@@ -19,8 +19,8 @@
 use std::sync::Arc;
 
 use botorch_core::acquisition::multi_objective::multi_output_risk_measures::{
-    y_normalization_bounds, IndependentCVaR, IndependentVaR, MVaR, MVaROptions, Mars,
-    MultiOutputExpectation, MultiOutputWorstCase,
+    mvar_make_differentiable, y_normalization_bounds, IndependentCVaR, IndependentVaR, MVaR,
+    MVaROptions, Mars, MultiOutputExpectation, MultiOutputWorstCase,
 };
 use botorch_core::acquisition::multi_objective::McMultiOutputObjective;
 use botorch_core::acquisition::risk_measures::{CVaR, Expectation, VaR, WorstCase};
@@ -474,9 +474,68 @@ pub fn mars_y_normalization_bounds(y: Array, ref_point: Option<Vec<f64>>) -> PyR
 }
 
 /// Registers the classes of this module.
+/// Public MVaR component mapping and its VJP, in original row-major order.
+#[pyfunction(name = "mvar_make_differentiable")]
+#[pyo3(signature = (prepared_samples, mvars, adjoint=None))]
+fn mvar_make_differentiable_py(
+    py: Python<'_>,
+    prepared_samples: Array,
+    mvars: Array,
+    adjoint: Option<Array>,
+) -> PyResult<ArrayBuf> {
+    let ps = &prepared_samples.1;
+    let ms = &mvars.1;
+    if ps.len() != 3
+        || ms.len() != 3
+        || ps[0] != ms[0]
+        || ps[2] != ms[2]
+        || adjoint.as_ref().is_some_and(|bar| bar.1 != *ms)
+    {
+        return Err(dimension_error("Expected prepared_samples [batch,n_w,m], mvars [batch,k,m], and optional matching adjoint"));
+    }
+    let length = |shape: &[usize]| shape.iter().try_fold(1usize, |n, &v| n.checked_mul(v));
+    if length(ps) != Some(prepared_samples.0.len())
+        || length(ms) != Some(mvars.0.len())
+        || adjoint
+            .as_ref()
+            .is_some_and(|bar| length(&bar.1) != Some(bar.0.len()))
+    {
+        return Err(dimension_error("array data do not match their shapes"));
+    }
+    let (batch, nw, m, k) = (ps[0], ps[1], ps[2], ms[1]);
+    let values = threads::run(py, || -> botorch_core::Result<Vec<f64>> {
+        let mut result = Vec::new();
+        for b in 0..batch {
+            let prepared =
+                Matrix::from_row_slice(nw, m, &prepared_samples.0[b * nw * m..(b + 1) * nw * m]);
+            let points = Matrix::from_row_slice(k, m, &mvars.0[b * k * m..(b + 1) * k * m]);
+            let bar = adjoint
+                .as_ref()
+                .map(|a| Matrix::from_row_slice(k, m, &a.0[b * k * m..(b + 1) * k * m]));
+            let mapped = mvar_make_differentiable(&prepared, &points, bar.as_ref())?;
+            for i in 0..mapped.nrows() {
+                for t in 0..m {
+                    result.push(mapped[(i, t)]);
+                }
+            }
+        }
+        Ok(result)
+    })
+    .into_py_result()?;
+    Ok(ArrayBuf(
+        values,
+        if adjoint.is_some() {
+            ps.clone()
+        } else {
+            ms.clone()
+        },
+    ))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRiskMeasure>()?;
     m.add_class::<PyMultiOutputRiskMeasure>()?;
     m.add_function(wrap_pyfunction!(mars_y_normalization_bounds, m)?)?;
+    m.add_function(wrap_pyfunction!(mvar_make_differentiable_py, m)?)?;
     Ok(())
 }

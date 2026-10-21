@@ -25,12 +25,27 @@ class DownsamplingKernel(Kernel):
         ("raw_offset", "raw_offset_constraint", "offset_prior"),
     )
 
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        device = kwargs.get("device")
+        if cls is DownsamplingKernel and (
+            _use_torch_backend(backend, *args, *kwargs.values())
+            or (backend == "auto" and device is not None and str(device) != "cpu")
+        ):
+            from botorch_rs.models._torch_backend_kernel_catalogue import TorchDownsamplingKernel
+
+            return object.__new__(TorchDownsamplingKernel)
+        return object.__new__(cls)
+
     def __init__(
         self,
         power_prior: Prior | None = None,
         offset_prior: Prior | None = None,
         power_constraint: Interval | None = None,
         offset_constraint: Interval | None = None,
+        *,
+        backend: str = "auto",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)

@@ -815,6 +815,7 @@ fn parity_scalarized_acquisition() {
                 scalarized.clone(),
                 &baseline,
                 QLogNoisyExpectedImprovementOptions {
+                    cache_root: false,
                     sampler: sampler_from(&c.base_samples),
                     x_pending: pending.clone(),
                     prune_baseline: false,

@@ -36,6 +36,19 @@ class PositiveIndexKernel(IndexKernel):
         ("raw_covar_factor", "raw_covar_factor_constraint", None),
     )
 
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        device = kwargs.get("device")
+        if cls is PositiveIndexKernel and (
+            _use_torch_backend(backend, *args, *kwargs.values())
+            or (backend == "auto" and device is not None and str(device) != "cpu")
+        ):
+            from botorch_rs.models._torch_backend_kernel_catalogue import TorchPositiveIndexKernel
+
+            return object.__new__(TorchPositiveIndexKernel)
+        return object.__new__(cls)
+
     def __init__(
         self,
         num_tasks: int,
@@ -45,6 +58,8 @@ class PositiveIndexKernel(IndexKernel):
         var_constraint: Interval | None = None,
         target_task_index: int = 0,
         unit_scale_for_target: bool = True,
+        *,
+        backend: str = "auto",
         **kwargs: Any,
     ) -> None:
         if rank > num_tasks:

@@ -25,13 +25,16 @@ the candidate with the pending points; the multi-fidelity GIBBON uses the
 
 from __future__ import annotations
 
+import copy
 import math
+import weakref
 from collections.abc import Callable
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
+from botorch_rs import _ops
 from botorch_rs._arrays import from_flat, kind_of, to_flat
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, pending_arg
+from botorch_rs.acquisition.acquisition import AcquisitionFunction, MCSamplerMixin, pending_arg
 from botorch_rs.acquisition.cost_aware import CostAwareUtility
 from botorch_rs.acquisition.knowledge_gradient import _expand_arg
 from botorch_rs.acquisition.multi_objective.hypervolume_knowledge_gradient import (
@@ -40,7 +43,7 @@ from botorch_rs.acquisition.multi_objective.hypervolume_knowledge_gradient impor
 )
 from botorch_rs.acquisition.objective import transform_arg
 from botorch_rs.exceptions.errors import UnsupportedError
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 from botorch_rs.sampling.pathwise.prior_samplers import seed_arg
 
 #: BoTorch's lower bound of the variances (``CLAMP_LB``).
@@ -58,6 +61,30 @@ def _candidates(candidate_set: Any, d: int, name: str = "candidate_set") -> Any:
     return flat
 
 
+def _candidate_train_inputs(model: Any, train_inputs: Any, candidate_width: int) -> Any:
+    """Align long-format multitask baselines with task-free design coordinates.
+
+    Retargeting observed continuous locations through ``model.posterior`` uses
+    the selected ``output_tasks``. Explicit task-column candidate sets retain
+    their labels and their full training baseline.
+    """
+    if train_inputs is None:
+        return None
+    d = getattr(model, "num_non_task_features", None)
+    task_feature = getattr(model, "_task_feature", None)
+    shape = _ops.shape_of(train_inputs)
+    if d == candidate_width and task_feature is not None and shape[-1] == d + 1:
+        task_feature %= d + 1
+        return _ops.concat(
+            [
+                _ops.getitem(train_inputs, (Ellipsis, slice(None, task_feature))),
+                _ops.getitem(train_inputs, (Ellipsis, slice(task_feature + 1, None))),
+            ],
+            -1,
+        )
+    return train_inputs
+
+
 class MaxValueBase(AcquisitionFunction):
     r"""Base class of the max-value entropy search acquisition functions: the
     max values are sampled at construction from the posterior over the
@@ -65,6 +92,114 @@ class MaxValueBase(AcquisitionFunction):
     approximation or discrete Thompson sampling)."""
 
     _name = "MaxValueBase"
+
+    def __init__(
+        self,
+        model: Any,
+        candidate_set: Any,
+        num_mv_samples: int = 10,
+        posterior_transform: Any = None,
+        use_gumbel: bool = True,
+        maximize: bool = True,
+        X_pending: Any = None,
+        train_inputs: Any = None,
+        *,
+        seed: int | None = None,
+    ) -> None:
+        if type(self)._compute_information_gain is MaxValueBase._compute_information_gain:
+            raise TypeError("MaxValueBase subclasses must implement `_compute_information_gain`.")
+        super().__init__(model)
+        if model.num_outputs > 1:
+            raise UnsupportedError(
+                f"Multi-output models are not supported by {type(self).__name__}."
+            )
+        d = int(model._acquisition_model(None).dim)
+        _candidates(candidate_set, d)
+        if num_mv_samples <= 0:
+            raise ValueError("num_mv_samples must be positive.")
+        self._custom_max_base = True
+        self._init_model = model
+        self.num_mv_samples = int(num_mv_samples)
+        self.posterior_transform = posterior_transform
+        self.use_gumbel, self.maximize = bool(use_gumbel), bool(maximize)
+        self.weight = 1.0 if maximize else -1.0
+        self._max_seed = seed
+        if train_inputs is None and hasattr(model, "train_inputs"):
+            train_inputs = model.train_inputs[0]
+        train_inputs = _candidate_train_inputs(model, train_inputs, d)
+        if train_inputs is not None:
+            _candidates(train_inputs, d, "train_inputs")
+            candidate_set = _ops.concat([candidate_set, train_inputs], 0)
+        self.candidate_set = candidate_set
+        pending_arg(X_pending, d)
+        self._base_pending = None if X_pending is None else _ops.clone(X_pending)
+        self._sample_max_values(self.num_mv_samples, X_pending)
+        # Native optimization calls the subclass's information-gain hook through
+        # the established callable bridge. The weak proxy avoids an ownership cycle.
+        self._rs = _rs.callable_acquisition_function(weakref.proxy(self), d)
+
+    def _compute_information_gain(self, X: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError
+
+    def _sample_max_values(self, num_samples: int, X_pending: Any = None) -> None:
+        candidates = self.candidate_set
+        if X_pending is not None:
+            candidates = _ops.concat([candidates, X_pending], 0)
+        project = getattr(self, "project", None)
+        if callable(project):
+            candidates = project(candidates)
+        sampler = _sample_max_value_Gumbel if self.use_gumbel else _sample_max_value_Thompson
+        self.posterior_max_values = sampler(
+            self._init_model,
+            candidates,
+            num_samples,
+            self.posterior_transform,
+            self.maximize,
+            seed=self._max_seed,
+        )
+
+    def forward(self, X: Any) -> Any:
+        if not getattr(self, "_custom_max_base", False):
+            return super().forward(X)
+        shape = to_flat(X, "X")[1]
+        if len(shape) < 2 or shape[-2] != 1:
+            raise ValueError("MaxValueBase expects X with shape (..., 1, d).")
+        query = _ops.getitem(X, (None, Ellipsis)) if len(shape) == 2 else X
+        posterior = self.model.posterior(
+            _ops.getitem(query, (Ellipsis, None, slice(None), slice(None))),
+            observation_noise=False,
+            posterior_transform=self.posterior_transform,
+        )
+        mean = _ops.apply(
+            "mul_raw", self.weight, _ops.getitem(posterior.mean, (Ellipsis, 0, 0)), kind=kind_of(X)
+        )
+        variance = _ops.getitem(posterior.variance, (Ellipsis, 0, 0))
+        kind = kind_of(variance)
+        if kind.lib == "torch":
+            variance = variance.clamp_min(CLAMP_LB)
+        else:
+            data, dimensions = to_flat(variance)
+            variance = from_flat([max(v, CLAMP_LB) for v in data], dimensions, kind)
+        information_gain = self._compute_information_gain(
+            X=query,
+            mean_M=mean,
+            variance_M=variance,
+            covar_mM=_ops.getitem(variance, (Ellipsis, None)),
+        )
+        return _ops.reduce("mean", information_gain, 0)
+
+    def set_X_pending(self, X_pending: Any = None) -> None:
+        if not getattr(self, "_custom_max_base", False):
+            super().set_X_pending(X_pending)
+            return
+        pending_arg(X_pending, int(self.model._acquisition_model(None).dim))
+        self._base_pending = None if X_pending is None else _ops.clone(X_pending)
+
+    @property
+    def X_pending(self) -> Any:
+        if getattr(self, "_custom_max_base", False):
+            return self._base_pending
+        return AcquisitionFunction.X_pending.fget(self)  # type: ignore[attr-defined]
 
     def _setup(
         self,
@@ -80,10 +215,13 @@ class MaxValueBase(AcquisitionFunction):
         **kwargs: Any,
     ) -> None:
         super().__init__(model)
+        self._init_model = model
+        self._max_seed = seed
         if model.num_outputs > 1:
             raise UnsupportedError(f"Multi-output models are not supported by {self._name}.")
         rs_model = model._acquisition_model(None)
         d = int(rs_model.dim)
+        train_inputs = _candidate_train_inputs(model, train_inputs, d)
         self.candidate_set = candidate_set
         self.num_mv_samples = int(num_mv_samples)
         self.posterior_transform = posterior_transform
@@ -112,11 +250,19 @@ class MaxValueBase(AcquisitionFunction):
     @property
     def posterior_max_values(self) -> Any:
         """The max-value samples (``num_mv_samples x 1``)."""
+        if getattr(self, "_custom_max_base", False):
+            return self._base_max_values
         values = self._state.posterior_max_values()
         return from_flat(values, (len(values), 1), self.model._kind)
 
     @posterior_max_values.setter
     def posterior_max_values(self, values: Any) -> None:
+        if getattr(self, "_custom_max_base", False):
+            data, shape = to_flat(values, "posterior_max_values")
+            if len(shape) != 2 or shape[-1] != 1 or any(not math.isfinite(v) for v in data):
+                raise ValueError("posterior_max_values must be finite with shape (samples, 1).")
+            self._base_max_values = values
+            return
         data, _ = to_flat(values, "posterior_max_values")
         self._state.set_posterior_max_values([float(v) for v in data])
 
@@ -124,7 +270,7 @@ class MaxValueBase(AcquisitionFunction):
         return f"{type(self).__name__}(num_mv_samples={self.num_mv_samples})"
 
 
-class qMaxValueEntropy(MaxValueBase):
+class qMaxValueEntropy(MaxValueBase, MCSamplerMixin):
     r"""The acquisition function for Max-value Entropy Search.
 
     This acquisition function computes the mutual information of max values
@@ -201,8 +347,10 @@ class qMaxValueEntropy(MaxValueBase):
         if fantasies_sampler is None:
             fantasies_sampler = SobolQMCNormalSampler(sample_shape=(num_fantasies,))
         for s, name in ((sampler, "sampler"), (fantasies_sampler, "fantasies_sampler")):
-            if not isinstance(s, SobolQMCNormalSampler):
-                raise UnsupportedError(f"`{name}` must be a botorch_rs SobolQMCNormalSampler.")
+            if not isinstance(s, NormalMCSampler):
+                raise UnsupportedError(
+                    f"`{name}` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+                )
         self.sampler = sampler
         self.fantasies_sampler = fantasies_sampler
         self.num_fantasies = int(fantasies_sampler.num_samples)
@@ -302,6 +450,13 @@ class qMultiFidelityMaxValueEntropy(qMaxValueEntropy):
     """
 
     _name = "qMultiFidelityMaxValueEntropy"
+
+    @property
+    def cost_sampler(self) -> Any:
+        """An independent copy of the fantasy sampler for cost sampling."""
+        if getattr(self, "_cost_sampler", None) is None:
+            self._cost_sampler = copy.deepcopy(self.fantasies_sampler)
+        return self._cost_sampler
 
     def __init__(
         self,
@@ -440,6 +595,19 @@ def _sample_max_value_Gumbel(
     quantiles; the same uniform numbers (BoTorch's ``torch.rand(num_samples,
     1)``) give the samples of every batch. botorch_rs extensions
     (keyword-only): the uniform numbers ``uniforms`` or their ``seed``."""
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.acquisition._torch_backend_entropy import sample_maximums
+
+        return sample_maximums(
+            model,
+            candidate_set,
+            num_samples,
+            posterior_transform,
+            maximize,
+            gumbel=True,
+            uniforms=uniforms,
+            seed=seed,
+        )
     import random
 
     if uniforms is None:
@@ -488,6 +656,19 @@ def _sample_max_value_Thompson(
     botorch_rs extensions (keyword-only): the standard normal
     ``base_samples`` (``num_samples x batch_shape x n``, independent between
     the batches as BoTorch's draws) or their ``seed``."""
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.acquisition._torch_backend_entropy import sample_maximums
+
+        return sample_maximums(
+            model,
+            candidate_set,
+            num_samples,
+            posterior_transform,
+            maximize,
+            gumbel=False,
+            base_samples=base_samples,
+            seed=seed,
+        )
     import random
 
     rs_model = model._acquisition_model(None)

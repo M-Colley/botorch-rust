@@ -11,10 +11,18 @@ from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import from_pair, kind_of, to_flat
 from botorch_rs.acquisition.acquisition import check_unsupported, pending_arg, scalar_arg
 from botorch_rs.acquisition.monte_carlo import (
+    _LEARNED_CACHE_ROOT_MESSAGE,
     SampleReducingMCAcquisitionFunction,
+    _compute_noisy_best_f,
     check_constrained_objective,
+    supports_cache_root,
 )
-from botorch_rs.acquisition.objective import IdentityMCObjective, fat_arg, is_constrained_objective
+from botorch_rs.acquisition.objective import (
+    IdentityMCObjective,
+    _requires_joint_sampling,
+    fat_arg,
+    is_constrained_objective,
+)
 from botorch_rs.exceptions.errors import BotorchError, BotorchTensorDimensionError
 from botorch_rs.exceptions.warnings import BotorchWarning
 from botorch_rs.sampling.normal import SobolQMCNormalSampler
@@ -27,6 +35,16 @@ TAU_MAX = 1e-2
 # Number of samples used by ``prune_inferior_points`` (BoTorch's default).
 _PRUNE_SAMPLES = 2048
 _PRUNE_SEED_SALT = 0x5DEECE66D
+
+
+def check_tau(tau: Any, name: str) -> Any:
+    """Validate a positive scalar temperature and return the original value."""
+    data, _ = to_flat(tau, name)
+    if len(data) != 1:
+        raise ValueError(f"{name} is not a scalar: tau.numel()={len(data)}.")
+    if not data[0] > 0:
+        raise ValueError(f"{name} is non-positive: tau={tau!r}.")
+    return tau
 
 
 def _check_log_objective(objective: Any) -> None:
@@ -182,11 +200,11 @@ class qLogNoisyExpectedImprovement(LogImprovementMCAcquisitionFunction):
     ``log E[max(max_j y_j - max_i y_i^baseline, 0)]`` over joint posterior
     samples of the candidates and the (pruned) baseline points.
 
-    botorch_rs always uses the plain joint computation (BoTorch's
-    ``cache_root=False``), which equals BoTorch's default ``cache_root=True``
-    in distribution; the ``cache_root`` argument is accepted and ignored. The
-    baseline is pruned with ``prune_inferior_points`` (2048 Sobol samples)
-    seeded deterministically from the sampler's seed.
+    With ``cache_root=True`` on a supported GP model, the baseline covariance
+    is factored once and candidate samples use a native low-rank update.
+    With ``False``, the full joint posterior is sampled. The baseline is
+    pruned with ``prune_inferior_points`` (2048 Sobol samples) seeded
+    deterministically from the sampler's seed.
 
     With outcome ``constraints``, the incumbent of every sample is the best
     *feasible* baseline objective (``compute_best_feasible_objective``); if
@@ -236,7 +254,19 @@ class qLogNoisyExpectedImprovement(LogImprovementMCAcquisitionFunction):
             self._pending_kind = kind_of(X_pending)
         self.fat = fat
         self.prune_baseline = prune_baseline
-        self.cache_root = cache_root
+        requested_cache_root = cache_root
+        if cache_root is None:
+            cache_root = supports_cache_root(model)
+        elif cache_root and not supports_cache_root(model):
+            from botorch_rs.acquisition.monte_carlo import _CACHE_ROOT_MESSAGE
+
+            warnings.warn(_CACHE_ROOT_MESSAGE.format(type(model)), RuntimeWarning, stacklevel=2)
+            cache_root = False
+        if cache_root and _requires_joint_sampling(objective):
+            if requested_cache_root:
+                warnings.warn(_LEARNED_CACHE_ROOT_MESSAGE, RuntimeWarning, stacklevel=2)
+            cache_root = False
+        self.cache_root = self._cache_root = bool(cache_root)
         self.tau_max = tau_max
         self.tau_relu = tau_relu
         self.incremental = incremental
@@ -255,6 +285,7 @@ class qLogNoisyExpectedImprovement(LogImprovementMCAcquisitionFunction):
             pending,
             fat=fat_bool,
             prune_baseline=bool(prune_baseline),
+            cache_root=self._cache_root,
             prune_num_samples=_PRUNE_SAMPLES,
             prune_max_frac=1.0,
             prune_seed=(self.sampler.seed ^ _PRUNE_SEED_SALT) & 0xFFFFFFFFFFFFFFFF,
@@ -262,10 +293,15 @@ class qLogNoisyExpectedImprovement(LogImprovementMCAcquisitionFunction):
             tau_relu=scalar_arg(tau_relu, "tau_relu"),
             incremental=bool(incremental),
             objective=self._objective,
+            objective_batch_shape=self._objective_batch_shape,
             fat_list=fat_list,
             lower_bound_points=lb,
             **kwargs,
         )
+
+    def compute_best_f(self, obj: Any) -> Any:
+        """Return the actual best feasible noisy value for every MC sample."""
+        return _compute_noisy_best_f(self, obj)
 
     def _after_evaluation(self) -> None:
         # BoTorch warns when some sample has no feasible baseline point.
@@ -282,11 +318,17 @@ class qLogNoisyExpectedImprovement(LogImprovementMCAcquisitionFunction):
     def X_baseline(self) -> Any:
         """The incumbent points: the (pruned) baseline and, in incremental mode,
         the pending points."""
+        members = self.__dict__.get("_ensemble_acqfs")
+        if members:  # an ensemble: the members share the baseline
+            return members[0].X_baseline
         return from_pair(self._rs.full_x_baseline(), self._baseline_kind)
 
     @property
     def _X_baseline(self) -> Any:
         """The (pruned) baseline points."""
+        members = self.__dict__.get("_ensemble_acqfs")
+        if members:
+            return members[0]._X_baseline
         return from_pair(self._rs.x_baseline(), self._baseline_kind)
 
     @property
@@ -338,6 +380,7 @@ class qLogProbabilityOfFeasibility(LogImprovementMCAcquisitionFunction):
 
 
 __all__ = [
+    "check_tau",
     "TAU_MAX",
     "TAU_RELU",
     "LogImprovementMCAcquisitionFunction",

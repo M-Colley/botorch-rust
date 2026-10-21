@@ -129,12 +129,7 @@ pub fn prune_inferior_points_indices(
     let mut obj = match &options.objective {
         Some(o) => {
             let v = o.evaluate(&samples, Some(x), false)?.values;
-            if v.shape() != (n, samples.num_samples()) {
-                return Err(crate::acquisition::mc_objective::q_batch_mismatch(
-                    v.nrows(),
-                    n,
-                ));
-            }
+            crate::acquisition::mc_objective::check_objective_shape(&v, n, samples.num_samples())?;
             v
         }
         None => {
@@ -169,9 +164,11 @@ pub fn prune_inferior_points_indices(
                     a.min(v)
                 }
             });
-            for (o, &f) in obj.iter_mut().zip(feasible.iter()) {
-                if !f {
-                    *o = min - 1.0;
+            for c in 0..obj.ncols() {
+                for p in 0..n {
+                    if !feasible[(p, c % feasible.ncols())] {
+                        obj[(p, c)] = min - 1.0;
+                    }
                 }
             }
         }
@@ -249,14 +246,27 @@ where
             .collect());
     };
     let feasible = compute_feasibility_indicator(constraints, samples)?;
-    let all_have_feasible = (0..s).all(|c| (0..n).any(|p| feasible[(p, c)]));
+    crate::acquisition::mc_objective::check_objective_shape(
+        obj,
+        feasible.nrows(),
+        feasible.ncols(),
+    )?;
+    let all_have_feasible = (0..s).all(|c| (0..n).any(|p| feasible[(p, c % feasible.ncols())]));
     let fill = if all_have_feasible {
         f64::NEG_INFINITY
     } else {
         infeasible_value()?
     };
     Ok((0..s)
-        .map(|c| amax((0..n).map(|p| if feasible[(p, c)] { obj[(p, c)] } else { fill })))
+        .map(|c| {
+            amax((0..n).map(|p| {
+                if feasible[(p, c % feasible.ncols())] {
+                    obj[(p, c)]
+                } else {
+                    fill
+                }
+            }))
+        })
         .collect())
 }
 

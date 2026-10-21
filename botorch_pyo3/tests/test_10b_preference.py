@@ -198,7 +198,7 @@ def test_samplers() -> None:
         comps = to_list(sampler(post))
         assert len(comps) == 3 and all(len(c) == 3 for c in comps)
         # The preferred item first: the samples order every pair.
-        samples = to_list(type(sampler).__mro__[2].forward(sampler, post))
+        samples = to_list(sampler._base_forward(post))
         for s, cs in zip(samples, comps, strict=True):
             for w, lo in cs:
                 assert s[w][0] > s[lo][0]
@@ -239,14 +239,13 @@ def test_batched_model() -> None:
     m = PairwiseGP(X, C)
     assert m.batch_shape == (2,)
     assert tuple(m.covar_module.base_kernel.raw_lengthscale.shape) == (2, 1, 2)
-    assert tuple(m.covar_module.raw_outputscale.shape) == ()
+    assert tuple(m.covar_module.raw_outputscale.shape) == (2,)
     assert tuple(m.posterior(torch.rand(3, 2, dtype=torch.float64)).mean.shape) == (2, 3, 1)
     fit_gpytorch_mll(PairwiseLaplaceMarginalLogLikelihood(m.likelihood, m))
 
 
 def test_acquisition_functions_and_optimization() -> None:
     from botorch_rs.acquisition.active_learning import PairwiseMCPosteriorVariance
-    from botorch_rs.acquisition.monte_carlo import qSimpleRegret
     from botorch_rs.optim import optimize_acqf
 
     m = PairwiseGP(X_LIST, C_LIST)
@@ -273,9 +272,16 @@ def test_acquisition_functions_and_optimization() -> None:
         mcv([[[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]]])
     with pytest.raises(UnsupportedError, match="deterministic"):
         AnalyticExpectedUtilityOfBestOption(m, outcome_model=SingleTaskGP(X_LIST, [[0.1]] * 6))
+
+
+def test_learned_objective_acquisition() -> None:
+    pytest.importorskip("torch")
+    from botorch_rs.acquisition.monte_carlo import qSimpleRegret
+
+    m = PairwiseGP(X_LIST, C_LIST)
     lo = LearnedObjective(m, sample_shape=(3,), seed=1)
-    with pytest.raises(UnsupportedError, match="LearnedObjective is not supported"):
-        qSimpleRegret(m, objective=lo)
+    outcome = SingleTaskGP(X_LIST, [[0.1, 0.3]] * 6)
+    assert math.isfinite(float(to_list(qSimpleRegret(outcome, objective=lo)([[[0.2, 0.4]]]))[0]))
 
 
 @pytest.mark.parametrize("kind", KINDS)

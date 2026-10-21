@@ -8,6 +8,7 @@ model; other closures follow BoTorch's semantics on torch tensors.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -40,20 +41,29 @@ class ForwardBackwardClosure:
     def __call__(self, **kwargs: Any) -> tuple[Any, tuple[Any, ...]]:
         native = _native(self.forward)
         if native is not None:
+            from botorch_rs.mlls import _persistent_parameter
             from botorch_rs.optim.closures.model_closures import _grads_out
 
-            value, grads = native.value_and_grad(list(self.parameters))
-            return value, _grads_out(self.parameters, grads)
-        import torch
+            value, grads = native.value_and_grad(list(self.parameters), **kwargs)
+            gradients = _grads_out(self.parameters, grads)
+            out = []
+            for parameter, gradient in zip(self.parameters.values(), gradients, strict=True):
+                if _persistent_parameter(parameter):
+                    if not hasattr(value, "detach"):
+                        value = parameter.new_tensor(value)
+                    if parameter.requires_grad:
+                        parameter.grad = gradient
+                    elif parameter.grad is not None:
+                        parameter.grad.zero_()
+                    gradient = parameter.grad
+                out.append(gradient)
+            return value, tuple(out)
+        from botorch_rs.utils.context_managers import zero_grad_ctx
 
-        for p in self.parameters.values():
-            p.grad = None
-        value = self.forward(**kwargs).sum()
-        value.backward()
-        grads = tuple(param.grad for param in self.parameters.values())
-        for p in self.parameters.values():
-            p.grad = None
-        return value, tuple(g if g is None else torch.as_tensor(g) for g in grads)
+        with zero_grad_ctx(self.parameters):
+            value = self.forward(**kwargs).sum()
+            value.backward()
+            return value, tuple(param.grad for param in self.parameters.values())
 
 
 class NdarrayOptimizationClosure:
@@ -88,7 +98,7 @@ class NdarrayOptimizationClosure:
         try:
             value, grads = self.closure(**kwargs)
             value = np.asarray(float(to_flat(value, "value")[0][0]), dtype=np.float64)
-            out = np.zeros(sum(self._sizes()), dtype=np.float64)
+            out: Any = np.zeros(sum(self._sizes()), dtype=np.float64)
             index = 0
             for (name, p), g in zip(self.parameters.items(), grads, strict=True):
                 size = len(to_flat(p, name)[0])
@@ -157,4 +167,145 @@ class NdarrayOptimizationClosure:
                 index += size
 
 
-__all__ = ["ForwardBackwardClosure", "NdarrayOptimizationClosure"]
+class BatchedNDarrayOptimizationClosure:
+    """Expose independent batch losses and parameter gradients as NumPy rows.
+
+    Native MLL closures retain their Rust parameter state and derivatives.
+    User-provided torch closures use torch autograd, as in BoTorch.
+    """
+
+    def __init__(
+        self,
+        forward: Callable[..., Any],
+        parameters: dict[str, Any],
+        batch_shape: Any,
+    ) -> None:
+        self.forward = forward
+        self.parameters = parameters
+        self.batch_shape = batch_shape
+        batch = tuple(int(value) for value in batch_shape)
+        if any(value <= 0 for value in batch):
+            raise ValueError("Batch dimensions must be positive.")
+        self.batch_size = max(math.prod(batch), 1)
+        self._trailing_sizes = {}
+        self._per_element_size = 0
+        for name, parameter in parameters.items():
+            shape = to_flat(parameter, name)[1]
+            if tuple(shape[: len(batch)]) != batch:
+                raise ValueError(f"Parameter {name!r} must begin with batch_shape {batch}.")
+            size = math.prod(shape[len(batch) :])
+            self._trailing_sizes[name] = size
+            self._per_element_size += size
+        self._native = _native(forward)
+        self._state_wrapper = (
+            NdarrayOptimizationClosure(ForwardBackwardClosure(forward, parameters), parameters)
+            if self._native is not None
+            else None
+        )
+
+    @property
+    def state(self) -> Any:
+        import numpy as np
+
+        output: Any = np.empty((self.batch_size, self._per_element_size), dtype=np.float64)
+        flat = None if self._state_wrapper is None else self._state_wrapper.state
+        column, offset = 0, 0
+        for name, parameter in self.parameters.items():
+            size = self._trailing_sizes[name]
+            count = self.batch_size * size
+            values = to_flat(parameter, name)[0] if flat is None else flat[offset : offset + count]
+            output[:, column : column + size] = np.asarray(values).reshape(self.batch_size, size)
+            column += size
+            offset += count
+        return output
+
+    @state.setter
+    def state(self, state: Any) -> None:
+        import numpy as np
+
+        state = np.asarray(state, dtype=np.float64)
+        expected = (self.batch_size, self._per_element_size)
+        if state.shape != expected:
+            raise ValueError(f"Expected state shape {expected}, got {state.shape}.")
+        column = 0
+        if self._state_wrapper is not None:
+            flattened = []
+            for name in self.parameters:
+                size = self._trailing_sizes[name]
+                flattened.extend(state[:, column : column + size].reshape(-1))
+                column += size
+            self._state_wrapper.state = flattened
+            return
+        import torch
+
+        with torch.no_grad():
+            for name, parameter in self.parameters.items():
+                size = self._trailing_sizes[name]
+                values = state[:, column : column + size]
+                parameter.copy_(
+                    torch.as_tensor(values, dtype=parameter.dtype, device=parameter.device).reshape(
+                        parameter.shape
+                    )
+                )
+                column += size
+
+    def __call__(
+        self, state: Any = None, batch_indices: Any = None, **kwargs: Any
+    ) -> tuple[Any, Any]:
+        import numpy as np
+
+        if state is not None:
+            if batch_indices is None:
+                self.state = state
+            else:
+                full = self.state
+                full[batch_indices] = state
+                self.state = full
+        try:
+            gradients: Any = np.zeros((self.batch_size, self._per_element_size), dtype=np.float64)
+            if self._native is not None:
+                per_batch = self.forward(**kwargs)
+                _, native_gradients = self._native.value_and_grad(list(self.parameters))
+                grad_values = [native_gradients[name] for name in self.parameters]
+            else:
+                from botorch_rs.utils.context_managers import zero_grad_ctx
+
+                with zero_grad_ctx(self.parameters):
+                    per_batch = self.forward(**kwargs)
+                    per_batch.sum().backward()
+                    grad_values = [parameter.grad for parameter in self.parameters.values()]
+            values = np.asarray(to_flat(per_batch, "values")[0], dtype=np.float64).reshape(
+                self.batch_size
+            )
+            column = 0
+            for (name, _), gradient in zip(self.parameters.items(), grad_values, strict=True):
+                size = self._trailing_sizes[name]
+                if gradient is not None:
+                    gradients[:, column : column + size] = np.asarray(
+                        to_flat(gradient, name)[0], dtype=np.float64
+                    ).reshape(self.batch_size, size)
+                column += size
+        except RuntimeError as error:
+            from botorch_rs.exceptions.errors import NanError, NotPSDError
+
+            if isinstance(error, NotPSDError) or type(error).__name__ == "NotPSDError":
+                raise
+            if not (
+                isinstance(error, NanError)
+                or type(error).__name__ == "NanError"
+                or "singular" in str(error)
+                or "input is not positive-definite" in str(error)
+            ):
+                raise
+            values = np.full(self.batch_size, np.nan, dtype=np.float64)
+            gradients = np.zeros((self.batch_size, self._per_element_size), dtype=np.float64)
+        if batch_indices is not None:
+            return values[batch_indices], gradients[batch_indices]
+        return values, gradients
+
+
+__all__ = [
+    "BatchedNDarrayOptimizationClosure",
+    "ForwardBackwardClosure",
+    "NdarrayOptimizationClosure",
+]

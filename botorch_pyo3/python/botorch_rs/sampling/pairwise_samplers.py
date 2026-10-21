@@ -20,6 +20,7 @@ from __future__ import annotations
 import importlib
 import math
 import random
+import sys
 from itertools import combinations
 from typing import Any
 
@@ -65,7 +66,7 @@ class PairwiseMCSampler(MCSampler):
         self.seed = int(seed)
 
     def _base_forward(self, posterior: Any) -> Any:  # pragma: no cover - abstract
-        raise NotImplementedError
+        return super().forward(posterior)
 
     def forward(self, posterior: Any) -> Any:
         r"""Draws MC samples from the posterior and make comparisons
@@ -82,6 +83,23 @@ class PairwiseMCSampler(MCSampler):
         from botorch_rs.models.pairwise_gp import _long_array
 
         samples = self._base_forward(posterior)
+        torch = sys.modules.get("torch")
+        if torch is not None and isinstance(samples, torch.Tensor):
+            n = samples.shape[-2]
+            if n < 2:
+                raise RuntimeError("Number of samples < 2, cannot make comparisons")
+            pairs = list(combinations(range(n), 2))
+            count = (
+                len(pairs)
+                if self.max_num_comparisons is None
+                else min(self.max_num_comparisons, len(pairs))
+            )
+            selected = [pairs[i] for i in _choose_pairs(self.seed, len(pairs), count)]
+            indices = torch.tensor(selected, dtype=torch.long, device=samples.device).reshape(-1, 2)
+            preference = samples[..., indices[:, 0], 0] > samples[..., indices[:, 1], 0]
+            first = torch.where(preference, indices[:, 0], indices[:, 1])
+            second = torch.where(preference, indices[:, 1], indices[:, 0])
+            return torch.stack((first, second), -1)
         data, shape = to_flat(samples, "samples")
         s_n = shape[-2]  # candidate number per batch
         if s_n < 2:
@@ -104,8 +122,6 @@ class PairwiseMCSampler(MCSampler):
         kind = posterior._kind
         return _long_array(out, (*shape[:-2], comp_n, 2), kind)
 
-    __call__ = forward
-
 
 class PairwiseIIDNormalSampler(PairwiseMCSampler, IIDNormalSampler):
     def __init__(
@@ -124,13 +140,12 @@ class PairwiseIIDNormalSampler(PairwiseMCSampler, IIDNormalSampler):
             kwargs: Catch-all for deprecated arguments.
         """
         PairwiseMCSampler.__init__(self, max_num_comparisons=max_num_comparisons, seed=seed)
-        IIDNormalSampler.__init__(self, sample_shape=sample_shape, seed=self.seed, **kwargs)
+        IIDNormalSampler.__init__(self, sample_shape=sample_shape, seed=seed, **kwargs)
 
     def _base_forward(self, posterior: Any) -> Any:
         return IIDNormalSampler.forward(self, posterior)
 
     forward = PairwiseMCSampler.forward
-    __call__ = PairwiseMCSampler.forward
 
 
 class PairwiseSobolQMCNormalSampler(PairwiseMCSampler, SobolQMCNormalSampler):
@@ -154,7 +169,8 @@ class PairwiseSobolQMCNormalSampler(PairwiseMCSampler, SobolQMCNormalSampler):
 
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
         PairwiseMCSampler.__init__(self, max_num_comparisons=max_num_comparisons, seed=seed)
-        SobolQMCNormalSampler.__init__(self, sample_shape=sample_shape, seed=self.seed)
+        SobolQMCNormalSampler.__init__(self, sample_shape=sample_shape, seed=seed)
+        self.seed = self._rs.seed
 
     @property  # type: ignore[override]
     def seed(self) -> int:
@@ -168,7 +184,6 @@ class PairwiseSobolQMCNormalSampler(PairwiseMCSampler, SobolQMCNormalSampler):
         return SobolQMCNormalSampler.forward(self, posterior)
 
     forward = PairwiseMCSampler.forward
-    __call__ = PairwiseMCSampler.forward
 
 
 __all__ = ["PairwiseIIDNormalSampler", "PairwiseMCSampler", "PairwiseSobolQMCNormalSampler"]

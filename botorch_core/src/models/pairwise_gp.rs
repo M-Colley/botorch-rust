@@ -65,6 +65,8 @@ use crate::priors::Prior;
 use crate::transforms::input::{ChainedInputTransform, TransformMode};
 use crate::{Matrix, Vector};
 
+mod input_transform;
+
 /// BoTorch's default `jitter` of `PairwiseGP`.
 pub const DEFAULT_JITTER: f64 = 1e-6;
 /// The default `xtol` of the MAP solve (`_update`).
@@ -528,7 +530,6 @@ enum Start<'a> {
     Fresh(&'a [f64]),
     /// No solve: these values are taken as the fsolve solution (the
     /// function BoTorch differentiates, with the solution held fixed).
-    #[cfg(test)]
     Solved(&'a [f64]),
 }
 
@@ -613,13 +614,9 @@ fn laplace(
     let x0: Vec<f64> = match start {
         Start::Warm(x) => x.to_vec(),
         Start::Fresh(draws) => initial_utility(p.comps, draws, s.sqrt()),
-        #[cfg(test)]
         Start::Solved(x) => x.to_vec(),
     };
-    #[cfg(test)]
     let solved = matches!(start, Start::Solved(_));
-    #[cfg(not(test))]
-    let solved = false;
     let res = if solved {
         crate::minpack::HybrjResult {
             x: x0.clone(),
@@ -954,7 +951,7 @@ impl PairwiseGP {
     ///
     /// # Errors
     /// [`BotorchError::Unsupported`] for a covariance module that is not a
-    /// `ScaleKernel` or an input transform with learned parameters;
+    /// `ScaleKernel` or a one-to-many input transform;
     /// [`BotorchError::InvalidArgument`] for comparisons out of range or
     /// wrong `draws`; numerical errors of the Laplace approximation.
     pub fn new(
@@ -978,24 +975,28 @@ impl PairwiseGP {
             None => CovarModule::Standard(pairwise_default_covar_module(dim, options.float32)?),
         };
         check_scale_kernel(&covar_module)?;
-        let raw = options
+        let mut input_transform = options.input_transform;
+        let kernel_parameters = num_raw_parameters(&covar_module);
+        let input_parameters = input_transform.as_ref().map_or(0, |t| t.num_params());
+        let mut raw = options
             .raw_parameters
             .unwrap_or_else(|| initial_raw_parameters(&covar_module));
-        if raw.len() != num_raw_parameters(&covar_module) {
+        // The constructor also accepts the historical kernel-only initial
+        // vector, with transform concentrations supplied by the chain itself.
+        if raw.len() == kernel_parameters {
+            if let Some(chain) = &input_transform {
+                raw.extend(chain.params());
+            }
+        }
+        if raw.len() != kernel_parameters + input_parameters {
             return Err(BotorchError::DimensionMismatch(format!(
-                "expected {} raw kernel parameters, got {}",
-                num_raw_parameters(&covar_module),
+                "expected {} raw parameters (kernel then input transform), got {}",
+                kernel_parameters + input_parameters,
                 raw.len()
             )));
         }
-        if let Some(t) = &options.input_transform {
-            if t.num_params() > 0 {
-                return Err(BotorchError::Unsupported(
-                    "input transforms with learned parameters are not supported by \
-                     PairwiseGP in botorch_rs"
-                        .into(),
-                ));
-            }
+        if let Some(t) = &mut input_transform {
+            t.set_params(&raw[kernel_parameters..])?;
             if t.is_one_to_many() {
                 return Err(BotorchError::Unsupported(
                     "one-to-many input transforms (InputPerturbation) are not supported by \
@@ -1009,7 +1010,7 @@ impl PairwiseGP {
             covar_module,
             raw,
             mean_constant: options.mean_constant,
-            input_transform: options.input_transform,
+            input_transform,
             jitter: options.jitter,
             xtol: options.xtol,
             consolidate_rtol: options.consolidate_rtol,
@@ -1112,8 +1113,8 @@ impl PairwiseGP {
         &self.covar_module
     }
 
-    /// The raw hyperparameters of the covariance module (in
-    /// `named_parameters()` order).
+    /// The raw hyperparameters: kernel parameters followed by learned input
+    /// transform parameters (concentration0 then concentration1 for Warp).
     pub fn raw_parameters(&self) -> &[f64] {
         &self.raw
     }
@@ -1138,12 +1139,20 @@ impl PairwiseGP {
             )));
         }
         self.raw = raw.to_vec();
+        let kernel_parameters = num_raw_parameters(&self.covar_module);
+        if let Some(chain) = &mut self.input_transform {
+            chain.set_params(&raw[kernel_parameters..])?;
+        }
         Ok(())
     }
 
     /// The optimizer bounds of the raw hyperparameters.
     pub fn raw_parameter_bounds(&self) -> Vec<(f64, f64)> {
-        raw_parameter_bounds(&self.covar_module)
+        let mut bounds = raw_parameter_bounds(&self.covar_module);
+        if let Some(chain) = &self.input_transform {
+            bounds.extend(chain.param_bounds());
+        }
+        bounds
     }
 
     /// The `ConstantMean` constant.
@@ -1186,6 +1195,14 @@ impl PairwiseGP {
     /// Sets train (`true`) or eval mode.
     pub fn set_training(&mut self, training: bool) {
         self.training = training;
+        if let Some(chain) = self.input_transform.take() {
+            let steps = chain.training().len();
+            self.input_transform = Some(
+                chain
+                    .with_training(vec![training; steps])
+                    .expect("one mode flag per transform step"),
+            );
+        }
     }
 
     /// The Laplace approximation (`None` without data).
@@ -1271,11 +1288,43 @@ impl PairwiseGP {
                 Some(d) => Start::Fresh(d),
                 None => Start::Warm(self.x0.as_deref().expect("warm start")),
             };
-            laplace(&p, &self.covar_module, &self.raw, start)?
+            laplace(&p, &self.covar_module, self.kernel_raw_parameters(), start)?
         };
         self.x0 = Some(lap.state.x0.clone());
-        self.state = Some(Arc::new(lap.state));
+        let mut state = lap.state;
+        state.raw = self.raw.clone();
+        self.state = Some(Arc::new(state));
         Ok(())
+    }
+
+    /// The Laplace state at the current hyperparameters from the given
+    /// fsolve solution `x0` (the model keeps its state): BoTorch's two Newton
+    /// steps of `_update` without the MAP solve. With another
+    /// implementation's fsolve solution this gives both the same input to
+    /// everything downstream of the solve.
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] without data or with `x0` of the
+    /// wrong length; errors of the covariance and its factorization.
+    pub fn laplace_from_solution(&mut self, x0: &[f64]) -> Result<LaplaceState> {
+        if self.data.is_none() || x0.len() != self.num_datapoints() {
+            return Err(BotorchError::InvalidArgument(format!(
+                "expected an fsolve solution of {} values, got {}",
+                self.num_datapoints(),
+                x0.len()
+            )));
+        }
+        let x_tf = self.transformed_datapoints()?;
+        let p = self.problem(&x_tf);
+        let mut state = laplace(
+            &p,
+            &self.covar_module,
+            self.kernel_raw_parameters(),
+            Start::Solved(x0),
+        )?
+        .state;
+        state.raw = self.raw.clone();
+        Ok(state)
     }
 
     /// The Laplace marginal log likelihood (BoTorch's
@@ -1294,27 +1343,19 @@ impl PairwiseGP {
         raw: &[f64],
         with_grad: bool,
     ) -> Result<(f64, Option<Vec<f64>>, LaplaceState)> {
-        let x_tf = self.training_inputs_tf()?;
         let x0 = self
             .x0
             .clone()
             .ok_or_else(|| BotorchError::Unsupported("the model has no data".into()))?;
-        let p = self.problem(&x_tf);
-        mll_eval(&p, &self.covar_module, raw, &x0, with_grad)
+        self.evaluate_trial(raw, &x0, with_grad)
     }
 
-    /// The transformed datapoints as a training-mode forward pass sees them.
+    #[cfg(test)]
     fn training_inputs_tf(&self) -> Result<Matrix> {
-        let d = self
-            .data
-            .as_ref()
-            .ok_or_else(|| BotorchError::Unsupported("the model has no data".into()))?;
+        let d = self.data.as_ref().expect("the test model has data");
         match &self.input_transform {
             None => Ok(d.datapoints.clone()),
-            Some(t) => {
-                let mut t = t.clone();
-                t.fit(&d.datapoints)
-            }
+            Some(t) => t.clone().fit(&d.datapoints),
         }
     }
 
@@ -1364,7 +1405,7 @@ impl PairwiseGP {
         let (xt, jacs) = self.transform_test(x, with_grad)?;
         let q = xt.nrows();
         let dt = xt.ncols();
-        let covar = build_covar(&self.covar_module, &self.raw, dt)?;
+        let covar = build_covar(&self.covar_module, self.kernel_raw_parameters(), dt)?;
         let s = outputscale_of(&covar);
         let pn = covar.prepare(&xt)?;
         let kxx = covar.symmetric(&pn);
@@ -1567,6 +1608,7 @@ impl PairwiseGP {
     /// BoTorch's `sample_all_priors` on the covariance module.
     fn sample_priors(&self, rng: &mut StdRng) -> Vec<f64> {
         let mut raw = self.raw.clone();
+        let kernel_parameters = num_raw_parameters(&self.covar_module);
         match &self.covar_module {
             CovarModule::Standard(spec) => {
                 let scale = spec.scale.expect("ScaleKernel");
@@ -1576,7 +1618,7 @@ impl PairwiseGP {
                         .inverse_transform(prior.sample(rng));
                 }
                 if let Some(prior) = spec.lengthscale_prior {
-                    for v in raw[1..].iter_mut() {
+                    for v in raw[1..kernel_parameters].iter_mut() {
                         *v = spec
                             .lengthscale_constraint
                             .inverse_transform(prior.sample(rng));
@@ -1584,7 +1626,17 @@ impl PairwiseGP {
                 }
             }
             CovarModule::Tree(tree) => {
-                crate::kernels::tree::sample_tree_priors(tree, &mut raw, rng);
+                crate::kernels::tree::sample_tree_priors(tree, &mut raw[..kernel_parameters], rng);
+            }
+        }
+        if let Some(chain) = &self.input_transform {
+            for (value, prior) in raw[kernel_parameters..]
+                .iter_mut()
+                .zip(chain.param_priors())
+            {
+                if let Some(prior) = prior {
+                    *value = prior.sample(rng);
+                }
             }
         }
         raw
@@ -1607,15 +1659,12 @@ impl PairwiseGP {
                 "datapoints and comparisons cannot be None in training mode.".into(),
             ));
         }
-        self.training = true;
-        let x_tf = self.training_inputs_tf()?;
+        self.set_training(true);
         let bounds = self.raw_parameter_bounds();
         let x_init = self.raw.clone();
         let warm = std::cell::RefCell::new(self.x0.clone().expect("warm start"));
         let last: std::cell::RefCell<Option<LaplaceState>> = std::cell::RefCell::new(None);
         let (result, x) = {
-            let p = self.problem(&x_tf);
-            let module = &self.covar_module;
             let this: &Self = self;
             minimize_with_retries(
                 &x_init,
@@ -1623,7 +1672,7 @@ impl PairwiseGP {
                 options,
                 |raw| {
                     let x0 = warm.borrow().clone();
-                    match mll_eval(&p, module, raw, &x0, true) {
+                    match this.evaluate_trial(raw, &x0, true) {
                         Ok((v, g, st)) => {
                             *warm.borrow_mut() = st.x0.clone();
                             *last.borrow_mut() = Some(st);
@@ -1640,7 +1689,10 @@ impl PairwiseGP {
                 |rng| this.sample_priors(rng),
             )?
         };
-        self.raw = x.clone();
+        self.set_raw_parameters(&x)?;
+        // Install the fitted transform coefficients as well as concentrations
+        // even when the final Laplace state can be reused without a new solve.
+        self.transformed_datapoints()?;
         self.x0 = Some(warm.into_inner());
         let last = last.into_inner();
         match last {
@@ -1649,32 +1701,9 @@ impl PairwiseGP {
             }
             _ => self.update(None)?,
         }
-        self.training = false;
+        self.set_training(false);
         Ok(result)
     }
-}
-
-/// The MLL (and gradient) at `raw` warm-started from `x0` (a training
-/// forward pass and the MLL), with the new state.
-fn mll_eval(
-    p: &Problem<'_>,
-    module: &CovarModule,
-    raw: &[f64],
-    x0: &[f64],
-    with_grad: bool,
-) -> Result<(f64, Option<Vec<f64>>, LaplaceState)> {
-    let lap = laplace(p, module, raw, Start::Warm(x0))?;
-    check_training_posterior(&lap.state, p.jitter)?;
-    let (data, w) = mll_data(p, &lap, with_grad)?;
-    let (lp, grad) = priors_and_raw_grad(
-        module,
-        &lap.covar_built,
-        &lap.prepared,
-        raw,
-        w.as_ref(),
-        &lap.state.nan_grads,
-    )?;
-    Ok((data + lp, grad, lap.state))
 }
 
 impl Fittable for PairwiseGP {
@@ -1714,15 +1743,26 @@ impl Model for PairwiseGP {
 /// e.g. the fantasy models of `fantasize`): every element has its own data
 /// and Laplace approximation and is not consolidated; the hyperparameters
 /// are a global vector of which every element uses the entries
-/// [`BatchedPairwiseGP::param_map`] (shared by all elements, or batched
-/// lengthscales with a shared outputscale as BoTorch's default module with
-/// batched data).
+/// [`BatchedPairwiseGP::param_map`] (shared by all elements, or independent
+/// parameters such as the default batched lengthscales and outputscales).
 #[derive(Clone, Debug)]
 pub struct BatchedPairwiseGP {
     batch_shape: Vec<usize>,
     elements: Vec<PairwiseGP>,
     raw: Vec<f64>,
     param_map: Vec<Vec<usize>>,
+    shared_input_transform: Option<ChainedInputTransform>,
+}
+
+fn pooled_inputs(inputs: &[&Matrix], dim: usize) -> Matrix {
+    let rows = inputs.iter().map(|x| x.nrows()).sum();
+    let mut pooled = Matrix::zeros(rows, dim);
+    let mut offset = 0;
+    for input in inputs {
+        pooled.rows_mut(offset, input.nrows()).copy_from(input);
+        offset += input.nrows();
+    }
+    pooled
 }
 
 impl BatchedPairwiseGP {
@@ -1739,7 +1779,7 @@ impl BatchedPairwiseGP {
         batch_shape: Vec<usize>,
         data: Vec<(Matrix, Vec<(usize, usize)>)>,
         dim: usize,
-        options: PairwiseGPOptions,
+        mut options: PairwiseGPOptions,
         raw: Option<Vec<f64>>,
         param_map: Option<Vec<Vec<usize>>>,
         draws: Option<&[f64]>,
@@ -1767,6 +1807,15 @@ impl BatchedPairwiseGP {
                     d.len()
                 )));
             }
+        }
+        // Shared coefficient-learning transforms reduce over every input
+        // batch, as Normalize(batch_shape=()) does in BoTorch. Individual
+        // Laplace solves must reuse these pooled coefficients.
+        let mut shared_input_transform = options.input_transform.clone();
+        if let Some(chain) = &mut shared_input_transform {
+            let inputs: Vec<&Matrix> = data.iter().map(|(x, _)| x).collect();
+            chain.fit(&pooled_inputs(&inputs, dim))?;
+            options.input_transform = Some(chain.frozen());
         }
         let template = PairwiseGP::new_impl(None, dim, options.clone(), None, false)?;
         let k = template.raw.len();
@@ -1796,6 +1845,7 @@ impl BatchedPairwiseGP {
             elements,
             raw,
             param_map,
+            shared_input_transform,
         })
     }
 
@@ -1815,6 +1865,39 @@ impl BatchedPairwiseGP {
     /// The batch from elements sharing all hyperparameters (e.g. the
     /// fantasies of an unbatched model).
     pub fn from_elements(batch_shape: Vec<usize>, elements: Vec<PairwiseGP>) -> Result<Self> {
+        let shared = elements.first().and_then(|e| e.input_transform.clone());
+        Self::from_elements_with_transform(batch_shape, elements, shared)
+    }
+
+    /// A batch retaining the original shared transform's coefficient-learning
+    /// flags (individual member views may have frozen coefficients).
+    pub fn from_elements_with_transform(
+        batch_shape: Vec<usize>,
+        elements: Vec<PairwiseGP>,
+        shared_input_transform: Option<ChainedInputTransform>,
+    ) -> Result<Self> {
+        let raw = elements.first().map_or_else(Vec::new, |e| e.raw.clone());
+        let k = raw.len();
+        let b: usize = batch_shape.iter().product();
+        Self::from_elements_with_mapping(
+            batch_shape,
+            elements,
+            shared_input_transform,
+            raw,
+            vec![(0..k).collect(); b],
+        )
+    }
+
+    /// A conditioned batch retaining its parent's global parameter ownership.
+    /// New fantasy dimensions repeat member maps rather than introducing new
+    /// fitted parameters or collapsing distinct member parameters together.
+    pub fn from_elements_with_mapping(
+        batch_shape: Vec<usize>,
+        elements: Vec<PairwiseGP>,
+        shared_input_transform: Option<ChainedInputTransform>,
+        raw: Vec<f64>,
+        param_map: Vec<Vec<usize>>,
+    ) -> Result<Self> {
         let b: usize = batch_shape.iter().product();
         if elements.len() != b || b == 0 {
             return Err(BotorchError::DimensionMismatch(format!(
@@ -1822,14 +1905,38 @@ impl BatchedPairwiseGP {
                 elements.len()
             )));
         }
-        let raw = elements[0].raw.clone();
-        let k = raw.len();
+        Self::check_map(&param_map, b, elements[0].raw.len(), raw.len())?;
         Ok(Self {
             batch_shape,
             elements,
             raw,
-            param_map: vec![(0..k).collect(); b],
+            param_map,
+            shared_input_transform,
         })
+    }
+
+    /// The shared input transform, with its original learning flags.
+    pub fn shared_input_transform(&self) -> Option<&ChainedInputTransform> {
+        self.shared_input_transform.as_ref()
+    }
+
+    fn prepare_shared_transform(&mut self) -> Result<()> {
+        if let Some(chain) = &mut self.shared_input_transform {
+            if self.elements[0].training {
+                let inputs: Vec<&Matrix> = self
+                    .elements
+                    .iter()
+                    .map(|e| &e.data.as_ref().expect("batch member has data").datapoints)
+                    .collect();
+                chain.fit(&pooled_inputs(&inputs, self.elements[0].dim))?;
+            }
+            let frozen = chain.frozen();
+            for element in &mut self.elements {
+                let kernel = num_raw_parameters(&element.covar_module);
+                element.input_transform = Some(frozen.with_params(&element.raw[kernel..])?);
+            }
+        }
+        Ok(())
     }
 
     /// The batch shape.
@@ -1875,6 +1982,10 @@ impl BatchedPairwiseGP {
             el.set_raw_parameters(&local)?;
         }
         self.raw = raw.to_vec();
+        if let Some(chain) = &mut self.shared_input_transform {
+            let first = &self.elements[0];
+            chain.set_params(&first.raw[num_raw_parameters(&first.covar_module)..])?;
+        }
         Ok(())
     }
 
@@ -1882,6 +1993,14 @@ impl BatchedPairwiseGP {
     pub fn set_training(&mut self, training: bool) {
         for e in &mut self.elements {
             e.set_training(training);
+        }
+        if let Some(chain) = self.shared_input_transform.take() {
+            let steps = chain.training().len();
+            self.shared_input_transform = Some(
+                chain
+                    .with_training(vec![training; steps])
+                    .expect("one mode flag per transform step"),
+            );
         }
     }
 
@@ -1892,6 +2011,7 @@ impl BatchedPairwiseGP {
     /// # Errors
     /// See [`PairwiseGP::update`].
     pub fn update(&mut self, draws: Option<&[f64]>) -> Result<()> {
+        self.prepare_shared_transform()?;
         let n = self.elements[0].num_datapoints();
         for (e, el) in self.elements.iter_mut().enumerate() {
             el.update(draws.map(|d| &d[e * n..(e + 1) * n]))?;
@@ -1916,35 +2036,28 @@ impl BatchedPairwiseGP {
         raw: &[f64],
         with_grad: bool,
     ) -> Result<(f64, Option<Vec<f64>>, Vec<LaplaceState>)> {
+        if raw.len() != self.raw.len() {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "expected {} raw parameters, got {}",
+                self.raw.len(),
+                raw.len()
+            )));
+        }
         let mut total = 0.0;
         let mut grad = vec![0.0; raw.len()];
         let mut states = Vec::with_capacity(self.elements.len());
         for (e, el) in self.elements.iter().enumerate() {
             let local: Vec<f64> = self.param_map[e].iter().map(|&i| raw[i]).collect();
-            let x_tf = el.training_inputs_tf()?;
             let x0 = el.x0.clone().expect("warm start");
-            let p = el.problem(&x_tf);
-            let lap = laplace(&p, &el.covar_module, &local, Start::Warm(&x0))?;
-            check_training_posterior(&lap.state, p.jitter)?;
-            let (data, w) = mll_data(&p, &lap, with_grad)?;
-            total += data;
-            if let Some(w) = w {
-                // The data gradient only (no priors): contract with a zero
-                // prior by subtracting the prior part.
-                let (_, g_all) = priors_and_raw_grad(
-                    &el.covar_module,
-                    &lap.covar_built,
-                    &lap.prepared,
-                    &local,
-                    Some(&w),
-                    &lap.state.nan_grads,
-                )?;
-                let (_, g_prior) = prior_raw_grad(&el.covar_module, &local)?;
+            let (value, gradient, state) = el.evaluate_trial(&local, &x0, with_grad)?;
+            let (prior, prior_gradient) = el.local_priors(&local)?;
+            total += value - prior;
+            if let Some(gradient) = gradient {
                 for (j, &gi) in self.param_map[e].iter().enumerate() {
-                    grad[gi] += g_all.as_ref().expect("gradient")[j] - g_prior[j];
+                    grad[gi] += gradient[j] - prior_gradient[j];
                 }
             }
-            states.push(lap.state);
+            states.push(state);
         }
         let (lp, gp) = self.global_priors(raw)?;
         total += lp;
@@ -1957,19 +2070,16 @@ impl BatchedPairwiseGP {
     /// The log priors of the global parameters and their raw gradients.
     fn global_priors(&self, raw: &[f64]) -> Result<(f64, Vec<f64>)> {
         let el = &self.elements[0];
-        let identity = self
+        let kernel = num_raw_parameters(&el.covar_module);
+        let kernel_shared = self
             .param_map
             .iter()
-            .all(|m| m.iter().enumerate().all(|(j, &i)| i == j))
-            && raw.len() == el.raw.len();
-        if identity {
-            return prior_raw_grad(&el.covar_module, raw);
-        }
-        let CovarModule::Standard(_) = &el.covar_module else {
+            .all(|m| m[..kernel] == self.param_map[0][..kernel]);
+        if !kernel_shared && matches!(&el.covar_module, CovarModule::Tree(_)) {
             return Err(BotorchError::Unsupported(
                 "batched kernel trees with per-element parameters are not supported".into(),
             ));
-        };
+        }
         // Every global parameter once, with the prior of a local parameter
         // that maps to it.
         let mut owner = vec![None; raw.len()];
@@ -1980,8 +2090,33 @@ impl BatchedPairwiseGP {
         }
         let mut lp = 0.0;
         let mut grad = vec![0.0; raw.len()];
+        if kernel_shared {
+            let map = &self.param_map[0][..kernel];
+            let values: Vec<f64> = map.iter().map(|&i| raw[i]).collect();
+            let (value, gradient) = prior_raw_grad(&el.covar_module, &values)?;
+            lp += value;
+            for (&i, g) in map.iter().zip(gradient) {
+                grad[i] += g;
+            }
+        }
+        let input_priors = el
+            .input_transform
+            .as_ref()
+            .map(|t| t.param_priors())
+            .unwrap_or_default();
         for (i, o) in owner.iter().enumerate() {
             let Some(j) = *o else { continue };
+            if j >= kernel {
+                if let Some(p) = input_priors[j - kernel] {
+                    check_support(&p, raw[i])?;
+                    lp += p.log_prob(raw[i]);
+                    grad[i] += p.grad_log_prob(raw[i]);
+                }
+                continue;
+            }
+            if kernel_shared {
+                continue;
+            }
             let (prior, constraint) = standard_param(&el.covar_module, j);
             let v = constraint.transform(raw[i]);
             if let Some(p) = prior {
@@ -2007,6 +2142,7 @@ impl BatchedPairwiseGP {
     /// See [`PairwiseGP::fit`].
     pub fn fit(&mut self, options: FitOptions) -> Result<FitResult> {
         self.set_training(true);
+        self.prepare_shared_transform()?;
         let bounds = self.global_bounds();
         let x_init = self.raw.clone();
         let warm: std::cell::RefCell<Vec<Vec<f64>>> = std::cell::RefCell::new(
@@ -2054,6 +2190,7 @@ impl BatchedPairwiseGP {
             )?
         };
         self.set_raw_parameters(&x)?;
+        self.prepare_shared_transform()?;
         for (el, x0) in self.elements.iter_mut().zip(warm.into_inner()) {
             el.x0 = Some(x0);
         }
@@ -2180,7 +2317,7 @@ impl Model for BatchedPairwiseGP {
 mod tests {
     use super::*;
 
-    fn data() -> (Matrix, Vec<(usize, usize)>) {
+    pub(super) fn data() -> (Matrix, Vec<(usize, usize)>) {
         let x = Matrix::from_row_slice(
             6,
             2,
@@ -2191,8 +2328,66 @@ mod tests {
         (x, vec![(0, 1), (2, 3), (1, 4), (5, 2), (4, 0)])
     }
 
-    fn draws(n: usize) -> Vec<f64> {
+    pub(super) fn draws(n: usize) -> Vec<f64> {
         (0..n).map(|i| ((i as f64) * 0.7).sin()).collect()
+    }
+
+    #[test]
+    fn shared_batch_normalization_uses_pooled_data_and_retains_learning_flags() {
+        use crate::transforms::input::InputTransformStep;
+        use crate::Normalize;
+
+        let (x, comps) = data();
+        let shifted = x.add_scalar(2.0);
+        let options = PairwiseGPOptions {
+            input_transform: Some(
+                ChainedInputTransform::new(vec![InputTransformStep::Normalize(Normalize::new(2))])
+                    .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let mut batch = BatchedPairwiseGP::new(
+            vec![2],
+            vec![(x.clone(), comps.clone()), (shifted.clone(), comps)],
+            2,
+            options,
+            None,
+            None,
+            Some(&draws(12)),
+        )
+        .unwrap();
+        let mut expected = Normalize::new(2);
+        expected.fit(&pooled_inputs(&[&x, &shifted], 2)).unwrap();
+        for element in batch.elements() {
+            let raw = &element.data().unwrap().datapoints;
+            assert_eq!(
+                element.training_inputs_tf().unwrap(),
+                expected.transform(raw).unwrap()
+            );
+        }
+        // A training-mode conditioned batch must relearn the shared bounds
+        // from all of its augmented data, even though member views are frozen.
+        let new_x = Matrix::from_row_slice(2, 2, &[4.0, 3.0, 5.0, 4.0]);
+        let shared = batch.shared_input_transform().cloned();
+        let elements = batch
+            .elements()
+            .iter()
+            .map(|e| e.with_observations(&new_x, &[(0, 1)], true).unwrap())
+            .collect();
+        batch = BatchedPairwiseGP::from_elements_with_transform(vec![2], elements, shared).unwrap();
+        batch.update(None).unwrap();
+        let raw: Vec<&Matrix> = batch
+            .elements()
+            .iter()
+            .map(|e| &e.data().unwrap().datapoints)
+            .collect();
+        expected.fit(&pooled_inputs(&raw, 2)).unwrap();
+        for (element, input) in batch.elements().iter().zip(raw) {
+            assert_eq!(
+                element.training_inputs_tf().unwrap(),
+                expected.transform(input).unwrap()
+            );
+        }
     }
 
     #[test]

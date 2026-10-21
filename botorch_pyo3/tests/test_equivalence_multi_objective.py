@@ -830,6 +830,7 @@ def test_qlognparego(pair: tuple) -> None:
         a_bt, v_bt, g_bt = evaluate(bt)
         a_rs = rs_parego.qLogNParEGO(
             rs,
+            cache_root=False,
             X_baseline=X,
             sampler=rs_sampler(S, seed, (n + n_pending + q) * m),
             objective=o.o_rs,

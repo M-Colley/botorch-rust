@@ -623,3 +623,92 @@ pub fn evaluate_feasibility_py(
     .into_py_result()?;
     Ok(BoolBuf(feasible, batch))
 }
+
+/// Project points onto intra-point linear equalities, with all dense work native.
+#[pyfunction]
+#[pyo3(name = "project_linear_equalities")]
+pub fn project_linear_equalities_py(
+    py: Python<'_>,
+    x: Array,
+    equality: Vec<LinearArg<'_>>,
+) -> PyResult<ArrayBuf> {
+    let (_, points) = x.points("X")?;
+    let constraints = linear_constraints(Some(equality))?;
+    let projected = threads::run(py, || {
+        botorch_core::optim::parameter_constraints::project_to_equality_constraints(
+            &points,
+            &constraints,
+        )
+    })
+    .into_py_result()?;
+    Ok(ArrayBuf(matrix_out(&projected).0, x.1))
+}
+
+/// Native reverse derivative of the equality projection.
+#[pyfunction]
+#[pyo3(name = "equality_projection_vjp")]
+#[allow(clippy::type_complexity)]
+pub fn equality_projection_vjp_py(
+    py: Python<'_>,
+    x: Array,
+    equality: Vec<LinearArg<'_>>,
+    output_adjoint: Array,
+) -> PyResult<(ArrayBuf, Vec<Vec<f64>>, Vec<f64>)> {
+    let (_, points) = x.points("X")?;
+    let (_, adjoint) = output_adjoint.points("output_adjoint")?;
+    let constraints = linear_constraints(Some(equality))?;
+    let grad = threads::run(py, || {
+        botorch_core::optim::parameter_constraints::equality_projection_vjp(
+            &points,
+            &constraints,
+            &adjoint,
+        )
+    })
+    .into_py_result()?;
+    Ok((
+        ArrayBuf(matrix_out(&grad.points).0, x.1),
+        grad.coefficients,
+        grad.rhs,
+    ))
+}
+
+/// Native SLSQP projection with arbitrary per-row fixed feature values.
+#[pyfunction]
+#[pyo3(name = "project_feasible_space", signature = (
+    x, bounds, inequality_constraints=None, equality_constraints=None,
+    nonlinear_inequality_constraints=None, fixed_features=None, tolerance=1e-8
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn project_feasible_space_py(
+    py: Python<'_>,
+    x: Array,
+    bounds: Array,
+    inequality_constraints: Option<Vec<LinearArg<'_>>>,
+    equality_constraints: Option<Vec<LinearArg<'_>>>,
+    nonlinear_inequality_constraints: Option<Vec<(Py<PyAny>, bool)>>,
+    fixed_features: Option<BTreeMap<usize, Vec<f64>>>,
+    tolerance: f64,
+) -> PyResult<ArrayBuf> {
+    let (batch, sets) = x.batches("X")?;
+    let bounds = bounds.matrix("bounds")?;
+    let d = bounds.ncols();
+    let q = x.1[x.1.len() - 2];
+    let constraints = parameter_constraints(
+        inequality_constraints,
+        equality_constraints,
+        nonlinear_inequality_constraints,
+        d,
+    )?;
+    let fixed = fixed_features.unwrap_or_default();
+    let projected = threads::run(py, || {
+        botorch_core::optim::slsqp::project_to_feasible_space_with_fixed_values(
+            &sets,
+            &bounds,
+            &constraints,
+            &fixed,
+            tolerance,
+        )
+    })
+    .into_py_result()?;
+    Ok(stack_out(&projected, &batch, q, d).into())
+}

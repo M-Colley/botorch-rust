@@ -212,6 +212,20 @@ macro_rules! analytic_common {
             &self.model
         }
 
+        fn supports_parameter_gradients(&self) -> bool {
+            true
+        }
+
+        fn forward_with_adjoints(
+            &self,
+            x: &Matrix,
+            query_gradient: bool,
+        ) -> Result<crate::acquisition::adjoints::AcquisitionAdjoints> {
+            analytic_adjoints(self.model.clone(), x, query_gradient, |m, s| {
+                self.partials(m, s)
+            })
+        }
+
         fn expected_q(&self) -> Option<usize> {
             Some(1)
         }
@@ -226,6 +240,71 @@ macro_rules! analytic_common {
             marginal_batch(self.model.as_ref(), xs, |m, s| self.value(m, s))
         }
     };
+}
+
+/// Scalar value derivatives; no input-coordinate Jacobian or extra posterior
+/// evaluation is needed to obtain the two moment adjoints.
+trait MeanSigmaPartials {
+    fn partials(&self, mean: f64, sigma: f64) -> (f64, f64, f64);
+}
+
+fn analytic_adjoints<F>(
+    model: Arc<dyn Model>,
+    x: &Matrix,
+    query_gradient: bool,
+    partials: F,
+) -> Result<crate::acquisition::adjoints::AcquisitionAdjoints>
+where
+    F: Fn(f64, f64) -> (f64, f64, f64),
+{
+    check_candidates(x, model.dim(), Some(1))?;
+    let post = model.posterior(x, false)?;
+    if post.mean.len() != 1 {
+        return Err(BotorchError::Unsupported(
+            "Analytic parameter adjoints require one posterior point and output".into(),
+        ));
+    }
+    let raw_var = post.covariance[(0, 0)];
+    let (mean, variance, a, b, c, d) = match &post.sample_transform {
+        Some(transform) => transform.moments(0, 0, post.mean[0], raw_var)?,
+        None => (
+            post.mean[0],
+            raw_var.max(crate::posterior::MIN_VARIANCE),
+            1.0,
+            0.0,
+            0.0,
+            if raw_var > crate::posterior::MIN_VARIANCE {
+                1.0
+            } else {
+                0.0
+            },
+        ),
+    };
+    let sigma = variance.max(MIN_VAR).sqrt();
+    let (value, mean_bar, sigma_bar) = partials(mean, sigma);
+    let variance_bar = if variance > MIN_VAR {
+        sigma_bar / (2.0 * sigma)
+    } else {
+        0.0
+    };
+    let ma = Vector::from_element(1, mean_bar * a + variance_bar * c);
+    let ca = Matrix::from_element(1, 1, mean_bar * b + variance_bar * d);
+    let gradient = if query_gradient {
+        Some(model.joint_posterior_vjp(x, 0..1, &ma, &ca)?)
+    } else {
+        None
+    };
+    Ok(crate::acquisition::adjoints::AcquisitionAdjoints {
+        value,
+        query_gradient: gradient,
+        posterior: crate::acquisition::adjoints::PosteriorAdjoints {
+            model,
+            inputs: x.clone(),
+            mean: ma,
+            covariance: ca,
+        }
+        .into(),
+    })
 }
 
 /// Single-outcome analytic Expected Improvement,
@@ -568,6 +647,76 @@ impl AcquisitionFunction for PosteriorStandardDeviation {
         let (mean, sigma, _, dsigma) = mean_sigma_with_grad(self.model.as_ref(), x)?;
         let ds = if self.maximize { dsigma } else { -dsigma };
         Ok((self.value(mean, sigma), row_matrix(ds)))
+    }
+}
+
+impl MeanSigmaPartials for ExpectedImprovement {
+    fn partials(&self, mean: f64, sigma: f64) -> (f64, f64, f64) {
+        let sign = if self.maximize { 1.0 } else { -1.0 };
+        let u = sign * (mean - self.best_f) / sigma;
+        (self.value(mean, sigma), sign * ndtr(u), phi(u))
+    }
+}
+impl MeanSigmaPartials for LogExpectedImprovement {
+    fn partials(&self, mean: f64, sigma: f64) -> (f64, f64, f64) {
+        let sign = if self.maximize { 1.0 } else { -1.0 };
+        let u = sign * (mean - self.best_f) / sigma;
+        let derivative = log_ei_helper_grad(u);
+        (
+            self.value(mean, sigma),
+            sign * derivative / sigma,
+            (1.0 - u * derivative) / sigma,
+        )
+    }
+}
+impl MeanSigmaPartials for ProbabilityOfImprovement {
+    fn partials(&self, mean: f64, sigma: f64) -> (f64, f64, f64) {
+        let sign = if self.maximize { 1.0 } else { -1.0 };
+        let u = sign * (mean - self.best_f) / sigma;
+        (
+            self.value(mean, sigma),
+            sign * phi(u) / sigma,
+            -u * phi(u) / sigma,
+        )
+    }
+}
+impl MeanSigmaPartials for LogProbabilityOfImprovement {
+    fn partials(&self, mean: f64, sigma: f64) -> (f64, f64, f64) {
+        let sign = if self.maximize { 1.0 } else { -1.0 };
+        let u = sign * (mean - self.best_f) / sigma;
+        let derivative = log_ndtr_grad(u);
+        (
+            self.value(mean, sigma),
+            sign * derivative / sigma,
+            -u * derivative / sigma,
+        )
+    }
+}
+impl MeanSigmaPartials for UpperConfidenceBound {
+    fn partials(&self, mean: f64, sigma: f64) -> (f64, f64, f64) {
+        (
+            self.value(mean, sigma),
+            if self.maximize { 1.0 } else { -1.0 },
+            self.beta.sqrt(),
+        )
+    }
+}
+impl MeanSigmaPartials for PosteriorMean {
+    fn partials(&self, mean: f64, sigma: f64) -> (f64, f64, f64) {
+        (
+            self.value(mean, sigma),
+            if self.maximize { 1.0 } else { -1.0 },
+            0.0,
+        )
+    }
+}
+impl MeanSigmaPartials for PosteriorStandardDeviation {
+    fn partials(&self, mean: f64, sigma: f64) -> (f64, f64, f64) {
+        (
+            self.value(mean, sigma),
+            0.0,
+            if self.maximize { 1.0 } else { -1.0 },
+        )
     }
 }
 

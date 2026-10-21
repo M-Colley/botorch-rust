@@ -630,6 +630,14 @@ def jes_fixture(case: dict, model: Any, X: torch.Tensor, opt: dict, seed: int) -
         )
         if not hv.has_fantasy_mean_cache_fix():
             hv.use_fantasy_mean_cache(acqf.conditional_model)  # #3396
+        if est == "MC":
+            # Explicit corrected-reference fixture: conditional Gaussian CDFs
+            # require sqrt(1-rho^2), not the pinned reference's variance.
+            tests_dir = os.path.join(os.path.dirname(__file__), "..", "botorch_pyo3", "tests")
+            sys.path.insert(0, tests_dir)
+            from jes_reference import correct_jes_monte_carlo
+
+            correct_jes_monte_carlo(acqf)
         Xt = points(X, (3, q, d), seed + 10 + i)
         entry: dict[str, Any] = {
             "estimation_type": est,
@@ -642,6 +650,10 @@ def jes_fixture(case: dict, model: Any, X: torch.Tensor, opt: dict, seed: int) -
         if est == "MC":
             acqf(Xt[:1])
             entry["base_samples"] = enc(acqf.sampler.base_samples.reshape(16, -1))
+            entry["reference_correction"] = (
+                "Conditional CDF standard deviation sqrt(1-rho^2); "
+                "official b0dd01be61d517c387e234903a6e2cc38c057ea2"
+            )
         entry["eval"] = vg(acqf, Xt)
         out.append(entry)
     return out

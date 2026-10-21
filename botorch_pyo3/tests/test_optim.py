@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from importlib.util import find_spec
 
 import pytest
 
@@ -145,19 +146,44 @@ def test_options(model: SingleTaskGP) -> None:
         acqf, BOUNDS, q=1, num_restarts=4, raw_samples=32, options={**options, "method": "SLSQP"}
     )
     assert shape(X2) == (1, 3) and abs(float(value2) - float(value)) < 1e-4
-    for bad in ({"method": "trust-constr"}, {"with_grad": False}):
-        with pytest.raises(UnsupportedError):
-            optimize_acqf(acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, options=bad)
+    if HAS_TORCH:
+        for extra in ({"method": "trust-constr"}, {"with_grad": False}):
+            initial = [[[0.2, 0.3, 0.4]], [[0.8, 0.7, 0.6]]]
+            if find_spec("scipy") is None:
+                with pytest.raises(UnsupportedError, match="method.*dependency 'scipy'"):
+                    optimize_acqf(
+                        acqf,
+                        BOUNDS,
+                        q=1,
+                        num_restarts=2,
+                        batch_initial_conditions=initial,
+                        options={**extra, "maxiter": 100},
+                    )
+                continue
+            points, scores = optimize_acqf(
+                acqf,
+                BOUNDS,
+                q=1,
+                num_restarts=2,
+                batch_initial_conditions=initial,
+                return_best_only=False,
+                options={**extra, "maxiter": 100},
+            )
+            assert shape(points) == (2, 1, 3)
+            assert all(0 <= x <= 1 for x in flatten(points))
+            assert all(
+                v >= s - 1e-7 for v, s in zip(flatten(scores), flatten(acqf(initial)), strict=True)
+            )
 
 
 def test_unsupported_arguments(model: SingleTaskGP) -> None:
     acqf = PosteriorMean(model)
-    for kwargs in (
-        {"acq_function_sequence": [acqf, acqf]},
-        {"unknown_ic_kwarg": 1},
-    ):
-        with pytest.raises(UnsupportedError):
-            optimize_acqf(acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, **kwargs)
+    with pytest.raises(UnsupportedError):
+        optimize_acqf(acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, unknown_ic_kwarg=1)
+    with pytest.raises(ValueError, match="requires sequential"):
+        optimize_acqf(
+            acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, acq_function_sequence=[acqf]
+        )
     with pytest.raises(UnsupportedError):
         optimize_acqf(object(), BOUNDS, q=1, num_restarts=2, raw_samples=8)  # type: ignore[arg-type]
     # Callables are evaluated on torch tensors (see test_deterministic.py); their

@@ -296,6 +296,9 @@ impl SingleTaskGP {
         if k == 0 {
             return Ok(vec![self.clone(); ys.len()]);
         }
+        if self.sparse_outlier_noise().is_some() {
+            return Err(BotorchError::Unsupported("conditioning a sparse outlier GP requires an explicit support extension and is not supported yet".into()));
+        }
         let x_tf = self.check_new_inputs(x, mode)?;
         let noise_tf = self.new_noise(noise.map(|v| v.as_slice()), k)?;
         let enlarged = self.enlarged(&x_tf, &noise_tf)?;
@@ -369,7 +372,8 @@ impl SingleTaskGP {
                     mean_module: self.mean_module,
                     hyperparameters: self.hyperparameters.clone(),
                     point_noise: point_noise.clone(),
-                    cache: OnceLock::from(Ok(new_cache)),
+                    sparse_outlier_noise: None,
+                    cache: Arc::new(OnceLock::from(Ok(new_cache))),
                 })
             })
             .collect()
@@ -828,7 +832,7 @@ mod tests {
             assert_eq!(cond.num_train(), 12);
             // Reference: a full factorization of the enlarged training data.
             let mut reference = cond.clone();
-            reference.cache = OnceLock::new();
+            reference.cache = Arc::new(OnceLock::new());
             let xt = Matrix::from_row_slice(4, 2, &[0.2, 0.2, 0.5, 0.6, 0.9, 0.1, 0.33, 0.12]);
             let a = cond.posterior(&xt, true).unwrap();
             let b = reference.posterior(&xt, true).unwrap();

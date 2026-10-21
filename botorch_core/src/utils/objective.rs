@@ -302,10 +302,22 @@ impl SmoothedFeasibility {
                 "the feasibility indicator was computed without derivatives".into(),
             ));
         }
+        let (n, s) = self.values.shape();
+        if adjoint.nrows() != n || !adjoint.ncols().is_multiple_of(s) {
+            return Err(BotorchError::DimensionMismatch(
+                "feasibility adjoint must repeat the original MC sample axis".into(),
+            ));
+        }
+        let folded = Matrix::from_fn(n, s, |p, c| {
+            (c..adjoint.ncols())
+                .step_by(s)
+                .map(|k| adjoint[(p, k)])
+                .sum()
+        });
         let log_bar = if self.log {
-            adjoint.clone()
+            folded
         } else {
-            adjoint.component_mul(&self.values)
+            folded.component_mul(&self.values)
         };
         let mut out = Matrix::zeros(self.samples_shape.0, self.samples_shape.1);
         for (dl, pb) in self.dlog.iter().zip(self.pullbacks) {

@@ -491,6 +491,8 @@ def test_cyclic(p: dict[str, Any]) -> None:
 
     for options in lbfgsb_modes():
         for cyclic_options in ({"maxiter": 3}, {}, {"minimize": False, "maxiter": 30}):
+            # Corrected maximization default, already proposed in upstream PR3395.
+            cyclic_options = {"minimize": False, **cyclic_options}
             tag = f"{'serial' if options else 'parallel'} {cyclic_options}"
             # BoTorch's criterion keeps a view of the values that
             # `optimize_acqf_cyclic` then changes in place, which corrupts the

@@ -1,10 +1,8 @@
 """Helpers of the pathwise sampling package (``botorch.sampling.pathwise.utils``).
 
-BoTorch's ``utils`` module holds the transforms that its paths compose
-(input transforms, ``OutcomeUntransformer``, the lengthscale, sine-cosine and
-outputscale transforms of the Fourier features). In botorch_rs these are part
-of the paths computed in Rust; this module arranges the values computed in
-Rust into BoTorch's shapes.
+Transforms preserve lists, NumPy arrays and torch tensors; elementary
+functions and their first derivatives are evaluated in Rust. The module
+also arranges native path values into BoTorch's shapes.
 
 A path evaluated at ``X`` (``batch_shape x n x d``) returns BoTorch's
 broadcast of ``batch_shape`` with the batch shape of the path's weights
@@ -16,6 +14,10 @@ the value of the indexed sample (and output) at the indexed point of ``X``.
 from __future__ import annotations
 
 import itertools
+import math
+import operator
+import sys
+from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any, NamedTuple
 
@@ -28,7 +30,261 @@ from botorch_rs._arrays import (
     kind_of,
     to_flat,
 )
+from botorch_rs._module import GPModule
+from botorch_rs._ops import apply, concat, getitem, int_array, shape_of, transpose
 from botorch_rs.exceptions.errors import UnsupportedError
+from botorch_rs.models.approximate_gp import SingleTaskVariationalGP
+from botorch_rs.models.model import Model, ModelList
+from botorch_rs.models.model_list_gp_regression import ModelListGP
+from botorch_rs.models.transforms.input import InputTransform
+from botorch_rs.models.transforms.outcome import OutcomeTransform
+from botorch_rs.utils.dispatcher import Dispatcher
+
+GetTrainInputs = Dispatcher("get_train_inputs")
+GetTrainTargets = Dispatcher("get_train_targets")
+
+
+class TransformedModuleMixin:
+    """Apply optional input and output transforms around a callable module."""
+
+    def __call__(self, values: Any, *args: Any, **kwargs: Any) -> Any:
+        transform = getattr(self, "input_transform", None)
+        if transform is not None:
+            values = (
+                transform.forward(values)
+                if isinstance(transform, InputTransform)
+                else transform(values)
+            )
+        output = super().__call__(values, *args, **kwargs)  # type: ignore[misc]
+        transform = getattr(self, "output_transform", None)
+        if transform is None:
+            return output
+        return (
+            transform.untransform(output)[0]
+            if isinstance(transform, OutcomeTransform)
+            else transform(output)
+        )
+
+
+class TensorTransform(ABC, GPModule):
+    """Base of callable array transforms, independent of a torch runtime."""
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        if getattr(cls, "__abstractmethods__", None):
+            return object.__new__(cls)
+        if sys.modules.get("torch") is not None:
+            from botorch_rs.sampling.pathwise._torch_transforms import tensor_transform_type
+
+            module_type = tensor_transform_type(cls)
+            if module_type is not None:
+                result = object.__new__(module_type)
+                sys.modules["torch"].nn.Module.__init__(result)
+                return result
+        return object.__new__(cls)
+
+    def __call__(self, values: Any, **kwargs: Any) -> Any:
+        return self.forward(values, **kwargs)
+
+    @abstractmethod
+    def forward(self, values: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError
+
+
+class ChainedTransform(TensorTransform):
+    """Compose transforms from right to left."""
+
+    def __init__(self, *transforms: TensorTransform) -> None:
+        self.transforms = list(transforms)
+
+    def forward(self, values: Any, **kwargs: Any) -> Any:
+        for transform in reversed(self.transforms):
+            values = transform(values)
+        return values
+
+
+class SineCosineTransform(TensorTransform):
+    """Concatenate sine and cosine features, with optional scaling."""
+
+    def __init__(self, scale: Any = None) -> None:
+        self.scale = scale
+
+    def forward(self, values: Any, **kwargs: Any) -> Any:
+        if is_torch_tensor(values):
+            import torch
+
+            sincos = torch.cat((values.sin(), values.cos()), dim=-1)
+            return (
+                sincos
+                if self.scale is None
+                else sincos * torch.as_tensor(self.scale, dtype=values.dtype, device=values.device)
+            )
+        sincos = concat([apply("sin", values), apply("cos", values)], dim=-1)
+        return sincos if self.scale is None else apply("mul_raw", sincos, self.scale)
+
+
+class InverseLengthscaleTransform(TensorTransform):
+    """Divide features by a kernel's current lengthscales."""
+
+    def __init__(self, kernel: Any) -> None:
+        if not getattr(kernel, "has_lengthscale", hasattr(kernel, "lengthscale")):
+            raise RuntimeError(f"{type(kernel)} does not implement `lengthscale`.")
+        self.kernel = kernel
+
+    def forward(self, values: Any, **kwargs: Any) -> Any:
+        if is_torch_tensor(values):
+            import torch
+
+            return values / torch.as_tensor(
+                self.kernel.lengthscale, dtype=values.dtype, device=values.device
+            )
+        return apply("div_raw", values, self.kernel.lengthscale)
+
+
+class OutputscaleTransform(TensorTransform):
+    """Multiply features by the square root of a kernel's outputscale."""
+
+    def __init__(self, kernel: Any) -> None:
+        self.kernel = kernel
+
+    def forward(self, values: Any, **kwargs: Any) -> Any:
+        outputscale = self.kernel.outputscale
+        if self.kernel.batch_shape:
+            outputscale = getitem(outputscale, (..., None, None))
+        if is_torch_tensor(values):
+            if not is_torch_tensor(outputscale):
+                import torch
+
+                outputscale = torch.as_tensor(outputscale, dtype=values.dtype, device=values.device)
+            return values * outputscale.sqrt()
+        return apply("mul_raw", values, apply("sqrt", outputscale))
+
+
+class FeatureSelector(TensorTransform):
+    """Select features along an axis, preserving repeated indices."""
+
+    def __init__(self, indices: Any, dim: Any = -1) -> None:
+        self.dim = operator.index(dim)
+        self.indices = tuple(operator.index(i) for i in indices)
+
+    def forward(self, values: Any, **kwargs: Any) -> Any:
+        shape = shape_of(values)
+        ndim = len(shape)
+        if ndim == 0 or not -ndim <= self.dim < ndim:
+            raise IndexError(f"Dimension out of range: {self.dim} for {ndim} dimensions.")
+        axis = self.dim % ndim
+        if any(i < 0 or i >= shape[axis] for i in self.indices):
+            raise IndexError(f"Feature index out of range for axis of size {shape[axis]}.")
+        kind = kind_of(values)
+        if kind.lib == "torch":
+            return values.index_select(axis, int_array(self.indices, (len(self.indices),), kind))
+        if kind.lib == "numpy":
+            return values.take(self.indices, axis=axis)
+        data, _ = to_flat(values)
+        inner, outer = math.prod(shape[axis + 1 :]), math.prod(shape[:axis])
+        out = [
+            data[(o * shape[axis] + i) * inner + j]
+            for o in range(outer)
+            for i in self.indices
+            for j in range(inner)
+        ]
+        return from_flat(out, (*shape[:axis], len(self.indices), *shape[axis + 1 :]), kind)
+
+
+class OutcomeUntransformer(TensorTransform):
+    """Adapt an outcome transform to paths with output dimensions in a batch."""
+
+    def __init__(self, transform: OutcomeTransform, num_outputs: Any) -> None:
+        self.transform = transform
+        self.num_outputs = operator.index(num_outputs)
+
+    def forward(self, values: Any, **kwargs: Any) -> Any:
+        from botorch_rs.models.transforms.outcome import Standardize
+        from botorch_rs.posteriors.transformed import _affine
+
+        def untransform(values: Any) -> Any:
+            if is_torch_tensor(values):
+                return self.transform.untransform(values)[0]
+            if type(self.transform) is Standardize:
+                if not self.transform._is_trained:
+                    raise RuntimeError("Standardize must be fitted before untransforming paths.")
+                return _affine(values, self.transform._rs.means, self.transform._rs.stdvs, 1)
+            return self.transform.untransform(values)[0]
+
+        if self.num_outputs == 1:
+            return getitem(untransform(getitem(values, (..., None))), (..., 0))
+        return transpose(untransform(transpose(values)))
+
+
+def get_input_transform(model: Any) -> InputTransform | None:
+    """Return the model's input transform, when present."""
+    return getattr(model, "input_transform", None)
+
+
+def get_output_transform(model: Any) -> OutcomeUntransformer | None:
+    """Return a path-compatible wrapper around the model's outcome transform."""
+    transform = getattr(model, "outcome_transform", None)
+    return None if transform is None else OutcomeUntransformer(transform, model.num_outputs)
+
+
+def get_train_inputs(model: Any, transformed: bool = False) -> Any:
+    """Return training inputs in the requested input space."""
+    return GetTrainInputs(model, transformed=transformed)
+
+
+@GetTrainInputs.register(Model)
+def _get_train_inputs_model(model: Any, transformed: bool = False) -> tuple[Any]:
+    # Native exact models expose original inputs in both modes; unlike GPyTorch
+    # they do not replace train_inputs when toggling eval().
+    original = getattr(model, "_original_train_inputs", None)
+    (X,) = (original,) if original is not None else model.train_inputs
+    transform = get_input_transform(model)
+    return (transform.forward(X) if transformed and transform is not None else X,)
+
+
+@GetTrainInputs.register(SingleTaskVariationalGP)
+def _get_train_inputs_variational(model: Any, transformed: bool = False) -> tuple[Any]:
+    (X,) = model.model.train_inputs
+    transform = get_input_transform(model)
+    return (X if transformed or transform is None else transform.untransform(X),)
+
+
+@GetTrainInputs.register(
+    ModelList,
+)
+@GetTrainInputs.register(ModelListGP)
+def _get_train_inputs_list(model: Any, transformed: bool = False) -> list[Any]:
+    return [get_train_inputs(m, transformed=transformed) for m in model.models]
+
+
+def get_train_targets(model: Any, transformed: bool = False) -> Any:
+    """Return training targets in the requested outcome space."""
+    return GetTrainTargets(model, transformed=transformed)
+
+
+@GetTrainTargets.register(Model)
+def _get_train_targets_model(model: Any, transformed: bool = False) -> Any:
+    Y = model.train_targets
+    transform = getattr(model, "outcome_transform", None)
+    if transformed or transform is None:
+        return Y
+    return OutcomeUntransformer(transform, model.num_outputs)(Y)
+
+
+@GetTrainTargets.register(SingleTaskVariationalGP)
+def _get_train_targets_variational(model: Any, transformed: bool = False) -> Any:
+    Y = model.model.train_targets
+    transform = getattr(model, "outcome_transform", None)
+    if transformed or transform is None:
+        return Y
+    if model.num_outputs == 1:
+        return OutcomeUntransformer(transform, 1)(Y)
+    return transform.untransform(Y)[0]
+
+
+@GetTrainTargets.register(ModelList)
+@GetTrainTargets.register(ModelListGP)
+def _get_train_targets_list(model: Any, transformed: bool = False) -> list[Any]:
+    return [get_train_targets(m, transformed=transformed) for m in model.models]
 
 
 def sample_shape_arg(sample_shape: Any) -> tuple[int, ...]:

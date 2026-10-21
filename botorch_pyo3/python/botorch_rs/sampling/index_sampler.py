@@ -7,11 +7,11 @@ from __future__ import annotations
 import importlib
 import math
 import random
-from typing import Any
+from typing import Any, cast
 
 from botorch_rs._arrays import LIST, from_flat, to_flat
 from botorch_rs.posteriors.ensemble import EnsemblePosterior
-from botorch_rs.sampling.normal import MCSampler, _sample_shape
+from botorch_rs.sampling.normal import MCSampler, _sample_shape, _uses_tensor_protocol
 
 
 class IndexSampler(MCSampler):
@@ -40,6 +40,25 @@ class IndexSampler(MCSampler):
     def _construct_base_samples(self, posterior: EnsemblePosterior) -> None:
         r"""Constructs base samples as indices to sample with them from the
         Posterior."""
+        if _uses_tensor_protocol(posterior):
+            import torch
+
+            from botorch_rs.posteriors._torch_ensemble import TorchEnsemblePosterior, draw_indices
+
+            expected = (*self.sample_shape, *posterior.batch_shape)
+            current = (
+                None
+                if self.base_samples is None
+                else torch.as_tensor(self.base_samples, device=posterior.device)
+            )
+            if current is None or tuple(current.shape) != expected:
+                generator = torch.Generator(device=posterior.device).manual_seed(self.seed)
+                self.base_samples = draw_indices(
+                    cast(TorchEnsemblePosterior, posterior), self.sample_shape, generator
+                )
+            else:
+                self.base_samples = current
+            return
         expected = (*self.sample_shape, *posterior.batch_shape)
         if self.base_samples is not None and tuple(to_flat(self.base_samples)[1]) == expected:
             return
@@ -81,7 +100,9 @@ class IndexSampler(MCSampler):
             sample_shape=self.sample_shape, base_samples=self.base_samples
         )
 
-    __call__ = forward
+    def _update_base_samples(self, posterior: Any, base_sampler: Any) -> None:
+        """Ensemble member coordinates do not grow with the number of query points."""
+        # This is intentionally a null operation, matching the public reference.
 
     def _member_counts(self, ensemble_size: int, weights: Any = None) -> list[float]:
         """The number of samples that select each ensemble member for a

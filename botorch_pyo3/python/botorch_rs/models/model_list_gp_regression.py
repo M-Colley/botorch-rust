@@ -7,16 +7,16 @@ from collections.abc import Iterator
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import LIST, kind_of, to_flat
+from botorch_rs._arrays import broadcast_shapes, to_flat
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
 from botorch_rs.likelihoods import LikelihoodList
 from botorch_rs.models.gp_regression import SingleTaskGP
+from botorch_rs.models.gpytorch import ModelListGPyTorchModel
 from botorch_rs.models.model import Model
 from botorch_rs.models.multitask import MultiTaskGP
-from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 
 
-class ModelListGP(Model):
+class ModelListGP(ModelListGPyTorchModel):
     r"""A multi-output model of independent GPs, possibly with different
     training data.
 
@@ -36,6 +36,15 @@ class ModelListGP(Model):
         >>> fit_gpytorch_mll(mll)
     """
 
+    def __new__(cls, *gp_models: Any) -> Any:
+        if cls is ModelListGP and any(
+            getattr(model, "_tensor_backend", None) == "torch" for model in gp_models
+        ):
+            from botorch_rs.models._torch_backend_list import TorchModelListGP
+
+            return object.__new__(TorchModelListGP)
+        return object.__new__(cls)
+
     def __init__(self, *gp_models: SingleTaskGP | MultiTaskGP) -> None:
         if not gp_models:
             raise ValueError("ModelListGP requires at least one model.")
@@ -53,20 +62,25 @@ class ModelListGP(Model):
                 f"All sub-models must have the same input dimension, got {sorted(dims)}."
             )
         shapes = {m.batch_shape for m in gp_models}
-        if len(shapes) > 1:
-            raise NotImplementedError(
-                "`ModelListGP.batch_shape` is only supported if all constituent models have "
-                "the same `batch_shape`."
-            )
+        if broadcast_shapes(*shapes) is None:
+            raise NotImplementedError("Component model batch shapes must be broadcastable.")
         self.models: list[Any] = list(gp_models)
         self.likelihood = LikelihoodList(*[m.likelihood for m in gp_models])
-        kinds = [m._kind for m in gp_models if m._kind.lib != "list"]
-        self._kind = kinds[0] if kinds else LIST
         self.training = True
 
     @property
-    def _all_single_task(self) -> bool:
-        return all(isinstance(m, SingleTaskGP) for m in self.models)
+    def _ensemble_members(self) -> Any:
+        """With ensemble sub-models (e.g. fully Bayesian GPs): the lists of
+        their members of the same index (``AttributeError`` otherwise)."""
+        from botorch_rs.models._ensemble_lists import members_method
+
+        return members_method(self)
+
+    @property
+    def _ensemble_acquisition(self) -> Any:
+        from botorch_rs.models._ensemble_lists import acquisition_method
+
+        return acquisition_method(self)
 
     def _require_single_task(self, what: str) -> None:
         if any(type(m).__name__ == "PairwiseGP" for m in self.models):
@@ -76,22 +90,11 @@ class ModelListGP(Model):
         if not self._all_single_task:
             raise UnsupportedError(f"{what} requires SingleTaskGP sub-models in botorch_rs.")
 
-    def _rs_list(self) -> Any:
-        """A list of the current snapshots of the sub-models (a generic list
-        of model handles if a sub-model is not a ``SingleTaskGP``)."""
-        if self._all_single_task:
-            return _rs.ModelListGP([m._rs for m in self.models])
-        return _rs.Model.from_models([m._acquisition_model(None) for m in self.models])
-
     # -- data --------------------------------------------------------------
 
     @property
     def num_outputs(self) -> int:
         return sum(m.num_outputs for m in self.models)
-
-    @property
-    def batch_shape(self) -> tuple[int, ...]:
-        return self.models[0].batch_shape
 
     @property
     def train_inputs(self) -> list[tuple[Any]]:
@@ -103,100 +106,7 @@ class ModelListGP(Model):
 
     # -- modes -------------------------------------------------------------
 
-    def train(self, mode: bool = True) -> ModelListGP:
-        self.training = mode
-        for m in self.models:
-            m.train(mode)
-        return self
-
     # -- posterior ---------------------------------------------------------
-
-    def posterior(
-        self,
-        X: Any,
-        output_indices: list[int] | None = None,
-        observation_noise: bool = False,
-        posterior_transform: Any = None,
-        **kwargs: Any,
-    ) -> Any:
-        """The posterior at ``X`` (``batch_shape x q x d``) over the outputs
-        ``output_indices`` (all by default), scalarized by
-        ``posterior_transform`` if given, with the observation noise of every
-        sub-model if ``observation_noise=True``. If a sub-model has a
-        nonlinear outcome transform, a ``PosteriorList`` of the sub-models'
-        posteriors (a posterior transform then scalarizes the marginal moments
-        of a single point, as BoTorch's ``scalarize_posterior``)."""
-        from botorch_rs.acquisition.objective import transform_arg
-
-        if not isinstance(observation_noise, bool):
-            raise UnsupportedError("`observation_noise` must be a bool in botorch_rs.")
-        m = self.num_outputs
-        oi = None
-        if output_indices is not None:
-            oi = [int(t) for t in output_indices]
-            if not oi or any(not -m <= t < m for t in oi):
-                raise BotorchTensorDimensionError(
-                    f"output_indices {list(output_indices)} are invalid for a model with "
-                    f"{m} outputs."
-                )
-            oi = [t % m for t in oi]
-            if oi == list(range(m)):
-                oi = None
-        kind = kind_of(X)
-        flat = to_flat(X, "X")
-        d = self.models[0]._rs.dim
-        if len(flat[1]) < 2 or flat[1][-1] != d:
-            raise BotorchTensorDimensionError(
-                f"Expected X to be `batch_shape x q x d` with d = {d}, got shape {flat[1]}."
-            )
-        self.eval()
-        transform = transform_arg(posterior_transform)
-        transformed = self._transformed_outputs()
-        selected = transformed if oi is None else [transformed[t] for t in oi]
-        if any(selected) and transform is None:
-            # BoTorch's `ModelList.posterior`: a `PosteriorList` of the
-            # sub-models' posteriors over their selected outputs.
-            from botorch_rs.posteriors.posterior_list import PosteriorList
-
-            posteriors = []
-            start = 0
-            for sub in self.models:
-                k = sub.num_outputs
-                local = (
-                    list(range(k))
-                    if oi is None
-                    else [t - start for t in oi if start <= t < start + k]
-                )
-                if local:
-                    posteriors.append(
-                        sub.posterior(
-                            X,
-                            output_indices=None if local == list(range(k)) else local,
-                            observation_noise=observation_noise,
-                        )
-                    )
-                start += k
-            return PosteriorList(*posteriors)
-        rs_list = self._rs_list()
-        return GPyTorchPosterior(
-            rs_list,
-            flat,
-            kind,
-            observation_noise,
-            num_outputs=m,
-            model_batch_shape=self.batch_shape,
-            output_indices=oi,
-            transform=transform,
-            points_per_input=rs_list.points_per_input,
-        )
-
-    def _transformed_outputs(self) -> list[bool]:
-        """Whether each output's posterior is a ``TransformedPosterior``."""
-        out: list[bool] = []
-        for sub in self.models:
-            flags = getattr(sub._rs, "transformed_outputs", None)
-            out.extend(list(flags) if flags is not None else [False] * sub.num_outputs)
-        return out
 
     def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:
         """The model handle that acquisition functions are built on."""
@@ -266,14 +176,21 @@ class ModelListGP(Model):
         (``model_batch x 1 x m`` or ``x n' x m``, outcome-transformed space)
         defaults to each sub-model's noise."""
         from botorch_rs.sampling.list_sampler import ListSampler
-        from botorch_rs.sampling.normal import SobolQMCNormalSampler
+        from botorch_rs.sampling.normal import NormalMCSampler
 
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
         self._require_single_task("fantasize")
         if isinstance(sampler, ListSampler):
-            samplers, shared = [s._rs for s in sampler.samplers], False
-        elif isinstance(sampler, SobolQMCNormalSampler):
+            samplers = []
+            for member_sampler in sampler.samplers:
+                if not isinstance(member_sampler, NormalMCSampler):
+                    raise UnsupportedError(
+                        "ModelListGP.fantasize requires normal samplers for its Gaussian members."
+                    )
+                samplers.append(member_sampler._rs)
+            shared = False
+        elif isinstance(sampler, NormalMCSampler):
             samplers, shared = [sampler._rs], True
         else:
             raise UnsupportedError(
@@ -307,7 +224,7 @@ class ModelListGP(Model):
         """See ``ModelList._get_group_subset_indices``."""
         from botorch_rs.models.model import ModelList
 
-        return ModelList._get_group_subset_indices(self, idcs)  # type: ignore[arg-type]
+        return ModelList._get_group_subset_indices(self, idcs)
 
     def subset_output(self, idcs: list[int]) -> Model:
         r"""Subset the model along the output dimension: a ``ModelListGP`` of
@@ -319,7 +236,7 @@ class ModelListGP(Model):
         """
         from botorch_rs.models.model import ModelList
 
-        return ModelList.subset_output(self, idcs)  # type: ignore[arg-type]
+        return ModelList.subset_output(self, idcs)
 
     def _with_models(self, handles: list[Any]) -> ModelListGP:
         """A list of copies of the sub-models around new Rust models."""
@@ -329,14 +246,30 @@ class ModelListGP(Model):
 
     # -- parameters --------------------------------------------------------
 
-    def named_parameters(self) -> Iterator[tuple[str, Any]]:
+    def named_parameters(
+        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
+    ) -> Iterator[tuple[str, Any]]:
         """``(name, raw value)`` of every hyperparameter (``models.<i>.<name>``)."""
+        if not recurse:
+            return
+        seen_models: set[int] = set()
+        # Keep snapshots alive as well: non-Torch descriptors are freshly
+        # allocated, so retaining only IDs could mistake allocator reuse for
+        # an actual shared parameter.
+        seen_parameters: dict[int, Any] = {}
         for i, m in enumerate(self.models):
+            if remove_duplicate and id(m) in seen_models:
+                continue
+            seen_models.add(id(m))
             for name, value in m.named_parameters():
-                yield f"models.{i}.{name}", value
+                if remove_duplicate and id(value) in seen_parameters:
+                    continue
+                seen_parameters[id(value)] = value
+                path = f"models.{i}.{name}"
+                yield f"{prefix}.{path}" if prefix else path, value
 
-    def parameters(self) -> Iterator[Any]:
-        for _, value in self.named_parameters():
+    def parameters(self, recurse: bool = True) -> Iterator[Any]:
+        for _, value in self.named_parameters(recurse=recurse):
             yield value
 
     def initialize(self, **kwargs: Any) -> ModelListGP:

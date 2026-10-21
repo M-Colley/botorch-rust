@@ -54,7 +54,9 @@ def rel_err(a: Any, e: Any, atol: float = 0.0) -> float:
     if e.numel() == 0:
         return 0.0
     if not torch.isfinite(e).all() or not torch.isfinite(a).all():
-        same = (a == e) | (torch.isnan(a) & torch.isnan(e))
+        # Shared NaNs are failures of numerical equivalence. Tests of
+        # intentionally invalid inputs compare nonfinite classes explicitly.
+        same = a == e
         finite = torch.isfinite(e) & torch.isfinite(a)
         if not bool((same | finite).all()):
             return float("inf")
@@ -237,6 +239,11 @@ def twin_inputs(X: Any, t: int) -> Any:
 def _losses(outcome: FitOutcome) -> tuple[list[float], int]:
     loss, attempts = outcome
     losses = [float(loss)] if isinstance(loss, (int, float)) else [float(v) for v in loss]
+    if int(attempts) == 1:
+        assert all(math.isfinite(value) for value in losses), (
+            "Nonfinite loss reported as a successful first-attempt fit",
+            losses,
+        )
     return losses, int(attempts)
 
 
@@ -292,6 +299,7 @@ def two_stage_fit_comparisons(
     n_el = len(bt_out[0][0])
     assert not bt_extra or n_el == 1, "bt_extra needs a single-element model"
     extra = [float(v) for v in bt_extra]
+    assert all(math.isfinite(value) for value in extra), "Nonfinite additional first-attempt loss"
     comparisons: dict[int, FitComparison] = {}
     for e in range(n_el):
         bt = first(bt_out, e) + extra

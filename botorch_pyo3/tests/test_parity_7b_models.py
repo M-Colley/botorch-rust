@@ -445,7 +445,9 @@ def test_mixed_acquisition_and_optimize_acqf_mixed_match_botorch() -> None:
     a_bt = bt_logei.qLogNoisyExpectedImprovement(
         bt, X, sampler=s_bt, prune_baseline=False, cache_root=False
     )
-    a_rs = rs_logei.qLogNoisyExpectedImprovement(rs, X, sampler=s_rs, prune_baseline=False)
+    a_rs = rs_logei.qLogNoisyExpectedImprovement(
+        rs, X, cache_root=False, sampler=s_rs, prune_baseline=False
+    )
     Xq = _mixed_points("last", 2, 43).unsqueeze(0)
     _compare_acqf("qLogNEI on mixed GP", a_rs, a_bt, Xq)
     # optimize_acqf_mixed over the categories from identical initial conditions.

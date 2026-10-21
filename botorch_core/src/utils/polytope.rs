@@ -453,7 +453,7 @@ impl HitAndRunPolytopeSampler {
 /// singular value decomposition (BoTorch: `Vh[rank:].T` of `torch.linalg.svd`;
 /// the rank counts singular values above `max(k, d) · ε · σ_max` instead of
 /// exactly non-zero ones).
-fn null_space(c: &Matrix) -> Matrix {
+pub fn null_space(c: &Matrix) -> Matrix {
     let (k, d) = c.shape();
     // Pad to a square matrix so that the SVD returns all right singular vectors.
     let mut padded = Matrix::zeros(d.max(k), d);

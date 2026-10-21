@@ -1,0 +1,2024 @@
+{
+  "recorded_utc": "2026-10-20T22:04:36.494300+00:00",
+  "status": "validation_passed_for_documented_scope",
+  "behavioral_parity_complete": false,
+  "gpu_coverage_complete": false,
+  "scope": "Official main BoTorch package at the pinned reference; native Rust CPU and optional Torch float32/float64 CPU/CUDA backends. Specialized models, entropy/search, device NUTS and variational pathwise updates included. Community excluded. Availability and tested configurations do not certify every subclass/configuration combination.",
+  "source_revision": "4d625cf252d35c57ec992346004f7204b4beea6b",
+  "native_source_revision": "9a74f3fe5ce1bf48689d565bc59c09880414760f",
+  "official_reference_revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+  "environment": {
+    "platform": "Windows-11-10.0.26300-SP0",
+    "python": "3.13.12",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "torch": "2.13.0+cu132",
+    "cuda_device": "NVIDIA GeForce RTX 4050 Laptop GPU"
+  },
+  "artifact": {
+    "wheel": "target/tensor-main-final-v4-wheels/botorch_rust-0.2.0-cp311-abi3-win_amd64.whl",
+    "wheel_sha256": "87d65554624689a1d9baf2c60dad5dfd4228c6e89f5e1890752cf22905e2bb1b",
+    "native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf",
+    "python_sources_sha256": "cb9148a13b3563d244f0a6df37f0036dabe47ff5d025d7b511dcf951c49b446b",
+    "source_files_matching_wheel": 302,
+    "installed_python_source_files": 302,
+    "current_python_source_files": 302,
+    "source_mismatches": [],
+    "bytecode_cache_files": [],
+    "duplicate_archive_members": [],
+    "installed_prefix": "target/tensor-main-final-v4-release-python",
+    "source_checkout_extension_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf",
+    "readme_matches_completed_family_scope": true
+  },
+  "api_inventory": {
+    "available": 776,
+    "audited": 776,
+    "gaps": [],
+    "core_import_errors": {},
+    "community_included": false,
+    "meaning": "Symbol availability is not proof of numerical parity, supported configurations, autograd compatibility or performance."
+  },
+  "native_tests": {
+    "passed": 532,
+    "failed": 0,
+    "ignored": 0,
+    "groups": 46,
+    "command": "cargo test --workspace --locked",
+    "source_revision": "64e1477c07419b934da0b2c0fde332e5ae676c5d",
+    "inventory": "target/native-workspace-main-2026-10-20.json",
+    "inventory_sha256": "50d9aa8d0a6c6abd7bd52e6c8e427a6bcfab6a5f0f82577663e6e57e8acbf302",
+    "source_files_fingerprinted": 300,
+    "rust_source_hashes_still_match": true,
+    "log": "target/native-workspace-main-2026-10-20.log",
+    "log_sha256": "d4138eb4b056539bcf0d5c87c36f3e882009105b66784ec25a0c793ac40aeb97",
+    "inventory_revision": "4d625cf252d35c57ec992346004f7204b4beea6b",
+    "execution_and_inventory_rust_inputs_identical": true,
+    "execution_revision_note": "The trajectory reference-grid Python-test/documentation-only commit landed during native execution; all 300 Rust/Cargo input files remained unchanged. The successful native execution log and inventory both account for 532 tests in 46 groups."
+  },
+  "python_tests": {
+    "valid": true,
+    "errors": [],
+    "canonical_case_count": 10591,
+    "canonical_case_ids_sha256": "741958e1c21e933ae6b5f04f6f32a28a1c8aee5e16fd64c4a3f4904a871a5cc0",
+    "case_ids_exactly_once": true,
+    "phase_totals": {
+      "broad": {
+        "passed": 9322,
+        "skipped": 34
+      },
+      "equivalence": {
+        "passed": 1220,
+        "skipped": 15
+      }
+    },
+    "totals": {
+      "passed": 10542,
+      "skipped": 49
+    },
+    "collection_skips": [],
+    "fingerprints": {
+      "native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf",
+      "python_sources_sha256": "cb9148a13b3563d244f0a6df37f0036dabe47ff5d025d7b511dcf951c49b446b",
+      "python_source_files": 302,
+      "helper_sha256": "a112abc5a1af50d63115f6b722e6efaac6ee1c305d086cbec9feb04aa2a5e046",
+      "source_revision": "4d625cf252d35c57ec992346004f7204b4beea6b",
+      "reference_revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+      "source_tree_status": "",
+      "reference_tree_status": ""
+    },
+    "native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf",
+    "python_sources_sha256": "cb9148a13b3563d244f0a6df37f0036dabe47ff5d025d7b511dcf951c49b446b",
+    "helper_sha256": "a112abc5a1af50d63115f6b722e6efaac6ee1c305d086cbec9feb04aa2a5e046",
+    "source_revision": "4d625cf252d35c57ec992346004f7204b4beea6b",
+    "reference_revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "package_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-main-final-v4-release-python\\botorch_rs\\__init__.py",
+    "native_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-main-final-v4-release-python\\botorch_rs\\_botorch_rs.pyd",
+    "python_executable": "C:\\Users\\Mark\\miniconda3\\python.exe",
+    "torch": "2.13.0+cu132",
+    "cuda_device": "NVIDIA GeForce RTX 4050 Laptop GPU",
+    "verified_utc": "2026-10-20T21:58:56.528724+00:00",
+    "phase_reports": {
+      "broad": {
+        "path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-main-final-v4-broad.json",
+        "sha256": "7683076010940c502290626a24f8e7a825b59bb4826ee27e146cf7dacc562a52"
+      },
+      "equivalence": {
+        "path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-main-final-v4-equivalence.json",
+        "sha256": "47f48021a1625830e9b8170e09de3700f03e962be9a32c519bc29921099f7a7c"
+      }
+    },
+    "pair_verifier_sha256": "a8d265e7b88e5f442f5471801cfc8eca93b5d5f3f0ba43655b297b86a77aa8bf"
+  },
+  "checks": {
+    "clippy_warnings_as_errors": "passed",
+    "rustfmt": "passed",
+    "ruff_check_and_format": "passed; exact CI selection",
+    "mypy": "passed",
+    "installed_wheel_matches_python_sources": true,
+    "static_evidence": {
+      "metadata": "target/tensor-main-final-v4-static.json",
+      "metadata_sha256": "e68116373054fa7f3e5b22ad6bad69897e13c616f868f585645547cedb51750b",
+      "source_revision": "4d625cf252d35c57ec992346004f7204b4beea6b",
+      "git_status": "",
+      "checks": [
+        {
+          "name": "ruff",
+          "exit_code": 0,
+          "command": [
+            "C:\\Users\\Mark\\miniconda3\\python.exe",
+            "-m",
+            "ruff",
+            "check",
+            "--config",
+            "botorch_pyo3/pyproject.toml",
+            "botorch_pyo3/python",
+            "botorch_pyo3/tests",
+            "scripts/develop.py",
+            "scripts/benchmark.py",
+            "scripts/plot_benchmarks.py",
+            "scripts/api_coverage.py",
+            "scripts/benchmark_mo_utils.py",
+            "scripts/fixtures_mo_test_functions.py",
+            "scripts/benchmark_arrays.py",
+            "scripts/fixtures_mo_acquisition.py",
+            "scripts/fixtures_mo_hvkg.py",
+            "scripts/benchmark_mo_hvkg.py",
+            "scripts/fixtures_mo_entropy.py",
+            "scripts/benchmark_mo_entropy.py",
+            "scripts/fixtures_mo_robust.py",
+            "scripts/fixtures_deterministic.py",
+            "scripts/fixtures_lcemgp.py",
+            "scripts/fixtures_8_so_acquisition.py",
+            "scripts/fixtures_optim.py",
+            "scripts/fixtures_6a_kernels.py",
+            "scripts/fixtures_6b_transforms.py",
+            "scripts/fixtures_7a_multitask.py",
+            "scripts/fixtures_7b_models.py",
+            "scripts/fixtures_8b_acquisition_rest.py",
+            "scripts/fixtures_10b_preference.py",
+            "scripts/fit_comparison_sim.py",
+            "scripts/fixtures_10a_fully_bayesian.py",
+            "scripts/fixtures_10c_approximate.py",
+            "scripts/fixtures_11a_utils.py"
+          ],
+          "log": "target\\tensor-main-final-v4-static-ruff.log",
+          "log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+          "summary": "All checks passed!"
+        },
+        {
+          "name": "format",
+          "exit_code": 0,
+          "command": [
+            "C:\\Users\\Mark\\miniconda3\\python.exe",
+            "-m",
+            "ruff",
+            "format",
+            "--check",
+            "--config",
+            "botorch_pyo3/pyproject.toml",
+            "botorch_pyo3/python",
+            "botorch_pyo3/tests",
+            "scripts/develop.py",
+            "scripts/benchmark.py",
+            "scripts/plot_benchmarks.py",
+            "scripts/api_coverage.py",
+            "scripts/benchmark_mo_utils.py",
+            "scripts/fixtures_mo_test_functions.py",
+            "scripts/benchmark_arrays.py",
+            "scripts/fixtures_mo_acquisition.py",
+            "scripts/fixtures_mo_hvkg.py",
+            "scripts/benchmark_mo_hvkg.py",
+            "scripts/fixtures_mo_entropy.py",
+            "scripts/benchmark_mo_entropy.py",
+            "scripts/fixtures_mo_robust.py",
+            "scripts/fixtures_deterministic.py",
+            "scripts/fixtures_lcemgp.py",
+            "scripts/fixtures_8_so_acquisition.py",
+            "scripts/fixtures_optim.py",
+            "scripts/fixtures_6a_kernels.py",
+            "scripts/fixtures_6b_transforms.py",
+            "scripts/fixtures_7a_multitask.py",
+            "scripts/fixtures_7b_models.py",
+            "scripts/fixtures_8b_acquisition_rest.py",
+            "scripts/fixtures_10b_preference.py",
+            "scripts/fit_comparison_sim.py",
+            "scripts/fixtures_10a_fully_bayesian.py",
+            "scripts/fixtures_10c_approximate.py",
+            "scripts/fixtures_11a_utils.py"
+          ],
+          "log": "target\\tensor-main-final-v4-static-format.log",
+          "log_sha256": "8c72253610265d1e934deaad77835ce7d46e05090270524cdc54eaa640317bd4",
+          "summary": "584 files already formatted"
+        },
+        {
+          "name": "mypy-with-optionals",
+          "mypy_version": "mypy 2.4.0 (compiled: yes)",
+          "exit_code": 0,
+          "command": [
+            "C:\\Users\\Mark\\miniconda3\\python.exe",
+            "-m",
+            "mypy",
+            "--cache-dir",
+            "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-main-final-v4-mypy-with-optionals-cache",
+            "python/botorch_rs"
+          ],
+          "log": "target/tensor-main-final-v4-static-mypy-with-optionals.log",
+          "log_sha256": "850eec75ac3c4aac65128b47a3aa091de9d3c07061eeaf033d59f2646acc47fc",
+          "summary": "Success: no issues found in 301 source files"
+        },
+        {
+          "name": "mypy-no-optionals",
+          "mypy_version": "mypy 2.4.0 (compiled: yes)",
+          "exit_code": 0,
+          "command": [
+            "C:\\Users\\Mark\\miniconda3\\python.exe",
+            "-S",
+            "-m",
+            "mypy",
+            "--no-site-packages",
+            "--cache-dir",
+            "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-main-final-v4-mypy-no-optionals-cache",
+            "python/botorch_rs"
+          ],
+          "log": "target/tensor-main-final-v4-static-mypy-no-optionals.log",
+          "log_sha256": "850eec75ac3c4aac65128b47a3aa091de9d3c07061eeaf033d59f2646acc47fc",
+          "summary": "Success: no issues found in 301 source files"
+        },
+        {
+          "name": "diffcheck",
+          "command": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "exit_code": 0,
+          "log": "target/tensor-main-final-v4-static-diffcheck.log",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "summary": ""
+        }
+      ],
+      "formatted_files": 584,
+      "mypy_source_files_per_mode": 301
+    },
+    "native_quality_evidence": {
+      "metadata": "target/native-main-quality-v4-2026-10-20.json",
+      "metadata_sha256": "2e3448b1cffb11d7fd2ba6945b1068f065fcb8363b9b3b875f0deecc2c430135",
+      "source_revision": "4d625cf252d35c57ec992346004f7204b4beea6b",
+      "git_status": "",
+      "method": "Recorded from the observed successful root tool call running Clippy, then rustfmt only after Clippy exited 0. The combined command returned exit_code=0; this recorder does not infer rustfmt success from its empty log or rerun either check.",
+      "checks": [
+        {
+          "name": "clippy",
+          "command": [
+            "cargo",
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "exit_code": 0,
+          "log": "target/native-main-clippy-v4-2026-10-20.log",
+          "log_sha256": "0d99cba00eadaca7c89419592effbac334d1f4853c7c23aa1cf2546e96b0e5ef"
+        },
+        {
+          "name": "rustfmt",
+          "command": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "exit_code": 0,
+          "log": "target/native-main-rustfmt-v4-2026-10-20.log",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    }
+  },
+  "performance": [
+    {
+      "report": "benchmarks/tensor-main-prediction-2026-10-20-float64.json",
+      "dtype": "float64",
+      "scope": "interleaved shuffled warmed no_grad posterior mean+variance; CUDA synchronized before and after each timed call; excludes construction, fitting, imports, first training factor",
+      "speedup_reference_over_port": [
+        {
+          "train_n": 32,
+          "cpu": 1.5651752320265964,
+          "cuda": 1.6149553571428572,
+          "native_cpu": 5.2700559701492535
+        },
+        {
+          "train_n": 256,
+          "cpu": 1.2032299556952981,
+          "cuda": 1.461222717764534,
+          "native_cpu": 1.329805717896067
+        },
+        {
+          "train_n": 1024,
+          "cpu": 1.3412655884645364,
+          "cuda": 1.0704891555145364,
+          "native_cpu": 0.08958688872367114
+        }
+      ]
+    },
+    {
+      "report": "benchmarks/tensor-main-prediction-2026-10-20-float32.json",
+      "dtype": "float32",
+      "scope": "interleaved shuffled warmed no_grad posterior mean+variance; CUDA synchronized before and after each timed call; excludes construction, fitting, imports, first training factor",
+      "speedup_reference_over_port": [
+        {
+          "train_n": 32,
+          "cpu": 1.6485747754783286,
+          "cuda": 1.4884726224783862
+        },
+        {
+          "train_n": 256,
+          "cpu": 1.2343011478730586,
+          "cuda": 1.6533968368080518
+        },
+        {
+          "train_n": 1024,
+          "cpu": 1.0080214675245982,
+          "cuda": 1.462877817140273
+        }
+      ]
+    }
+  ],
+  "coverage_notes": "torch-backend.md",
+  "correctness_submissions": "upstream-pull-requests.md",
+  "remaining_limits": [
+    "Select backend=\"torch\" explicitly for CPU data/query/parameter higher-order graphs; native CPU float64 semantics are separate.",
+    "Dense exact Tensor algebra is used for structured Kronecker/higher-order models; structured-performance work is separate.",
+    "NUTS keeps numerical states on device but synchronizes scalar tree decisions; random/discrete choices and sampled MCMC values are detached as in standard MCMC. Arbitrary custom probabilistic overrides and eager jit_compile=True remain unsupported.",
+    "Noisy Tensor root-cache requests use an explicit exact-joint-sampling performance fallback.",
+    "General nonlinear constrained optimization and selected fitting/default optimizer interfaces use an explicit SciPy boundary; candidate vectors/objective derivatives cross that boundary while model algebra stays on device. Forced parallel SciPy mode is unsupported.",
+    "Model-specific shapes, transforms, likelihood and pathwise strategy restrictions are documented in the linked family notes.",
+    "KG evaluate holds optimized inner decisions fixed for its envelope gradient; augmented one-shot KG retains the functional graph.",
+    "The API inventory and regression suite do not establish exhaustive behavioral/GPU parity or universal speed improvements.",
+    "The separate Linux CI run validates PyTorch 2.14 CPU at test revision e5a6c0ad3da8 with runtime inputs identical to the frozen wheel. Its case counts are separate from the installed-wheel ledger; local CUDA validation uses PyTorch 2.13."
+  ],
+  "reproduce_python": {
+    "broad": "python scripts/verify_python_release.py --package-root target/tensor-main-final-v4-release-python --native-sha256 e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf --phase broad --report target/tensor-main-final-v4-broad.json",
+    "equivalence": "python scripts/verify_python_release.py --package-root target/tensor-main-final-v4-release-python --native-sha256 e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf --phase equivalence --report target/tensor-main-final-v4-equivalence.json",
+    "certificate": "python scripts/verify_python_release_pair.py --broad target/tensor-main-final-v4-broad.json --equivalence target/tensor-main-final-v4-equivalence.json --report target/tensor-main-final-v4-certificate.json"
+  },
+  "optional_dependency_tests": {
+    "source_revision": "4d625cf252d35c57ec992346004f7204b4beea6b",
+    "python_sources_sha256": "cb9148a13b3563d244f0a6df37f0036dabe47ff5d025d7b511dcf951c49b446b",
+    "python_source_files": 302,
+    "native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf",
+    "python_executable": "C:\\Users\\Mark\\miniconda3\\python.exe",
+    "cuda_visible_devices": "-1",
+    "torch_omp_mkl_rayon_threads": 1,
+    "method": "Import-blocking harness simulates absent optional dependencies; this is separate from the installed-wheel canonical ledgers and totals.",
+    "harness": "D:/collect-optional-dependencies.py",
+    "harness_sha256": "ac5e46849ee927077c8d863c495fd7baa22c0e0e97be6e70a120c76ae0d5b648",
+    "matrices": [
+      {
+        "name": "lists",
+        "passed": 802,
+        "skipped": 551,
+        "exit_code": 0,
+        "blocked_imports": [
+          "torch",
+          "numpy",
+          "gpytorch",
+          "botorch",
+          "linear_operator",
+          "jax",
+          "numpyro",
+          "scipy"
+        ],
+        "log": "target/tensor-main-final-v4-optional-lists.log",
+        "log_sha256": "334d07c13391f911f4bc96f05056500b1338f6952dc5199cb0cfc7ec543b72dc",
+        "summary": "802 passed, 551 skipped, 54 warnings in 31.07s",
+        "command": [
+          "C:\\Users\\Mark\\miniconda3\\python.exe",
+          "D:\\collect-optional-dependencies.py",
+          "torch,numpy,gpytorch,botorch,linear_operator,jax,numpyro,scipy",
+          "--run"
+        ],
+        "wall_seconds": 32.19899309996981,
+        "failed": 0,
+        "errors": 0,
+        "warnings": 54
+      },
+      {
+        "name": "numpy",
+        "passed": 1201,
+        "skipped": 628,
+        "exit_code": 0,
+        "blocked_imports": [
+          "torch",
+          "gpytorch",
+          "botorch",
+          "linear_operator",
+          "jax",
+          "numpyro",
+          "scipy"
+        ],
+        "log": "target/tensor-main-final-v4-optional-numpy.log",
+        "log_sha256": "817df1ee46b0b49dfa0a7cce47c527489ae31a521e2c481776ae68b127586155",
+        "summary": "1201 passed, 628 skipped, 98 warnings in 33.54s",
+        "command": [
+          "C:\\Users\\Mark\\miniconda3\\python.exe",
+          "D:\\collect-optional-dependencies.py",
+          "torch,gpytorch,botorch,linear_operator,jax,numpyro,scipy",
+          "--run"
+        ],
+        "wall_seconds": 34.854390599997714,
+        "failed": 0,
+        "errors": 0,
+        "warnings": 98
+      },
+      {
+        "name": "torch-cpu",
+        "passed": 2389,
+        "skipped": 1270,
+        "exit_code": 0,
+        "blocked_imports": [
+          "gpytorch",
+          "botorch",
+          "linear_operator",
+          "jax",
+          "numpyro",
+          "scipy"
+        ],
+        "log": "target/tensor-main-final-v4-optional-torch-cpu.log",
+        "log_sha256": "eb2c050cef54319fed53c9967fad672b39012ad2e9fecd1f20414bcb3166f4cc",
+        "summary": "2389 passed, 1270 skipped, 208 warnings in 95.44s (0:01:35)",
+        "command": [
+          "C:\\Users\\Mark\\miniconda3\\python.exe",
+          "D:\\collect-optional-dependencies.py",
+          "gpytorch,botorch,linear_operator,jax,numpyro,scipy",
+          "--run"
+        ],
+        "wall_seconds": 99.75102369999513,
+        "failed": 0,
+        "errors": 0,
+        "warnings": 208
+      }
+    ],
+    "started_utc": "2026-10-20T21:32:28.230764+00:00",
+    "finished_utc": "2026-10-20T21:34:56.734493+00:00",
+    "fingerprints_stable": true,
+    "tracked_trees_clean": true,
+    "before": {
+      "source_revision": "4d625cf252d35c57ec992346004f7204b4beea6b",
+      "source_tree_status": "",
+      "source_git_tree": "c41e7eeb53d44f7ff14fa52c4d50c78daa0f7267",
+      "tracked_source_sha256": "312da7a424fc9f2969bd978d26703e98a317ec8c0a71fda099424128bee7f302",
+      "tracked_source_files": 1215,
+      "python_sources_sha256": "cb9148a13b3563d244f0a6df37f0036dabe47ff5d025d7b511dcf951c49b446b",
+      "python_source_files": 302,
+      "package_payload_sha256": "f60fae6936f4d7022f44b1e2e5905a19f3f76b6df484d6f5b5cbea45a6e6da80",
+      "native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf",
+      "native_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\botorch_pyo3\\python\\botorch_rs\\_botorch_rs.pyd",
+      "harness_sha256": "ac5e46849ee927077c8d863c495fd7baa22c0e0e97be6e70a120c76ae0d5b648",
+      "installed_python_sources_sha256": "cb9148a13b3563d244f0a6df37f0036dabe47ff5d025d7b511dcf951c49b446b",
+      "installed_python_source_files": 302,
+      "installed_package_payload_sha256": "f60fae6936f4d7022f44b1e2e5905a19f3f76b6df484d6f5b5cbea45a6e6da80",
+      "installed_native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf",
+      "installed_prefix": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-main-final-v4-release-python"
+    },
+    "after": {
+      "source_revision": "4d625cf252d35c57ec992346004f7204b4beea6b",
+      "source_tree_status": "",
+      "source_git_tree": "c41e7eeb53d44f7ff14fa52c4d50c78daa0f7267",
+      "tracked_source_sha256": "312da7a424fc9f2969bd978d26703e98a317ec8c0a71fda099424128bee7f302",
+      "tracked_source_files": 1215,
+      "python_sources_sha256": "cb9148a13b3563d244f0a6df37f0036dabe47ff5d025d7b511dcf951c49b446b",
+      "python_source_files": 302,
+      "package_payload_sha256": "f60fae6936f4d7022f44b1e2e5905a19f3f76b6df484d6f5b5cbea45a6e6da80",
+      "native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf",
+      "native_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\botorch_pyo3\\python\\botorch_rs\\_botorch_rs.pyd",
+      "harness_sha256": "ac5e46849ee927077c8d863c495fd7baa22c0e0e97be6e70a120c76ae0d5b648",
+      "installed_python_sources_sha256": "cb9148a13b3563d244f0a6df37f0036dabe47ff5d025d7b511dcf951c49b446b",
+      "installed_python_source_files": 302,
+      "installed_package_payload_sha256": "f60fae6936f4d7022f44b1e2e5905a19f3f76b6df484d6f5b5cbea45a6e6da80",
+      "installed_native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf",
+      "installed_prefix": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-main-final-v4-release-python"
+    },
+    "loaded": {
+      "python_executable": "C:\\Users\\Mark\\miniconda3\\python.exe",
+      "package_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\botorch_pyo3\\python\\botorch_rs\\__init__.py",
+      "native_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\botorch_pyo3\\python\\botorch_rs\\_botorch_rs.pyd",
+      "native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf"
+    },
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "-1",
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "RAYON_NUM_THREADS": "1",
+      "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+      "PYTHONDONTWRITEBYTECODE": "1"
+    },
+    "removed_inherited_environment": {},
+    "previous_report": {
+      "path": "target/tensor-main-final-v3-optional-matrices.json",
+      "sha256": "cfeaf9abdcbf73e420b85ce6517bc360321aee99ff7aadd62e1346336b5e9654"
+    },
+    "installed_loaded": {
+      "python_executable": "C:\\Users\\Mark\\miniconda3\\python.exe",
+      "package_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-main-final-v4-release-python\\botorch_rs\\__init__.py",
+      "native_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-main-final-v4-release-python\\botorch_rs\\_botorch_rs.pyd",
+      "native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf"
+    },
+    "loaded_after": {
+      "python_executable": "C:\\Users\\Mark\\miniconda3\\python.exe",
+      "package_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\botorch_pyo3\\python\\botorch_rs\\__init__.py",
+      "native_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\botorch_pyo3\\python\\botorch_rs\\_botorch_rs.pyd",
+      "native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf"
+    },
+    "installed_loaded_after": {
+      "python_executable": "C:\\Users\\Mark\\miniconda3\\python.exe",
+      "package_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-main-final-v4-release-python\\botorch_rs\\__init__.py",
+      "native_path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\target\\tensor-main-final-v4-release-python\\botorch_rs\\_botorch_rs.pyd",
+      "native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf"
+    }
+  },
+  "native_bo_performance": {
+    "report": "benchmarks/native-main-bo-2026-10-20.json",
+    "median_seconds": {
+      "botorch_rs": 0.20729159994516522,
+      "botorch": 13.091863899957389
+    },
+    "speedup_reference_over_native": 63.156750700079385,
+    "scope": "30-iteration Hartmann-6 BO, same 14-point initial design; actual default GP fitting plus LogEI optimization (10 restarts,512 raw samples) each iteration; interleaved shuffled three seeded runs after one warmup per library; one Torch/Rayon thread; native CPU float64 versus BoTorch CPU float64; trajectories may differ"
+  },
+  "continuous_integration": {
+    "conclusion": "success",
+    "databaseId": 39508767912,
+    "event": "pull_request",
+    "headSha": "e5a6c0ad3da849cc047598c65aa8be365e2b43f2",
+    "jobs": [
+      {
+        "completedAt": "2026-10-20T22:32:04Z",
+        "conclusion": "success",
+        "databaseId": 118924246754,
+        "name": "Python lint",
+        "startedAt": "2026-10-20T22:31:47Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-20T22:31:48Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-20T22:31:47Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:52Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 2,
+            "startedAt": "2026-10-20T22:31:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:52Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 3,
+            "startedAt": "2026-10-20T22:31:52Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:56Z",
+            "conclusion": "success",
+            "name": "Install ruff and mypy",
+            "number": 4,
+            "startedAt": "2026-10-20T22:31:52Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:56Z",
+            "conclusion": "success",
+            "name": "ruff",
+            "number": 5,
+            "startedAt": "2026-10-20T22:31:56Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:01Z",
+            "conclusion": "success",
+            "name": "mypy",
+            "number": 6,
+            "startedAt": "2026-10-20T22:31:56Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:01Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 11,
+            "startedAt": "2026-10-20T22:32:01Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:01Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 12,
+            "startedAt": "2026-10-20T22:32:01Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:01Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 13,
+            "startedAt": "2026-10-20T22:32:01Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39508767912/job/118924246754"
+      },
+      {
+        "completedAt": "2026-10-20T22:38:41Z",
+        "conclusion": "success",
+        "databaseId": 118924246914,
+        "name": "Rust (windows-latest)",
+        "startedAt": "2026-10-20T22:31:47Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-20T22:31:50Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-20T22:31:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:03Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 2,
+            "startedAt": "2026-10-20T22:31:50Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:03Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 3,
+            "startedAt": "2026-10-20T22:32:03Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:27Z",
+            "conclusion": "success",
+            "name": "Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 4,
+            "startedAt": "2026-10-20T22:32:03Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:33Z",
+            "conclusion": "success",
+            "name": "rustfmt",
+            "number": 5,
+            "startedAt": "2026-10-20T22:32:27Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:33:25Z",
+            "conclusion": "success",
+            "name": "clippy",
+            "number": 6,
+            "startedAt": "2026-10-20T22:32:33Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:37Z",
+            "conclusion": "success",
+            "name": "Tests (unit, BoTorch parity fixtures, doctests)",
+            "number": 7,
+            "startedAt": "2026-10-20T22:33:25Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:37Z",
+            "conclusion": "success",
+            "name": "Post Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 12,
+            "startedAt": "2026-10-20T22:38:37Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:37Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 13,
+            "startedAt": "2026-10-20T22:38:37Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:39Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 14,
+            "startedAt": "2026-10-20T22:38:37Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:39Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 15,
+            "startedAt": "2026-10-20T22:38:39Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39508767912/job/118924246914"
+      },
+      {
+        "completedAt": "2026-10-20T22:45:55Z",
+        "conclusion": "success",
+        "databaseId": 118924246957,
+        "name": "Python 3.12 (ubuntu-latest, BoTorch parity)",
+        "startedAt": "2026-10-20T22:31:46Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-20T22:31:49Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-20T22:31:47Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:51Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 2,
+            "startedAt": "2026-10-20T22:31:49Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:51Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 3,
+            "startedAt": "2026-10-20T22:31:51Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:53Z",
+            "conclusion": "success",
+            "name": "Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 4,
+            "startedAt": "2026-10-20T22:31:51Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:10Z",
+            "conclusion": "success",
+            "name": "Install CPU-only torch",
+            "number": 5,
+            "startedAt": "2026-10-20T22:31:53Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:21Z",
+            "conclusion": "success",
+            "name": "Install test dependencies",
+            "number": 6,
+            "startedAt": "2026-10-20T22:32:10Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:23Z",
+            "conclusion": "success",
+            "name": "Check out the pinned official BoTorch reference",
+            "number": 7,
+            "startedAt": "2026-10-20T22:32:21Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:35Z",
+            "conclusion": "success",
+            "name": "Install the pinned reference and optional trace dependencies",
+            "number": 8,
+            "startedAt": "2026-10-20T22:32:23Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:33Z",
+            "conclusion": "success",
+            "name": "Build and install botorch-rust (maturin)",
+            "number": 9,
+            "startedAt": "2026-10-20T22:32:35Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:35Z",
+            "conclusion": "success",
+            "name": "Show versions",
+            "number": 10,
+            "startedAt": "2026-10-20T22:34:33Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:37Z",
+            "conclusion": "success",
+            "name": "Strict pinned core API inventory",
+            "number": 11,
+            "startedAt": "2026-10-20T22:34:35Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:41:50Z",
+            "conclusion": "success",
+            "name": "Tests",
+            "number": 12,
+            "startedAt": "2026-10-20T22:34:37Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:45:52Z",
+            "conclusion": "success",
+            "name": "Equivalence suite (BoTorch)",
+            "number": 13,
+            "startedAt": "2026-10-20T22:41:50Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:45:52Z",
+            "conclusion": "success",
+            "name": "Post Check out the pinned official BoTorch reference",
+            "number": 23,
+            "startedAt": "2026-10-20T22:45:52Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:45:52Z",
+            "conclusion": "success",
+            "name": "Post Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 24,
+            "startedAt": "2026-10-20T22:45:52Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:45:52Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 25,
+            "startedAt": "2026-10-20T22:45:52Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:45:52Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 26,
+            "startedAt": "2026-10-20T22:45:52Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:45:52Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 27,
+            "startedAt": "2026-10-20T22:45:52Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39508767912/job/118924246957"
+      },
+      {
+        "completedAt": "2026-10-20T22:38:13Z",
+        "conclusion": "success",
+        "databaseId": 118924246999,
+        "name": "Python 3.15 (windows-latest, numpy)",
+        "startedAt": "2026-10-20T22:31:47Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-20T22:31:50Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-20T22:31:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:59Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 2,
+            "startedAt": "2026-10-20T22:31:50Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:59Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 3,
+            "startedAt": "2026-10-20T22:31:59Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:10Z",
+            "conclusion": "success",
+            "name": "Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 4,
+            "startedAt": "2026-10-20T22:31:59Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:10Z",
+            "conclusion": "skipped",
+            "name": "Install CPU-only torch",
+            "number": 5,
+            "startedAt": "2026-10-20T22:32:10Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:22Z",
+            "conclusion": "success",
+            "name": "Install test dependencies",
+            "number": 6,
+            "startedAt": "2026-10-20T22:32:10Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:22Z",
+            "conclusion": "skipped",
+            "name": "Check out the pinned official BoTorch reference",
+            "number": 7,
+            "startedAt": "2026-10-20T22:32:22Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:22Z",
+            "conclusion": "skipped",
+            "name": "Install the pinned reference and optional trace dependencies",
+            "number": 8,
+            "startedAt": "2026-10-20T22:32:22Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:48Z",
+            "conclusion": "success",
+            "name": "Build and install botorch-rust (maturin)",
+            "number": 9,
+            "startedAt": "2026-10-20T22:32:22Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:48Z",
+            "conclusion": "success",
+            "name": "Show versions",
+            "number": 10,
+            "startedAt": "2026-10-20T22:37:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:48Z",
+            "conclusion": "skipped",
+            "name": "Strict pinned core API inventory",
+            "number": 11,
+            "startedAt": "2026-10-20T22:37:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:09Z",
+            "conclusion": "success",
+            "name": "Tests",
+            "number": 12,
+            "startedAt": "2026-10-20T22:37:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:09Z",
+            "conclusion": "skipped",
+            "name": "Equivalence suite (BoTorch)",
+            "number": 13,
+            "startedAt": "2026-10-20T22:38:09Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:09Z",
+            "conclusion": "success",
+            "name": "Post Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 24,
+            "startedAt": "2026-10-20T22:38:09Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:09Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 25,
+            "startedAt": "2026-10-20T22:38:09Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:12Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 26,
+            "startedAt": "2026-10-20T22:38:09Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:12Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 27,
+            "startedAt": "2026-10-20T22:38:12Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39508767912/job/118924246999"
+      },
+      {
+        "completedAt": "2026-10-20T22:39:25Z",
+        "conclusion": "success",
+        "databaseId": 118924247024,
+        "name": "Rust (macos-latest)",
+        "startedAt": "2026-10-20T22:31:48Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-20T22:31:52Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-20T22:31:49Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:57Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 2,
+            "startedAt": "2026-10-20T22:31:52Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:57Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 3,
+            "startedAt": "2026-10-20T22:31:57Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:21Z",
+            "conclusion": "success",
+            "name": "Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 4,
+            "startedAt": "2026-10-20T22:31:57Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:25Z",
+            "conclusion": "success",
+            "name": "rustfmt",
+            "number": 5,
+            "startedAt": "2026-10-20T22:32:21Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:33:20Z",
+            "conclusion": "success",
+            "name": "clippy",
+            "number": 6,
+            "startedAt": "2026-10-20T22:32:25Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:39:14Z",
+            "conclusion": "success",
+            "name": "Tests (unit, BoTorch parity fixtures, doctests)",
+            "number": 7,
+            "startedAt": "2026-10-20T22:33:20Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:39:15Z",
+            "conclusion": "success",
+            "name": "Post Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 12,
+            "startedAt": "2026-10-20T22:39:14Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:39:16Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 13,
+            "startedAt": "2026-10-20T22:39:15Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:39:17Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 14,
+            "startedAt": "2026-10-20T22:39:16Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:39:23Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 15,
+            "startedAt": "2026-10-20T22:39:17Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39508767912/job/118924247024"
+      },
+      {
+        "completedAt": "2026-10-20T22:36:22Z",
+        "conclusion": "success",
+        "databaseId": 118924247072,
+        "name": "Python 3.13 (ubuntu-latest, numpy + torch)",
+        "startedAt": "2026-10-20T22:31:46Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-20T22:31:49Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-20T22:31:47Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:51Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 2,
+            "startedAt": "2026-10-20T22:31:49Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:51Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 3,
+            "startedAt": "2026-10-20T22:31:51Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:54Z",
+            "conclusion": "success",
+            "name": "Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 4,
+            "startedAt": "2026-10-20T22:31:51Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:19Z",
+            "conclusion": "success",
+            "name": "Install CPU-only torch",
+            "number": 5,
+            "startedAt": "2026-10-20T22:31:54Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:24Z",
+            "conclusion": "success",
+            "name": "Install test dependencies",
+            "number": 6,
+            "startedAt": "2026-10-20T22:32:19Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:24Z",
+            "conclusion": "skipped",
+            "name": "Check out the pinned official BoTorch reference",
+            "number": 7,
+            "startedAt": "2026-10-20T22:32:24Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:24Z",
+            "conclusion": "skipped",
+            "name": "Install the pinned reference and optional trace dependencies",
+            "number": 8,
+            "startedAt": "2026-10-20T22:32:24Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:35:27Z",
+            "conclusion": "success",
+            "name": "Build and install botorch-rust (maturin)",
+            "number": 9,
+            "startedAt": "2026-10-20T22:32:24Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:35:28Z",
+            "conclusion": "success",
+            "name": "Show versions",
+            "number": 10,
+            "startedAt": "2026-10-20T22:35:27Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:35:28Z",
+            "conclusion": "skipped",
+            "name": "Strict pinned core API inventory",
+            "number": 11,
+            "startedAt": "2026-10-20T22:35:28Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:36:20Z",
+            "conclusion": "success",
+            "name": "Tests",
+            "number": 12,
+            "startedAt": "2026-10-20T22:35:28Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:36:20Z",
+            "conclusion": "skipped",
+            "name": "Equivalence suite (BoTorch)",
+            "number": 13,
+            "startedAt": "2026-10-20T22:36:20Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:36:20Z",
+            "conclusion": "success",
+            "name": "Post Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 24,
+            "startedAt": "2026-10-20T22:36:20Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:36:20Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 25,
+            "startedAt": "2026-10-20T22:36:20Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:36:20Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 26,
+            "startedAt": "2026-10-20T22:36:20Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:36:20Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 27,
+            "startedAt": "2026-10-20T22:36:20Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39508767912/job/118924247072"
+      },
+      {
+        "completedAt": "2026-10-20T22:34:47Z",
+        "conclusion": "success",
+        "databaseId": 118924247073,
+        "name": "Rust (ubuntu-latest)",
+        "startedAt": "2026-10-20T22:31:47Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-20T22:31:48Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-20T22:31:47Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:51Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 2,
+            "startedAt": "2026-10-20T22:31:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:51Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 3,
+            "startedAt": "2026-10-20T22:31:51Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:53Z",
+            "conclusion": "success",
+            "name": "Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 4,
+            "startedAt": "2026-10-20T22:31:51Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:56Z",
+            "conclusion": "success",
+            "name": "rustfmt",
+            "number": 5,
+            "startedAt": "2026-10-20T22:31:53Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:20Z",
+            "conclusion": "success",
+            "name": "clippy",
+            "number": 6,
+            "startedAt": "2026-10-20T22:31:56Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:46Z",
+            "conclusion": "success",
+            "name": "Tests (unit, BoTorch parity fixtures, doctests)",
+            "number": 7,
+            "startedAt": "2026-10-20T22:32:20Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:46Z",
+            "conclusion": "success",
+            "name": "Post Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 12,
+            "startedAt": "2026-10-20T22:34:46Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:46Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 13,
+            "startedAt": "2026-10-20T22:34:46Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:46Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 14,
+            "startedAt": "2026-10-20T22:34:46Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:46Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 15,
+            "startedAt": "2026-10-20T22:34:46Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39508767912/job/118924247073"
+      },
+      {
+        "completedAt": "2026-10-20T22:37:54Z",
+        "conclusion": "success",
+        "databaseId": 118924247108,
+        "name": "Python 3.13 (macos-latest, numpy)",
+        "startedAt": "2026-10-20T22:31:47Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-20T22:31:50Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-20T22:31:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:54Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 2,
+            "startedAt": "2026-10-20T22:31:50Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:55Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 3,
+            "startedAt": "2026-10-20T22:31:54Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:14Z",
+            "conclusion": "success",
+            "name": "Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 4,
+            "startedAt": "2026-10-20T22:31:55Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:14Z",
+            "conclusion": "skipped",
+            "name": "Install CPU-only torch",
+            "number": 5,
+            "startedAt": "2026-10-20T22:32:14Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:21Z",
+            "conclusion": "success",
+            "name": "Install test dependencies",
+            "number": 6,
+            "startedAt": "2026-10-20T22:32:14Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:21Z",
+            "conclusion": "skipped",
+            "name": "Check out the pinned official BoTorch reference",
+            "number": 7,
+            "startedAt": "2026-10-20T22:32:21Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:21Z",
+            "conclusion": "skipped",
+            "name": "Install the pinned reference and optional trace dependencies",
+            "number": 8,
+            "startedAt": "2026-10-20T22:32:21Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:25Z",
+            "conclusion": "success",
+            "name": "Build and install botorch-rust (maturin)",
+            "number": 9,
+            "startedAt": "2026-10-20T22:32:21Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:26Z",
+            "conclusion": "success",
+            "name": "Show versions",
+            "number": 10,
+            "startedAt": "2026-10-20T22:37:25Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:26Z",
+            "conclusion": "skipped",
+            "name": "Strict pinned core API inventory",
+            "number": 11,
+            "startedAt": "2026-10-20T22:37:26Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:46Z",
+            "conclusion": "success",
+            "name": "Tests",
+            "number": 12,
+            "startedAt": "2026-10-20T22:37:26Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:46Z",
+            "conclusion": "skipped",
+            "name": "Equivalence suite (BoTorch)",
+            "number": 13,
+            "startedAt": "2026-10-20T22:37:46Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:47Z",
+            "conclusion": "success",
+            "name": "Post Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 24,
+            "startedAt": "2026-10-20T22:37:46Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:47Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 25,
+            "startedAt": "2026-10-20T22:37:47Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:48Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 26,
+            "startedAt": "2026-10-20T22:37:47Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:51Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 27,
+            "startedAt": "2026-10-20T22:37:48Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39508767912/job/118924247108"
+      },
+      {
+        "completedAt": "2026-10-20T22:35:34Z",
+        "conclusion": "success",
+        "databaseId": 118924247122,
+        "name": "Python 3.15 (ubuntu-latest, numpy + torch)",
+        "startedAt": "2026-10-20T22:31:46Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-20T22:31:48Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-20T22:31:47Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:50Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 2,
+            "startedAt": "2026-10-20T22:31:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:51Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 3,
+            "startedAt": "2026-10-20T22:31:50Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:53Z",
+            "conclusion": "success",
+            "name": "Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 4,
+            "startedAt": "2026-10-20T22:31:51Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:20Z",
+            "conclusion": "success",
+            "name": "Install CPU-only torch",
+            "number": 5,
+            "startedAt": "2026-10-20T22:31:53Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:25Z",
+            "conclusion": "success",
+            "name": "Install test dependencies",
+            "number": 6,
+            "startedAt": "2026-10-20T22:32:20Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:25Z",
+            "conclusion": "skipped",
+            "name": "Check out the pinned official BoTorch reference",
+            "number": 7,
+            "startedAt": "2026-10-20T22:32:25Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:25Z",
+            "conclusion": "skipped",
+            "name": "Install the pinned reference and optional trace dependencies",
+            "number": 8,
+            "startedAt": "2026-10-20T22:32:25Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:48Z",
+            "conclusion": "success",
+            "name": "Build and install botorch-rust (maturin)",
+            "number": 9,
+            "startedAt": "2026-10-20T22:32:25Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:48Z",
+            "conclusion": "success",
+            "name": "Show versions",
+            "number": 10,
+            "startedAt": "2026-10-20T22:34:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:48Z",
+            "conclusion": "skipped",
+            "name": "Strict pinned core API inventory",
+            "number": 11,
+            "startedAt": "2026-10-20T22:34:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:35:32Z",
+            "conclusion": "success",
+            "name": "Tests",
+            "number": 12,
+            "startedAt": "2026-10-20T22:34:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:35:32Z",
+            "conclusion": "skipped",
+            "name": "Equivalence suite (BoTorch)",
+            "number": 13,
+            "startedAt": "2026-10-20T22:35:32Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:35:32Z",
+            "conclusion": "success",
+            "name": "Post Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 24,
+            "startedAt": "2026-10-20T22:35:32Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:35:32Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 25,
+            "startedAt": "2026-10-20T22:35:32Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:35:32Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 26,
+            "startedAt": "2026-10-20T22:35:32Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:35:32Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 27,
+            "startedAt": "2026-10-20T22:35:32Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39508767912/job/118924247122"
+      },
+      {
+        "completedAt": "2026-10-20T22:34:51Z",
+        "conclusion": "success",
+        "databaseId": 118924247126,
+        "name": "Python 3.11 (ubuntu-latest, lists)",
+        "startedAt": "2026-10-20T22:31:47Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-20T22:31:50Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-20T22:31:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:53Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 2,
+            "startedAt": "2026-10-20T22:31:50Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:53Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 3,
+            "startedAt": "2026-10-20T22:31:53Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:57Z",
+            "conclusion": "success",
+            "name": "Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 4,
+            "startedAt": "2026-10-20T22:31:53Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:31:57Z",
+            "conclusion": "skipped",
+            "name": "Install CPU-only torch",
+            "number": 5,
+            "startedAt": "2026-10-20T22:31:57Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:04Z",
+            "conclusion": "success",
+            "name": "Install test dependencies",
+            "number": 6,
+            "startedAt": "2026-10-20T22:31:57Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:04Z",
+            "conclusion": "skipped",
+            "name": "Check out the pinned official BoTorch reference",
+            "number": 7,
+            "startedAt": "2026-10-20T22:32:04Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:04Z",
+            "conclusion": "skipped",
+            "name": "Install the pinned reference and optional trace dependencies",
+            "number": 8,
+            "startedAt": "2026-10-20T22:32:04Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:34Z",
+            "conclusion": "success",
+            "name": "Build and install botorch-rust (maturin)",
+            "number": 9,
+            "startedAt": "2026-10-20T22:32:04Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:35Z",
+            "conclusion": "success",
+            "name": "Show versions",
+            "number": 10,
+            "startedAt": "2026-10-20T22:34:34Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:35Z",
+            "conclusion": "skipped",
+            "name": "Strict pinned core API inventory",
+            "number": 11,
+            "startedAt": "2026-10-20T22:34:35Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:48Z",
+            "conclusion": "success",
+            "name": "Tests",
+            "number": 12,
+            "startedAt": "2026-10-20T22:34:35Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:48Z",
+            "conclusion": "skipped",
+            "name": "Equivalence suite (BoTorch)",
+            "number": 13,
+            "startedAt": "2026-10-20T22:34:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:48Z",
+            "conclusion": "success",
+            "name": "Post Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 24,
+            "startedAt": "2026-10-20T22:34:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:48Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 25,
+            "startedAt": "2026-10-20T22:34:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:48Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 26,
+            "startedAt": "2026-10-20T22:34:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:34:48Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 27,
+            "startedAt": "2026-10-20T22:34:48Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39508767912/job/118924247126"
+      },
+      {
+        "completedAt": "2026-10-20T22:38:18Z",
+        "conclusion": "success",
+        "databaseId": 118924247137,
+        "name": "Python 3.12 (windows-latest, numpy)",
+        "startedAt": "2026-10-20T22:31:47Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-20T22:31:49Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-20T22:31:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:00Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 2,
+            "startedAt": "2026-10-20T22:31:49Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:00Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 3,
+            "startedAt": "2026-10-20T22:32:00Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:11Z",
+            "conclusion": "success",
+            "name": "Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 4,
+            "startedAt": "2026-10-20T22:32:00Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:11Z",
+            "conclusion": "skipped",
+            "name": "Install CPU-only torch",
+            "number": 5,
+            "startedAt": "2026-10-20T22:32:11Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:26Z",
+            "conclusion": "success",
+            "name": "Install test dependencies",
+            "number": 6,
+            "startedAt": "2026-10-20T22:32:11Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:26Z",
+            "conclusion": "skipped",
+            "name": "Check out the pinned official BoTorch reference",
+            "number": 7,
+            "startedAt": "2026-10-20T22:32:26Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:32:26Z",
+            "conclusion": "skipped",
+            "name": "Install the pinned reference and optional trace dependencies",
+            "number": 8,
+            "startedAt": "2026-10-20T22:32:26Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:51Z",
+            "conclusion": "success",
+            "name": "Build and install botorch-rust (maturin)",
+            "number": 9,
+            "startedAt": "2026-10-20T22:32:26Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:51Z",
+            "conclusion": "success",
+            "name": "Show versions",
+            "number": 10,
+            "startedAt": "2026-10-20T22:37:51Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:37:51Z",
+            "conclusion": "skipped",
+            "name": "Strict pinned core API inventory",
+            "number": 11,
+            "startedAt": "2026-10-20T22:37:51Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:14Z",
+            "conclusion": "success",
+            "name": "Tests",
+            "number": 12,
+            "startedAt": "2026-10-20T22:37:51Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:14Z",
+            "conclusion": "skipped",
+            "name": "Equivalence suite (BoTorch)",
+            "number": 13,
+            "startedAt": "2026-10-20T22:38:14Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:14Z",
+            "conclusion": "success",
+            "name": "Post Set up the Rust toolchain (rust-toolchain.toml)",
+            "number": 24,
+            "startedAt": "2026-10-20T22:38:14Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:15Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "number": 25,
+            "startedAt": "2026-10-20T22:38:14Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:17Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "number": 26,
+            "startedAt": "2026-10-20T22:38:15Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-20T22:38:17Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 27,
+            "startedAt": "2026-10-20T22:38:17Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39508767912/job/118924247137"
+      }
+    ],
+    "status": "completed",
+    "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39508767912",
+    "recorded_utc": "2026-10-20T22:46:35.157259+00:00",
+    "meaning": "Separate CI validation after test/documentation-only changes. The frozen Windows wheel and its canonical case ledger remain at the original source revision; later CI counts are not added to the installed-wheel total.",
+    "parity_log": "target/main-followup-ci-39508767912-parity.log",
+    "parity_log_sha256": "b6b5b67e2fe6ed295d2d1a5cca4a48a572d340ca1161ab05afdf5c9b7ffaa33c",
+    "parity_torch": "2.14.1+cpu",
+    "parity_phase_summaries": [
+      {
+        "passed": 7824,
+        "skipped": 555,
+        "duration": "426.87s"
+      },
+      {
+        "passed": 1222,
+        "skipped": 15,
+        "duration": "236.13s"
+      }
+    ],
+    "runtime_identity": {
+      "frozen_source_revision": "4d625cf252d35c57ec992346004f7204b4beea6b",
+      "validation_revision": "e5a6c0ad3da849cc047598c65aa8be365e2b43f2",
+      "changed_paths": [
+        "README.md",
+        "botorch_pyo3/tests/test_equivalence_10a_fully_bayesian.py",
+        "botorch_pyo3/tests/test_equivalence_11a_utils.py",
+        "botorch_pyo3/tests/test_torch_fully_bayesian_multitask.py",
+        "docs/benchmarks/native-main-bo-2026-10-20.json",
+        "docs/benchmarks/tensor-main-prediction-2026-10-20-float32.json",
+        "docs/benchmarks/tensor-main-prediction-2026-10-20-float64.json",
+        "docs/drafts/11a-utils.md",
+        "docs/empirical-gp-models.md",
+        "docs/models.md",
+        "docs/roadmap.md",
+        "docs/torch-backend.md",
+        "docs/torch-fully-bayesian-multitask.md",
+        "docs/torch-fully-bayesian.md",
+        "docs/upstream-pull-requests.md",
+        "docs/verification-main-device-release-2026-10-20.json"
+      ],
+      "only_tests_and_documentation_changed": true,
+      "python_source_files": 302,
+      "python_sources_sha256": "cb9148a13b3563d244f0a6df37f0036dabe47ff5d025d7b511dcf951c49b446b",
+      "native_sha256": "e8adc00da79eed53dd1260aa3c54574369ffb979b6d55b7ff81c6e1597e083cf",
+      "native_sha256_meaning": "Unchanged local Windows extension from the frozen release; Linux CI builds its own platform extension from the same Rust/Cargo sources.",
+      "rust_cargo_input_files_unchanged": 300,
+      "release_helpers_and_benchmark_scripts_unchanged": true
+    }
+  }
+}

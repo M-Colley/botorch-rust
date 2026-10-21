@@ -5,9 +5,12 @@ handling (no BoTorch needed; callables need torch)."""
 
 from __future__ import annotations
 
+import builtins
+import importlib
 import math
 import sys
 import warnings
+from importlib.util import find_spec
 from typing import Any
 
 import pytest
@@ -632,10 +635,34 @@ def test_optimize_constraint_errors_and_options(kind: str, single_model: SingleT
             inequality_constraints=constraints_of(kind, INEQ),
             options={"method": "L-BFGS-B"},
         )
-    with pytest.raises(UnsupportedError, match="method"):
-        optimize_acqf(
-            acqf, bounds, q=1, num_restarts=2, raw_samples=8, options={"method": "COBYLA"}
+    if HAS_TORCH and find_spec("scipy") is not None:
+        # General SciPy methods are now supported through the Torch callback
+        # driver. Exercise a legal derivative-free option and its actual law.
+        X, value = optimize_acqf(
+            acqf,
+            bounds,
+            q=1,
+            num_restarts=2,
+            raw_samples=8,
+            options={"method": "COBYLA", "with_grad": False, "maxiter": 30, "seed": 0},
         )
+        check_kind(X, kind)
+        assert shape(X) == (1, 2) and satisfies(X)
+        assert float(value) == pytest.approx(flatten(acqf(X))[0], rel=1e-12)
+        with pytest.raises(ValueError, match="Unknown solver"):
+            optimize_acqf(
+                acqf,
+                bounds,
+                q=1,
+                num_restarts=2,
+                raw_samples=8,
+                options={"method": "not-a-minimizer"},
+            )
+    else:
+        with pytest.raises(UnsupportedError, match="method.*requires.*dependency.*(?:torch|scipy)"):
+            optimize_acqf(
+                acqf, bounds, q=1, num_restarts=2, raw_samples=8, options={"method": "COBYLA"}
+            )
     infeasible = constraints_of(kind, [([0], [1.0], 0.8), ([0], [-1.0], -0.2)])
     with pytest.raises(InfeasibilityError, match="polytope appears empty"):
         optimize_acqf(
@@ -682,6 +709,38 @@ def test_optimize_constraint_errors_and_options(kind: str, single_model: SingleT
             raw_samples=8,
             batch_initial_conditions=as_kind([[0.2, 0.3]], kind),
             inequality_constraints=constraints_of(kind, INEQ),
+        )
+
+
+@pytest.mark.parametrize("dependency", ["torch", "scipy"])
+def test_general_optimizer_missing_dependency_is_explicit(
+    single_model: SingleTaskGP, dependency: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if dependency == "scipy":
+        pytest.importorskip("torch")
+    module = importlib.import_module("botorch_rs.optim.optimize")
+    acqf = qlogei(single_model)
+    if dependency == "torch":
+        original_import = builtins.__import__
+
+        def missing_torch(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "torch":
+                raise ModuleNotFoundError("No module named 'torch'", name="torch")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", missing_torch)
+    else:
+        original_import_module = module.import_module
+
+        def missing_scipy(name: str) -> Any:
+            if name == "scipy.optimize":
+                raise ModuleNotFoundError("No module named 'scipy'", name="scipy")
+            return original_import_module(name)
+
+        monkeypatch.setattr(module, "import_module", missing_scipy)
+    with pytest.raises(UnsupportedError, match=f"method 'COBYLA'.*dependency '{dependency}'"):
+        optimize_acqf(
+            acqf, BOUNDS, q=1, num_restarts=2, raw_samples=8, options={"method": "COBYLA"}
         )
 
 

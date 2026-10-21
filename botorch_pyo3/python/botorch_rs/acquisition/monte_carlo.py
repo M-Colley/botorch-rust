@@ -22,11 +22,14 @@ from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import kind_of
 from botorch_rs.acquisition.acquisition import (
     AcquisitionFunction,
+    MCSamplerMixin,
     pending_arg,
     scalar_arg,
 )
 from botorch_rs.acquisition.objective import (
     IdentityMCObjective,
+    _objective_batch_shape,
+    _requires_joint_sampling,
     constraints_arg,
     is_constrained_objective,
     objective_arg,
@@ -50,7 +53,7 @@ def check_constrained_objective(objective: Any, constraints: Any) -> None:
         )
 
 
-class MCAcquisitionFunction(AcquisitionFunction):
+class MCAcquisitionFunction(AcquisitionFunction, MCSamplerMixin):
     """Base class of the Monte-Carlo acquisition functions."""
 
     def __init__(
@@ -74,16 +77,23 @@ class MCAcquisitionFunction(AcquisitionFunction):
                     "posterior_transform must scalarize the output."
                 )
         self._objective = objective_arg(objective)
+        self._objective_batch_shape = _objective_batch_shape(objective)
         self.objective = IdentityMCObjective() if objective is None else objective
         self.posterior_transform = posterior_transform
         self._rs_model = self._model_handle(posterior_transform)
-        self.sampler = mc_sampler_arg(sampler, self._rs_model, (DEFAULT_MC_SAMPLES,))
+        self.sampler = mc_sampler_arg(sampler, self._rs_model, self._default_sample_shape)
         self._pending = pending_arg(X_pending, self._rs_model.dim)
         if X_pending is not None:
             self._pending_kind = kind_of(X_pending)
         self._constraints: list[Any] | None = None
         self._eta: Any = None
         self._fat: Any = False
+
+    def _get_samples_and_objectives(self, X: Any) -> tuple[Any, Any]:
+        """Return posterior samples and their MC objective values at ``X``."""
+        posterior = self.model.posterior(X=X, posterior_transform=self.posterior_transform)
+        samples = self.get_posterior_samples(posterior)
+        return samples, self.objective(samples=samples, X=X)
 
     def _set_constraints(self, constraints: Any, eta: Any, fat: Any = False) -> dict[str, Any]:
         """Stores BoTorch's ``_constraints``, ``_eta`` and ``_fat`` and returns
@@ -101,6 +111,7 @@ class MCAcquisitionFunction(AcquisitionFunction):
             self.sampler._rs,
             self._pending,
             objective=self._objective,
+            objective_batch_shape=self._objective_batch_shape,
             **kwargs,
         )
 
@@ -235,11 +246,6 @@ class SampleReducingMCAcquisitionFunction(MCAcquisitionFunction):
         """Whether the class is evaluated through torch (it defines
         ``_sample_forward`` outside of botorch_rs)."""
         return _defines_sample_forward(cls)
-
-    @property
-    def sample_shape(self) -> tuple[int, ...]:
-        """The sample shape of the sampler."""
-        return tuple(self.sampler.sample_shape)
 
     def _sample_reduction(self, X: Any) -> Any:
         import torch
@@ -608,21 +614,91 @@ _CACHE_ROOT_MESSAGE = (
     "don't produce a TransformedPosterior. Got a model of type {}. Setting `cache_root = False`."
 )
 
+_LEARNED_CACHE_ROOT_MESSAGE = (
+    "A stochastic or batched LearnedObjective requires joint baseline and candidate preference samples. "
+    "Setting cache_root=False to preserve their joint distribution."
+)
+
 
 def supports_cache_root(model: Any) -> bool:
     r"""Checks if a model supports the cache_root functionality (BoTorch's
     ``supports_cache_root``): the models of a ``ModelListGP`` must, and
     multi-task (``MultiTaskGP``, ``LCEMGP``, ``KroneckerMultiTaskGP``) and
     deterministic models do not."""
-    from botorch_rs.models.gp_regression import SingleTaskGP
+    from botorch_rs.models.gpytorch import GPyTorchModel
     from botorch_rs.models.model_list_gp_regression import ModelListGP
-    from botorch_rs.models.multitask import KroneckerMultiTaskGP, MultiTaskGP
 
     if isinstance(model, ModelListGP):
         return all(supports_cache_root(m) for m in model.models)
-    if isinstance(model, (MultiTaskGP, KroneckerMultiTaskGP)):
+    if getattr(model, "_supports_cache_root", True) is False:
         return False
-    return isinstance(model, SingleTaskGP)
+    if not isinstance(model, GPyTorchModel):
+        return False
+    transform = getattr(model, "outcome_transform", None)
+    return transform is None or bool(transform._is_linear)
+
+
+def _compute_noisy_best_f(acqf: Any, obj: Any) -> Any:
+    """Shape actual native incumbents like BoTorch's compute_best_f.
+
+    A cached baseline is available at construction. An uncached baseline
+    comes from the exact last completed evaluation, with parallel t-batches
+    captured together by the native bridge.
+    """
+    from botorch_rs._arrays import broadcast_shapes, from_flat, to_flat
+    from botorch_rs.exceptions.errors import BotorchTensorDimensionError
+
+    _, obj_shape = to_flat(obj, "obj")
+    sample_shape = tuple(acqf.sample_shape)
+    n_sample = len(sample_shape)
+    if (
+        obj_shape
+        and obj_shape[:n_sample] != sample_shape
+        and obj_shape[0] > 0
+        and obj_shape[0] % math.prod(sample_shape) == 0
+    ):
+        sample_shape = (obj_shape[0],)
+        n_sample = 1
+    if len(obj_shape) < n_sample + 1 or obj_shape[:n_sample] != sample_shape:
+        raise BotorchTensorDimensionError(
+            f"obj must have sample shape {sample_shape} followed by batch dimensions and q; "
+            f"got {obj_shape}."
+        )
+    batch_shape: tuple[int, ...]
+    members = acqf.__dict__.get("_ensemble_acqfs")
+    if members:
+        cached = [member._rs.baseline_best_f() for member in members]
+        if any(value is None for value in cached):
+            raise UnsupportedError(
+                "compute_best_f for an uncached ensemble requires per-member forward state; "
+                "use cache_root=True on a supported GP ensemble."
+            )
+        count = math.prod(sample_shape)
+        data = [cached[member][sample] for sample in range(count) for member in range(len(cached))]
+        batch_shape = (len(members),)
+    else:
+        cached_best = acqf._rs.baseline_best_f()
+        if cached_best is not None:
+            data, batch_shape = cached_best, ()
+        else:
+            state = acqf._rs.last_baseline_best_f()
+            if state is None:
+                raise RuntimeError(
+                    "compute_best_f requires a completed forward when cache_root=False."
+                )
+            data, shape = state
+            if shape[0] != math.prod(sample_shape):
+                raise BotorchTensorDimensionError("The stored incumbent sample shape has changed.")
+            batch_shape = tuple(shape[1:])
+    if len(data) != math.prod(sample_shape) * math.prod(batch_shape):
+        raise BotorchTensorDimensionError("The stored incumbent sample shape has changed.")
+    padding = len(obj_shape) - n_sample - len(batch_shape) - 1
+    if padding < 0 or broadcast_shapes(batch_shape, obj_shape[n_sample:-1]) is None:
+        raise BotorchTensorDimensionError(
+            f"Stored incumbent batch shape {batch_shape} is incompatible with obj shape {obj_shape}."
+        )
+    view_shape = (*sample_shape, *((1,) * padding), *batch_shape)
+    return from_flat(data, view_shape, kind_of(obj))
 
 
 class qNoisyExpectedImprovement(SampleReducingMCAcquisitionFunction):
@@ -677,10 +753,15 @@ class qNoisyExpectedImprovement(SampleReducingMCAcquisitionFunction):
         check_unsupported(marginalize_dim=marginalize_dim)
         check_constrained_objective(objective, constraints)
         super().__init__(model, sampler, objective, posterior_transform, X_pending)
+        requested_cache_root = cache_root
         if cache_root is None:
             cache_root = supports_cache_root(model)
         elif cache_root and not supports_cache_root(model):
             warnings.warn(_CACHE_ROOT_MESSAGE.format(type(model)), RuntimeWarning, stacklevel=2)
+            cache_root = False
+        if cache_root and _requires_joint_sampling(objective):
+            if requested_cache_root:
+                warnings.warn(_LEARNED_CACHE_ROOT_MESSAGE, RuntimeWarning, stacklevel=2)
             cache_root = False
         self._cache_root = bool(cache_root)
         baseline = to_flat(X_baseline, "X_baseline")
@@ -704,6 +785,7 @@ class qNoisyExpectedImprovement(SampleReducingMCAcquisitionFunction):
             self._pending,
             objective=self._objective,
             prune_baseline=bool(prune_baseline),
+            objective_batch_shape=self._objective_batch_shape,
             prune_num_samples=_PRUNE_SAMPLES,
             prune_max_frac=1.0,
             prune_seed=(self.sampler.seed ^ _PRUNE_SEED_SALT) & 0xFFFFFFFFFFFFFFFF,
@@ -711,6 +793,10 @@ class qNoisyExpectedImprovement(SampleReducingMCAcquisitionFunction):
             lower_bound_points=lb,
             **kwargs,
         )
+
+    def compute_best_f(self, obj: Any) -> Any:
+        """Return the actual best feasible noisy value for every MC sample."""
+        return _compute_noisy_best_f(self, obj)
 
     def _after_evaluation(self) -> None:
         # BoTorch warns when some sample has no feasible baseline point.

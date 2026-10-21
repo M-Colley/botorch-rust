@@ -322,6 +322,27 @@ impl PyMultiTaskGP {
         Self::from_batch((*self.state()).clone())
     }
 
+    /// Fixed sampled Kumaraswamy concentrations on non-task columns.
+    fn set_input_warp(
+        &self,
+        indices: Vec<usize>,
+        c0: Vec<f64>,
+        c1: Vec<f64>,
+        eps: f64,
+    ) -> PyResult<()> {
+        self.update(|model| model.set_input_warp(indices.clone(), c0.clone(), c1.clone(), eps))
+    }
+
+    /// Fixed offsets after normalization and sampled warping.
+    fn set_input_feature_offsets(&self, indices: Vec<usize>, offsets: Vec<f64>) -> PyResult<()> {
+        self.update(|model| model.set_input_feature_offsets(indices.clone(), offsets.clone()))
+    }
+
+    /// Install a fitted positive affine outcome map on transformed data.
+    fn _set_fitted_outcome_affine(&self, offset: f64, scale: f64) -> PyResult<()> {
+        self.update(|model| model.set_fitted_outcome_affine(offset, scale))
+    }
+
     // ------------------------------------------------------------------
     // Data and configuration
     // ------------------------------------------------------------------
@@ -467,6 +488,20 @@ impl PyMultiTaskGP {
             Vec::new(),
         )
         .map(Some)
+    }
+
+    #[pyo3(signature=(standardize=None, chains=None))]
+    fn _set_fitted_outcome_state(
+        &self,
+        standardize: Option<PyRef<'_, PyStandardize>>,
+        chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+    ) -> PyResult<()> {
+        let transform = crate::models::unbatched_fitted_outcome_state(standardize, chains)?;
+        self.update(|model| {
+            model
+                .set_fitted_outcome_state(transform.clone())
+                .map(|_| ())
+        })
     }
 
     /// The fitted input transform (`learn_bounds` as given), if any.
@@ -725,7 +760,7 @@ impl PyMultiTaskGP {
         y: Array,
         noise: Option<Array>,
     ) -> PyResult<Self> {
-        let model = self.single("condition_on_observations")?;
+        let state = self.state();
         let (xb, xs) = x.batches("X")?;
         let (yb, ys) = y.batches("Y")?;
         let nz = noise.map(|v| v.batches("noise")).transpose()?;
@@ -733,30 +768,36 @@ impl PyMultiTaskGP {
         let nb = nz.as_ref().map_or(&empty, |(b, _)| b);
         let out = broadcast_shapes(&xb, &yb)
             .and_then(|s| broadcast_shapes(&s, nb))
+            .and_then(|s| broadcast_shapes(&s, &state.batch_shape))
             .ok_or_else(|| {
                 dimension_error(format!(
-                    "The batch shapes of X ({xb:?}), Y ({yb:?}) and the noise ({nb:?}) are not \
-                     broadcastable."
+                    "The batch shapes of X ({xb:?}), Y ({yb:?}), noise ({nb:?}) and \
+                     model ({:?}) are not broadcastable.",
+                    state.batch_shape
                 ))
             })?;
         let ix = broadcast_indices(&xb, &out);
         let iy = broadcast_indices(&yb, &out);
         let inz = broadcast_indices(nb, &out);
+        let im = broadcast_indices(&state.batch_shape, &out);
         let models = threads::run(py, || -> botorch_core::Result<Vec<Arc<MultiTaskGP>>> {
             let mut slots: Vec<Option<Arc<MultiTaskGP>>> = vec![None; ix.len()];
             // Elements with the same inputs (and noise) share the update.
-            let mut groups: std::collections::BTreeMap<(usize, usize), Vec<usize>> =
+            let mut groups: std::collections::BTreeMap<(usize, usize, usize), Vec<usize>> =
                 std::collections::BTreeMap::new();
             for r in 0..ix.len() {
-                groups.entry((ix[r], inz[r])).or_default().push(r);
+                groups.entry((im[r], ix[r], inz[r])).or_default().push(r);
             }
-            for ((a, b), members) in groups {
+            for ((model_index, a, b), members) in groups {
                 let noise_vec: Option<Vec<f64>> = nz
                     .as_ref()
                     .map(|(_, mats)| mats[b].column(0).iter().copied().collect());
                 let yy: Vec<Matrix> = members.iter().map(|&r| ys[iy[r]].clone()).collect();
-                let conditioned =
-                    model.condition_on_observations_many(&xs[a], &yy, noise_vec.as_deref())?;
+                let conditioned = state.models[model_index].condition_on_observations_many(
+                    &xs[a],
+                    &yy,
+                    noise_vec.as_deref(),
+                )?;
                 for (&r, c) in members.iter().zip(conditioned) {
                     slots[r] = Some(Arc::new(c));
                 }
@@ -999,6 +1040,20 @@ impl PyKroneckerMultiTaskGP {
         matrix_out(self.snapshot().transformed_train_targets()).into()
     }
 
+    /// Cached noiseless training covariance, interleaved point then task.
+    fn train_full_covar(&self, py: Python<'_>) -> PyResult<ArrayBuf> {
+        let model = self.snapshot();
+        let value = threads::run(py, || model.train_full_covar()).into_py_result()?;
+        Ok(matrix_out(value.as_ref()).into())
+    }
+
+    /// Cached transformed-space predictive mean solve (interleaved).
+    fn predictive_mean_cache(&self, py: Python<'_>) -> PyResult<ArrayBuf> {
+        let model = self.snapshot();
+        let value = threads::run(py, || model.predictive_mean_cache()).into_py_result()?;
+        Ok(ArrayBuf(value.as_slice().to_vec(), vec![value.len()]))
+    }
+
     /// The fitted outcome transform, if any.
     fn outcome_transform(&self) -> PyResult<Option<PyStandardize>> {
         let m = self.snapshot();
@@ -1012,6 +1067,20 @@ impl PyKroneckerMultiTaskGP {
             Vec::new(),
         )
         .map(Some)
+    }
+
+    #[pyo3(signature=(standardize=None, chains=None))]
+    fn _set_fitted_outcome_state(
+        &self,
+        standardize: Option<PyRef<'_, PyStandardize>>,
+        chains: Option<Vec<Vec<PyRef<'_, crate::transform_steps::PyOutcomeStep>>>>,
+    ) -> PyResult<()> {
+        let transform = crate::models::unbatched_fitted_outcome_state(standardize, chains)?;
+        let mut next = (*self.snapshot()).clone();
+        if next.set_fitted_outcome_state(transform).into_py_result()? {
+            self.replace(next);
+        }
+        Ok(())
     }
 
     /// The fitted input transform (`learn_bounds` as given), if any.
@@ -1179,6 +1248,46 @@ impl PyKroneckerMultiTaskGP {
     /// Matheron samples (`S x batch x (q m)`, interleaved) at `x` (`batch x
     /// q x d`) from base samples `z` (`S x total` shared by the batches, or
     /// `S x batch x total`).
+    #[pyo3(signature=(x, mean_adjoint, variance_adjoint, observation_noise=false))]
+    fn marginal_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        mean_adjoint: Array,
+        variance_adjoint: Array,
+        observation_noise: bool,
+    ) -> PyResult<ArrayBuf> {
+        let x = x.matrix("X")?;
+        let mean = mean_adjoint.matrix("mean_adjoint")?;
+        let variance = variance_adjoint.matrix("variance_adjoint")?;
+        let model = self.snapshot();
+        threads::run(py, || {
+            model.marginal_vjp(&x, &mean, &variance, observation_noise)
+        })
+        .map(|g| matrix_out(&g).into())
+        .into_py_result()
+    }
+
+    #[pyo3(signature=(x, z, adjoint, observation_noise=false))]
+    fn matheron_samples_vjp(
+        &self,
+        py: Python<'_>,
+        x: Array,
+        z: Array,
+        adjoint: Array,
+        observation_noise: bool,
+    ) -> PyResult<ArrayBuf> {
+        let x = x.matrix("X")?;
+        let z = z.matrix("base_samples")?;
+        let adjoint = adjoint.matrix("adjoint")?;
+        let model = self.snapshot();
+        threads::run(py, || {
+            model.matheron_samples_vjp(&x, &z, &adjoint, observation_noise)
+        })
+        .map(|g| matrix_out(&g).into())
+        .into_py_result()
+    }
+
     #[pyo3(signature = (x, z, observation_noise=false))]
     fn matheron_samples(
         &self,

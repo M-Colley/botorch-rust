@@ -196,7 +196,14 @@ class WeightedMCMultiOutputObjective(IdentityMCMultiOutputObjective):
         self._weights = [float(w) for w in data]
 
     def forward(self, samples: Any, X: Any = None) -> Any:
-        return _scale_last(super().forward(samples), self._weights)
+        selected = super().forward(samples)
+        if is_torch_tensor(selected) and is_torch_tensor(self.weights):
+            import torch
+
+            return selected * torch.as_tensor(
+                self.weights, dtype=selected.dtype, device=selected.device
+            )
+        return _scale_last(selected, self._weights)
 
     def _mo_spec(self) -> tuple[Any, ...]:
         return ("weighted", list(self._weights), self._outcomes)

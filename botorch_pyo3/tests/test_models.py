@@ -185,7 +185,7 @@ def test_standalone_transforms(kind: str) -> None:
         sub(as_kind(X3, kind)), [[0.0, 0.0, 7.0], [1.0, 0.0, 8.0], [0.5, 1.0, 9.0]], rtol=1e-15
     )
     # (Normalize over a subset of the inputs is supported since phase 7a.)
-    assert Normalize(d=3, indices=[0, 1]).indices == [0, 1]
+    assert list(Normalize(d=3, indices=[0, 1]).indices) == [0, 1]
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         Normalize(d=2, learn_bounds=False)
@@ -264,8 +264,10 @@ def test_fixed_noise_model(kind: str, data: tuple[list, list]) -> None:
         "mean_module.raw_constant",
         "covar_module.raw_lengthscale",
     ]
-    with pytest.raises(UnsupportedError):
-        FixedNoiseGaussianLikelihood(noise=Yvar)
+    supplied = FixedNoiseGaussianLikelihood(noise=as_kind(Yvar, kind))
+    assert isinstance(supplied, FixedNoiseGaussianLikelihood)
+    check_kind(supplied.noise, kind)
+    assert_close(supplied.noise, Yvar)
     with pytest.raises(InputDataError):
         SingleTaskGP(X, Y, [[-1.0]] * len(Y))
 

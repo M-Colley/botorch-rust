@@ -160,7 +160,7 @@ fn fit_status(status: LbfgsbStatus) -> FitStatus {
 /// sampled correlations (BoTorch's `_set_lower_triangle_corr`); an
 /// `IndexKernel` task prior has no setting closure in GPyTorch (BoTorch's
 /// `sample_all_priors` raises), so those parameters keep their values.
-fn sample_all_priors(
+pub(crate) fn sample_all_priors(
     model: &SingleTaskGP,
     initial: &Hyperparameters,
     rng: &mut StdRng,
@@ -270,6 +270,9 @@ impl Fittable for SingleTaskGP {
 
 /// The single-output fit of [`fit_gpytorch_mll`].
 fn fit_single_task_gp(model: &mut SingleTaskGP, options: FitOptions) -> Result<FitResult> {
+    if model.sparse_outlier_noise().is_some() {
+        return crate::models::relevance_pursuit::fit_sparse_outlier_gp(model, options);
+    }
     let initial = model.hyperparameters().clone();
     let x_init = initial.to_vector().as_slice().to_vec();
     let bounds = model.raw_parameter_bounds();

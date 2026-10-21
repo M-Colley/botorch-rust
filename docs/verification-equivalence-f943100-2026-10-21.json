@@ -1,0 +1,62 @@
+{
+  "kind": "development_equivalence_audit",
+  "release_certificate": false,
+  "complete_scope": false,
+  "started_utc": "2026-10-21T15:35:48.531651+00:00",
+  "before": {
+    "head": "f9431009abd24e730106b98ed35ac49334739201",
+    "status": "",
+    "reference_head": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "reference_status": "",
+    "extension_sha256": "5082562554ee625b394d6fcaaa976d6d27c89a65eb5b7a4e338a24d075b78c66",
+    "worker_sha256": "f5ff61a399d28a757f6cb2354ccae668e890acdd3b88d5b0adb9aaad2c97b804",
+    "inventories": {
+      "python": {
+        "files": 335,
+        "sha256": "032c6d548095553430f924c661e3a948a13246c63583a44b121c68279b12a4d1"
+      },
+      "tests": {
+        "files": 315,
+        "sha256": "763fe513c782978d2d7776640f648923dd5b1a11a640097d5b84758248b70a2a"
+      }
+    }
+  },
+  "ended_utc": "2026-10-21T15:45:23.751236+00:00",
+  "after": {
+    "head": "f9431009abd24e730106b98ed35ac49334739201",
+    "status": "",
+    "reference_head": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "reference_status": "",
+    "extension_sha256": "5082562554ee625b394d6fcaaa976d6d27c89a65eb5b7a4e338a24d075b78c66",
+    "worker_sha256": "f5ff61a399d28a757f6cb2354ccae668e890acdd3b88d5b0adb9aaad2c97b804",
+    "inventories": {
+      "python": {
+        "files": 335,
+        "sha256": "032c6d548095553430f924c661e3a948a13246c63583a44b121c68279b12a4d1"
+      },
+      "tests": {
+        "files": 315,
+        "sha256": "763fe513c782978d2d7776640f648923dd5b1a11a640097d5b84758248b70a2a"
+      }
+    }
+  },
+  "selected_cases": 1237,
+  "counts": {
+    "passed": 1222,
+    "skipped": 15
+  },
+  "failures": [],
+  "exitstatus": 0,
+  "exact_case_coverage": true,
+  "fingerprints_stable": true,
+  "all_passed": true,
+  "artifact_hashes": {
+    "target/equivalence-audit-f943100/collection.json": "9f490f4b589a64ab56fa6091fb41279a6a6256ee248c3e096aab5aee9676364f",
+    "target/equivalence-audit-f943100/execution.json": "1dcd06e84816c1a971199216e3e39f8fc9fd510a9fd6a584432052ebcbc907b5",
+    "target/equivalence-audit-f943100/execution.log": "d62b47fcd698b8e299fa8945957faebaa58d30da5f56fedccce975801b9a3561",
+    "target/equivalence-audit-f943100/execution.xml": "1fc1295f62db45f848401e020c32d184ebaa615c54b911c00a578756bfb14516",
+    "target/equivalence-audit-f943100/summary.json": "64dd4e9fef6b0f893f92a5695984ca62d7f4d4f63b7baf3ed1f8312684e38f5b"
+  },
+  "scope": "Exactly the 1237 canonical cases selected by the equivalence marker at f943100. Broad tests, subsequent changes and a new wheel are outside this checkpoint.",
+  "interpretation": "All selected equivalence cases passed or recorded a skip at the frozen source/native/reference fingerprints. This is a development checkpoint, not exhaustive behavior/GPU coverage, a release certificate or approval for the conditional Unity migration."
+}

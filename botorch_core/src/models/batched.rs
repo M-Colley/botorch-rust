@@ -536,6 +536,96 @@ impl BatchedMultiOutputGP {
         &mut self.models
     }
 
+    /// Replace each element's fitted inverse map without refitting targets or
+    /// observation noise. Maps are ordered by batch element, then output.
+    ///
+    /// # Errors
+    /// Incorrect map counts, unfitted maps, or both representations supplied.
+    /// Failure is atomic across all elements.
+    pub fn set_fitted_outcome_states(
+        &mut self,
+        standardize: Option<&[Standardize]>,
+        chains: Option<&[crate::transforms::outcome::OutcomeChain]>,
+    ) -> Result<bool> {
+        if standardize.is_some() && chains.is_some()
+            || standardize.is_some_and(|v| v.len() != self.models.len())
+            || chains.is_some_and(|v| v.len() != self.models.len())
+        {
+            return Err(BotorchError::DimensionMismatch(
+                "Supply one fitted outcome map per GP element".into(),
+            ));
+        }
+        let mut models = self.models.clone();
+        let mut changed = false;
+        for (i, model) in models.iter_mut().enumerate() {
+            changed |= model.set_fitted_outcome_state(
+                standardize.map(|v| v[i].clone()),
+                chains.map(|v| v[i].clone()),
+            )?;
+        }
+        if changed {
+            self.models = models;
+        }
+        Ok(changed)
+    }
+
+    /// Configures sparse outlier noise on an unbatched, single-output GP.
+    pub fn set_sparse_outlier_noise(
+        &mut self,
+        state: super::relevance_pursuit::SparseOutlierState,
+    ) -> Result<()> {
+        if !self.batch_shape.is_empty() || self.num_outputs != 1 {
+            return Err(BotorchError::Unsupported(
+                "sparse outlier relevance pursuit currently requires an unbatched single-output GP"
+                    .into(),
+            ));
+        }
+        self.models[0].set_sparse_outlier_noise(Some(state))
+    }
+
+    /// Replaces the transformed targets, one vector per independent GP.
+    /// Fixed noise is optional; all edits commit together after validation.
+    pub fn replace_transformed_train_data(
+        &mut self,
+        targets: Vec<Vector>,
+        noise: Option<Vec<Vector>>,
+    ) -> Result<()> {
+        let e = self.num_elements();
+        if targets.len() != e || noise.as_ref().is_some_and(|v| v.len() != e) {
+            return Err(BotorchError::DimensionMismatch(
+                "one target/noise vector per GP is required".into(),
+            ));
+        }
+        let mut models = self.models.clone();
+        for (i, model) in models.iter_mut().enumerate() {
+            model.replace_transformed_train_data(
+                targets[i].clone(),
+                noise.as_ref().map(|v| v[i].clone()),
+            )?;
+        }
+        self.models = models;
+        for batch in 0..self.batch_size() {
+            for output in 0..self.num_outputs {
+                let model = &self.models[batch * self.num_outputs + output];
+                self.train_y[batch]
+                    .column_mut(output)
+                    .copy_from(&model.train_targets().column(0));
+                if noise.is_some() {
+                    if let (Some(all), Some(variance)) = (&mut self.train_yvar, model.train_yvar())
+                    {
+                        all[batch].column_mut(output).copy_from(&variance.column(0));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether this model has sparse outlier-noise parameters.
+    pub fn has_sparse_outlier_noise(&self) -> bool {
+        self.models[0].sparse_outlier_noise().is_some()
+    }
+
     /// The GP of output `output` of batch element `batch`.
     ///
     /// # Panics
@@ -626,6 +716,19 @@ impl BatchedMultiOutputGP {
 
     /// BoTorch parameter names and total sizes (all elements) in flat order.
     pub fn parameter_names(&self) -> Vec<(String, usize)> {
+        if let Some(state) = self.models[0].sparse_outlier_noise() {
+            let mut names = vec![("likelihood.noise_covar.raw_rho".into(), state.raw.len())];
+            names.extend(self.models[0].parameter_names().into_iter().map(|(n, s)| {
+                (
+                    n.replace(
+                        "likelihood.noise_covar.raw_noise",
+                        "likelihood.noise_covar.base_noise.raw_noise",
+                    ),
+                    s,
+                )
+            }));
+            return names;
+        }
         let e = self.num_elements();
         self.models[0]
             .parameter_names()
@@ -637,6 +740,27 @@ impl BatchedMultiOutputGP {
     /// BoTorch parameter names and shapes, e.g.
     /// `("covar_module.raw_lengthscale", [m, 1, d])` for `m > 1` outputs.
     pub fn parameter_shapes(&self) -> Vec<(String, Vec<usize>)> {
+        if let Some(state) = self.models[0].sparse_outlier_noise() {
+            let mut names = vec![(
+                "likelihood.noise_covar.raw_rho".into(),
+                vec![state.raw.len()],
+            )];
+            names.extend(
+                self.models[0]
+                    .parameter_element_shapes()
+                    .into_iter()
+                    .map(|(n, s)| {
+                        (
+                            n.replace(
+                                "likelihood.noise_covar.raw_noise",
+                                "likelihood.noise_covar.base_noise.raw_noise",
+                            ),
+                            s,
+                        )
+                    }),
+            );
+            return names;
+        }
         let aug = self.aug_batch_shape();
         self.models[0]
             .parameter_element_shapes()
@@ -695,11 +819,22 @@ impl BatchedMultiOutputGP {
     /// # Errors
     /// [`BotorchError::DimensionMismatch`] for a wrong length.
     pub fn split_flat(&self, values: &[f64]) -> Result<Vec<Vec<f64>>> {
+        if self.has_sparse_outlier_noise() {
+            if values.len() != self.raw_parameters().len() {
+                return Err(BotorchError::DimensionMismatch(
+                    "wrong joint sparse parameter length".into(),
+                ));
+            }
+            return Ok(vec![values.to_vec()]);
+        }
         self.split(values)
     }
 
     /// The raw hyperparameters of all elements in BoTorch's flat order.
     pub fn raw_parameters(&self) -> Vector {
+        if self.has_sparse_outlier_noise() {
+            return self.models[0].relevance_parameters();
+        }
         let per: Vec<Vector> = self.models.iter().map(|m| m.raw_parameters()).collect();
         self.join(&per)
     }
@@ -711,6 +846,9 @@ impl BatchedMultiOutputGP {
     /// [`BotorchError::DimensionMismatch`] for a wrong length and the errors
     /// of [`SingleTaskGP::set_raw_parameters`].
     pub fn set_raw_parameters(&mut self, values: &[f64]) -> Result<()> {
+        if self.has_sparse_outlier_noise() {
+            return self.models[0].set_relevance_parameters(values);
+        }
         let per = self.split(values)?;
         let mut models = self.models.clone();
         for (m, v) in models.iter_mut().zip(&per) {
@@ -722,6 +860,9 @@ impl BatchedMultiOutputGP {
 
     /// Optimizer bounds of the raw hyperparameters in flat order.
     pub fn raw_parameter_bounds(&self) -> Vec<(f64, f64)> {
+        if self.has_sparse_outlier_noise() {
+            return self.models[0].relevance_bounds();
+        }
         let e = self.num_elements();
         let bounds = self.models[0].raw_parameter_bounds();
         let mut out = Vec::with_capacity(bounds.len() * e);
@@ -765,6 +906,19 @@ impl BatchedMultiOutputGP {
             .collect()
     }
 
+    /// The log marginal likelihood of the training targets of every element
+    /// (not divided by `n`, without the log priors); see
+    /// [`ExactMarginalLogLikelihood::data_log_likelihood`].
+    ///
+    /// # Errors
+    /// See [`ExactMarginalLogLikelihood::value`].
+    pub fn data_log_likelihoods(&self) -> Result<Vec<f64>> {
+        self.models
+            .iter()
+            .map(|m| ExactMarginalLogLikelihood::new(m).data_log_likelihood())
+            .collect()
+    }
+
     /// The marginal log likelihoods of all elements at the flat raw
     /// hyperparameters `raw` and the gradient of their *sum* with respect to
     /// `raw` (what autograd computes for `mll(...).sum()` in BoTorch).
@@ -772,6 +926,11 @@ impl BatchedMultiOutputGP {
     /// # Errors
     /// See [`ExactMarginalLogLikelihood::value_and_grad`].
     pub fn mll_values_and_grad(&self, raw: &[f64]) -> Result<(Vec<f64>, Vector)> {
+        if self.has_sparse_outlier_noise() {
+            return self.models[0]
+                .relevance_value_and_grad(raw)
+                .map(|(v, g)| (vec![v], g));
+        }
         let per = self.split(raw)?;
         let mut values = Vec::with_capacity(per.len());
         let mut grads = Vec::with_capacity(per.len());
@@ -1043,6 +1202,38 @@ pub(crate) fn block_diagonal_grad(parts: &[JointPosteriorGrad]) -> JointPosterio
 }
 
 impl Model for BatchedMultiOutputGP {
+    fn posterior_parameter_vjp(
+        &self,
+        x: &Matrix,
+        mean_adjoint: &Vector,
+        covariance_adjoint: &Matrix,
+        observation_noise: bool,
+    ) -> Result<Vector> {
+        self.require_unbatched()?;
+        check_vjp_shapes_expanded(
+            x,
+            &(0..x.nrows()),
+            mean_adjoint,
+            covariance_adjoint,
+            self.num_outputs,
+            self.points_per_input(),
+        )?;
+        let q = x.nrows() * self.points_per_input();
+        let gradients = self
+            .outputs_of(0)
+            .iter()
+            .enumerate()
+            .map(|(t, model)| {
+                model.posterior_parameter_vjp(
+                    x,
+                    &mean_adjoint.rows(t * q, q).into_owned(),
+                    &covariance_adjoint.view((t * q, t * q), (q, q)).into_owned(),
+                    observation_noise,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(self.join(&gradients))
+    }
     fn dim(&self) -> usize {
         self.dim
     }

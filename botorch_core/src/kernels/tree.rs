@@ -21,8 +21,12 @@
 
 use crate::constraints::{Constraint, GreaterThan};
 use crate::error::{BotorchError, Result};
+use crate::kernels::contextual::LceaSpec;
+use crate::kernels::empirical::EmpiricalBasisSpec;
 use crate::kernels::KernelKind;
 use crate::priors::Prior;
+
+mod feature_batch;
 
 /// One parameter of a kernel (per model element).
 #[derive(Clone, Debug, PartialEq)]
@@ -154,6 +158,19 @@ pub const SAAS_EPS: f64 = 1e-8;
 /// The kernel classes of a [`KernelNode`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum KernelType {
+    /// Conditional spatial kernels plus a kernel of binary task memberships.
+    Heterogeneous {
+        /// Task column in the local full-feature inputs (negative: from end).
+        task_feature: isize,
+        /// Task-by-subkernel membership matrix.
+        binary_map: Vec<Vec<bool>>,
+        /// Whether to include the final combinatorial child in the covariance.
+        use_combinatorial: bool,
+    },
+    /// Interpolated historical basis curves with optional learned weights.
+    EmpiricalBasis(Box<EmpiricalBasisSpec>),
+    /// Latent context embedding additive covariance with shared parameters.
+    ContextualLcea(Box<LceaSpec>),
     /// `RBFKernel` or `MaternKernel(nu)` (parameter `raw_lengthscale`).
     Stationary(KernelKind),
     /// `RQKernel`: `(1 + r²/(2α))^(-α)` (`raw_lengthscale`, `raw_alpha`).
@@ -200,6 +217,22 @@ pub enum KernelType {
     /// BoTorch's `ExponentialDecayKernel`: `w + (1 + ‖(x + y)/ℓ‖)^(-α)`
     /// (`raw_lengthscale`, `raw_power`, `raw_offset`).
     ExponentialDecay,
+    /// Structural additive contextual RBF kernel with one shared ARD
+    /// lengthscale vector and one outputscale per named context.
+    ContextualSac {
+        /// Input columns in parameter order for every context.
+        contexts: Vec<Vec<usize>>,
+    },
+    /// Integrated white noise of positive integration order (no parameters).
+    IntegratedWhiteNoise {
+        /// Number of integrations; one is Brownian motion.
+        order: usize,
+    },
+    /// Deterministic feature activation: `1[path(x)] * 1[path(y)]`.
+    Activation {
+        /// Parent feature and target value along a root-to-feature path.
+        conditions: Vec<(usize, f64)>,
+    },
     /// BoTorch's `InfiniteWidthBNNKernel` (`raw_weight_var`, `raw_bias_var`).
     InfiniteWidthBnn {
         /// The depth of the network.
@@ -296,6 +329,50 @@ impl KernelNode {
         ))
     }
 
+    /// A PSD gate for a hierarchical feature block. Branch comparisons use
+    /// BoTorch's `isclose` tolerances; derivatives of the discrete gate vanish.
+    pub fn activation(conditions: Vec<(usize, f64)>) -> Result<Self> {
+        if conditions.iter().any(|(_, value)| !value.is_finite()) {
+            return Err(BotorchError::InvalidArgument(
+                "Activation values must be finite".into(),
+            ));
+        }
+        Ok(Self::leaf(
+            KernelType::Activation { conditions },
+            Vec::new(),
+        ))
+    }
+
+    /// Heterogeneous-task covariance, retaining the public subkernel paths.
+    /// The combinatorial child remains registered when disabled, as in BoTorch.
+    pub fn heterogeneous(
+        task_feature: isize,
+        binary_map: Vec<Vec<bool>>,
+        mut spatial: Vec<KernelNode>,
+        combinatorial: KernelNode,
+        use_combinatorial: bool,
+    ) -> Result<Self> {
+        let count = spatial.len();
+        if count == 0 || binary_map.is_empty() || binary_map.iter().any(|row| row.len() != count) {
+            return Err(BotorchError::InvalidArgument(
+                "Heterogeneous kernels need a nonempty rectangular task-membership map".into(),
+            ));
+        }
+        spatial.push(combinatorial);
+        Ok(Self {
+            kind: KernelType::Heterogeneous {
+                task_feature,
+                binary_map,
+                use_combinatorial,
+            },
+            active_dims: None,
+            params: Vec::new(),
+            task_prior: None,
+            saas: None,
+            children: spatial,
+        })
+    }
+
     /// `RQKernel(ard_num_dims)`.
     ///
     /// # Errors
@@ -376,7 +453,7 @@ impl KernelNode {
     ///
     /// # Errors
     /// [`BotorchError::InvalidArgument`] with GPyTorch's message if
-    /// `rank > num_tasks`, or for zero tasks or rank.
+    /// `rank > num_tasks`, or for zero tasks. Rank zero gives a diagonal task covariance.
     pub fn index(num_tasks: usize, rank: usize) -> Result<Self> {
         check_tasks(num_tasks, rank)?;
         Ok(Self::leaf(
@@ -468,6 +545,42 @@ impl KernelNode {
                 ParamSpec::new("raw_power", vec![1], positive()),
                 ParamSpec::new("raw_offset", vec![1], positive()),
             ],
+        ))
+    }
+
+    /// White noise integrated `order` times on scalar time inputs.
+    ///
+    /// # Errors
+    /// [`BotorchError::InvalidArgument`] for order zero.
+    pub fn integrated_white_noise(order: usize) -> Result<Self> {
+        if order == 0 {
+            return Err(BotorchError::InvalidArgument(
+                "IntegratedWhiteNoiseKernel requires an integer order >= 1".into(),
+            ));
+        }
+        Ok(Self::leaf(
+            KernelType::IntegratedWhiteNoise { order },
+            vec![],
+        ))
+    }
+
+    /// Empirical covariance of fixed historical basis curves.
+    pub fn empirical_basis(spec: EmpiricalBasisSpec) -> Result<Self> {
+        spec.validate(spec.group_column.map_or(1, |c| c + 1))?;
+        let params = if spec.learn_weights {
+            let mut p = ParamSpec::new(
+                "curve_weights",
+                vec![spec.weights.len()],
+                Some(GreaterThan::new(0.0, None, None).into()),
+            );
+            p.default_raw = 1.0;
+            vec![p]
+        } else {
+            vec![]
+        };
+        Ok(Self::leaf(
+            KernelType::EmpiricalBasis(Box::new(spec)),
+            params,
         ))
     }
 
@@ -622,6 +735,93 @@ impl KernelNode {
         }
     }
 
+    /// BoTorch's `SACKernel`. Parameters retain their public module paths,
+    /// but the shared base kernel's parameters occur exactly once.
+    pub fn contextual_sac(
+        decomposition: Vec<(String, Vec<usize>)>,
+        base: KernelNode,
+    ) -> Result<Self> {
+        let d = decomposition
+            .first()
+            .map(|(_, dims)| dims.len())
+            .unwrap_or(0);
+        if d == 0 || decomposition.iter().any(|(_, dims)| dims.len() != d) {
+            return Err(BotorchError::InvalidArgument(
+                "SACKernel needs nonempty contexts with the same number of parameters".into(),
+            ));
+        }
+        if !matches!(base.kind, KernelType::Stationary(KernelKind::Rbf))
+            || base.active_dims.is_some()
+            || base.params.len() != 1
+            || base.params[0].shape != [1, d]
+        {
+            return Err(BotorchError::Unsupported(
+                "SACKernel requires an RBF base kernel with one lengthscale per context parameter"
+                    .into(),
+            ));
+        }
+        let mut params = base.params;
+        params[0].name = "base_kernel.raw_lengthscale".into();
+        let mut names = std::collections::HashSet::new();
+        for (name, _) in &decomposition {
+            if name.is_empty() || name.contains('.') || !names.insert(name.clone()) {
+                return Err(BotorchError::InvalidArgument(
+                    "SACKernel context names must be unique, nonempty, and contain no dots".into(),
+                ));
+            }
+            params.push(ParamSpec::new(
+                &format!("kernel_dict.{name}.raw_outputscale"),
+                vec![],
+                positive(),
+            ));
+        }
+        Ok(Self::leaf(
+            KernelType::ContextualSac {
+                contexts: decomposition.into_iter().map(|(_, dims)| dims).collect(),
+            },
+            params,
+        ))
+    }
+
+    /// LCEA's amplitudes, learned embeddings, task RBF and spatial RBF.
+    pub fn contextual_lcea(spec: LceaSpec, task: KernelNode, base: KernelNode) -> Result<Self> {
+        spec.validate(usize::MAX)?;
+        for (kernel, d) in [(&task, spec.embedding_dim()), (&base, spec.spatial_dim())] {
+            if !matches!(kernel.kind, KernelType::Stationary(KernelKind::Rbf))
+                || kernel.active_dims.is_some()
+                || kernel.params.len() != 1
+                || kernel.params[0].shape != [1, d]
+            {
+                return Err(BotorchError::Unsupported(
+                    "LCEAKernel needs shared ARD RBF task and spatial kernels".into(),
+                ));
+            }
+        }
+        let mut params = vec![ParamSpec::new(
+            "raw_outputscale_list",
+            vec![spec.scale_count()],
+            positive(),
+        )];
+        params.extend(
+            spec.embedding_shapes
+                .iter()
+                .enumerate()
+                .map(|(i, &(n, d))| {
+                    ParamSpec::new(&format!("emb_layers.{i}.weight"), vec![n, d], None)
+                }),
+        );
+        let mut task_parameter = task.params[0].clone();
+        task_parameter.name = "task_covar_module.raw_lengthscale".into();
+        params.push(task_parameter);
+        let mut base_parameter = base.params[0].clone();
+        base_parameter.name = "base_kernel.raw_lengthscale".into();
+        params.push(base_parameter);
+        Ok(Self::leaf(
+            KernelType::ContextualLcea(Box::new(spec)),
+            params,
+        ))
+    }
+
     /// `AdditiveKernel(*kernels)`.
     ///
     /// # Errors
@@ -658,14 +858,13 @@ impl KernelNode {
     // Configuration
     // ------------------------------------------------------------------
 
-    /// Sets `active_dims` (the input columns the kernel acts on). A
-    /// `ScaleKernel` keeps the `active_dims` taken over from its base kernel.
+    /// Sets `active_dims` (the input columns the kernel acts on), replacing
+    /// any selection previously inherited by a `ScaleKernel`.
     ///
     /// # Errors
     /// [`BotorchError::InvalidArgument`] for empty `active_dims` and
     /// [`BotorchError::Unsupported`] for `active_dims` of an
-    /// `AdditiveKernel` / `ProductKernel` (GPyTorch has none) or a second set
-    /// for a `ScaleKernel`.
+    /// `AdditiveKernel` / `ProductKernel` (GPyTorch has none).
     pub fn with_active_dims(mut self, active_dims: Vec<usize>) -> Result<Self> {
         if active_dims.is_empty() {
             return Err(BotorchError::InvalidArgument(
@@ -677,10 +876,6 @@ impl KernelNode {
                 return Err(BotorchError::Unsupported(
                     "AdditiveKernel and ProductKernel have no active_dims".into(),
                 ))
-            }
-            KernelType::Scale if self.active_dims.is_some() => {
-                // GPyTorch replaces them with the base kernel's.
-                return Ok(self);
             }
             _ => {}
         }
@@ -977,6 +1172,10 @@ impl KernelNode {
     /// `"kernels.0"`, ...).
     pub fn child_names(&self) -> Vec<String> {
         match self.kind {
+            KernelType::Heterogeneous { .. } => (0..self.children.len() - 1)
+                .map(|i| format!("kernels.{i}"))
+                .chain(std::iter::once("combinatorial_kernel".into()))
+                .collect(),
             KernelType::Scale | KernelType::OrthogonalAdditive { .. } => {
                 vec!["base_kernel".to_string()]
             }
@@ -1138,6 +1337,49 @@ impl KernelNode {
             Ok(())
         };
         match &self.kind {
+            KernelType::Heterogeneous {
+                task_feature,
+                binary_map,
+                ..
+            } => {
+                let task = if *task_feature < 0 {
+                    k as isize + task_feature
+                } else {
+                    *task_feature
+                };
+                if task < 0 || task as usize >= k {
+                    return Err(BotorchError::InvalidArgument(format!(
+                        "Task feature {task_feature} is out of range for {k} inputs"
+                    )));
+                }
+                let count = binary_map[0].len();
+                for child in &self.children[..count] {
+                    child.validate(k)?;
+                }
+                self.children[count].validate(count)?;
+                return Ok(());
+            }
+            KernelType::Activation { conditions } => {
+                if let Some((bad, _)) = conditions.iter().find(|(j, _)| *j >= k) {
+                    return Err(BotorchError::Runtime(format!(
+                        "Activation index {bad} is out of range for {k} inputs"
+                    )));
+                }
+            }
+            KernelType::ContextualLcea(spec) => spec.validate(k)?,
+            KernelType::EmpiricalBasis(spec) => spec.validate(k)?,
+            KernelType::ContextualSac { contexts } => {
+                if let Some(&bad) = contexts.iter().flatten().find(|&&j| j >= k) {
+                    return Err(BotorchError::Runtime(format!(
+                        "SACKernel context index {bad} is out of range for {k} inputs"
+                    )));
+                }
+            }
+            KernelType::IntegratedWhiteNoise { .. } if k != 1 => {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "IntegratedWhiteNoiseKernel requires 1D inputs, got {k} dimensions"
+                )));
+            }
             KernelType::Stationary(_)
             | KernelType::RationalQuadratic
             | KernelType::Categorical
@@ -1308,9 +1550,9 @@ fn sample_node<R: rand::Rng + ?Sized>(
 }
 
 fn check_tasks(num_tasks: usize, rank: usize) -> Result<()> {
-    if num_tasks == 0 || rank == 0 {
+    if num_tasks == 0 {
         return Err(BotorchError::InvalidArgument(
-            "num_tasks and rank must be positive".into(),
+            "num_tasks must be positive".into(),
         ));
     }
     if rank > num_tasks {

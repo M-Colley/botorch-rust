@@ -19,8 +19,9 @@ computed in Rust (``kernel(x1, x2)``, the model's posteriors, the marginal
 log likelihood and their derivatives).
 
 Deviations from GPyTorch: kernel calls return dense arrays (the array type
-of ``x1``) instead of ``LinearOperator`` objects; ``last_dim_is_batch`` is
-not supported; unknown keyword arguments raise ``UnsupportedError`` (GPyTorch
+of ``x1``) instead of ``LinearOperator`` objects; ``last_dim_is_batch``
+evaluates native feature covariance batches for standard kernels and their
+trees; unknown keyword arguments raise ``UnsupportedError`` (GPyTorch
 ignores them); ``IndexKernel`` draws its random initial values from torch's
 global generator if torch is installed (as GPyTorch), else from Python's
 ``random`` module.
@@ -78,6 +79,7 @@ def _check_constraint(constraint: Any, name: str) -> None:
 
 def _check_kwargs(kwargs: dict[str, Any], cls: str) -> None:
     kwargs.pop("eps", None)  # GPyTorch's deprecated argument, ignored
+    kwargs.pop("backend", None)
     kwargs.pop("device", None)
     kwargs.pop("dtype", None)
     if kwargs:
@@ -107,6 +109,26 @@ def _randn(shape: Sequence[int], uniform: bool = False) -> list[float]:
         return [random.gauss(0.0, 1.0) for _ in range(n)]
     t = torch.rand(*shape) if uniform else torch.randn(*shape)
     return [float(v) for v in t.reshape(-1).tolist()]
+
+
+def _check_call_ard(kernel: Kernel, input_dim: int) -> None:
+    selected = len(kernel.active_dims) if kernel.active_dims is not None else input_dim
+    if kernel.ard_num_dims is not None and kernel.ard_num_dims != selected:
+        raise RuntimeError(
+            f"Expected the input to have {kernel.ard_num_dims} dimensionality "
+            f"(based on the ard_num_dims argument). Got {selected}."
+        )
+    _check_forward_ard(kernel, selected)
+
+
+def _check_forward_ard(kernel: Kernel, input_dim: int) -> None:
+    if isinstance(kernel, ScaleKernel):
+        # ScaleKernel calls forward directly, bypassing its base kernel's
+        # active-dimension selection and __call__ ARD validation.
+        _check_forward_ard(kernel.base_kernel, input_dim)
+    elif isinstance(kernel, (AdditiveKernel, ProductKernel)):
+        for child in kernel.kernels:
+            _check_call_ard(child, input_dim)
 
 
 class _KernelList(list):  # type: ignore[type-arg]
@@ -147,6 +169,35 @@ class Kernel(GPModule):
     _params: tuple[tuple[str, str | None, str | None], ...] = ()
     #: A BoTorch preset building the kernel's ``KernelSpec`` for ``d`` inputs.
     _preset: Callable[[int], _rs.KernelSpec] | None = None
+
+    def __new__(cls, *args: Any, backend: str = "auto", **kwargs: Any) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        core = cls.__module__ == __name__ and cls.__name__ in {
+            "RBFKernel",
+            "MaternKernel",
+            "RQKernel",
+            "PeriodicKernel",
+            "LinearKernel",
+            "PolynomialKernel",
+            "CosineKernel",
+            "IndexKernel",
+            "ScaleKernel",
+            "AdditiveKernel",
+            "ProductKernel",
+            "MultitaskKernel",
+        }
+        if core:
+            use_torch = _use_torch_backend(backend, *args, *kwargs.values())
+            device = kwargs.get("device")
+            use_torch = use_torch or (
+                backend == "auto" and device is not None and str(device) != "cpu"
+            )
+            if use_torch:
+                from botorch_rs.models._torch_backend_core_kernels import tensor_kernel_class
+
+                return object.__new__(tensor_kernel_class(cls))
+        return object.__new__(cls)
 
     def __init__(
         self,
@@ -314,6 +365,9 @@ class Kernel(GPModule):
         raise AttributeError(f"{type(self).__name__} has no parameter {name!r}.")
 
     def _get_raw(self, name: str) -> Any:
+        getter = getattr(self._model, "_raw_param_array", None)
+        if getter is not None:
+            return getter(self._prefix + name)
         return from_flat(self._raw_values(name), self._param_shape(name), self._kind_out())
 
     def _set_raw(self, name: str, value: Any) -> None:
@@ -335,6 +389,12 @@ class Kernel(GPModule):
 
     def _get_value(self, name: str) -> Any:
         c = self._constraint_of(name)
+        if self._model is not None:
+            raw_parameter = self._get_raw(name)
+            if getattr(raw_parameter, "requires_grad", False):
+                from botorch_rs.models._torch_parameters import constrained_parameter
+
+                return constrained_parameter(raw_parameter, c)
         raw = self._raw_values(name)
         values = raw if c is None else [c.transform(v) for v in raw]
         return from_flat(values, self._param_shape(name), self._kind_out())
@@ -451,21 +511,38 @@ class Kernel(GPModule):
         """The kernel matrix ``K(x1, x2)`` (``... x n1 x n2``), or its
         diagonal (``diag=True``) as GPyTorch computes it, with the current
         hyperparameters; a dense array of the type of ``x1``."""
-        if last_dim_is_batch:
-            raise UnsupportedError("last_dim_is_batch is not supported by botorch_rs.")
         if params:
             raise UnsupportedError(f"Unsupported arguments: {sorted(params)}.")
         kind = kind_of(x1)
         a = to_flat(x1, "x1")
         if len(a[1]) == 1:
             a = (a[0], (a[1][0], 1))
+        _check_call_ard(self, a[1][-1])
         b = None
         if x2 is not None:
             b = to_flat(x2, "x2")
             if len(b[1]) == 1:
                 b = (b[0], (b[1][0], 1))
             if b[1][-1] != a[1][-1]:
-                raise RuntimeError("x1_ and x2_ must have the same number of dimensions!")
+                if self.active_dims is None:
+                    raise RuntimeError("x1_ and x2_ must have the same number of dimensions!")
+                if any(j < 0 or j >= min(a[1][-1], b[1][-1]) for j in self.active_dims):
+                    raise RuntimeError("active_dims contain an input index out of range")
+                width = max(a[1][-1], b[1][-1])
+
+                def pad(pair: Any) -> Any:
+                    values, shape = pair
+                    old = shape[-1]
+                    data = [
+                        values[row * old + j] if j < old else 0.0
+                        for row in range(math.prod(shape[:-1]))
+                        for j in range(width)
+                    ]
+                    return data, (*shape[:-1], width)
+
+                a, b = pad(a), pad(b)
+        if diag and b is not None and a[1][-2] != b[1][-2]:
+            raise RuntimeError("diag=True requires x1 and x2 with the same number of points")
         node = self._node()
         kbatch = self.batch_shape
         if self._model is not None:
@@ -478,6 +555,12 @@ class Kernel(GPModule):
                 f"The batch shapes of the kernel {kbatch} and of the inputs {abatch}, "
                 f"{bbatch} do not broadcast."
             )
+        if 0 in out_batch:
+            node.validate(a[1][-1])
+            tail = (a[1][-2],) if diag else (a[1][-2], (b or a)[1][-2])
+            if last_dim_is_batch:
+                tail = (node.feature_batch_size(a[1][-1]), *tail)
+            return from_flat([], (*out_batch, *tail), kind)
         raws = self._raw_per_element(len(kbatch))
         results: list[float] = []
         shape: tuple[int, ...] = ()
@@ -485,7 +568,10 @@ class Kernel(GPModule):
             raw = raws[_flat_index(idx, kbatch)]
             xa = _batch_matrix(a, idx)
             xb = _batch_matrix(b, idx) if b is not None else None
-            data, out_shape = node.evaluate(raw, xa, xb, diag)
+            if last_dim_is_batch:
+                data, out_shape = node.evaluate(raw, xa, xb, diag, last_dim_is_batch=True)
+            else:
+                data, out_shape = node.evaluate(raw, xa, xb, diag)
             shape = tuple(out_shape)
             results.extend(data)
         return from_flat(results, (*out_batch, *shape), kind)
@@ -496,7 +582,8 @@ class Kernel(GPModule):
         flat = self._raw_flat()
         n = max(len(flat) // max(k, 1), 1) if k else 1
         if k == 0:
-            return [[]] * max(n, 1)
+            batch = self._aug if self._model is not None else self.batch_shape
+            return [[]] * max(math.prod(batch), 1)
         # Parameters are stored parameter by parameter over the batch.
         sizes = [math.prod(s) for _, s in self._node().param_shapes("")]
         per: list[list[float]] = [[] for _ in range(n)]
@@ -902,7 +989,7 @@ class ScaleKernel(Kernel):
 class _CompositeKernel(Kernel):
     """A combination of sub-kernels (``kernels``)."""
 
-    def __init__(self, *kernels: Kernel) -> None:
+    def __init__(self, *kernels: Kernel, backend: str = "auto") -> None:
         super().__init__()
         if not kernels:
             raise UnsupportedError(f"{type(self).__name__} needs at least one kernel.")

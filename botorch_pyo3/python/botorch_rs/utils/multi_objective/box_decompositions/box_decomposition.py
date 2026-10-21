@@ -19,7 +19,15 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import LIST, ArrayKind, first_kind, from_pair, kind_of, to_flat
+from botorch_rs._arrays import (
+    LIST,
+    ArrayKind,
+    first_kind,
+    from_pair,
+    is_torch_tensor,
+    kind_of,
+    to_flat,
+)
 from botorch_rs.exceptions.errors import BotorchError
 from botorch_rs.utils.multi_objective._common import scalar_zero, size
 
@@ -50,6 +58,9 @@ class BoxDecomposition:
         self.sort = bool(sort)
         self._ref_kind = kind_of(ref_point)
         self._kind: ArrayKind = first_kind(Y, ref_point) if Y is not None else LIST
+        # A Torch acquisition can rebuild differentiable device-side geometry
+        # from caller-owned outcomes; native CPU partitioning remains unchanged.
+        self._tensor_source_Y = Y if is_torch_tensor(Y) else None
         y = None if Y is None else to_flat(Y, "Y")
         self._rs = _rs.BoxDecomposition(self._rs_kind, to_flat(ref_point, "ref_point"), y, alpha)
 
@@ -110,7 +121,29 @@ class BoxDecomposition:
                 outcomes.
         """
         self._ensure_kind(Y)
-        self._rs.update(to_flat(Y, "Y"))
+        values = to_flat(Y, "Y")
+        self._rs.update(values)
+        if self._tensor_source_Y is not None:
+            import torch
+
+            old = self._tensor_source_Y
+            self._tensor_source_Y = torch.cat(
+                (old, torch.as_tensor(Y, dtype=old.dtype, device=old.device)), dim=-2
+            )
+        elif is_torch_tensor(Y):
+            # The earlier outcomes, if any, are constants from the native store.
+            import torch
+
+            all_Y = torch.as_tensor(self.Y, dtype=Y.dtype, device=Y.device)
+            count = Y.shape[-2]
+            self._tensor_source_Y = (
+                torch.cat(
+                    (torch.as_tensor(all_Y[..., :-count, :], dtype=Y.dtype, device=Y.device), Y),
+                    dim=-2,
+                )
+                if count
+                else all_Y
+            )
 
     def reset(self) -> None:
         r"""Reset non-dominated front and decomposition."""

@@ -1,10 +1,11 @@
-"""Mean modules (``gpytorch.means``): ``ConstantMean``."""
+"""Mean modules (``gpytorch.means``): ``ConstantMean``, ``ZeroMean``."""
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
-from botorch_rs._arrays import to_flat
+from botorch_rs._arrays import LIST, broadcast_to, from_flat, kind_of, to_flat
 from botorch_rs._module import GPModule
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.kernels import _check_batch_shape, _check_kwargs
@@ -52,15 +53,50 @@ class ConstantMean(Mean):
         _check_kwargs(kwargs, "ConstantMean")
         self.mean_prior = constant_prior
         self.raw_constant_constraint = constant_constraint
+        initial = None if constant_constraint is None else constant_constraint.initial_value
+        self._local_raw = [0.0 if initial is None else initial] * math.prod(self.batch_shape)
+        self._local_kind = LIST
+        self._has_local_constant = initial is not None
+
+    def _bind(self, model: Any) -> None:
+        super()._bind(model)
+        # Only transfer explicitly initialized values. Rebinding a copied model
+        # must preserve the parameters already stored in its native snapshot.
+        if self._has_local_constant:
+            self.constant = from_flat(self._local_raw, self.batch_shape, self._local_kind)
+            self._has_local_constant = False
 
     @property
     def constant(self) -> Any:
         """The constant, shape ``batch_shape``."""
+        if self._model is None:
+            return from_flat(self._local_raw, self.batch_shape, self._local_kind)
+        getter = getattr(self._model, "_raw_param_array", None)
+        if getter is not None:
+            return getter("mean_module.raw_constant")
         return self._param_out(self._rs_model.constant, ())
 
     @constant.setter
     def constant(self, value: Any) -> None:
-        self._rs_model.set_constant(to_flat(value, "constant"))
+        data, shape = to_flat(value, "constant")
+        if any(not math.isfinite(v) for v in data):
+            raise ValueError("constant must contain finite values.")
+        if self._model is None:
+            self._local_raw = broadcast_to(data, shape, self.batch_shape)
+            self._local_kind = kind_of(value)
+            self._has_local_constant = True
+        else:
+            self._rs_model.set_constant((data, shape))
+            sync = getattr(self._model, "_sync_torch_parameters", None)
+            if sync is not None:
+                sync()
+
+    def initialize(self, **kwargs: Any) -> ConstantMean:
+        for name, value in kwargs.items():
+            if name not in ("constant", "raw_constant"):
+                raise AttributeError(f"ConstantMean has no parameter {name!r}.")
+            setattr(self, name, value)
+        return self
 
     @property
     def raw_constant(self) -> Any:
@@ -72,6 +108,18 @@ class ConstantMean(Mean):
 
     def __repr__(self) -> str:
         return "ConstantMean()"
+
+
+class ZeroMean(Mean):
+    """A zero mean (``gpytorch.means.ZeroMean``; no parameters). Supported by
+    ``SingleTaskVariationalGP``."""
+
+    def __init__(self, batch_shape: Any = (), **kwargs: Any) -> None:
+        self.batch_shape = _check_batch_shape(batch_shape)
+        _check_kwargs(kwargs, "ZeroMean")
+
+    def __repr__(self) -> str:
+        return "ZeroMean()"
 
 
 class _TaskConstantMean(Mean):
@@ -131,4 +179,4 @@ class MultitaskMean(Mean):
         return f"MultitaskMean(num_tasks={self.num_tasks})"
 
 
-__all__ = ["ConstantMean", "Mean", "MultitaskMean"]
+__all__ = ["ConstantMean", "Mean", "MultitaskMean", "ZeroMean"]

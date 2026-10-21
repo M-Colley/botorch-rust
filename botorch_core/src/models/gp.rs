@@ -27,7 +27,7 @@
 //! cached lazily and invalidated whenever the hyperparameters change.
 
 use std::ops::Range;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::constraints::{Constraint, GreaterThan};
 use crate::error::{BotorchError, Result};
@@ -45,9 +45,14 @@ use crate::transforms::outcome::{OutcomeChain, PointAffine, SampleStep, SampleTr
 use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
 use crate::{Matrix, Vector};
 
+pub mod additive;
+#[cfg(test)]
+mod cache_tests;
 mod conditioning;
 mod lookahead;
 mod noiseless_fantasy;
+mod outcome;
+mod parameter_grad;
 
 pub(crate) use conditioning::{FantasyAdjoint, FantasyGp, FantasyPosterior};
 pub(crate) use lookahead::{CondAdjoint, CondFactor, CondGp, CondPosterior};
@@ -384,7 +389,11 @@ pub struct SingleTaskGP {
     /// likelihood noise. Like BoTorch's fantasy models, the explicit noise
     /// only enters the predictions, not the marginal log likelihood.
     point_noise: Option<Vec<Option<f64>>>,
-    cache: OnceLock<std::result::Result<PredictionCache, BotorchError>>,
+    sparse_outlier_noise: Option<super::relevance_pursuit::SparseOutlierState>,
+    // Clones are immutable prediction snapshots until a setter installs a new
+    // cache. Sharing the lazy cell retains its initialization even if a short-
+    // lived posterior snapshot is the first object that evaluates the model.
+    cache: Arc<OnceLock<std::result::Result<PredictionCache, BotorchError>>>,
 }
 
 fn check_finite(m: &Matrix, what: &str) -> Result<()> {
@@ -622,13 +631,81 @@ impl SingleTaskGP {
             mean_module,
             hyperparameters,
             point_noise: None,
-            cache: OnceLock::new(),
+            sparse_outlier_noise: None,
+            cache: Arc::new(OnceLock::new()),
         })
     }
 
     // ------------------------------------------------------------------
     // Data and configuration accessors
     // ------------------------------------------------------------------
+
+    /// Optional sparse outlier covariance state.
+    pub fn sparse_outlier_noise(&self) -> Option<&super::relevance_pursuit::SparseOutlierState> {
+        self.sparse_outlier_noise.as_ref()
+    }
+
+    /// Sets validated sparse state and invalidates every cached factorization.
+    pub fn set_sparse_outlier_noise(
+        &mut self,
+        state: Option<super::relevance_pursuit::SparseOutlierState>,
+    ) -> Result<()> {
+        if let Some(s) = &state {
+            s.validate(self.num_train())?;
+        }
+        self.sparse_outlier_noise = state;
+        self.cache = Arc::new(OnceLock::new());
+        Ok(())
+    }
+
+    /// Replaces transformed targets and optional fixed observation noise while
+    /// preserving fitted transforms and hyperparameters. Training inputs must
+    /// retain their number of rows.
+    pub fn replace_transformed_train_data(
+        &mut self,
+        targets: Vector,
+        fixed_noise: Option<Vector>,
+    ) -> Result<()> {
+        let n = self.num_train();
+        if targets.len() != n || fixed_noise.as_ref().is_some_and(|v| v.len() != n) {
+            return Err(BotorchError::DimensionMismatch(
+                "replacement targets/noise must match the number of training inputs".into(),
+            ));
+        }
+        if targets.iter().any(|v| !v.is_finite())
+            || fixed_noise
+                .as_ref()
+                .is_some_and(|v| v.iter().any(|&x| !x.is_finite() || x < 0.0))
+        {
+            return Err(BotorchError::InputData(
+                "replacement targets must be finite and noise must be finite and nonnegative"
+                    .into(),
+            ));
+        }
+        if fixed_noise.is_some() && !matches!(self.likelihood, Likelihood::FixedNoise { .. }) {
+            return Err(BotorchError::Unsupported(
+                "replacing fixed noise requires a fixed-noise likelihood".into(),
+            ));
+        }
+        let y = Matrix::from_column_slice(n, 1, targets.as_slice());
+        let variance = fixed_noise
+            .as_ref()
+            .map(|v| Matrix::from_column_slice(n, 1, v.as_slice()));
+        let (original_y, original_variance) = if let Some(chain) = &self.outcome_chain {
+            chain.untransform(&y, variance.as_ref(), &self.train_x_tf)?
+        } else {
+            let (mean, sd) = self.outcome_affine()?;
+            (y.map(|v| mean + sd * v), variance.map(|v| v.scale(sd * sd)))
+        };
+        self.train_y_tf = targets;
+        self.train_y = original_y;
+        if let Some(noise) = fixed_noise {
+            self.likelihood = Likelihood::FixedNoise { noise };
+            self.train_yvar = original_variance;
+        }
+        self.cache = Arc::new(OnceLock::new());
+        Ok(())
+    }
 
     /// Training inputs in the original input space (`n × d`).
     pub fn train_inputs(&self) -> &Matrix {
@@ -825,7 +902,7 @@ impl SingleTaskGP {
                 ))
             }
         }
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 
@@ -890,7 +967,7 @@ impl SingleTaskGP {
             self.train_x_tf = x_tf;
         }
         self.hyperparameters = hyperparameters;
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 
@@ -1144,6 +1221,31 @@ impl SingleTaskGP {
         noise.sum() / noise.len() as f64
     }
 
+    /// Sparse likelihood noise at test inputs: fixed base noise is present
+    /// only at its stored event size, while rho is present only at exactly
+    /// the training inputs. Convex rho scales the posterior diagonal here.
+    fn observation_noise_diagonal(&self, xt: &Matrix, variances: &[f64]) -> Vec<f64> {
+        let Some(state) = &self.sparse_outlier_noise else {
+            return vec![self.observation_noise_transformed(); xt.nrows()];
+        };
+        let base = self.likelihood_noise();
+        let mut noise = match self.likelihood() {
+            Likelihood::Gaussian(_) => vec![base[0]; xt.nrows()],
+            Likelihood::FixedNoise { .. } if base.len() == xt.nrows() => base.as_slice().to_vec(),
+            Likelihood::FixedNoise { .. } => vec![0.0; xt.nrows()],
+        };
+        if xt == &self.train_x_tf {
+            for (&i, &r) in state.support.iter().zip(&state.raw) {
+                noise[i] += if state.convex {
+                    (variances[i] + noise[i]) * r / (1.0 - r)
+                } else {
+                    r
+                };
+            }
+        }
+        noise
+    }
+
     /// The observation-noise variance in the *original* outcome space that
     /// `posterior(x, true)` adds to the diagonal of the posterior covariance.
     pub fn observation_noise(&self) -> f64 {
@@ -1163,6 +1265,9 @@ impl SingleTaskGP {
         let n = self.num_train();
         for i in 0..n {
             k[(i, i)] += self.training_noise(&noise, i);
+        }
+        if let Some(state) = &self.sparse_outlier_noise {
+            state.inflate(&mut k);
         }
         let chol = psd_safe_cholesky(&k)?;
         let resid = self.train_y_tf.add_scalar(-self.constant());
@@ -1189,6 +1294,48 @@ impl SingleTaskGP {
     /// [`BotorchError::NotPsd`] if the factorization fails even with jitter.
     pub fn train_cholesky(&self) -> Result<&CholeskyFactor> {
         Ok(&self.cache()?.chol)
+    }
+
+    /// Leave-one-out means and variances at the training points, in the
+    /// transformed outcome space, without refitting hyperparameters.
+    ///
+    /// Reuses the training factorization. The diagonal of `K^-1` is the
+    /// squared column norms of `L^-1`, so no dense matrix inverse is needed.
+    /// Fixed noise is subtracted pointwise when `observation_noise` is false.
+    ///
+    /// # Errors
+    /// See [`SingleTaskGP::train_cholesky`].
+    pub fn loo_predictions(&self, observation_noise: bool) -> Result<(Vector, Vector)> {
+        let cache = self.cache()?;
+        let inverse_diagonal = cache.chol.inverse_diagonal();
+        let noise = self.likelihood_noise();
+        let n = self.num_train();
+        let outlier_factors = self
+            .sparse_outlier_noise
+            .as_ref()
+            .map(|state| state.factors(n));
+        let mut mean = Vector::zeros(n);
+        let mut variance = Vector::zeros(n);
+        for i in 0..n {
+            let precision = inverse_diagonal[i];
+            mean[i] = self.train_y_tf[i] - cache.alpha[i] / precision;
+            let predictive = precision.recip();
+            variance[i] = if observation_noise {
+                predictive
+            } else {
+                let base = self.training_noise(&noise, i);
+                let extra = self.sparse_outlier_noise.as_ref().map_or(0.0, |state| {
+                    let factor = outlier_factors.as_ref().expect("sparse factors computed")[i];
+                    if state.convex {
+                        (cache.kernel.diag(&cache.train_scaled, i) + base) * factor
+                    } else {
+                        factor
+                    }
+                });
+                (predictive - base - extra).max(0.0)
+            };
+        }
+        Ok((mean, variance))
     }
 
     fn check_columns(&self, x: &Matrix, mode: TransformMode) -> Result<()> {
@@ -1306,9 +1453,10 @@ impl SingleTaskGP {
         cache.chol.solve_lower_mut(&mut v);
         cov.gemm_tr(-1.0, &v, &v, 1.0);
         if let ObservationNoise::Likelihood = noise {
-            let noise = self.observation_noise_transformed();
+            let diagonal: Vec<f64> = cov.diagonal().iter().copied().collect();
+            let noise = self.observation_noise_diagonal(&xt, &diagonal);
             for i in 0..q {
-                cov[(i, i)] += noise;
+                cov[(i, i)] += noise[i];
             }
         }
         let (aff, samples) = self.outcome_parts(&xt)?;
@@ -1633,18 +1781,20 @@ impl SingleTaskGP {
         let (aff, samples) = self.outcome_parts(&xt)?;
         let mut mean = Vector::zeros(b);
         let mut var = Vector::zeros(b);
+        let mut var_tf = vec![0.0; b];
         for i in 0..b {
             let (mu, sd) = aff.at(i);
             let k = kxs.row(i).transpose();
             mean[i] = mu + sd * (self.constant() + k.dot(&cache.alpha));
             let v = cache.chol.solve_lower_vec(&k);
-            var[i] = sd * sd * (cache.kernel.diag(&xs, i) - v.dot(&v));
+            var_tf[i] = cache.kernel.diag(&xs, i) - v.dot(&v);
+            var[i] = sd * sd * var_tf[i];
         }
         if observation_noise {
-            let noise_tf = self.observation_noise_transformed();
+            let noise_tf = self.observation_noise_diagonal(&xt, &var_tf);
             for i in 0..b {
                 let sd = aff.scale(i);
-                var[i] += sd * sd * noise_tf;
+                var[i] += sd * sd * noise_tf[i];
             }
         }
         if let Some(st) = SampleTransform::new(vec![samples], b) {
@@ -1970,6 +2120,21 @@ pub struct CrossPosterior {
 }
 
 impl Model for SingleTaskGP {
+    fn posterior_parameter_vjp(
+        &self,
+        x: &Matrix,
+        mean_adjoint: &Vector,
+        covariance_adjoint: &Matrix,
+        observation_noise: bool,
+    ) -> Result<Vector> {
+        SingleTaskGP::posterior_parameter_vjp(
+            self,
+            x,
+            mean_adjoint,
+            covariance_adjoint,
+            observation_noise,
+        )
+    }
     fn dim(&self) -> usize {
         SingleTaskGP::dim(self)
     }

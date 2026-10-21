@@ -275,14 +275,14 @@ impl LcemParameters {
 }
 
 /// Quantities derived from the hyperparameters and cached for prediction.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct LcemCache {
     kernel: Kernel,
     train_scaled: ScaledPoints,
     /// The task covariance over the context rows (`K' × K'`).
     task_cov: Matrix,
     noise: Vector,
-    chol: CholeskyFactor,
+    chol: Arc<CholeskyFactor>,
     alpha: Vector,
 }
 
@@ -295,6 +295,9 @@ pub struct LCEMGP {
     x_data: Matrix,
     train_tasks: Vec<usize>,
     y_tf: Vector,
+    /// Explicit transformed-space noise for conditioned rows, otherwise the
+    /// current learned noise of the row's task.
+    point_noise: Vec<Option<f64>>,
     outcome_transform: Option<Standardize>,
     likelihood: GaussianLikelihoodSpec,
     covar_module: KernelSpec,
@@ -480,6 +483,7 @@ impl LCEMGP {
             x_data,
             train_tasks,
             y_tf: Vector::from_column_slice(y_tf.column(0).as_slice()),
+            point_noise: vec![None; n],
             outcome_transform,
             likelihood,
             covar_module,
@@ -547,6 +551,24 @@ impl LCEMGP {
     /// The fitted outcome transform, if any.
     pub fn outcome_transform(&self) -> Option<&Standardize> {
         self.outcome_transform.as_ref()
+    }
+
+    /// Replace the fitted inverse map without refitting stored targets or noise.
+    ///
+    /// # Errors
+    /// The supplied map must be fitted and have one scalar output.
+    pub fn set_fitted_outcome_state(&mut self, transform: Option<Standardize>) -> Result<bool> {
+        if transform
+            .as_ref()
+            .is_some_and(|st| !st.is_trained() || st.means().len() != 1)
+        {
+            return Err(BotorchError::InvalidArgument(
+                "A fitted scalar outcome map is required".into(),
+            ));
+        }
+        let changed = self.outcome_transform != transform;
+        self.outcome_transform = transform;
+        Ok(changed)
     }
 
     /// The per-task noise configuration (prior and constraint).
@@ -973,7 +995,7 @@ impl LCEMGP {
         let tasks = &self.train_tasks;
         let mut k = Matrix::from_fn(n, n, |i, j| kdata[(i, j)] * task_cov[(tasks[i], tasks[j])]);
         for i in 0..n {
-            k[(i, i)] += noise[tasks[i]];
+            k[(i, i)] += self.point_noise[i].unwrap_or(noise[tasks[i]]);
         }
         let chol = psd_safe_cholesky(&k)?;
         let resid = Vector::from_fn(n, |i, _| self.y_tf[i] - p.raw_constant[tasks[i]]);
@@ -1001,7 +1023,9 @@ impl LCEMGP {
         let mut gnoise = vec![0.0; self.num_tasks()];
         let mut gconst = vec![0.0; self.num_tasks()];
         for i in 0..n {
-            gnoise[tasks[i]] += 0.5 * w[(i, i)];
+            if self.point_noise[i].is_none() {
+                gnoise[tasks[i]] += 0.5 * w[(i, i)];
+            }
             gconst[tasks[i]] += alpha[i];
         }
         for (t, g) in gnoise.iter().enumerate() {
@@ -1147,7 +1171,7 @@ impl LCEMGP {
         let noise = self.noise();
         let mut k = Matrix::from_fn(n, n, |i, j| kdata[(i, j)] * task_cov[(tasks[i], tasks[j])]);
         for i in 0..n {
-            k[(i, i)] += noise[tasks[i]];
+            k[(i, i)] += self.point_noise[i].unwrap_or(noise[tasks[i]]);
         }
         let chol = psd_safe_cholesky(&k)?;
         let resid = Vector::from_fn(n, |i, _| self.y_tf[i] - p.raw_constant[tasks[i]]);
@@ -1157,7 +1181,7 @@ impl LCEMGP {
             train_scaled,
             task_cov,
             noise,
-            chol,
+            chol: Arc::new(chol),
             alpha,
         })
     }
@@ -1391,6 +1415,116 @@ impl LCEMGP {
         let pairs: Vec<_> = tasks.into_iter().enumerate().collect();
         let (mean, cov) = self.joint_pairs(&x, &pairs, observation_noise)?;
         Ok(Posterior::single_output(mean, cov))
+    }
+
+    /// Condition on full inputs and original-space targets, retaining the
+    /// fitted outcome transform, context embeddings and hyperparameters.
+    /// Explicit variances are in transformed outcome space, matching the
+    /// multitask conditioning protocol. All returned models share one factor.
+    ///
+    /// # Errors
+    /// Returns shape/task validation errors, an input error for nonfinite
+    /// observations or negative noise, and factorization errors for invalid
+    /// covariance matrices.
+    pub fn condition_on_observations_many(
+        &self,
+        x: &Matrix,
+        ys: &[Matrix],
+        noise: Option<&[f64]>,
+    ) -> Result<Vec<Self>> {
+        let q = x.nrows();
+        let (data, tasks) = self.layout.split_inputs(x)?;
+        if x.iter().any(|v| !v.is_finite()) {
+            return Err(BotorchError::InputData("X must be finite.".into()));
+        }
+        for y in ys {
+            if y.shape() != (q, 1) {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "Expected Y of shape ({q}, 1), got {:?}",
+                    y.shape()
+                )));
+            }
+            if y.iter().any(|v| !v.is_finite()) {
+                return Err(BotorchError::InputData("Y must be finite.".into()));
+            }
+        }
+        if let Some(values) = noise {
+            if values.len() != q {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "Expected {q} noise variances, got {}",
+                    values.len()
+                )));
+            }
+            if values.iter().any(|v| !v.is_finite() || *v < 0.0) {
+                return Err(BotorchError::InputData(
+                    "Observation noise must be finite and nonnegative.".into(),
+                ));
+            }
+        }
+        if ys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let append = |a: &Matrix, b: &Matrix| {
+            let mut result = Matrix::zeros(a.nrows() + b.nrows(), a.ncols());
+            result.rows_mut(0, a.nrows()).copy_from(a);
+            result.rows_mut(a.nrows(), b.nrows()).copy_from(b);
+            result
+        };
+        let mut base = self.clone();
+        base.train_x = append(&self.train_x, x);
+        base.x_data = append(&self.x_data, &data);
+        base.train_tasks.extend(tasks);
+        base.point_noise
+            .extend((0..q).map(|i| noise.map(|values| values[i])));
+        base.cache = OnceLock::new();
+        let mut shared: Option<LcemCache> = None;
+        ys.iter()
+            .map(|y| {
+                let mut model = base.clone();
+                model.train_y = append(&self.train_y, y);
+                let transformed = match &self.outcome_transform {
+                    Some(transform) => transform.transform(y, None)?.0,
+                    None => y.clone(),
+                };
+                let mut target = self.y_tf.as_slice().to_vec();
+                target.extend(transformed.column(0).iter().copied());
+                model.y_tf = Vector::from_vec(target);
+                let cache = match &shared {
+                    Some(cache) => {
+                        let residual = Vector::from_fn(model.num_train(), |i, _| {
+                            model.y_tf[i] - model.params.raw_constant[model.train_tasks[i]]
+                        });
+                        LcemCache {
+                            alpha: cache.chol.solve_vec(&residual),
+                            ..cache.clone()
+                        }
+                    }
+                    None => {
+                        let cache = model.compute_cache()?;
+                        shared = Some(cache.clone());
+                        cache
+                    }
+                };
+                model.cache = OnceLock::from(Ok(Arc::new(cache)));
+                Ok(model)
+            })
+            .collect()
+    }
+
+    /// Single observation-set form of [`Self::condition_on_observations_many`].
+    ///
+    /// # Errors
+    /// See [`Self::condition_on_observations_many`].
+    pub fn condition_on_observations(
+        &self,
+        x: &Matrix,
+        y: &Matrix,
+        noise: Option<&[f64]>,
+    ) -> Result<Self> {
+        Ok(self
+            .condition_on_observations_many(x, std::slice::from_ref(y), noise)?
+            .pop()
+            .expect("one observation set"))
     }
 }
 
@@ -2065,5 +2199,100 @@ mod tests {
             gp.mll_value_and_grad(raw.as_slice()),
             Err(BotorchError::Nan { .. })
         ));
+    }
+
+    #[test]
+    fn conditioned_lcem_matches_dense_gaussian_and_keeps_fitted_state() {
+        for explicit in [false, true] {
+            let gp = model(2, 14);
+            let x = Matrix::from_row_slice(2, 3, &[0.18, 0.37, 0.0, 0.74, 0.22, 2.0]);
+            let test = Matrix::from_row_slice(2, 3, &[0.32, 0.58, 1.0, 0.61, 0.19, 2.0]);
+            let y = Matrix::from_column_slice(2, 1, &[0.8, -0.4]);
+            let noise = [0.015, 0.08];
+            let mut joint_x = Matrix::zeros(4, 3);
+            joint_x.rows_mut(0, 2).copy_from(&x);
+            joint_x.rows_mut(2, 2).copy_from(&test);
+            let joint = gp.posterior_with_tasks(&joint_x, false).unwrap();
+            let sd = gp.outcome_affine().1;
+            let task_noise = gp.noise();
+            let mut corner = joint.covariance.view((0, 0), (2, 2)).into_owned();
+            for i in 0..2 {
+                corner[(i, i)] += sd
+                    * sd
+                    * if explicit {
+                        noise[i]
+                    } else {
+                        task_noise[gp.layout.task_index(x[(i, 2)]).unwrap()]
+                    };
+            }
+            let root = psd_safe_cholesky(&corner).unwrap();
+            let cross = joint.covariance.view((2, 0), (2, 2)).into_owned();
+            let delta = Vector::from_fn(2, |i, _| y[(i, 0)] - joint.mean[i]);
+            let expected_mean =
+                joint.mean.rows(2, 2).into_owned() + &cross * root.solve_vec(&delta);
+            let expected_covariance = joint.covariance.view((2, 2), (2, 2)).into_owned()
+                - &cross * root.solve(&cross.transpose());
+            let models = gp
+                .condition_on_observations_many(
+                    &x,
+                    &[y.clone(), &y + Matrix::from_element(2, 1, 0.2)],
+                    explicit.then_some(noise.as_slice()),
+                )
+                .unwrap();
+            let actual = models[0].posterior_with_tasks(&test, false).unwrap();
+            assert!((actual.mean - expected_mean).amax() < 3e-12);
+            assert!((actual.covariance - expected_covariance).amax() < 3e-12);
+            assert_eq!(gp.parameters(), models[0].parameters());
+            assert_eq!(gp.outcome_transform(), models[0].outcome_transform());
+            assert_eq!(gp.num_train() + 2, models[0].num_train());
+            assert!(Arc::ptr_eq(
+                &models[0].cache().unwrap().chol,
+                &models[1].cache().unwrap().chol
+            ));
+            assert_eq!(gp.num_train(), 9);
+        }
+    }
+
+    #[test]
+    fn explicit_conditioning_noise_survives_parameter_changes_and_mll_gradients() {
+        let mut gp = model(1, 8);
+        let mut parameters = gp.parameters().clone();
+        // Stay inside max_norm: its intentional no-grad renormalization is
+        // not the finite-difference law of the embedding lookup.
+        for weight in &mut parameters.embedding_weights {
+            *weight *= 0.4;
+        }
+        gp.set_parameters(parameters).unwrap();
+        let x = Matrix::from_row_slice(2, 3, &[0.18, 0.37, 0.0, 0.74, 0.22, 1.0]);
+        let y = Matrix::from_column_slice(2, 1, &[0.8, -0.4]);
+        let conditioned = gp
+            .condition_on_observations(&x, &y, Some(&[0.015, 0.08]))
+            .unwrap();
+        let raw = conditioned.raw_parameters();
+        let (_, gradient) = conditioned.mll_value_and_grad(raw.as_slice()).unwrap();
+        for j in 0..raw.len() {
+            let mut plus = raw.clone();
+            let mut minus = raw.clone();
+            plus[j] += 1e-6;
+            minus[j] -= 1e-6;
+            let fd = (conditioned.mll_value_and_grad(plus.as_slice()).unwrap().0
+                - conditioned.mll_value_and_grad(minus.as_slice()).unwrap().0)
+                / 2e-6;
+            assert!(
+                (fd - gradient[j]).abs() < 2e-6,
+                "parameter {j}: {fd} vs {}",
+                gradient[j]
+            );
+        }
+        assert!(gp
+            .condition_on_observations(&x, &y, Some(&[-1.0, 0.08]))
+            .is_err());
+        assert!(gp
+            .condition_on_observations(&x, &y, Some(&[f64::NAN, 0.08]))
+            .is_err());
+        assert!(gp.condition_on_observations(&x, &y, Some(&[0.08])).is_err());
+        assert!(gp
+            .condition_on_observations(&x, &Matrix::zeros(3, 1), None)
+            .is_err());
     }
 }

@@ -196,6 +196,24 @@ pub trait Model: Send + Sync + Debug {
         Ok(out)
     }
 
+    /// Raw model-parameter adjoint of a Gaussian posterior. Parameters follow
+    /// the concrete model's public flat layout; specialized models opt in.
+    ///
+    /// # Errors
+    /// Unsupported model families, inconsistent adjoint shapes, or numerical
+    /// failures of the full conditional training-solve derivative.
+    fn posterior_parameter_vjp(
+        &self,
+        _x: &Matrix,
+        _mean_adjoint: &Vector,
+        _covariance_adjoint: &Matrix,
+        _observation_noise: bool,
+    ) -> Result<Vector> {
+        Err(BotorchError::Unsupported(
+            "This model does not implement native posterior parameter gradients".into(),
+        ))
+    }
+
     /// Posteriors of every row of `x`, each evaluated on its own (a
     /// `b × 1 × d` batch in BoTorch), over all outputs, with *unclamped*
     /// output covariances and without observation noise.
@@ -211,6 +229,53 @@ pub trait Model: Send + Sync + Debug {
         let mut covariance = Matrix::zeros(b, m * m);
         for i in 0..b {
             let p = self.posterior(&x.rows(i, 1).into_owned(), false)?;
+            check_point_posterior(&p.mean, m)?;
+            for a in 0..m {
+                mean[(i, a)] = p.mean[a];
+                for c in 0..m {
+                    covariance[(i, a * m + c)] = p.covariance[(a, c)];
+                }
+            }
+        }
+        Ok(PointPosteriors { mean, covariance })
+    }
+
+    /// [`Model::point_posteriors`] computed like the joint posterior of each
+    /// point (the variances from the covariance matrix), which BoTorch's
+    /// `ScalarizedPosteriorTransform` uses. Models whose marginal variances
+    /// (GPyTorch's lazy `diag=True` kernel values, e.g. of a variational
+    /// GP) differ from the diagonal of their covariance matrix override it;
+    /// the default is [`Model::point_posteriors`].
+    ///
+    /// # Errors
+    /// See [`Model::posterior`].
+    fn point_posteriors_joint(&self, x: &Matrix) -> Result<PointPosteriors> {
+        self.point_posteriors(x)
+    }
+
+    /// [`Model::point_posterior_with_grad`] computed like the joint
+    /// posterior of the point (see [`Model::point_posteriors_joint`]); the
+    /// default is [`Model::point_posterior_with_grad`].
+    ///
+    /// # Errors
+    /// See [`Model::posterior`].
+    fn point_posterior_joint_with_grad(&self, x: &[f64]) -> Result<JointPosteriorGrad> {
+        self.point_posterior_with_grad(x)
+    }
+
+    /// [`Model::point_posteriors`] with observation noise (BoTorch's
+    /// `posterior(X, observation_noise=True)` of a `b × 1 × d` batch). The
+    /// default implementation calls [`Model::posterior`] row by row.
+    ///
+    /// # Errors
+    /// See [`Model::posterior`].
+    fn point_posteriors_with_noise(&self, x: &Matrix) -> Result<PointPosteriors> {
+        let b = x.nrows();
+        let m = self.num_outputs();
+        let mut mean = Matrix::zeros(b, m);
+        let mut covariance = Matrix::zeros(b, m * m);
+        for i in 0..b {
+            let p = self.posterior(&x.rows(i, 1).into_owned(), true)?;
             check_point_posterior(&p.mean, m)?;
             for a in 0..m {
                 mean[(i, a)] = p.mean[a];

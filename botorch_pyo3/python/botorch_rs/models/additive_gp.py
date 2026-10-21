@@ -1,16 +1,15 @@
 """Additive GPs (``botorch.models.additive_gp``): ``OrthogonalAdditiveGP``.
 
-The model is a ``SingleTaskGP`` with an ``OrthogonalAdditiveKernel``
-(evaluated in Rust). The posteriors of the individual additive components
-(``posterior(..., infer_all_components=True)``,
-``evaluate_first_order_on_grid``) are not ported.
+Full and component posteriors condition on the same native training solve.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from botorch_rs._arrays import to_flat
+from botorch_rs import _botorch_rs as _rs
+from botorch_rs import _ops
+from botorch_rs._arrays import broadcast_shapes, kind_of, to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.likelihoods import Likelihood
 from botorch_rs.means import ConstantMean
@@ -31,6 +30,24 @@ class OrthogonalAdditiveGP(SingleTaskGP):
 
     _infer_all_components: bool = False
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        from botorch_rs.models.map_saas import _use_torch_backend
+
+        if cls is OrthogonalAdditiveGP and _use_torch_backend(
+            backend, train_X, train_Y, *args, *kwargs.values()
+        ):
+            from botorch_rs.models._torch_backend_additive import TorchOrthogonalAdditiveGP
+
+            return object.__new__(TorchOrthogonalAdditiveGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -41,6 +58,8 @@ class OrthogonalAdditiveGP(SingleTaskGP):
         mean_module: ConstantMean | None = None,
         outcome_transform: Any = DEFAULT,
         input_transform: InputTransform | None = None,
+        *,
+        backend: str = "auto",
     ) -> None:
         """Initialize the OrthogonalAdditiveGP.
 
@@ -64,7 +83,9 @@ class OrthogonalAdditiveGP(SingleTaskGP):
             covar_module = OrthogonalAdditiveKernel(
                 dim=to_flat(train_X, "train_X")[1][-1],
                 second_order=second_order,
+                batch_shape=self.get_batch_dimensions(train_X, train_Y)[1],
                 dtype=getattr(train_X, "dtype", None) or "float64",
+                device=getattr(train_X, "device", None),
             )
         elif not isinstance(covar_module, OrthogonalAdditiveKernel):
             raise TypeError(
@@ -97,17 +118,50 @@ class OrthogonalAdditiveGP(SingleTaskGP):
             output_indices: Not supported for this model.
             observation_noise: Whether to add observation noise to the posterior.
             posterior_transform: Optional posterior transform.
-            infer_all_components: The posteriors of the individual components
-                are not supported by botorch_rs.
+            infer_all_components: Return bias, first-order and interaction
+                marginals as an extra leading batch dimension.
             kwargs: Passed on to ``SingleTaskGP.posterior``.
 
         Returns:
             The posterior distribution at X.
         """
         if infer_all_components:
-            raise UnsupportedError(
-                "The posteriors of the individual additive components "
-                "(infer_all_components=True) are not supported by botorch_rs."
+            if kwargs:
+                raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
+            if not isinstance(observation_noise, bool):
+                raise UnsupportedError("`observation_noise` must be a bool in botorch_rs.")
+            from botorch_rs.acquisition.objective import ExpectationPosteriorTransform
+
+            self.eval()
+            shape = to_flat(X, "X")[1]
+            if len(shape) < 2 or shape[-1] != self._rs.dim:
+                raise ValueError(f"Expected X with shape (..., q, {self._rs.dim})")
+            batch = broadcast_shapes(shape[:-2], self.batch_shape)
+            if batch is None:
+                raise ValueError("The model and query batch shapes do not broadcast.")
+            source = _rs.additive_component_model(self._rs, len(batch) - len(self.batch_shape))
+            query = _ops.getitem(X, (None, Ellipsis))
+            oi, transform = self._posterior_args(
+                output_indices,
+                None
+                if isinstance(posterior_transform, ExpectationPosteriorTransform)
+                else posterior_transform,
+            )
+            posterior = GPyTorchPosterior(
+                source,
+                to_flat(query, "X"),
+                kind_of(X),
+                observation_noise,
+                model_batch_shape=tuple(source.batch_shape),
+                output_indices=oi,
+                transform=transform,
+                points_per_input=source.points_per_input,
+                query_inputs=query,
+            )
+            return (
+                posterior_transform(posterior, X=X)
+                if isinstance(posterior_transform, ExpectationPosteriorTransform)
+                else posterior
             )
         return super().posterior(
             X=X,
@@ -116,6 +170,41 @@ class OrthogonalAdditiveGP(SingleTaskGP):
             posterior_transform=posterior_transform,
             **kwargs,
         )
+
+    @property
+    def component_indices(self) -> dict[str, Any]:
+        return self.covar_module.component_indices  # type: ignore[attr-defined,no-any-return]
+
+    @property
+    def num_components(self) -> int:
+        return int(self.covar_module.num_components)  # type: ignore[attr-defined]
+
+    def get_component_index(
+        self, component_type: str, dim_index: int | tuple[int, int] | None = None
+    ) -> int:
+        return int(self.covar_module.get_component_index(component_type, dim_index))  # type: ignore[attr-defined]
+
+    def evaluate_first_order_on_grid(self, grid_1d: Any) -> tuple[tuple[Any, Any], tuple[Any, Any]]:
+        """Bias and first-order posterior moments on a shared one-dimensional grid."""
+        shape = to_flat(grid_1d, "grid_1d")[1]
+        if len(shape) != 1 or not shape[0]:
+            raise ValueError("grid_1d must be a nonempty one-dimensional grid")
+        grid = _ops.expand(
+            _ops.getitem(grid_1d, (slice(None), None)),
+            (shape[0], to_flat(self.train_inputs[0])[1][-1]),
+        )
+        posterior = self.posterior(grid, infer_all_components=True)
+        mean = _ops.getitem(posterior.mean, (Ellipsis, 0))
+        variance = _ops.getitem(posterior.variance, (Ellipsis, 0))
+        bias = (
+            _ops.reduce("mean", _ops.getitem(mean, 0), -1),
+            _ops.reduce("mean", _ops.getitem(variance, 0), -1),
+        )
+        first = (
+            _ops.getitem(mean, slice(1, 1 + len(self.component_indices["first_order"]))),
+            _ops.getitem(variance, slice(1, 1 + len(self.component_indices["first_order"]))),
+        )
+        return bias, first
 
 
 __all__ = ["OrthogonalAdditiveGP"]

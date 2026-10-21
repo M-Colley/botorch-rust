@@ -7,14 +7,19 @@ botorch_rs ``SingleTaskGP`` (one or several outputs) and ``ModelListGP``
 models, ``draw_kernel_feature_paths`` (random Fourier features of RBF and
 Matérn kernels, with ``active_dims``, with or without ``ScaleKernel``) and
 ``gaussian_update``.
+Standalone ``gen_kernel_features``, ``KernelFeatureMap`` and
+``KernelEvaluationMap`` support native evaluation and input derivatives.
 The random numbers come from botorch_rs's generators (keyword-only ``seed``)
 or are passed explicitly (keyword-only ``draws``); given BoTorch's draws, the
-paths equal BoTorch's to rounding. ``gen_kernel_features`` and
-``KernelEvaluationMap`` are part of the paths computed in Rust and not
-exposed in Python.
+paths equal BoTorch's to rounding.
 """
 
-from botorch_rs.sampling.pathwise.features import FeatureMap, KernelFeatureMap
+from botorch_rs.sampling.pathwise.features import (
+    FeatureMap,
+    KernelEvaluationMap,
+    KernelFeatureMap,
+    gen_kernel_features,
+)
 from botorch_rs.sampling.pathwise.paths import (
     GeneralizedLinearPath,
     PathDict,
@@ -33,6 +38,7 @@ __all__ = [
     "FeatureMap",
     "GeneralizedLinearPath",
     "KernelFeatureMap",
+    "KernelEvaluationMap",
     "MatheronPath",
     "PathDict",
     "PathList",
@@ -40,5 +46,6 @@ __all__ = [
     "draw_kernel_feature_paths",
     "draw_matheron_paths",
     "gaussian_update",
+    "gen_kernel_features",
     "get_matheron_path_model",
 ]

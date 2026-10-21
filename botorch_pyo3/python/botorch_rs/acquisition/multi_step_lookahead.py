@@ -41,7 +41,7 @@ from botorch_rs.acquisition.monte_carlo import MCAcquisitionFunction
 from botorch_rs.acquisition.objective import objective_arg, transform_arg
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import BotorchWarning
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
 #: ``(model, X) -> kwargs`` of a stage value function.
 TAcqfArgConstructor = Callable[..., dict[str, Any]]
@@ -249,7 +249,7 @@ class qMultiStepLookahead(MCAcquisitionFunction, OneShotAcquisitionFunction):
             samplers = [SobolQMCNormalSampler(sample_shape=(nf,)) for nf in num_fantasies]
         else:
             for s in samplers:
-                if not isinstance(s, SobolQMCNormalSampler):
+                if not isinstance(s, NormalMCSampler):
                     raise UnsupportedError(
                         "The samplers of qMultiStepLookahead must be botorch_rs "
                         "SobolQMCNormalSamplers."
@@ -655,6 +655,9 @@ def make_best_f(model: Any, X: Any) -> dict[str, Any]:
     argument factory of ``qMultiStepLookahead``, every fantasy model gets the
     best value of its observed and fantasized data.
     """
+    if getattr(model, "_tensor_backend", None) == "torch" and hasattr(model, "_train_Y"):
+        best = model._train_Y.amax(dim=-2)
+        return {"best_f": best.squeeze(-1) if model.num_outputs == 1 else best}
     rs = getattr(model, "_rs", None)
     if rs is not None and hasattr(rs, "train_targets"):
         data, shape = rs.train_targets()

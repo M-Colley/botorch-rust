@@ -62,6 +62,8 @@ use crate::priors::Prior;
 use crate::transforms::{Normalize, Standardize};
 use crate::{Matrix, Vector};
 
+mod matheron;
+
 /// `log(2π)`.
 const LN_2PI: f64 = 1.837_877_066_409_345_3;
 
@@ -127,6 +129,10 @@ impl Default for KroneckerMultiTaskGPOptions {
 struct KronCache {
     data: TreeKernel,
     train_prep: TreePrep,
+    /// The data covariance on transformed training inputs (`n × n`).
+    kx: Matrix,
+    /// Materialized noiseless `Kxx ⊗ B`, only when publicly requested.
+    train_full: OnceLock<Arc<Matrix>>,
     /// The task covariance `B` (`m × m`).
     b: Matrix,
     /// The task noise covariance `N` (`m × m`).
@@ -342,6 +348,24 @@ impl KroneckerMultiTaskGP {
     /// The fitted outcome transform, if any.
     pub fn outcome_transform(&self) -> Option<&Standardize> {
         self.outcome_transform.as_ref()
+    }
+
+    /// Replace fitted task-wise inverse statistics without refitting training data.
+    ///
+    /// # Errors
+    /// The supplied map must be fitted and have one statistic per task.
+    pub fn set_fitted_outcome_state(&mut self, transform: Option<Standardize>) -> Result<bool> {
+        if transform
+            .as_ref()
+            .is_some_and(|st| !st.is_trained() || st.means().len() != self.train_y.ncols())
+        {
+            return Err(BotorchError::InvalidArgument(
+                "A fitted outcome map with one statistic per task is required".into(),
+            ));
+        }
+        let changed = self.outcome_transform != transform;
+        self.outcome_transform = transform;
+        Ok(changed)
     }
 
     // ------------------------------------------------------------------
@@ -733,6 +757,8 @@ impl KroneckerMultiTaskGP {
         Ok(KronCache {
             data,
             train_prep,
+            kx,
+            train_full: OnceLock::new(),
             b,
             noise,
             chol: Arc::new(chol),
@@ -744,6 +770,35 @@ impl KroneckerMultiTaskGP {
         self.cache
             .get_or_init(|| self.compute_cache().map(Arc::new))
             .clone()
+    }
+
+    /// The cached noiseless training covariance `Kxx ⊗ B`, interleaved by
+    /// point then task, in the transformed training space.
+    ///
+    /// This dense matrix is materialized lazily and shared by subsequent
+    /// requests; ordinary posterior evaluation does not allocate it.
+    ///
+    /// # Errors
+    /// Returns kernel-construction or training-factorization errors.
+    pub fn train_full_covar(&self) -> Result<Arc<Matrix>> {
+        let c = self.cache()?;
+        let (n, m) = (self.num_train(), self.num_tasks());
+        Ok(c.train_full
+            .get_or_init(|| {
+                Arc::new(Matrix::from_fn(n * m, n * m, |i, j| {
+                    c.kx[(i / m, j / m)] * c.b[(i % m, j % m)]
+                }))
+            })
+            .clone())
+    }
+
+    /// The cached solve `(Kxx ⊗ B + I ⊗ N)⁻¹ (y - μ)`, interleaved by
+    /// point then task, in transformed training units.
+    ///
+    /// # Errors
+    /// Returns kernel-construction or training-factorization errors.
+    pub fn predictive_mean_cache(&self) -> Result<Vector> {
+        Ok(self.cache()?.alpha.clone())
     }
 
     /// `(means, stdvs)` of the outcome transform (zeros and ones without).
@@ -1095,7 +1150,7 @@ impl Model for KroneckerMultiTaskGP {
 mod tests {
     use super::*;
 
-    fn model(lr: usize, standardize: bool) -> KroneckerMultiTaskGP {
+    pub(super) fn model(lr: usize, standardize: bool) -> KroneckerMultiTaskGP {
         let n = 7;
         let x = Matrix::from_fn(n, 2, |i, j| ((i * 5 + j * 3) % 11) as f64 / 11.0);
         let y = Matrix::from_fn(n, 3, |i, t| {
@@ -1128,6 +1183,36 @@ mod tests {
             .collect();
         m.set_raw_parameters(&raw).unwrap();
         m
+    }
+
+    #[test]
+    fn public_training_caches_are_lazy_reused_and_invalidated() {
+        for lr in [0, 2] {
+            for standardize in [false, true] {
+                let mut m = model(lr, standardize);
+                let snapshot = m.clone();
+                let c = m.cache().unwrap();
+                assert!(c.train_full.get().is_none());
+                let full = m.train_full_covar().unwrap();
+                assert!(Arc::ptr_eq(&full, &m.train_full_covar().unwrap()));
+                let expected = m.train_covariance(
+                    &c.data.symmetric(&c.train_prep),
+                    &m.task_covariance().unwrap(),
+                    &Matrix::zeros(m.num_tasks(), m.num_tasks()),
+                );
+                assert!((full.as_ref() - expected).amax() < 1e-14);
+                let alpha = m.predictive_mean_cache().unwrap();
+                let noisy = m.train_covariance(&c.kx, &c.b, &c.noise);
+                assert!((&noisy * &alpha - m.residuals(m.raw.as_slice())).amax() < 1e-10);
+                assert!(Arc::ptr_eq(&c, &m.cache().unwrap()));
+                let mut raw = m.raw.as_slice().to_vec();
+                raw[m.mean_range().start] += 0.7;
+                m.set_raw_parameters(&raw).unwrap();
+                assert!(!Arc::ptr_eq(&c, &m.cache().unwrap()));
+                assert!((m.predictive_mean_cache().unwrap() - &alpha).amax() > 1e-4);
+                assert!((snapshot.predictive_mean_cache().unwrap() - alpha).amax() < 1e-14);
+            }
+        }
     }
 
     #[test]

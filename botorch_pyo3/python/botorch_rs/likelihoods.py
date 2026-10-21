@@ -1,4 +1,4 @@
-"""Gaussian likelihoods (``gpytorch.likelihoods``).
+"""Gaussian and probit likelihoods (``gpytorch.likelihoods``).
 
 A model's ``likelihood`` exposes the noise variance in the model's
 (transformed) outcome space, like GPyTorch: ``noise`` has shape
@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import to_flat
+from botorch_rs._arrays import from_flat, is_torch_tensor, kind_of, to_flat
 from botorch_rs._module import GPModule
 from botorch_rs.constraints import Interval
 from botorch_rs.constraints import _from_rs as _constraint_from_rs
@@ -26,7 +26,7 @@ class Likelihood(GPModule):
     """Base class of the likelihoods."""
 
     @property
-    def noise_covar(self) -> Likelihood:
+    def noise_covar(self) -> Any:
         """GPyTorch's noise module (``likelihood.noise_covar.noise``)."""
         return self
 
@@ -70,15 +70,27 @@ class GaussianLikelihood(Likelihood):
     @property
     def noise(self) -> Any:
         """The noise variance, shape ``batch_shape x 1``."""
+        if getattr(self._model, "_sync_torch_parameters", lambda: None)() is not None:
+            from botorch_rs.models._torch_parameters import constrained_parameter
+
+            return constrained_parameter(self.raw_noise, self.noise_constraint)
         return self._param_out(self._rs_model.noise, (1,))
 
     @noise.setter
     def noise(self, value: Any) -> None:
         self._rs_model.set_noise(to_flat(value, "noise"))
+        sync = getattr(self._model, "_sync_torch_parameters", None)
+        if sync is not None:
+            sync()
 
     @property
     def raw_noise(self) -> Any:
-        return self._param_out(self._model._raw_param("raw_noise"), (1,))
+        getter = getattr(self._model, "_raw_param_array", None)
+        return (
+            getter("raw_noise")
+            if getter is not None
+            else self._param_out(self._model._raw_param("raw_noise"), (1,))
+        )
 
     @raw_noise.setter
     def raw_noise(self, value: Any) -> None:
@@ -92,13 +104,48 @@ class GaussianLikelihood(Likelihood):
         return "GaussianLikelihood()"
 
 
-class FixedNoiseGaussianLikelihood(Likelihood):
-    """Fixed observation noise, created by models given ``train_Yvar``."""
+class BernoulliLikelihood(Likelihood):
+    """Probit observations for Tensor-backend scalar variational GPs.
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        raise UnsupportedError(
-            "Pass `train_Yvar` to the model instead of a FixedNoiseGaussianLikelihood."
-        )
+    ``num_locs`` controls Gauss-Hermite integration of the expected log
+    likelihood (20 by default). The native Gaussian-only backend rejects it.
+    """
+
+    def __init__(self, *, num_locs: int = 20) -> None:
+        if isinstance(num_locs, bool) or int(num_locs) != num_locs or num_locs <= 0:
+            raise ValueError("num_locs must be a positive integer.")
+        self.num_locs = int(num_locs)
+        self.batch_shape = ()
+
+
+class FixedNoiseGaussianLikelihood(Likelihood):
+    """Fixed observation noise, optionally with an additional learned variance."""
+
+    def __new__(cls, noise: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if is_torch_tensor(noise):
+            from botorch_rs._torch_likelihoods import TorchPublicFixedNoiseLikelihood
+            from botorch_rs.sampling.pathwise._torch_types import module_type
+
+            return object.__new__(
+                module_type(cls, TorchPublicFixedNoiseLikelihood, FixedNoiseGaussianLikelihood)
+            )
+        return object.__new__(cls)
+
+    def __init__(
+        self,
+        noise: Any,
+        learn_additional_noise: bool | None = False,
+        batch_shape: Any = (),
+        **kwargs: Any,
+    ) -> None:
+        if learn_additional_noise:
+            raise UnsupportedError("Additional learned fixed noise requires Tensor noise.")
+        _check_kwargs(kwargs, "FixedNoiseGaussianLikelihood")
+        values, shape = to_flat(noise, "noise")
+        if not shape:
+            raise ValueError("Fixed noise must have an observation dimension.")
+        self.batch_shape = _check_batch_shape(batch_shape)
+        self._fixed_noise = from_flat([max(v, 1e-6) for v in values], shape, kind_of(noise))
 
     @classmethod
     def _create(cls, batch_shape: tuple[int, ...] = ()) -> FixedNoiseGaussianLikelihood:
@@ -110,7 +157,16 @@ class FixedNoiseGaussianLikelihood(Likelihood):
     def noise(self) -> Any:
         """The (transformed, clamped at 1e-6) noise variances, shape
         ``batch_shape x n``."""
+        if self._model is None:
+            return self._fixed_noise
         return self._param_out(self._rs_model.noise, (-1,))
+
+    @noise.setter
+    def noise(self, value: Any) -> None:
+        if self._model is None:
+            self._fixed_noise = value
+        else:
+            self._model._replace_transformed_train_data(self._model.train_targets, noise=value)
 
     def __repr__(self) -> str:
         return "FixedNoiseGaussianLikelihood()"
@@ -287,6 +343,10 @@ class MultitaskGaussianLikelihood(Likelihood):
     @property
     def noise(self) -> Any:
         """The global noise variance (shape ``1``)."""
+        if getattr(self._model, "_sync_torch_parameters", lambda: None)() is not None:
+            from botorch_rs.models._torch_parameters import constrained_parameter
+
+            return constrained_parameter(self.raw_noise, self.noise_constraint)
         return self._out([self._model._rs.noises()[1]], (1,))
 
     @noise.setter
@@ -298,6 +358,9 @@ class MultitaskGaussianLikelihood(Likelihood):
 
     @property
     def raw_noise(self) -> Any:
+        getter = getattr(self._model, "_raw_param_array", None)
+        if getter is not None:
+            return getter("likelihood.raw_noise")
         return self._out(self._model._raw_param("likelihood.raw_noise"), (1,))
 
     @raw_noise.setter
@@ -311,6 +374,10 @@ class MultitaskGaussianLikelihood(Likelihood):
             raise AttributeError(
                 "Cannot set diagonal task noises when covariance has ", self.rank, ">0"
             )
+        if getattr(self._model, "_sync_torch_parameters", lambda: None)() is not None:
+            from botorch_rs.models._torch_parameters import constrained_parameter
+
+            return constrained_parameter(self.raw_task_noises, self.noise_constraint)
         return self._out(list(self._model._rs.noises()[0]), (self.num_tasks,))
 
     @task_noises.setter
@@ -327,6 +394,9 @@ class MultitaskGaussianLikelihood(Likelihood):
 
     @property
     def raw_task_noises(self) -> Any:
+        getter = getattr(self._model, "_raw_param_array", None)
+        if getter is not None:
+            return getter("likelihood.raw_task_noises")
         return self._out(self._model._raw_param("likelihood.raw_task_noises"), (self.num_tasks,))
 
     @raw_task_noises.setter
@@ -381,6 +451,7 @@ class LikelihoodList(Likelihood):
 
 
 __all__ = [
+    "BernoulliLikelihood",
     "FixedNoiseGaussianLikelihood",
     "GaussianLikelihood",
     "HadamardGaussianLikelihood",

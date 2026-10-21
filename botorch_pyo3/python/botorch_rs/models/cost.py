@@ -3,44 +3,21 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import (
+    LIST,
+    ArrayKind,
     from_flat,
     from_pair,
     is_torch_tensor,
-    kind_from_dtype,
     kind_of,
     to_flat,
 )
 from botorch_rs.exceptions.errors import BotorchTensorDimensionError
 from botorch_rs.models.model import Model
-
-
-class _CostModelValue:
-    """Autograd of a cost model's values for torch inputs that require
-    gradients (the gradient is computed in Rust)."""
-
-    @staticmethod
-    def apply(rs: Any, X: Any) -> Any:
-        import torch
-
-        class _Fn(torch.autograd.Function):
-            @staticmethod
-            def forward(ctx: Any, Xt: Any) -> Any:  # type: ignore[override]
-                kind = kind_of(Xt)
-                ctx.save_for_backward(Xt)
-                return from_pair(rs.forward(to_flat(Xt)), kind)
-
-            @staticmethod
-            def backward(ctx: Any, grad_output: Any) -> Any:  # type: ignore[override]
-                (Xt,) = ctx.saved_tensors
-                kind = kind_of(Xt)
-                g = rs.backward(to_flat(Xt), to_flat(grad_output.contiguous()))
-                return from_pair(g, kind)
-
-        return _Fn.apply(X)
 
 
 class DeterministicCostModel(Model):
@@ -52,16 +29,15 @@ class DeterministicCostModel(Model):
     _rs_cost: Any
 
     def forward(self, X: Any) -> Any:
+        if is_torch_tensor(X):
+            from botorch_rs.models._torch_backend_cost import tensor_cost_forward
+
+            return tensor_cost_forward(self, X)
         flat = to_flat(X, "X")
         if len(flat[1]) < 2:
             raise BotorchTensorDimensionError(
                 f"Expected X to be `batch_shape x q x d`, got shape {flat[1]}."
             )
-        if is_torch_tensor(X):
-            import torch
-
-            if X.requires_grad and torch.is_grad_enabled():
-                return _CostModelValue.apply(self._rs_cost, X)
         return from_pair(self._rs_cost.forward(flat), kind_of(X))
 
     __call__ = forward
@@ -73,6 +49,10 @@ class DeterministicCostModel(Model):
     def posterior(self, X: Any, output_indices: list[int] | None = None, **kwargs: Any) -> Any:
         """A deterministic posterior: ``mean`` holds the costs (of the outputs
         ``output_indices``), ``variance`` zeros."""
+        if is_torch_tensor(X):
+            from botorch_rs.models._torch_backend_cost import tensor_cost_posterior
+
+            return tensor_cost_posterior(self, X, output_indices, kwargs)
         flat = to_flat(X, "X")
         data, shape = self._rs_cost.forward(flat)
         m = shape[-1]
@@ -102,13 +82,21 @@ class AffineFidelityCostModel(DeterministicCostModel):
 
     The fidelity dimensions are the sorted keys of ``fidelity_weights``
     (default ``{-1: 1.0}``: the last column with weight 1). BoTorch stores the
-    weights in torch's default dtype (float32 unless changed); botorch_rs uses
-    them as exact float64 values.
+    weights in torch's default dtype (float32 unless changed). With Torch
+    already imported, native weights use those same rounded values; list-only
+    construction keeps float64 values without importing Torch.
 
     Example:
         >>> cost_model = AffineFidelityCostModel(fidelity_weights={6: 1.0}, fixed_cost=5.0)
         >>> cost_aware_utility = InverseCostWeightedUtility(cost_model=cost_model)
     """
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        if cls is AffineFidelityCostModel and sys.modules.get("torch") is not None:
+            from botorch_rs.models._torch_backend_cost import TorchAffineFidelityCostModel
+
+            return object.__new__(TorchAffineFidelityCostModel)
+        return object.__new__(cls)
 
     def __init__(
         self,
@@ -120,6 +108,13 @@ class AffineFidelityCostModel(DeterministicCostModel):
         self.fidelity_dims = sorted(int(k) for k in fidelity_weights)
         self.fixed_cost = fixed_cost
         self._weights = [float(fidelity_weights[k]) for k in self.fidelity_dims]
+        torch = sys.modules.get("torch")
+        if torch is not None:
+            self._weights = torch.tensor(
+                self._weights, dtype=getattr(torch, self._buffer_factory_dtype), device="cpu"
+            ).tolist()
+        else:
+            self._buffer_factory_dtype = "float64"
         self._rs_cost = _rs.CostModel.affine(
             [(k, w) for k, w in zip(self.fidelity_dims, self._weights, strict=True)],
             float(fixed_cost),
@@ -127,9 +122,14 @@ class AffineFidelityCostModel(DeterministicCostModel):
 
     @property
     def weights(self) -> Any:
-        """The weights of the fidelity dimensions (a list, or a float64 tensor
-        if torch is available)."""
-        return from_flat(self._weights, (len(self._weights),), kind_from_dtype())
+        """Weights in the constructor's default floating dtype."""
+        torch = sys.modules.get("torch")
+        kind = (
+            LIST
+            if torch is None
+            else ArrayKind("torch", getattr(torch, self._buffer_factory_dtype))
+        )
+        return from_flat(self._weights, (len(self._weights),), kind)
 
     def __repr__(self) -> str:
         return (
@@ -142,6 +142,13 @@ class FixedCostModel(DeterministicCostModel):
     r"""Deterministic, fixed cost model: every point of a candidate set
     costs ``fixed_cost`` (one cost per output, e.g. per objective of a
     decoupled multi-objective problem)."""
+
+    def __new__(cls, fixed_cost: Any = None) -> Any:
+        if cls is FixedCostModel and is_torch_tensor(fixed_cost):
+            from botorch_rs.models._torch_backend_cost import TorchFixedCostModel
+
+            return object.__new__(TorchFixedCostModel)
+        return object.__new__(cls)
 
     def __init__(self, fixed_cost: Any) -> None:
         data, shape = to_flat(fixed_cost, "fixed_cost")
@@ -170,6 +177,12 @@ def cost_model_handle(cost_model: Any) -> Any:
 
     if isinstance(cost_model, DeterministicCostModel):
         return cost_model._rs_cost
+    if getattr(cost_model, "_tensor_backend", None) == "torch":
+        from botorch_rs.exceptions.errors import UnsupportedError
+
+        raise UnsupportedError(
+            "A Tensor GP cost model requires a Tensor-aware acquisition/utility."
+        )
     if isinstance(cost_model, (SingleTaskGP, ModelListGP)):
         return _rs.CostModel.posterior_mean(cost_model._acquisition_model(None))
     num_outputs = int(getattr(cost_model, "num_outputs", 1))

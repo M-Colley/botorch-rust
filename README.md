@@ -1,7 +1,7 @@
 # botorch-rust
 
 *botorch-rust* is a fast implementation of [BoTorch](https://botorch.org) in
-Rust, with Python bindings that provide essentially the same API as BoTorch.
+Rust, with Python bindings that follow BoTorch's API for the supported features.
 It is an independent project, not affiliated with or endorsed by Meta or the
 BoTorch team.
 
@@ -68,21 +68,26 @@ Like [Rustuna](https://github.com/optuna/rustuna) for Optuna, botorch-rust
 balances compatibility and performance:
 
 - **Essentially the same API.** Module paths, class names, argument names,
-  order and defaults follow BoTorch. Where botorch-rust cannot honor an
-  argument (a `post_processing_func` or custom `gen_candidates` in
-  `optimize_acqf`, a multi-output objective, ...) it raises
+  order and defaults follow BoTorch. Unsupported combinations raise
   `botorch_rs.exceptions.UnsupportedError`, a `NotImplementedError`, instead
   of silently ignoring it.
-- **The same numbers.** Every component is validated against BoTorch itself:
-  identical data and hyperparameters give identical posteriors, marginal
-  likelihoods and acquisition values to about 1e-10 (see
+- **Numerical parity.** Supported operations are compared with BoTorch itself:
+  identical data and hyperparameters give matching posteriors, marginal
+  likelihoods and acquisition values to about 1e-10, except documented upstream
+  correctness fixes and numerical conventions (see
   [Equivalence with BoTorch](#equivalence-with-botorch)).
-- **Not a complete replacement yet.** botorch-rust covers exact GPs
+- **Main BoTorch package.** botorch-rust covers exact GPs
   (single- and multi-output, batched, model lists, multi-task, multi-fidelity,
-  mixed, MAP SAAS and ensembles), the single- and multi-objective acquisition
-  functions, MC objectives, outcome constraints and acquisition optimization.
-  BoTorch remains the place for fully Bayesian, variational and preference
-  models, GPUs, and everything built on autograd through models.
+  mixed, MAP SAAS and ensembles), fully Bayesian GPs with native and GPU NUTS,
+  variational and higher-order GPs, preference learning, the single- and
+  multi-objective acquisition functions, and acquisition optimization.
+  An optional Torch backend adds GPU execution and complete autograd graphs
+  through specialized/empirical models, entropy search, lookahead and
+  candidate optimization. Its
+  [backend configuration and verification](docs/torch-backend.md) are tracked separately.
+  Select `backend="torch"` for device execution and complete training-data and
+  hyperparameter graphs. Public-name availability and numerical parity are
+  measured separately.
 
 ## Installation
 
@@ -110,7 +115,7 @@ extension into the source tree instead (see [Development](#development)).
 
 ```toml
 [dependencies]
-botorch_core = { git = "https://github.com/M-Colley/botorch-rust", tag = "v0.2.0" }
+botorch_core = { git = "https://github.com/M-Colley/botorch-rust", tag = "v0.3.0" }
 ```
 
 ## Quickstart
@@ -250,8 +255,8 @@ counterpart.
 | `botorch.models.model.ModelList`, `ModelDict`, `FantasizeMixin` | same paths (`ModelList` also in `botorch_rs.models`) | `ModelList` of botorch_rs models (GPs and deterministic models): `posterior` (`PosteriorList`), `batch_shape`, `num_outputs`, `subset_output`, `transform_inputs`, `fantasize` (per sub-model), acquisition functions on the joint model; `ModelDict` with BoTorch's `InputDataError` |
 | `Model.subset_output`, `Model.construct_inputs` | same names | `subset_output` for `SingleTaskGP` (any covariance module), `SingleTaskMultiFidelityGP`, `MixedSingleTaskGP`, the MAP SAAS models, `ModelListGP`, `ModelList`, the deterministic models; `construct_inputs` for every model above with BoTorch's or botorch_rs's `SupervisedDataset` |
 | `botorch.utils.datasets.SupervisedDataset` | same path | `X`, `Y`, `Yvar`, names, validation, `clone`, equality |
-| `botorch.models.additive_gp.OrthogonalAdditiveGP` | same path (not exported from `botorch_rs.models`, as in BoTorch) | `SingleTaskGP` with an `OrthogonalAdditiveKernel` (first and second order); `posterior(..., infer_all_components=True)` raises `UnsupportedError` |
-| `botorch.models.PairwiseGP` | `botorch_rs.models.PairwiseGP` | `likelihood`, `covar_module` (any `ScaleKernel` tree), `input_transform` (without learned parameters), `jitter`, `xtol`, `consolidate_rtol` / `consolidate_atol`, `maxfev`; batched data; prior-only models; `posterior`, `condition_on_observations`, `fantasize` (pairwise samplers), `set_train_data`, `load_state_dict`, `construct_inputs` (BoTorch's `RankingDataset`), BoTorch's buffers (`utility`, `covar`, `covar_chol`, `covar_inv`, `likelihood_hess`, `hlcov_eye`, `D`, `DT`, `_x0`, ...) |
+| `botorch.models.additive_gp.OrthogonalAdditiveGP` | same path (not exported from `botorch_rs.models`, as in BoTorch) | `SingleTaskGP` with an `OrthogonalAdditiveKernel` (first and second order); conditioned component posteriors with `infer_all_components=True` and `evaluate_first_order_on_grid` for single-output models with affine outcome transforms ([scope](docs/additive-components.md)) |
+| `botorch.models.PairwiseGP` | `botorch_rs.models.PairwiseGP` | `likelihood`, `covar_module` (`ScaleKernel` trees), `input_transform` (native Warp fitting with shared or per-member concentrations; [scope](docs/pairwise-input-transforms.md)), `jitter`, `xtol`, `consolidate_rtol` / `consolidate_atol`, `maxfev`; batched data; prior-only models; `posterior`, `condition_on_observations`, `fantasize` (pairwise samplers), `set_train_data`, `load_state_dict`, `construct_inputs` (BoTorch's `RankingDataset`), BoTorch's buffers (`utility`, `covar`, `covar_chol`, `covar_inv`, `likelihood_hess`, `hlcov_eye`, `D`, `DT`, `_x0`, ...) |
 | `botorch.models.pairwise_gp.PairwiseLaplaceMarginalLogLikelihood` | `botorch_rs.models.PairwiseLaplaceMarginalLogLikelihood` | `mll(model(datapoints), comparisons)` or `mll()`; `value_and_grad(raw)` (botorch_rs extension: BoTorch's autograd gradient, computed natively) |
 | `botorch.fit.fit_gpytorch_mll` (Laplace MLL) | `botorch_rs.fit.fit_gpytorch_mll` | L-BFGS-B with retries from prior samples, every evaluation warm-started like BoTorch's training forward pass |
 | `botorch.models.likelihoods.pairwise.PairwiseLikelihood`, `PairwiseProbitLikelihood`, `PairwiseLogitLikelihood` | `botorch_rs.models.likelihoods.pairwise.*` | `p`, `log_p`, `negative_log_gradient_sum`, `negative_log_hessian_sum` (evaluated in Rust, not differentiable with torch), `forward` (a torch `Bernoulli`) |
@@ -259,9 +264,9 @@ counterpart.
 | `botorch.acquisition.preference.qExpectedUtilityOfBestOption` | `botorch_rs.acquisition.preference.qExpectedUtilityOfBestOption` | `outcome_model`, `sampler`, `objective`, `posterior_transform`, `X_pending` |
 | `botorch.acquisition.preference.PairwiseBayesianActiveLearningByDisagreement` | `botorch_rs.acquisition.preference.PairwiseBayesianActiveLearningByDisagreement` | `outcome_model`, `num_samples`, `std_noise`; draws from the caller's array library (torch: BoTorch's draws for the same seed) |
 | `botorch.acquisition.active_learning.PairwiseMCPosteriorVariance` | `botorch_rs.acquisition.active_learning.PairwiseMCPosteriorVariance` | any MC objective as link function |
-| `botorch.acquisition.objective.LearnedObjective` | `botorch_rs.acquisition.objective.LearnedObjective` | `PairwiseGP` or deterministic `pref_model`, `sample_shape`, `seed` (torch's draws); values and exact torch autograd; not accepted by the MC acquisition functions (see below) |
+| `botorch.acquisition.objective.LearnedObjective` | `botorch_rs.acquisition.objective.LearnedObjective` | `PairwiseGP` or deterministic `pref_model`, `sample_shape`, `seed`; native MC values and query derivatives, expanded preference samples, constraints and noisy improvement; [scope and joint-sampling correction](docs/learned-objective-acquisitions.md) |
 | `botorch.sampling.pairwise_samplers.PairwiseMCSampler`, `PairwiseIIDNormalSampler`, `PairwiseSobolQMCNormalSampler` | `botorch_rs.sampling.pairwise_samplers.*` | `max_num_comparisons`, `seed` (numpy's choice of pairs); the preferred item first (BoTorch bug 1) |
-| `botorch.sampling.normal.IIDNormalSampler` | `botorch_rs.sampling.IIDNormalSampler` | partial: sampling posteriors (torch's draws for `seed`), `batch_range_override`; not in MC acquisition functions |
+| `botorch.sampling.normal.IIDNormalSampler` | `botorch_rs.sampling.IIDNormalSampler` | posterior and MC acquisition sampling (torch's draws for an explicit `seed`), `batch_range_override` |
 | `PairwiseGP` in `ModelListGP` / `ModelList` | same | posteriors and acquisition functions; fits and fantasies raise BoTorch's errors |
 | `botorch.acquisition.input_constructors.construct_inputs_analytic_eubo`, `construct_inputs_qeubo` | same path, registered for botorch_rs's EUBO / qEUBO | preferential BO (`model` is the preference model) and BOPE (`pref_model`; the outcome model becomes `FixedSingleSampleModel(model, w)`, `w = torch.randn(pref_model.dim) * sample_multiplier` from torch's global generator, Python's `random` without torch); `previous_winner`, `sampler`, `objective`, `posterior_transform`, `X_pending` |
 | `PairwiseGP` with phase 8b's `SampleReducingMCAcquisitionFunction` subclasses | same | Python subclasses work on a `PairwiseGP`; `qMultiStepLookahead` raises BoTorch's `RuntimeError` |
@@ -348,7 +353,7 @@ counterpart.
 | `construct_inputs_EHVI`, `_qEHVI`, `_qNEHVI`, `_qLogNEHVI`, `_qLogNParEGO` | same path | reference points from `objective_thresholds` (with `get_ref_point` / outcome constraints), partitionings (`alpha`), `X_baseline` / `prune_baseline`, constraints from `constraints_tuple` |
 | `construct_inputs_qKG`, `_qMFKG`, `_qHVKG`, `_qMFHVKG`, `_mf_base` | same path | `current_value` from `optimize_objective` (botorch_rs's `optimize_acqf`; `optimizer_options`, `batch_initial_conditions` for deterministic results), `target_fidelities` / `fidelity_weights` / `cost_intercept` (the native `project_to_target_fidelity` / `expand_trace_observations` partials) |
 | `construct_inputs_qMES`, `_qMFMES`, `_qJES`, `_NIPV` | same path | candidate sets drawn with the training data's RNG (torch's for tensors, so `torch.manual_seed` reproduces BoTorch's), optimal samples with botorch_rs's `get_optimal_samples`, NIPV's points with botorch_rs's `draw_sobol_samples` |
-| `get_best_f_analytic`, `get_best_f_mc`, `optimize_objective` | same path | `posterior_transform`, `objective`, `constraints`, `fixed_features`, `linear_constraints`, `qmc` (botorch_rs has no IID sampler: `qmc=False` raises `UnsupportedError`) |
+| `get_best_f_analytic`, `get_best_f_mc`, `optimize_objective` | same path | `posterior_transform`, `objective`, `constraints`, `fixed_features`, `linear_constraints`, `qmc` (QMC or IID sampling), `mc_samples`, `seed_inner` |
 | `botorch.acquisition.factory.get_acquisition_function` | same path (also `botorch_rs.acquisition`) | every name BoTorch handles (`qEI`, `qLogEI`, `qPI`, `qLogPF`, `qNEI`, `qLogNEI`, `qSR`, `qUCB`, `qEHVI`, `qLogEHVI`, `qNEHVI`, `qLogNEHVI`, `pTS`) with BoTorch's errors; Sobol sampler, or `IndexSampler` for ensemble models |
 | `botorch.acquisition.utils.compute_best_feasible_objective`, `get_infeasible_cost`, `repeat_to_match_aug_dim`, `project_to_sample_points`, `get_acquisition_function` (deprecated) | same path | BoTorch's operations (torch for tensors); `get_infeasible_cost` from the posterior mean minus six standard deviations at `X` |
 | `botorch.acquisition.multi_step_lookahead.qMultiStepLookahead` | same path (also `botorch_rs.acquisition`) | native fantasy tree (Rust): `batch_sizes`, `num_fantasies` or `samplers` (with `base_weights`), `valfunc_cls` (the knowledge gradient's native value functions: `PosteriorMean`, `PosteriorStandardDeviation`, `UpperConfidenceBound`, `(Log)ExpectedImprovement`, `(Log)ProbabilityOfImprovement`, `ScalarizedPosteriorMean`, `qSimpleRegret`, `qExpectedImprovement`, `qProbabilityOfImprovement`, `qUpper/LowerConfidenceBound`, `qPosteriorStandardDeviation`), `valfunc_argfacs` (`make_best_f` per node; others once, see deviations), `objective` (MC), `posterior_transform`, `inner_mc_samples`, `X_pending`, `collapse_fantasy_base_samples`; `get_augmented_q_batch_size`, `get_split_shapes`, `extract_candidates`, `get_induced_fantasy_model`; exact gradients (BoTorch's are wrong, bug 1); `SingleTaskGP` (one or more outputs, inferred or fixed noise, transforms) and `ModelListGP`. Rust: `botorch_core::acquisition::multi_step_lookahead` |
@@ -379,7 +384,7 @@ counterpart.
 | `botorch.optim.fit.fit_gpytorch_mll_torch`, `fit_gpytorch_mll_scipy` | `botorch_rs.optim.fit.*` | native for botorch_rs GPs (all outputs and batch elements in parallel): torch's Adam update and `ExpMAStoppingCriterion`, `step_limit`, `parameters`, `bounds`, `timeout_sec`; L-BFGS-B with BoTorch's options; other optimizers, closures, schedulers and callbacks run BoTorch's generic loop on the botorch_rs closure. `fit_gpytorch_mll(..., optimizer=fit_gpytorch_mll_torch)` retries like BoTorch |
 | `botorch.optim.core.OptimizationResult`, `OptimizationStatus`, `scipy_minimize`, `torch_minimize` | `botorch_rs.optim.core.*` | the generic minimizers run SciPy / torch on Python closures (NumPy / torch required) |
 | `botorch.optim.stopping.StoppingCriterion`, `ExpMAStoppingCriterion` | `botorch_rs.optim.stopping.*` | torch's float32 weights (bitwise for the defaults) |
-| `botorch.optim.closures.ForwardBackwardClosure`, `NdarrayOptimizationClosure`, `get_loss_closure`, `get_loss_closure_with_grads` | `botorch_rs.optim.closures.*` | loss and gradients of botorch_rs MLLs computed in Rust; `data_loader` is not supported |
+| `botorch.optim.closures.ForwardBackwardClosure`, `NdarrayOptimizationClosure`, `get_loss_closure`, `get_loss_closure_with_grads` | `botorch_rs.optim.closures.*` | loss and gradients of botorch_rs MLLs computed in Rust; variational `data_loader` closures evaluate actual minibatches and cycle epochs |
 | `botorch.optim.utils.columnwise_clamp`, `fix_features`, `get_X_baseline`, `get_parameters`, `get_parameters_and_bounds`, `get_name_filter`, `sample_all_priors`, `TorchAttr` | `botorch_rs.optim.utils.*` | BoTorch's parameter names and order (likelihood first) |
 | `botorch.cross_validation.gen_loo_cv_folds`, `batch_cross_validation`, `CVFolds`, `CVResults` | `botorch_rs.cross_validation.*` | batched LOO folds (also `train_Yvar`, multi-output), one batched model fitted per fold in parallel, `observation_noise`, `model_init_kwargs`; `MultiTaskGP` raises `UnsupportedError` as in BoTorch |
 | `botorch.exceptions.errors.OptimizationTimeoutError`, `OptimizationGradientError` | `botorch_rs.exceptions.errors.*` | with `current_x` and `runtime` |
@@ -428,146 +433,154 @@ counterpart.
 | hyperparameter setters (`outputscale`, `noise`, `constant`, `lengthscale`, `initialize`) | same | values with as many elements as the parameter are reshaped, as in GPyTorch: e.g. `covar_module.outputscale = torch.tensor([v])` |
 | `botorch.exceptions` | `botorch_rs.exceptions` | `BotorchRsError` hierarchy (also `ValueError`, `RuntimeError`, `NotImplementedError` subclasses) and BoTorch's warnings |
 
-Everything else in BoTorch is not ported yet: see
-[What is not ported yet](#what-is-not-ported-yet).
+See [coverage and configuration limits](#what-is-not-ported-yet) for the
+audited main-package inventory and backend-specific restrictions.
 
-## What is not ported yet
+<a id="what-is-not-ported-yet"></a>
 
-botorch-rust covers the core of Bayesian optimization with exact Gaussian
-processes, which is a small part of BoTorch: it provides **460 of the 776
-public classes and functions** defined in BoTorch's modules (59%; BoTorch main
-at da00e04). `scripts/api_coverage.py` compares the two libraries module by
-module and writes every missing class, function, parameter and method to
-[docs/api_coverage.md](docs/api_coverage.md); [docs/roadmap.md](docs/roadmap.md)
-orders the remaining work toward a full port. The main gaps:
+## Coverage and configuration limits
 
-- **Models:**
-  - `HeterogeneousMTGP` and its kernels (`MultiTaskGP`,
-    `KroneckerMultiTaskGP` and `LCEMGP` are ported);
-  - fully Bayesian models (`SaasFullyBayesianSingleTaskGP` with NUTS; the MAP
-    SAAS models are ported);
-  - variational GPs (`SingleTaskVariationalGP`), `HigherOrderGP` and
-    `LatentKroneckerGP`;
-  - the additive contextual GPs (`SACGP`, `LCEAGP`), and the per-component
-    posteriors of `OrthogonalAdditiveGP`;
-  - cost models other than `AffineFidelityCostModel` and `FixedCostModel`;
-  - relevance pursuit, and the empirical and hierarchical model packages.
-- **Model features:**
-  - `subset_output` and `construct_inputs` of `LCEMGP`, and
-    `condition_on_observations` / `fantasize` for multi-output sub-models of a
-    `ModelListGP`;
-  - on ensemble models (`EnsembleModel`, `EnsembleMapSaasSingleTaskGP`): the
-    knowledge gradient, entropy search and the multi-objective acquisition
-    functions, transforms of an `EnsembleModel` in acquisition functions, and
-    pruning an ensemble baseline with an objective or constraints (see
-    [docs/models.md](docs/models.md));
-  - for `MultiTaskGP`: batched training data, acquisition candidates that
-    include the task column, `StratifiedStandardize`, and qKG / qNIPV (BoTorch
-    fails there too); for `KroneckerMultiTaskGP`: `output_indices` subsets and
-    posterior transforms (see [docs/multitask.md](docs/multitask.md));
-  - for `LCEMGP`: fixed noise (`train_Yvar`), custom `mean_module` /
-    `likelihood`, input transforms, outcome transforms other than
-    `Standardize`, batched training data and `condition_on_observations` /
-    `fantasize`;
-  - autograd through models (acquisition values do support `torch.autograd`
-    with respect to their inputs);
-  - the kernels of later model phases (`IntegratedWhiteNoiseKernel`,
-    `LCEAKernel`, `SACKernel`, the heterogeneous multi-task kernels), other
-    GPyTorch kernels (spectral mixture, piecewise polynomial, grid and
-    inducing-point kernels), `last_dim_is_batch`, and kernel trees in models
-    other than `SingleTaskGP` / `ModelListGP` (see
-    [docs/kernels-and-priors.md](docs/kernels-and-priors.md));
-  - the priors `MultivariateNormalPrior` and `HorseshoePrior`, prior
-    transforms, and likelihoods other than `GaussianLikelihood`,
-    `HadamardGaussianLikelihood` and `MultitaskGaussianLikelihood`;
-  - transforms: `Warp(reverse=True)` in a model, learned transform
-    parameters shared by several outputs, `StratifiedStandardize` with a
-    batch shape, transforms other than `Normalize` and `Standardize` on the
-    multi-task models and `LCEMGP`, and nonlinear outcome transforms in the
-    knowledge gradient, max-value and multi-objective entropy search and
-    pathwise sampling (see [docs/transforms.md](docs/transforms.md));
-  - GPU execution and float32 arithmetic: everything runs in float64 on the
-    CPU.
-- **Single-objective acquisition functions:**
-  - `qMultiStepLookahead` with value functions other than the knowledge
-    gradient's, on models other than `SingleTaskGP` / `ModelListGP`, and
-    the input constructor for BALD (see
-    [docs/acquisition-construction.md](docs/acquisition-construction.md));
-  - BALD (needs fully Bayesian models), and `LearnedObjective` inside the
-    Monte-Carlo acquisition functions (BoTorch's BOPE workflow with qNEI;
-    see [docs/preference.md](docs/preference.md));
-  - batched candidate sets in the max-value entropy search classes (BoTorch's
-    are broken; the sampling functions take them), and an IID normal sampler
-    (`qmc=False`).
-- **Multi-objective optimization:** all of BoTorch's multi-objective
-  acquisition functions are ported: qLogNEHVI, qLogEHVI, qNEHVI, qEHVI,
-  analytic EHVI, qLogNParEGO, the hypervolume knowledge gradient (also
-  multi-fidelity), MOMF, and max-value, joint and predictive entropy search.
-  So are their objectives, the multi-output risk measures, the utilities,
-  `optimize_acqf_list`, `optimize_with_nsgaii` and the test problems. Not yet:
-  - in the ported acquisition functions: `marginalize_dim` (fully Bayesian
-    models), per-constraint `fat` lists, posterior transforms, batched models
-    and batched box decompositions;
-  - `get_posterior_samples` and `sample_shape` of the MC acquisition
-    functions, and `psi` / `nu` of the analytic EHVI;
-  - risk measures on batched models, and pymoo algorithms other than NSGA-II.
-- **Objectives and transforms:** posterior transforms other than
-  `ScalarizedPosteriorTransform`, and learned MC objectives.
-- **Optimization and candidate generation:**
-  - `optimize_acqf(acq_function_sequence=...)`, tensor-valued fixed features
-    per t-batch, and `timeout_sec` on the constrained (SLSQP) path;
-  - `get_loss_closure(data_loader=...)` and `get_data_loader`;
-  - `loo_cv`, `efficient_loo_cv` and `ensemble_loo_cv` (`batch_cross_validation`
-    is ported); see [docs/optimization.md](docs/optimization.md).
-- **Sampling and utilities:**
-  - samplers other than `SobolQMCNormalSampler`, `ListSampler`,
-    `IndexSampler`, the pairwise samplers and `StochasticSampler` (for
-    deterministic models): `IIDNormalSampler` samples posteriors but is not
-    used in the Monte-Carlo acquisition functions yet, and `ForkedRNGSampler`
-    is missing;
-  - pathwise sampling of approximate GPs, ensembles and batched models,
-    and with kernels other than RBF and Matérn (as in BoTorch);
-  - most of `botorch.utils`: probability (bivariate and truncated
-    multivariate normal, elliptical slice sampling), low-rank and dataset
-    utilities;
-  - `settings`.
-- **Test functions and community code:** test functions other than the 20
-  synthetic and the 33 multi-objective ones above (multi-fidelity, constrained
-  single-objective problems, sensitivity analysis, ...), and everything in
-  `botorch_community`.
+The consolidated development branch provides **all 776 public
+BoTorch classes and functions**, compared with official upstream
+commit `b0dd01be6`. This measures public-name availability. It does not
+mean that every configuration or gradient is supported.
+The [generated report](docs/api_coverage.md) and
+[machine-readable gap inventory](docs/api_coverage.json) list missing
+names, parameters and members; [the roadmap](docs/roadmap.md) distinguishes
+native implementation follow-ups from the Tensor implementation. The strict core check,
+`python scripts/api_coverage.py --require-full`, passes for this pinned
+reference, including audited constructor parameters and public members.
+Configuration and numerical parity remain separate requirements.
+
+The [0.3.0 installed-wheel verification](docs/verification-release-030-2026-10-21.json) records
+**14,509 passing Python cases and 51 skips**, including **1,222 equivalence
+passes and 15 skips**, on CPU and CUDA against pinned BoTorch
+`b0dd01be61d517c387e234903a6e2cc38c057ea2`. All 14,560 canonical cases are
+accounted for exactly, and source, wheel, native, verifier and dependency
+fingerprints remain stable. The [native checks](docs/native-030-verification.md)
+pass 551 all-target tests and 3 doctests, strict Clippy and formatting.
+The [reference-blocked run](docs/verification-reference-blocked-030-2026-10-21.json)
+passes 4,154 cases with 2,777 case skips; module collection skips are separate.
+All eleven [cross-platform CI jobs](docs/verification-main-ci-258ff6b-2026-10-21.json)
+pass. These finite checks and the 776-name inventory measure different scopes.
+Earlier [release certificates](docs/verification-main-device-release-2026-10-20.json)
+remain preserved separately; overlapping counts are not added together.
+
+The previously separate fully Bayesian, approximate and utility worktrees
+are integrated in this branch:
+
+- Fully Bayesian single-task, linear and multi-task GPs, native NUTS, BALD
+  and ensemble acquisition functions:
+  [implementation and limits](docs/drafts/10a-fully-bayesian.md).
+- Preference learning with `PairwiseGP`, its Laplace MLL, EUBO and BALD:
+  [preference learning](docs/preference.md).
+- `SingleTaskVariationalGP`, its variational ELBO and inducing-point
+  allocators, and `HigherOrderGP` with native Kronecker inference, fitting
+  and Matheron samples: [approximate models](docs/approximate-models.md).
+- `LatentKroneckerGP` with complete or missing observations and corrected
+  sampling: [implementation and limits](docs/latent-kronecker.md).
+- Structural additive and embedded-context models `SACGP` / `LCEAGP`,
+  and hierarchical conditional kernels and GPs: [SAC](docs/contextual-sac.md),
+  [LCEA](docs/contextual-lcea.md), [hierarchical models](docs/hierarchical-models.md).
+- Native scalar, correlated-output and heterogeneous multitask empirical GPs,
+  EM prior pretraining, exact EM models, shared-kernel fitting and coordinate
+  ascent, plus covariance, basis, interpolation, PSD and shrinkage utilities:
+  [models](docs/empirical-gp-models.md), [utilities](docs/empirical-gp-utils.md).
+- `HeterogeneousMTGP` and its composite kernels, plus robust GPs, sparse outlier
+  likelihoods and relevance pursuit: [heterogeneous models](docs/heterogeneous-multitask.md),
+  [relevance pursuit](docs/relevance-pursuit.md).
+- Exact native additive-component posteriors and query derivatives:
+  [component inference and upstream fixes](docs/additive-components.md).
+- Resumable batched L-BFGS-B with genuine native solver state:
+  [solver and verified upstream patch](docs/batched-lbfgsb.md).
+- Composable pathwise feature maps and transforms, full-covariance
+  expectation transforms, Gaussian posterior evaluation and cached sampling:
+  [posterior APIs](docs/posteriors-and-samplers.md),
+  [expectation transforms](docs/expectation-posterior-transform.md).
+- Public linear/Matheron path constructors and optional NumPyro named-site
+  interoperability: [paths](docs/pathwise-public-constructors.md),
+  [trace interface](docs/numpyro-trace-interoperability.md).
+- Probability, QMC and IID sampling, data and optimization utilities,
+  settings, and the multi-fidelity, sensitivity-analysis and constrained
+  single-objective test functions: [scope and verification](docs/drafts/11a-utils.md).
+- `loo_cv`, `efficient_loo_cv` and `ensemble_loo_cv`, using cached native
+  factorizations with fixed hyperparameters. `batch_cross_validation`
+  refits the model for each fold.
+
+Backend selection and source boundaries:
+
+- The native backend computes on CPU in float64, accepts lists without Torch,
+  and provides analytic derivatives and persistent parameter/query autograd for
+  its documented interfaces. Its native algorithm and descriptor restrictions
+  are listed in the model chapters.
+- `backend="torch"` provides CPU/CUDA float32/float64 computation and ordinary
+  PyTorch graphs through training inputs, targets, noise, queries and model
+  Parameters, including higher derivatives. It includes specialized, empirical,
+  variational and fully Bayesian models; entropy/search and lookahead;
+  continuous, mixed and discrete optimization; custom modules, fitting closures,
+  samplers, paths, conditioning and fantasies. See the
+  [backend guide](docs/torch-backend.md), [fitting protocol](docs/fitting-protocol.md)
+  and configuration-specific numerical checks linked there.
+- Structured Tensor models may use dense exact algebra where native models
+  use Kronecker or iterative algorithms. This affects memory and performance.
+  Sampler Markov-chain decisions and optimizer iterations are not differentiated;
+  loaded posterior parameters and the documented envelope interfaces retain
+  their ordinary derivative semantics. Discrete observations do not gain
+  reparameterized samples.
+- Source-rejected configurations remain source-rejected. Additional GPyTorch
+  strategies that need different constructors require an adapting model or
+  factory, as in BoTorch. Optional external module and numerical dependencies
+  are needed only when those interfaces are used. `botorch_community` is outside
+  this main-package port.
+
+The inventory and regression suite do not prove equivalence for every possible
+caller-defined subclass or numerical configuration. The verification receipts
+state the exact collected cases, skips, dependency versions and artifact hashes.
+
+Existing release benchmark results above apply to the measured exact-GP
+and acquisition workflows. They do not establish a speedup for every newly
+integrated model, sampler or configuration.
+The [latest release qLogNEI measurement](docs/correctness-findings.md#measured-release-performance)
+compares identical draws with one worker: cached evaluation is 5.97x faster
+for 180 baseline points, while full joint evaluation is roughly equal
+(0.995x). Raw timings, value checks and extension hashes are retained.
+[Correctness findings and proposed upstream solutions](docs/correctness-findings.md)
+record the reference bugs, deliberate corrections and a fresh release LOO benchmark.
+Version 0.3.0 includes this main-package implementation. The
+[backend guide](docs/torch-backend.md) records configuration and performance limits.
 
 <details>
 <summary>Coverage by area (public classes and functions)</summary>
 
 | Area | Public classes and functions | In botorch_rs | Share |
 |---|---|---|---|
-| `acquisition` | 145 | 132 | 91% |
+| `acquisition` | 145 | 145 | 100% |
 | `acquisition.multi_objective` | 33 | 33 | 100% |
-| `cross_validation` | 7 | 4 | 57% |
-| `exceptions` | 20 | 18 | 90% |
-| `fit` | 3 | 1 | 33% |
-| `generation` | 8 | 7 | 88% |
-| `logging` | 1 | 0 | 0% |
-| `models` | 66 | 31 | 47% |
-| `models.empirical_gps` | 36 | 0 | 0% |
-| `models.hierarchical` | 6 | 0 | 0% |
-| `models.kernels` | 19 | 8 | 42% |
-| `models.likelihoods` | 5 | 3 | 60% |
+| `cross_validation` | 7 | 7 | 100% |
+| `exceptions` | 20 | 20 | 100% |
+| `fit` | 3 | 3 | 100% |
+| `generation` | 8 | 8 | 100% |
+| `logging` | 1 | 1 | 100% |
+| `models` | 66 | 66 | 100% |
+| `models.empirical_gps` | 36 | 36 | 100% |
+| `models.hierarchical` | 6 | 6 | 100% |
+| `models.kernels` | 19 | 19 | 100% |
+| `models.likelihoods` | 5 | 5 | 100% |
 | `models.transforms` | 35 | 35 | 100% |
-| `models.utils` | 26 | 6 | 23% |
-| `optim` | 58 | 45 | 78% |
-| `optim.closures` | 5 | 4 | 80% |
-| `optim.utils` | 14 | 8 | 57% |
-| `posteriors` | 13 | 8 | 62% |
-| `sampling` | 14 | 9 | 64% |
-| `sampling.pathwise` | 25 | 11 | 44% |
-| `settings` | 3 | 0 | 0% |
-| `test_functions` | 84 | 57 | 68% |
-| `test_utils` | 2 | 0 | 0% |
-| `utils` | 97 | 20 | 21% |
-| `utils.multi_objective` | 25 | 20 | 80% |
-| `utils.probability` | 26 | 0 | 0% |
-| **all of `botorch`** | **776** | **460** | **59%** |
+| `models.utils` | 26 | 26 | 100% |
+| `optim` | 58 | 58 | 100% |
+| `optim.closures` | 5 | 5 | 100% |
+| `optim.utils` | 14 | 14 | 100% |
+| `posteriors` | 13 | 13 | 100% |
+| `sampling` | 14 | 14 | 100% |
+| `sampling.pathwise` | 25 | 25 | 100% |
+| `settings` | 3 | 3 | 100% |
+| `test_functions` | 84 | 84 | 100% |
+| `test_utils` | 2 | 2 | 100% |
+| `utils` | 97 | 97 | 100% |
+| `utils.multi_objective` | 25 | 25 | 100% |
+| `utils.probability` | 26 | 26 | 100% |
+| **all of `botorch`** | **776** | **776** | **100%** |
 | `botorch_community` | 55 | 0 | 0% |
 
 </details>
@@ -1512,6 +1525,11 @@ The model fits alone are 140–550× faster.
 
 ## Migration notes and known differences
 
+Unless stated otherwise, the numerical implementation notes below describe the
+native CPU route. The [Torch backend](docs/torch-backend.md) has its own device,
+module, fitting and higher-derivative protocols. In particular, its training-data
+graphs and supplied module callbacks are preserved.
+
 - **Preference learning.** Where BoTorch is wrong, botorch-rust has the
   correct behaviour:
   - the pairwise samplers list the preferred item first, so fantasies
@@ -1723,11 +1741,12 @@ The model fits alone are 140–550× faster.
 - **Model snapshots.** An acquisition function uses the model as it is when
   the acquisition function is created; after refitting a model, create a new
   acquisition function (the usual BO-loop pattern).
-- **qLogNEI** always uses the plain joint computation (BoTorch's
-  `cache_root=False`); `cache_root` is accepted and ignored. Both agree in
-  distribution; objectives and constraints are evaluated on the joint samples
-  of the baseline and the candidates, as with `cache_root=False` (this only
-  matters for callables that couple the points of a batch). When some sample
+- **qLogNEI and qLogNParEGO** use a cached baseline covariance root and a
+  native low-rank candidate update when `cache_root=True` on a supported GP.
+  With `cache_root=False`, objectives and constraints use full joint samples
+  of the baseline and candidates. `compute_best_f` returns the actual cached
+  incumbents or those captured by the last completed uncached forward,
+  preserving parallel candidate-batch order. When some sample
   has no feasible baseline point, the objective's lower bound is estimated at
   32 points drawn from a generator seeded by the sampler (BoTorch:
   `torch.rand`); pass them explicitly with the keyword-only
@@ -1769,12 +1788,25 @@ The model fits alone are 140–550× faster.
 - **Marginal log likelihood.** `mll()` without arguments evaluates the MLL on
   the model's training data (GPyTorch: `mll(model(*model.train_inputs),
   model.train_targets)`); `mll.value_and_grad()` also returns its gradient.
-- **Gradients.** There is no autograd through models. Acquisition values
-  support `torch.autograd` (exact gradients computed in Rust), and
-  `acqf.value_and_grad(X)` returns gradients for any array type.
-- **Fitting.** `pick_best_of_all_attempts`, custom optimizers and closures are
-  not supported; retries sample hyperparameters from their priors with a
-  seeded generator (`fit_gpytorch_mll(mll, seed=...)`).
+- **Gradients.** Native Gaussian posterior moments and samples support
+  first-order Torch query gradients. Ordinary CPU Torch `SingleTaskGP`
+  posteriors and exact MLLs also carry native parameter gradients through
+  persistent leaves. Exact GPs expose explicit parameter pullbacks as well.
+  Common analytic/scalar MC acquisitions, qNEI, qLogNEI and qLogNParEGO
+  also carry model-parameter gradients for unbatched ordinary CPU Torch GPs
+  and Gaussian model lists. Cached noisy EI holds baseline factors and
+  incumbents constant; qLogNParEGO also holds its scalarization state fixed.
+  Reconstruct acquisitions after model updates. See the
+  [acquisition scope](docs/acquisition-parameter-gradients.md) and
+  [noisy-gradient contract](docs/noisy-acquisition-parameter-gradients.md).
+  Acquisition values support query `torch.autograd` (exact gradients computed
+  in Rust), and `acqf.value_and_grad(X)` returns query gradients for any array type.
+- **Fitting.** `pick_best_of_all_attempts` selects the best native L-BFGS-B or
+  Adam result for `SingleTaskGP` families ([scope](docs/fit-attempts.md)).
+  Supplied optimizers, closures, callbacks, retries and state rollback use the
+  [generic fitting protocol](docs/fitting-protocol.md). Native default retries
+  sample hyperparameters from their priors with a seeded generator
+  (`fit_gpytorch_mll(mll, seed=...)`).
 - **Warnings and errors** follow BoTorch (`InputDataWarning` for unscaled
   data, `NumericsWarning` for legacy EI, `BadInitialCandidatesWarning`).
   Errors raised by the Rust core derive from

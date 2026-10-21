@@ -19,6 +19,7 @@ and ``qMultiFidelityMaxValueEntropy``).
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 from typing import Any
 
@@ -27,6 +28,7 @@ from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.kernels import Kernel, ProductKernel, ScaleKernel
 from botorch_rs.likelihoods import Likelihood
 from botorch_rs.means import ConstantMean
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.kernels.downsampling import DownsamplingKernel
 from botorch_rs.models.kernels.exponential_decay import ExponentialDecayKernel
@@ -52,6 +54,46 @@ class SingleTaskMultiFidelityGP(SingleTaskGP):
         >>> model = SingleTaskMultiFidelityGP(train_X, train_Y, data_fidelities=[3])
     """
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if cls is SingleTaskMultiFidelityGP:
+            if backend not in {"auto", "native", "torch"}:
+                raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+            torch = sys.modules.get("torch")
+            values = (train_X, train_Y, kwargs.get("train_Yvar"), *args[:1])
+            requested = any(
+                getattr(v, "requires_grad", False)
+                or getattr(getattr(v, "device", None), "type", "cpu") != "cpu"
+                for v in values
+            )
+            modules = (
+                any(
+                    requires_tensor_backend(kwargs.get(k))
+                    for k in (
+                        "covar_module",
+                        "likelihood",
+                        "mean_module",
+                        "input_transform",
+                        "outcome_transform",
+                    )
+                )
+                if torch
+                else False
+            )
+            if backend == "torch" or (backend == "auto" and (requested or modules)):
+                from botorch_rs.models._torch_backend_specialized import (
+                    TorchSingleTaskMultiFidelityGP,
+                )
+
+                return object.__new__(TorchSingleTaskMultiFidelityGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -66,6 +108,8 @@ class SingleTaskMultiFidelityGP(SingleTaskGP):
         outcome_transform: Any = DEFAULT,
         input_transform: InputTransform | None = None,
         mean_module: ConstantMean | None = None,
+        *,
+        backend: str = "auto",
     ) -> None:
         r"""
         Args:

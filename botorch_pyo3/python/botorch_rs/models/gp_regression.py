@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 import warnings
 from collections.abc import Iterator
 from typing import Any
@@ -15,7 +16,9 @@ from botorch_rs.exceptions.warnings import InputDataWarning
 from botorch_rs.kernels import Kernel
 from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood, Likelihood
 from botorch_rs.means import ConstantMean
-from botorch_rs.models.model import Model
+from botorch_rs.models._backend_selection import requires_tensor_backend
+from botorch_rs.models.gpytorch import BatchedMultiOutputGPyTorchModel
+from botorch_rs.models.transforms._torch_input import has_tensor_state as _input_has_tensor_state
 from botorch_rs.models.transforms.input import (
     InputTransform,
     Normalize,
@@ -39,6 +42,22 @@ from botorch_rs.utils.types import DEFAULT
 
 def _is_default(value: Any) -> bool:
     return value is DEFAULT or type(value).__name__ == "_DefaultType"
+
+
+def _is_tensor_factory_target(cls: type, canonical: type) -> bool:
+    """Let the nearest built-in model family select a caller subclass backend.
+
+    Other built-in families own their own construction and must not be
+    reinterpreted as an ordinary SingleTaskGP/MultiTaskGP by an ancestor.
+    Already allocated Tensor classes also keep their concrete implementation.
+    """
+    return (
+        next(
+            (base for base in cls.__mro__ if base.__module__.startswith("botorch_rs.models.")),
+            None,
+        )
+        is canonical
+    )
 
 
 def _validate_tensor_args(
@@ -223,7 +242,7 @@ def _modules_of(model: Any) -> list[Any]:
     return out
 
 
-class SingleTaskGP(Model):
+class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
     r"""A single-task exact GP with BoTorch's defaults.
 
     Without ``train_Yvar`` the noise level is inferred (``GaussianLikelihood``
@@ -252,6 +271,74 @@ class SingleTaskGP(Model):
         >>> posterior = model.posterior(test_X)
     """
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if _is_tensor_factory_target(cls, SingleTaskGP):
+            if backend not in ("auto", "native", "torch"):
+                raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+            values = (train_X, train_Y, kwargs.get("train_Yvar"), *args[:1])
+            torch = sys.modules.get("torch")
+            modules = (
+                *args[1:],
+                *(
+                    kwargs.get(name)
+                    for name in (
+                        "likelihood",
+                        "covar_module",
+                        "mean_module",
+                        "input_transform",
+                        "outcome_transform",
+                    )
+                ),
+            )
+            tensor_backend = backend == "torch" or (
+                backend == "auto"
+                and (
+                    any(
+                        getattr(value, "requires_grad", False)
+                        or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
+                        for value in values
+                    )
+                    or (
+                        torch is not None
+                        and any(
+                            requires_tensor_backend(module)
+                            or (
+                                isinstance(module, InputTransform)
+                                and _input_has_tensor_state(module)
+                            )
+                            for module in modules
+                        )
+                    )
+                )
+            )
+            if tensor_backend:
+                from botorch_rs.models._torch_backend import TorchSingleTaskGP
+                from botorch_rs.models.likelihoods.sparse_outlier_noise import (
+                    SparseOutlierGaussianLikelihood,
+                )
+
+                likelihood = kwargs.get("likelihood", args[1] if len(args) > 1 else None)
+                concrete: type
+                if isinstance(likelihood, SparseOutlierGaussianLikelihood):
+                    from botorch_rs.models._torch_backend_relevance import TorchSparseSingleTaskGP
+
+                    concrete = TorchSparseSingleTaskGP
+                else:
+                    concrete = TorchSingleTaskGP
+                if cls is SingleTaskGP:
+                    return object.__new__(concrete)
+                from botorch_rs.models._torch_model_subclasses import model_type
+
+                return object.__new__(model_type(cls, concrete))
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -262,7 +349,13 @@ class SingleTaskGP(Model):
         mean_module: ConstantMean | None = None,
         outcome_transform: Any = DEFAULT,
         input_transform: InputTransform | None = None,
+        *,
+        backend: str = "auto",
     ) -> None:
+        from botorch_rs.models.likelihoods.sparse_outlier_noise import (
+            SparseOutlierGaussianLikelihood,
+        )
+
         kind = kind_of(train_X)
         x = to_flat(train_X, "train_X")
         y = to_flat(train_Y, "train_Y")
@@ -271,7 +364,7 @@ class SingleTaskGP(Model):
         if yvar is not None and yvar[1] != y[1]:  # broadcast trailing dimensions
             reps = len(y[0]) // max(len(yvar[0]), 1)
             yvar = (yvar[0] * reps, y[1])
-        batch = tuple(x[1][:-2])
+        batch, aug = self.get_batch_dimensions(train_X, train_Y)
         if tuple(y[1][:-2]) != batch:
             raise BotorchTensorDimensionError(
                 f"Expected train_X and train_Y to have the same batch shape, got "
@@ -279,12 +372,17 @@ class SingleTaskGP(Model):
             )
         d = x[1][-1]
         m = y[1][-1]
-        aug = batch + ((m,) if m > 1 else ())
         if likelihood is not None:
-            if not isinstance(likelihood, GaussianLikelihood):
+            if not isinstance(likelihood, (GaussianLikelihood, SparseOutlierGaussianLikelihood)):
                 raise UnsupportedError(
                     "`likelihood` must be a botorch_rs GaussianLikelihood "
                     "(e.g. get_gaussian_likelihood_with_gamma_prior())."
+                )
+            if isinstance(likelihood, SparseOutlierGaussianLikelihood) and not isinstance(
+                likelihood.noise_covar.base_noise, GaussianLikelihood
+            ):
+                raise UnsupportedError(
+                    "A custom sparse likelihood requires native Gaussian base noise; for fixed noise use RobustRelevancePursuitSingleTaskGP(train_Yvar=...)."
                 )
             if yvar is not None:
                 raise UnsupportedError(
@@ -452,12 +550,15 @@ class SingleTaskGP(Model):
                 assert fitted_outcome is not None
                 ot_obj._set_fitted(fitted_outcome, kind_of(train_Y))
             self.outcome_transform = ot_obj
+        from botorch_rs.settings import validate_input_scaling
+
         if covar_module is None:
-            _validate_input_scaling(
-                self._rs.construction_train_inputs(),
-                self._rs.transformed_train_targets(),
-                self._rs.num_train,
-            )
+            if validate_input_scaling.on():
+                _validate_input_scaling(
+                    self._rs.construction_train_inputs(),
+                    self._rs.transformed_train_targets(),
+                    self._rs.num_train,
+                )
             # Used for subsetting along the output dimension (BoTorch's
             # `Model.subset_output`; botorch_rs subsets any covariance module).
             self._subset_batch_dict = {
@@ -468,26 +569,10 @@ class SingleTaskGP(Model):
                 self._subset_batch_dict["likelihood.noise_covar.raw_noise"] = -2
         self.training = True
 
-    @staticmethod
-    def get_batch_dimensions(train_X: Any, train_Y: Any) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        r"""Get the raw batch shape and output-augmented batch shape of the inputs.
+        from botorch_rs._buffers import adopt_buffer_dtype
 
-        Args:
-            train_X: A ``n x d`` or ``batch_shape x n x d`` (batch mode) tensor of
-                training features.
-            train_Y: A ``n x m`` or ``batch_shape x n x m`` (batch mode) tensor of
-                training observations.
-
-        Returns:
-            2-element tuple containing
-
-            - The ``input_batch_shape``
-            - The output-augmented batch shape: ``input_batch_shape x (m)``
-        """
-        input_batch_shape = tuple(to_flat(train_X, "train_X")[1][:-2])
-        num_outputs = to_flat(train_Y, "train_Y")[1][-1]
-        aug_batch_shape = input_batch_shape + ((num_outputs,) if num_outputs > 1 else ())
-        return input_batch_shape, aug_batch_shape
+        adopt_buffer_dtype(self, kind)
+        self._torch_parameters_ready = True
 
     # -- data --------------------------------------------------------------
 
@@ -534,10 +619,33 @@ class SingleTaskGP(Model):
         ``_aug_batch_shape x n``."""
         return from_pair(self._rs.transformed_train_targets(), self._kind)
 
+    def _replace_transformed_train_data(
+        self, targets: Any, noise: Any = None, strict: bool = True
+    ) -> None:
+        """Atomically replace internal targets and optional fixed noise.
+
+        Fitted transforms and hyperparameters are preserved. The number of
+        observations must continue to match the stored training inputs.
+        """
+        self._rs.replace_transformed_train_data(
+            to_flat(targets, "targets"), None if noise is None else to_flat(noise, "noise"), strict
+        )
+
+    def set_train_data(self, inputs: Any = None, targets: Any = None, strict: bool = True) -> None:
+        """Replace transformed targets while keeping existing training inputs."""
+        if inputs is not None:
+            raise UnsupportedError(
+                "Replacing training inputs is not supported yet; construct a new model."
+            )
+        if targets is not None:
+            self._replace_transformed_train_data(targets, strict=strict)
+
     # -- modes -------------------------------------------------------------
 
     def train(self, mode: bool = True) -> SingleTaskGP:
+        self._sync_torch_parameters()
         self.training = mode
+        self.likelihood.train(mode)
         for name in ("input_transform", "outcome_transform"):
             tf = getattr(self, name, None)
             if tf is not None:
@@ -546,70 +654,11 @@ class SingleTaskGP(Model):
 
     # -- posterior ---------------------------------------------------------
 
-    def _posterior_args(
-        self, output_indices: Any, posterior_transform: Any
-    ) -> tuple[list[int] | None, tuple[list[float], float] | None]:
-        from botorch_rs.acquisition.objective import transform_arg
-
-        m = self.num_outputs
-        oi = None
-        if output_indices is not None:
-            oi = [int(t) for t in output_indices]
-            if not oi or any(not -m <= t < m for t in oi):
-                raise BotorchTensorDimensionError(
-                    f"output_indices {list(output_indices)} are invalid for a model with "
-                    f"{m} outputs."
-                )
-            oi = [t % m for t in oi]
-            if oi == list(range(m)):
-                oi = None
-        return oi, transform_arg(posterior_transform)
-
-    def posterior(
-        self,
-        X: Any,
-        output_indices: list[int] | None = None,
-        observation_noise: bool = False,
-        posterior_transform: Any = None,
-        **kwargs: Any,
-    ) -> GPyTorchPosterior:
-        """The posterior at ``X`` (``batch_shape x q x d``), in the original
-        outcome space, over the outputs ``output_indices`` (all by default),
-        scalarized by ``posterior_transform`` if given; with
-        ``observation_noise=True`` the likelihood noise is added (the mean
-        training noise for fixed-noise models)."""
-        if not isinstance(observation_noise, bool):
-            raise UnsupportedError("`observation_noise` must be a bool in botorch_rs.")
-        oi, transform = self._posterior_args(output_indices, posterior_transform)
-        kind = kind_of(X)
-        flat = to_flat(X, "X")
-        if len(flat[1]) < 2:
-            raise BotorchTensorDimensionError(
-                f"Expected X to be `batch_shape x q x d`, got shape {flat[1]}."
-            )
-        if flat[1][-1] != self._rs.dim:
-            raise BotorchTensorDimensionError(
-                f"Expected X with {self._rs.dim} columns (d), got {flat[1][-1]}."
-            )
-        self.eval()
-        return _model_posterior(
-            self._rs,
-            flat,
-            kind,
-            observation_noise,
-            num_outputs=self.num_outputs,
-            model_batch_shape=self.batch_shape,
-            output_indices=oi,
-            transform=transform,
-            points_per_input=self._rs.points_per_input,
-            transformed=list(self._rs.transformed_outputs),
-            is_list=False,
-        )
-
     def _acquisition_model(self, posterior_transform: Any = None) -> _rs.Model:
         """The model handle that acquisition functions are built on."""
         from botorch_rs.acquisition.objective import transform_arg
 
+        self._sync_torch_parameters()
         return _rs.Model.from_single_task_gp(
             self._rs, transform_arg(posterior_transform, self.num_outputs)
         )
@@ -622,6 +671,16 @@ class SingleTaskGP(Model):
         new = self.__class__.__new__(self.__class__)
         memo: dict[int, Any] = {id(self): new}
         for key, value in self.__dict__.items():
+            if (
+                key == "_torch_parameter_requires_grad"
+                and "_torch_parameter_state" in self.__dict__
+            ):
+                continue
+            if key == "_torch_parameter_state":
+                new.__dict__["_torch_parameter_requires_grad"] = {
+                    name: p.requires_grad for name, p in value.entries
+                }
+                continue
             new.__dict__[key] = rs if key == "_rs" else copy.deepcopy(value, memo)
         new.training = False
         return new
@@ -646,6 +705,7 @@ class SingleTaskGP(Model):
         """
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
+        self._sync_torch_parameters()
         if self.training:
             raise RuntimeError(
                 "Fantasy observations can only be added after making predictions with a model "
@@ -677,7 +737,7 @@ class SingleTaskGP(Model):
         space) defaults to the inferred noise level, or the mean training
         noise of a fixed-noise model."""
         from botorch_rs.exceptions.errors import DeprecationError
-        from botorch_rs.sampling.normal import SobolQMCNormalSampler
+        from botorch_rs.sampling.normal import NormalMCSampler
 
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
@@ -685,8 +745,10 @@ class SingleTaskGP(Model):
             raise DeprecationError(
                 "`fantasize` no longer accepts a boolean for `observation_noise`."
             )
-        if not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        if not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         self.eval()
         x = to_flat(X, "X")
         nz = None if observation_noise is None else to_flat(observation_noise, "observation_noise")
@@ -709,6 +771,7 @@ class SingleTaskGP(Model):
         every module, since all of them have independent parameters per
         output.
         """
+        self._sync_torch_parameters()
         idcs = [int(i) for i in idcs]
         m = self.num_outputs
         if m == len(idcs) and idcs == list(range(m)):
@@ -733,13 +796,23 @@ class SingleTaskGP(Model):
         """Batch element ``k`` of a batched model (row-major) as an
         unbatched ``SingleTaskGP`` with its own modules, e.g. a member of an
         ensemble of GPs."""
+        self._sync_torch_parameters()
         old_aug = self._aug_batch_shape
         new = SingleTaskGP.__new__(SingleTaskGP)
         memo: dict[int, Any] = {id(self): new}
         for key, value in self.__dict__.items():
+            if (
+                key == "_torch_parameter_requires_grad"
+                and "_torch_parameter_state" in self.__dict__
+            ):
+                continue
             if key == "_rs":
                 new.__dict__[key] = value.batch_element(k)
-            elif key in ("taus", "_ensemble_cache"):
+            elif key in ("taus", "_ensemble_cache", "_torch_parameter_state"):
+                if key == "_torch_parameter_state":
+                    new.__dict__["_torch_parameter_requires_grad"] = {
+                        name: p.requires_grad for name, p in value.entries
+                    }
                 continue
             else:
                 new.__dict__[key] = copy.deepcopy(value, memo)
@@ -757,6 +830,26 @@ class SingleTaskGP(Model):
 
     # -- parameters --------------------------------------------------------
 
+    def _sync_torch_parameters(self) -> Any:
+        """Synchronize the persistent leaves of ordinary Torch SingleTaskGPs."""
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
+        if (
+            type(self) is not SingleTaskGP
+            or self._kind.lib != "torch"
+            or not self.__dict__.get("_torch_parameters_ready", False)
+        ):
+            return None
+        state = self.__dict__.get("_torch_parameter_state")
+        if state is None:
+            from botorch_rs.models._torch_parameters import TorchParameterState
+
+            state = self._torch_parameter_state = TorchParameterState(self)
+        else:
+            state.sync(self)
+        return state
+
     def _param_index(self, suffix: str) -> tuple[str, int, int]:
         """The full name, offset and size of the parameter named ``suffix``
         (a full name, or the end of one)."""
@@ -770,11 +863,15 @@ class SingleTaskGP(Model):
         raise AttributeError(f"The model has no parameter {suffix!r}.")
 
     def _raw_param(self, suffix: str) -> list[float]:
+        self._sync_torch_parameters()
         _, offset, size = self._param_index(suffix)
         return self._rs.raw_parameters()[offset : offset + size]
 
     def _raw_param_array(self, suffix: str) -> Any:
         """The raw parameter named ``suffix`` as an array of its shape."""
+        state = self._sync_torch_parameters()
+        if state is not None:
+            return state.parameter(self._param_index(suffix)[0])
         return from_flat(self._raw_param(suffix), self._raw_param_shape(suffix), self._kind)
 
     def _raw_param_shape(self, suffix: str) -> tuple[int, ...]:
@@ -782,6 +879,7 @@ class SingleTaskGP(Model):
         return tuple(dict(self._rs.parameter_shapes())[name])
 
     def _set_raw_param(self, suffix: str, value: Any) -> None:
+        self._sync_torch_parameters()
         data, shape = to_flat(value, suffix)
         name, offset, size = self._param_index(suffix)
         values = self._rs.raw_parameters()
@@ -797,10 +895,15 @@ class SingleTaskGP(Model):
             new = [float(v) for v in data]
         values[offset : offset + size] = new
         self._rs.set_raw_parameters(values)
+        self._sync_torch_parameters()
 
     def named_parameters(self) -> Iterator[tuple[str, Any]]:
         """``(name, raw value)`` of every hyperparameter, with BoTorch's names,
         order and shapes."""
+        state = self._sync_torch_parameters()
+        if state is not None:
+            yield from state.entries
+            return
         values = self._rs.raw_parameters()
         offset = 0
         for name, shape in self._rs.parameter_shapes():
@@ -812,6 +915,58 @@ class SingleTaskGP(Model):
     def parameters(self) -> Iterator[Any]:
         for _, value in self.named_parameters():
             yield value
+
+    def requires_grad_(self, requires_grad: bool = True) -> SingleTaskGP:
+        """Set trainability of persistent CPU Torch parameters in place."""
+        state = self._sync_torch_parameters()
+        if state is None:
+            raise UnsupportedError(
+                "Persistent parameter trainability requires a CPU Torch SingleTaskGP."
+            )
+        for _, parameter in state.entries:
+            parameter.requires_grad_(requires_grad)
+        return self
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        """Clear accumulated gradients on the persistent Torch parameters."""
+        state = self._sync_torch_parameters()
+        if state is not None:
+            for _, parameter in state.entries:
+                if parameter.grad is not None:
+                    if set_to_none:
+                        parameter.grad = None
+                    else:
+                        if parameter.grad.grad_fn is not None:
+                            parameter.grad.detach_()
+                        else:
+                            parameter.grad.requires_grad_(False)
+                        parameter.grad.zero_()
+
+    def posterior_parameter_vjp(
+        self,
+        X: Any,
+        mean_adjoint: Any,
+        covariance_adjoint: Any,
+        observation_noise: bool = False,
+    ) -> Any:
+        """Native posterior derivative in flat ``named_parameters`` order.
+
+        ``mean_adjoint`` has the posterior mean's ``... x q x m`` layout.
+        ``covariance_adjoint`` uses the joint normal's output-major
+        ``... x (q*m) x (q*m)`` layout. Model and query batch broadcasting
+        is reduced into the original model parameters. The result is an
+        explicit first-order gradient; no prior-density terms are added.
+        """
+        self._sync_torch_parameters()
+        return from_pair(
+            self._rs.posterior_parameter_vjp(
+                to_flat(X, "X"),
+                to_flat(mean_adjoint, "mean_adjoint"),
+                to_flat(covariance_adjoint, "covariance_adjoint"),
+                observation_noise,
+            ),
+            self._kind,
+        )
 
     def initialize(self, **kwargs: Any) -> SingleTaskGP:
         """Sets hyperparameters by (dotted) name, like GPyTorch's
@@ -830,9 +985,20 @@ class SingleTaskGP(Model):
     # -- copying -----------------------------------------------------------
 
     def __deepcopy__(self, memo: dict[int, Any]) -> SingleTaskGP:
+        self._sync_torch_parameters()
         new = self.__class__.__new__(self.__class__)
         memo[id(self)] = new
         for key, value in self.__dict__.items():
+            if (
+                key == "_torch_parameter_requires_grad"
+                and "_torch_parameter_state" in self.__dict__
+            ):
+                continue
+            if key == "_torch_parameter_state":
+                new.__dict__["_torch_parameter_requires_grad"] = {
+                    name: p.requires_grad for name, p in value.entries
+                }
+                continue
             if key == "_rs":
                 new.__dict__[key] = value.copy()
             else:
@@ -863,6 +1029,8 @@ def _model_posterior(
     points_per_input: int,
     transformed: list[bool],
     is_list: bool,
+    query_inputs: Any = None,
+    parameter_owner: Any = None,
 ) -> Any:
     """The posterior of a model: a ``GPyTorchPosterior``, or a
     ``TransformedPosterior`` if a selected output has a nonlinear outcome
@@ -877,6 +1045,8 @@ def _model_posterior(
         "output_indices": output_indices,
         "transform": transform,
         "points_per_input": points_per_input,
+        "query_inputs": query_inputs,
+        "parameter_owner": parameter_owner,
     }
     native = GPyTorchPosterior(*args, **kwargs)
     if not any(selected):

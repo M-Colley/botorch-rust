@@ -14,13 +14,60 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import ArrayKind, first_kind, from_flat, kind_of, to_flat
+from botorch_rs._arrays import ArrayKind, first_kind, from_flat, is_torch_tensor, kind_of, to_flat
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import OptimizationWarning
 from botorch_rs.optim.parameter_constraints import (
     linear_constraints_arg,
     nonlinear_constraints_arg,
 )
+from botorch_rs.optim.utils.common import check_scipy_version_at_least
+
+# The supported SciPy driver range of the pinned official BoTorch API.
+# Native candidate generation uses Rust solvers and does not require SciPy.
+SCIPY_MIN_VERSION = 13
+SCIPY_UNTESTED_VERSION = 19
+
+
+def get_reasons_against_fast_path(
+    method: str,
+    with_grad: bool,
+    minimize_options: dict[str, Any],
+    timeout_sec: float | None,
+) -> list[str]:
+    """BoTorch's SciPy fast-path compatibility diagnostic.
+
+    This reports SciPy-driver eligibility for API interoperability; native
+    Rust candidate generation selects its own solvers independently.
+    """
+    reasons = []
+    if method != "L-BFGS-B":
+        reasons.append(f"method={method}, method needs to be L-BFGS-B")
+    if not with_grad:
+        reasons.append("with_grad=False, it needs to be True")
+    extra = set(minimize_options) - {
+        "maxiter",
+        "disp",
+        "iprint",
+        "max_cor",
+        "ftol",
+        "pgtol",
+        "factr",
+        "tol",
+        "maxls",
+    }
+    if extra:
+        reasons.append(f"options={extra} are not accepted")
+    if timeout_sec is not None:
+        reasons.append(f"timeout_sec={timeout_sec}, it needs to be None")
+    if not check_scipy_version_at_least(minor=SCIPY_MIN_VERSION) or check_scipy_version_at_least(
+        minor=SCIPY_UNTESTED_VERSION
+    ):
+        reasons.append(
+            f"Scipy version is not in the range from 1.{SCIPY_MIN_VERSION}.0 to "
+            f"1.{SCIPY_UNTESTED_VERSION}.x."
+        )
+    return reasons
 
 
 def _bounds_arg(
@@ -54,6 +101,33 @@ def _fixed_arg(fixed_features: Mapping[int, Any] | None, d: int) -> dict[int, fl
             )
         out[int(k) % d] = float(data[0])
     return out
+
+
+def _has_shaped_fixed_features(fixed_features: Mapping[int, Any] | None) -> bool:
+    return any(
+        value is None or bool(to_flat(value, "fixed feature")[1])
+        for value in (fixed_features or {}).values()
+    )
+
+
+def _gen_candidates_scipy_loop(arguments: dict[str, Any]) -> tuple[Any, Any]:
+    import torch
+
+    from botorch_rs.optim._torch_acq_optim import gen_scipy
+
+    initial = arguments["initial_conditions"]
+    arguments = dict(arguments)
+    arguments["initial_conditions"] = (
+        initial if is_torch_tensor(initial) else torch.as_tensor(initial, dtype=torch.float64)
+    )
+    candidates, values = gen_scipy(**arguments)
+    if is_torch_tensor(initial):
+        return candidates, values
+    kind = kind_of(initial)
+    return (
+        from_flat(*to_flat(candidates), kind),
+        from_flat(*to_flat(values), kind),
+    )
 
 
 def _values_out(values: list[float], ics_shape: tuple[int, ...], kind: Any) -> Any:
@@ -102,6 +176,18 @@ def gen_candidates_scipy(
         The generated candidates (the shape of ``initial_conditions``) and
         the acquisition value of each t-batch.
     """
+    if getattr(acquisition_function, "_tensor_backend", None) == "torch":
+        arguments = locals().copy()
+        from botorch_rs.optim._torch_acq_optim import gen_scipy
+
+        return gen_scipy(**arguments)
+    if (
+        _has_shaped_fixed_features(fixed_features)
+        or (options or {}).get("with_grad", True) is False
+        or (options or {}).get("callback") is not None
+        or (options or {}).get("method", "L-BFGS-B") not in {"L-BFGS-B", "SLSQP"}
+    ):
+        return _gen_candidates_scipy_loop(locals().copy())
     from botorch_rs.optim.optimize import _as_native, _parse_options
 
     kind = first_kind(initial_conditions)
@@ -205,6 +291,11 @@ def gen_candidates_torch(
         The generated candidates (the shape of ``initial_conditions``) and
         the acquisition value of each t-batch.
     """
+    if getattr(acquisition_function, "_tensor_backend", None) == "torch":
+        arguments = locals().copy()
+        from botorch_rs.optim._torch_acq_optim import gen_torch
+
+        return gen_torch(**arguments)
     from botorch_rs.optim.optimize import _as_native, _torch_options
 
     kind = first_kind(initial_conditions)
@@ -212,7 +303,9 @@ def gen_candidates_torch(
     shape = tuple(ics[1])
     d = shape[-1]
     native = _as_native(acquisition_function, d)
-    if optimizer is not None and getattr(optimizer, "__name__", None) != "Adam":
+    if _has_shaped_fixed_features(fixed_features) or (
+        optimizer is not None and getattr(optimizer, "__name__", None) != "Adam"
+    ):
         return _gen_candidates_torch_loop(
             initial_conditions,
             native,
@@ -261,68 +354,23 @@ def _gen_candidates_torch_loop(
 ) -> tuple[Any, Any]:
     """BoTorch's ``gen_candidates_torch`` loop with a torch optimizer (on the
     natively computed values and gradients)."""
-    import time
-
     import torch
 
-    from botorch_rs.optim.stopping import ExpMAStoppingCriterion
-    from botorch_rs.optim.utils.acquisition_utils import fix_features
+    from botorch_rs.optim._torch_acq_optim import gen_torch
 
-    start_time = time.monotonic()
-    options = options or {}
-    X0 = torch.as_tensor(initial_conditions, dtype=torch.float64)
-    d = X0.shape[-1]
-    free = [i for i in range(d) if not fixed_features or i not in fixed_features]
-
-    def clamp(X: Any) -> Any:
-        lo = None if lower_bounds is None else torch.as_tensor(lower_bounds, dtype=X.dtype)
-        hi = None if upper_bounds is None else torch.as_tensor(upper_bounds, dtype=X.dtype)
-        if lo is not None and lo.ndim > 0 and lo.numel() == d and X.shape[-1] != d:
-            lo = lo[free]
-        if hi is not None and hi.ndim > 0 and hi.numel() == d and X.shape[-1] != d:
-            hi = hi[free]
-        return X.clamp(lo, hi) if lo is not None or hi is not None else X
-
-    params = clamp(X0)[..., free].clone().requires_grad_(True)
-    optimizer_options = dict(options.get("optimizer_options", {}) or {})
-    stopping_options = dict(options.get("stopping_criterion_options", {}) or {})
-    if "maxiter" in options:
-        warnings.warn(
-            "Passing 'maxiter' directly in options is deprecated. "
-            "Please use options['stopping_criterion_options']['maxiter'] instead.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        stopping_options.setdefault("maxiter", options["maxiter"])
-    optimizer_options.setdefault("lr", 0.025)
-    opt = optimizer(params=[params], **optimizer_options)
-    criterion = ExpMAStoppingCriterion(**stopping_options)
-    i, stop = 0, False
-    while not stop:
-        i += 1
-        with torch.no_grad():
-            X = clamp(params).requires_grad_(True)
-        loss = -acquisition_function(
-            fix_features(X, fixed_features, replace_current_value=False)
-        ).sum()
-        grad = torch.autograd.grad(loss, X)[0]
-        if callback:
-            callback(i, loss, grad)
-
-        def assign_grad(grad: Any = grad, loss: Any = loss) -> Any:
-            opt.zero_grad()
-            params.grad = grad
-            return loss
-
-        opt.step(assign_grad)
-        stop = criterion(loss.detach())
-        if timeout_sec is not None and time.monotonic() - start_time > timeout_sec:
-            stop = True
-    with torch.no_grad():
-        final = fix_features(clamp(params), fixed_features, replace_current_value=False)
-        values = acquisition_function(final)
+    candidates, values = gen_torch(
+        torch.as_tensor(initial_conditions, dtype=torch.float64),
+        acquisition_function,
+        lower_bounds=lower_bounds,
+        upper_bounds=upper_bounds,
+        optimizer=optimizer,
+        options=options,
+        callback=callback,
+        fixed_features=fixed_features,
+        timeout_sec=timeout_sec,
+    )
     kind = kind_of(initial_conditions)
-    return from_flat(final.reshape(-1).tolist(), tuple(final.shape), kind), from_flat(
+    return from_flat(candidates.reshape(-1).tolist(), tuple(candidates.shape), kind), from_flat(
         values.reshape(-1).tolist(), tuple(values.shape), kind
     )
 
@@ -340,6 +388,8 @@ def get_best_candidates(batch_candidates: Any, batch_values: Any) -> Any:
     Returns:
         A ``q x d`` (or ``d``) array of the candidates with the highest value.
     """
+    if is_torch_tensor(batch_candidates) and is_torch_tensor(batch_values):
+        return batch_candidates[batch_values.argmax()]
     values = [float(v) for v in to_flat(batch_values, "batch_values")[0]]
     best = next((i for i, v in enumerate(values) if v != v), None)
     if best is None:
@@ -351,4 +401,9 @@ def get_best_candidates(batch_candidates: Any, batch_values: Any) -> Any:
     )
 
 
-__all__ = ["gen_candidates_scipy", "gen_candidates_torch", "get_best_candidates"]
+__all__ = [
+    "gen_candidates_scipy",
+    "gen_candidates_torch",
+    "get_best_candidates",
+    "get_reasons_against_fast_path",
+]

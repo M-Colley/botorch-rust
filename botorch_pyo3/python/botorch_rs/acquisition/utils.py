@@ -18,7 +18,7 @@ from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import BotorchWarning
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.model_list_gp_regression import ModelListGP
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
 
 
 def get_acquisition_function(*args: Any, **kwargs: Any) -> None:
@@ -325,6 +325,23 @@ def prune_inferior_points(
     require an ``objective`` or a scalarizing ``posterior_transform``. Without
     a ``sampler``, the samples are drawn with a random seed (like BoTorch).
     """
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.acquisition._torch_pruning import prune_indices
+
+        return X.index_select(
+            -2,
+            prune_indices(
+                model,
+                X,
+                objective,
+                posterior_transform,
+                constraints,
+                num_samples,
+                max_frac,
+                sampler,
+                marginalize_dim,
+            ),
+        )
     if hasattr(model, "_ensemble_acquisition"):
         # BoTorch marginalizes the ensemble dimension of an ensemble of GPs
         # (``marginalize_dim``) and samples members with an IndexSampler.
@@ -356,8 +373,10 @@ def prune_inferior_points(
     handle = model._acquisition_model(posterior_transform)
     base_samples = None
     if sampler is not None:
-        if not isinstance(sampler, SobolQMCNormalSampler):
-            raise UnsupportedError("`sampler` must be a botorch_rs SobolQMCNormalSampler.")
+        if not isinstance(sampler, NormalMCSampler):
+            raise UnsupportedError(
+                "`sampler` must be a botorch_rs SobolQMCNormalSampler or IIDNormalSampler."
+            )
         num_samples = sampler.num_samples
         base_samples = sampler._rs.base_samples(n * handle.num_outputs) if n > 0 else None
     pruned = _rs.prune_inferior_points(

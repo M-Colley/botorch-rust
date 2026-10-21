@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -10,6 +11,7 @@ from botorch_rs._arrays import to_flat
 from botorch_rs.constraints import GreaterThan
 from botorch_rs.kernels import Kernel, ScaleKernel
 from botorch_rs.likelihoods import Likelihood
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.gp_regression import SingleTaskGP
 from botorch_rs.models.kernels.categorical import CategoricalKernel
 from botorch_rs.models.transforms.input import InputTransform
@@ -53,6 +55,38 @@ class MixedSingleTaskGP(SingleTaskGP):
         >>> model = MixedSingleTaskGP(train_X, train_Y, cat_dims=[-1])
     """
 
+    def __new__(
+        cls,
+        train_X: Any = None,
+        train_Y: Any = None,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
+        if cls is MixedSingleTaskGP:
+            if backend not in {"auto", "native", "torch"}:
+                raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+            torch = sys.modules.get("torch")
+            values = (train_X, train_Y, kwargs.get("train_Yvar"), *args[1:2])
+            requested = any(
+                getattr(v, "requires_grad", False)
+                or getattr(getattr(v, "device", None), "type", "cpu") != "cpu"
+                for v in values
+            )
+            modules = (
+                any(
+                    requires_tensor_backend(kwargs.get(k))
+                    for k in ("likelihood", "input_transform", "outcome_transform")
+                )
+                if torch
+                else False
+            )
+            if backend == "torch" or (backend == "auto" and (requested or modules)):
+                from botorch_rs.models._torch_backend_specialized import TorchMixedSingleTaskGP
+
+                return object.__new__(TorchMixedSingleTaskGP)
+        return object.__new__(cls)
+
     def __init__(
         self,
         train_X: Any,
@@ -63,6 +97,8 @@ class MixedSingleTaskGP(SingleTaskGP):
         likelihood: Likelihood | None = None,
         outcome_transform: Any = DEFAULT,
         input_transform: InputTransform | None = None,
+        *,
+        backend: str = "auto",
     ) -> None:
         r"""A single-task exact GP model supporting categorical parameters.
 
