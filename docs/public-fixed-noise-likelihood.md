@@ -22,10 +22,13 @@ additional learned component. This follows the repaired Gaussian contract in
 the pinned implementation's duplicated explicit override. Conditioning appends
 fixed observations once and independently copies learned likelihood parameters.
 
-Twenty-four focused CPU/CUDA cases compare source values, all active first and
+Thirty-two focused CPU/CUDA cases compare source values, all active first and
 mixed second derivatives, actual module protocols and independent corrected
-override/conditioning laws. All 204 related integrated cases pass. The focused
-module passes twelve cases on Torch 2.14 CPU; with reference packages blocked,
-eight pass and sixteen source-only comparisons skip. Configured formatting,
+override/conditioning laws. They also preserve supplied constraint/prior identity,
+constraint initial values, raw optimizer bounds and prior derivative graphs.
+The eight new constraint controls fail before the repair. All 212 related
+integrated cases pass. The earlier 24-case focused selection passes twelve cases
+on Torch 2.14 CPU; with reference packages blocked, eight pass and sixteen
+source-only comparisons skip. Configured formatting,
 Ruff and Mypy pass. These focused selections overlap and do not replace the
 complete release verification.

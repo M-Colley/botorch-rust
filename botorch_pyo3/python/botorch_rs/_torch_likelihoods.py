@@ -79,6 +79,8 @@ class _AdditionalNoise(_TorchGaussianNoise):
             else TorchConstraint(constraint, torch.empty(0)).to(like)
         )
         self.raw_noise = nn.Parameter(like.new_zeros(*self.batch_shape, 1))
+        if self.raw_noise_constraint.initial_value is not None:
+            self._assign("raw_noise", self.raw_noise_constraint.initial_value)
         if isinstance(prior, nn.Module):
             self.add_module("noise_prior", prior)
             self._prior_parameters["noise_prior"] = "noise", 1

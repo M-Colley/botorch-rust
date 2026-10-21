@@ -261,12 +261,20 @@ class _TorchModule(nn.Module):
                 constraint = getattr(module, "noise_constraint", constraint)
             yield name, parameter, constraint
 
-    def raw_parameter_bounds(self) -> dict[str, tuple[float, float]]:
-        return {
-            name: constraint.raw_bounds
-            for name, _, constraint in self.named_parameters_and_constraints()
-            if constraint is not None
-        }
+    def raw_parameter_bounds(self) -> dict[str, tuple[Any, Any]]:
+        bounds = {}
+        for name, _, constraint in self.named_parameters_and_constraints():
+            if constraint is None:
+                continue
+            limits = getattr(constraint, "raw_bounds", None)
+            if limits is None:
+                limits = (
+                    (-math.inf, math.inf)
+                    if constraint.enforced
+                    else (constraint.lower_bound, constraint.upper_bound)
+                )
+            bounds[name] = limits
+        return bounds
 
     def _assign(self, name: str, value: Any, constraint: TorchConstraint | None = None) -> None:
         parameter = getattr(self, name)

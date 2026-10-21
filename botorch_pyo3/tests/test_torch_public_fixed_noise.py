@@ -150,3 +150,53 @@ def test_scalar_model_adopts_actual_module_and_conditions_fixed_component_once(d
     )
     result = conditioned.posterior(X.new_tensor([[0.6]])).mean
     assert torch.isfinite(torch.autograd.grad(result.sum(), new_noise)[0]).all()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("enforced", [False, True])
+def test_actual_constraint_initialization_matches_source(device, enforced):
+    gpytorch = pytest.importorskip("gpytorch")
+    kwargs = {} if enforced else {"transform": None}
+    pairs = []
+    for kind in (FixedNoiseGaussianLikelihood, gpytorch.likelihoods.FixedNoiseGaussianLikelihood):
+        constraint = gpytorch.constraints.GreaterThan(0.02, initial_value=0.13, **kwargs)
+        prior = gpytorch.priors.GammaPrior(2.0, 3.0)
+        likelihood = kind(
+            values(device, False), True, noise_constraint=constraint, noise_prior=prior
+        ).to(dtype=torch.double, device=device)
+        assert likelihood.second_noise_covar.raw_noise_constraint is constraint
+        assert likelihood.second_noise_covar.noise_prior is prior
+        pairs.append(likelihood)
+    torch.testing.assert_close(pairs[0].second_noise, pairs[1].second_noise)
+    torch.testing.assert_close(
+        pairs[0].second_noise_covar.raw_noise, pairs[1].second_noise_covar.raw_noise
+    )
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("enforced", [False, True])
+def test_actual_constraint_optimizer_bounds_and_prior_graph_match_source(device, enforced):
+    gpytorch = pytest.importorskip("gpytorch")
+    from botorch_rs.optim._torch_backend import parameter_bounds
+
+    kwargs = {} if enforced else {"transform": None}
+    constraint = gpytorch.constraints.GreaterThan(0.02, initial_value=0.13, **kwargs)
+    likelihood = FixedNoiseGaussianLikelihood(
+        values(device, False),
+        True,
+        noise_constraint=constraint,
+        noise_prior=gpytorch.priors.GammaPrior(2.0, 3.0),
+    ).to(dtype=torch.double, device=device)
+    bounds = parameter_bounds(likelihood)
+    lower, upper = bounds["second_noise_covar.raw_noise"]
+    expected_lower = -torch.inf if enforced else constraint.lower_bound
+    torch.testing.assert_close(torch.as_tensor(lower), torch.as_tensor(expected_lower))
+    assert torch.as_tensor(upper).isposinf().all()
+    prior_records = list(likelihood.named_priors())
+    assert len(prior_records) == 1
+    _, owner, prior, closure, _ = prior_records[0]
+    log_prob = prior.log_prob(closure(owner)).sum()
+    torch.testing.assert_close(likelihood.log_prior(), log_prob)
+    raw = likelihood.second_noise_covar.raw_noise
+    first = torch.autograd.grad(log_prob, raw, create_graph=True)[0]
+    assert torch.isfinite(torch.autograd.grad(first.sum(), raw)[0]).all()
