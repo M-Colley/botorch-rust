@@ -245,7 +245,8 @@ def test_task_loader_conditioning_and_all_graphs_match_independent_gaussian(devi
     extra_Y = Y.new_tensor([[0.7]], requires_grad=True)
     extra_noise = Y.new_tensor([[0.04]], requires_grad=True) if fixed else None
     conditioned = model.condition_on_observations(extra_X, extra_Y, noise=extra_noise)
-    assert conditioned.pyro_model is model.pyro_model
+    assert conditioned.pyro_model is not model.pyro_model
+    assert conditioned.pyro_model.data_kernel is conditioned.covar_module.kernels[0].base_kernel
     assert model._train_X.shape[-2] == 6 and conditioned._train_X.shape[-2] == 7
     # No second MCMC axis is introduced by a conditioning batch.
     actual = conditioned.posterior(query)
@@ -279,6 +280,24 @@ def test_task_loader_conditioning_and_all_graphs_match_independent_gaussian(devi
         strict=True,
     ):
         torch.testing.assert_close(actual_grad, expected_grad, atol=3e-10, rtol=3e-9)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_source_conditioning_copies_program_and_keeps_copied_module_aliases(device):
+    model, source, (X, Y, _), _, _ = _models(device, 1)
+    query = X.new_tensor([[0.21, 3.0, 0.41], [0.65, 7.0, 0.63]])
+    added_X, added_Y = X.new_tensor([[0.4, 3.0, 0.5]]), Y.new_tensor([[0.7]])
+    source.posterior(query)
+    for parent, index in ((source, False), (model, True)):
+        conditioned = parent.condition_on_observations(added_X, added_Y)
+        assert conditioned.pyro_model is not parent.pyro_model
+        kernel = conditioned.covar_module.kernels[0]
+        if index:
+            kernel = kernel.base_kernel
+        assert conditioned.pyro_model.data_kernel is kernel
+        assert {id(p) for p in conditioned.parameters()}.isdisjoint(
+            id(p) for p in parent.parameters()
+        )
 
 
 @pytest.mark.parametrize("device", DEVICES)

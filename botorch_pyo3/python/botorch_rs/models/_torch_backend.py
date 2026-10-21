@@ -808,6 +808,30 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         return self
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Any:
+        # A fully Bayesian program owns mapped training data outside the module
+        # tree. Copy its Python state and module aliases, retaining data graphs
+        # just as for the model's registered/nonpersistent Tensor state.
+        program = getattr(self, "pyro_model", None)
+        if program is not None:
+            visited: set[int] = set()
+
+            def preserve_data(value: Any) -> None:
+                if id(value) in visited:
+                    return
+                visited.add(id(value))
+                if isinstance(value, torch.Tensor):
+                    if not value.is_leaf and id(value) not in memo:
+                        memo[id(value)] = value.clone()
+                elif isinstance(value, dict):
+                    for child in value.values():
+                        preserve_data(child)
+                elif isinstance(value, (tuple, list)):
+                    for child in value:
+                        preserve_data(child)
+                elif isinstance(value, torch.nn.Module):
+                    preserve_data(vars(value))
+
+            preserve_data(vars(program))
         for module in self.modules():
             values = (*module.buffers(recurse=False), *module.__dict__.values())
             for buffer in values:

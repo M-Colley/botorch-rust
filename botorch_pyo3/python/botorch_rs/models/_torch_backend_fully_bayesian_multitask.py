@@ -356,10 +356,14 @@ class TorchSaasFullyBayesianMultiTaskGP(TorchMultiTaskGP, SaasFullyBayesianMulti
         # conditioning validation/broadcast logic appends the supplied noise.
         stage = _copy_model(self)
         stage.likelihood = _copy_transform(self.likelihood)
-        fixed = self.likelihood.noise.unsqueeze(-1)
+        fixed = self.likelihood.noise_covar.noise.unsqueeze(-1)
         if self.outcome_transform is not None:
             fixed = self.outcome_transform.untransform(torch.zeros_like(fixed), fixed)[1]
         stage._train_Yvar = fixed
+        stage._train_Y = stage._train_Y.expand(
+            *torch.broadcast_shapes(stage._train_Y.shape[:-2], fixed.shape[:-2]),
+            *stage._train_Y.shape[-2:],
+        )
         stage._fb_custom_likelihood = False
         conditioned = TorchMultiTaskGP.condition_on_observations(stage, X, Y, noise=noise, **kwargs)
         fixed = conditioned._training_values()[2]
