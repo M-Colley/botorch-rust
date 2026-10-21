@@ -48,6 +48,8 @@ Tensor operations. LogPI and log feasibility use the port's stable
 `log_ndtr` primitive rather than Torch's inaccurate far-tail backward.
 Independent 80-digit controls verify the LogEI value and its first through
 fourth derivatives at standardized improvements from `-6` to `-1e6`.
+The isolated source repair is submitted in
+[BoTorch #3519](https://github.com/meta-pytorch/botorch/pull/3519).
 
 Focused CPU/CUDA float32/float64 checks cover source moment and sampling
 parity, weighted value/parameter/query Hessians, explicit and default
