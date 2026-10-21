@@ -65,10 +65,14 @@ the supplied sampler's full noisy Gaussian law, with no additional ambient
 random draws outside its base-sample protocol. Feature/time/parameter
 higher derivatives remain connected when `propagate_grads=True`.
 
-This implementation uses dense exact masked solves and joint roots; it does
-not claim iterative masked-grid scalability. Iterative solver controls,
-explicit observation-noise posterior overrides and arbitrary posterior or
-non-Standardize outcome transforms raise explicit unsupported errors.
+This implementation uses dense masked matrices and joint roots. Its
+[iterative Tensor controls](latent-iterative-methods.md) retain differentiable
+CG solves and Lanczos log probabilities without claiming matrix-free storage.
+Explicit observation-noise posterior overrides and arbitrary posterior
+transforms retain the source's unsupported boundary.
+Beyond Standardize, [general outcome modules](latent-outcome-transforms.md)
+support nonlinear sampling, available analytic moments, chains, and custom
+differentiable affine maps.
 Changing the existing training missing-value pattern requires reconstruction.
 Dataset factorization continues to use the existing native adapter.
 

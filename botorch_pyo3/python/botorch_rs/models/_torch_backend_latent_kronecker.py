@@ -16,7 +16,6 @@ from botorch_rs.means import ZeroMean
 from botorch_rs.models._torch_backend import TorchSingleTaskGP
 from botorch_rs.models._torch_backend_kronecker import tensor_kron
 from botorch_rs.models._torch_backend_modules import (
-    TorchStandardize,
     build_input_transform,
     build_kernel,
     build_likelihood,
@@ -25,7 +24,6 @@ from botorch_rs.models._torch_backend_modules import (
     module_log_prior,
 )
 from botorch_rs.models.latent_kronecker_gp import LatentKroneckerGP
-from botorch_rs.models.transforms.outcome import Standardize
 from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
 from botorch_rs.posteriors.latent_kronecker import LatentKroneckerGPPosterior
 from botorch_rs.utils.types import DEFAULT
@@ -211,15 +209,11 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         ):
             self.register_buffer(name, value)
         self.input_transform = build_input_transform(input_transform, train_X.shape[-1], train_X)
+        with torch.no_grad():
+            outcome_inputs = self.transform_inputs(train_X)
         self.outcome_transform = build_outcome_transform(
-            outcome_transform, 1, self._transform_fit_Y
+            outcome_transform, 1, self._transform_fit_Y, train_X=outcome_inputs
         )
-        if self.outcome_transform is not None and not isinstance(
-            self.outcome_transform, (TorchStandardize, Standardize)
-        ):
-            raise UnsupportedError(
-                "Tensor LatentKronecker outcomes currently support Standardize(m=1) or None."
-            )
         if isinstance(likelihood, nn.Module):
             from botorch_rs.models._torch_structured_likelihood import validate_scalar_likelihood
 
@@ -317,7 +311,7 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
                 self._train_X
             )
         )
-        Y = observed if self.outcome_transform is None else self.outcome_transform(observed)[0]
+        Y = observed if self.outcome_transform is None else self.outcome_transform(observed, X=X)[0]
         return X, self._train_T, Y.squeeze(-1)
 
     @staticmethod
@@ -493,7 +487,10 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         q, t = query.shape[-2], T.shape[-2]
         mean = mean.reshape(*batch, q, t)
         location, scale = 0.0, 1.0
-        if untransform and self.outcome_transform is not None:
+        from botorch_rs.models._torch_structured_outcomes import is_scalar_standardize
+
+        scalar_standardize = is_scalar_standardize(self.outcome_transform)
+        if untransform and scalar_standardize:
             location, scale = (
                 self.outcome_transform.means.clone(),
                 self.outcome_transform.stdvs.clone(),
@@ -524,6 +521,10 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             scale,
         )
         posterior._likelihood_inputs = (query, T)
+        if untransform and self.outcome_transform is not None and not scalar_standardize:
+            from botorch_rs.models._torch_structured_outcomes import TorchStructuredOutcomePosterior
+
+            return TorchStructuredOutcomePosterior(posterior, self.outcome_transform, X)
         return posterior
 
     def __call__(self, X: Tensor, T: Any = None, **kwargs: Any) -> Any:
@@ -639,10 +640,17 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         index = torch.arange(posterior._q * posterior._m, device=X.device)
         index = index.reshape(posterior._q, posterior._m).T.flatten()
         covariance = covariance.index_select(-2, index).index_select(-1, index)
-        if self.outcome_transform is not None:
+        from botorch_rs.models._torch_structured_outcomes import is_scalar_standardize
+
+        scalar_standardize = is_scalar_standardize(self.outcome_transform)
+        if scalar_standardize:
             mean = mean * self.outcome_transform.stdvs + self.outcome_transform.means
             covariance = covariance * self.outcome_transform.stdvs.square()
-        observed = TorchGPyTorchPosterior(mean, covariance)
+        observed: Any = TorchGPyTorchPosterior(mean, covariance)
+        if self.outcome_transform is not None and not scalar_standardize:
+            from botorch_rs.models._torch_structured_outcomes import TorchStructuredOutcomePosterior
+
+            observed = TorchStructuredOutcomePosterior(observed, self.outcome_transform, X)
         with fantasize():
             Y = sampler(observed)
             return self.condition_on_observations(X, Y)
