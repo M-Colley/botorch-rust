@@ -321,6 +321,30 @@ def test_explicit_native_refit_keeps_torch_module_destination(device, stratified
     torch.testing.assert_close(transform.means, expected.means)
 
 
+@pytest.mark.parametrize("stratified", [False, True])
+def test_native_fit_keeps_float64_statistics_after_default_module_initialization(stratified):
+    transform = StratifiedStandardize(1, [1, 3]) if stratified else Standardize(1)
+    assert transform.means.dtype == torch.get_default_dtype()
+    y = torch.tensor(
+        [[0.123456789012345], [0.765432109876543], [1.23456789012345], [1.87654321098765]],
+        dtype=torch.double,
+    )
+    x = torch.tensor([[0.1, 1], [0.3, 3], [0.6, 1], [0.8, 3]], dtype=torch.double)
+    transform(y.tolist(), X=x.tolist())
+    expected = StratifiedStandardize(1, [1, 3]) if stratified else Standardize(1)
+    expected(y, X=x)
+    # Accessing registered statistics must not round native float64 state and
+    # subsequently export rounded values through the native handle getter.
+    for _ in range(2):
+        assert transform.means.dtype == torch.double
+        torch.testing.assert_close(transform.means, expected.means, atol=2e-15, rtol=2e-15)
+        torch.testing.assert_close(transform.stdvs, expected.stdvs, atol=2e-15, rtol=2e-15)
+        transform.eval()
+        actual, _ = transform(y.tolist(), X=x.tolist())
+        reference, _ = expected.eval()(y, X=x)
+        torch.testing.assert_close(torch.tensor(actual, dtype=torch.double), reference)
+
+
 @pytest.mark.parametrize("protocol", ["to", "state_dict", "hook", "buffers", "pickle"])
 def test_pre_torch_outcomes_promote_in_place_on_explicit_module_protocol(protocol):
     from botorch_rs import _botorch_rs

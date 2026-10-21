@@ -464,7 +464,16 @@ class Standardize(OutcomeTransform):
         state = self.__dict__.get("_tensor_standardize")
         if state is None:
             if like is None:
-                dtype = self.__dict__.get("_buffer_factory_dtype", "float32")
+                native_trained = (
+                    self._step.is_trained
+                    if isinstance(self, StratifiedStandardize)
+                    else self._native_standardize.is_trained
+                )
+                dtype = (
+                    "float64"
+                    if native_trained
+                    else self.__dict__.get("_buffer_factory_dtype", "float32")
+                )
                 dtype, device = self.__dict__.get(
                     "_standardize_tensor_spec", (getattr(torch, dtype), None)
                 )
@@ -1031,7 +1040,11 @@ class ChainedOutcomeTransform(OutcomeTransform):
 def is_plain_standardize(tf: Any) -> bool:
     """Whether an outcome transform is a ``Standardize`` of all outputs (the
     transform the models have always evaluated)."""
-    return type(tf) is Standardize and tf._outputs is None
+    from botorch_rs.models._backend_selection import native_port_descriptor_type
+
+    return (
+        type(tf) is Standardize or native_port_descriptor_type(tf) is Standardize
+    ) and tf._outputs is None
 
 
 def outcome_chains(tf: OutcomeTransform, m: int, batch: tuple[int, ...]) -> list[list[Any]]:

@@ -64,7 +64,10 @@ def _initialize(self: Any, *args: Any, **kwargs: Any) -> None:
 
 def _apply(self: Any, fn: Any, recurse: bool = True) -> Any:
     _ensure_state(self)
-    return nn.Module._apply(self, fn, recurse)
+    result = nn.Module._apply(self, fn, recurse)
+    if (state := self.__dict__.get("_tensor_standardize")) is not None:
+        self.__dict__["_standardize_tensor_spec"] = (state.means.dtype, state.means.device)
+    return result
 
 
 def _state_dict(self: Any, *args: Any, **kwargs: Any) -> Any:
@@ -188,7 +191,10 @@ def expose_statistics(module: Any, state: nn.Module) -> None:
 def discard_statistics(module: Any) -> None:
     state = module.__dict__.pop("_tensor_standardize", None)
     if isinstance(module, nn.Module) and state is not None:
-        module.__dict__["_standardize_tensor_spec"] = (state.means.dtype, state.means.device)
+        # Empty constructor buffers follow Torch's default dtype. They do not
+        # select the dtype of a later, authoritative native float64 fit.
+        if bool(state._is_trained):
+            module.__dict__["_standardize_tensor_spec"] = (state.means.dtype, state.means.device)
         for name in ("means", "stdvs", "_stdvs_sq", "_is_trained", "strata_mapping"):
             module._buffers.pop(name, None)
             module._non_persistent_buffers_set.discard(name)
