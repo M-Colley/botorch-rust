@@ -194,35 +194,112 @@ def test_pairwise_q_validation_and_unused_feasibility_objective(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("outputs", [1, 2])
-def test_integrated_variance_matches_independent_joint_schur_law(device, outputs):
+@pytest.mark.parametrize("reference", [False, True])
+def test_integrated_variance_matches_independent_joint_schur_law(device, outputs, reference):
     model, data = _model(device, outputs, fixed_noise=True)
+    acquisition_type = qNegIntegratedPosteriorVariance
+    if reference:
+        source = pytest.importorskip("botorch.models")
+        acquisition_type = pytest.importorskip(
+            "botorch.acquisition.active_learning"
+        ).qNegIntegratedPosteriorVariance
+        model = source.SingleTaskGP(*data, outcome_transform=None)
     query = data[0].new_tensor([[[0.2], [0.65]]], requires_grad=True)
     grid = data[0].new_tensor([[0.1], [0.5], [0.9]], requires_grad=True)
     weights = data[0].new_tensor([0.7, -0.3]) if outputs > 1 else None
     transform = ScalarizedPosteriorTransform(weights) if weights is not None else None
-    acquisition = qNegIntegratedPosteriorVariance(model, grid, posterior_transform=transform)
-    actual = acquisition(query)
+    if reference and weights is not None:
+        transform = pytest.importorskip(
+            "botorch.acquisition.objective"
+        ).ScalarizedPosteriorTransform(weights)
+    acquisition = acquisition_type(model, grid, posterior_transform=transform)
+    fantasies = []
+    fantasize = model.fantasize
+
+    def capture(*args, **kwargs):
+        future = fantasize(*args, **kwargs)
+        if reference:
+            # Recompute the source's disposable prediction cache through its
+            # actual copied leaves, as in the model ownership controls.
+            future.prediction_strategy = None
+        fantasies.append(future)
+        return future
+
+    with patch.object(model, "fantasize", side_effect=capture):
+        actual = acquisition(query)
+    assert len(fantasies) == 1
+    future = fantasies[0]
+    original_parameters, copied_parameters = (
+        dict(model.named_parameters()),
+        dict(future.named_parameters()),
+    )
+    assert original_parameters.keys() == copied_parameters.keys()
+    for name in original_parameters:
+        assert original_parameters[name] is not copied_parameters[name], name
+        torch.testing.assert_close(original_parameters[name], copied_parameters[name])
     n, q = grid.shape[-2], query.shape[-2]
     joined = torch.cat((grid.expand(*query.shape[:-2], n, grid.shape[-1]), query), -2)
-    joint = model.posterior(joined).distribution.covariance_matrix
-    grid_indices = torch.cat([torch.arange(n, device=device) + o * (n + q) for o in range(outputs)])
-    query_indices = torch.cat(
-        [torch.arange(n, n + q, device=device) + o * (n + q) for o in range(outputs)]
-    )
-    grid_cov = joint.index_select(-2, grid_indices).index_select(-1, grid_indices)
-    cross_cov = joint.index_select(-2, grid_indices).index_select(-1, query_indices)
-    noisy_cov = model.posterior(query, observation_noise=True).distribution.covariance_matrix
+    count = data[0].shape[-2]
+    if reference:
+        training, noise = future.train_inputs[0], future.likelihood.noise
+        joined = joined.unsqueeze(-3) if outputs > 1 else joined
+    else:
+        training, target, fixed = future._training_values()
+        noise = future._training_noise(target, fixed)
+        joined = future._augment_X(joined)
+    training = training[..., :count, :]
+
+    def kernel(left, right):
+        value = future.covar_module(left, right)
+        if isinstance(value, torch.Tensor):
+            return value
+        identity = torch.eye(value.shape[-1], device=device, dtype=query.dtype)
+        return value.evaluate_kernel()._matmul(identity)
+
+    matrix = kernel(training, training) + torch.diag_embed(noise[..., :count])
+    cross = kernel(training, joined)
+    joint = kernel(joined, joined) - cross.transpose(-1, -2) @ torch.linalg.solve(matrix, cross)
+    grid_cov, cross_cov = joint[..., :n, :n], joint[..., :n, n:]
+    noisy_cov = joint[..., n:, n:] + torch.diag_embed(noise[..., count : count + q])
     conditional = grid_cov - cross_cov @ torch.linalg.solve(noisy_cov, cross_cov.transpose(-1, -2))
-    variance = conditional.diagonal(dim1=-2, dim2=-1).reshape(*query.shape[:-2], outputs, n)
+    variance = conditional.diagonal(dim1=-2, dim2=-1)
     if weights is not None:
         variance = (variance * weights.square().unsqueeze(-1)).sum(-2)
-    expected = -variance.mean(-1).squeeze(-1) if outputs == 1 else -variance.mean(-1)
+    expected = -variance.mean(-1).squeeze(0)
     torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
-    leaves = (query, grid, data[0], data[2], *model.parameters())
-    a, b = _derivatives(actual, leaves), _derivatives(expected, leaves)
+    named_leaves = [
+        ("query", query),
+        ("mc_points", grid),
+        ("train_X", data[0]),
+        ("train_Yvar", data[2]),
+        *(("original." + name, value) for name, value in original_parameters.items()),
+        *(("fantasy." + name, value) for name, value in copied_parameters.items()),
+    ]
+    leaves = tuple(value for _, value in named_leaves)
+
+    def derivatives(value):
+        first = torch.autograd.grad(
+            value.sum(), leaves, create_graph=True, retain_graph=True, allow_unused=True
+        )
+        active = []
+        for (name, _), gradient in zip(named_leaves, first, strict=True):
+            used = not name.startswith(("original.", "fantasy.mean_module."))
+            assert (gradient is not None) == used, name
+            if used:
+                assert torch.isfinite(gradient).all(), name
+                active.append(gradient)
+        second = torch.autograd.grad(
+            sum(g.square().sum() for g in active), leaves, retain_graph=True, allow_unused=True
+        )
+        for (name, _), gradient, previous in zip(named_leaves, second, first, strict=True):
+            assert (gradient is None) == (previous is None), name
+        return first, second
+
+    a, b = derivatives(actual), derivatives(expected)
     for ao, bo in zip(a, b, strict=True):
-        for ag, bg in zip(ao, bo, strict=True):
-            torch.testing.assert_close(ag, bg, atol=2e-9, rtol=2e-9)
+        for (name, _), ag, bg in zip(named_leaves, ao, bo, strict=True):
+            if ag is not None:
+                torch.testing.assert_close(ag, bg, atol=2e-9, rtol=2e-9, msg=name)
 
 
 @pytest.mark.parametrize("device", DEVICES)
