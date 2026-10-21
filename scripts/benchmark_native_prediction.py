@@ -105,7 +105,12 @@ def main():
             return posterior.mean, posterior.variance
 
         with torch.no_grad():
-            observed, expected = public(own), public(reference)
+            cold_start = time.perf_counter_ns()
+            observed = public(own)
+            cold_native_ms = (time.perf_counter_ns() - cold_start) / 1e6
+            cold_start = time.perf_counter_ns()
+            expected = public(reference)
+            cold_reference_ms = (time.perf_counter_ns() - cold_start) / 1e6
             errors = {}
             for label, actual, target in zip(
                 ("mean", "variance"), observed, expected, strict=True
@@ -115,9 +120,9 @@ def main():
             for _ in range(args.warmup):
                 public(own)
                 public(reference)
-            durations = {"native_public_unwarmed_parent": [], "botorch_public": []}
+            durations = {"native_public": [], "botorch_public": []}
             entries = [
-                ("native_public_unwarmed_parent", own),
+                ("native_public", own),
                 ("botorch_public", reference),
             ]
             rng = random.Random(731)
@@ -162,6 +167,7 @@ def main():
             "d": 4,
             "query_batches": 16,
             "q": 2,
+            "cold_public_ms": {"native": cold_native_ms, "botorch": cold_reference_ms},
             "raw_parameters": own._rs.raw_parameters(),
             "max_abs_error": errors,
             "timings": results,
