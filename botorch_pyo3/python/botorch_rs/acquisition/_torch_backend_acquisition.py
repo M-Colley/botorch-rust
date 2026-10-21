@@ -107,6 +107,7 @@ _ACTIVE_LEARNING = frozenset(
         "PairwiseMCPosteriorVariance",
     }
 )
+_BAYESIAN_ACTIVE_LEARNING = frozenset({"qBayesianActiveLearningByDisagreement"})
 _TYPES: dict[type, type] = {}
 _LOG_2PI = math.log(2 * math.pi)
 
@@ -126,6 +127,7 @@ def tensor_acquisition(public_class: type) -> Any:
         | _EXTRA_MULTI_OBJECTIVE
         | _ACTIVE_LEARNING
         | _NOISY_ANALYTIC
+        | _BAYESIAN_ACTIVE_LEARNING
         or not public_class.__module__.startswith("botorch_rs.acquisition.")
     ):
         raise UnsupportedError(f"{public_class.__name__} does not yet support backend='torch'.")
@@ -148,6 +150,12 @@ def tensor_acquisition(public_class: type) -> Any:
             from botorch_rs.acquisition._torch_backend_noisy_analytic import TensorNoisyAnalytic
 
             mixin = TensorNoisyAnalytic
+        elif public_class.__name__ in _BAYESIAN_ACTIVE_LEARNING:
+            from botorch_rs.acquisition._torch_backend_bald import (
+                TensorBayesianActiveLearningByDisagreement,
+            )
+
+            mixin = TensorBayesianActiveLearningByDisagreement
         elif public_class.__name__ in _PREFERENCE:
             from botorch_rs.acquisition._torch_backend_preference import TensorPreferenceAcquisition
 
