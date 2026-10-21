@@ -43,15 +43,19 @@ space. `combine_terms=False` is evaluated directly, rather than by the fitting
 closure.
 
 Single and independent multiple outputs are supported, including batched
-training with explicit inducing points. Default multioutput observations use
+training with automatic or explicit inducing points. Default multioutput observations use
 rank-zero multitask Gaussian noise, with global and task variances. Gaussian
 noise, variational means/factors, inducing locations, kernel parameters, means,
 training inputs/targets and posterior queries participate in the Torch graph.
 Fitted transform graphs are recomputed from the original training data when
 needed, retaining functional training-data derivatives.
 
-Default unbatched inducing allocation is Torch pivoted Cholesky with the first
-output's covariance for multiple outputs, matching GreedyVarianceReduction.
+Inducing allocation uses device-resident pivoted Cholesky, including model
+batches, `GreedyImprovementReduction`, and custom `InducingPointAllocator`
+quality functions or allocator implementations. Kernel/quality evaluation and
+discrete pivot selection stay on the input device. Selected input values retain
+their first- and higher-order data graphs; pivot choices are discrete. Independent
+outputs share locations selected using the first output's covariance.
 Reinitialization preserves the inducing leaf's identity and resets lazy
 variational initialization. Cloning the model rewires strategy ownership to
 the clone. A prior-only call does not initialize q(v) or consume random draws.
@@ -71,10 +75,18 @@ extension evaluates current Parameters and returns a flat gradient in their
 registered order; explicit alternate raw vectors are unsupported on this
 backend, so assign the Parameters before calling it.
 
+An additional allocation suite checks CPU/CUDA, float32/64, quality-weighted
+pivots, selected-input first/second derivatives, custom allocators, batched
+construction/ELBO derivatives and reinitialization against independent reference
+computations. For model batches with distinct hyperparameters, each batch uses
+its own covariance. Pinned `b0dd01be6` instead recomputes all batched kernels for
+each input row and takes `kernel_element[0]` repeatedly, so its public batched
+allocator incorrectly uses the first model's hyperparameters for every batch.
+The regression compares each batch against the reference's standalone pivot
+routine with that batch's actual covariance.
+
 This checkpoint does not implement other variational distributions or
-strategies, non-Gaussian observations, rank-positive multitask noise, or custom
-inducing allocators. Those configurations raise `UnsupportedError`. Automatic
-allocation currently requires unbatched training inputs; batched models require
-explicit inducing points. Reallocation cannot resize the variational family.
+strategies, non-Gaussian observations or rank-positive multitask noise. Those
+configurations raise `UnsupportedError`. Reallocation cannot resize the variational family.
 It does not imply GPU support for arbitrary `ApproximateGPyTorchModel` wrappers
 or every other approximate-model family.

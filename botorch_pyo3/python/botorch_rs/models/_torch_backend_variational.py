@@ -319,35 +319,6 @@ class _TorchVariationalOutput:
         return samples if self._multitask else samples.squeeze(-1)
 
 
-def _allocate_points(X: Tensor, kernel: Any, count: int, outputs: int) -> Tensor:
-    if X.ndim != 2:
-        raise UnsupportedError(
-            "Automatic Torch inducing allocation currently requires unbatched inputs; pass explicit inducing points for batched models."
-        )
-    if count <= 0:
-        raise ValueError("The number of inducing points must be positive.")
-    count = min(count, X.shape[-2])
-    with torch.no_grad():
-        covariance = _dense(kernel(X, X))
-        if outputs > 1:
-            covariance = covariance[0]
-        diagonal = covariance.diagonal().clone()
-        factors = X.new_zeros(count, X.shape[-2])
-        selected = []
-        for i in range(count):
-            pivot = diagonal.argmax()
-            if bool(diagonal[pivot] < 1e-12):
-                break
-            row = covariance[pivot] - (factors[:i, pivot].unsqueeze(-1) * factors[:i]).sum(0)
-            factors[i] = row / diagonal[pivot].sqrt()
-            diagonal = (diagonal - factors[i].square()).clamp_min(0)
-            diagonal[pivot] = -torch.inf
-            selected.append(pivot)
-        if not selected:
-            raise ValueError("Inducing allocation requires a nonzero prior variance.")
-        return X.index_select(0, torch.stack(selected))
-
-
 class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
     _tensor_backend = "torch"
     _train_X: Tensor
@@ -407,13 +378,13 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             raise UnsupportedError(
                 "Torch variational models currently support CholeskyVariationalDistribution only."
             )
-        if (
-            inducing_point_allocator is not None
-            and type(inducing_point_allocator) is not GreedyVarianceReduction
-        ):
-            raise UnsupportedError(
-                "Torch inducing allocation currently supports GreedyVarianceReduction; pass explicit inducing points for other allocations."
-            )
+        self._inducing_point_allocator = (
+            GreedyVarianceReduction()
+            if inducing_point_allocator is None
+            else inducing_point_allocator
+        )
+        if not callable(getattr(self._inducing_point_allocator, "allocate_inducing_points", None)):
+            raise TypeError("inducing_point_allocator must implement allocate_inducing_points.")
         self._desired_num_outputs = int(num_outputs)
         self.register_buffer("_train_X", train_X)
         self.register_buffer("_train_Y", train_Y)
@@ -444,11 +415,13 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             self.likelihood = build_likelihood(likelihood, None, self.batch_shape, train_X)
         transformed = self._training_inputs()
         points = (
-            _allocate_points(
-                transformed,
-                covariance,
-                int(0.25 * train_X.shape[-2]) if inducing_points is None else inducing_points,
-                num_outputs,
+            self._inducing_point_allocator.allocate_inducing_points(
+                inputs=transformed,
+                covar_module=covariance,
+                num_inducing=(
+                    int(0.25 * train_X.shape[-2]) if inducing_points is None else inducing_points
+                ),
+                input_batch_shape=self.batch_shape,
             )
             if inducing_points is None or isinstance(inducing_points, int)
             else inducing_points
@@ -534,11 +507,11 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         self._strategy._initialize()
 
     def init_inducing_points(self, inputs: Tensor) -> Tensor:
-        points = _allocate_points(
-            inputs,
-            self.model.covar_module,
-            self._strategy.inducing_points.shape[-2],
-            self.num_outputs,
+        points = self._inducing_point_allocator.allocate_inducing_points(
+            inputs=inputs,
+            covar_module=self.model.covar_module,
+            num_inducing=self._strategy.inducing_points.shape[-2],
+            input_batch_shape=self.batch_shape,
         )
         if points.shape != self._strategy.inducing_points.shape:
             raise ValueError("Reallocated inducing points must retain their shape.")
