@@ -515,8 +515,15 @@ class _TorchVariationalOutput:
         if not prior:
             self._kl = owner.model.variational_strategy.kl_divergence(variational_moments)
             self._log_prior = owner._log_prior()
-            if getattr(owner.likelihood, "_non_gaussian", False):
-                self._expected_log_prob = owner.likelihood.snapshot_expected_log_prob()
+            if owner._non_gaussian_likelihood:
+                if getattr(owner.likelihood, "_non_gaussian", False):
+                    self._expected_log_prob = owner.likelihood.snapshot_expected_log_prob()
+                else:
+                    from botorch_rs.models._torch_variational_external_likelihood import (
+                        snapshot_expected_log_prob,
+                    )
+
+                    self._expected_log_prob = snapshot_expected_log_prob(owner.likelihood, self)
             else:
                 self._noise = owner.likelihood.noise_for(mean.shape[-1]).clone()
 
@@ -707,12 +714,26 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         external_gaussian = (
             gpytorch is not None and type(likelihood) is gpytorch.likelihoods.GaussianLikelihood
         )
+        external_non_gaussian = (
+            gpytorch is not None
+            and isinstance(likelihood, gpytorch.likelihoods.Likelihood)
+            and not isinstance(
+                likelihood, gpytorch.likelihoods.gaussian_likelihood._GaussianLikelihoodBase
+            )
+        )
+        self._non_gaussian_likelihood = bernoulli or external_non_gaussian
         if bernoulli:
             if num_outputs != 1:
                 raise UnsupportedError(
                     "Probit variational observations currently require a scalar output."
                 )
             self.likelihood = TorchBernoulliLikelihood(likelihood, train_X)
+        elif external_non_gaussian:
+            if num_outputs != 1:
+                raise UnsupportedError(
+                    "Supplied non-Gaussian variational likelihoods currently require a scalar latent output."
+                )
+            self.likelihood = likelihood.to(train_X)
         elif external_gaussian:
             if num_outputs != 1:
                 raise UnsupportedError(
@@ -1062,18 +1083,24 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         self._fit_transforms()
         transformed = X if self.input_transform is None else self.input_transform(X)
         output = self.model(transformed)
-        if getattr(self.likelihood, "_non_gaussian", False) and observation_noise is not False:
+        if self._non_gaussian_likelihood and observation_noise is not False:
             if observation_noise is not True:
                 raise UnsupportedError(
-                    "Bernoulli observation noise is its likelihood, not a Gaussian covariance override."
+                    "Non-Gaussian observation noise is its likelihood, not a Gaussian covariance override."
                 )
             if output_indices is not None:
                 raise UnsupportedError(
-                    "Observed Bernoulli posteriors do not support output selection."
+                    "Observed non-Gaussian posteriors do not support output selection."
                 )
             from botorch_rs.posteriors.torch import TorchPosterior
 
-            result: Any = TorchPosterior(self.likelihood(output))
+            if getattr(self.likelihood, "_non_gaussian", False):
+                observed = self.likelihood(output)
+            else:
+                from botorch_rs.models._torch_variational_external_likelihood import gaussian
+
+                observed = self.likelihood(gaussian(output))
+            result: Any = TorchPosterior(observed)
             if self.outcome_transform is not None:
                 result = self.outcome_transform.untransform_posterior(result, X=X)
             return result if posterior_transform is None else posterior_transform(result, X=X)

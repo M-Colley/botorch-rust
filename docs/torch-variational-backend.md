@@ -152,8 +152,10 @@ module and gradient semantics; see
 Batch-decoupled inference and its distinct KL are covered in
 [`torch-variational-decoupled.md`](torch-variational-decoupled.md).
 Symmetric CIQ whitening and its distinct Natural convention are covered in
-[`torch-variational-ciq.md`](torch-variational-ciq.md). Other non-Gaussian
-observation families remain configuration gaps.
+[`torch-variational-ciq.md`](torch-variational-ciq.md). Supplied scalar
+non-Gaussian observation modules now retain their actual likelihood protocols;
+see [`torch-variational-likelihood-protocol.md`](torch-variational-likelihood-protocol.md).
+Multiple latent non-Gaussian outputs remain a configuration gap.
 Unwhitened pseudo-points and online
 fantasy conversion are not implemented. Reallocation cannot resize the variational family.
 It does not imply GPU support for arbitrary `ApproximateGPyTorchModel` wrappers
