@@ -49,6 +49,17 @@ entry. Separate regressions reject mismatched classes and finite-value errors;
 a fully defined positive-latent case checks common-normal samples, source first
 derivatives and independent dense Hessians.
 
+The broader Linux run at `637ee4a` exposed 21 more legacy comparisons of
+intentional nonfinite values. Percentile tests now derive the expected NaN
+mask directly from their deliberately missing data/score inputs. MVNXPB tests
+derive the exact uncomputed plug-in sentinel mask from the completed step
+count; every computed entry still receives a numerical comparison, and a
+regression rejects shared NaNs in a computed entry. The periodic-kernel stress
+case separately checks its undefined aligned diagonal only after a lengthscale
+has underflowed to exactly zero. Finite covariance/diagonal comparisons retain
+their existing tolerances. These state/domain checks do not count matching NaNs
+as numerical equivalence, and no runtime behavior changes in that correction.
+
 A final release needs a fresh source and installed-wheel run with matching
 Python/native fingerprints and every canonical test ID accounted for exactly
 once. Earlier successful checkpoints and focused runs remain separate evidence;

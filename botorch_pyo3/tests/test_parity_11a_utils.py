@@ -324,7 +324,14 @@ def test_percentile_case_dispatcher_and_indices() -> None:
     a = rs_pu.percentile_of_score(data, score, dim=-2)
     e = bt_pu.percentile_of_score(data, score, dim=-2)
     assert a.dtype == e.dtype
-    C.check("probability.percentile_of_score", a, e, 0.0)
+    undefined = data.isnan().any(dim=-2) | score.squeeze(-2).isnan()
+    assert torch.equal(a.isnan(), undefined) and torch.equal(e.isnan(), undefined)
+    C.record(
+        "probability.percentile_of_score: NaN input propagation (domain behavior only)",
+        float(undefined.sum()),
+        None,
+    )
+    C.check("probability.percentile_of_score: defined inputs", a[~undefined], e[~undefined], 0.0)
     x = torch.randn(6, generator=gen(17), dtype=DT)
     out_a, out_e = torch.empty_like(x), torch.empty_like(x)
     for out, mod in ((out_a, rs_pu), (out_e, bt_pu)):
@@ -424,8 +431,47 @@ def _check_state(name: str, a: Any, e: Any, tol: float = TOL) -> None:
     assert torch.equal(a.piv_chol.perm, e.piv_chol.perm), name
     C.check(f"{name} bounds", a.bounds, e.bounds, tol)
     C.check(f"{name} tril", a.piv_chol.tril, e.piv_chol.tril, tol)
-    C.check(f"{name} plug_ins", a.plug_ins, e.plug_ins, 1e-8)
+    # Entries beyond the completed solver step are explicitly initialized to
+    # NaN. Verify that state contract from the step count, then compare only
+    # computed entries numerically; an unexpected computed NaN must fail.
+    uncomputed = torch.arange(e.plug_ins.shape[-1], device=e.plug_ins.device) >= e.step
+    uncomputed = uncomputed.expand_as(e.plug_ins)
+    assert torch.equal(a.plug_ins.isnan(), uncomputed), name
+    assert torch.equal(e.plug_ins.isnan(), uncomputed), name
+    C.record(
+        f"{name} plug_ins: uncomputed sentinel count (state behavior only)",
+        float(uncomputed.sum()),
+        None,
+    )
+    if e.step:
+        C.check(
+            f"{name} plug_ins: computed entries",
+            a.plug_ins[~uncomputed],
+            e.plug_ins[~uncomputed],
+            1e-8,
+        )
     C.check(f"{name} log_prob", a.log_prob, e.log_prob, tol)
+
+
+def test_mvnxpb_state_rejects_shared_nan_in_computed_entries() -> None:
+    from types import SimpleNamespace
+
+    from botorch_rs.utils.probability.mvnxpb import MVNXPB
+
+    covariance, bounds = _mvn_problem(400, n=3)
+    actual = MVNXPB(covariance, bounds)
+    actual.solve(num_steps=2)
+    state = SimpleNamespace(
+        step=actual.step,
+        piv_chol=actual.piv_chol,
+        perm=actual.perm,
+        bounds=actual.bounds,
+        plug_ins=actual.plug_ins.clone(),
+        log_prob=actual.log_prob,
+    )
+    state.plug_ins[..., 0] = float("nan")
+    with pytest.raises(AssertionError, match="shared computed NaN"):
+        _check_state("shared computed NaN", state, state)
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2, 3])
