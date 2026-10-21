@@ -8,6 +8,7 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
+from botorch_rs._torch_math import log_ndtr
 from botorch_rs.acquisition._torch_backend_acquisition import _average_ensemble, _log_ei
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import legacy_ei_numerics_warning
@@ -18,7 +19,7 @@ def log_normal_interval(lower: Tensor, upper: Tensor) -> Tensor:
     reverse = upper.abs() > lower.abs()
     a = torch.where(reverse, -upper, lower)
     b = torch.where(reverse, -lower, upper)
-    log_a, log_b = torch.special.log_ndtr(a), torch.special.log_ndtr(b)
+    log_a, log_b = log_ndtr(a), log_ndtr(b)
     return log_b + (-(log_a - log_b).expm1()).log()
 
 
@@ -99,10 +100,10 @@ class TensorAnalyticExtra(nn.Module):
             if lo_name is None:
                 assert hi_name is not None
                 upper = getattr(self, hi_name).to(mean)
-                probability = torch.special.log_ndtr((upper - mean) / sigma)
+                probability = log_ndtr((upper - mean) / sigma)
             elif hi_name is None:
                 lower = getattr(self, lo_name).to(mean)
-                probability = torch.special.log_ndtr((mean - lower) / sigma)
+                probability = log_ndtr((mean - lower) / sigma)
             else:
                 lower = (getattr(self, lo_name).to(mean) - mean) / sigma
                 upper = (getattr(self, hi_name).to(mean) - mean) / sigma
@@ -124,15 +125,20 @@ class TensorAnalyticExtra(nn.Module):
             if posterior.mean.shape[-1] != 1 or X.shape[-2] != self.weights.numel():
                 raise ValueError("The posterior must have one output and q must match weights.")
             return _average_ensemble(posterior.mean.squeeze(-1) @ self.weights.to(X), self.model)
+        from botorch_rs.posteriors.ensemble import EnsemblePosterior
         from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 
-        if not isinstance(posterior, GPyTorchPosterior):
+        if not isinstance(posterior, (GPyTorchPosterior, EnsemblePosterior)) or (
+            self._name == "qAnalyticProbabilityOfImprovement"
+            and isinstance(posterior, EnsemblePosterior)
+        ):
             raise UnsupportedError(
                 "Analytic Gaussian constraints require a Gaussian posterior; use an MC acquisition for nonlinear outcome transforms."
             )
         if self._name == "qAnalyticProbabilityOfImprovement":
             from botorch_rs.utils.probability.mvnxpb import MVNXPB
 
+            assert isinstance(posterior, GPyTorchPosterior)
             if posterior.mean.shape[-1] != 1:
                 raise UnsupportedError("The posterior transform must produce one output.")
             centered = self.best_f.to(X).unsqueeze(-1) - posterior.distribution.mean

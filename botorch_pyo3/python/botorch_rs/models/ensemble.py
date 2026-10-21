@@ -56,6 +56,10 @@ class EnsembleModel(Model):
         return self.forward(X=X)
 
     def __call__(self, X: Any) -> Any:
+        if getattr(self, "_tensor_backend", None) == "torch":
+            import torch
+
+            return torch.nn.Module.__call__(self, X)
         return self.forward(X)
 
     @property

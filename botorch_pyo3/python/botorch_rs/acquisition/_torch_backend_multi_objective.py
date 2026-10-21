@@ -13,6 +13,7 @@ from torch import Tensor, nn
 
 from botorch_rs.acquisition._torch_backend_acquisition import (
     _average_ensemble,
+    _default_sampler,
     _log_softplus,
     _TensorAcquisition,
 )
@@ -109,7 +110,7 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
         self.model = values["model"]
         self.posterior_transform = None
         self.objective = values["objective"] or IdentityMCMultiOutputObjective()
-        self.sampler = values["sampler"] or SobolQMCNormalSampler((128,))
+        self.sampler = values["sampler"] or _default_sampler(self.model, (128,))
         self._constraints = self.constraints = values["constraints"]
         self.register_buffer("_eta", torch.as_tensor(values["eta"]))
         self.fat = self._fat = values["fat"]
@@ -378,7 +379,12 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
                 samples = samples.detach()
         else:
             samples = self.ref_point.new_empty(
-                (*self.sample_shape, *self.model.batch_shape, 0, self.model.num_outputs)
+                (
+                    *self.sample_shape,
+                    *self.model.posterior(baseline).batch_shape,
+                    0,
+                    self.model.num_outputs,
+                )
             )
         objective = self.objective(samples, X=baseline)
         cells = _partition(
@@ -464,17 +470,20 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
             objective=self.objective,
             constraints=self._constraints,
             marginalize_dim=self.marginalize_dim,
-            sampler=SobolQMCNormalSampler((2048,), seed=self.sampler.seed),
+            sampler=_default_sampler(self.model, (2048,), seed=self.sampler.seed),
         )
         self._X_baseline = self._X_baseline.index_select(-2, indices)
 
     @staticmethod
     def _prefix_posterior(posterior: Any, count: int) -> Any:
         from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+        from botorch_rs.posteriors.ensemble import EnsemblePosterior
 
         underlying = posterior
         while hasattr(underlying, "_posterior"):
             underlying = underlying._posterior
+        if isinstance(underlying, EnsemblePosterior):
+            return EnsemblePosterior(underlying.values[..., :count, :], underlying._weights)
         mean = underlying.mean[..., :count, :]
         q, m = underlying.mean.shape[-2:]
         indices = (
@@ -487,6 +496,13 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
         return TorchGPyTorchPosterior(mean, covariance)
 
     def _joint_samples(self, posterior: Any, baseline_count: int) -> Tensor:
+        from botorch_rs.sampling.index_sampler import IndexSampler
+
+        if isinstance(self.sampler, IndexSampler):
+            # One member index selects its complete joint baseline/candidate
+            # function draw; its random coordinates do not depend on q.
+            self.base_sampler = self._observed_sampler = self.sampler
+            return self.sampler(posterior)
         original = self._X_baseline.shape[-2]
         if self._initial_pending_seed_full and self.base_sampler is None:
             # Reference incremental NEHVI initializes directly on B+P, so

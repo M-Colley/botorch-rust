@@ -16,9 +16,20 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
+from botorch_rs._torch_math import log_ndtr
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import BotorchWarning, legacy_ei_numerics_warning
 from botorch_rs.utils.transforms import is_ensemble
+
+
+def _default_sampler(model: Any, sample_shape: Any, seed: int | None = None) -> Any:
+    from botorch_rs.models.ensemble import EnsembleModel
+    from botorch_rs.sampling.index_sampler import IndexSampler
+    from botorch_rs.sampling.normal import SobolQMCNormalSampler
+
+    sampler_type = IndexSampler if isinstance(model, EnsembleModel) else SobolQMCNormalSampler
+    return sampler_type(sample_shape=sample_shape, seed=seed)
+
 
 _ANALYTIC = frozenset(
     {
@@ -403,7 +414,18 @@ def _log_ei(u: Tensor) -> Tensor:
         - 0.5 * _LOG_2PI
         + torch.where(u > limit, log_one_minus, -2 * lower_u.abs().log())
     )
-    return torch.where(u > -1, upper, lower)
+    # Far-negative erfcx/log1mexp differentiation subtracts nearly equal
+    # numbers (relative gradient error grows like eps*u**2). Laplace's
+    # continued fraction gives D(t)=1/(sqrt(pi)*erfcx(t))-t without that
+    # subtraction. Since EI/phi = D/(t+D), both the value and every derivative
+    # can be evaluated from this rational recurrence with no custom adjoint.
+    tail_u = u.clamp_max(-4 * math.sqrt(2))
+    t = -tail_u / math.sqrt(2)
+    gap = torch.zeros_like(t)
+    for index in range(40, 0, -1):
+        gap = (index / 2) / (t + gap)
+    tail = -0.5 * tail_u.square() - 0.5 * _LOG_2PI + gap.log() - (t + gap).log()
+    return torch.where(u < -4 * math.sqrt(2), tail, torch.where(u > -1, upper, lower))
 
 
 def _log_softplus(value: Tensor, tau: Tensor, fat: bool) -> Tensor:
@@ -525,7 +547,6 @@ class _TensorAcquisition(nn.Module):
                 )
             return
         from botorch_rs.acquisition.objective import IdentityMCObjective, is_constrained_objective
-        from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
         objective = values.get("objective")
         if self._constraints is not None and is_constrained_objective(objective):
@@ -540,7 +561,7 @@ class _TensorAcquisition(nn.Module):
         self.objective = IdentityMCObjective() if objective is None else objective
         self.sampler = values.get("sampler")
         if self.sampler is None:
-            self.sampler = SobolQMCNormalSampler(sample_shape=(512,))
+            self.sampler = _default_sampler(self.model, (512,))
         self._sample_reduction_fn = values.get("sample_reduction")
         self._q_reduction_fn = values.get("q_reduction")
         if self._log and name not in _BASE_FAMILIES:
@@ -603,9 +624,10 @@ class _TensorAcquisition(nn.Module):
             "ProbabilityOfImprovement",
             "LogProbabilityOfImprovement",
         }:
+            from botorch_rs.posteriors.ensemble import EnsemblePosterior
             from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 
-            if not isinstance(posterior, GPyTorchPosterior):
+            if not isinstance(posterior, (GPyTorchPosterior, EnsemblePosterior)):
                 raise UnsupportedError(
                     "Analytic EI/PI requires a Gaussian posterior; use an MC acquisition for nonlinear outcome transforms."
                 )
@@ -638,7 +660,7 @@ class _TensorAcquisition(nn.Module):
         if name == "ProbabilityOfImprovement":
             return torch.special.ndtr(u).squeeze(-1)
         if name == "LogProbabilityOfImprovement":
-            return torch.special.log_ndtr(u).squeeze(-1)
+            return log_ndtr(u).squeeze(-1)
         if name == "LogExpectedImprovement":
             return (_log_ei(u) + sigma.log()).squeeze(-1)
         phi = (-0.5 * u.square() - 0.5 * _LOG_2PI).exp()
@@ -895,7 +917,6 @@ class _TensorAcquisition(nn.Module):
 
     def _prune_baseline(self) -> None:
         from botorch_rs.acquisition.objective import LearnedObjective
-        from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
         if not self._preference_ensemble and not isinstance(self.objective, LearnedObjective):
             from botorch_rs.acquisition._torch_pruning import prune_indices
@@ -906,8 +927,8 @@ class _TensorAcquisition(nn.Module):
                 self.objective,
                 self.posterior_transform,
                 self._constraints,
-                sampler=SobolQMCNormalSampler(
-                    (2048,), seed=int(getattr(self.sampler, "seed", 0) or 0)
+                sampler=_default_sampler(
+                    self.model, (2048,), seed=int(getattr(self.sampler, "seed", 0) or 0)
                 ),
                 marginalize_dim=self.marginalize_dim,
             )
@@ -919,9 +940,15 @@ class _TensorAcquisition(nn.Module):
         if self._X_baseline.ndim != 2:
             raise UnsupportedError("Batched baseline pruning is unsupported.")
         ensemble = is_ensemble(self.model)
-        if self.model.batch_shape and not (ensemble and len(self.model.batch_shape) == 1):
+        from botorch_rs.models.ensemble import EnsembleModel
+
+        if (
+            not isinstance(self.model, EnsembleModel)
+            and self.model.batch_shape
+            and not (ensemble and len(self.model.batch_shape) == 1)
+        ):
             raise UnsupportedError("Noisy baseline pruning requires an unbatched Torch model.")
-        sampler = SobolQMCNormalSampler((2048,), seed=int(getattr(self.sampler, "seed", 0)))
+        sampler = _default_sampler(self.model, (2048,), seed=int(getattr(self.sampler, "seed", 0)))
         with torch.no_grad():
             samples = sampler(self._posterior(self._X_baseline))
             objective = self._objective_values(samples, self._X_baseline)

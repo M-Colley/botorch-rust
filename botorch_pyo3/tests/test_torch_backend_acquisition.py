@@ -7,6 +7,7 @@ pytest.importorskip("torch")
 
 
 import importlib
+import math
 import warnings
 
 import torch
@@ -329,6 +330,7 @@ def test_noisy_pending_constraint_reference(device, incremental):
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 def test_log_ei_tails_match_values_and_two_derivatives(device, dtype):
     pytest.importorskip("botorch")
+    mp = pytest.importorskip("mpmath")
     from botorch.acquisition.analytic import _log_ei_helper
 
     from botorch_rs.acquisition._torch_backend_acquisition import _log_ei
@@ -344,8 +346,32 @@ def test_log_ei_tails_match_values_and_two_derivatives(device, dtype):
     second = torch.autograd.grad(first.sum(), u)[0]
     reference_second = torch.autograd.grad(reference_first.sum(), u)[0]
     assert torch.isfinite(first).all() and torch.isfinite(second).all()
-    torch.testing.assert_close(first, reference_first, rtol=tolerance, atol=tolerance)
-    torch.testing.assert_close(second, reference_second, rtol=tolerance, atol=tolerance)
+    ordinary = u >= -4 * math.sqrt(2)
+    torch.testing.assert_close(
+        first[ordinary], reference_first[ordinary], rtol=tolerance, atol=tolerance
+    )
+    torch.testing.assert_close(
+        second[ordinary], reference_second[ordinary], rtol=tolerance, atol=tolerance
+    )
+    # The source tail VJP loses eps*u**2 relative precision. Keep its value
+    # comparison above, and certify both derivatives independently instead.
+    with mp.workdps(80):
+
+        def exact(value):
+            return mp.log(
+                mp.exp(-value * value / 2) / mp.sqrt(2 * mp.pi)
+                + value * mp.erfc(-value / mp.sqrt(2)) / 2
+            )
+
+        points = [mp.mpf(float(value)) for value in u.detach().tolist()]
+        exact_first = [float(mp.diff(exact, value, 1)) for value in points]
+        exact_second = [float(mp.diff(exact, value, 2)) for value in points]
+    torch.testing.assert_close(
+        first[~ordinary], u.new_tensor(exact_first)[~ordinary], rtol=tolerance, atol=tolerance
+    )
+    torch.testing.assert_close(
+        second[~ordinary], u.new_tensor(exact_second)[~ordinary], rtol=tolerance, atol=tolerance
+    )
 
 
 @pytest.mark.parametrize("device", DEVICES)
