@@ -82,6 +82,7 @@ class ChebyshevScalarization:
             if weights.shape != Y.shape[-1:]:
                 raise BotorchTensorDimensionError(
                     "weights must be an `m`-dim tensor where Y is `... x m`."
+                    f"Got shapes {weights.shape} and {Y.shape}."
                 )
             if Y.ndim > 2:
                 raise NotImplementedError("Batched Y is not currently supported.")
