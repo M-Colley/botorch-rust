@@ -215,3 +215,25 @@ def test_default_warning_policy_accepts_iteration_limit_without_retry(backend, d
     fit_gpytorch_mll(mll, optimizer=optimizer, max_attempts=3)
     assert calls == [1]
     assert not mll.training
+
+
+@pytest.mark.parametrize("backend,device", CONFIGS)
+def test_model_list_custom_optimizer_receives_individual_marginal_likelihoods(backend, device):
+    from botorch_rs.mlls import SumMarginalLogLikelihood
+    from botorch_rs.models import ModelListGP
+
+    first, _, _ = _model(backend, device)
+    second, _, _ = _model(backend, device)
+    model = ModelListGP(first.model, second.model)
+    mll = SumMarginalLogLikelihood(model.likelihood, model)
+    calls = []
+
+    def optimizer(module, closure):
+        calls.append(module.model)
+        assert isinstance(module, ExactMarginalLogLikelihood)
+        return _result(0.0)
+
+    fit_gpytorch_mll(mll, optimizer=optimizer)
+    assert calls == [first.model, second.model]
+    assert not mll.training and all(not child.training for child in model.models)
+    assert len(mll._fit_result) == 2

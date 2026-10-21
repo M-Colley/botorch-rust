@@ -79,6 +79,24 @@ def fit_gpytorch_mll(
             **kwargs,
         )
 
+    if isinstance(mll, SumMarginalLogLikelihood) and not isinstance(
+        mll, _SharedSumMarginalLogLikelihood
+    ):
+        mll.train()
+        results = []
+        for sub_mll in mll.mlls:
+            fit_gpytorch_mll(
+                sub_mll,
+                closure=closure,
+                optimizer=optimizer,
+                closure_kwargs=closure_kwargs,
+                optimizer_kwargs=optimizer_kwargs,
+                **kwargs,
+            )
+            results.append(sub_mll._fit_result)
+        mll._fit_result = results
+        return mll.eval()
+
     if getattr(getattr(mll, "model", None), "_tensor_backend", None) == "torch":
         if getattr(mll.model, "_is_fully_bayesian", False):
             raise UnsupportedError(
@@ -122,21 +140,6 @@ def fit_gpytorch_mll(
         if not isinstance(mll, MarginalLogLikelihood):
             raise UnsupportedError("fit_gpytorch_mll requires a botorch_rs MarginalLogLikelihood.")
         return _fit_generic(mll, closure, optimizer, closure_kwargs, optimizer_kwargs, kwargs)
-    if isinstance(mll, SumMarginalLogLikelihood):
-        mll.train()
-        results = []
-        for sub_mll in mll.mlls:
-            fit_gpytorch_mll(
-                sub_mll,
-                closure=closure,
-                optimizer=optimizer,
-                closure_kwargs=closure_kwargs,
-                optimizer_kwargs=optimizer_kwargs,
-                **kwargs,
-            )
-            results.append(sub_mll._fit_result)
-        mll._fit_result = results
-        return mll.eval()
     if isinstance(mll, _ApproximateMarginalLogLikelihood):
         return _fit_fallback_approximate(
             mll, closure, optimizer, closure_kwargs, optimizer_kwargs, kwargs
