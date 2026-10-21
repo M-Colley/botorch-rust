@@ -37,5 +37,17 @@ The new cases, existing hypervolume regressions and acquisition-subclass tests
 pass together: 162 CPU/CUDA cases with no tolerance changes. The repeated-point
 case exposed and verifies the baseline-prefix stabilization repair.
 
+Pending points may carry batch axes. Dynamic and cached prefixes preserve the
+point axis during append, replacement, promotion past `max_iep`, and clearing.
+Non-incremental cached improvements retain their decision-batch axes when
+averaging posterior samples. Twenty CPU/CUDA tests compare batched transitions
+against independent decisions with the same sampler history and compare
+uncached values/full first/higher graphs against independent unmodified-source
+decisions. Together with the existing hypervolume suite, 109 cases pass. The
+source currently rejects even uncached batched pending points because its empty
+cached prefix has a different batch rank; the regression is reproduced in a
+separate upstream fix. The port's cached batched-pending behavior extends the
+source's currently working configurations.
+
 These development checks supplement the frozen release certificate; they do
 not establish full-package behavioral or GPU equivalence.

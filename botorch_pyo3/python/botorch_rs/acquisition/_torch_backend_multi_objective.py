@@ -403,23 +403,29 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
     @property
     def X_baseline(self) -> Tensor:
         if self._cached_pending_count and self._X_pending is not None:
+            pending = self._X_pending[..., : self._cached_pending_count, :]
+            batch = torch.broadcast_shapes(self._X_baseline.shape[:-2], pending.shape[:-2])
             return torch.cat(
-                (self._X_baseline, self._X_pending[: self._cached_pending_count]), dim=-2
+                (
+                    self._X_baseline.expand(*batch, *self._X_baseline.shape[-2:]),
+                    pending.expand(*batch, *pending.shape[-2:]),
+                ),
+                dim=-2,
             )
         return self._X_baseline
 
     def set_X_pending(self, X_pending: Any = None) -> None:
         previous = self._X_pending
         old_count = self._cached_pending_count
-        if X_pending is not None and (not isinstance(X_pending, Tensor) or X_pending.ndim != 2):
-            raise ValueError("Noisy hypervolume pending points must be an n x d tensor.")
+        if X_pending is not None and (not isinstance(X_pending, Tensor) or X_pending.ndim < 2):
+            raise ValueError("Noisy hypervolume pending points must be a batch x n x d tensor.")
         _TensorAcquisition.set_X_pending(self, X_pending)
         current = self._X_pending
         append = (
             previous is not None
             and current is not None
             and current.shape[-2] >= previous.shape[-2]
-            and torch.equal(current[: previous.shape[-2]], previous)
+            and torch.equal(current[..., : previous.shape[-2], :], previous)
         )
         if not self.cache_pending or current is None:
             new_count = 0
@@ -514,11 +520,18 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
             raise ValueError("X must be a Torch tensor with shape batch_shape x q x d.")
         X = X.unsqueeze(0) if X.ndim == 2 else X
         if self._X_pending is not None:
-            pending = self._X_pending[self._cached_pending_count :].to(X)
+            pending = self._X_pending[..., self._cached_pending_count :, :].to(X)
             if pending.shape[-2]:
-                X = torch.cat((X, pending.expand(*X.shape[:-2], *pending.shape[-2:])), dim=-2)
+                batch = torch.broadcast_shapes(X.shape[:-2], pending.shape[:-2])
+                X = torch.cat(
+                    (X.expand(*batch, *X.shape[-2:]), pending.expand(*batch, *pending.shape[-2:])),
+                    dim=-2,
+                )
         baseline = self.X_baseline.to(X)
-        joint = torch.cat((baseline.expand(*X.shape[:-2], *baseline.shape[-2:]), X), dim=-2)
+        batch = torch.broadcast_shapes(baseline.shape[:-2], X.shape[:-2])
+        joint = torch.cat(
+            (baseline.expand(*batch, *baseline.shape[-2:]), X.expand(*batch, *X.shape[-2:])), dim=-2
+        )
         count = baseline.shape[-2]
         posterior = self.model.posterior(joint)
         samples = self._joint_samples(posterior, count)
@@ -560,6 +573,10 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
                     observed_hv = observed_hv.detach()
             else:
                 observed_hv = pending_hv * 0
-            previous = (pending_hv - observed_hv).clamp_min(0).mean()
+            previous = (
+                (pending_hv - observed_hv)
+                .clamp_min(0)
+                .mean(dim=tuple(range(len(self.sample_shape))))
+            )
             value = torch.logaddexp(value, previous.log()) if self._log else value + previous
         return _average_ensemble(value, self.model, self._log)
