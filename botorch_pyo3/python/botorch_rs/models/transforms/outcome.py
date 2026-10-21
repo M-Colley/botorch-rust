@@ -358,6 +358,10 @@ class Standardize(OutcomeTransform):
     @_rs.setter
     def _rs(self, value: _NativeStandardize) -> None:
         self._native_standardize = value
+        # Native model loaders can replace this handle and its batch shape.
+        # Their explicit replacement is authoritative over an earlier Tensor
+        # cache; exporting that cache would overwrite the new native state.
+        self.__dict__.pop("_tensor_standardize", None)
 
     def _set_fitted(self, fitted: _NativeStandardize, kind: ArrayKind) -> None:
         self._rs = fitted
@@ -412,7 +416,7 @@ class Standardize(OutcomeTransform):
         else:
             means = list(to_flat(state.means)[0])
             stdvs = list(to_flat(state.stdvs)[0])
-            self._rs = _rs.Standardize.fitted(
+            self._native_standardize = _rs.Standardize.fitted(
                 [means[i : i + self._m] for i in range(0, len(means), self._m)],
                 [stdvs[i : i + self._m] for i in range(0, len(stdvs), self._m)],
                 self._min_stdv,
