@@ -99,3 +99,13 @@ models; unobserved contexts; Adam and bounded SciPy fitting; conditioning; task
 kernel replacement; and state reload. The reference posterior parameter-gradient
 oracle enables BoTorch's `propagate_grads` setting. The runtime never calls the
 reference model.
+
+`LCEMGP.construct_inputs` now accepts supervised and multitask datasets, task
+selection, categorical/fixed context features and embedding sizes. It delegates
+the shared dataset/task protocol to `MultiTaskGP.construct_inputs`, preserves
+original Tensor identities and forwards optional context arguments unchanged.
+Constructed configurations work with native list/NumPy/Tensor predictions and
+the explicit Torch backend. The dataset helper and existing Tensor LCEM suite
+pass 37 combined cases, including CPU/CUDA training/embedding/query first and
+higher derivatives. Native LCEM conditioning/fantasies still require selecting
+the existing Torch backend; this helper does not add those native operations.

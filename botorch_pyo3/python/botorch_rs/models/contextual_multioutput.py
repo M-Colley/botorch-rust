@@ -511,8 +511,31 @@ class LCEMGP(MultiTaskGP):
         raise UnsupportedError("fantasize is not supported for LCEMGP in botorch_rs.")
 
     @classmethod
-    def construct_inputs(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:  # type: ignore[override]
-        raise UnsupportedError("LCEMGP.construct_inputs is not ported to botorch_rs.")
+    def construct_inputs(  # type: ignore[override]
+        cls,
+        training_data: Any,
+        task_feature: int,
+        output_tasks: list[int] | None = None,
+        context_cat_feature: Any = None,
+        context_emb_feature: Any = None,
+        embs_dim_list: list[int] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Construct contextual model arguments without copying dataset tensors."""
+        inputs = super().construct_inputs(
+            training_data=training_data,
+            task_feature=task_feature,
+            output_tasks=output_tasks,
+            **kwargs,
+        )
+        for name, value in (
+            ("context_cat_feature", context_cat_feature),
+            ("context_emb_feature", context_emb_feature),
+            ("embs_dim_list", embs_dim_list),
+        ):
+            if value is not None:
+                inputs[name] = value
+        return inputs
 
     # -- parameters --------------------------------------------------------
 
