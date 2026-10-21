@@ -29,6 +29,21 @@ modules; calibration refits their training statistics without changing their
 evaluation mode. A supplied `Power` Parameter remains the same registered
 Parameter through direct calls and posterior sample transformations.
 
+Custom supplied Torch modules and BoTorch Standardize subclasses retain their
+actual forward callbacks, hooks, registered state, and object/Parameter
+ownership. Calibration supplies training input context and refreshes its
+complete data and Parameter graph. Custom public port subclasses use the same
+forward calibration protocol. For explicitly supplied BoTorch Gaussian
+callbacks, the port constructs their expected Gaussian envelope and converts
+the result back to its differentiable Tensor law; GP fitting and prediction
+remain implemented in the port. Canonical source built-ins without custom
+callbacks retain their existing native Tensor conversion.
+
+Supplied BoTorch chains retain their source call behavior, including the
+source's child-hook suppression. The public port chain honors child hooks;
+the source repair is proposed in
+[BoTorch PR #3528](https://github.com/meta-pytorch/botorch/pull/3528).
+
 The existing Tensor model extensions for selected output affine maps and
 repeated output subsetting remain available. Unselected standardization
 columns have zero means and unit scales, including in transformed Gaussian

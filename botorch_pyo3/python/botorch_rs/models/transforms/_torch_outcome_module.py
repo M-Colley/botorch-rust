@@ -21,19 +21,28 @@ class TorchOutcomeModule(nn.Module):
 
     @property
     def _requires_X(self) -> bool:
+        from botorch_rs.models._backend_selection import native_port_descriptor_type
         from botorch_rs.models.transforms.outcome import (
             ChainedOutcomeTransform,
             StratifiedStandardize,
         )
 
-        return isinstance(self, StratifiedStandardize) or (
-            isinstance(self, ChainedOutcomeTransform)
-            and any(getattr(child, "_requires_X", False) for child in self.values())
+        return (
+            native_port_descriptor_type(self) is None
+            or isinstance(self, StratifiedStandardize)
+            or (
+                isinstance(self, ChainedOutcomeTransform)
+                and any(getattr(child, "_requires_X", False) for child in self.values())
+            )
         )
 
     def fit(self, Y: Any, X: Any = None) -> Any:
         from botorch_rs.models.higher_order_gp import FlattenedStandardize
-        from botorch_rs.models.transforms.outcome import ChainedOutcomeTransform, Standardize
+        from botorch_rs.models.transforms.outcome import (
+            ChainedOutcomeTransform,
+            Standardize,
+            StratifiedStandardize,
+        )
 
         if isinstance(self, ChainedOutcomeTransform):
             for child in self.values():
@@ -48,11 +57,22 @@ class TorchOutcomeModule(nn.Module):
                         Y, _ = child(Y, X=X)
                     finally:
                         child.train(mode)
-        elif isinstance(self, Standardize):
+        elif isinstance(self, Standardize) and self._native_port_descriptor in (
+            Standardize,
+            StratifiedStandardize,
+            FlattenedStandardize,
+        ):
             values = (
                 self._squeeze_to_single_output(Y) if isinstance(self, FlattenedStandardize) else Y
             )
             self._tensor_state(Y).fit(values, X=X)
+        else:
+            mode = self.training
+            try:
+                self.train()
+                self(Y, X=X)
+            finally:
+                self.train(mode)
         return self
 
 

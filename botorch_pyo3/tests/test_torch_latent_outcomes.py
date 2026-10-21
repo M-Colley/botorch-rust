@@ -51,6 +51,19 @@ class AffineOutcome(OutcomeTransform):
         )
 
 
+class ExternalAffineOutcome(nn.Module):
+    _is_linear = True
+
+    def __init__(self, like):
+        super().__init__()
+        self.scale = nn.Parameter(like.new_tensor(1.7))
+        self.register_buffer("offset", like.new_tensor(0.3))
+
+    forward = AffineOutcome.forward
+    untransform = AffineOutcome.untransform
+    untransform_posterior = AffineOutcome.untransform_posterior
+
+
 class ShiftedStandardize(Standardize):
     def __init__(self, like):
         super().__init__(1, batch_shape=like.shape[:-2])
@@ -90,6 +103,7 @@ def _transform(family, Y):
             log=Log(), standardize=Standardize(1, batch_shape=Y.shape[:-2])
         ),
         "affine": lambda: AffineOutcome(Y),
+        "external": lambda: ExternalAffineOutcome(Y),
         "custom_standardize": lambda: ShiftedStandardize(Y),
     }[family]()
 
@@ -177,7 +191,7 @@ def _compare(actual, expected, leaves):
 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize(
-    "family", ["log", "power", "bilog", "chain", "affine", "custom_standardize"]
+    "family", ["log", "power", "bilog", "chain", "affine", "external", "custom_standardize"]
 )
 @pytest.mark.parametrize("batch", [False, True])
 def test_general_outcomes_dense_matheron_law_and_all_leaf_hessians(device, family, batch):
@@ -206,7 +220,7 @@ def test_general_outcomes_dense_matheron_law_and_all_leaf_hessians(device, famil
         torch.testing.assert_close(posterior.variance.flatten(-2), raw_variance)
         actual = actual + posterior.mean.sin().sum() + posterior.variance.square().sum()
         expected = expected + raw_mean.sin().sum() + raw_variance.square().sum()
-    elif family in ("affine", "custom_standardize"):
+    elif family in ("affine", "external", "custom_standardize"):
         scale = outcome.scale if calibration is None else calibration[1]
         torch.testing.assert_close(posterior.mean.flatten(-2), inverse(mean))
         torch.testing.assert_close(
@@ -226,7 +240,7 @@ def test_general_outcomes_dense_matheron_law_and_all_leaf_hessians(device, famil
 
 
 @pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("family", ["log", "chain", "affine"])
+@pytest.mark.parametrize("family", ["log", "chain", "affine", "external"])
 def test_general_outcome_conditioning_fantasies_and_frozen_posterior_statistics(device, family):
     X, T, Y, Q, _ = _data(device)
     model = LatentKroneckerGP(X, T, Y, outcome_transform=_transform(family, Y), backend="torch")
@@ -238,7 +252,7 @@ def test_general_outcome_conditioning_fantasies_and_frozen_posterior_statistics(
     expected_samples = posterior.rsample_from_base_samples(torch.Size([2]), bases)
     if family == "chain":
         model.outcome_transform.train()(Y.flatten(-2)[..., model.mask_valid].unsqueeze(-1) * 1.4)
-    elif family == "affine":
+    elif family in ("affine", "external"):
         model.outcome_transform.offset.add_(0.2)
     torch.testing.assert_close(posterior.mean, expected_mean)
     torch.testing.assert_close(posterior.variance, expected_variance)

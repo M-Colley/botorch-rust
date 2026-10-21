@@ -1595,6 +1595,14 @@ def build_outcome_transform(
             with torch.no_grad():
                 source(train_Y, X=train_X)
         return source.eval()
+    if isinstance(source, nn.Module):
+        from botorch_rs.models._torch_external_outcome import (
+            external_outcome_module,
+            needs_external_protocol,
+        )
+
+        if needs_external_protocol(source):
+            return external_outcome_module(source, like, train_Y, train_X)
     if source is DEFAULT or type(source).__name__ == "_DefaultType":
         if like is None:
             raise ValueError("An outcome transform requires train_Y or train_X for dtype/device.")
@@ -1743,18 +1751,7 @@ def build_outcome_transform(
                     values, _ = transform(values, X=train_X)
         return TorchOutcomeChain(children).eval()
     elif isinstance(source, nn.Module):
-        if all(
-            hasattr(source, name) for name in ("_m", "_batch_shape", "_min_stdv", "means", "stdvs")
-        ) and not (
-            callable(getattr(source, "fit", None))
-            and getattr(source, "_tensor_backend", None) == "torch"
-        ):
-            raise UnsupportedError(
-                "Custom Standardize-like Torch modules must provide fit(Y) and "
-                "_tensor_backend='torch' for their training-statistics graph; "
-                "overridden behavior is not canonicalized."
-            )
-        return source.to(like)
+        return external_outcome_module(source, like, train_Y, train_X)
     else:
         raise UnsupportedError(
             "Torch backend outcome transforms support Standardize, Log, Bilog, Power, ChainedOutcomeTransform or a torch.nn.Module."

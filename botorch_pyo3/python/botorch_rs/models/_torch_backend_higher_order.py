@@ -217,6 +217,17 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
         ):
             self.register_buffer(name, value)
         self.input_transform = build_input_transform(input_transform, train_X.shape[-1], train_X)
+        from botorch_rs.models._torch_external_outcome import needs_external_protocol
+
+        source_standardize = any(
+            cls.__module__ == "botorch.models.transforms.outcome" and cls.__name__ == "Standardize"
+            for cls in type(outcome_transform).__mro__
+        )
+        source_flattened = any(
+            cls.__module__ == "botorch.models.higher_order_gp"
+            and cls.__name__ == "FlattenedStandardize"
+            for cls in type(outcome_transform).__mro__
+        )
         if isinstance(outcome_transform, FlattenedStandardize) and isinstance(
             outcome_transform, nn.Module
         ):
@@ -225,10 +236,11 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
             outcome_transform is DEFAULT
             or type(outcome_transform).__name__ == "_DefaultType"
             or isinstance(outcome_transform, Standardize)
+            or (source_standardize and not source_flattened)
         ):
-            if isinstance(outcome_transform, Standardize) and not isinstance(
-                outcome_transform, FlattenedStandardize
-            ):
+            if (
+                isinstance(outcome_transform, Standardize) or source_standardize
+            ) and not isinstance(outcome_transform, FlattenedStandardize):
                 warnings.warn(
                     "HigherOrderGP uses FlattenedStandardize instead of Standardize.",
                     RuntimeWarning,
@@ -247,6 +259,7 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
         elif (
             type(outcome_transform).__module__ == "botorch.models.higher_order_gp"
             and type(outcome_transform).__name__ == "FlattenedStandardize"
+            and not needs_external_protocol(outcome_transform)
         ):
             self.outcome_transform = TorchFlattenedStandardize(
                 self.target_shape, batch, train_Y, min_stdv=outcome_transform._min_stdv

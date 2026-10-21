@@ -51,6 +51,19 @@ class AffineOutcome(OutcomeTransform):
         )
 
 
+class ExternalAffineOutcome(nn.Module):
+    _is_linear = True
+
+    def __init__(self, like):
+        super().__init__()
+        self.scale = nn.Parameter(like.new_tensor(1.7))
+        self.register_buffer("offset", like.new_tensor(0.3))
+
+    forward = AffineOutcome.forward
+    untransform = AffineOutcome.untransform
+    untransform_posterior = AffineOutcome.untransform_posterior
+
+
 def _data(kind, device, batch=False):
     X = torch.tensor([[0.1], [0.45], [0.9]], device=device, dtype=torch.double)
     outputs = torch.arange(4 if kind == "higher" else 2, device=device, dtype=X.dtype)
@@ -78,6 +91,7 @@ def _outcome(kind, family, Y):
             else Standardize(2, batch_shape=batch),
         ),
         "affine": lambda: AffineOutcome(Y),
+        "external": lambda: ExternalAffineOutcome(Y),
     }[family]()
 
 
@@ -132,7 +146,7 @@ def _compare(actual, expected, leaves):
 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("kind", ["kronecker", "higher"])
-@pytest.mark.parametrize("family", ["log", "power", "bilog", "chain", "affine"])
+@pytest.mark.parametrize("family", ["log", "power", "bilog", "chain", "affine", "external"])
 @pytest.mark.parametrize("batch", [False, True])
 def test_grid_outcome_training_moments_and_structured_samples_all_leaf_hessians(
     device, kind, family, batch
@@ -157,7 +171,7 @@ def test_grid_outcome_training_moments_and_structured_samples_all_leaf_hessians(
         mean, variance = internal.mean * scale + location, internal.variance * scale**2
         raw_mean = (mean + 0.5 * variance).exp()
         raw_variance = variance.expm1() * (2 * mean + variance).exp()
-    elif family == "affine":
+    elif family in ("affine", "external"):
         raw_mean, raw_variance = (
             inverse(internal.mean),
             internal.variance * transform.scale.square(),
@@ -167,7 +181,7 @@ def test_grid_outcome_training_moments_and_structured_samples_all_leaf_hessians(
             _ = posterior.mean
         with pytest.raises(NotImplementedError):
             _ = posterior.variance
-    if family in ("log", "chain", "affine"):
+    if family in ("log", "chain", "affine", "external"):
         torch.testing.assert_close(posterior.mean, raw_mean)
         torch.testing.assert_close(posterior.variance, raw_variance)
         actual = actual + posterior.mean.sin().sum() + posterior.variance.square().sum()
@@ -177,7 +191,7 @@ def test_grid_outcome_training_moments_and_structured_samples_all_leaf_hessians(
 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("kind", ["kronecker", "higher"])
-@pytest.mark.parametrize("family", ["log", "chain", "affine"])
+@pytest.mark.parametrize("family", ["log", "chain", "affine", "external"])
 def test_grid_general_outcome_conditioning_fantasies_and_snapshot_stability(device, kind, family):
     X, Y, Q = _data(kind, device)
     model = _model(kind, X, Y, _outcome(kind, family, Y))
@@ -187,7 +201,7 @@ def test_grid_general_outcome_conditioning_fantasies_and_snapshot_stability(devi
     samples = posterior.rsample_from_base_samples(torch.Size([2]), base)
     if family == "chain":
         model.outcome_transform.train()(Y * 1.4)
-    elif family == "affine":
+    elif family in ("affine", "external"):
         model.outcome_transform.offset.add_(0.2)
     torch.testing.assert_close(posterior.mean, means)
     torch.testing.assert_close(posterior.variance, variances)
