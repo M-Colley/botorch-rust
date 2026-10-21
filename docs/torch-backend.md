@@ -56,6 +56,14 @@ variational strategies, specialized fitting extensions, custom module protocols,
 and acquisition approximation/cache configurations. A new release and Unity
 integration require a fresh integrated verification of the completed scope.
 
+The later [frozen development equivalence checkpoint](verification-equivalence-c3e8317-2026-10-21.json)
+at `c3e8317` passes 1,222 cases with 15 skips, no failures, and all 1,237
+selected IDs accounted for. Python/test inventories, the production v8 native
+artifact, worker and pinned reference remain unchanged throughout the run.
+This covers the grouped variational, structured likelihood/iterative, and path
+module checkpoints at that commit. Subsequent ownership/configuration repairs
+remain outside its scope; the complete frozen suite is a separate ongoing run.
+
 Construct supported models with `backend="torch"` to request these semantics
 explicitly. `backend="auto"` selects it for CUDA training data, training tensors
 requiring gradients, or supported custom Torch module components. Ordinary CPU

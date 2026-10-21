@@ -1,0 +1,65 @@
+{
+  "kind": "development_equivalence_audit",
+  "release_certificate": false,
+  "complete_scope": false,
+  "started_utc": "2026-10-21T18:06:51.858627+00:00",
+  "before": {
+    "head": "c3e8317ce97bb6524d02f664b5e848e7852808bd",
+    "status": "",
+    "reference_head": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "reference_status": "",
+    "extension_sha256": "3b7c95aa07214afaf759badf111dec3b8a781e476fedd1006c65e5782709f04f",
+    "worker_sha256": "f5ff61a399d28a757f6cb2354ccae668e890acdd3b88d5b0adb9aaad2c97b804",
+    "inventories": {
+      "python": {
+        "files": 347,
+        "sha256": "866c3d93c4ca395da1026eb21752e8ae2417a30b23b53410321876149d5fe5cf"
+      },
+      "tests": {
+        "files": 343,
+        "sha256": "9369c882d58a2ac3c3e936dd230635623a7b5712a2c647ca2c045664565b749d"
+      }
+    }
+  },
+  "ended_utc": "2026-10-21T18:19:37.951767+00:00",
+  "after": {
+    "head": "c3e8317ce97bb6524d02f664b5e848e7852808bd",
+    "status": "",
+    "reference_head": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "reference_status": "",
+    "extension_sha256": "3b7c95aa07214afaf759badf111dec3b8a781e476fedd1006c65e5782709f04f",
+    "worker_sha256": "f5ff61a399d28a757f6cb2354ccae668e890acdd3b88d5b0adb9aaad2c97b804",
+    "inventories": {
+      "python": {
+        "files": 347,
+        "sha256": "866c3d93c4ca395da1026eb21752e8ae2417a30b23b53410321876149d5fe5cf"
+      },
+      "tests": {
+        "files": 343,
+        "sha256": "9369c882d58a2ac3c3e936dd230635623a7b5712a2c647ca2c045664565b749d"
+      }
+    }
+  },
+  "selected_cases": 1237,
+  "counts": {
+    "passed": 1222,
+    "skipped": 15
+  },
+  "failures": [],
+  "exitstatus": 0,
+  "exact_case_coverage": true,
+  "fingerprints_stable": true,
+  "all_passed": true,
+  "artifact_directory": "D:/botorch-verification/equivalence-c3e8317",
+  "artifacts": {
+    "collection.json": "9f490f4b589a64ab56fa6091fb41279a6a6256ee248c3e096aab5aee9676364f",
+    "collection.log": "24273f1bc73ebabc5b633d660498eaca55ecd4a602cede65dd53be5483d0fce7",
+    "execution.json": "a183212e360d563015f583b187ae3f1faa2bd903ab0284def18a14892daf1801",
+    "execution.log": "06fa0bd29d9af18fa6a84fba9a4c4f1e5eac4fdbc4d465297501625babe62df0",
+    "execution.xml": "62b077a425ed24dff584d90383dd2c6cabf2cb5b6aeb93648219967218c469b0",
+    "summary.json": "533ba28dc98b04cf6cf4892592d5979777d4699346b4ae3cd6b79ebf69b2df68"
+  },
+  "controller": "D:/run-botorch-equivalence-audit-c3e8317.py",
+  "controller_sha256": "4139b58cce6ff428563396bae77e45d2171027f5c76a53908c7de1badd81708b",
+  "interpretation": "Frozen development checkpoint only. Skips retain unsupported source configurations. Later source changes, complete behavioral coverage, performance and a new release are not certified."
+}
