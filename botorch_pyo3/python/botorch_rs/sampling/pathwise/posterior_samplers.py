@@ -291,11 +291,17 @@ def _compose_matheron_paths(
             sample_shape=shape,
             **prior_options,
         )
+        if not callable(prior) or not callable(getattr(prior, "forward", None)):
+            raise TypeError(
+                "prior_sampler must return a callable sample path with a callable forward method."
+            )
         values = prior.forward(points)
         options = {} if variational else {"target_values": targets}
         if update_strategy is gaussian_update and seed is not None:
             options["seed"] = seed
         update = update_strategy(model=model, sample_values=values, **options)
+        if not callable(update):
+            raise TypeError("update_strategy must return a callable sample path.")
     cls: Any = MatheronPath
     if getattr(model, "_tensor_backend", None) == "torch":
         from botorch_rs.sampling.pathwise._torch_backend import TorchMatheronPath

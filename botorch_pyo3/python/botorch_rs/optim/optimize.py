@@ -7,6 +7,7 @@ import functools
 import math
 import warnings
 from collections.abc import Callable, Mapping
+from importlib import import_module
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -477,7 +478,29 @@ def _optimize_kwargs(
 
 
 def _optimize_with_general_driver(arguments: dict[str, Any]) -> tuple[Any, Any]:
-    import torch
+    method = (arguments.get("options") or {}).get("method", "L-BFGS-B")
+    try:
+        import torch
+    except ModuleNotFoundError as error:
+        if error.name == "torch":
+            raise UnsupportedError(
+                f"Optimization method {method!r} requires the optional dependency 'torch'."
+            ) from error
+        raise
+
+    from botorch_rs.generation.gen import gen_candidates_scipy
+
+    generator = arguments.get("gen_candidates")
+    if generator is None or generator is gen_candidates_scipy:
+        try:
+            import_module("scipy.optimize")
+        except ModuleNotFoundError as error:
+            dependency = (error.name or "").split(".")[0]
+            if dependency in {"numpy", "scipy"}:
+                raise UnsupportedError(
+                    f"Optimization method {method!r} requires the optional dependency {dependency!r}."
+                ) from error
+            raise
 
     from botorch_rs.optim._torch_acq_optim import optimize
 

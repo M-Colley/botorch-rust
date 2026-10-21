@@ -59,6 +59,9 @@ weight generator receives the actual feature count returned by the map.
 callbacks `model.outcome_transform` is absent, matching the reference, while
 functional training-data helpers retain the fitted transform needed to compute
 transformed targets. Scoped state is restored on normal and exceptional exits.
+Prior callbacks must return callable sample paths with a callable `forward`
+method; update callbacks must return callable paths. Malformed returns raise
+`TypeError` at construction and preserve the model's outcome-transform state.
 
 Exact `gaussian_update` supports alternate transformed `points`,
 `target_values`, full `noise_covariance`, Gaussian likelihoods and a caller's

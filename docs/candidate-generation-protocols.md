@@ -13,6 +13,10 @@ methods, including acquisition callables without a differentiation graph.
 Callback signatures are preserved for SciPy's `intermediate_result` protocol.
 SciPy itself validates method-specific options and capabilities. These options
 also work through `optimize_acqf`, including native-model acquisitions.
+The general method/callback driver requires optional Torch and, when using
+the SciPy generator, SciPy/NumPy. Missing packages raise `UnsupportedError`
+identifying the selected method and dependency. The ordinary native solver
+paths continue to work without those optional packages.
 
 Native candidate generation retains its Rust fast paths for their usual
 configurations. Shaped fixed features, custom SciPy callbacks, numerical

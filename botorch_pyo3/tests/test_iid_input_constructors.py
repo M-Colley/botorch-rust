@@ -44,6 +44,10 @@ def test_optimize_objective_runs_requested_seeded_sampler(backend, device, qmc):
     torch = pytest.importorskip("torch")
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA unavailable")
+    if backend == "torch":
+        pytest.importorskip(
+            "scipy", reason="The default Tensor optimize_objective driver uses SciPy."
+        )
     from botorch_rs.acquisition.monte_carlo import qSimpleRegret
     from botorch_rs.acquisition.objective import GenericMCObjective
     from botorch_rs.models import SingleTaskGP

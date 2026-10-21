@@ -13,6 +13,7 @@ from __future__ import annotations
 import functools
 import math
 import random
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -410,12 +411,15 @@ def test_errors(model: SingleTaskGP, model_list: ModelListGP) -> None:
         qLowerBoundMultiObjectiveMaxValueEntropySearch(model, cells, estimation_type="XX")
     with pytest.raises(UnsupportedError):
         compute_sample_box_decomposition(pf, partitioning=dict)
-    with pytest.raises(UnsupportedError):
+    with pytest.raises(TypeError, match="prior_sampler must return"):
         draw_matheron_paths(model, [2], prior_sampler=lambda **kw: None)
-    with pytest.raises(UnsupportedError):
+    with pytest.raises(TypeError, match="update_strategy must return"):
         draw_matheron_paths(model, [2], update_strategy=lambda **kw: None)
-    with pytest.raises(UnsupportedError):
-        draw_kernel_feature_paths(model, [2], weight_generator=None)
+    # None selects the default weight sampler in the generic path protocol.
+    prior = draw_kernel_feature_paths(model, [2], num_features=16, seed=4, weight_generator=None)
+    values = prior(model.train_inputs[0])
+    assert shape(values) == (2, 2, 10)
+    assert all(math.isfinite(value) for value in flatten(values))
     with pytest.raises(UnsupportedError, match="even number"):
         draw_kernel_feature_paths(model, [2], num_features=33)
     with pytest.raises(UnsupportedError, match="num_points"):
@@ -427,3 +431,19 @@ def test_errors(model: SingleTaskGP, model_list: ModelListGP) -> None:
     fixed = _model(train_Yvar=[[0.01, 0.01]] * 10)
     with pytest.raises(RuntimeError, match="noise"):
         qLowerBoundMultiObjectiveJointEntropySearch(fixed, ps, pf, cells)
+
+
+@pytest.mark.parametrize(
+    "invalid", [None, object(), lambda x: x, SimpleNamespace(forward=lambda x: x)]
+)
+def test_invalid_prior_path_protocol_restores_outcome_and_does_not_call_update(
+    model: SingleTaskGP, invalid: Any
+) -> None:
+    transform = model.outcome_transform
+
+    def update(**kwargs: Any) -> Any:
+        raise AssertionError("Malformed prior paths must be rejected before the update callback.")
+
+    with pytest.raises(TypeError, match="prior_sampler must return.*forward"):
+        draw_matheron_paths(model, [2], prior_sampler=lambda **kw: invalid, update_strategy=update)
+    assert model.outcome_transform is transform

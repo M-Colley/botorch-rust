@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from importlib.util import find_spec
 
 import pytest
 
@@ -148,6 +149,17 @@ def test_options(model: SingleTaskGP) -> None:
     if HAS_TORCH:
         for extra in ({"method": "trust-constr"}, {"with_grad": False}):
             initial = [[[0.2, 0.3, 0.4]], [[0.8, 0.7, 0.6]]]
+            if find_spec("scipy") is None:
+                with pytest.raises(UnsupportedError, match="method.*dependency 'scipy'"):
+                    optimize_acqf(
+                        acqf,
+                        BOUNDS,
+                        q=1,
+                        num_restarts=2,
+                        batch_initial_conditions=initial,
+                        options={**extra, "maxiter": 100},
+                    )
+                continue
             points, scores = optimize_acqf(
                 acqf,
                 BOUNDS,
