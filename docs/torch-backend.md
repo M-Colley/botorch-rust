@@ -51,10 +51,15 @@ The earlier 21 deliberate nonfinite-state/domain comparison failures are repaire
 with explicit validity checks and a negative control rejecting shared computed
 NaNs. This CI checkpoint precedes the latest direct-transform, structured-call
 and native-cache changes and does not certify a new wheel.
-The complete behavior/configuration audit is still open, including remaining
-variational strategies, specialized fitting extensions, custom module protocols,
-and acquisition approximation/cache configurations. A new release and Unity
-integration require a fresh integrated verification of the completed scope.
+The API inventory measures availability rather than configuration equivalence.
+Later [variational factory](variational-factory-configurations.md),
+[supplied likelihood](torch-variational-likelihood-protocol.md),
+[custom model](torch-custom-models.md), [fitting](fitting-protocol.md), and
+[acquisition cache](torch-noisy-root-cache.md) checks address configurations
+listed as gaps in earlier checkpoints. Family-specific notes distinguish
+implemented behavior, native-only limits and source-unsupported calls. A new
+release and Unity integration require fresh integrated verification of that
+reviewed scope.
 
 The later [frozen development equivalence checkpoint](verification-equivalence-c3e8317-2026-10-21.json)
 at `c3e8317` passes 1,222 cases with 15 skips, no failures, and all 1,237
@@ -107,12 +112,16 @@ Supported model paths include exact single-task independent outputs and
 batches, Gaussian and nonlinear-outcome model lists, long-format `MultiTaskGP`,
 `MixedSingleTaskGP`, `SingleTaskMultiFidelityGP`, `KroneckerMultiTaskGP`,
 `HigherOrderGP`, `LatentKroneckerGP`, `PairwiseGP` with probit/logit likelihoods,
-whitened `SingleTaskVariationalGP`, and loaded-sample fully Bayesian Matérn,
+whitened, unwhitened, batch-decoupled, CIQ and grouped large-batch
+`SingleTaskVariationalGP`, compatible caller strategy factories, and loaded-sample fully Bayesian Matérn,
 SAAS and linear single-task and latent-task multitask models. Exact single-task and correlated multitask
 conditioning and fantasies retain training-data and parameter graphs. See the
-detailed model notes for configuration limits. The Kronecker implementation
-currently uses dense exact factorization; its structured performance work is
-still pending. Loaded MCMC values become registered leaves, matching the
+detailed model notes for configuration limits. The Kronecker Tensor route
+evaluates the exact Gaussian law with dense factorization; a structured or
+matrix-free speedup is not implemented. This is a performance distinction,
+separate from its supported posterior and likelihood configurations.
+`LatentKroneckerGP` has its own
+[iterative solver implementation](latent-iterative-methods.md). Loaded MCMC values become registered leaves, matching the
 reference loader. Markov-chain choices are not differentiated.
 
 Public outcome transforms participate in actual Torch module graphs, with

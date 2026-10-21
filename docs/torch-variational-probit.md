@@ -44,9 +44,17 @@ to a port evaluator while keeping their noise parameter and constraint module
 identities, trainability flags, priors and optimizer bounds. Their Gaussian
 conditional/marginal computations use Tensor operations in the port.
 
-This checkpoint covers scalar probit observations and homoskedastic Gaussian
-component interoperability. Independent multitask probit likelihoods, other
-non-Gaussian observation families and arbitrary custom likelihood modules are
-separate configuration gaps. An explicit observation covariance override is
-not a Bernoulli likelihood and raises an error. Source-unsupported unwhitened
-and independent-multitask Matheron update boundaries still apply.
+This document records the scalar port-owned probit evaluator. The later
+[supplied likelihood protocol](torch-variational-likelihood-protocol.md)
+supersedes its earlier Gaussian and custom-likelihood coverage limits: actual
+supplied GPyTorch Gaussian and non-Gaussian modules retain their identity,
+overrides and expected-log-probability protocol, including multiple latent
+outputs. Its controls cover Laplace, Student-t, Beta, Poisson, joint custom
+observations and categorical Softmax observations. The port's own
+`BernoulliLikelihood` convenience specification remains scalar; supplied
+GPyTorch likelihoods use the generic module route.
+
+An explicit observation covariance override is not a Bernoulli likelihood and
+raises an error. Source-unsupported unwhitened and independent-multitask
+Matheron update boundaries still apply; compatible custom path callbacks are
+covered separately by the [pathwise protocol](pathwise-public-constructors.md).
