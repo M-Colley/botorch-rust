@@ -10,6 +10,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 
 | Finding | Submission / remaining work |
 | --- | --- |
+| Batched inducing allocation reuses the first model covariance | New [BoTorch #3511](https://github.com/meta-pytorch/botorch/pull/3511); allocator/approximate suites pass 27 tests and 14 subtests on Torch 2.13 CPU/CUDA and 2.14.1 CPU |
 | Batched LOO and fully Bayesian target layout | Existing [BoTorch #3386](https://github.com/meta-pytorch/botorch/pull/3386) |
 | Shared SAC prior counted repeatedly | New [GPyTorch #2812](https://github.com/cornellius-gp/gpytorch/pull/2812) |
 | SAC structural indices and device metadata after module migration | New [BoTorch #3493](https://github.com/meta-pytorch/botorch/pull/3493); 10 source tests and two migration subtests pass |

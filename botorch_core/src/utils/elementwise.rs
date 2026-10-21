@@ -37,9 +37,6 @@ const TINY_F32: f64 = f32::MIN_POSITIVE as f64;
 const FATPLUS_ALPHA: f64 = 0.1;
 /// `math.sqrt(1 / 3)`, the inflection point of `fatmoid`.
 const INV_SQRT_3: f64 = 0.5773502691896257;
-/// `2 / sqrt(pi)`.
-const TWO_INV_SQRT_PI: f64 = std::f64::consts::FRAC_2_SQRT_PI;
-
 /// The result of [`elementwise`]: `values[o][i]` is output `o` at element
 /// `i`; `grads[o][k][i]` its derivative with respect to input `k` (if
 /// requested).
@@ -109,16 +106,7 @@ fn cauchy_with_grad(x: f64) -> (f64, f64) {
 /// `log(erfcx(x))` and its derivative (BoTorch's `log_erfcx`).
 #[inline]
 fn log_erfcx_with_grad(x: f64) -> (f64, f64) {
-    if x > 0.0 {
-        let e = prob::erfcx(x);
-        (e.ln(), (2.0 * x * e - TWO_INV_SQRT_PI) / e)
-    } else {
-        let e = prob::erfc(x);
-        (
-            e.ln() + x * x,
-            -TWO_INV_SQRT_PI * (-(x * x)).exp() / e + 2.0 * x,
-        )
-    }
+    (prob::log_erfcx(x), prob::log_erfcx_grad(x))
 }
 
 /// BoTorch's `log_softplus(x, tau)` with the cutoffs of the dtype, and its

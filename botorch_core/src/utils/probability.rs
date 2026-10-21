@@ -70,10 +70,14 @@ pub fn erfcx(x: f64) -> f64 {
     RealErrorFunctions::erfcx(x)
 }
 
-/// Derivative of [`erfcx`] (PyTorch's formula `2 x erfcx(x) - 2/√π`).
+/// Derivative of [`erfcx`], avoiding cancellation in the positive tail.
 #[inline]
 pub fn erfcx_grad(x: f64) -> f64 {
-    2.0 * x * erfcx(x) - TWO_INV_SQRT_PI
+    if x > 20.0 {
+        erfcx(x) * log_erfcx_grad(x)
+    } else {
+        2.0 * x * erfcx(x) - TWO_INV_SQRT_PI
+    }
 }
 
 /// Standard normal CDF `Φ(x) = erfc(-x/√2) / 2` (BoTorch's `ndtr`).
@@ -110,8 +114,7 @@ pub fn log_erfc(x: f64) -> f64 {
 #[inline]
 pub fn log_erfc_grad(x: f64) -> f64 {
     if x > 0.0 {
-        let e = erfcx(x);
-        (2.0 * x * e - TWO_INV_SQRT_PI) / e - 2.0 * x
+        log_erfcx_grad(x) - 2.0 * x
     } else {
         -TWO_INV_SQRT_PI * (-(x * x)).exp() / erfc(x)
     }
@@ -124,6 +127,32 @@ pub fn log_erfcx(x: f64) -> f64 {
         erfcx(x).ln()
     } else {
         erfc(x).ln() + x * x
+    }
+}
+
+/// Derivative of [`log_erfcx`], including the far positive tail.
+///
+/// Directly subtracting `2 x - 2 / (sqrt(pi) erfcx(x))` loses all meaningful
+/// digits for large `x`. Differentiate the asymptotic series instead. Twelve
+/// terms at `x > 20` make truncation smaller than double precision rounding.
+#[inline]
+pub fn log_erfcx_grad(x: f64) -> f64 {
+    if x > 20.0 {
+        let inverse = x.recip();
+        let inverse_square = inverse * inverse;
+        let mut term = 1.0;
+        let mut correction = 0.0;
+        let mut weighted_correction = 0.0;
+        for order in 1..=12 {
+            term *= -f64::from(2 * order - 1) * 0.5 * inverse_square;
+            correction += term;
+            weighted_correction += f64::from(order) * term;
+        }
+        -inverse * (1.0 + 2.0 * weighted_correction / (1.0 + correction))
+    } else if x > 0.0 {
+        (2.0 * x * erfcx(x) - TWO_INV_SQRT_PI) / erfcx(x)
+    } else {
+        -TWO_INV_SQRT_PI * (-(x * x)).exp() / erfc(x) + 2.0 * x
     }
 }
 
@@ -213,6 +242,25 @@ mod tests {
 
     fn rel(a: f64, b: f64) -> f64 {
         (a - b).abs() / b.abs().max(1e-300)
+    }
+
+    #[test]
+    fn positive_tail_derivatives_do_not_cancel() {
+        // Independent 100-digit mpmath evaluations of the defining derivative.
+        for (x, expected) in [
+            (21.0, -0.047_511_674_968_101_945),
+            (1000.0, -0.0009999990000025),
+            (1e50, -1e-50),
+            (1e150, -1e-150),
+        ] {
+            assert!(rel(log_erfcx_grad(x), expected) < 2e-14, "x={x}");
+            assert!(
+                rel(erfcx_grad(x), erfcx(x) * expected) < 2e-14,
+                "erfcx at x={x}"
+            );
+        }
+        assert_eq!(log_erfcx_grad(f64::INFINITY), -0.0);
+        assert_eq!(erfcx_grad(f64::INFINITY), -0.0);
     }
 
     // Reference values computed with mpmath (50 digits).
