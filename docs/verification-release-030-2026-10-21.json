@@ -1,0 +1,1109 @@
+{
+  "kind": "installed-wheel-reference-enabled-full-suite-certificate",
+  "created_utc": "2026-10-21T22:18:09.280576+00:00",
+  "scope": "Complete frozen development suite with pinned BoTorch reference enabled; exact collected-case accounting, not universal behavioral coverage or every configuration.",
+  "version": "0.3.0",
+  "source_revision": "258ff6b544159b2c5e2797c331e39f1095ab7a3d",
+  "source_root": "D:\\botorch-rs-release-030",
+  "started_utc": "2026-10-21T20:57:13.895031+00:00",
+  "ended_utc": "2026-10-21T22:16:17.670172+00:00",
+  "result": {
+    "all_passed": true,
+    "suite_complete": true,
+    "exact_case_coverage": true,
+    "fingerprints_stable": true,
+    "batches": 69,
+    "canonical_collected_cases": 14560,
+    "reported_cases": 14560,
+    "accounted_exactly_once": 14560,
+    "executed_call_phases": 14560,
+    "passed": 14509,
+    "call_phase_skipped": 51,
+    "setup_phase_skipped_without_call": 0,
+    "collection_skipped_modules": 0,
+    "failed": 0,
+    "xfail": 0,
+    "deselected": 0,
+    "not_executed": 0,
+    "collected_case_modules": 345,
+    "suite_python_files_hashed_including_helpers": 367,
+    "denominators": [
+      "14560 = 14509 passed calls + 51 call-phase skips. Every canonical case has exactly one setup, call and passing teardown report.",
+      "Skipped calls are accounted for but do not imply completed assertions in skipped branches.",
+      "345 modules contributed cases; 367 hashed suite Python files also include 22 support/helper files.",
+      "Equivalence markers form an overlapping subset of this suite, not additional tests."
+    ]
+  },
+  "equivalence_marked_subset": {
+    "collected": 1237,
+    "passed": 1222,
+    "call_phase_skipped": 15,
+    "failed": 0,
+    "xfail": 0,
+    "not_executed": 0,
+    "skip_details": [
+      {
+        "id": "tests/test_equivalence_9_optim.py::test_mixed_alternating[1]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.010538100032135844,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_9_optim.py', 194, 'Skipped: needs a continuous dimension besides the discrete and categorical ones')"
+      },
+      {
+        "id": "tests/test_equivalence_9_optim.py::test_mixed_alternating[3]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.010425799991935492,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_9_optim.py', 194, 'Skipped: needs a continuous dimension besides the discrete and categorical ones')"
+      },
+      {
+        "id": "tests/test_equivalence_9_optim.py::test_mixed_alternating[6]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.007262200000695884,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_9_optim.py', 194, 'Skipped: needs a continuous dimension besides the discrete and categorical ones')"
+      },
+      {
+        "id": "tests/test_equivalence_9_optim.py::test_mixed_alternating[10]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.007051900029182434,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_9_optim.py', 194, 'Skipped: needs a continuous dimension besides the discrete and categorical ones')"
+      },
+      {
+        "id": "tests/test_equivalence_9_optim.py::test_mixed_alternating[15]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.009334000060334802,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_9_optim.py', 194, 'Skipped: needs a continuous dimension besides the discrete and categorical ones')"
+      },
+      {
+        "id": "tests/test_equivalence_9_optim.py::test_mixed_alternating[21]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.01335819996893406,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_9_optim.py', 194, 'Skipped: needs a continuous dimension besides the discrete and categorical ones')"
+      },
+      {
+        "id": "tests/test_equivalence_9_optim.py::test_mixed_alternating[23]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.007527299923822284,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_9_optim.py', 194, 'Skipped: needs a continuous dimension besides the discrete and categorical ones')"
+      },
+      {
+        "id": "tests/test_equivalence_mo_entropy.py::test_optima_and_boxes[11_list_n8_d2_m1_rbf+n7_d2_m2_matern52]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.00036319997161626816,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_mo_entropy.py', 288, \"Skipped: BoTorch's path models do not support lists of multi-output models\")"
+      },
+      {
+        "id": "tests/test_equivalence_mo_entropy.py::test_entropy_search[11_list_n8_d2_m1_rbf+n7_d2_m2_matern52-MES]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.0003157999599352479,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_mo_entropy.py', 389, \"Skipped: BoTorch's path models do not support lists of multi-output models\")"
+      },
+      {
+        "id": "tests/test_equivalence_mo_entropy.py::test_entropy_search[11_list_n8_d2_m1_rbf+n7_d2_m2_matern52-JES]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.00029710005037486553,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_mo_entropy.py', 389, \"Skipped: BoTorch's path models do not support lists of multi-output models\")"
+      },
+      {
+        "id": "tests/test_equivalence_mo_entropy.py::test_pes[11_list_n8_d2_m1_rbf+n7_d2_m2_matern52]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.0002954999217763543,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_mo_entropy.py', 477, \"Skipped: BoTorch's path models do not support lists of multi-output models\")"
+      },
+      {
+        "id": "tests/test_equivalence_so_acquisition.py::test_max_value_entropy[04_n10_d2_m2_matern52]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.0004270999925211072,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_so_acquisition.py', 310, 'Skipped: single-output models only (as in BoTorch)')"
+      },
+      {
+        "id": "tests/test_equivalence_so_acquisition.py::test_max_value_entropy[08_n14_d3_m2_matern52]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.00038590002804994583,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_so_acquisition.py', 310, 'Skipped: single-output models only (as in BoTorch)')"
+      },
+      {
+        "id": "tests/test_equivalence_so_acquisition.py::test_max_value_entropy[10_list_n10_d2_m1_rbf+n8_d2_m1_matern52_norm]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.00025459995958954096,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_so_acquisition.py', 310, 'Skipped: single-output models only (as in BoTorch)')"
+      },
+      {
+        "id": "tests/test_equivalence_so_acquisition.py::test_max_value_entropy[11_list_n9_d3_m1_rbf_fixed+n12_d3_m1_rbf_nostd]",
+        "phase": "call",
+        "outcome": "skipped",
+        "duration": 0.0003629999700933695,
+        "detail": "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_so_acquisition.py', 310, 'Skipped: single-output models only (as in BoTorch)')"
+      }
+    ],
+    "scope": "Only the explicitly equivalence-marked subset. Other suite checks may also compare the pinned reference; marker counts do not establish coverage of every source configuration."
+  },
+  "independent_audit": {
+    "collected_ids_unique": true,
+    "raw_batch_inventory_exactly_001_through_069": true,
+    "raw_batch_items_equal_expected_file_groups_and_summary_ids": true,
+    "collected_reported_multisets_equal": true,
+    "each_case_one_setup_one_call_one_passing_teardown": true,
+    "phase_outcomes_recomputed_from_raw_reports": {
+      "setup:passed": 14560,
+      "call:passed": 14509,
+      "teardown:passed": 14560,
+      "call:skipped": 51
+    },
+    "all_collection_and_batch_provenance_equal_before_and_after": true,
+    "source_reference_still_clean_and_pinned": true,
+    "wheel_native_manifest_verifier_dependency_initializers_rehashed": true,
+    "all_359_wheel_and_installed_package_bytes_rehashed_and_matched": true,
+    "all_358_source_text_files_byte_equal_to_installed_wheel": true,
+    "canonical_case_ids_sha256": "e8e8d297a629b3c7d9340bc71fd060f0cc015fbaaaf5145c88b16b00d6dec0fb",
+    "canonical_case_results_sha256": "830a17fd7b61a90f19fa7e0144187f7c760a76417b73b7d83e11bb4c681fc8ed",
+    "id_digest_encoding": "UTF-8 compact JSON of sorted canonical ID strings.",
+    "result_digest_encoding": "UTF-8 sorted-key compact JSON of records sorted by id: id,outcome,skip_phase,call_executed."
+  },
+  "artifact": {
+    "build_manifest": "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\build-manifest.json",
+    "build_manifest_sha256": "1657cd1bea0d962fcadff898763b4120738d3803f713b2a43a3687b79d85d5b1",
+    "wheel": "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\dist\\botorch_rust-0.3.0-cp311-abi3-win_amd64.whl",
+    "wheel_sha256": "f378b6aa5b0603054058102a93780f720a0a92f92dc66bbf7f029252883bdd5c",
+    "revision": "258ff6b544159b2c5e2797c331e39f1095ab7a3d",
+    "native_sha256": "8fa0323b0b1cf80ab4e35dee8216de497586c3213b8489a79abf5bf492ee3675",
+    "distribution_version": "0.3.0",
+    "distribution_metadata": "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\installed\\botorch_rust-0.3.0.dist-info\\METADATA",
+    "installed_record_sha256": "25d4fbb195b55435c54bbbdd10673e78dcdde290f473c2c78ef4e26c1489e724",
+    "pip_direct_url": {
+      "archive_info": {
+        "hash": "sha256=f378b6aa5b0603054058102a93780f720a0a92f92dc66bbf7f029252883bdd5c",
+        "hashes": {
+          "sha256": "f378b6aa5b0603054058102a93780f720a0a92f92dc66bbf7f029252883bdd5c"
+        }
+      },
+      "url": "file:///D:/botorch-release-030/checkpoints/258ff6b54415/dist/botorch_rust-0.3.0-cp311-abi3-win_amd64.whl"
+    }
+  },
+  "package_byte_payload": {
+    "entries": 359,
+    "source_text_entries": 358,
+    "native_entries": 1,
+    "sha256_manifest": {
+      "botorch_rs/__init__.py": "087b66c3a049ee6f2f3a28ceca3956acca1f486a63c8c5343e2269b1a6babd90",
+      "botorch_rs/_arrays.py": "244d0f9374103b083771fd091385543e76e5f397647578887b1223298ea21abd",
+      "botorch_rs/_botorch_rs.pyd": "8fa0323b0b1cf80ab4e35dee8216de497586c3213b8489a79abf5bf492ee3675",
+      "botorch_rs/_botorch_rs.pyi": "d5a6973eae8b422ea63d389c102ae646d6c54578f0c99019999ec583e0ee5f14",
+      "botorch_rs/_buffers.py": "edd52e1dbde8cb634e2623f37c8a95c0d24921bc0bfaf437088a1f7f54ad04b4",
+      "botorch_rs/_fit_attempts.py": "9ffce169fd342262d11e35ed2bac8ec23c9c3f5dbd197b23590780891337c5db",
+      "botorch_rs/_fit_fallback.py": "6b1943e153c64f6a9c7828a80b3b981b75c42c1d4cebde12566c77ab8186a5f5",
+      "botorch_rs/_module.py": "9bf1101f94eab140fa3f1a6fe30e72a37bb75a2cc6245c63acfdcb5b084ee0a1",
+      "botorch_rs/_ops.py": "756b749ad3211874f5e6bf582cea0c2dddb86d3e4fc799f2db8dd947b8407927",
+      "botorch_rs/_risk_autograd.py": "81b572f88ffe32efea9c83120e12b41aa7bf86cd4956e9127a50429c00bb689b",
+      "botorch_rs/_robust_bridge.py": "0b7de8ac2ee545f7415ee46d643deb253460f176360c2125823eeeb7a8a5317b",
+      "botorch_rs/_tensor_mll.py": "ac7539d03ba5050220558e75d1c4dcad701e6cf7e26abbc015648609fd9c020b",
+      "botorch_rs/_torch_autograd.py": "2ba1f8c3fb255ba835bcb04177d26b3245a4af3b83dff36cd44aeac2dd130c81",
+      "botorch_rs/_torch_bridge.py": "0e419a0e78996bd8d1e40c4335c6db1139d68d31c12eda0599b832229c70837b",
+      "botorch_rs/_torch_likelihoods.py": "742a448301462b335f2e67ff62c70638229c861ebe11e663c58d090b24574077",
+      "botorch_rs/_torch_math.py": "183d323af06996f0c0817a9a43d82d76fcc73d59394a433db8f7714451ffbec7",
+      "botorch_rs/_transforms_bridge.py": "ef1b6775c50dbc898129694e8dde2e052f203eacd50753856332d4bb4a1f999a",
+      "botorch_rs/acquisition/__init__.py": "2c73e2cf9677694a590e502684f9e4a19aef29214846df30b8ecde9f8e38e52c",
+      "botorch_rs/acquisition/_fidelity.py": "98e8f7599c53df0fdbbc7b554cfa94980d6b4f6a181ff47417c6adbbaf74581b",
+      "botorch_rs/acquisition/_native_objective.py": "f866cb669d093dfbf2299b8ea8b0b74b13b1f785203497de89a3afdb5c3ac0c8",
+      "botorch_rs/acquisition/_parameter_autograd.py": "38244bd1937afc012b5b93d9b027dc70dd7a70c8ccdbbe8b1f695ba549854189",
+      "botorch_rs/acquisition/_torch_backend_acquisition.py": "646ec505bdfd89ffe093b15ad1c56e0e256cbb32bf231393573d67d0eb0d8161",
+      "botorch_rs/acquisition/_torch_backend_active_learning.py": "22e68e53175587d81b8efaf086636579409e1ff6e5a7e87d7312f4bb583ce068",
+      "botorch_rs/acquisition/_torch_backend_analytic.py": "233721bb08dd4b09ad60d8b88e0ca8edb85a8b96ebba20fde462f7342f31bd1f",
+      "botorch_rs/acquisition/_torch_backend_bald.py": "842a9f5865b80be7a0e02324895ba492363ce2bbf4fc67888d89cbc5f17437b1",
+      "botorch_rs/acquisition/_torch_backend_cost_aware.py": "d2c482e918cd7493acb5bc9dd7c0d943309ec45c2ca260aafc9e9ed6050eff2a",
+      "botorch_rs/acquisition/_torch_backend_entropy.py": "7fcdfaf040869af1b21d58dd583297899407e8d7931c12aef43d9805b5aa4910",
+      "botorch_rs/acquisition/_torch_backend_hvkg.py": "4d4f3f5b42ca32da86ed5131cad08c23cf2283a619db766345eea1f0c301fb3f",
+      "botorch_rs/acquisition/_torch_backend_joint_entropy.py": "8912c8d3bc3578277a36c6412ef51f6b014bf3baf8fb15063e6696e726354503",
+      "botorch_rs/acquisition/_torch_backend_knowledge_gradient.py": "f78b9403e9a77975ab002a13eccd0e7300d5cee47277d0a9482e629c2068108d",
+      "botorch_rs/acquisition/_torch_backend_mo_entropy.py": "65a99c81d1a05c4976f0586ae18dcb8c1827a0a7495d1a3226ab2af59058fce0",
+      "botorch_rs/acquisition/_torch_backend_mo_extra.py": "66fe042949226ea5659cde764b58c6479d00b11815c2effcca317293fd70fae9",
+      "botorch_rs/acquisition/_torch_backend_multi_objective.py": "d34f5528427bbe36f9dceead8eba6568290ce13938fad3589cdadb43b8d8bb37",
+      "botorch_rs/acquisition/_torch_backend_multi_step.py": "86730cc363fe3515b6bb97c7bad7851966d4098cf13f9a4c24f485883d5907c3",
+      "botorch_rs/acquisition/_torch_backend_noisy_analytic.py": "e90da16f6e5c03f505892de297cbb9e986d32ea6444b14630f9518f3a304535a",
+      "botorch_rs/acquisition/_torch_backend_predictive_entropy.py": "f4d7f4004ba7043f89f8955778c8289c45865028d738ba5df2cf98a6617a502f",
+      "botorch_rs/acquisition/_torch_backend_preference.py": "6774882835c296bb6cb9bf73a08182db14c2f13256d3eeccaf6ffbce1e0a1138",
+      "botorch_rs/acquisition/_torch_backend_regularized.py": "6a26833f6c6161fa9379347348f4b9c6bce85c30dae608065cf40b02bc32ba33",
+      "botorch_rs/acquisition/_torch_backend_wrappers.py": "3bbba9a7e7795e51ef68f218b84fb02094f90261a3b98fc0ccbfbb6b1dcc9090",
+      "botorch_rs/acquisition/_torch_box_decomposition.py": "d1a602a109fcbc72a4a503e74fc819aca72e4b8d8358159ff26ab726c05aea31",
+      "botorch_rs/acquisition/_torch_pruning.py": "b857974c8b5c69ed417f09154ee22eec86d37fb0743b6b924dcacd90df1a2442",
+      "botorch_rs/acquisition/_torch_reductions.py": "540acb44ec37728929d4a40860ffaef0ea14a4af9856c12b8cbe26aa5c0e18a0",
+      "botorch_rs/acquisition/_torch_root_cache.py": "ac892f30ba386b26bf9d041b19712d4181a59b9cae79bb47220a59904a09d4f3",
+      "botorch_rs/acquisition/acquisition.py": "02234e4c77bfa1113731d0d88fe3d9df62671bddf7292880d3735b51e90cdffb",
+      "botorch_rs/acquisition/active_learning.py": "f5a2dbf5806ee5aee404486b3c436cd8a14e01426ce1f2c229f32aa3e41c4ea1",
+      "botorch_rs/acquisition/analytic.py": "3a524097b1ddeb2f4aed55569bf0333fd640d15b0cdfb9fef1ee43c3f2522001",
+      "botorch_rs/acquisition/bayesian_active_learning.py": "dc48e3b566185178829749ba537db242ef17ccc258ec95d764c3872c3221eddb",
+      "botorch_rs/acquisition/cached_cholesky.py": "735f94d2e1f5ca19e7f9c270fe843e04525b855e3d312162c0f94884baa111cd",
+      "botorch_rs/acquisition/composite.py": "b2a0d8ea0789eaddc5785f30241ddced784ab822b6866ccb687f209a15e57299",
+      "botorch_rs/acquisition/cost_aware.py": "f8e99551c78f94d9362ea2a1eae2d6103f4f28e7b96cadf7a62562749103c98b",
+      "botorch_rs/acquisition/decoupled.py": "18d57458b4c9bfc78416cc26dd45a90e5f924022337261705ce2d292a3125b97",
+      "botorch_rs/acquisition/factory.py": "25959e0ca4ae31ae60ae8d404fc4b7ce290356e1a8b9cbc8bcbdca8261900247",
+      "botorch_rs/acquisition/fixed_feature.py": "864e4aa7f4bb579c2054573cd62ec372fe73ab4ef0df0b8e83daf1259d3ae6ca",
+      "botorch_rs/acquisition/input_constructors.py": "94d0d4abdc24a3d2d59c5944cd5d128b10ac312b6b38cd8f00b2fb4cc192b515",
+      "botorch_rs/acquisition/joint_entropy_search.py": "6ebded66c4639c0af54e362b4150a4163a2d3c45e2b5efa007195b6cc3363d70",
+      "botorch_rs/acquisition/knowledge_gradient.py": "bdf0a58ef2d223233aaf65932f55ed1564016ebbf9e95df0fb2b3977b1067044",
+      "botorch_rs/acquisition/logei.py": "7ea9b36e771b651e3577b047407ff6c7d23e2c6a4a76bebe9fc18a0eb4957e67",
+      "botorch_rs/acquisition/max_value_entropy_search.py": "18078805f3757a2aaef6736036c893b8145bb2c434142b70f9221e6c0600ed26",
+      "botorch_rs/acquisition/monte_carlo.py": "4c8935e8df0531196379d51e3eb913df98987b504bf385a06772f5f3863339bb",
+      "botorch_rs/acquisition/multi_objective/__init__.py": "59d3fce9f5f8f02bf29756315908856c377f00f97917c9c4ea2e2182e9530812",
+      "botorch_rs/acquisition/multi_objective/analytic.py": "59da821905d9dd4250592a59350d01c5682c02fca4afc221345d9f6fd5cbabf3",
+      "botorch_rs/acquisition/multi_objective/base.py": "f7f255540dc7a20a7b6d6b022131c03e1068869b96cf8b4b7996308de2569e22",
+      "botorch_rs/acquisition/multi_objective/hypervolume_knowledge_gradient.py": "3ca5242e6969c2db377cfb616c89697b016e6814fc16bc321014941656bce460",
+      "botorch_rs/acquisition/multi_objective/joint_entropy_search.py": "01641485799bcbd58b56560f363d6b0b4ed1cf24e7c3f834d83c646c2f548f1c",
+      "botorch_rs/acquisition/multi_objective/logei.py": "8a4a6621e60cbf252ea8e52f6d72713bbdf40edb453525a957a36a1517b96069",
+      "botorch_rs/acquisition/multi_objective/max_value_entropy_search.py": "38285f17c895043af35f83f93c23a7f6671b4d750aada9d5ac832a0d7df0274c",
+      "botorch_rs/acquisition/multi_objective/monte_carlo.py": "d5e5c98293780ca849bdcfa6883c30876cdbab8570cb08fd4036cfbc88d4512f",
+      "botorch_rs/acquisition/multi_objective/multi_fidelity.py": "8a41e3e033be2c1ffe7bd7af370d98fc733678370eec7e56c15985c9645abc83",
+      "botorch_rs/acquisition/multi_objective/multi_output_risk_measures.py": "e293b8cc0f314c67d08c11732d859f427639a8e1e1c0f7cbc863745efead1433",
+      "botorch_rs/acquisition/multi_objective/objective.py": "71428d1d93062d8c6e9bdd64692f15f465fd31b0df6efdf63d4d15c4a2f307b4",
+      "botorch_rs/acquisition/multi_objective/parego.py": "2495d64116518717871debf45e5eefa2bca5d589a3fa04c0ce6179678e183215",
+      "botorch_rs/acquisition/multi_objective/predictive_entropy_search.py": "d0c856fabec0a42b15fa041a8493be4f464ab08afebfecf5814bc073c18d04e6",
+      "botorch_rs/acquisition/multi_objective/utils.py": "1b0fa83733012f4046005233083a1ee79a39145fc3de7b808d7b8b22833eee6d",
+      "botorch_rs/acquisition/multi_step_lookahead.py": "81c10c81d69ba61971a552c1bf2ee8670dd027ec2ef7f93beca64ff482c5a3c7",
+      "botorch_rs/acquisition/multioutput_acquisition.py": "c225fc36971b27b2c54b55a78bcbbbca7f67ec0e7abd4872a54e53ba1e3c9319",
+      "botorch_rs/acquisition/objective.py": "ba7507e8b739e2d24544f7e503840b1ba06847711c57a45bf211a57a4a30c004",
+      "botorch_rs/acquisition/penalized.py": "cb48962ded77b96ea51d867778fe2c23393dd4070612195ef48dc6cacd731dfe",
+      "botorch_rs/acquisition/predictive_entropy_search.py": "2e21a748de3031f534544ca98376c76b53b9a3db0d40daf895a49689126eaa8a",
+      "botorch_rs/acquisition/preference.py": "9c2e815649916370bc1fe06215120534a5ccab0b03d8b65a4bda822e68907ece",
+      "botorch_rs/acquisition/prior_guided.py": "eb6163d4dc7701a1eec6f06c487fedec555487753de797bf4a1293e0570b65ea",
+      "botorch_rs/acquisition/proximal.py": "3ed985d803e453992b245e59643104f797f0a9392f0a1540c94fbd0ea0f7e854",
+      "botorch_rs/acquisition/risk_measures.py": "104dda8a76198ef95e4846bb6a66e99b522f186d4ffbe3ff842f895de3fb6c4e",
+      "botorch_rs/acquisition/thompson_sampling.py": "732a86366f07b93ba60149ea5e96f2b834bab9b8f6be024bac101715f829f610",
+      "botorch_rs/acquisition/utils.py": "916a61d6a866b818e2afb89e969e193f6f78272aac23eb1ac2dd4d6831d80b6a",
+      "botorch_rs/constraints.py": "10cbd0919557b1edd980cdf7e6be76ceba782c3aa9d5afa73be9384765759d5d",
+      "botorch_rs/cross_validation.py": "2b847bce89519a80b4dc8cae1a6047d074d17a1b57931335ec0d7b870a1555bd",
+      "botorch_rs/exceptions/__init__.py": "8667dc8a3dc4419bd97403dea5c408c694ea123f0f3a9868b0ca1be3b8ce0419",
+      "botorch_rs/exceptions/errors.py": "cf7c5cf1955d07c018d35d32bb59a97e927718782c47dbf79dc5bf37ff463155",
+      "botorch_rs/exceptions/warnings.py": "8bc1d412143aeeb2ebdb581eec86d078321a4e066956b4aec416f312960fd5d1",
+      "botorch_rs/fit.py": "04aebeb7c0afbb4708d8a479fe06e15559986a76b8d8bab20d87ecb239f6a091",
+      "botorch_rs/generation/__init__.py": "a8bdeed8469a3632803616857d8d466fb99359f507776b47456799f41429f6e1",
+      "botorch_rs/generation/gen.py": "3964f724e9be4789774ac10a7152fa15e528060c13902574a2300b2bbeb6491d",
+      "botorch_rs/generation/sampling.py": "9d56f9215fa39a827943fc03e00e5c611fceb927df11c82f13256562e8a87d56",
+      "botorch_rs/kernels.py": "737c1c0069a65479f6af072d9ebc467e3c31842113f02b7d4fc6904d1dc792ed",
+      "botorch_rs/likelihoods.py": "129ac0cca2e3599b0c04656cd22b46f03825b0dd778b1e9fbb87199a000349de",
+      "botorch_rs/logging.py": "ee5c945e23bc924c695f5417af2dc9ba230115a5fe5bb0a8f741496f15975aaf",
+      "botorch_rs/means.py": "ae243e0f7a3838d60c2f2f19d5c9995e5572f3a9a7f2877a91632236a6c416c6",
+      "botorch_rs/mlls.py": "ccdd119a00e0ee8b01a4f9a5a63894e1aa180a4f98e72522f4044be9fbaf507c",
+      "botorch_rs/models/__init__.py": "9836d65309077a107effb2e73e4f323d632305c0fe88fe9c4b1c751d748a42a0",
+      "botorch_rs/models/_backend_selection.py": "4fd964acb864f8effbedb06317c215ab09d189e6673a74d29bc71cc77025a156",
+      "botorch_rs/models/_elbo_autograd.py": "e044ee1d9daf937b27fe2937abdf23425d78d1bbdf7cb9544e9bd4b82aa687f6",
+      "botorch_rs/models/_ensemble_lists.py": "d38a5a620302f758bbdf9ce233134626d95bbbed34e6c6f9a400e25c6286aee2",
+      "botorch_rs/models/_fully_bayesian_outcomes.py": "13ab12ab44b98f2bc78944983a619fe0e56abab0c87da9ddf1303a0c25207977",
+      "botorch_rs/models/_higher_order_variance.py": "176dd132ed240a3d038bd1a2c0fcc719d7e48312fa51203cc0866cc2bdd442a4",
+      "botorch_rs/models/_lcemgp_conditioning.py": "e0d8389b23eb802ff4411317ff44f5be687bed40189584b2f9b04c16b4d2e7e3",
+      "botorch_rs/models/_mll_autograd.py": "39465d193c5b1f4a523e7f0cdf21b5166de063907a30ed857b3ef315f14d7cad",
+      "botorch_rs/models/_native_outcome_state.py": "2b3d79d0a6894a46a8777cc5339fb8ce0981c6c86dc78c0b249f079fd5bc576f",
+      "botorch_rs/models/_numpyro.py": "c7ac52a2f8b3e32f11a819d1604b03de435d085e7ed7e1754474614f167ce4fb",
+      "botorch_rs/models/_numpyro_fitting.py": "1c58ff3b8c3171e491aab3091bd810118fbba0036978891484b20108f35c4a6b",
+      "botorch_rs/models/_nuts_progress.py": "7528265498ad008957ebc4d0f142136eadb5eeb1af01c3426189afed5a456e6a",
+      "botorch_rs/models/_pathwise_context.py": "f11fdb8bad16a31cfe7936cdb7b1d4792f8422930b112d6a10b16506651c61c9",
+      "botorch_rs/models/_structured_iterative.py": "1514008270bc4da697ac382f1660cd3f4cf6501435726fabcb018e3b55778d4e",
+      "botorch_rs/models/_torch_backend.py": "5b3ca710b7521406ca342bc994b9d45c55ff8ec06cfea68d7f93e9d1e14fc80f",
+      "botorch_rs/models/_torch_backend_additive.py": "21e298e083370b3ed8fa70edf31f694e359cdb8c95741072b0fa16f27abc73a4",
+      "botorch_rs/models/_torch_backend_approximate.py": "e47d34746fc32eae0bd45dbf2d78ada33500a6c683bbf5147e8ebf997c0eb9f6",
+      "botorch_rs/models/_torch_backend_contextual.py": "e6138624bc2a9b7b62d052eb4755cbc2f498bf3881f21beee97af1d3b4e9a88f",
+      "botorch_rs/models/_torch_backend_core_kernels.py": "d4e24eca9bceec0f976ae478385a387d5169d0722e0fcbd04b73470af788c01f",
+      "botorch_rs/models/_torch_backend_cost.py": "ad4c4199100dbe204a1f3d8625028d36b3ef0def9c1264b8d9da89e81e2435e2",
+      "botorch_rs/models/_torch_backend_fully_bayesian.py": "e44958744f1db72c1c54ba3ae1d414ad3472e82f9b08a95a1bb73a906934bef3",
+      "botorch_rs/models/_torch_backend_fully_bayesian_multitask.py": "8e3361ec4119ceb954017d750c59992e3001692f7770fa84d05878e345822aa9",
+      "botorch_rs/models/_torch_backend_heterogeneous.py": "cab9a469de879277c2dc271099a05c49a404a41d0db9dd5690fd171da531e895",
+      "botorch_rs/models/_torch_backend_hierarchical.py": "d0f1919af22b08a5cf4d8474bbf788e328919c573f0a526c761789a365afdce2",
+      "botorch_rs/models/_torch_backend_higher_order.py": "1e78890fb42de1bb1f4450a038b14b8e52a51a4ee0e4ad19e7135a9bb3acc67c",
+      "botorch_rs/models/_torch_backend_kernel_catalogue.py": "7090570643e9d989cb77e2905f145fb314c269090bdc1536eb149d0e700be1b6",
+      "botorch_rs/models/_torch_backend_kronecker.py": "92bca405744f1634682321c503417a72e9cf0a38e9be9785a7d42749748af20a",
+      "botorch_rs/models/_torch_backend_latent_kronecker.py": "047b817f2ed5344c7a93938cd93a59e104b295d025e50e4f1331cf4f64250e7c",
+      "botorch_rs/models/_torch_backend_lcem.py": "3ed709248d698db14ba00259f92f5968749c3206da7a8f3a027a5b25c14e1b95",
+      "botorch_rs/models/_torch_backend_list.py": "1bba4c42178539f5719627aca0729b430cda53c96a69b890d8a6eaa2d1cf9440",
+      "botorch_rs/models/_torch_backend_map_saas.py": "9656d7552171b333114cca46e4fac72502f711569c7856271e232b62d6a8559f",
+      "botorch_rs/models/_torch_backend_mcmc.py": "b2cc2bf4fefd4a0bffa6942f388b30f22a78e6f147d3182dd3146597c51ae50d",
+      "botorch_rs/models/_torch_backend_modules.py": "936aca208a6c5dccb10eeb2b95c31a6475999384b8bcc910067a76ef2af7f800",
+      "botorch_rs/models/_torch_backend_multitask.py": "0bb5392be349a37d47ed48666c76655cac7c87b3cfabc5e118373d53cada780f",
+      "botorch_rs/models/_torch_backend_neural.py": "2e5933577ba11a8076177fe4b66298903319f7c56d690d55663719b2d81f38fd",
+      "botorch_rs/models/_torch_backend_pairwise.py": "ec20d4efe7acb360f2aeb4189c4c5ca97bdca25a977628cf47d444b1a6c6c2dd",
+      "botorch_rs/models/_torch_backend_relevance.py": "2433a428b63e0b79c8ee7d93ec8e3e0ca45f4cc8d916e55bb0450b5fd4f9a55d",
+      "botorch_rs/models/_torch_backend_specialized.py": "9b02eb19cfc71d27c6f85389d45f06a486d850f0e86199bf8e8acac146060934",
+      "botorch_rs/models/_torch_backend_variational.py": "c3190b909f990f11ecd90de358febe4d913afe0ed0ba1d6664f4f34c43b8f3e0",
+      "botorch_rs/models/_torch_backend_variational_ciq.py": "3707fd44ebbacd75eb1f5e9e6bfb1504c63c484e596d9e5f2399b5c8dcdae681",
+      "botorch_rs/models/_torch_backend_variational_decoupled.py": "1a8351bda5d38445ee73afb2954ba8b0d185fb59597f741423887009d8a27612",
+      "botorch_rs/models/_torch_backend_variational_large_batch.py": "a98e298b105164456eb431e795ca2e6552833d4f05eaaaf6152af4b41a79f9c4",
+      "botorch_rs/models/_torch_backend_variational_likelihoods.py": "ca495661edfc50f38b0eeb89972ff771584602d28f9f1a748e89ec304ec7c1e4",
+      "botorch_rs/models/_torch_backend_wiener.py": "db8c1e7d4e46166f693edd65ff12cedbd3aa533e9196733238886069a205d9c3",
+      "botorch_rs/models/_torch_external_outcome.py": "4b55342a36ad3ba3723fb303f1c85fbc9099f7080fb785b854787d7bf9145b07",
+      "botorch_rs/models/_torch_fantasy.py": "a32655f30530d1bce18fc15665da2cecd9c847e2e3fe076f07b0e9765fa95187",
+      "botorch_rs/models/_torch_fully_bayesian_likelihood.py": "a5ba588ae75a538792f3a8897cefc96701da97e9807db8087604ce196ef57dd4",
+      "botorch_rs/models/_torch_fully_bayesian_loader.py": "9ef859b2632227677ea483deb51c32da06fe8f88b9a2d5b15cd5bf8c590a58f2",
+      "botorch_rs/models/_torch_gaussian_likelihood.py": "2c5f09318e059943dc1628981a96e1152a20b456cbe4c6a3ac05be953dd72b2b",
+      "botorch_rs/models/_torch_model_subclasses.py": "2688b3d997e559db434485449fe0ab963861e8fbfc81ad12bcf229eac35c4d8a",
+      "botorch_rs/models/_torch_module_elbo.py": "e0f957ee5f36a2b1f50d00ca0b78842dd52e03c4ab2a02aabc7245850eafdc00",
+      "botorch_rs/models/_torch_parameters.py": "ca58976b9265170694c4ddf2ce514c2c27132a035fd4f0ba83237e280e6fe62d",
+      "botorch_rs/models/_torch_pyro_modules.py": "24d8e5063519e6118ec3daa9c974b7eec0def7cd6d2bc46b242dbe9f63459311",
+      "botorch_rs/models/_torch_structured_iterative.py": "830020e01c1eafc480917c7d0d4674bf54b04209bca5247ae829ff76e722755d",
+      "botorch_rs/models/_torch_structured_likelihood.py": "aa5d9ddf291cc192f9b918f1c7d72778211e7e0ad23766ba73c34ed9c71fbbc3",
+      "botorch_rs/models/_torch_structured_outcomes.py": "77e38dd8dba8cb79ba71626e28325f131e2a1a12fc85eb1afd89d93b57c953de",
+      "botorch_rs/models/_torch_variational_external_likelihood.py": "6c7c90ab90b5eb153d80145d53365fd182e42d03f6e138c9f46e695215baef6d",
+      "botorch_rs/models/_torch_variational_factory.py": "2478103fea6f397265e2ab01aeb86cec8c379929dbc94b28d84d11f14c03f323",
+      "botorch_rs/models/additive_gp.py": "8777a5795ff0f2bf1bbab53b5b291d36c5ef7bf163885f2b2d1ce10d5f75bf14",
+      "botorch_rs/models/approximate_gp.py": "1380dd29a31c152b66a7515d1c1e82fc57c2f04f5ce48aa5095af92c8e8024e9",
+      "botorch_rs/models/contextual.py": "6361ae12ba0513853c2f9aee30b836a4ade6175b2ac3dd63b3eedfc9c9113cc4",
+      "botorch_rs/models/contextual_multioutput.py": "7df23bd65c65b06a40dbc504fefcbeb7ffecfc91f022c77b026fa72aacedb12a",
+      "botorch_rs/models/cost.py": "8033089a241cd4391fe54b65a3b7a2f7238ce7e4f6e02d26da32a578e96ecdcd",
+      "botorch_rs/models/deterministic.py": "63341fc3f9a5490ec130c4dd115c0fd4702e9da6f0aeadc62bf500a31b94a6c1",
+      "botorch_rs/models/empirical_gps/__init__.py": "23f1b67e94b028364487f5a96d83e9ec5fc0fdfe8f13a3be1b347bb466bd7b29",
+      "botorch_rs/models/empirical_gps/_conditioning.py": "96487cff77bc601929d4376eaa78bf1da2082dc7739b6571fd4ad3a487cd66a3",
+      "botorch_rs/models/empirical_gps/_torch_backend.py": "440f514c5b549bdd1b0f4b0391a892f3b3fbc485a98eadb8f1a22b7413d83091",
+      "botorch_rs/models/empirical_gps/_torch_em.py": "9daa23601ef0627064dd720d92be8f339955e481b8090b08972f08d2d4e9ecdc",
+      "botorch_rs/models/empirical_gps/_torch_em_helpers.py": "ac66386a06448693bd1b93a9521a93785209fc1a3cf5e5a53c80d687a80a0e81",
+      "botorch_rs/models/empirical_gps/_torch_multitask.py": "77f2df62475d2a0943316c32d94e7ff5abb30feefd140e7956d2a776029f4cae",
+      "botorch_rs/models/empirical_gps/_torch_spectral.py": "014e48f64975891a8549f3b4806af5f515326b1581d2e09c1693a46b12dd397b",
+      "botorch_rs/models/empirical_gps/_torch_utils.py": "13cf6fccf1b1fb343dcaf868868c3302deec68c2f6b704301a3e3b4296cdb816",
+      "botorch_rs/models/empirical_gps/em_coordinate_ascent.py": "adfa6e4cc9d82c26adcd8cfa9e04db2366ab4d7b3e86f64c56f53a0d85ed36c0",
+      "botorch_rs/models/empirical_gps/em_empirical_gp.py": "97abd297ebe395feb95b796352d83f6f1d7b5b5f7aeb15f622e95834ff9795de",
+      "botorch_rs/models/empirical_gps/empirical_1d_gp.py": "ad48cee87fd97589e780a92195de6b70304acf3a4d48bcac2e5c0f3c6409ee5f",
+      "botorch_rs/models/empirical_gps/multioutput_empirical_1d_gp.py": "35ba1655b2d754381bc91c71c6dbb5bd029f173a15971f5d678c5952cf930a96",
+      "botorch_rs/models/empirical_gps/multitask_empirical_1d_gp.py": "8727c3ee63cebe89fda7006a8dadcdbb4aa485ff60d86e6c40bc9bf7081062a0",
+      "botorch_rs/models/empirical_gps/shared_gp.py": "e0aaa4d676939c64ac9552ac3fd63896c7a0295468917caee335ea4635a4f76d",
+      "botorch_rs/models/empirical_gps/utils.py": "44c17ca51a977e82ab8276f3787f60770f645bdd0e1cf38f83bbba4a183155bb",
+      "botorch_rs/models/ensemble.py": "26607642a5d70c224924b99538feb1e9ece4770f60eec1a66efd80197044395e",
+      "botorch_rs/models/fully_bayesian.py": "2a2c317d0a865d71b87c91966ed329df6e7c68572a7e05bad211aee785800ba8",
+      "botorch_rs/models/fully_bayesian_multitask.py": "012824b7a23f40c4d5293140976b4110224753012bc724da5a2700fe3da8d1cf",
+      "botorch_rs/models/gp_regression.py": "e868119b49307ea9df3c815af4ea50f8eeed95fee57e52939c29998198339c72",
+      "botorch_rs/models/gp_regression_fidelity.py": "cdbf32991e144126ecb2fdb62358984dc7f0cb6c8a1007466b1d9ecca8f867e2",
+      "botorch_rs/models/gp_regression_mixed.py": "1b756c41ccdda4fbbfde8a36b8cda1bcee0b77372e0f4984030906996b33bc30",
+      "botorch_rs/models/gpytorch.py": "21afc77d60627225a928ce26842df8d382efa427bfc3a167790e8d5b53d5ec2e",
+      "botorch_rs/models/heterogeneous_mtgp.py": "f953ecd78c48a0e91a63cb82b27af4371b42773128a7455f719652b6d26819b8",
+      "botorch_rs/models/hierarchical/__init__.py": "8f8d4c683922408172f4243b1cb206f9a73495d01adbbb47e507c1229b0e7dbf",
+      "botorch_rs/models/hierarchical/conditional_kernel_gp.py": "ee29f887c969830191a2af48005b7a27ba897e00443e9a06ecca626a88fd5805",
+      "botorch_rs/models/hierarchical/utils.py": "0262891d3fb1f2097290266fdbb98d9471122e9cd30fc257208d983391ed7a9a",
+      "botorch_rs/models/higher_order_gp.py": "d4a88209ffa6996451d6c9b1eeb28fec1b8d1e816f2bed2259f6f5ff25a12f44",
+      "botorch_rs/models/kernels/__init__.py": "a57da3936e28448a0e1150c3d6934b87b5e91a29d98c273fa8a79dde7997cc70",
+      "botorch_rs/models/kernels/categorical.py": "74ef7ffcb7e6243e8fc60fcb8288902578bf73e763e505a3578befde7d013fd7",
+      "botorch_rs/models/kernels/contextual_lcea.py": "26578388f663ced0a2a9dae1cb715b1d543f1fab340e477a3b7f77968214f5eb",
+      "botorch_rs/models/kernels/contextual_sac.py": "d136f2adfa385ebcb8fdf15bb8e125fe88582763319a0d7825031e0252b475fe",
+      "botorch_rs/models/kernels/downsampling.py": "669e6a751452767a24af802b8ab81c7e14b8349f24fea55b329d6299c672c580",
+      "botorch_rs/models/kernels/exponential_decay.py": "af42239432e3f39d5391d0c400d9b5a2e3095c59f30ce2896b3067a49a244b9a",
+      "botorch_rs/models/kernels/heterogeneous_multitask.py": "1999f96df2e3531b474cf3d66acb347293cffe5f7a762629debe65019a841ca0",
+      "botorch_rs/models/kernels/infinite_width_bnn.py": "c4ce3228d28cf73e6d83d0926a796509bd860cff31a31af3eae5474c78f818f9",
+      "botorch_rs/models/kernels/integrated_white_noise.py": "8abaee3f3aec5d3869bcd5e4e9632042a4d20d0ed98c19476db6ca7fe8b0c308",
+      "botorch_rs/models/kernels/linear_truncated_fidelity.py": "34d7d5153d8ac839a11028d2d355fac5586dd3c757d3f71e6f39046a755e06de",
+      "botorch_rs/models/kernels/orthogonal_additive_kernel.py": "befdefd3625a73377d87f4d5641119284dbb54d1f6373752e03732b68e8274b8",
+      "botorch_rs/models/kernels/positive_index.py": "1449aeb8e4d741370fae2f6999d37e8c8b5db4e4a0c66ec1f67fba4b4774072d",
+      "botorch_rs/models/latent_kronecker_gp.py": "17b30e22929edb43b88e239ccc6f0e5d1772ddadb284bbf883926c9880f0d337",
+      "botorch_rs/models/likelihoods/__init__.py": "a5a78572fc7c4567f27a56dd40ead6357790ba45ee45b2a30e169cdcbfab869c",
+      "botorch_rs/models/likelihoods/pairwise.py": "601e1b5a6fd108f88a2e2f35707eef0fad0081b10cc6f442a2d24ef699d41acd",
+      "botorch_rs/models/likelihoods/sparse_outlier_noise.py": "bba4061b230a81afb6f2a96a0428b04794f151ecec2302989a0eeb11aa5f7439",
+      "botorch_rs/models/map_saas.py": "60cfae221c28482b635e90a84f34d3b7d486237bf8d3336ef713df6c140d0074",
+      "botorch_rs/models/model.py": "ab4b7e383d1721ec9ccf1ea7bda0300195d1a319188d2840687644a154406572",
+      "botorch_rs/models/model_list_gp_regression.py": "d016dec36423134463a2d886066256c6cbc937e162fc38b421da8ec45156dc57",
+      "botorch_rs/models/multitask.py": "641a9f6370a626a495750f5ae252af7aae5238488dc14f911d0f9bc079e36dfa",
+      "botorch_rs/models/pairwise_gp.py": "3b5ad1509d60b860adaaf1cb0dea33cce44c30a3ea0772f15e92d3382245629c",
+      "botorch_rs/models/relevance_pursuit.py": "fb5b4aeea1747950c8ad307119bd05091c4139621ff6a0dcf6d5748eadf7de3f",
+      "botorch_rs/models/robust_relevance_pursuit_model.py": "df8717afffc6d5d173cbd242bfc34ab3292c8f31b0998aa37d933fa7b2948bdf",
+      "botorch_rs/models/transforms/__init__.py": "e2cf865d8ceac10d7635b3fd47e340846bc7c59126e1cdec5fc84137d900d14a",
+      "botorch_rs/models/transforms/_input_pickle.py": "12bd276d5f6cbb96f4b285caf3444f8bdbdee0d2b0cf5859849e6b3022128008",
+      "botorch_rs/models/transforms/_outcome_pickle.py": "d9c5c3334343e131b139a21f4e42b24ab5af04a8608c5247ee4df0ee0fb2eb14",
+      "botorch_rs/models/transforms/_torch_input.py": "40746cb6c03d3be04bcb8196abc52a4456329ae097e01edf588c1f56fb869505",
+      "botorch_rs/models/transforms/_torch_input_module.py": "dd449de972a982c484e96fba383fd02b4cb1ffbf0ada07957e3fb628600d89cc",
+      "botorch_rs/models/transforms/_torch_input_protocol.py": "dcce1b86362b68114a64e9eb7f2aea385ce129a55510f98c5759dc4c4a30fb53",
+      "botorch_rs/models/transforms/_torch_outcome_module.py": "e4480ad30d669aeca3ee0fd263fde7f386a3fe9c822071d5e9791565895899e6",
+      "botorch_rs/models/transforms/_torch_standardize.py": "66686653f7603c6337b11333a3a13d8f941a3b1365a5dcfa6d6fad5c569a1af5",
+      "botorch_rs/models/transforms/factory.py": "c0f90799bb3f6da793b7c09a6fcfc7794a7ba49f59735a0bd90f275f6734a107",
+      "botorch_rs/models/transforms/input.py": "95b49b84aef871522008052debfcd1089ce270a20f3c5e1f4feff05b1b774d3b",
+      "botorch_rs/models/transforms/outcome.py": "4fc375ce7b3c22c2e2a6d5cec45d6102a430f096077b428ca415e0a76663624e",
+      "botorch_rs/models/transforms/utils.py": "23eadda9ef2f124d8117366914362fc65564cbcc6a57e0d370bc95ecb7e61d82",
+      "botorch_rs/models/utils/__init__.py": "c661a1739130bc80396302a71e9fbdd2ebf51cdf2bbdd801d9463a088f649907",
+      "botorch_rs/models/utils/assorted.py": "98fbb9abbc7f49c24de4f40c132dbbabf82d066faa67a0f86ce09e7410586b0a",
+      "botorch_rs/models/utils/gpytorch_modules.py": "52049504548e90658d25fe34eff2a1e0615ff46276517d680307b2ded9380dda",
+      "botorch_rs/models/utils/inducing_point_allocators.py": "32f511719bdac87a4869f224488afd5dcf67025b528c0249c62ee1856a70961f",
+      "botorch_rs/models/utils/priors.py": "112b37de05200094934a6c876423d29f0edf87bf950a3617b1c1db33fdaf8151",
+      "botorch_rs/optim/__init__.py": "a92e4e3387668c1f9ca66dfc87b9d46682589e6d244faecbd91b84af80786398",
+      "botorch_rs/optim/_torch_acq_discrete.py": "4d2b0187862ed441dc23771707072e8d5f84b91d0f6169dc9b149bfd3b506ea5",
+      "botorch_rs/optim/_torch_acq_initializers.py": "c183e99533abd40c1efe1448a5e7ce1331832263ad4b4ba5784a167fdbefd8b1",
+      "botorch_rs/optim/_torch_acq_mixed.py": "329b6ea9cad0c3b43f9262e62052ee62b25f7bee4faecfb7cdba14349df97f26",
+      "botorch_rs/optim/_torch_acq_optim.py": "2b4df8dc09c2c58d576f548fdc4dab8cbf4e529632ea68f8bea893352ead396d",
+      "botorch_rs/optim/_torch_acq_parallel.py": "5cb33f855e85a1593f8352144b821787f8f464c185ca7531b60f685cb840138b",
+      "botorch_rs/optim/_torch_backend.py": "faac286ab1a51d5aef3be8d57ba3c7a3ce5829c34c4ea7face4027a076509532",
+      "botorch_rs/optim/_torch_initialization_sampling.py": "81fab515929c41830927d024d9e536743bf8905e702ea290e7d61968d62fb53b",
+      "botorch_rs/optim/_torch_kg_initializers.py": "07a349715ece71d9a233cf769bf2aa8b16ae9700ba5500c89b4a1d7c5766e48c",
+      "botorch_rs/optim/_torch_optim_utils.py": "5dfe35ae4b8d89ce8e29639110acac6a0fdd38af4577ee9ad66736cd7c00bc32",
+      "botorch_rs/optim/batched_lbfgs_b.py": "c8a81dfe5b7c6145c45d175a6efa2eb3f5aac3ee6337e0b6a8f1694e51635d72",
+      "botorch_rs/optim/closures/__init__.py": "ec36581f884004323bb68ea446f34b45ae3250021f4f5189cb04c28bad962116",
+      "botorch_rs/optim/closures/core.py": "8584de722b6d7a436f0744079a6d34bf88ff7426b04ff1a069eed5a2880069bb",
+      "botorch_rs/optim/closures/model_closures.py": "4fe1d6aebfa55413103ed29171e822f0ae1943e3bbb582cf265a22e3f6b8a815",
+      "botorch_rs/optim/core.py": "dce80cb0342f53fb932a104672dadeb4f74e07f0e9c5b51d024075b34173e8c7",
+      "botorch_rs/optim/fit.py": "2c1f4f775617ccf4237c56058cc68d42ff9019b890f2693d275a4279b64cf28c",
+      "botorch_rs/optim/homotopy.py": "8e531846d71572f10fabe7f12b9a66a9d3b836cbdbaacb093c118c625eee244f",
+      "botorch_rs/optim/initializers.py": "de0d52ba4ae84dc08043b1483a766dbbe6e0a5dba5d2eb48dad9aca9e3fc6d21",
+      "botorch_rs/optim/optimize.py": "789ec3958994b1ee4049f9e3eb697a0c12c67a1bddbe211ec149a7ec69130e96",
+      "botorch_rs/optim/optimize_homotopy.py": "3c098c4358d384d4ad8d9a42da9370ac53438ef614c78b6dd972fc6baf4bc552",
+      "botorch_rs/optim/optimize_mixed.py": "2b97c9b3e140d0b85789ad60b3bf6cb5aaf2c5c7e6c1daf7587e3e83b03842f7",
+      "botorch_rs/optim/parameter_constraints.py": "2e6872ada78f653961679f691c8c534c80d83cda113dc16c8ad457453d619140",
+      "botorch_rs/optim/stopping.py": "bc01183509ded05712901a18c90561e9bf98bc96c0899d822c50ea1a24658daa",
+      "botorch_rs/optim/utils/__init__.py": "895e17eddf0f6a5d4f61cf545514fde80afb12f33475c7d89c1247c8c684e8a5",
+      "botorch_rs/optim/utils/acquisition_utils.py": "8b4c66e5006f032937914fdf1e5048b7c0952dbeb3ce1fce9fa52db7b0c2f16b",
+      "botorch_rs/optim/utils/common.py": "90ff39ad7b7c3b68c6edf49387b0686cf9169a6f68bee75b3da516d5ead85b4f",
+      "botorch_rs/optim/utils/model_utils.py": "c8a5d20ee9fdd66d2927002844cccea4f56b8da87610090ebdb85da8da3e2635",
+      "botorch_rs/optim/utils/numpy_utils.py": "074848d671dde5628bad00f02fbbeee030735fb203b7498c6ea6a30231e34bd5",
+      "botorch_rs/optim/utils/timeout.py": "5f8de59271dcf03f970df51eaf19657b0ce37c5847df9314db4f6d366903941c",
+      "botorch_rs/posteriors/__init__.py": "8c51cce13f1d2e7ed90b6a64f604ab58292e57c8808d087f154b1111c89962cb",
+      "botorch_rs/posteriors/_base_samples.py": "6de6b9faba138501620aefd07ecf633d96c04b7b809d543589d33d65c7bbb33f",
+      "botorch_rs/posteriors/_distribution.py": "e0cccac54566980ed014e2bb3533112c7029c6ece48b9d11fd5dc73829406b31",
+      "botorch_rs/posteriors/_parameter_autograd.py": "6cae653df0b526a2eb4699dfd78d1f233031530f2bc912430a6d97ab9d974b44",
+      "botorch_rs/posteriors/_query_autograd.py": "4a6206197ad4b165dda51c64c7ef73ba0dc1dc1a0fbbac4c6499d9ddbdcddaf3",
+      "botorch_rs/posteriors/_structured.py": "21c59f5b8d570cdcbe532f0eab48a0e2951228d33201516b93f74c03e6d4041d",
+      "botorch_rs/posteriors/_structured_query_autograd.py": "bc24465f0cb6fdea17a3d3f8307b5df301c299d8202edf1ec45f85a489ed5487",
+      "botorch_rs/posteriors/_torch_backend.py": "efdc3742cf3258a5a3e9aaf9b234a79bdebf4eecf2143a3fd7efb8ce11416819",
+      "botorch_rs/posteriors/_torch_backend_list.py": "05c6c581cebd03650f89bcd5f04b7a587fa808eddb1cf59757667866da4b6e2d",
+      "botorch_rs/posteriors/_torch_ensemble.py": "7a171bf2dcf2e77491b34c74096b6120bf9d3057bfd9fce6e952adf0b8434a28",
+      "botorch_rs/posteriors/_torch_gaussian.py": "11c39166280944b1d8e0f01406968f589eb7388a95538da6ea04c711f0f58dd1",
+      "botorch_rs/posteriors/ensemble.py": "fb215cbf5a7a49cfc29c8e06e7a5cfeadf704f31924753164d791becfb0a1daf",
+      "botorch_rs/posteriors/fully_bayesian.py": "aa902251e1949e88688370acbf6bbefb98f3e997a50a57719a3e9f203fae88c9",
+      "botorch_rs/posteriors/gpytorch.py": "74a3df097ca5dad4aaf851f6d0aeddaea78937d7a274b10bca9a8fef8a6afe59",
+      "botorch_rs/posteriors/higher_order.py": "28207f88a6e161a44157fdd783e141fa2987b02f4d9ced38e6b34edee3569f48",
+      "botorch_rs/posteriors/latent_kronecker.py": "4f9cb1aaf22151fa04e3ac157c805b589381456bee446224403bb6343f746dde",
+      "botorch_rs/posteriors/multitask.py": "d0ad35505442feb98bab68857587c82541d6ff7b7fe641089b99d7e34ff4c13c",
+      "botorch_rs/posteriors/posterior_list.py": "14d270d1a0f24b818cf5a28908f7d29258fd981a4348ca03fcdc3a3d8c13f97e",
+      "botorch_rs/posteriors/torch.py": "fb581cd2fba247e306d8ab3ef7b3a14f3d5efb7da6bf69a14842c0920820c56e",
+      "botorch_rs/posteriors/transformed.py": "af6ef83fb01c02fd84f71000685368bf6d4ab3ea654edde0301de00350b0e4d1",
+      "botorch_rs/priors.py": "e336174fe3b5a86d1fcc8d67279a923193aca0cff67c61dd4e2436c65937ad40",
+      "botorch_rs/py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "botorch_rs/sampling/__init__.py": "3a6b14601dcc34c078180e5ddaf13fa4389ea90690c4a9b8e440ac38136bb2ef",
+      "botorch_rs/sampling/_torch_sampler.py": "a48922d555c4da403fbf5e9b63566dafa85a42ec94e24055122c3c9549dd4be7",
+      "botorch_rs/sampling/get_sampler.py": "5fb0ccf6b41cb21ae217cd943edaea1df84fc6f6e06d74e322cd768e959c7377",
+      "botorch_rs/sampling/index_sampler.py": "e71f35b967d6d3f2a784b1ee47e9aaec59e57e6fb132eda98c30dadfc7768598",
+      "botorch_rs/sampling/list_sampler.py": "a4fea8647fc422ef715438f6703fb68613ec9de4c00a1395faad0810f8b7abbc",
+      "botorch_rs/sampling/normal.py": "5dd2d9ca8217ab11ba7dff5e79f0403aa62b91898ba0281f688bc3edf2094e1f",
+      "botorch_rs/sampling/pairwise_samplers.py": "0711fce4942ed3ee4454ca15140c5c1a758e17ec3217256425173f908718c8d5",
+      "botorch_rs/sampling/pathwise/__init__.py": "311caf501edcee0b1e1cb6fcf15fba5d4d4ee9d15e1d2d86a03518caadcaf755",
+      "botorch_rs/sampling/pathwise/_autograd.py": "35f1dfcff2491e11bea61b39d74f36aef4f768d8b114109efef5313178dd9f12",
+      "botorch_rs/sampling/pathwise/_native_updates.py": "925b3ab72f344bf9aee8db43a31da2f4c1c6a72bb51369cbc4748aa56770f9d3",
+      "botorch_rs/sampling/pathwise/_torch_backend.py": "9322fffdb1c083e5cb622cee1f76b1030b3e9a8d8e2e7186112a411835857e95",
+      "botorch_rs/sampling/pathwise/_torch_modules.py": "458f174df5a0de8d0fb5cf2195854d1b91541322b814f5913ba2d8c0dfdc1979",
+      "botorch_rs/sampling/pathwise/_torch_transforms.py": "9959efa2695eed72368f1b9c113b4853e63200f21329b4fa4f26b45c8dab7ab5",
+      "botorch_rs/sampling/pathwise/_torch_types.py": "929482c7b6849f4da7c585a3ee8c2a7b37e5309fd1d79c797a3137e165f6c43d",
+      "botorch_rs/sampling/pathwise/features/__init__.py": "12872e8ff6ae934e116f587765fde4ffe348c9b1511b0da66cef99329e5a0a14",
+      "botorch_rs/sampling/pathwise/features/generators.py": "c0f500a82a309ea18e59dd97bab2c97d5040edd525304e4aca6cc73524bad9ff",
+      "botorch_rs/sampling/pathwise/features/maps.py": "20ebbd3cd323871d8fbcc663e237a1291c40759eed6ee57c72516cf99e5f263c",
+      "botorch_rs/sampling/pathwise/paths.py": "b5ad8374c21c9e41d0bd6f0d64870fa7db25740c7ff09a922a4e2e3db81070f7",
+      "botorch_rs/sampling/pathwise/posterior_samplers.py": "25e55ef346e58e93ea9b5978a50d2d42db00034f9d30501d302ff6285533cee5",
+      "botorch_rs/sampling/pathwise/prior_samplers.py": "840ea570a6ddb7fd5960694d56261883f4e364d3bf8c74807fdc51dd2d1ba22b",
+      "botorch_rs/sampling/pathwise/update_strategies.py": "90ddf64c7a0b206fd5d906129fcaaa869bb9721189e96a5f040dec47fb2a806d",
+      "botorch_rs/sampling/pathwise/utils.py": "56cf915662c2302a212485d2b86bb1b4b82857b417be460a5cf17b1e46e2ea0f",
+      "botorch_rs/sampling/qmc.py": "65b9be8047f2ab70f3e576a05d41c3890dadd023d703846b2742fbb05aed0e15",
+      "botorch_rs/sampling/stochastic_samplers.py": "e7dfcf33344505e2b6f6d072cfff83a7abb557f631b299ff657788d231be0ead",
+      "botorch_rs/settings.py": "b8ed4d03673f96f4e9b5d022825310c1e1e9c1382c6b3c1186e9538114803900",
+      "botorch_rs/test_functions/__init__.py": "614bd5b6b06fd5abd3b80030740b76a800a9f0a78a4a6bbf850b77604ae00751",
+      "botorch_rs/test_functions/base.py": "6310f9d2f66573728a85c7b668e872cb78c20a8800c96ffba8afc881be32c52c",
+      "botorch_rs/test_functions/multi_fidelity.py": "5adea01dab8ba8c50907fcef357fc90b7377e74feb4a08efb2c4bcb0050b3535",
+      "botorch_rs/test_functions/multi_objective.py": "1f82879ac8a28750821d2c4f9456d248a96844b932ae25cbdac1712127393128",
+      "botorch_rs/test_functions/multi_objective_multi_fidelity.py": "c3374664a9c9f831927d5b487c669165e550373c3131243ce8677fafa0b60ac4",
+      "botorch_rs/test_functions/sensitivity_analysis.py": "d806ee3e1c09891ee79f5bf73493d79f9a3d1d60e8f682583cce4885b7f9071f",
+      "botorch_rs/test_functions/synthetic.py": "6a2e783eeae5ad68425bbf20c71aa70ac98a5a9aff758ffb3cab933b2400cce5",
+      "botorch_rs/test_functions/utils.py": "a5a15cc60ac615444669314ba675498c698ecbd0bd706681858cb194c3dcd104",
+      "botorch_rs/test_utils/__init__.py": "9197e25e1826f62f04baa333c7df2844796b637fde5332973a5a4d55cdabf9c9",
+      "botorch_rs/test_utils/mock.py": "bdec1892c2a67729fca1ef5d2c42462bbfd4ba530996a3a32f4a1ca710064fdd",
+      "botorch_rs/utils/__init__.py": "1cf2b5b3887141ed8a55ca5923bf0e8dd96f8bbce941b5f4f405886c11811a66",
+      "botorch_rs/utils/_torch_low_rank.py": "da2824b373cb5e4fcb2220cfbcc5dfcb206c75a57ac2fe152fb8d9a186b90691",
+      "botorch_rs/utils/constants.py": "a2338296ee9baf3d73f4de2b5e130d4c9d3b4e00dfae7070e1d22a2d775a6ad0",
+      "botorch_rs/utils/constraints.py": "caa07a57c3df46d21d7b4b5bcc0ffc0cd61617d4ededa826c4938ac8ea0c6861",
+      "botorch_rs/utils/containers.py": "e4b903456265fa8b7f76c8b6dab4f0e5e19a860b9cd0454bcbfefe2a24b03885",
+      "botorch_rs/utils/context_managers.py": "5e4c65e5803cd5c5d5ca0b3504872c18e4581af68107b1da184f696150bb6a75",
+      "botorch_rs/utils/datasets.py": "5bc2efbfb493078f144816a7258bff0f1ef5815ce5031e308c37d10c9b567225",
+      "botorch_rs/utils/dispatcher.py": "9f56d1f1623ecbc3b22240f0b56014560963bc4877a99c860de4fb3d45b4b78a",
+      "botorch_rs/utils/evaluation.py": "d2ed0742c1d65e0704f85dbffa9e89f46b2ac9d6022619a4e7c4afb35878d97a",
+      "botorch_rs/utils/feasible_volume.py": "eed361bae5291e6e8707617b93ec3e76d4b92d7975dec31708f807b2db6f92e8",
+      "botorch_rs/utils/jax_utils.py": "8d82614ea73b637c91011962b7f375148060a6cd67f59cd57fe2dc5b6d377c33",
+      "botorch_rs/utils/lcbench.py": "0f805454ccd95e0b93546c25ab1a336d7e47052c7a723f86c0f30bc867c2c32c",
+      "botorch_rs/utils/low_rank.py": "5f01003b81361c534082771db95495f29b110ac212b02cbd98f553f8d74894ea",
+      "botorch_rs/utils/multi_objective/__init__.py": "ac39d5802db4c28a47b93d777d4cfdcf6656c63ceb7eb1161fec0db5d9a35dd5",
+      "botorch_rs/utils/multi_objective/_common.py": "3e73893050d9c7558895adf9d813328ed9c47327e574cf709ea35f18fb6170a0",
+      "botorch_rs/utils/multi_objective/box_decompositions/__init__.py": "2e5acdb039aec383661bb1f38e87b50d04211eac2b5bb9d93c44f5d2457ef6bd",
+      "botorch_rs/utils/multi_objective/box_decompositions/box_decomposition.py": "ed33ac7e6d70cea0e35a4b76caf1ce7a132dd313f1c54cb2665e791b8572b1b5",
+      "botorch_rs/utils/multi_objective/box_decompositions/box_decomposition_list.py": "c42e28a2157f165501da811f3aef447c0d1329a650d01503b0bcf7586419b0b7",
+      "botorch_rs/utils/multi_objective/box_decompositions/dominated.py": "4bdc8895fd91c59f64d4143ba95f982f200887ebc5db6564e4f7fbab425640ab",
+      "botorch_rs/utils/multi_objective/box_decompositions/non_dominated.py": "a865f519bfb39bdfc556e4638dbca50b6eaa393bf6c60ab02f5dc4df9c15bc0f",
+      "botorch_rs/utils/multi_objective/box_decompositions/utils.py": "87a72f10c8e10f20919f416254f1565d263aabb023c290e4a528cc082eabca1c",
+      "botorch_rs/utils/multi_objective/hypervolume.py": "370f8de541406dea7cf8788090b9a7977646ee90892100ba28f975404d9f6b56",
+      "botorch_rs/utils/multi_objective/optimize.py": "84942b968dd5bab95ab1e5667efbb7c529c051fcde0c5d1f8abb9e8353b75bb7",
+      "botorch_rs/utils/multi_objective/pareto.py": "4f97ace83368fa1e7e51b53f55df8d5424fc98fd0a8ee4daecf9841a8f97958f",
+      "botorch_rs/utils/multi_objective/scalarization.py": "0b4ddae10ffafb68dfdac6989c27431a8b06f1712309a173fd579ee8fa53bf3b",
+      "botorch_rs/utils/multitask.py": "c02637d0af9b3a32546405341e3e4e86056ac717cd2410978c049582d1b78331",
+      "botorch_rs/utils/objective.py": "12e47fe464bd582d5dc64a7a75f59796721a716f6d2a472fc0dbe9652fe8f114",
+      "botorch_rs/utils/probability/__init__.py": "e21d2731ca5485a0859c1f02d558083b7a41ed4a8906141744595cc7a3c5dc5e",
+      "botorch_rs/utils/probability/_torch_bvn.py": "30e702d0ef3da736d9e7daf9a2f22869ff3185b0d62a93cae8d3fc3c1ff1837b",
+      "botorch_rs/utils/probability/_torch_mvnxpb.py": "5d93a23aec3dd59ed397e40032a95f68ff24055289cba0f9faace60f1f5e5ad9",
+      "botorch_rs/utils/probability/bvn.py": "602ec370f0220d2eb658ab01c3e0c185818791b4d0f80356e2a4591b66f6c511",
+      "botorch_rs/utils/probability/lin_ess.py": "83efc2d772cc13f6b1fd0728b552102c6d25f1189c2c40883327cc00808863d0",
+      "botorch_rs/utils/probability/linalg.py": "d019291657498341f4c2d4c2befd09496c3b4aea15c2e5bac268a8b093299b66",
+      "botorch_rs/utils/probability/mvnxpb.py": "e8e0b4d93e2a8c11f2c6f04be403bfc3838e85521b1d80e2b0ecad5df0f20c87",
+      "botorch_rs/utils/probability/truncated_multivariate_normal.py": "2273f1033146363cbf9bb9f29d285510a1dbb7cc80dcdd9a0d41e7a4d4b44db7",
+      "botorch_rs/utils/probability/unified_skew_normal.py": "3a3ff8a6df01c340da86025a66289d0840761afb75ba3243f035d7f68d936f35",
+      "botorch_rs/utils/probability/utils.py": "cb7c7618c0e906c471ab7f7ecdbd181f3e1d77eb0b8728aaa49e2ad63db2a02b",
+      "botorch_rs/utils/rounding.py": "1b08184178540d86a770d5fb3ea0c2a4c458faec912130da0eca1e514c2c2fee",
+      "botorch_rs/utils/safe_math.py": "4e3ec2d7b027633f7a6b2de3234e59cc6275ab1d4077db51d76902df296d997f",
+      "botorch_rs/utils/sampling.py": "59666eb147c9dc4daf979983f06c5c676d91e968c3af603fdc54963acb203e24",
+      "botorch_rs/utils/torch.py": "0207a10a1e3a4fb3ca6ce7a868cdbc5152cdd82d7f21e5dc438edea87fe604ce",
+      "botorch_rs/utils/transforms.py": "5c2ed79748d78823b237c430114fd2afe6b987bf5c75be4ffd9abcd44cd4b95b",
+      "botorch_rs/utils/types.py": "a26aeba0c7d90344f6bccfe6a131c34ad73fa67287d303ff5831a998bcb3415a",
+      "botorch_rs/variational.py": "0742084f4d3b25047d8a650949da8f512cae73b7429ee1155ad122ffd8aa6d56"
+    },
+    "manifest_sha256": "8492e3b9fbea752978de9cdf1a6f7c70d6272e0733d4312db6bb6e351ce69571",
+    "manifest_encoding": "UTF-8 sorted-key compact JSON of sha256_manifest.",
+    "installed_root": "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\installed",
+    "source_text_root": "D:\\botorch-rs-release-030\\botorch_pyo3\\python"
+  },
+  "stable_source_fingerprints": {
+    "head": "258ff6b544159b2c5e2797c331e39f1095ab7a3d",
+    "status": "",
+    "reference_head": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "reference_status": "",
+    "reference_payload_sha256": "4232f1f71d4163aa230a768e66a582149ac0d6f3ef7f5c05bff010cc262a3428",
+    "python_payload_sha256": "1f6c36758b71d57e222445f532bdc32892c7ea73d66fe6b1af8c3520ee2975ef",
+    "python_file_count": 358,
+    "installed_payload_sha256": "1f6c36758b71d57e222445f532bdc32892c7ea73d66fe6b1af8c3520ee2975ef",
+    "tests_sha256": "db8d8f9030809c0d11d0b308e6058e3376637bfbe8d887918be7b48a75c49700",
+    "test_file_count": 367,
+    "worker_sha256": "f46152ac48674e7c378b59be7c23ddad3ee6d457974b5694e6fb76a633bf9794",
+    "controller_sha256": "0c64c7c0697c52f351599da6fffe1120d4b2d0e8d5534a687d1a8ece2acbcfca"
+  },
+  "reference_pin": {
+    "root": "C:/Users/Mark/Desktop/botorch-rs/.reference/botorch",
+    "revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "status": "",
+    "python_payload_sha256": "4232f1f71d4163aa230a768e66a582149ac0d6f3ef7f5c05bff010cc262a3428"
+  },
+  "import_provenance": {
+    "python": "3.13.12 | packaged by Anaconda, Inc. | (main, Feb 24 2026, 16:05:56) [MSC v.1942 64 bit (AMD64)]",
+    "executable": "C:\\Users\\Mark\\miniconda3\\python.exe",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "dependencies": {
+      "botorch_rs": {
+        "distribution": "botorch-rust",
+        "distribution_version": "0.3.0",
+        "imported": true,
+        "runtime_version": "0.3.0",
+        "origin": "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\installed\\botorch_rs\\__init__.py",
+        "origin_sha256": "087b66c3a049ee6f2f3a28ceca3956acca1f486a63c8c5343e2269b1a6babd90"
+      },
+      "botorch": {
+        "distribution": "botorch",
+        "distribution_version": "0.18.2.dev41+gb0dd01be6",
+        "imported": true,
+        "runtime_version": "0.18.2.dev41+gb0dd01be6",
+        "origin": "C:\\Users\\Mark\\Desktop\\botorch-rs\\.reference\\botorch\\botorch\\__init__.py",
+        "origin_sha256": "6b1554310c7296b2bb63250fb834f3c869e4ac6777daffd762b2f213ad11fc81"
+      },
+      "torch": {
+        "distribution": "torch",
+        "distribution_version": "2.13.0+cu132",
+        "imported": true,
+        "runtime_version": "2.13.0+cu132",
+        "origin": "C:\\Users\\Mark\\miniconda3\\Lib\\site-packages\\torch\\__init__.py",
+        "origin_sha256": "767496b63c899ec3d1106a4c1eeac664a9b3947a9b2f9eefa7a901cdfe8a0288"
+      },
+      "gpytorch": {
+        "distribution": "gpytorch",
+        "distribution_version": "1.15.2",
+        "imported": true,
+        "runtime_version": "1.15.2",
+        "origin": "C:\\Users\\Mark\\miniconda3\\Lib\\site-packages\\gpytorch\\__init__.py",
+        "origin_sha256": "7a7a184dc115f667ac928e5dea9abbef140eacb41fa8f6f327efa5cb4a965f71"
+      },
+      "linear_operator": {
+        "distribution": "linear-operator",
+        "distribution_version": "0.6.1",
+        "imported": true,
+        "runtime_version": "0.6.1",
+        "origin": "C:\\Users\\Mark\\miniconda3\\Lib\\site-packages\\linear_operator\\__init__.py",
+        "origin_sha256": "8b408f0fed2d9ffc1a1d167e62b403c1dbe966da33a0bdd67c64c530ca856d35"
+      },
+      "numpy": {
+        "distribution": "numpy",
+        "distribution_version": "2.5.2",
+        "imported": true,
+        "runtime_version": "2.5.2",
+        "origin": "C:\\Users\\Mark\\miniconda3\\Lib\\site-packages\\numpy\\__init__.py",
+        "origin_sha256": "a6958cb364663b7acce81ccfd58eeb65a2b34d5376157f924777b97211a73be4"
+      },
+      "scipy": {
+        "distribution": "scipy",
+        "distribution_version": "1.18.0",
+        "imported": true,
+        "runtime_version": "1.18.0",
+        "origin": "C:\\Users\\Mark\\miniconda3\\Lib\\site-packages\\scipy\\__init__.py",
+        "origin_sha256": "a11ad8a1eaf423d32a0d3dd6c9be6c7be86068321f043dacd2d555a49418b92f"
+      },
+      "jax": {
+        "distribution": "jax",
+        "distribution_version": "0.9.2",
+        "imported": true,
+        "runtime_version": "0.9.2",
+        "origin": "C:\\Users\\Mark\\miniconda3\\Lib\\site-packages\\jax\\__init__.py",
+        "origin_sha256": "01565d964875ee541dcc12a49638371dcad7def06b55d8b8443969c8b5019255"
+      },
+      "jaxlib": {
+        "distribution": "jaxlib",
+        "distribution_version": "0.9.2",
+        "imported": true,
+        "runtime_version": "0.9.2",
+        "origin": "C:\\Users\\Mark\\miniconda3\\Lib\\site-packages\\jaxlib\\__init__.py",
+        "origin_sha256": "2a5b37b2bc9802769f45ca43de7cdc1a8b532f0afd2bf9542131ab68f649c4a3"
+      },
+      "numpyro": {
+        "distribution": "numpyro",
+        "distribution_version": "0.21.0",
+        "imported": true,
+        "runtime_version": "0.21.0",
+        "origin": "C:\\Users\\Mark\\miniconda3\\Lib\\site-packages\\numpyro\\__init__.py",
+        "origin_sha256": "a76bb4e041234be9bd16a2cd968e7ed9fae472f7ab2e2486e117052a3c78400d"
+      },
+      "pyro": {
+        "distribution": "pyro-ppl",
+        "distribution_version": "1.9.1",
+        "imported": true,
+        "runtime_version": "1.9.1",
+        "origin": "C:\\Users\\Mark\\AppData\\Roaming\\Python\\Python313\\site-packages\\pyro\\__init__.py",
+        "origin_sha256": "2e1c7fabaa2580ef9ab1611f6581167431fbdd732f08b086236008a2bd432287"
+      },
+      "pytest": {
+        "distribution": "pytest",
+        "distribution_version": "9.0.3",
+        "imported": true,
+        "runtime_version": "9.0.3",
+        "origin": "C:\\Users\\Mark\\miniconda3\\Lib\\site-packages\\pytest\\__init__.py",
+        "origin_sha256": "7be7a1e2218dc59a19d1ad131e4abe21172a295087efc72898938248782e8766"
+      }
+    },
+    "cuda": true,
+    "cuda_devices": [
+      "NVIDIA GeForce RTX 4050 Laptop GPU"
+    ],
+    "torch_cuda_runtime": "13.2",
+    "reference_blocked": false,
+    "reference_block_scope": null,
+    "native_origin": "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\native\\_botorch_rs.pyd",
+    "native_sha256": "8fa0323b0b1cf80ab4e35dee8216de497586c3213b8489a79abf5bf492ee3675",
+    "worker_sha256": "f46152ac48674e7c378b59be7c23ddad3ee6d457974b5694e6fb76a633bf9794",
+    "controller_sha256": "0c64c7c0697c52f351599da6fffe1120d4b2d0e8d5534a687d1a8ece2acbcfca",
+    "build_manifest_sha256": "1657cd1bea0d962fcadff898763b4120738d3803f713b2a43a3687b79d85d5b1"
+  },
+  "commands": {
+    "controller": [
+      "C:\\Users\\Mark\\miniconda3\\python.exe",
+      "D:/run-botorch-release-verification-030.py",
+      "--root",
+      "D:\\botorch-rs-release-030",
+      "--extension",
+      "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\native\\_botorch_rs.pyd",
+      "--reference",
+      "C:/Users/Mark/Desktop/botorch-rs/.reference/botorch",
+      "--installed",
+      "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\installed",
+      "--build-manifest",
+      "D:\\botorch-release-030\\checkpoints\\258ff6b54415\\build-manifest.json",
+      "--output",
+      "D:\\botorch-verification\\release-030-258ff6b-full",
+      "--files-per-batch",
+      "5"
+    ],
+    "collection_worker": [
+      "C:\\Users\\Mark\\miniconda3\\python.exe",
+      "D:/run-botorch-release-worker-030.py",
+      "botorch_pyo3/tests",
+      "--collect-only",
+      "-q"
+    ],
+    "batch_worker_template": [
+      "C:\\Users\\Mark\\miniconda3\\python.exe",
+      "D:/run-botorch-release-worker-030.py",
+      "{all files assigned to this batch}",
+      "-q",
+      "-ra",
+      "--tb=short",
+      "--junitxml={output}/{batch_label}.xml"
+    ],
+    "environment": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+      "BOTORCH_RS_REQUIRE_BOTORCH": "1",
+      "BOTORCH_REFERENCE_BLOCKED": "0",
+      "JAX_ENABLE_X64": "True",
+      "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+    },
+    "torch_threads_per_worker": 1,
+    "filters": "No -k, marker selection, deselection, omission or retry exclusion."
+  },
+  "test_support_helper_sha256": {
+    "botorch_pyo3/tests/acquisition_rest_helpers.py": "3da96c2b87adf5d3ec32aaadf9a00954f8ce0b93d2176fcb90c41950f4d51271",
+    "botorch_pyo3/tests/approximate_helpers.py": "781b036a426e48ec1c0faa87ae8769e5ea23655ba2c546d96e5922bea5d12010",
+    "botorch_pyo3/tests/clamp_subgradients.py": "ce75b0b11bb6d7b5a23f8606c2a9d72b47ebcc2ca292e9b1e379f204115bab5b",
+    "botorch_pyo3/tests/conftest.py": "1d1823cfb74947f81e3729502ae216ae9c30594fbeb4419de297699d60d8429b",
+    "botorch_pyo3/tests/entropy_parameter_helpers.py": "22ba00a79a5ce552940952442e7b484e0c8b14e841b16fee8bd021582337322a",
+    "botorch_pyo3/tests/fully_bayesian_helpers.py": "87b7305c458b08fb13dc49ff87346306c6d9ebd2875f460a97a4f4331bf57366",
+    "botorch_pyo3/tests/helpers.py": "f0e71d9d90f9f006485173ecc5147300019fbfbcad08f0852c89f1adf69e154d",
+    "botorch_pyo3/tests/hvkg_helpers.py": "1e41d9b45025028148b5c88005e4e52dd267cbefd2ede8473f226147074e219a",
+    "botorch_pyo3/tests/jes_reference.py": "0676236832858d9fd4ed8ccf89904d6061b7656774de97d0d9ff9b73da484a02",
+    "botorch_pyo3/tests/kernel_tree_helpers.py": "2b9af8dab15f66a02007659897315e309753b33c06599b76bbb09a4f47ee4aae",
+    "botorch_pyo3/tests/lcemgp_reference.py": "1c3e37b3d17fd3f9e9934627d3276927b66ac04d62fd9b18340c3265c835c29a",
+    "botorch_pyo3/tests/models7b_helpers.py": "969c26abda746775a9f4a9d5fc2ec7ce9263f0591258045ac953b20264d259fb",
+    "botorch_pyo3/tests/mo_acquisition_helpers.py": "8e089a99ea141799d8f0682131a0028c9d4b30b2e42276cd5eaf234f7ba5af3e",
+    "botorch_pyo3/tests/mo_entropy_helpers.py": "6cf3278adac258536f5488b6dcdd6e0b92b5b208b2651871a3c53469c3d4889d",
+    "botorch_pyo3/tests/mo_reference.py": "c5a037a8f516d86c27796d9849fd3c6dfa11f05c869c5505f918458f20f187f8",
+    "botorch_pyo3/tests/multitask_helpers.py": "5626190c401146ee7e12248ded42790d795c40b8899a35816fa47cde70ad15d0",
+    "botorch_pyo3/tests/optim9_helpers.py": "b889b03e4bc524d61c12e5187b1bef49d186a7dba1fe32d54ba889ddb86774dc",
+    "botorch_pyo3/tests/parity_helpers.py": "9f7d15e56b7ec8f488e5d5a3debf0f06bbeaa717a319e34391ce3dca63e66e56",
+    "botorch_pyo3/tests/preference_helpers.py": "ba28b7117673ae1de3a15e0ff690bd60a55e67a2e511ccdeb3100fbafc5e9731",
+    "botorch_pyo3/tests/so_acquisition_helpers.py": "15b70f97da657b3fb56bbc36eb18f8da20bf57a861e906e70c7ab8e9efeeb00b",
+    "botorch_pyo3/tests/trajectory_reference.py": "ea6432b1b350ac95941f3fc4736f97f6d5b30ffc4944526b01db11b30c61a681",
+    "botorch_pyo3/tests/transform_helpers.py": "88d7189bc96cc09ffd44e57f411a9e450b68c10a77d4127b52de416b52ef05ee"
+  },
+  "skip_reason_counts": {
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_11a_utils.py', 497, 'Skipped: constraint callables need array arithmetic')": 1,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_9_optim.py', 194, 'Skipped: needs a continuous dimension besides the discrete and categorical ones')": 7,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_mo_entropy.py', 288, \"Skipped: BoTorch's path models do not support lists of multi-output models\")": 1,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_mo_entropy.py', 389, \"Skipped: BoTorch's path models do not support lists of multi-output models\")": 2,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_mo_entropy.py', 477, \"Skipped: BoTorch's path models do not support lists of multi-output models\")": 1,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_equivalence_so_acquisition.py', 310, 'Skipped: single-output models only (as in BoTorch)')": 4,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_kernel_feature_batches.py', 158, 'Skipped: Nested lists cannot encode trailing axes after an empty batch.')": 4,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_6a_kernels.py', 217, \"Skipped: BoTorch's OrthogonalAdditiveKernel base kernels carry the input dimension\")": 2,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_8b_acquisition_rest.py', 1405, 'Skipped: best_f from the model requires a single-output model')": 4,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_8b_acquisition_rest.py', 1410, 'Skipped: BoTorch fails for one t-batch of multi-output fantasies')": 2,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_deterministic.py', 196, 'Skipped: the hypervolume terms are compared on two outcomes')": 5,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_deterministic.py', 226, 'Skipped: compared on two outcomes')": 1,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_mo_acquisition.py', 269, 'Skipped: the feasibility-weighted objective needs a constraint output')": 1,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_mo_acquisition.py', 369, 'Skipped: the feasibility-weighted objective needs a constraint output')": 1,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_mo_acquisition.py', 642, 'Skipped: covered by the smaller models')": 1,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_mo_acquisition.py', 712, 'Skipped: covered by the smaller models')": 1,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_mo_hvkg.py', 308, 'Skipped: BoTorch without meta-pytorch/botorch#3399 ignores the transforms')": 2,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_so_acquisition.py', 618, \"Skipped: BoTorch's GIBBON repulsion is wrong with an outcome transform\")": 3,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_so_acquisition.py', 757, \"Skipped: BoTorch's MC estimate ignores the posterior transform of the optima (#3399)\")": 2,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_parity_so_acquisition.py', 1002, 'Skipped: negative posterior means need beta')": 2,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_torch_acq_discrete.py', 236, 'Skipped: Native callback bridge is a CPU interface.')": 2,
+    "('D:\\\\botorch-rs-release-030\\\\botorch_pyo3\\\\tests\\\\test_torch_mo_extra.py', 51, 'Skipped: The reference rejects negative weights without observations.')": 2
+  },
+  "raw_evidence": {
+    "summary": {
+      "path": "D:\\botorch-verification\\release-030-258ff6b-full\\summary.json",
+      "sha256": "22ae8808f9a96d8a2e1a805003af7d6a520722783aa7b059f22f43bf53ba264a"
+    },
+    "collection": {
+      "path": "D:\\botorch-verification\\release-030-258ff6b-full\\collection.json",
+      "sha256": "a238d3b0fdf25c80e2cbc35922d61f637c2d310bb56a77db3cd7cd6d5901fd24"
+    },
+    "collection_log": {
+      "path": "D:\\botorch-verification\\release-030-258ff6b-full\\collection.log",
+      "sha256": "44479c63c0af8b1492bd26f0ff540fee8d8f3e2096378bb662a8012dc9d76e47"
+    },
+    "controller_log": {
+      "path": "D:/botorch-release-030-full-258ff-controller.log",
+      "sha256": "51de288f1cc4ace46c4cae54e468102773169ad5861725990aaf91f539ed3ec0"
+    },
+    "batch_ledger_path_pattern": "D:\\botorch-verification\\release-030-258ff6b-full\\{batch_label}.json",
+    "batch_log_path_pattern": "D:\\botorch-verification\\release-030-258ff6b-full\\{batch_label}.log",
+    "junit_path_pattern": "D:\\botorch-verification\\release-030-258ff6b-full\\{batch_label}.xml",
+    "batch_labels": "batch-001 through batch-069 inclusive",
+    "batch_sha256": {
+      "batch-001": {
+        "ledger": "1f178e903b9fb985914b3abcb8e16c3347edeb5ef8d10b972878f7b34b08e3c7",
+        "log": "a65b3bce0f8d7d52a22d73c162c9c1f84641f2cfff6147525bd6bc3edfd0480a"
+      },
+      "batch-002": {
+        "ledger": "3771d3cbc871fae6d085b7a117f768dd8dfe35a033280d4f2847975dd523529f",
+        "log": "851a574cfd2d52ca2e6f1e15d3228247a5dff5403dc5607b2e218c0a624a1a9b"
+      },
+      "batch-003": {
+        "ledger": "28ba250fd96127ace63d201582e3055571a2d1d14db5e3678d2a0e1ef651af5d",
+        "log": "909dba3cefc494b2a559387294fc673a654f76766489ea2ba6de911aa9674a49"
+      },
+      "batch-004": {
+        "ledger": "da189aff6b4703d67a5d77e41363632b68465028ded480a7f4660f0aa53f4f27",
+        "log": "c6e5d0a59117669353c367eb6e0d6755a408f1bcaf827f5d5f647c11e5292934"
+      },
+      "batch-005": {
+        "ledger": "93988fba6dbacede5080ab34246e90c9f47be8abaf8e6e85bc54cd15b16d0882",
+        "log": "1dbe52f43f8ad76470d50cc41ba9c457634041af581d8c34cdb1a6ef8416da0b"
+      },
+      "batch-006": {
+        "ledger": "ae3796c048c0838eda6aafd2a325b6cfdafac2d20209091c87eaf4ace48cc43e",
+        "log": "e1859acd1acf1aa477fb9ccbcfd481430907d75553e2e50a66e87267aa8adde3"
+      },
+      "batch-007": {
+        "ledger": "9b97ade2fa4d3a872b3031876d1d6ad543269ad06b520dc14179cf9c7210a36c",
+        "log": "4a75258ae84fdaca687c4311a418cbe98227bd7c1a18e7c496287146fd2c93ce"
+      },
+      "batch-008": {
+        "ledger": "6ebf3bd9e3b914df5dc9f5dcb8599da82aa343e67e22d716ef9e34a461fd61e5",
+        "log": "fbb0c7754f1001a2391076c4240a377fea8e4a8ff514ce1495f8beb506fd3730"
+      },
+      "batch-009": {
+        "ledger": "75515c2d7e05515344e64b29f0a27fb71ad57b4cec45ab31eab1ffdaad4abc2f",
+        "log": "f51f398385a68c9295458b03fa5f88eeaa70a345c38a3a2b1e5e7e23bace7381"
+      },
+      "batch-010": {
+        "ledger": "a96f828e5a442892d1c88112a59dbd1a8a4b958373a62e31df55fbd6da4ab645",
+        "log": "a6e540663d47814d343bb871845e1c14bdd7397c6463bf926d8443bf7d961181"
+      },
+      "batch-011": {
+        "ledger": "71b19456c356839cd6aef974b3f2e0281878ea97219c220fcfedf6b382b425d1",
+        "log": "16bc623a0d5ea94b04ee3e0e29a6b15441d326979605266458fff5b268f0c8ef"
+      },
+      "batch-012": {
+        "ledger": "3a26305eed7f3b9ca9642ec1508452961c76ed8976c995df9d5b3e7fb83034c9",
+        "log": "18a8b56b912cd4ff06e5cfa6e9b0a966b3ba2e92b547f325790ed0f833ab8640"
+      },
+      "batch-013": {
+        "ledger": "3b1ca6761760042ed6fa7441c2c50efbcc48448e39fb74f5cbbd92fff0421a80",
+        "log": "99452f016767e546416c740e287b643c20f31c56fe853aeb817bc1a0b6cb0a02"
+      },
+      "batch-014": {
+        "ledger": "19c3aa703eda00ac006dcadd20910134088d9795dfa9283d7499f0611cefba56",
+        "log": "2bb4fd659b2f4086b476284e191a319ba2625da180b55c7cd0d93c714f20fb12"
+      },
+      "batch-015": {
+        "ledger": "ce35f716978734c3744b2ebd18112b77781547b34dd7def9a140fd3897ad6dae",
+        "log": "90e81b82a4bcfd75857d5ec8c8f114a29c60429217ce32134a8c534954884145"
+      },
+      "batch-016": {
+        "ledger": "c0f3d0a9834292cde222a9bbde6d0054e0223b91484f51bee4e8c2ba7ee1dacb",
+        "log": "5d09bdd2adeea910b88b31cb5bcf13fce9eb88479ecfcf67c1f530e295c705c5"
+      },
+      "batch-017": {
+        "ledger": "2d579cf6e4874186e532edb59213852bf034845f3b9cdfa7f0e7f47cf34fc1ce",
+        "log": "b9af5726ed1657a5a9421dc8d8ae83a1c1de5b183743907dd76947f31bf88726"
+      },
+      "batch-018": {
+        "ledger": "ada61e33f8df32566ed81428eb3f1d0d8b7849a748e89d3c5ff2c5fd37fcc838",
+        "log": "434a3d93021c35d896918ea65d1f89b22a4b1a61dce2cab726e0df6d0dc3b99c"
+      },
+      "batch-019": {
+        "ledger": "84c09b7b94335d4c91b78f9fd261c41a069522230f131dec9616094d18fe6cee",
+        "log": "9d9a10c698698b23e9987d92c2275c44b7508c9cc3469483a2652b39ae7d2124"
+      },
+      "batch-020": {
+        "ledger": "57d3c1d0683412689cb2db50f6bb166b58835c3b0630fd6c0f3a08a467479e8f",
+        "log": "478bfc536cdcb99be440d1ce70c5c2304c664e2cf6c4050507ceff5bce04d9f8"
+      },
+      "batch-021": {
+        "ledger": "6d38ddaa05c4ddda3c034114e0a157354038a2da511812f6390d0637f56444f8",
+        "log": "b021a0b352d18eed8764dcb5dd5957fce264b9421160dbfb6c7b68af38799460"
+      },
+      "batch-022": {
+        "ledger": "abbfba01740e11880e02d7430ce1c45c2dbbcce4bc73389e9821802a10a83950",
+        "log": "f7ef7be6b3dd51371049caf12b5591c1d05b3d5efc9130982863feb9a7facaac"
+      },
+      "batch-023": {
+        "ledger": "aeae104274ef948e0fbf43d1c57156e86b3a1d66a9a47392d47c928f15b5f039",
+        "log": "36cf306fdc37fe8d4074debdbba2143de6cbc3cbdefc6a459b899431bae8ad2e"
+      },
+      "batch-024": {
+        "ledger": "6cfafcae5aa4cfb266a64ed486bf44a63b007ed88bc5381537b8be7f25cc1fb8",
+        "log": "09a016e302fc99092547c32e9090a39d9227fc06115082f9de30dfb2a5209623"
+      },
+      "batch-025": {
+        "ledger": "e39f53775b992c1633d5794e4bb73728bbacc2fa0983ae5e2ed33e72b56ed5a9",
+        "log": "8f089110bc82e5dd3b68148946fe9d8112f3bcad9fb0f7d847acf76c41c4974f"
+      },
+      "batch-026": {
+        "ledger": "f13fcbf039cfeaf084d4d863bb4a67dd3e3443c0d75c4fba90394df88221124a",
+        "log": "03cbe7564a6563af24485dc6a8a77b19a025f7bef15ec92ccb64b3ff2ea65ab9"
+      },
+      "batch-027": {
+        "ledger": "41c0f70a6798fd4d3f386b469949c8fe50eca8cfad58b9a44eae60867f2c69bc",
+        "log": "32ea8e30245d171c65dc446e0ec5136d45cf3dd68150a52bf6660ec608ab77d3"
+      },
+      "batch-028": {
+        "ledger": "c42d68f7f4deeb185adeb741742bcf72cdbad287609d96f1cf9ed7219994cbbb",
+        "log": "4ba9d9ba7a33fe6fc4f5951abf994f6213ee92582ca59f01458773d3e716f3ca"
+      },
+      "batch-029": {
+        "ledger": "35ac6af7a2ee6c331fb2b2159670916fb91ca4ab1e079d607111157f6f6fc49b",
+        "log": "e1208a131c25543ac7520fb2e1aafb0b20397eac0b2fbe9c117a631c3f48e98e"
+      },
+      "batch-030": {
+        "ledger": "5c0e719d9096c12916340a2fc877f5f6a496a372823390dbc70b3745630ab925",
+        "log": "f4c577b53d6566a0bf9eb527387e71b2fe7d794ba19d331ae2e6d91bc6edb381"
+      },
+      "batch-031": {
+        "ledger": "702a35cdf97bfcb2e5d2924cb460f15954f6c9c2f1174d419c235ef5ae68fb5b",
+        "log": "58895a81fc9bb958bad6f3b643ed495ac3a945a2bf5eb448f7fb26de60d39a06"
+      },
+      "batch-032": {
+        "ledger": "086bb4f3ac9a6de73b59957b847a119b430281e5344b424d94f0404907538c27",
+        "log": "5c64440e2f98c0c09d2c35d1f9cfa170cb4a5612401b592c7db1348743aa2c12"
+      },
+      "batch-033": {
+        "ledger": "82b300757f4f5c00a519330c5040408fc877b9214bd0c6a406a119db20c37dc4",
+        "log": "01addf6eb90fe52525c5b1caaed9664df929dc9b96ed41b82778d641689e7bab"
+      },
+      "batch-034": {
+        "ledger": "2370ec5dbd0d22344c9a2a9aa1babc0ff5d5803742ba20201fc47f8fe55b2f76",
+        "log": "15165f3b603d74ef368981b52473c8b58e95bedcaa16ef0575039f074db05b7b"
+      },
+      "batch-035": {
+        "ledger": "bf6668b92e36ca30d8ceb06cd82cd75eaefc81a07c64a7e9db4fe6b7e1c3146b",
+        "log": "af01efebb4393f1bc6758b5d463ae0df5aeec058979d7083609ee94721b7448c"
+      },
+      "batch-036": {
+        "ledger": "3f2f2f1e9ba91fa3dfc95b7bed6b1efe1641e3b12b052ab88bee5c7dc9369597",
+        "log": "36c41dfd4de750a6cf89fcb949ffb0fae8b01e5454635d542c9bb4c3a359a1c2"
+      },
+      "batch-037": {
+        "ledger": "31717c6df99cb7ccf6075799d7024838bcc0de4066b02608b15e06c55d59553d",
+        "log": "d7656ddc17d7f7ad377545ef8b5de122a4c874bdb8d4dfb55d2bed1415cd205a"
+      },
+      "batch-038": {
+        "ledger": "871678e9f2b34810a3de63b5f3444db481b503a234f43b3ad15786e169e493ec",
+        "log": "7cce89ff87fdd9621cb359af4383ed9fdd845a7988c9b96cf43384af1ef96c50"
+      },
+      "batch-039": {
+        "ledger": "89a3e3a1922338ab5c7185d5a89ecf221ef687821fc297635ca2958cff02cea9",
+        "log": "6907ea23a2fb840363670bbc5ec19f85ff5af1d2095858192e486fef24e744a5"
+      },
+      "batch-040": {
+        "ledger": "4503bb082459def30d4ef8bd0585987ac372f55601a50947458803301a699e4b",
+        "log": "1db55721730cc7430b44ad5066831b36712b84901a036118d77662a185bed2bd"
+      },
+      "batch-041": {
+        "ledger": "6e7c82ee38f81b06812b086b8daef9d262a878ce20bde368040c11db1fec619e",
+        "log": "0287a33dd85317939d36cfa5eb164dbc2483be2e3af3a6085a724220055fddde"
+      },
+      "batch-042": {
+        "ledger": "98f75c3ca9abdb3c1c62f36ea47c39dbed39deae1b8141bc32dcdf40cfbf4949",
+        "log": "2f6f0b0da63fefc1aeb608ede0579c66f002c8c4f88c1cb78c2586cf163a3292"
+      },
+      "batch-043": {
+        "ledger": "586066e43c811a444e1051bb0792bc9f1dc85b33005db57d3b98ef6fcb1187a8",
+        "log": "cd227735bdbc47615230abaf2424ae93c84ba86e38a3df1e04e965f0a376393a"
+      },
+      "batch-044": {
+        "ledger": "6ea5484e567495070140d533666ba9b93f8e406843516d15dc414e75a3e2e10e",
+        "log": "234e48d68824f8871ba547b2ccc8bd0424d2d12f05484919b166aeefea95a44b"
+      },
+      "batch-045": {
+        "ledger": "3d60e6b914c13754eb6066f3ba15dbab27d79e1a99b6516099d6ef86a6a11ab7",
+        "log": "47e3e709cd643e090448b19b8c053b45ff4cf7ec006cd7d7f41e1f9a3b3ea10f"
+      },
+      "batch-046": {
+        "ledger": "ca47ea0f21019cf905d274aa90f461d8f8bf656ba33872a0205d86dd31b84a2d",
+        "log": "8ff17e7673078d11cdcc032987c732daf8f98636b3a0ebb91b4d1d2f88656365"
+      },
+      "batch-047": {
+        "ledger": "0a22065b1e0cce6346d26814e45d65fd40ddd27907a94383fc6cae773633bda5",
+        "log": "e167796c85f852b629a27ed822b91712688f72789e0812208731190d86f41228"
+      },
+      "batch-048": {
+        "ledger": "437b1c13a9fb14bbddfe6bde51a186d43ee8d313798a0ff4e63f8fed9bc7053d",
+        "log": "cda4d2e6da1c67b8b0ec370c7710addbe2129fd2e89318e3d0043f5881dc6da6"
+      },
+      "batch-049": {
+        "ledger": "23c3bc916e502758801aad0d80654976acde09982fd54a7ca99fea0fd588d073",
+        "log": "8f47c66ea42a5d62d64ef7dd748c1efc390b21fdcd4d22960070219b0373e17d"
+      },
+      "batch-050": {
+        "ledger": "7d094870a19ec47f50cc498fd030c53c01bb77914c4b50747d1d3e82d597cfd1",
+        "log": "52062257fbeac7e7633899e5eb8dffb09a0645a8e66e44de969c1813d21c1c21"
+      },
+      "batch-051": {
+        "ledger": "cafb3d92ad288c683a168f17a63fc20619bc6686ae932fc1855cb14f76a7ed81",
+        "log": "a9077129a3dee6780cb7c023e95c7636d1f3a08ec577ae69678eeff5dbb2ed28"
+      },
+      "batch-052": {
+        "ledger": "98a46c53a6c6ef624c795869c8e73d59407171c4105476c5db91fbb54747a777",
+        "log": "458b76979b4f6a38e8acbb82c518f0a180e01aceff53771b225b5aa7f18f9b80"
+      },
+      "batch-053": {
+        "ledger": "7bbb4b8ee10645814a95d2d57b2e123f92285a6a4c96dc6f876a41dadd77b3b4",
+        "log": "29201e261a1348767f7d2d8724b30d985d31972d7ba92c2bace8eed2b2567edf"
+      },
+      "batch-054": {
+        "ledger": "725eef22ed65eafcc1bbafb61184549bf4eb0460caa28ba45adffaf68e02ecb6",
+        "log": "7055530ab0f611e89938c48bf8c6f103701ba41197a9be971c981761dc4a6573"
+      },
+      "batch-055": {
+        "ledger": "794395a1549284f196eabeda11fa0016f441c76e0b9ab0fd3a879e1180992f9f",
+        "log": "49652f2f65d4f5daf8df62d8d28e1584f09281f93f57d6a3581ddf305df1fd87"
+      },
+      "batch-056": {
+        "ledger": "738dcf580173a40bbfbbbd16dadbdbae35793b9961d9b8905ab31c5a3bf6bb83",
+        "log": "226743b0a7b4075df2664d0cae7c2c9e00e6a65d26c3b891d41b5b53522a37c0"
+      },
+      "batch-057": {
+        "ledger": "75e3ebe0378297a9b2a352b916a4b5d0fd51846aee2d6f5698df2498332b4579",
+        "log": "a3ce8778492bf6c9e30e7b742efd12dc14ca0feb62f1056dd669f58c9260bced"
+      },
+      "batch-058": {
+        "ledger": "635a1d89fe8262a0643c3bbf366af8928c6fcad6cbd1e62f8635c0060657bf01",
+        "log": "d64afabeee3db7bc7aed94088e27d2952bad0e21c77fc5f0a9682c3b8d4b1c3b"
+      },
+      "batch-059": {
+        "ledger": "81e4088cb54538056694d665fcd6a2d76337c678d1974451f7a8ee5707e9211c",
+        "log": "e6456c68109178abca8259dce3878eba0b26e2111d167abacf0a2ec9458483c1"
+      },
+      "batch-060": {
+        "ledger": "280f4cbce3c61984cf46382221c468670a07e4638b1ad8d648a91c4429dd2f64",
+        "log": "b65a15c999f71acc53e1d73f2309f2404c3d685117413c07cfa6a2a1dd362bd7"
+      },
+      "batch-061": {
+        "ledger": "dc2259d17c9a5cd8ac3edc094990b922c6c6b920df6ff2bf339ca9666b0bec7a",
+        "log": "cc5e9cf7aaba96f551a65f49bab52d10225dd1a0bf414ab7ff2354afdc8b85d9"
+      },
+      "batch-062": {
+        "ledger": "e5784b79f772712223c037bb57ec7dd78daf0b3f0e0128f0bb6f242e3b0c5750",
+        "log": "4895f7d92148df5b3ee2e45409b0c0d69862c871886e2353544ef988f5aa4caa"
+      },
+      "batch-063": {
+        "ledger": "5e3d7b04ea88de8ef5be4ad739537377c92f680e8ca19438486cf5634afb0a08",
+        "log": "53aefcc06ebcd3bb7ba89d1ba6fa9f992559d390de40334c847ec3e055adf842"
+      },
+      "batch-064": {
+        "ledger": "ddf65e30e9620a071d61ff6e5d1ee181f5219741ed4ff8596c93371d133ea312",
+        "log": "79fcb8846572f7c5aebcf354cdf1b3b8973dcb5ff8eddb88d176ed133f5a4ec3"
+      },
+      "batch-065": {
+        "ledger": "62e4baab16c8b742f55776eceacf0a02b18be8f9532c48625f9b3f3cce6a6d91",
+        "log": "6d82148862c369171ae8f8c2cdd4f5e45c665ab4cc8a44480d8b39dfc926f9f5"
+      },
+      "batch-066": {
+        "ledger": "92ae254e1f7c2cfdc2e6a189f0f6b652979c9d5614f331d7365e0b7451e9f4af",
+        "log": "309b9c14ab739f7427ad8391e93d03719609ed089fdf44cd7cac350e82dc8d4f"
+      },
+      "batch-067": {
+        "ledger": "39c7b1c6ecb146ba055d39add9adea5ec059490c464e1fc3b1ad9e06da6dab37",
+        "log": "bf6389666aef324a8a60f43a4b95e01492589ea1bb3f124dbb6c6bdceb0c3146"
+      },
+      "batch-068": {
+        "ledger": "30620fa6f9dfba229afa30032fc032dca6db1f4c370ec9ccdbd1905fa05b4eb2",
+        "log": "0890aa24872d0f5a46849627d9596a7fb34716ad760ee589d68276f869dd8c4a"
+      },
+      "batch-069": {
+        "ledger": "b731cd22f1b8557f4439ea51c80f36aaa976f1997c8f868151c21d6676323342",
+        "log": "941247bcc9064fb64cd00c47f7f0adc47bd500c2fd6a878958e57fd49763452a"
+      }
+    },
+    "batch_hash_manifest_sha256": "0d9d280909de0eadb44bb97291257a984b092271203f62d035cb24805183c238",
+    "batch_hash_manifest_encoding": "UTF-8 sorted-key compact JSON of batch_sha256."
+  },
+  "separate_reference_blocked_certificate": {
+    "repository_path": "docs/verification-reference-blocked-030-2026-10-21.json",
+    "path": "C:\\Users\\Mark\\Desktop\\botorch-rs\\docs\\verification-reference-blocked-030-2026-10-21.json",
+    "sha256": "cdc3b69e0d54f36254b2510f56db6f449a968eed1571e73df36ec1fc0222a126",
+    "counts_overlap_this_run": true,
+    "counts_must_not_be_added": true
+  },
+  "claims": {
+    "frozen_collected_suite_complete": true,
+    "global_behavioral_coverage_claimed": false,
+    "all_source_configurations_claimed": false,
+    "new_package_published_by_this_certificate": false
+  }
+}
