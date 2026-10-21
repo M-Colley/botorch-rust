@@ -28,9 +28,27 @@ def _sample_shape(sample_shape: Any) -> tuple[int, ...]:
         raise TypeError(
             f"Expected `sample_shape` to be a torch.Size, a tuple or an int, got {sample_shape!r}."
         ) from e
-    if not shape:
-        raise ValueError("`sample_shape` must contain at least one dimension.")
     return shape
+
+
+def _uses_tensor_protocol(posterior: Any) -> bool:
+    """Recognize the public Torch posterior protocol without private markers.
+
+    Native posteriors retain their native sampler cache even when their array
+    kind is Torch. An explicit Tensor backend or a caller-supplied posterior
+    with public Torch metadata uses device-resident normal generation.
+    """
+    if getattr(posterior, "_tensor_backend", None) == "torch":
+        return True
+    if _posterior_kind(posterior) is not None:
+        return False
+    try:
+        import torch
+    except ImportError:
+        return False
+    return isinstance(getattr(posterior, "dtype", None), torch.dtype) and isinstance(
+        getattr(posterior, "device", None), torch.device
+    )
 
 
 class MCSampler:
@@ -58,6 +76,7 @@ class NormalMCSampler(MCSampler):
 
     _rs: Any
     _base_shape: tuple[int, ...] | None
+    _tensor_sampler_key: tuple[tuple[int, ...], Any, Any, int] | None
     base_samples: Any
 
     def _construct_tensor_base_samples(self, posterior: Any) -> None:
@@ -109,7 +128,10 @@ class NormalMCSampler(MCSampler):
     def _tensor_samples(self, posterior: Any) -> Any:
         """Sample on the posterior device without flattening its graph."""
         self._construct_tensor_base_samples(posterior)
-        return posterior.rsample_from_base_samples(self.sample_shape, self.base_samples)
+        return posterior.rsample_from_base_samples(
+            sample_shape=self.sample_shape,
+            base_samples=self.base_samples.expand(self._get_extended_base_sample_shape(posterior)),
+        )
 
     @property
     def num_samples(self) -> int:
@@ -127,6 +149,9 @@ class NormalMCSampler(MCSampler):
         start, end, _ = slice(start, end).indices(len(shape))
         return (*self.sample_shape, *shape[:start], *(1 for _ in shape[start:end]), *shape[end:])
 
+    def _get_extended_base_sample_shape(self, posterior: Any) -> tuple[int, ...]:
+        return (*self.sample_shape, *posterior.base_sample_shape)
+
     def _store_base_samples(self, values: list[float], shape: tuple[int, ...], kind: Any) -> None:
         array = from_flat(values, shape, kind)
         if isinstance(self, SobolQMCNormalSampler):
@@ -138,7 +163,7 @@ class NormalMCSampler(MCSampler):
         self._rs.set_base_samples((values, (self.num_samples, len(values) // self.num_samples)))
 
     def _construct_base_samples(self, posterior: Any) -> None:
-        if getattr(posterior, "_tensor_backend", None) == "torch":
+        if _uses_tensor_protocol(posterior):
             self._construct_tensor_base_samples(posterior)
             return
         kind = _posterior_kind(posterior)
@@ -290,7 +315,13 @@ class SobolQMCNormalSampler(NormalMCSampler):
     @base_samples.setter
     def base_samples(self, value: Any) -> None:
         if value is None:
-            raise UnsupportedError("Assigned base samples cannot be removed.")
+            self._base_samples = None
+            self._base_samples_explicit = False
+            self._tensor_sampler_key = None
+            # Explicit CPU normals are also cached by the native sampler.
+            # Recreate that cache with the same seed when resetting it.
+            self._rs = _rs.SobolQMCNormalSampler(self.num_samples, self.seed)
+            return
         if getattr(getattr(value, "device", None), "type", "cpu") != "cpu" or getattr(
             value, "requires_grad", False
         ):
@@ -301,12 +332,18 @@ class SobolQMCNormalSampler(NormalMCSampler):
             return
         data, shape = to_flat(value, "base_samples")
         n = self._rs.num_samples
-        if not shape or shape[0] != n:
+        sample_dims = len(self.sample_shape)
+        if tuple(shape[:sample_dims]) == self.sample_shape:
+            event_shape = shape[sample_dims:]
+        elif shape and shape[0] == n:
+            # Preserve the native sampler's documented flattened sample axis.
+            event_shape = shape[1:]
+        else:
             raise BotorchTensorDimensionError(
-                f"Expected base samples with {n} rows (num_samples), got shape {shape}."
+                f"Expected base samples beginning with sample_shape {self.sample_shape}, got {shape}."
             )
-        non_one = [s for s in shape[1:] if s != 1]
-        if len(shape) == 1 or len(non_one) > 2:
+        non_one = [s for s in event_shape if s != 1]
+        if not event_shape or len(non_one) > 2:
             raise BotorchTensorDimensionError(
                 f"Base samples of shape {shape} must be `num_samples x q` (or "
                 "`num_samples x 1 x q`, `num_samples x q x m`); batched base samples are "
@@ -319,7 +356,7 @@ class SobolQMCNormalSampler(NormalMCSampler):
     def forward(self, posterior: GPyTorchPosterior) -> Any:
         """Posterior samples, shape ``sample_shape x batch_shape x q x m``; the
         same base samples are used for every batch."""
-        if getattr(posterior, "_tensor_backend", None) == "torch":
+        if _uses_tensor_protocol(posterior):
             return self._tensor_samples(posterior)
         self._construct_base_samples(posterior)
         if not isinstance(posterior, GPyTorchPosterior) or getattr(
@@ -428,7 +465,7 @@ class IIDNormalSampler(NormalMCSampler):
 
     def forward(self, posterior: GPyTorchPosterior) -> Any:
         """Posterior samples, shape ``sample_shape x batch_shape x q x m``."""
-        if getattr(posterior, "_tensor_backend", None) == "torch":
+        if _uses_tensor_protocol(posterior):
             return self._tensor_samples(posterior)
         self._construct_base_samples(posterior)
         if not isinstance(posterior, GPyTorchPosterior) or getattr(
