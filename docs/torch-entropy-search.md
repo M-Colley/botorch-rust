@@ -7,13 +7,15 @@ The Torch backend implements `qMaxValueEntropy`, `qLowerBoundMaxValueEntropy`
 Torch tensors on the model device. No runtime calculation delegates to BoTorch,
 SciPy or NumPy. Native CPU models retain their Rust entropy implementations.
 
-This checkpoint supports initially unbatched scalar Gaussian models, including
-supplied Gaussian-distribution adapters. Queries have `batch_shape x 1 x d`
+MES supports scalar Gaussian models, including supplied Gaussian-distribution
+adapters and model batches. For batched ExactGP models the source requires an
+explicit two-dimensional `train_inputs` candidate baseline; its default
+three-dimensional training baseline is rejected. Queries have `batch_shape x 1 x d`
 shape, including multiple query batch dimensions. Pending-point fantasies
 support greedy batch filling. Multifidelity MES supports projection, trace
 observations and cost weighting; multifidelity GIBBON supports projection and
-costs, and rejects trace observations. Initially model-batched and fully Bayesian
-ensembles remain explicit boundaries at this stage. MES observation/fantasy
+costs, and rejects trace observations. Initially batched GIBBON and fully Bayesian
+mixtures remain explicit boundaries. MES observation/fantasy
 samplers currently require one sample dimension, and MES requires at least two
 observation samples for its control-variate estimate.
 
@@ -45,6 +47,34 @@ first/mixed second derivatives and complete training/query `gradcheck` and
 construction, inference and double backward. Nine existing native max-entropy
 constructor/sampling regressions also pass. No speed claim is established for
 these entropy acquisitions yet.
+
+## Model-batch MES layouts
+
+The Tensor MES implementation keeps model, pending-fantasy and query axes
+separate, then averages the model/fantasy estimates. Max-value samples retain
+their model-batch dimensions and can share singleton dimensions. Its Gaussian
+calculations support multiple model-batch axes without folding a model axis
+into a query or fantasy axis. Queries and max samples retain their full
+training/query/parameter graphs.
+
+Multi-fidelity MES follows the same layout for a supplied Gaussian model
+protocol that does not expose a batched training baseline, as allowed by the
+source constructor. Projection, the default deterministic cost weighting
+and pending observations remain supported. The original ExactGP MF
+constructor has no `train_inputs` override and rejects a batched default
+baseline; a generic Gaussian model can instead supply the candidate set
+directly. This does not claim support for initially batched GIBBON or JES.
+
+The batched regression module checks unmodified source values and query
+derivatives, and complete initial data/parameter derivatives with its
+`propagate_grads` setting enabled. The reference's fantasy method requires
+shared pending locations to be explicitly expanded over the initial model
+batch to satisfy its input-rank check; the port accepts shared raw locations.
+Source comparisons use one pending fantasy. Independent component averaging
+checks multiple model axes and three fantasies, including every active
+data/query/max-sample/parameter gradient and Hessian-vector product. It also
+forbids inference-data host conversions during construction, conditioning
+and double backward. No batched MES speed claim is established.
 
 ## Verified reference defects and concrete repairs
 
@@ -100,6 +130,19 @@ Normalize, `q > 1`, multiple query-batch axes, training/optimal/query first and
 second derivatives, scalarized multi-output and ModelListGP models, float32
 and float64, all parameter Hessian products, and checks forbidding
 inference-data host conversion. This does not establish a speed claim.
+
+Conditioned models own independent copies of their module parameters, matching
+the source ExactGP protocol. JES uses the initial covariance and the conditional
+mean/covariance, so the initial model's mean parameter is mathematically unused.
+The parameter regressions assert that specific unused leaf against the
+unmodified source, then check every active initial and conditional parameter
+strictly. Independent source GP priors rebuilt from the augmented observations,
+with dense Gaussian conditioning and sampling, provide the child-parameter
+partials and all-leaf mixed Hessian-vector products. These bypass the retained
+incremental fantasy-cache graph and the separately reported source RBF and
+operator higher-backward defects (GPyTorch #2821, linear_operator #153/#155). Scalar and
+multi-objective JES both use these checks on CPU and CUDA. The scalar MC oracle
+applies the explicitly documented conditional-CDF correction below.
 
 The scalar JES Monte Carlo CDF has a further verified scaling defect in the
 official pinned revision. At

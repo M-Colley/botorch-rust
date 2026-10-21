@@ -174,8 +174,36 @@ def test_training_cells_and_optima_complete_gradgradcheck(device, joint, estimat
 @pytest.mark.parametrize("joint", [False, True])
 @pytest.mark.parametrize("estimator", ["LB", "MC"])
 def test_all_parameter_graphs_without_inference_host_data(device, joint, estimator, monkeypatch):
-    actual, _, query = make_pair(device, joint, estimator)
+    pytest.importorskip("botorch")
+    from botorch import settings
+    from entropy_parameter_helpers import (
+        assert_initial_mean_unused,
+        entropy_leaves,
+        fresh_source_model,
+        gradients_and_mixed_hvp,
+    )
+    from gpytorch.settings import detach_test_caches, fast_computations, trace_mode
+    from so_acquisition_helpers import no_fast_pred_var
+
+    actual, reference, query = make_pair(device, joint, estimator)
     query.requires_grad_()
+    if joint:
+        # Verify the named unused original mean against the unmodified source.
+        _, source_mean = entropy_leaves(reference, query, True)
+        assert_initial_mean_unused(reference(query), source_mean)
+        reference.conditional_model = fresh_source_model(actual.conditional_model)
+    reference.initial_model = reference.model = fresh_source_model(actual.initial_model)
+    expected_parameters, expected_mean = entropy_leaves(reference, query, joint)
+    with (
+        no_fast_pred_var(),
+        settings.propagate_grads(True),
+        detach_test_caches(False),
+        fast_computations(covar_root_decomposition=False, log_prob=False, solves=False),
+        trace_mode(True),
+    ):
+        expected = reference(query)
+        assert_initial_mean_unused(expected, expected_mean)
+        expected_graphs = gradients_and_mixed_hvp(expected, expected_parameters)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("Device entropy transferred inference data to host.")
@@ -184,10 +212,23 @@ def test_all_parameter_graphs_without_inference_host_data(device, joint, estimat
     monkeypatch.setattr(torch.Tensor, "numpy", forbidden)
     monkeypatch.setattr(torch.Tensor, "tolist", forbidden)
     value = actual(query)
-    parameters = (query, *actual.model.parameters())
-    first = torch.autograd.grad(value.sum(), parameters, create_graph=True)
-    second = torch.autograd.grad(sum(g.square().sum() for g in first), parameters)
-    assert all(torch.isfinite(g).all() for g in (*first, *second))
+    parameters, unused_mean = entropy_leaves(actual, query, joint)
+    assert_initial_mean_unused(value, unused_mean)
+    actual_graphs = gradients_and_mixed_hvp(value, parameters)
+    torch.testing.assert_close(value, expected, rtol=2e-7, atol=2e-8)
+    for order, (actual_order, expected_order) in enumerate(
+        zip(actual_graphs, expected_graphs, strict=False)
+    ):
+        for index, (actual_gradient, expected_gradient) in enumerate(
+            zip(actual_order, expected_order, strict=False)
+        ):
+            torch.testing.assert_close(
+                actual_gradient,
+                expected_gradient,
+                rtol=8e-5,
+                atol=8e-6,
+                msg=f"order={order}, leaf={index}",
+            )
 
 
 @pytest.mark.parametrize("device", DEVICES)

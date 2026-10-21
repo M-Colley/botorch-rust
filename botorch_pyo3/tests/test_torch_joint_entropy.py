@@ -238,16 +238,41 @@ def test_float32_values_and_second_query_derivatives(device, estimation_type):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("estimation_type", ["LB", "MC"])
 def test_all_parameter_hvps_and_no_host_data_conversion(device, estimation_type, monkeypatch):
-    X, Y = data(device)
-    model = SingleTaskGP(X, Y, backend="torch", outcome_transform=None)
-    acquisition = qJointEntropySearch(
-        model,
-        X.new_tensor([[0.27], [0.42]]),
-        Y.new_tensor([[1.05], [1.1]]),
-        estimation_type=estimation_type,
-        sampler=SobolQMCNormalSampler((16,), seed=43),
+    pytest.importorskip("botorch")
+    from botorch import settings
+    from entropy_parameter_helpers import (
+        assert_initial_mean_unused,
+        entropy_leaves,
+        fresh_source_model,
+        gradients_and_mixed_hvp,
     )
-    query = X.new_tensor([[[0.17]], [[0.48]]], requires_grad=True)
+    from gpytorch.settings import detach_test_caches, fast_computations, trace_mode
+    from jes_reference import correct_jes_monte_carlo
+    from so_acquisition_helpers import no_fast_pred_var
+
+    acquisition, reference, query = make_pair(device, estimation_type, False, 1, False)
+    query.requires_grad_()
+    if estimation_type == "MC":
+        del reference.__dict__["_compute_monte_carlo_information_gain"]
+    # The unmodified source also owns distinct child leaves: the initial
+    # entropy uses covariance only, so its original mean is specifically unused.
+    _, source_mean = entropy_leaves(reference, query, True)
+    assert_initial_mean_unused(reference(query), source_mean)
+    reference.initial_model = reference.model = fresh_source_model(acquisition.initial_model)
+    reference.conditional_model = fresh_source_model(acquisition.conditional_model)
+    if estimation_type == "MC":
+        correct_jes_monte_carlo(reference)
+    expected_variables, expected_mean = entropy_leaves(reference, query, True)
+    with (
+        no_fast_pred_var(),
+        settings.propagate_grads(True),
+        detach_test_caches(False),
+        fast_computations(covar_root_decomposition=False, log_prob=False, solves=False),
+        trace_mode(True),
+    ):
+        expected = reference(query)
+        assert_initial_mean_unused(expected, expected_mean)
+        expected_graphs = gradients_and_mixed_hvp(expected, expected_variables)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("Inference tensors were transferred to host Python/NumPy.")
@@ -256,10 +281,17 @@ def test_all_parameter_hvps_and_no_host_data_conversion(device, estimation_type,
     monkeypatch.setattr(torch.Tensor, "numpy", forbidden)
     monkeypatch.setattr(torch.Tensor, "tolist", forbidden)
     value = acquisition(query)
-    variables = (query, *model.parameters())
-    gradient = torch.autograd.grad(value.sum(), variables, create_graph=True)
-    second = torch.autograd.grad(sum(g.square().sum() for g in gradient), variables)
-    assert all(torch.isfinite(g).all() for g in (*gradient, *second))
+    variables, unused_mean = entropy_leaves(acquisition, query, True)
+    assert_initial_mean_unused(value, unused_mean)
+    actual_graphs = gradients_and_mixed_hvp(value, variables)
+    torch.testing.assert_close(value, expected, rtol=2e-7, atol=2e-8)
+    for order, (actual_order, expected_order) in enumerate(
+        zip(actual_graphs, expected_graphs, strict=False)
+    ):
+        for index, (actual, oracle) in enumerate(zip(actual_order, expected_order, strict=False)):
+            torch.testing.assert_close(
+                actual, oracle, rtol=8e-5, atol=8e-6, msg=f"order={order}, leaf={index}"
+            )
 
 
 @pytest.mark.parametrize("device", DEVICES)

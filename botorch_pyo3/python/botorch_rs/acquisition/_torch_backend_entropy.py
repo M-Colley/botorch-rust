@@ -157,10 +157,8 @@ class TensorMaxValueEntropy(_TensorAcquisition):
         self._lower_bound = "LowerBound" in self._name
         self._multi_fidelity = "MultiFidelity" in self._name
         self._init_model = self.model = values["model"]
-        if self.model.batch_shape:
-            raise UnsupportedError(
-                "Device max-value entropy currently requires an initially unbatched model."
-            )
+        if self._lower_bound and self.model.batch_shape:
+            raise UnsupportedError("Device GIBBON currently requires an initially unbatched model.")
         self.posterior_transform = values["posterior_transform"]
         if self.model.num_outputs != 1:
             raise UnsupportedError("Max-value entropy requires a single-output model.")
@@ -251,9 +249,22 @@ class TensorMaxValueEntropy(_TensorAcquisition):
 
     @posterior_max_values.setter
     def posterior_max_values(self, values: Tensor) -> None:
-        if values.ndim != 2 or values.shape[1] != 1 or not bool(torch.isfinite(values).all()):
-            raise ValueError("posterior_max_values must be finite with shape samples x 1.")
+        batch = tuple(self._init_model.batch_shape) or (1,)
+        try:
+            compatible = torch.broadcast_shapes(values.shape[1:], batch) == batch
+        except RuntimeError:
+            compatible = False
+        if values.ndim < 2 or not compatible or not bool(torch.isfinite(values).all()):
+            raise ValueError(
+                "posterior_max_values must be finite with shape samples x model_batch."
+            )
         self._base_max_values = values
+
+    def _model_batch_rank(self) -> int:
+        return max(1, len(self.model.batch_shape))
+
+    def _model_batch_points(self, X: Tensor) -> Tensor:
+        return X.reshape(*X.shape[:-2], *((1,) * self._model_batch_rank()), *X.shape[-2:])
 
     def _sample_max_values(self, num_samples: int, X_pending: Any = None) -> None:
         with torch.no_grad():
@@ -300,7 +311,9 @@ class TensorMaxValueEntropy(_TensorAcquisition):
         )
 
     def _mes(self, X: Tensor, mean_M: Tensor, variance_M: Tensor, covar_mM: Tensor) -> Tensor:
-        posterior = _gaussian(self.model, X.unsqueeze(-3), self.posterior_transform, True)
+        posterior = _gaussian(
+            self.model, self._model_batch_points(X), self.posterior_transform, True
+        )
         mean = self.weight * posterior.mean.squeeze(-1)
         covariance = posterior.distribution.covariance_matrix
         root = _rs.tensor_psd_safe_cholesky(covariance)
@@ -315,7 +328,11 @@ class TensorMaxValueEntropy(_TensorAcquisition):
         conditional_std = conditional_variance.clamp_min(CLAMP_LB).sqrt()
         maximum = (
             self.posterior_max_values.to(X)
-            .reshape(self.posterior_max_values.shape[0], *(1 for _ in range(mean_M.ndim - 1)), 1)
+            .reshape(
+                self.posterior_max_values.shape[0],
+                *((1,) * (mean_M.ndim - self.posterior_max_values.ndim + 1)),
+                *self.posterior_max_values.shape[1:],
+            )
             .unsqueeze(1)
         )
         cdf_conditional = torch.special.ndtr(
@@ -345,7 +362,9 @@ class TensorMaxValueEntropy(_TensorAcquisition):
             positive = product > 0
             denominator = torch.where(positive, product, 1).sqrt()
             coefficient = torch.where(positive, cov / denominator, 0)
-        return (entropy - first + coefficient * (zero - entropy)).movedim(-1, 0)
+        gain = entropy - first + coefficient * (zero - entropy)
+        rank = self._model_batch_rank()
+        return gain.movedim(tuple(range(-rank, 0)), tuple(range(rank))).flatten(0, rank - 1)
 
     def _gibbon(self, X: Tensor, mean_M: Tensor, variance_M: Tensor, covar_mM: Tensor) -> Tensor:
         noisy = _gaussian(self.model, X, self.posterior_transform, True)
@@ -381,13 +400,13 @@ class TensorMaxValueEntropy(_TensorAcquisition):
         evaluated = self.expand(X) if self._multi_fidelity and self.expand is not None else X
         if self._multi_fidelity:
             target = self.project(X)
-            joint = torch.cat((evaluated, target), -2).unsqueeze(-3)
+            joint = self._model_batch_points(torch.cat((evaluated, target), -2))
             posterior = _gaussian(self.model, joint, self.posterior_transform)
             mean = self.weight * posterior.mean[..., -1, 0]
             variance = posterior.variance[..., -1, 0].clamp_min(CLAMP_LB)
             cross = posterior.distribution.covariance_matrix[..., :-1, -1]
         else:
-            posterior = _gaussian(self.model, X.unsqueeze(-3), self.posterior_transform)
+            posterior = _gaussian(self.model, self._model_batch_points(X), self.posterior_transform)
             mean = self.weight * posterior.mean[..., 0, 0]
             variance = posterior.variance[..., 0, 0].clamp_min(CLAMP_LB)
             cross = variance.unsqueeze(-1)
