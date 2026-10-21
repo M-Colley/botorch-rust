@@ -123,7 +123,7 @@ from botorch_rs.acquisition.utils import (
 from botorch_rs.exceptions.errors import BotorchError, UnsupportedError
 from botorch_rs.models.cost import AffineFidelityCostModel
 from botorch_rs.models.deterministic import FixedSingleSampleModel
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import IIDNormalSampler, SobolQMCNormalSampler
 from botorch_rs.utils.datasets import SupervisedDataset
 
 ACQF_INPUT_CONSTRUCTOR_REGISTRY: dict[Any, Callable[..., dict[str, Any]]] = {}
@@ -1097,14 +1097,9 @@ def construct_inputs_qUCB(
 
 
 def _get_sampler(mc_samples: int, qmc: bool) -> Any:
-    """Set up MC sampler for q(N)EHVI (botorch_rs has only the
-    ``SobolQMCNormalSampler``)."""
-    # initialize the sampler
-    if qmc:
-        return SobolQMCNormalSampler(sample_shape=(mc_samples,))
-    raise UnsupportedError(
-        "qmc=False (an IIDNormalSampler) is not supported by botorch_rs; use qmc=True."
-    )
+    """Set up the requested QMC or IID sampler for q(N)EHVI."""
+    sampler_cls = SobolQMCNormalSampler if qmc else IIDNormalSampler
+    return sampler_cls(sample_shape=(mc_samples,))
 
 
 def _is_gpytorch_model(model: Any) -> bool:
@@ -2190,15 +2185,13 @@ def optimize_objective(
         if objective is None:
             acq_function = PosteriorMean(model=model, posterior_transform=posterior_transform)
         else:
-            if not qmc:
-                raise UnsupportedError(
-                    "qmc=False (an IIDNormalSampler) is not supported by botorch_rs; use qmc=True."
-                )
+            sampler_cls = SobolQMCNormalSampler if qmc else IIDNormalSampler
+            sampler: Any = sampler_cls(sample_shape=(mc_samples,), seed=seed_inner)
             acq_function = qSimpleRegret(
                 model=model,
                 objective=objective,
                 posterior_transform=posterior_transform,
-                sampler=SobolQMCNormalSampler(sample_shape=(mc_samples,), seed=seed_inner),
+                sampler=sampler,
             )
 
     d = _shape(bounds)[-1]

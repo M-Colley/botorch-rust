@@ -22,7 +22,7 @@ samplers and t-batched fixed values of `FixedFeatureAcquisitionFunction`.
 | `construct_inputs_qKG`, `_qMFKG`, `_qHVKG`, `_qMFHVKG`, `_mf_base` | same path | `current_value` from `optimize_objective` (botorch_rs's `optimize_acqf`; `optimizer_options`, `batch_initial_conditions` for deterministic results), `target_fidelities` / `fidelity_weights` / `cost_intercept` (the native `project_to_target_fidelity` / `expand_trace_observations` partials) |
 | `construct_inputs_qMES`, `_qMFMES`, `_qJES`, `_NIPV` | same path | candidate sets drawn with the training data's RNG (torch's for tensors, so `torch.manual_seed` reproduces BoTorch's), optimal samples with botorch_rs's `get_optimal_samples`, NIPV's points with botorch_rs's `draw_sobol_samples` |
 | `construct_inputs_analytic_eubo`, `construct_inputs_qeubo` | same path | added with Phase 10b (`docs/drafts/10b-preference.md`): preferential BO (`model` is the preference model) and BOPE (`pref_model`; the outcome model becomes `FixedSingleSampleModel(model, w)` with `w = torch.randn(pref_model.dim) * sample_multiplier` from torch's global generator, Python's `random` without torch) |
-| `get_best_f_analytic`, `get_best_f_mc`, `optimize_objective` | same path | `posterior_transform`, `objective`, `constraints`, `fixed_features`, `linear_constraints`, `qmc` (`qmc=False` raises `UnsupportedError`: botorch_rs's `IIDNormalSampler` samples posteriors but the MC acquisition functions do not take it) |
+| `get_best_f_analytic`, `get_best_f_mc`, `optimize_objective` | same path | `posterior_transform`, `objective`, `constraints`, `fixed_features`, `linear_constraints`, `qmc` (QMC or IID sampling), `mc_samples`, `seed_inner` |
 | `botorch.acquisition.factory.get_acquisition_function` | same path (also `botorch_rs.acquisition`) | every name BoTorch handles (`qEI`, `qLogEI`, `qPI`, `qLogPF`, `qNEI`, `qLogNEI`, `qSR`, `qUCB`, `qEHVI`, `qLogEHVI`, `qNEHVI`, `qLogNEHVI`, `pTS`) with BoTorch's errors; Sobol sampler, or `IndexSampler` for ensemble models |
 | `botorch.acquisition.utils.compute_best_feasible_objective`, `get_infeasible_cost`, `repeat_to_match_aug_dim`, `project_to_sample_points`, `get_acquisition_function` (deprecated) | same path | BoTorch's operations (torch for tensors); `get_infeasible_cost` from the posterior mean minus six standard deviations at `X` |
 | `botorch.acquisition.multi_step_lookahead.qMultiStepLookahead` | same path (also `botorch_rs.acquisition`) | native fantasy tree (Rust): `batch_sizes`, `num_fantasies` or `samplers` (with `base_weights`), `valfunc_cls` (the knowledge gradient's native value functions: `PosteriorMean`, `PosteriorStandardDeviation`, `UpperConfidenceBound`, `(Log)ExpectedImprovement`, `(Log)ProbabilityOfImprovement`, `ScalarizedPosteriorMean`, `qSimpleRegret`, `qExpectedImprovement`, `qProbabilityOfImprovement`, `qUpper/LowerConfidenceBound`, `qPosteriorStandardDeviation`), `valfunc_argfacs` (`make_best_f` per node; others once, see deviations), `objective` (MC), `posterior_transform`, `inner_mc_samples`, `X_pending`, `collapse_fantasy_base_samples`; `get_augmented_q_batch_size`, `get_split_shapes`, `extract_candidates`, `get_induced_fantasy_model`; exact gradients (BoTorch's are wrong, bug 1); `SingleTaskGP` (one or more outputs, inferred or fixed noise, transforms) and `ModelListGP`. Rust: `botorch_core::acquisition::multi_step_lookahead` |
@@ -47,9 +47,6 @@ samplers and t-batched fixed values of `FixedFeatureAcquisitionFunction`.
   `b x n x d`): BoTorch documents `n x d` and its batched behaviour is broken
   (bug 8), so botorch_rs keeps raising `UnsupportedError`. The sampling
   functions take batched candidate sets.
-- `get_best_f_mc` / `optimize_objective` with `qmc=False` (the MC
-  acquisition functions do not take botorch_rs's `IIDNormalSampler`):
-  `UnsupportedError`.
 
 ## Deviations from BoTorch (migration notes)
 
@@ -335,3 +332,13 @@ candidate batches (fixed on main, #3353); the tests accept that failure on
 | 7 | meta-pytorch/botorch#3455 |
 | 8 | meta-pytorch/botorch#3456 (rejects batched candidate sets) |
 | 10 | not filed: a design decision (see meta-pytorch/botorch#2724, #2725) |
+
+## IID input-constructor sampling
+
+The q(N)EHVI sampler helper and `optimize_objective(..., qmc=False)` select a
+real `IIDNormalSampler`. The latter preserves `mc_samples` and `seed_inner`
+through qSimpleRegret construction and optimization, for native CPU and Tensor
+models. Explicit shared-seed Gaussian samples are compared against the pinned
+reference; CPU/CUDA optimization checks the returned value against an independently
+constructed acquisition with that same sampler. Unspecified native Sobol seeds
+retain the existing independent RNG stream.

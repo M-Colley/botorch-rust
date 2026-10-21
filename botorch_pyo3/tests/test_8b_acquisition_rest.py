@@ -248,8 +248,7 @@ def test_multi_fidelity_and_reference_point_errors() -> None:
     assert ic._construct_constraint_dict_from_tuple(
         ([[0.0, -2.0]], [[1.0]]), ExpectedImprovement
     ) == {1: (-0.5, None)}
-    with pytest.raises(UnsupportedError, match="IIDNormalSampler"):
-        ic._get_sampler(mc_samples=8, qmc=False)
+    assert type(ic._get_sampler(mc_samples=8, qmc=False)).__name__ == "IIDNormalSampler"
     model, X, Y = _model("list", m=2)
     with pytest.raises(NotImplementedError, match="outcome constraints"):
         ic.construct_inputs_EHVI(
