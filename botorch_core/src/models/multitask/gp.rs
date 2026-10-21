@@ -304,6 +304,7 @@ pub struct MultiTaskGP {
     input_transform: Option<Normalize>,
     input_indices: Option<Vec<usize>>,
     input_warp: Option<warp::InputWarp>,
+    input_feature_offsets: Vec<(usize, f64)>,
     outcome_transform: Option<Standardize>,
     /// Kernel inputs of the training rows.
     train_kx: Matrix,
@@ -497,6 +498,7 @@ impl MultiTaskGP {
             input_transform,
             input_indices,
             input_warp: None,
+            input_feature_offsets: Vec::new(),
             outcome_transform,
             train_kx,
             train_tasks,
@@ -892,10 +894,12 @@ impl MultiTaskGP {
             self.input_indices.as_deref(),
             x,
         )?;
-        Ok(match &self.input_warp {
+        let mut transformed = match &self.input_warp {
             Some(warp) => warp.apply(&normalized),
             None => normalized,
-        })
+        };
+        self.apply_feature_offsets(&mut transformed);
+        Ok(transformed)
     }
 
     /// `∂x̃_c/∂x_c` of the input transform for every column `c` of the full
@@ -971,7 +975,7 @@ impl MultiTaskGP {
             &full,
         )?;
         let mut jacobian = Matrix::from_fn(full.nrows(), full.ncols(), |_, c| factors[c]);
-        let xt = match &self.input_warp {
+        let mut xt = match &self.input_warp {
             Some(warp) => {
                 let (values, derivative) = warp.with_factors(&normalized);
                 jacobian.component_mul_assign(&derivative);
@@ -979,6 +983,7 @@ impl MultiTaskGP {
             }
             None => normalized,
         };
+        self.apply_feature_offsets(&mut xt);
         let (kx, tasks) = map_task_column(&self.layout, &xt, self.validate)?;
         Ok(AugPoints {
             kx,

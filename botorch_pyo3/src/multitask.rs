@@ -333,6 +333,11 @@ impl PyMultiTaskGP {
         self.update(|model| model.set_input_warp(indices.clone(), c0.clone(), c1.clone(), eps))
     }
 
+    /// Fixed offsets after normalization and sampled warping.
+    fn set_input_feature_offsets(&self, indices: Vec<usize>, offsets: Vec<f64>) -> PyResult<()> {
+        self.update(|model| model.set_input_feature_offsets(indices.clone(), offsets.clone()))
+    }
+
     // ------------------------------------------------------------------
     // Data and configuration
     // ------------------------------------------------------------------
