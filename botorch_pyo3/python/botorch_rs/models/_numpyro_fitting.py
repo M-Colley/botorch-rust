@@ -101,24 +101,26 @@ def _candidate(model: Any) -> Any:
                 all_tasks=list(range(candidate.num_tasks)),
             )
         candidate.pyro_model.set_inputs(
-            train_X=X.detach(),
-            train_Y=Y.detach().unsqueeze(-1),
-            train_Yvar=None if noise is None else noise.detach().unsqueeze(-1),
+            train_X=X,
+            train_Y=Y.unsqueeze(-1),
+            train_Yvar=None if noise is None else noise.unsqueeze(-1),
             **kwargs,
         )
         candidate._initializing = False
-        # The current Tensor loader supports the family's fixed module
-        # structure. A custom returned-module loader is a separate protocol.
-        if candidate.pyro_model._rs_kernel not in ("matern", "saas", "linear"):
+        from botorch_rs.models._torch_fully_bayesian_loader import has_custom_loader
+
+        custom_loader = has_custom_loader(candidate.pyro_model)
+        if (
+            candidate.pyro_model._rs_kernel not in ("matern", "saas", "linear")
+            and not custom_loader
+        ):
             raise UnsupportedError(
                 "Custom Tensor NumPyro loading requires a declared Matern, SAAS or Linear family."
             )
-        for name in ("load_mcmc_samples", "_get_covar_module", "_build_multitask_covariance"):
-            method = getattr(candidate.pyro_model, name, None)
-            if method is not None and getattr(method, "__module__", "") not in _BUILTIN_MODULES:
-                raise UnsupportedError(
-                    f"Custom Tensor NumPyro inference does not implement returned-module {name} overrides."
-                )
+        if custom_loader and hasattr(candidate.pyro_model, "task_feature"):
+            raise UnsupportedError(
+                "Custom multitask returned-module loading is not implemented yet."
+            )
     return candidate
 
 

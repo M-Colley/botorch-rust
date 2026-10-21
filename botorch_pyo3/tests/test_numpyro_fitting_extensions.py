@@ -335,14 +335,23 @@ def test_custom_warped_family_inferred_noise_and_epsilon_match_loaded_law(family
     assert bool(torch.isfinite(gradient).all() & torch.isfinite(hvp).all())
 
 
-def test_custom_tensor_loader_and_native_replay_boundaries_are_explicit():
+def test_custom_tensor_loader_is_used_and_native_replay_boundary_is_explicit():
     from botorch_rs.exceptions.errors import UnsupportedError
 
     x, y, noise = _data()
     model = SaasFullyBayesianSingleTaskGP(x, y, noise, backend="torch")
     model.pyro_model = CustomLoadedSaas()
-    with pytest.raises(UnsupportedError, match="returned-module load_mcmc_samples"):
-        fit_fully_bayesian_model_nuts(model, warmup_steps=0, num_samples=1)
+    with jax_x64():
+        fit_fully_bayesian_model_nuts(
+            model,
+            warmup_steps=1,
+            num_samples=1,
+            thinning=1,
+            max_tree_depth=1,
+            disable_progbar=True,
+        )
+    assert model.num_mcmc_samples == 1 and model.pyro_model.load_calls == 1
+    assert model.posterior(x).mean.shape == (1, len(x), 1)
     model.pyro_model = CustomSaas()
     with pytest.raises(UnsupportedError, match="recorded-draw replay"):
         fit_fully_bayesian_model_nuts(model, draws=[], init_params=[])

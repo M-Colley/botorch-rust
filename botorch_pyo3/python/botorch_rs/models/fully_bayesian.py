@@ -205,7 +205,9 @@ class PyroModel:
         self.train_X = train_X
         self.train_Y = train_Y
         self.train_Yvar = train_Yvar
-        self.ard_num_dims = to_flat(train_X, "train_X")[1][-1]
+        self.ard_num_dims = (
+            train_X.shape[-1] if hasattr(train_X, "shape") else to_flat(train_X, "train_X")[1][-1]
+        )
         self._rs = None
         self._trace_inputs: dict[str, Any] = {}
 
@@ -385,6 +387,12 @@ class PyroModel:
         mean._pending = {"constant": _values(mcmc_samples, "mean")[0]}  # type: ignore[attr-defined]
         return mean
 
+    def _build_mean_module(
+        self, mcmc_samples: dict[str, Any], batch_shape: tuple[int, ...], **tkwargs: Any
+    ) -> Any:
+        """Public loader extension hook, including the reference dtype/device keywords."""
+        return self._mean_module(mcmc_samples, batch_shape)
+
     def _likelihood(self, mcmc_samples: dict[str, Any], batch_shape: tuple[int, ...]) -> Any:
         if self.train_Yvar is not None:
             return None  # fixed noise: train_Yvar of every sample
@@ -488,13 +496,17 @@ class MaternPyroModel(PyroModel):
         mean_values, _ = _values(mcmc_samples, "mean")
         num = len(mean_values)
         batch_shape = (num,)
-        mean_module = self._mean_module(mcmc_samples, batch_shape)
+        tkwargs = {
+            "dtype": getattr(self.train_X, "dtype", None),
+            "device": getattr(self.train_X, "device", None),
+        }
+        mean_module = self._build_mean_module(mcmc_samples, batch_shape, **tkwargs)
         outputscale = mcmc_samples.get("outputscale")
         covar_module = self._get_covar_module(
-            use_scale_kernel=outputscale is not None, batch_shape=batch_shape
+            use_scale_kernel=outputscale is not None, batch_shape=batch_shape, **tkwargs
         )
         likelihood = self._likelihood(mcmc_samples, batch_shape)
-        if isinstance(covar_module, ScaleKernel):
+        if isinstance(covar_module, ScaleKernel) or hasattr(covar_module, "raw_outputscale"):
             os_values, _ = _values(mcmc_samples, "outputscale")
             covar_module.outputscale = from_flat(os_values, batch_shape, kind_of(None))
             base_kernel = covar_module.base_kernel
@@ -503,11 +515,17 @@ class MaternPyroModel(PyroModel):
         ls, _ = _values(mcmc_samples, "lengthscale")
         base_kernel.lengthscale = from_flat(ls, (num, 1, self.ard_num_dims), kind_of(None))
         warping_function = self._warping_function(mcmc_samples, batch_shape)
-        covar_module = self._build_multitask_covariance(mcmc_samples, covar_module, batch_shape)
+        covar_module = self._build_multitask_covariance(
+            mcmc_samples, covar_module, batch_shape, **tkwargs
+        )
         return mean_module, covar_module, likelihood, warping_function
 
     def _build_multitask_covariance(
-        self, mcmc_samples: dict[str, Any], covar_module: Any, batch_shape: tuple[int, ...]
+        self,
+        mcmc_samples: dict[str, Any],
+        covar_module: Any,
+        batch_shape: tuple[int, ...],
+        **tkwargs: Any,
     ) -> Any:
         """Optionally wrap covar_module with task covariance (multi-task mixins)."""
         return covar_module
@@ -610,7 +628,12 @@ class LinearPyroModel(PyroModel):
         num = shape[0]
         batch_shape = (num,)
         d = self.ard_num_dims
-        mean_module = self._mean_module(mcmc_samples, batch_shape)
+        mean_module = self._build_mean_module(
+            mcmc_samples,
+            batch_shape,
+            dtype=getattr(self.train_X, "dtype", None),
+            device=getattr(self.train_X, "device", None),
+        )
         covar_module = LinearKernel(batch_shape=batch_shape, ard_num_dims=d)
         covar_module.variance = from_flat(wv, (num, 1, d), kind_of(None))
         bounds = [[0.0] * d, [1.0] * d]

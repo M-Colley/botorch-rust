@@ -91,8 +91,9 @@ intentionally detached, as in standard MCMC. The potential itself and loaded
 component predictions support full Torch graphs. Invalid fitting requests leave
 previously loaded components intact. The legacy `jit_compile` flag is accepted
 as a no-op, matching pinned BoTorch `b0dd01be`, whose fitter never reads it.
-The Tensor sampler remains eager; the native sampler is compiled. Progress bars
-are currently omitted by both backends. MAP MLL fitting is explicitly rejected
+The Tensor sampler remains eager; the native sampler is compiled. Both expose
+actual per-transition progress when `disable_progbar=False`; see
+[the progress checkpoint](fully-bayesian-nuts-progress.md). MAP MLL fitting is explicitly rejected
 for fully Bayesian classes; ordinary MAP SAAS models are a separate family.
 Training inputs remain `n x d` with single-output `n x 1` observations, matching
 the official family. The subsequent [multitask checkpoint](torch-fully-bayesian-multitask.md)
@@ -121,9 +122,12 @@ program; they do not reproduce the native or Tensor random streams.
 Custom priors and extra named sites with the existing Matern, SAAS, Linear,
 or latent-feature multitask loading structure are supported. Native scalar
 models also invoke a caller's returned-module loader when it returns modules
-supported by the native GP. Tensor returned-module loader overrides remain
-explicitly rejected: accepting a custom trace does not establish support for
-an arbitrary new prediction kernel or likelihood. Native/Tensor recorded-draw
+supported by the native GP. Tensor scalar models now adopt actual caller-returned
+mean, covariance, Gaussian likelihood, and input-transform modules, retaining
+their identities and parameter graphs. See
+[the returned-module loading protocol](fully-bayesian-custom-loading.md) for
+validation, fixed-noise ownership, and the remaining multitask boundary.
+Native/Tensor recorded-draw
 replay is also a separate protocol and is rejected on this adapter.
 
 The adapter stages inference and loading before replacing the live model.

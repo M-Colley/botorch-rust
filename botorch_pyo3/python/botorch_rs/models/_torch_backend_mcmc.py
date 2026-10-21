@@ -205,11 +205,6 @@ class TorchMCMCPotential:
             "_task_structure",
             "_warp_indices",
             "_member_modules",
-            "load_mcmc_samples",
-            "_build_covar_module",
-            "_build_mean_module",
-            "_build_multitask_covariance",
-            "_build_input_transform",
         ):
             method = getattr(pyro, name, None)
             if method is not None and getattr(method, "__module__", "") not in (

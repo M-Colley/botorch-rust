@@ -174,12 +174,28 @@ class _TorchFullyBayesianBase(TorchSingleTaskGP):
 
     def _training_values(self, clamp_noise: bool = True) -> tuple[Any, Any, Any]:
         X, Y, noise = TorchSingleTaskGP._training_values(self, clamp_noise=False)
+        if getattr(self, "_fb_custom_likelihood", False):
+            # An explicitly returned Gaussian likelihood owns its observation
+            # law, including when the original constructor supplied Yvar.
+            return (
+                X,
+                Y,
+                (self.likelihood.noise if getattr(self, "_fb_custom_fixed_noise", False) else None),
+            )
         if noise is not None and clamp_noise:
             noise = noise.clamp_min(MIN_INFERRED_NOISE_LEVEL)
         return X, Y, noise
 
     def load_mcmc_samples(self, mcmc_samples: dict[str, Tensor]) -> None:
         """Load detached hyperparameter draws as actual registered Parameters."""
+        from botorch_rs.models._torch_fully_bayesian_loader import (
+            has_custom_loader,
+            load_custom_modules,
+        )
+
+        if has_custom_loader(self.pyro_model):
+            load_custom_modules(self, mcmc_samples)
+            return
         like, d = self._train_X, self._train_X.shape[-1]
         mean = mcmc_samples.get("mean")
         if not isinstance(mean, Tensor) or mean.ndim != 1 or not mean.numel():
@@ -293,6 +309,7 @@ class _TorchFullyBayesianBase(TorchSingleTaskGP):
                     )
                 )
         self.likelihood = likelihood
+        self._fb_custom_likelihood = self._fb_custom_fixed_noise = False
         self._prediction_cache = None
         self._transform_fit_versions = {}
 
@@ -342,7 +359,16 @@ class _TorchFullyBayesianBase(TorchSingleTaskGP):
         raise AttributeError(f"'{type(self).__name__}' object has no attribute 'fantasize'")
 
     def load_state_dict(self, state_dict: Any, strict: bool = True, assign: bool = False) -> Any:
+        from botorch_rs.models._torch_fully_bayesian_loader import has_custom_loader
+
         mean = state_dict["mean_module.raw_constant"]
+        if has_custom_loader(self.pyro_model):
+            self.load_mcmc_samples(
+                self.pyro_model.get_dummy_mcmc_samples(
+                    mean.shape[0], dtype=mean.dtype, device=mean.device
+                )
+            )
+            return nn.Module.load_state_dict(self, state_dict, strict=strict, assign=assign)
         count, d = mean.numel(), self._train_X.shape[-1]
         samples = {"mean": torch.zeros_like(mean), "noise": mean.new_ones(count)}
         samples["weight_variance" if self.pyro_model._rs_kernel == "linear" else "lengthscale"] = (
