@@ -42,6 +42,9 @@ class Model(NativeBufferModule):
         return self
 
     def eval(self) -> Model:
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         return self.train(False)
 
     def transform_inputs(self, X: Any, input_transform: Any = None) -> Any:

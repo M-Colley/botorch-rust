@@ -832,6 +832,9 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
 
     def _sync_torch_parameters(self) -> Any:
         """Synchronize the persistent leaves of ordinary Torch SingleTaskGPs."""
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         if (
             type(self) is not SingleTaskGP
             or self._kind.lib != "torch"

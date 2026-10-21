@@ -888,6 +888,9 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
             posteriors along ``MCMC_DIM``). Includes observation noise if
             specified.
         """
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         self._check_if_fitted()
         assert self._samples is not None
         posteriors = [
@@ -920,6 +923,9 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
             A fully bayesian model conditioned on given observations (every
             MCMC sample on its observations).
         """
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         self._check_if_fitted()
         assert self._samples is not None
         shapes = [tuple(to_flat(value)[1]) for value in (X, Y, noise) if value is not None]
@@ -932,6 +938,9 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
                 raise ValueError("Conditioning and MCMC batch dimensions do not broadcast.")
             batch = expanded
         new = copy.copy(self)
+        if getattr(self, "outcome_transform", None) is not None:
+            new.outcome_transform = copy.deepcopy(self.outcome_transform)
+            new._fb_outcome_transform = new.outcome_transform
         new._samples = [
             m.condition_on_observations(
                 _mcmc_slice(X, batch, s),
@@ -952,6 +961,9 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
 
     def _ensemble_members(self) -> list[MultiTaskGP]:
         """The MCMC samples (``MultiTaskGP``s)."""
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         self._check_if_fitted()
         assert self._samples is not None
         return list(self._samples)

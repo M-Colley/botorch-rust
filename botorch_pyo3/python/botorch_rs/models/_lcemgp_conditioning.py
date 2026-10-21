@@ -33,6 +33,7 @@ class _LcemFantasyState:
     """Native members sharing hyperparameters, transforms and context tables."""
 
     _mutations = {
+        "_set_fitted_outcome_state",
         "set_raw_parameters",
         "set_raw_parameter",
         "set_noise",

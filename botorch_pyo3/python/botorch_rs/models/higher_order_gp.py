@@ -699,6 +699,9 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
         )
 
     def _acquisition_model(self, posterior_transform: Any = None) -> Any:
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         if posterior_transform is not None:
             raise NotImplementedError(
                 f"Posterior transforms currently not supported for {self.__class__.__name__}"
@@ -783,6 +786,9 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
     def _condition_transformed(
         self, X: Any, ydata: list[float], yshape: tuple[int, ...], *, flattened: bool
     ) -> HigherOrderGP:
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         if self._fantasy_batch is not None:
             raise UnsupportedError(
                 "Conditioning an existing batch of HigherOrderGP fantasy models."

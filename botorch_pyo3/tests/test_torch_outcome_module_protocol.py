@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+import botorch_rs
+
 torch = pytest.importorskip("torch")
 from torch import nn
 
@@ -297,7 +299,7 @@ assert 'botorch_rs.models.transforms._torch_outcome_module' not in sys.modules
             sys.executable,
             "-c",
             script,
-            str(Path(__file__).parents[1] / "python"),
+            str(Path(botorch_rs.__file__).resolve().parent.parent),
             _botorch_rs.__file__,
         ],
         capture_output=True,
@@ -458,7 +460,7 @@ for original, blob, values in zip(sources, blobs, expected):
             sys.executable,
             "-c",
             script,
-            str(Path(__file__).parents[1] / "python"),
+            str(Path(botorch_rs.__file__).resolve().parent.parent),
             _botorch_rs.__file__,
             protocol,
         ],

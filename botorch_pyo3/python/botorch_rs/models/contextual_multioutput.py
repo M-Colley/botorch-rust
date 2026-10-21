@@ -542,6 +542,9 @@ class LCEMGP(MultiTaskGP):
         )
 
     def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         from botorch_rs.models._lcemgp_conditioning import condition
 
         return condition(self, X, Y, noise, **kwargs)

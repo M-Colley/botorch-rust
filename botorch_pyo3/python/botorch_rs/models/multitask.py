@@ -499,6 +499,9 @@ class MultiTaskGP(MultiTaskGPyTorchModel):
         return self.train(False)
 
     def train(self, mode: bool = True) -> MultiTaskGP:
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         self.training = mode
         for name in ("input_transform", "outcome_transform"):
             tf = getattr(self, name, None)
@@ -562,6 +565,9 @@ class MultiTaskGP(MultiTaskGPyTorchModel):
         As in BoTorch, the model must be in eval mode (e.g. after a call of
         ``posterior``).
         """
+        from botorch_rs.models._native_outcome_state import sync_native_outcome
+
+        sync_native_outcome(self)
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
         if self.training:
