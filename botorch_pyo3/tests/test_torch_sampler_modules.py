@@ -516,3 +516,34 @@ def test_native_list_cache_can_be_used_with_a_tensor_posterior(sampler_class):
     assert value.shape == (4, 2, 1)
     first = torch.autograd.grad(value.sin().sum(), mean, create_graph=True)[0]
     assert torch.isfinite(torch.autograd.grad(first.square().sum(), mean)[0]).all()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("log", [False, True])
+def test_noisy_hypervolume_registers_and_resolves_actual_normal_sampler(device, log):
+    from botorch_rs.acquisition.multi_objective.logei import qLogNoisyExpectedHypervolumeImprovement
+    from botorch_rs.acquisition.multi_objective.monte_carlo import (
+        qNoisyExpectedHypervolumeImprovement,
+    )
+
+    X = torch.tensor([[0.1], [0.4], [0.8]], dtype=torch.double, device=device)
+    Y = torch.cat((X.sin(), (2 * X).cos()), -1)
+    model = SingleTaskGP(X, Y, outcome_transform=None, backend="torch")
+    sampler = IIDNormalSampler((8,), seed=19)
+    cls = qLogNoisyExpectedHypervolumeImprovement if log else qNoisyExpectedHypervolumeImprovement
+    acquisition = cls(
+        model,
+        ref_point=[-0.2, -0.2],
+        X_baseline=X,
+        sampler=sampler,
+        prune_baseline=False,
+    )
+    assert acquisition.sampler is sampler is dict(acquisition.named_children())["sampler"]
+    query = X.new_tensor([[0.25], [0.65]], requires_grad=True)
+    value = acquisition(query)
+    assert "sampler.base_samples" in acquisition.state_dict()
+    first = torch.autograd.grad(value.sum(), query, create_graph=True)[0]
+    second = torch.autograd.grad(first.square().sum(), query)[0]
+    assert bool(
+        torch.isfinite(value).all() & torch.isfinite(first).all() & torch.isfinite(second).all()
+    )

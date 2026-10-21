@@ -244,7 +244,7 @@ class NoisyExpectedHypervolumeMixin:
     _rs_nehvi: Any
     _baseline_kind: Any
     _default_sample_shape = (512,)
-    sampler: Any = None
+    sampler: Any
 
     def get_posterior_samples(self: Any, posterior: Any) -> Any:
         """Draw samples through the same sampler protocol as other MC acquisitions."""

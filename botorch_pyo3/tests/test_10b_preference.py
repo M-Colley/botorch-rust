@@ -198,7 +198,7 @@ def test_samplers() -> None:
         comps = to_list(sampler(post))
         assert len(comps) == 3 and all(len(c) == 3 for c in comps)
         # The preferred item first: the samples order every pair.
-        samples = to_list(type(sampler).__mro__[2].forward(sampler, post))
+        samples = to_list(sampler._base_forward(post))
         for s, cs in zip(samples, comps, strict=True):
             for w, lo in cs:
                 assert s[w][0] > s[lo][0]
