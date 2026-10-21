@@ -28,9 +28,7 @@ def timed(function, count):
 
 
 def revision(path):
-    return subprocess.check_output(
-        ["git", "-C", str(path), "rev-parse", "HEAD"], text=True
-    ).strip()
+    return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
 
 
 def main():
@@ -49,17 +47,16 @@ def main():
     spec = importlib.util.spec_from_file_location(
         name,
         args.native_extension,
-        loader=importlib.machinery.ExtensionFileLoader(
-            name, str(args.native_extension)
-        ),
+        loader=importlib.machinery.ExtensionFileLoader(name, str(args.native_extension)),
     )
     native = importlib.util.module_from_spec(spec)
     sys.modules[name] = native
     spec.loader.exec_module(native)
-    import torch
     import botorch
-    import botorch_rs
+    import torch
     from botorch.models import SingleTaskGP as Reference
+
+    import botorch_rs
     from botorch_rs.models import SingleTaskGP
 
     torch.set_num_threads(1)
@@ -91,17 +88,15 @@ def main():
         own = SingleTaskGP(x, y, outcome_transform=None, backend="native")
         reference = Reference(x, y, outcome_transform=None)
         for model in (own, reference):
-            model.covar_module.lengthscale = torch.full(
-                (1, 4), 0.31, dtype=torch.double
-            )
+            model.covar_module.lengthscale = torch.full((1, 4), 0.31, dtype=torch.double)
             model.likelihood.noise = torch.tensor(0.02, dtype=torch.double)
             model.mean_module.constant = torch.tensor(0.1, dtype=torch.double)
             model.requires_grad_(False)
             model.eval()
         flat = (query.reshape(-1).tolist(), list(query.shape))
 
-        def public(model):
-            posterior = model.posterior(query)
+        def public(model, points=query):
+            posterior = model.posterior(points)
             return posterior.mean, posterior.variance
 
         with torch.no_grad():
@@ -112,9 +107,7 @@ def main():
             expected = public(reference)
             cold_reference_ms = (time.perf_counter_ns() - cold_start) / 1e6
             errors = {}
-            for label, actual, target in zip(
-                ("mean", "variance"), observed, expected, strict=True
-            ):
+            for label, actual, target in zip(("mean", "variance"), observed, expected, strict=True):
                 torch.testing.assert_close(actual, target, atol=1e-9, rtol=1e-9)
                 errors[label] = float((actual - target).abs().max())
             for _ in range(args.warmup):
@@ -136,31 +129,25 @@ def main():
                 key: {"median_ms": statistics.median(values), "samples_ms": values}
                 for key, values in durations.items()
             }
-            results["native_copy_before_direct_parent_warm"] = timed(
-                own._rs.copy, args.repeats
-            )
+            results["native_copy_before_direct_parent_warm"] = timed(own._rs.copy, args.repeats)
             results["native_public_construction_before_parent_warm"] = timed(
-                lambda: own.posterior(query), args.repeats
+                lambda model=own, points=query: model.posterior(points), args.repeats
             )
             results["native_first_direct_parent_marginals"] = timed(
-                lambda: own._rs.posterior_marginals(flat), 1
+                lambda model=own._rs, points=flat: model.posterior_marginals(points), 1
             )
             direct_mean, direct_variance = own._rs.posterior_marginals(flat)
-            for actual, target in zip(
-                (direct_mean, direct_variance), observed, strict=True
-            ):
+            for actual, target in zip((direct_mean, direct_variance), observed, strict=True):
                 torch.testing.assert_close(
                     torch.tensor(actual[0], dtype=torch.double).reshape(target.shape),
                     target,
                 )
             results["native_direct_warm_marginals"] = timed(
-                lambda: own._rs.posterior_marginals(flat), args.repeats
+                lambda model=own._rs, points=flat: model.posterior_marginals(points), args.repeats
             )
-            results["native_copy_after_direct_parent_warm"] = timed(
-                own._rs.copy, args.repeats
-            )
+            results["native_copy_after_direct_parent_warm"] = timed(own._rs.copy, args.repeats)
             results["native_public_after_direct_parent_warm"] = timed(
-                lambda: public(own), args.repeats
+                lambda evaluate=public, model=own: evaluate(model), args.repeats
             )
         case = {
             "n": n,
@@ -174,9 +161,7 @@ def main():
         }
         report["cases"].append(case)
         print(
-            json.dumps(
-                {"n": n, **{key: value["median_ms"] for key, value in results.items()}}
-            ),
+            json.dumps({"n": n, **{key: value["median_ms"] for key, value in results.items()}}),
             flush=True,
         )
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
