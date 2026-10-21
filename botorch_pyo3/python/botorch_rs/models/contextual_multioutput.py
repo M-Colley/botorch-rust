@@ -434,11 +434,11 @@ class LCEMGP(MultiTaskGP):
 
     @property
     def batch_shape(self) -> tuple[int, ...]:
-        return ()
+        return tuple(getattr(self._rs, "batch_shape", ()))
 
     @property
     def _input_batch_shape(self) -> tuple[int, ...]:
-        return ()
+        return self.batch_shape
 
     @property
     def _aug_batch_shape(self) -> tuple[int, ...]:
@@ -495,6 +495,10 @@ class LCEMGP(MultiTaskGP):
         return from_flat(out, (*ishape[:-2], n, n), kind_of(task_idcs))
 
     def _native_task_source(self, tasks: list[int] | None, includes_task_feature: bool) -> Any:
+        from botorch_rs.models._lcemgp_conditioning import _LcemFantasyState
+
+        if isinstance(self._rs, _LcemFantasyState):
+            return self._rs.model_handle(tasks, includes_task_feature)
         return (
             _rs.Model.from_lcemgp_task_inputs(self._rs)
             if includes_task_feature
@@ -527,17 +531,25 @@ class LCEMGP(MultiTaskGP):
         # calls `eval()` and runs a forward pass.
         self.eval()
         self._forward_pass()
+        from botorch_rs.models._lcemgp_conditioning import _LcemFantasyState
+
+        if isinstance(self._rs, _LcemFantasyState):
+            return self._rs.model_handle(
+                None, False, transform_arg(posterior_transform, self.num_outputs)
+            )
         return _rs.Model.from_lcemgp(
             self._rs, None, transform_arg(posterior_transform, self.num_outputs)
         )
 
     def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
-        raise UnsupportedError(
-            "condition_on_observations is not supported for LCEMGP in botorch_rs."
-        )
+        from botorch_rs.models._lcemgp_conditioning import condition
+
+        return condition(self, X, Y, noise, **kwargs)
 
     def fantasize(self, X: Any, sampler: Any, observation_noise: Any = None, **kwargs: Any) -> Any:
-        raise UnsupportedError("fantasize is not supported for LCEMGP in botorch_rs.")
+        from botorch_rs.models._lcemgp_conditioning import fantasize
+
+        return fantasize(self, X, sampler, observation_noise, **kwargs)
 
     @classmethod
     def construct_inputs(  # type: ignore[override]
