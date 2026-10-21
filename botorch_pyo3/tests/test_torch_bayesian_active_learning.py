@@ -140,6 +140,33 @@ def test_fully_bayesian_model_list_joint_density_layout_and_graphs(device, scala
 
 
 @pytest.mark.parametrize("device", DEVICES)
+def test_unscalarized_model_list_matches_source_with_canonical_root_coordinates(device):
+    pairs = [_pair(device, FAMILIES[0], fixed=True) for _ in range(2)]
+    model = ModelListGP(*(pair[0][0] for pair in pairs))
+    reference = ReferenceModelList(*(pair[0][1] for pair in pairs))
+    query = pairs[0][1][0][0].new_tensor(
+        [[0.24, 0.33, 0.61], [0.62, 0.54, 0.36], [0.43, 0.38, 0.56]],
+        requires_grad=True,
+    )
+    reference_normals = query.new_tensor([-0.7, 0.2, 0.8, -0.3, 0.4, -0.9] * 16).reshape(
+        16, 1, 1, 3, 2
+    )
+    # Source BALD changes event-order metadata, so equal flattened root
+    # coordinates require this fixed q/output permutation of public normals.
+    port_normals = reference_normals.reshape(16, 1, 1, 2, 3).transpose(-1, -2).contiguous()
+    sampler = IIDNormalSampler((16,), seed=29)
+    sampler.base_samples = port_normals
+    reference_sampler = ReferenceSampler(torch.Size([16]), seed=29)
+    reference_sampler.base_samples = reference_normals
+    actual = qBayesianActiveLearningByDisagreement(model, sampler)(query)
+    expected = ReferenceBALD(reference, reference_sampler)(query)
+    actual_gradient = torch.autograd.grad(actual.sum(), query)[0]
+    expected_gradient = torch.autograd.grad(expected.sum(), query)[0]
+    torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-11)
+    torch.testing.assert_close(actual_gradient, expected_gradient, atol=1e-10, rtol=1e-9)
+
+
+@pytest.mark.parametrize("device", DEVICES)
 def test_identical_component_bald_is_zero_and_default_sampler_is_device_native(device):
     (model, _), data, samples = _pair(device, FAMILIES[0], fixed=True)
     samples = {name: value[:1] for name, value in samples.items()}

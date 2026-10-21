@@ -35,3 +35,13 @@ rows, and the official conditioning call fails. Using
 reference-only prototype of that repair agrees with the independent dense
 law to `1.78e-15` for means and `2.73e-16` for covariance. The production port
 does not patch or call the reference implementation.
+
+The source repair is submitted as [GPyTorch #2819](https://github.com/cornellius-gp/gpytorch/pull/2819),
+against official main `e1302d24cbd334649ada70608cbe98e903a47a83`. Its new
+regression fails all eight CPU/CUDA subcases before the repair and checks
+means, covariances and fantasy-input/target/query gradients against dense
+Gaussian conditioning afterward. The exact-GP, derivative-fantasy,
+ModelList, Gaussian-likelihood and fixed-noise fantasy suites run 117 tests
+successfully on Torch 2.13 CPU/CUDA (one existing expected failure), and on
+Torch 2.14 CPU (one CUDA skip and one existing expected failure). The PR is
+an open proposal; the pinned reference remains unchanged.

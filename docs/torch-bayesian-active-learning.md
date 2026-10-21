@@ -11,8 +11,7 @@ sampler uses 512 Sobol samples, matching the reference default.
 
 Dense covariance and event values use the same output-major order. This also
 supports an unscalarized multi-output ModelList as a joint information-gain
-extension; the documented reference interface asks callers to scalarize a
-multi-output model. No distribution ordering metadata is mutated. Multiple
+calculation. No distribution ordering metadata is mutated. Multiple
 sample axes and an empty sample shape reduce over all MC samples while keeping
 the MCMC component axis distinct. Negative MC estimates retain the reference
 warning rather than being clipped, which would change the estimator.
@@ -27,3 +26,11 @@ fixed noise, query, posterior-transform weights, and loaded parameters retain
 first and second derivatives. A single-component mixture has zero information
 gain and finite second derivatives. These changes do not extend the existing
 native CPU BALD restriction on multi-output or ModelList models.
+
+An additional CPU/CUDA control compares the unscalarized ModelList directly
+with the pinned source using the same flattened Gaussian root coordinates.
+The source's event-order metadata change induces a fixed permutation of the
+public `q x m` base-normal array; accounting for that permutation makes
+values and query gradients agree at the existing strict tolerances. The
+metadata mutation alone is therefore not established as an upstream bug,
+and no PR was filed for it.
