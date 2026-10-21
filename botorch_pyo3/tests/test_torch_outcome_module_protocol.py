@@ -374,6 +374,30 @@ def test_chains_construct_sample_only_laws_without_requesting_moments(device, ou
         _ = posterior.mean
 
 
+@pytest.mark.parametrize("device", DEVICES)
+def test_inherited_scalar_standardize_broadcasts_to_gaussian_multitask_laws(device):
+    class InheritedStandardize(Standardize):
+        pass
+
+    y = torch.tensor([[1.2], [1.7], [2.4], [3.1]], dtype=torch.double, device=device)
+    y.requires_grad_()
+    transform = InheritedStandardize(1).to(y)
+    transform(y)
+    transform.eval()
+    mean = y.new_tensor([[0.2, 0.7], [0.5, 0.9]]).requires_grad_()
+    scale = y.new_tensor(0.2).requires_grad_()
+    covariance = torch.eye(4, dtype=y.dtype, device=device) * scale
+    posterior = transform.untransform_posterior(TorchGPyTorchPosterior(mean, covariance))
+    std = y.std(-2, keepdim=True)
+    expected_mean = mean * std + y.mean(-2, keepdim=True)
+    expected_covariance = covariance * std.square()
+    _compare_hessian(
+        posterior.mean.sin().sum() + posterior._covariance_tensor.square().sum(),
+        expected_mean.sin().sum() + expected_covariance.square().sum(),
+        (y, mean, scale),
+    )
+
+
 @pytest.mark.parametrize("protocol", ["to", "state_dict", "hook", "buffers", "pickle"])
 def test_pre_torch_outcomes_promote_in_place_on_explicit_module_protocol(protocol):
     from botorch_rs import _botorch_rs

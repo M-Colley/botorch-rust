@@ -204,7 +204,10 @@ class TensorStandardizeState(nn.Module):
         if not bool(self._is_trained):
             raise RuntimeError("Standardize must be fitted before untransform_posterior.")
         q, m = posterior._extended_shape()[-2:]
-        if m != self._m and not self._requires_X:
+        scalar_multitask = (
+            self._m == 1 and isinstance(posterior, TorchGPyTorchPosterior) and posterior._is_mt
+        )
+        if m != self._m and not self._requires_X and not scalar_multitask:
             raise RuntimeError("Incompatible output dimensions encountered.")
         means, stdvs, squared = (value.clone() for value in self.statistics(X))
         if self._requires_X and means.shape[-2] != q:
