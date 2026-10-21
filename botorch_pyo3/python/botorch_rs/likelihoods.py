@@ -1,4 +1,4 @@
-"""Gaussian likelihoods (``gpytorch.likelihoods``).
+"""Gaussian and probit likelihoods (``gpytorch.likelihoods``).
 
 A model's ``likelihood`` exposes the noise variance in the model's
 (transformed) outcome space, like GPyTorch: ``noise`` has shape
@@ -102,6 +102,20 @@ class GaussianLikelihood(Likelihood):
 
     def __repr__(self) -> str:
         return "GaussianLikelihood()"
+
+
+class BernoulliLikelihood(Likelihood):
+    """Probit observations for Tensor-backend scalar variational GPs.
+
+    ``num_locs`` controls Gauss-Hermite integration of the expected log
+    likelihood (20 by default). The native Gaussian-only backend rejects it.
+    """
+
+    def __init__(self, *, num_locs: int = 20) -> None:
+        if isinstance(num_locs, bool) or int(num_locs) != num_locs or num_locs <= 0:
+            raise ValueError("num_locs must be a positive integer.")
+        self.num_locs = int(num_locs)
+        self.batch_shape = ()
 
 
 class FixedNoiseGaussianLikelihood(Likelihood):
@@ -411,6 +425,7 @@ class LikelihoodList(Likelihood):
 
 
 __all__ = [
+    "BernoulliLikelihood",
     "FixedNoiseGaussianLikelihood",
     "GaussianLikelihood",
     "HadamardGaussianLikelihood",

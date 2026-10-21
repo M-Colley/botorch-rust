@@ -433,7 +433,10 @@ class _TorchVariationalOutput:
         if not prior:
             self._kl = owner.model.variational_strategy.kl_divergence()
             self._log_prior = owner._log_prior()
-            self._noise = owner.likelihood.noise_for(mean.shape[-1]).clone()
+            if getattr(owner.likelihood, "_non_gaussian", False):
+                self._expected_log_prob = owner.likelihood.snapshot_expected_log_prob()
+            else:
+                self._noise = owner.likelihood.noise_for(mean.shape[-1]).clone()
 
     @property
     def mean(self) -> Tensor:
@@ -563,9 +566,34 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         )
         covariance = build_kernel(covar_module, train_X.shape[-1], self._aug_batch_shape, train_X)
         mean = build_mean(mean_module, self._aug_batch_shape, train_X)
-        if likelihood is None and num_outputs > 1:
+        from botorch_rs.likelihoods import BernoulliLikelihood
+        from botorch_rs.models._torch_backend_variational_likelihoods import (
+            TorchBernoulliLikelihood,
+            TorchExternalGaussianLikelihood,
+        )
+
+        bernoulli = type(likelihood) is BernoulliLikelihood or (
+            gpytorch is not None and type(likelihood) is gpytorch.likelihoods.BernoulliLikelihood
+        )
+        external_gaussian = (
+            gpytorch is not None and type(likelihood) is gpytorch.likelihoods.GaussianLikelihood
+        )
+        if bernoulli:
+            if num_outputs != 1:
+                raise UnsupportedError(
+                    "Probit variational observations currently require a scalar output."
+                )
+            self.likelihood = TorchBernoulliLikelihood(likelihood, train_X)
+        elif external_gaussian:
+            if num_outputs != 1:
+                raise UnsupportedError(
+                    "Independent multiple outputs require multitask observation noise."
+                )
+            self.likelihood = TorchExternalGaussianLikelihood(likelihood, train_X)
+        elif likelihood is None and num_outputs > 1:
             likelihood = MultitaskGaussianLikelihood(num_outputs)
-        if num_outputs > 1:
+            self.likelihood = _TorchMultitaskNoise(likelihood, train_X)
+        elif num_outputs > 1:
             if (
                 type(likelihood) is not MultitaskGaussianLikelihood
                 or likelihood.num_tasks != num_outputs
@@ -577,7 +605,7 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         else:
             if likelihood is not None and type(likelihood) is not GaussianLikelihood:
                 raise UnsupportedError(
-                    "The Torch variational backend currently supports Gaussian observations only."
+                    "The Torch variational backend supports Gaussian and scalar Bernoulli probit observations."
                 )
             self.likelihood = build_likelihood(likelihood, None, self.batch_shape, train_X)
         transformed = self._training_inputs()
@@ -864,6 +892,21 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         self._fit_transforms()
         transformed = X if self.input_transform is None else self.input_transform(X)
         output = self.model(transformed)
+        if getattr(self.likelihood, "_non_gaussian", False) and observation_noise is not False:
+            if observation_noise is not True:
+                raise UnsupportedError(
+                    "Bernoulli observation noise is its likelihood, not a Gaussian covariance override."
+                )
+            if output_indices is not None:
+                raise UnsupportedError(
+                    "Observed Bernoulli posteriors do not support output selection."
+                )
+            from botorch_rs.posteriors.torch import TorchPosterior
+
+            result: Any = TorchPosterior(self.likelihood(output))
+            if self.outcome_transform is not None:
+                result = self.outcome_transform.untransform_posterior(result, X=X)
+            return result if posterior_transform is None else posterior_transform(result, X=X)
         blocks = output._blocks()
         covariance = independent_covariance(blocks) if self.num_outputs > 1 else blocks
         if observation_noise is not False:
@@ -950,11 +993,14 @@ class TorchVariationalELBO(nn.Module, VariationalELBO):
             y = target.transpose(-1, -2)
         if y.shape != mean.shape:
             raise ValueError("ELBO targets must match the q(f) event and batch shapes.")
-        log_likelihood = -0.5 * (
-            ((y - mean).square() + variance) / output._noise
-            + output._noise.log()
-            + math.log(2 * math.pi)
-        ).mean(-1)
+        if hasattr(output, "_expected_log_prob"):
+            log_likelihood = output._expected_log_prob(y, mean, variance).mean(-1)
+        else:
+            log_likelihood = -0.5 * (
+                ((y - mean).square() + variance) / output._noise
+                + output._noise.log()
+                + math.log(2 * math.pi)
+            ).mean(-1)
         if owner.num_outputs > 1:
             log_likelihood = log_likelihood.sum(-1)
         kl = output._kl * (self.beta / self.num_data)

@@ -1038,6 +1038,7 @@ class SingleTaskVariationalGP(ApproximateGPyTorchModel):
         if cls is SingleTaskVariationalGP:
             if backend not in ("auto", "native", "torch"):
                 raise ValueError("backend must be 'auto', 'native', or 'torch'.")
+            from botorch_rs.likelihoods import BernoulliLikelihood
             from botorch_rs.variational import (
                 DeltaVariationalDistribution,
                 MeanFieldVariationalDistribution,
@@ -1062,6 +1063,7 @@ class SingleTaskVariationalGP(ApproximateGPyTorchModel):
             tensor_input = torch is not None and isinstance(train_X, torch.Tensor)
             needs_tensor_configuration = tensor_input and (
                 train_X.ndim > 2
+                or isinstance(components.get("likelihood"), BernoulliLikelihood)
                 or isinstance(
                     components.get("variational_distribution"),
                     (MeanFieldVariationalDistribution, DeltaVariationalDistribution),

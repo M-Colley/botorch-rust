@@ -133,8 +133,12 @@ the training data does not require gradients. Positional options are included.
 Explicit `backend="native"` preserves its supported Cholesky/whitened scope
 and rejects other configurations.
 
-Other variational distributions, strategies and non-Gaussian observations
-remain unsupported configurations. Unwhitened pseudo-points and online
+Scalar Bernoulli probit observations are implemented with device quadrature,
+analytic observed marginals and complete ELBO graphs; see
+[`torch-variational-probit.md`](torch-variational-probit.md) for verification
+and the disclosed reference scalar-CDF repair. Other variational distributions,
+strategies and non-Gaussian observation families remain configuration gaps.
+Unwhitened pseudo-points and online
 fantasy conversion are not implemented. Reallocation cannot resize the variational family.
 It does not imply GPU support for arbitrary `ApproximateGPyTorchModel` wrappers
 or every other approximate-model family.
