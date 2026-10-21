@@ -34,9 +34,12 @@ differences of the unmodified source's first gradients converge to the port
 (maximum error 3.7e-4, 3.3e-5, and 3.7e-6 at steps 1e-5, 3e-6, and 1e-6 for the
 unnormalized direction). The tests retain source first-gradient checks and a
 normalized-direction convergence check; they do not relax value tolerances or
-patch the reference checkout. Applying only the previously filed triangular
-operator repair does not fix this case, so its operator cause needs separate
-isolation before identifying the upstream repair.
+patch the reference checkout. The cause is `CatLinearOperator`'s detached generic
+bilinear derivative in the independent-MVN covariance assembly, separately from
+the triangular operator defect. The analytic child derivative in
+[linear_operator #153](https://github.com/cornellius-gp/linear_operator/pull/153)
+reduces the complete model Hessian discrepancy to 2.3e-12. Applying only the
+previous triangular repair does not fix this case.
 
 This checkpoint does not extend the other specialized model family factories,
 or change `MultiTaskGP`/`LCEMGP` virtual-prior semantics. Those paths remain
