@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -14,6 +15,15 @@ class Model(NativeBufferModule):
 
     training: bool = True
 
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        # Native families own their allocation paths. A caller-defined Model
+        # follows the source's Torch Module protocol when Torch is in use.
+        if not cls.__module__.startswith("botorch_rs.") and sys.modules.get("torch") is not None:
+            from botorch_rs.models._torch_model_subclasses import custom_model
+
+            return custom_model(cls)
+        return object.__new__(cls)
+
     @property
     def dtypes_of_buffers(self) -> set[Any]:
         """Dtypes of registered buffers, including supported native state.
@@ -25,6 +35,9 @@ class Model(NativeBufferModule):
 
     def train(self, mode: bool = True) -> Model:
         """Sets the training flag (for API compatibility; it has no effect)."""
+        torch = sys.modules.get("torch")
+        if torch is not None and isinstance(self, torch.nn.Module):
+            return torch.nn.Module.train(self, mode)
         self.training = mode
         return self
 

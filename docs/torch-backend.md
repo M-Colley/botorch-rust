@@ -17,6 +17,8 @@ Development after the frozen release adds [generic fitting protocols](fitting-pr
 [probit variational observations](torch-variational-probit.md),
 [custom acquisition subclasses](torch-acquisition-subclasses.md), and
 [binary hypervolume partitioning](torch-hypervolume-partitioning.md).
+Caller-defined model modules are covered by the
+[custom Torch model protocol](torch-custom-models.md).
 These focused results do not replace the frozen release certificate below.
 The complete behavior/configuration audit is still open, including remaining
 variational strategies, specialized fitting extensions, custom module protocols,
