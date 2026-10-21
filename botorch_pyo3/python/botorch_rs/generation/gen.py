@@ -103,6 +103,33 @@ def _fixed_arg(fixed_features: Mapping[int, Any] | None, d: int) -> dict[int, fl
     return out
 
 
+def _has_shaped_fixed_features(fixed_features: Mapping[int, Any] | None) -> bool:
+    return any(
+        value is None or bool(to_flat(value, "fixed feature")[1])
+        for value in (fixed_features or {}).values()
+    )
+
+
+def _gen_candidates_scipy_loop(arguments: dict[str, Any]) -> tuple[Any, Any]:
+    import torch
+
+    from botorch_rs.optim._torch_acq_optim import gen_scipy
+
+    initial = arguments["initial_conditions"]
+    arguments = dict(arguments)
+    arguments["initial_conditions"] = (
+        initial if is_torch_tensor(initial) else torch.as_tensor(initial, dtype=torch.float64)
+    )
+    candidates, values = gen_scipy(**arguments)
+    if is_torch_tensor(initial):
+        return candidates, values
+    kind = kind_of(initial)
+    return (
+        from_flat(*to_flat(candidates), kind),
+        from_flat(*to_flat(values), kind),
+    )
+
+
 def _values_out(values: list[float], ics_shape: tuple[int, ...], kind: Any) -> Any:
     if len(ics_shape) == 2:
         return from_flat(values[:1], (1,), kind)
@@ -154,6 +181,13 @@ def gen_candidates_scipy(
         from botorch_rs.optim._torch_acq_optim import gen_scipy
 
         return gen_scipy(**arguments)
+    if (
+        _has_shaped_fixed_features(fixed_features)
+        or (options or {}).get("with_grad", True) is False
+        or (options or {}).get("callback") is not None
+        or (options or {}).get("method", "L-BFGS-B") not in {"L-BFGS-B", "SLSQP"}
+    ):
+        return _gen_candidates_scipy_loop(locals().copy())
     from botorch_rs.optim.optimize import _as_native, _parse_options
 
     kind = first_kind(initial_conditions)
@@ -269,7 +303,9 @@ def gen_candidates_torch(
     shape = tuple(ics[1])
     d = shape[-1]
     native = _as_native(acquisition_function, d)
-    if optimizer is not None and getattr(optimizer, "__name__", None) != "Adam":
+    if _has_shaped_fixed_features(fixed_features) or (
+        optimizer is not None and getattr(optimizer, "__name__", None) != "Adam"
+    ):
         return _gen_candidates_torch_loop(
             initial_conditions,
             native,

@@ -308,10 +308,6 @@ def gen_scipy(
     import numpy as np
     from scipy.optimize import minimize
 
-    if use_parallel_mode is True:
-        raise UnsupportedError(
-            "The Torch SciPy driver implements serial mode only; use_parallel_mode=True is unsupported."
-        )
     shape = initial_conditions.shape
     if len(shape) < 2:
         raise ValueError("initial_conditions must have at least two dimensions.")
@@ -340,16 +336,11 @@ def gen_scipy(
         inequality_constraints or equality_constraints or nonlinear_inequality_constraints
     )
     method = options.pop("method", "SLSQP" if constrained else "L-BFGS-B")
-    if method not in {"L-BFGS-B", "SLSQP"} or (constrained and method != "SLSQP"):
-        raise UnsupportedError(
-            "Torch SciPy candidate generation requires L-BFGS-B or constrained SLSQP."
-        )
-    if not options.pop("with_grad", True):
-        raise UnsupportedError("Torch candidate generation requires with_grad=True.")
+    with_grad = bool(options.pop("with_grad", True))
     callback = options.pop("callback", None)
     if "max_optimization_problem_aggregation_size" in options:
         limit = options.pop("max_optimization_problem_aggregation_size")
-        options.update(method=method, callback=callback)
+        options.update(method=method, callback=callback, with_grad=with_grad)
         return _generate_chunks(
             gen_scipy,
             dict(
@@ -375,6 +366,18 @@ def gen_scipy(
     if "factr" in options:
         options.setdefault("ftol", options.pop("factr") * np.finfo(float).eps)
     options.setdefault("maxiter", 2000)
+    from botorch_rs.optim._torch_acq_parallel import eligible, gen_parallel
+
+    parallel = eligible(
+        initial, lo, hi, fixed, method, with_grad, constrained, timeout_sec, options
+    )
+    if use_parallel_mode is True and not parallel:
+        raise NotImplementedError(
+            "Parallel L-BFGS-B requires two/three-dimensional starts, analytic gradients, "
+            "shared free-variable bounds, no constraints/timeout, and compatible options."
+        )
+    if parallel and use_parallel_mode is not False:
+        return gen_parallel(initial, acquisition_function, lo, hi, fixed, options, callback)
     started = time.monotonic()
     last = initial
 
@@ -385,13 +388,16 @@ def gen_scipy(
             .requires_grad_(True)
         )
 
-    def objective(vector: Any) -> tuple[float, Any]:
+    def objective(vector: Any) -> Any:
         nonlocal last
         X = variable(vector)
-        loss = -acquisition_function(X).sum()
-        gradient = torch.autograd.grad(loss, X)[0]
         last = X.detach()
-        return loss.detach().double().item(), gradient.detach().double().cpu().numpy().ravel()
+        if with_grad:
+            loss = -acquisition_function(X).sum()
+            gradient = torch.autograd.grad(loss, X)[0]
+            return loss.detach().double().item(), gradient.detach().double().cpu().numpy().ravel()
+        with torch.no_grad():
+            return -acquisition_function(X).sum().double().item()
 
     constraints = []
     for index, specs in enumerate(
@@ -436,17 +442,20 @@ def gen_scipy(
     class Timeout(Exception):
         pass
 
-    def step(vector: Any) -> None:
+    def step(*args: Any, **kwargs: Any) -> None:
         if callback is not None:
-            callback(vector)
+            callback(*args, **kwargs)
         if timeout_sec is not None and time.monotonic() - started >= timeout_sec:
             raise Timeout
+
+    if callback is not None:
+        step = functools.wraps(callback)(step)
 
     try:
         result = minimize(
             objective,
             initial.double().cpu().numpy().ravel(),
-            jac=True,
+            jac=with_grad,
             bounds=list(
                 zip(
                     lo.double().cpu().numpy().ravel(),

@@ -185,8 +185,12 @@ def test_unimplemented_optimizer_options_are_rejected(device):
     with pytest.raises(UnsupportedError, match="custom ic_generator"):
         optimize_acqf(Quadratic(), bounds, 1, 2, 8, unknown_initializer_argument=True)
     initial = bounds.new_full((2, 1, 1), 0.5)
-    with pytest.raises(UnsupportedError, match="serial mode"):
-        gen_candidates_scipy(initial, Quadratic(), use_parallel_mode=True)
+    candidates, _ = gen_candidates_scipy(initial, Quadratic(), use_parallel_mode=True)
+    torch.testing.assert_close(candidates, torch.full_like(candidates, 0.73))
+    with pytest.raises(NotImplementedError, match="Parallel L-BFGS-B"):
+        gen_candidates_scipy(
+            initial, Quadratic(), options={"with_grad": False}, use_parallel_mode=True
+        )
     for generator in (gen_candidates_torch, gen_candidates_scipy):
         with pytest.raises(ValueError, match="positive integer"):
             generator(

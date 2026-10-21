@@ -221,9 +221,12 @@ joint-sampling performance fallback.
 All 11 [cross-platform CI jobs](https://github.com/M-Colley/botorch-rust/actions/runs/39508767912)
 pass at test revision `e5a6c0ad3da8`, including Rust on Linux, macOS
 and Windows, optional-dependency matrices, and the full Linux Torch 2.14 CPU
-BoTorch broad/equivalence suites. Changes after the frozen wheel affect tests
-and documentation only; the report verifies unchanged Python payloads and all
-300 Rust/Cargo source inputs. Linux CI builds its own platform extension.
+BoTorch broad/equivalence suites. That CI revision changed tests and documentation
+relative to the frozen wheel; its report verifies unchanged Python payloads and
+all 300 Rust/Cargo source inputs. Subsequent development changes add runtime
+behavior and are outside that release certificate. Their focused verification is
+recorded in the configuration-specific notes; a new full integrated certificate
+is pending. Linux CI builds its own platform extension.
 Its case counts are separate from the Windows installed-wheel ledger. Local
 CUDA validation uses Torch 2.13; Torch 2.14 GPU coverage is not certified.
 

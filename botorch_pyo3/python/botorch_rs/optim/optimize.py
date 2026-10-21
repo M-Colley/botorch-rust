@@ -476,6 +476,40 @@ def _optimize_kwargs(
     return kwargs
 
 
+def _optimize_with_general_driver(arguments: dict[str, Any]) -> tuple[Any, Any]:
+    import torch
+
+    from botorch_rs.optim._torch_acq_optim import optimize
+
+    original_bounds = arguments["bounds"]
+    kwargs = dict(arguments)
+    bounds = (
+        original_bounds
+        if is_torch_tensor(original_bounds)
+        else torch.as_tensor(original_bounds, dtype=torch.float64)
+    )
+    kwargs["bounds"] = bounds
+    initial = kwargs["batch_initial_conditions"]
+    if initial is not None:
+        kwargs["batch_initial_conditions"] = torch.as_tensor(
+            initial, dtype=bounds.dtype, device=bounds.device
+        )
+    initializer = kwargs["ic_generator"]
+    if initializer is not None:
+
+        def initialize(**kw: Any) -> Any:
+            return torch.as_tensor(initializer(**kw), dtype=bounds.dtype, device=bounds.device)
+
+        kwargs["ic_generator"] = initialize
+    candidates, values = optimize(kwargs)
+    if is_torch_tensor(original_bounds):
+        return candidates, values
+    kind = kind_of(original_bounds)
+    return from_flat(*to_flat(candidates), kind), (
+        None if values is None else from_flat(*to_flat(values), kind)
+    )
+
+
 def optimize_acqf(
     acq_function: Any,
     bounds: Any,
@@ -612,6 +646,12 @@ def optimize_acqf(
         )
     if acq_function is None:
         raise ValueError("Either `acq_function` or `acq_function_sequence` must be specified.")
+    if (
+        (options or {}).get("with_grad", True) is False
+        or (options or {}).get("callback") is not None
+        or (options or {}).get("method", "L-BFGS-B") not in {"L-BFGS-B", "SLSQP"}
+    ):
+        return _optimize_with_general_driver(locals().copy())
     if sequential and not return_best_only:
         raise UnsupportedError("`return_best_only=False` only supported for joint optimization.")
     kind = first_kind(bounds, batch_initial_conditions)

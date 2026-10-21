@@ -22,7 +22,7 @@ from botorch_rs._arrays import (
     kind_of,
     to_flat,
 )
-from botorch_rs.acquisition.acquisition import AcquisitionFunction, check_unsupported
+from botorch_rs.acquisition.acquisition import AcquisitionFunction
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import BadInitialCandidatesWarning, BotorchWarning
 from botorch_rs.optim.parameter_constraints import linear_constraints_arg
@@ -157,7 +157,35 @@ def gen_batch_initial_conditions(
             inequality_constraints=inequality_constraints,
             equality_constraints=equality_constraints,
         )
-    check_unsupported(generator=generator)
+    if generator is not None:
+        import torch
+
+        from botorch_rs.optim._torch_acq_initializers import gen_initial_conditions
+
+        tensor_bounds = (
+            bounds if is_torch_tensor(bounds) else torch.as_tensor(bounds, dtype=torch.float64)
+        )
+
+        def raw_generator(n: int, q: int, seed: int | None) -> Any:
+            values = generator(n, q, seed)
+            return torch.as_tensor(values, dtype=tensor_bounds.dtype, device=tensor_bounds.device)
+
+        result = gen_initial_conditions(
+            acq_function,
+            tensor_bounds,
+            q,
+            num_restarts,
+            raw_samples,
+            fixed_features,
+            options or {},
+            raw_generator=raw_generator,
+            fixed_X_fantasies=fixed_X_fantasies,
+            inequality_constraints=inequality_constraints,
+            equality_constraints=equality_constraints,
+        )
+        return (
+            result if is_torch_tensor(bounds) else from_flat(*to_flat(result), first_kind(bounds))
+        )
     if not isinstance(acq_function, AcquisitionFunction):
         raise UnsupportedError(
             "gen_batch_initial_conditions requires a botorch_rs acquisition function."
