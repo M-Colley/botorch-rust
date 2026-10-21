@@ -886,9 +886,10 @@ class _TensorAcquisition(nn.Module):
         return result
 
     def _prune_baseline(self) -> None:
+        from botorch_rs.acquisition.objective import LearnedObjective
         from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
-        if not self._preference_ensemble:
+        if not self._preference_ensemble and not isinstance(self.objective, LearnedObjective):
             from botorch_rs.acquisition._torch_pruning import prune_indices
 
             indices = prune_indices(
