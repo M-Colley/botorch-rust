@@ -82,3 +82,12 @@ existing active-dimension dispatch issue: no feature-selection behavior needs
 to change to repair batch repetition. Batched model comparisons form the exact
 law from the unmodified reference's actual data and task component modules,
 avoiding its broken composite wrapper.
+
+Direct Tensor evaluation calls consume already transformed inputs and return
+the latent conditional in standardized model units. `forward` evaluates the
+prior in both train and eval modes, applying input transforms only in train
+mode. Public `posterior` still accepts raw features and returns original
+outcome units. The structured direct-call regressions compare values and query
+gradients and check finite query Hessians on CPU/CUDA, including query/model batch axes.
+The source batch-factor defect is filed as
+[GPyTorch #2817](https://github.com/cornellius-gp/gpytorch/pull/2817).

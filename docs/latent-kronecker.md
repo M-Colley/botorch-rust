@@ -148,3 +148,14 @@ autograd parameter gradients and complete joint covariance, explicitly
 reshaping/untransforming the official moments before comparison. Native
 Rust tests independently compare dense covariance likelihoods, all raw
 parameter finite differences and analytic feature-input gradients.
+
+Direct Tensor evaluation calls accept transformed feature coordinates and
+return a flattened conditional in model outcome units, with an optional
+query time grid. Eval `forward` computes the prior and preserves the source's
+training-prefix missing-value mask on a joint feature/time grid. Public
+`posterior` continues to accept raw features and return original-space
+structured moments and samples. New direct-call comparisons cover CPU/CUDA,
+normalization and explicit query/model batch axes; the combined structured
+model and native fantasy regression run passes 173 cases. The 24 initial
+direct-call cases also pass on CPU/CUDA, with all 12 CPU cases passing on
+Torch 2.14. These overlapping counts do not certify a new release.

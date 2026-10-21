@@ -354,6 +354,19 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         posterior_transform: Any = None,
         **kwargs: Any,
     ) -> Any:
+        return self._posterior(X, T, observation_noise, posterior_transform, **kwargs)
+
+    def _posterior(
+        self,
+        X: Tensor,
+        T: Any = None,
+        observation_noise: Any = False,
+        posterior_transform: Any = None,
+        *,
+        inputs_transformed: bool = False,
+        untransform: bool = True,
+        **kwargs: Any,
+    ) -> Any:
         if kwargs or observation_noise is not False or posterior_transform is not None:
             raise UnsupportedError(
                 "LatentKronecker prediction supports latent outputs and no posterior transform overrides."
@@ -373,7 +386,7 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             raise ValueError("Query feature/time shapes, dtype and device must match the model.")
         self.eval()
         train, time, targets = self._training_values()
-        query = self.transform_inputs(X)
+        query = X if inputs_transformed else self.transform_inputs(X)
         batch = torch.broadcast_shapes(self.batch_shape, query.shape[:-2], T.shape[:-2])
         train, time, query, T = [v.expand(*batch, *v.shape[-2:]) for v in (train, time, query, T)]
         full_train = self._covariance(train, time, train, time)
@@ -391,7 +404,7 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         q, t = query.shape[-2], T.shape[-2]
         mean = mean.reshape(*batch, q, t)
         location, scale = 0.0, 1.0
-        if self.outcome_transform is not None:
+        if untransform and self.outcome_transform is not None:
             location, scale = (
                 self.outcome_transform.means.clone(),
                 self.outcome_transform.stdvs.clone(),
@@ -422,15 +435,25 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             scale,
         )
 
+    def __call__(self, X: Tensor, T: Any = None, **kwargs: Any) -> Any:
+        if not self.training:
+            if kwargs:
+                raise TypeError("LatentKroneckerGP evaluation accepts feature and time Tensors.")
+            return self._posterior(X, T, inputs_transformed=True, untransform=False).distribution
+        return nn.Module.__call__(self, X, T, **kwargs)
+
     def forward(self, X: Tensor, T: Any = None) -> Any:
         T = self.train_T if T is None else T
-        if not self.training:
-            return self.posterior(X, T).distribution
-        self._training_values()
-        X = self.transform_inputs(X)
-        covariance = self._covariance(X, T, X, T)[..., self.mask_valid, :][..., :, self.mask_valid]
+        if self.training:
+            self._training_values()
+            X = self.transform_inputs(X)
+            mask = self.mask_valid
+        else:
+            mask = torch.ones(X.shape[-2] * T.shape[-2], dtype=torch.bool, device=X.device)
+            mask[: self.mask_valid.numel()] = self.mask_valid
+        covariance = self._covariance(X, T, X, T)[..., mask, :][..., :, mask]
         return TorchGPyTorchPosterior(
-            self._get_mean(X, T, self.mask_valid).unsqueeze(-1), covariance
+            self._get_mean(X, T, mask).unsqueeze(-1), covariance
         ).distribution
 
     def _rsample_from_base_samples(

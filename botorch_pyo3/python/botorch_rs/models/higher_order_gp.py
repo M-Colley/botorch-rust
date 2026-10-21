@@ -73,12 +73,17 @@ class FlattenedStandardize(Standardize):
         self.output_shape = tuple(int(s) for s in output_shape)
 
     def _squeeze_to_single_output(self, tsr: Any) -> Any:
+        if kind_of(tsr).lib == "torch":
+            dim_ct = tsr.ndim - len(self.output_shape) - 1
+            return tsr.reshape(*tsr.shape[:dim_ct], -1, 1)
         data, shape = to_flat(tsr, "Y")
         dim_ct = len(shape) - len(self.output_shape) - 1
         lead = tuple(shape[:dim_ct])
         return from_flat(list(data), (*lead, len(data) // max(math.prod(lead), 1), 1), kind_of(tsr))
 
     def _return_to_output_shape(self, tsr: Any) -> Any:
+        if kind_of(tsr).lib == "torch":
+            return tsr.reshape(*tsr.shape[:-2], -1, *self.output_shape)
         data, shape = to_flat(tsr, "Y")
         lead = tuple(shape[:-2])
         n = len(data) // max(math.prod(lead) * math.prod(self.output_shape), 1)
@@ -106,11 +111,28 @@ class FlattenedStandardize(Standardize):
         return Y, Yvar
 
     def _scalar_stats(self) -> tuple[float, float]:
+        self._sync_native_statistics()
         if not self._rs.is_trained:
             return 0.0, 1.0
         return float(self._rs.means[0][0]), float(self._rs.stdvs[0][0])
 
     def untransform_posterior(self, posterior: Any, X: Any = None) -> TransformedPosterior:  # type: ignore[override]
+        if kind_of(posterior.mean).lib == "torch":
+            state = self._tensor_state(posterior.mean)
+            means, stdvs = state.means.clone(), state.stdvs.clone()
+
+            def tensor_affine(value: Any, variance: bool = False) -> Any:
+                flat = self._squeeze_to_single_output(value)
+                return self._return_to_output_shape(
+                    flat * stdvs.square() if variance else means + stdvs * flat
+                )
+
+            return TransformedPosterior(
+                posterior=posterior,
+                sample_transform=tensor_affine,
+                mean_transform=lambda m, v: tensor_affine(m),
+                variance_transform=lambda m, v: tensor_affine(v, variance=True),
+            )
         mu, sd = self._scalar_stats()
 
         def affine(t: Any, scale: float, offset: float) -> Any:

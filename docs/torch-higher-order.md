@@ -53,3 +53,26 @@ model batches, exact values/MLL, all-parameter first derivatives, mixed
 second derivatives, prior density, custom modules, structured transforms,
 conditioning and fantasies. Sample means/covariances are checked against
 the actual joint conditional, including noisy observations.
+
+Direct Tensor evaluation calls now use already transformed features and
+return flattened latent conditionals in model outcome units. Eval `forward`
+continues to evaluate a prior. Public `posterior` keeps its raw-feature and
+structured original-outcome interface. The direct-call regressions include
+explicit query/model batch axes on CPU/CUDA. The source's batched `forward`
+can repeat a latent batch by the target batch sizes rather than expand it;
+those failing source configurations are retained explicitly and checked
+against a separate dense conditional using its actual covariance modules.
+
+Public `FlattenedStandardize` reshapes Tensor targets without host transfers.
+Its direct forward, noise, inverse and posterior transforms preserve fitted
+statistics graphs. Saved posterior closures capture the fitted statistics;
+refitting the descriptor does not change the saved law. Native model
+construction explicitly exports current statistics before using a scalar
+Rust standardization specification.
+
+The initial structured direct-call matrix passes 24 CPU/CUDA cases and four
+additional flattened-transform cases verify complete training/noise/moment/sample
+first and mixed higher derivatives without host copies. All 14 CPU cases pass
+on Torch 2.14. The integrated input, scalar/multitask/structured direct calls,
+standardization, module and native higher-order fantasy selection passes 429
+cases. Counts overlap the family-specific suites above.

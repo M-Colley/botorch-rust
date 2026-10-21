@@ -541,6 +541,19 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         posterior_transform: Any = None,
         **kwargs: Any,
     ) -> Any:
+        return self._posterior(X, output_indices, observation_noise, posterior_transform, **kwargs)
+
+    def _posterior(
+        self,
+        X: Tensor,
+        output_indices: Any = None,
+        observation_noise: Any = False,
+        posterior_transform: Any = None,
+        *,
+        inputs_transformed: bool = False,
+        untransform: bool = True,
+        **kwargs: Any,
+    ) -> Any:
         if kwargs or not isinstance(observation_noise, bool):
             raise UnsupportedError(
                 "Structured Tensor prediction requires bool observation_noise and no extra options."
@@ -555,7 +568,7 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
             raise ValueError("Query tensors must match the model feature width, dtype and device.")
         self.eval()
         train, Y = self._training_values()
-        query = self.transform_inputs(X)
+        query = X if inputs_transformed else self.transform_inputs(X)
         batch = torch.broadcast_shapes(train.shape[:-2], query.shape[:-2])
         n, q, m = train.shape[-2], query.shape[-2], self.num_outputs
         train, query = (
@@ -591,7 +604,7 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         full = torch.cat((train, query), -2)
         joint = self.covar_module(full, full)
         location, scale = 0.0, 1.0
-        if self.outcome_transform is not None:
+        if untransform and self.outcome_transform is not None:
             location, scale = (
                 self.outcome_transform.means.clone(),
                 self.outcome_transform.stdvs.clone(),
@@ -618,12 +631,17 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
             posterior = posterior.subset_output(output_indices)
         return posterior if posterior_transform is None else posterior_transform(posterior, X=X)
 
-    def forward(self, X: Tensor) -> Any:
+    def __call__(self, X: Tensor, *args: Any, **kwargs: Any) -> Any:
         if not self.training:
-            return self.posterior(X).distribution
-        self._fit_transform_graphs()
-        if self.input_transform is not None:
-            X = getattr(self.input_transform, "preprocess_transform", self.input_transform)(X)
+            if args or kwargs:
+                raise TypeError("KroneckerMultiTaskGP evaluation accepts one input Tensor.")
+            return self._posterior(X, inputs_transformed=True, untransform=False).distribution
+        return nn.Module.__call__(self, X, *args, **kwargs)
+
+    def forward(self, X: Tensor) -> Any:
+        if self.training:
+            self._fit_transform_graphs()
+            X = self.transform_inputs(X)
         mean = self.mean_module(X)
         covariance = self.covar_module(X, X)
         q, m = X.shape[-2], self.num_outputs
