@@ -66,11 +66,7 @@ def condition_fixed_likelihood(
     stage.likelihood = _copy_transform(model.likelihood)
     # Additional inferred noise remains a separate learned component. The
     # fixed likelihood's fantasy protocol appends only the fixed component.
-    fixed = (
-        model.likelihood.noise_covar.noise
-        if is_gpytorch_gaussian(model.likelihood)
-        else model.likelihood.noise
-    )
+    fixed = model.likelihood.noise_covar.noise
     fixed = fixed.transpose(-1, -2) if model.num_outputs > 1 else fixed.unsqueeze(-1)
     if model.outcome_transform is not None:
         fixed = model.outcome_transform.untransform(

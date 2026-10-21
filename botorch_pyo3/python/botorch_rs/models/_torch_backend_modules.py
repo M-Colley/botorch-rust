@@ -823,7 +823,7 @@ class TorchFixedNoiseLikelihood(_TorchModule):
         self.register_buffer("noise", noise.detach().clamp_min(minimum).clone())
 
     @property
-    def noise_covar(self) -> TorchFixedNoiseLikelihood:
+    def noise_covar(self) -> Any:
         return self
 
     def noise_for(self, n: int, noise: Tensor | None = None) -> Tensor:

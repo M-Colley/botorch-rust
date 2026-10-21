@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import to_flat
+from botorch_rs._arrays import from_flat, is_torch_tensor, kind_of, to_flat
 from botorch_rs._module import GPModule
 from botorch_rs.constraints import Interval
 from botorch_rs.constraints import _from_rs as _constraint_from_rs
@@ -26,7 +26,7 @@ class Likelihood(GPModule):
     """Base class of the likelihoods."""
 
     @property
-    def noise_covar(self) -> Likelihood:
+    def noise_covar(self) -> Any:
         """GPyTorch's noise module (``likelihood.noise_covar.noise``)."""
         return self
 
@@ -119,12 +119,33 @@ class BernoulliLikelihood(Likelihood):
 
 
 class FixedNoiseGaussianLikelihood(Likelihood):
-    """Fixed observation noise, created by models given ``train_Yvar``."""
+    """Fixed observation noise, optionally with an additional learned variance."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        raise UnsupportedError(
-            "Pass `train_Yvar` to the model instead of a FixedNoiseGaussianLikelihood."
-        )
+    def __new__(cls, noise: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if is_torch_tensor(noise):
+            from botorch_rs._torch_likelihoods import TorchPublicFixedNoiseLikelihood
+            from botorch_rs.sampling.pathwise._torch_types import module_type
+
+            return object.__new__(
+                module_type(cls, TorchPublicFixedNoiseLikelihood, FixedNoiseGaussianLikelihood)
+            )
+        return object.__new__(cls)
+
+    def __init__(
+        self,
+        noise: Any,
+        learn_additional_noise: bool | None = False,
+        batch_shape: Any = (),
+        **kwargs: Any,
+    ) -> None:
+        if learn_additional_noise:
+            raise UnsupportedError("Additional learned fixed noise requires Tensor noise.")
+        _check_kwargs(kwargs, "FixedNoiseGaussianLikelihood")
+        values, shape = to_flat(noise, "noise")
+        if not shape:
+            raise ValueError("Fixed noise must have an observation dimension.")
+        self.batch_shape = _check_batch_shape(batch_shape)
+        self._fixed_noise = from_flat([max(v, 1e-6) for v in values], shape, kind_of(noise))
 
     @classmethod
     def _create(cls, batch_shape: tuple[int, ...] = ()) -> FixedNoiseGaussianLikelihood:
@@ -136,11 +157,16 @@ class FixedNoiseGaussianLikelihood(Likelihood):
     def noise(self) -> Any:
         """The (transformed, clamped at 1e-6) noise variances, shape
         ``batch_shape x n``."""
+        if self._model is None:
+            return self._fixed_noise
         return self._param_out(self._rs_model.noise, (-1,))
 
     @noise.setter
     def noise(self, value: Any) -> None:
-        self._model._replace_transformed_train_data(self._model.train_targets, noise=value)
+        if self._model is None:
+            self._fixed_noise = value
+        else:
+            self._model._replace_transformed_train_data(self._model.train_targets, noise=value)
 
     def __repr__(self) -> str:
         return "FixedNoiseGaussianLikelihood()"

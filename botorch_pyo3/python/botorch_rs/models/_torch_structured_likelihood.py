@@ -68,6 +68,11 @@ def scalar_observed_law(
         from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
 
         distribution = TorchGPyTorchPosterior(mean.unsqueeze(-1), covariance).distribution
+        if getattr(likelihood, "_fixed_noise_component", False):
+            options = (kwargs or {}).copy()
+            options.setdefault("noise", fixed_noise)
+            observed = likelihood(distribution, **options)
+            return observed.mean, observed.covariance_matrix
         observed = torch.func.functional_call(
             likelihood, {"noise": fixed_noise}, (distribution,), kwargs or {}
         )
@@ -225,9 +230,7 @@ def condition_likelihood(
         if not hasattr(model, "_conditioning_fixed_noise"):
             conditioned.register_buffer(
                 "_conditioning_fixed_noise",
-                likelihood.noise_covar.noise
-                if is_gpytorch_gaussian(likelihood)
-                else likelihood.noise,
+                likelihood.noise_covar.noise,
             )
 
 
