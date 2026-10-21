@@ -23,9 +23,10 @@ Pinned official BoTorch `b0dd01be61d517c387e234903a6e2cc38c057ea2`
 computes `nanstd([[.2, nan, .8, .5]], -1) == .3`, but its first gradient is
 `[[nan, nan, nan, nan]]`. It squares a NaN before reducing with `nanmean`,
 allowing inactive arithmetic to contaminate backward. The port's derivative
-matches standard deviation computed only on observed entries. A distinct
-upstream helper repair is being prepared; existing BoTorch #3468 changes
-outcome-transform code rather than this public helper.
+matches standard deviation computed only on observed entries. The distinct
+helper repair is submitted as [BoTorch #3520](https://github.com/meta-pytorch/botorch/pull/3520);
+existing BoTorch #3468 changes outcome-transform code rather than this helper.
+All 20 affected source tests pass on Torch 2.13 CPU/CUDA and 2.14.1 CPU.
 
 Validation adds 46 CPU/CUDA cases. Analytical lognormal marginal derivatives
 and directional Hessian products are checked independently, including tiny
