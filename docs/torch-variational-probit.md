@@ -36,6 +36,8 @@ Reference classifier comparisons disclose this one-primitive repair and retain
 the independent reference GP, variational, likelihood, quadrature and MLL code.
 Full mixed data/parameter Hessians are additionally compared against finite
 differences of those independent reference gradients.
+The upstream repair and CPU/CUDA regressions are published as
+[GPyTorch #2820](https://github.com/cornellius-gp/gpytorch/pull/2820).
 
 Actual supplied homoskedastic GPyTorch Gaussian likelihoods are also converted
 to a port evaluator while keeping their noise parameter and constraint module

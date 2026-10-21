@@ -50,12 +50,17 @@ def _distribution_family(source: Any) -> str:
         "DeltaVariationalDistribution": DeltaVariationalDistribution,
     }
     gpytorch = sys.modules.get("gpytorch")
+    if gpytorch is not None and isinstance(source, gpytorch.variational._VariationalDistribution):
+        # Keep supplied modules themselves: Natural distributions define a
+        # deliberate natural-gradient VJP, and subclasses may add parameters
+        # or change their forward law.
+        return "external"
     for name, own_class in families.items():
-        external = None if gpytorch is None else getattr(gpytorch.variational, name)
-        if type(source) is own_class or (external is not None and type(source) is external):
+        if type(source) is own_class:
             return name.removesuffix("VariationalDistribution").lower()
     raise UnsupportedError(
-        "Torch variational models support Cholesky, MeanField and Delta variational distributions."
+        "Torch variational models require a port Cholesky/MeanField/Delta specification "
+        "or a GPyTorch VariationalDistribution module."
     )
 
 
@@ -216,12 +221,47 @@ class _TorchDeltaDistribution(_TorchBaseDistribution):
         return 0.5 * (self.variational_mean.square() + math.log(2 * math.pi)).sum(-1)
 
 
+def _distribution_moments(distribution: Any) -> tuple[Tensor, Tensor, bool]:
+    """Evaluate the actual supplied law, including its registered autograd VJP."""
+    if isinstance(distribution, _TorchBaseDistribution):
+        return (
+            distribution.variational_mean.clone(),
+            distribution.covariance_matrix(),
+            isinstance(distribution, _TorchDeltaDistribution),
+        )
+    import gpytorch
+
+    value = distribution()
+    if isinstance(value, gpytorch.distributions.MultivariateNormal):
+        return value.mean.clone(), value.covariance_matrix, False
+    if isinstance(value, gpytorch.distributions.Delta):
+        return value.mean.clone(), torch.diag_embed(torch.zeros_like(value.mean)), True
+    raise RuntimeError(
+        f"Invalid variational distribution ({type(value)}). Expected a MultivariateNormal "
+        "or a Delta distribution."
+    )
+
+
+def sample_variational_with_base(distribution: Any, noise: Tensor) -> Tensor:
+    """Use a supplied distribution's root and sample semantics, without replacing it."""
+    if isinstance(distribution, _TorchBaseDistribution):
+        return distribution.sample_with_base(noise)
+    import gpytorch
+
+    value = distribution()
+    if isinstance(value, gpytorch.distributions.MultivariateNormal):
+        return value.rsample(base_samples=noise)
+    if isinstance(value, gpytorch.distributions.Delta):
+        return value.mean.expand_as(noise)
+    raise RuntimeError(f"Invalid variational distribution ({type(value)}).")
+
+
 class _TorchVariationalStrategy(nn.Module):
     _tensor_backend = "torch"
     _owner_ref: Any
     inducing_points: Tensor
     variational_params_initialized: Tensor
-    _variational_distribution: _TorchBaseDistribution
+    _variational_distribution: Any
 
     def __init__(
         self, owner: Any, points: Tensor, distribution: Any, learn: bool, whitened: bool = True
@@ -264,8 +304,9 @@ class _TorchVariationalStrategy(nn.Module):
     def prior_distribution(self) -> Any:
         if not self.whitened:
             return self._inducing_prior(1e-3)
-        mean = torch.zeros_like(self._variational_distribution.variational_mean)
-        n = mean.shape[-1]
+        distribution = self._variational_distribution
+        n = distribution.num_inducing_points
+        mean = self.inducing_points.new_zeros(*distribution.batch_shape, n)
         return TorchGPyTorchPosterior(
             mean.unsqueeze(-1),
             torch.eye(n, dtype=mean.dtype, device=mean.device).expand(*mean.shape[:-1], n, n),
@@ -273,8 +314,18 @@ class _TorchVariationalStrategy(nn.Module):
 
     def _initialize(self) -> None:
         if not bool(self.variational_params_initialized):
-            self._variational_distribution.initialize_variational_distribution(
-                None if self.whitened else self.prior_distribution
+            distribution = self._variational_distribution
+            prior = self.prior_distribution
+            if not isinstance(distribution, _TorchBaseDistribution):
+                import gpytorch
+
+                prior = gpytorch.distributions.MultivariateNormal(
+                    prior.mean, prior.covariance_matrix
+                )
+            distribution.initialize_variational_distribution(
+                None
+                if self.whitened and isinstance(distribution, _TorchBaseDistribution)
+                else prior
             )
             self.variational_params_initialized.fill_(1)
 
@@ -294,19 +345,23 @@ class _TorchVariationalStrategy(nn.Module):
         )
         return TorchGPyTorchPosterior(mean.unsqueeze(-1), covariance).distribution
 
-    def kl_divergence(self) -> Tensor:
+    def kl_divergence(self, moments: tuple[Tensor, Tensor, bool] | None = None) -> Tensor:
+        distribution = self._variational_distribution
+        if self.whitened and isinstance(distribution, _TorchBaseDistribution):
+            return distribution.kl_divergence()
+        mean, covariance, delta_distribution = (
+            _distribution_moments(distribution) if moments is None else moments
+        )
         if not self.whitened:
-            distribution = self._variational_distribution
             prior = self._inducing_prior(self._kl_prior_jitter)
-            delta = distribution.variational_mean - prior.mean
+            delta = mean - prior.mean
             root = _rs.tensor_psd_safe_cholesky(prior.covariance_matrix)
             quadratic = (delta * torch.cholesky_solve(delta.unsqueeze(-1), root).squeeze(-1)).sum(
                 -1
             )
             logdet = 2 * root.diagonal(dim1=-2, dim2=-1).log().sum(-1)
-            if isinstance(distribution, _TorchDeltaDistribution):
+            if delta_distribution:
                 return 0.5 * (quadratic + logdet + delta.shape[-1] * math.log(2 * math.pi))
-            covariance = distribution.covariance_matrix()
             trace = torch.cholesky_solve(covariance, root).diagonal(dim1=-2, dim2=-1).sum(-1)
             return 0.5 * (
                 quadratic
@@ -315,7 +370,15 @@ class _TorchVariationalStrategy(nn.Module):
                 + logdet
                 - torch.linalg.slogdet(covariance).logabsdet
             )
-        return self._variational_distribution.kl_divergence()
+        quadratic = mean.square().sum(-1)
+        if delta_distribution:
+            return 0.5 * (quadratic + mean.shape[-1] * math.log(2 * math.pi))
+        return 0.5 * (
+            quadratic
+            + covariance.diagonal(dim1=-2, dim2=-1).sum(-1)
+            - mean.shape[-1]
+            - torch.linalg.slogdet(covariance).logabsdet
+        )
 
     def forward(self, X: Tensor, prior: bool = False) -> Any:
         owner = self._owner_ref()
@@ -334,8 +397,8 @@ class _TorchIndependentStrategy(nn.Module):
         super().__init__()
         self.base_variational_strategy = strategy
 
-    def kl_divergence(self) -> Tensor:
-        return self.base_variational_strategy.kl_divergence().sum(-1)
+    def kl_divergence(self, moments: tuple[Tensor, Tensor, bool] | None = None) -> Tensor:
+        return self.base_variational_strategy.kl_divergence(moments).sum(-1)
 
     def forward(self, X: Tensor, prior: bool = False) -> Any:
         return self.base_variational_strategy(X, prior=prior)
@@ -373,6 +436,21 @@ class _TorchVariationalInner(nn.Module):
 
     def forward(self, X: Tensor) -> Any:
         return self._outer._prior_output(X, multitask=False)
+
+    def named_variational_parameters(self) -> Any:
+        distribution = self._outer._strategy._variational_distribution
+        leaves = {id(value) for value in distribution.parameters()}
+        return ((name, value) for name, value in self.named_parameters() if id(value) in leaves)
+
+    def variational_parameters(self) -> Any:
+        return (value for _, value in self.named_variational_parameters())
+
+    def named_hyperparameters(self) -> Any:
+        leaves = {id(value) for value in self.variational_parameters()}
+        return ((name, value) for name, value in self.named_parameters() if id(value) not in leaves)
+
+    def hyperparameters(self) -> Any:
+        return (value for _, value in self.named_hyperparameters())
 
 
 class _TorchMultitaskNoise(TorchMultitaskGaussianLikelihood):
@@ -421,6 +499,7 @@ class _TorchVariationalOutput:
         covariance: Any,
         prior: bool = False,
         independent: bool = False,
+        variational_moments: tuple[Tensor, Tensor, bool] | None = None,
     ) -> None:
         self._owner = owner
         self._mean = mean
@@ -431,7 +510,7 @@ class _TorchVariationalOutput:
         self._independent = independent
         self._multitask = owner.num_outputs > 1 and not independent
         if not prior:
-            self._kl = owner.model.variational_strategy.kl_divergence()
+            self._kl = owner.model.variational_strategy.kl_divergence(variational_moments)
             self._log_prior = owner._log_prior()
             if getattr(owner.likelihood, "_non_gaussian", False):
                 self._expected_log_prob = owner.likelihood.snapshot_expected_log_prob()
@@ -647,14 +726,17 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             raise ValueError(
                 "Variational distribution dimensions must match the inducing points and augmented model batch shape."
             )
-        distribution_class = {
-            "cholesky": _TorchCholeskyDistribution,
-            "meanfield": _TorchMeanFieldDistribution,
-            "delta": _TorchDeltaDistribution,
-        }[distribution_family]
-        distribution = distribution_class(
-            points.shape[-2], self._aug_batch_shape, train_X, variational_distribution
-        )
+        if distribution_family == "external":
+            distribution = variational_distribution.to(train_X)
+        else:
+            distribution_class = {
+                "cholesky": _TorchCholeskyDistribution,
+                "meanfield": _TorchMeanFieldDistribution,
+                "delta": _TorchDeltaDistribution,
+            }[distribution_family]
+            distribution = distribution_class(
+                points.shape[-2], self._aug_batch_shape, train_X, variational_distribution
+            )
         strategy = _TorchVariationalStrategy(
             self, points, distribution, learn_inducing_points, whitened=whitened
         )
@@ -749,9 +831,13 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             self.model.mean_module,
             self.likelihood,
             self.input_transform,
+            self._strategy._variational_distribution,
         ):
             if module is not None:
-                value = module_log_prior(module, self._aug_batch_shape)
+                # VariationalELBO globally sums each registered prior before
+                # broadcasting the scalar to its loss batches. Do not expand
+                # shared scalar priors to augmented batches before this sum.
+                value = module_log_prior(module, ())
                 result = result + (value.sum() if isinstance(value, Tensor) else value)
         return result
 
@@ -787,9 +873,11 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             root, _dense(kernel(inducing, augmented)), upper=False
         )
         distribution = strategy._variational_distribution
-        middle = distribution.covariance_matrix() - eye
+        moments = _distribution_moments(distribution)
+        variational_mean, variational_covariance, _ = moments
+        middle = variational_covariance - eye
         mean = self.model.mean_module(augmented) + (
-            interpolation.mT @ distribution.variational_mean.unsqueeze(-1)
+            interpolation.mT @ variational_mean.unsqueeze(-1)
         ).squeeze(-1)
         update = middle @ interpolation
         variance_update = (interpolation * update).sum(-2)
@@ -807,7 +895,9 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             )
             return prior + delta + jitter * torch.eye(N, dtype=X.dtype, device=X.device)
 
-        return _TorchVariationalOutput(self, mean, variance, covariance)
+        return _TorchVariationalOutput(
+            self, mean, variance, covariance, variational_moments=moments
+        )
 
     def _unwhitened_output(self, X: Tensor) -> Any:
         X = X.clone()
@@ -816,17 +906,19 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         distribution = strategy._variational_distribution
         points = strategy.inducing_points
         inducing = points if points.ndim == self._train_X.ndim + 1 else self._augment(points)
-        covariance_q = distribution.covariance_matrix()
+        moments = _distribution_moments(distribution)
+        variational_mean, covariance_q, delta_distribution = moments
         if torch.equal(augmented, inducing):
-            if isinstance(distribution, _TorchDeltaDistribution):
+            if delta_distribution:
                 raise RuntimeError(
                     "The reference unwhitened Delta strategy has no covariance at its inducing points."
                 )
             return _TorchVariationalOutput(
                 self,
-                distribution.variational_mean,
+                variational_mean,
                 covariance_q.diagonal(dim1=-2, dim2=-1),
                 lambda: covariance_q,
+                variational_moments=moments,
             )
         kernel, mean_module = self.model.covar_module, self.model.mean_module
         m = points.shape[-2]
@@ -837,7 +929,7 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         kzx = _dense(kernel(inducing, augmented))
         interpolation = torch.cholesky_solve(kzx, root)
         mean = mean_module(augmented) + (
-            interpolation.mT @ (distribution.variational_mean - mean_module(inducing)).unsqueeze(-1)
+            interpolation.mT @ (variational_mean - mean_module(inducing)).unsqueeze(-1)
         ).squeeze(-1)
         residual = _dense(kernel(augmented, augmented, diag=True)) - (kzx * interpolation).sum(-2)
         training = self.model.training
@@ -859,7 +951,9 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             )
             return correction + prior - kzx.mT @ interpolation
 
-        return _TorchVariationalOutput(self, mean, variance, covariance)
+        return _TorchVariationalOutput(
+            self, mean, variance, covariance, variational_moments=moments
+        )
 
     def forward(self, X: Tensor) -> Any:
         if self.training and self.input_transform is not None:

@@ -61,6 +61,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Exact predictive cache squeezes a singleton model batch axis | Existing [GPyTorch #2804](https://github.com/cornellius-gp/gpytorch/pull/2804) |
 | Exact fantasy updates fold broadcast parameter batches into the prior event axis | New [GPyTorch #2819](https://github.com/cornellius-gp/gpytorch/pull/2819); 117 relevant source tests run successfully on Torch 2.13 CPU/CUDA and 2.14 CPU, including eight new dense-Gaussian value/covariance/gradient subcases |
 | Variational unbatched zero-mean conversion | New [GPyTorch #2813](https://github.com/cornellius-gp/gpytorch/pull/2813) |
+| Probit log-CDF approximation and detached negative-tail higher derivatives | New [GPyTorch #2820](https://github.com/cornellius-gp/gpytorch/pull/2820); 256 relevant upstream tests pass, including CPU/CUDA value, analytic derivative and gradcheck regressions |
 | Neural-kernel self-diagonal consistency, zero-clipping derivatives and large-variance overflow | New [BoTorch #3492](https://github.com/meta-pytorch/botorch/pull/3492); 19 tests and 31 subtests pass. Separate paired-input repair remains in [#3387](https://github.com/meta-pytorch/botorch/pull/3387) |
 | Constant-target transform first/second derivatives | New [BoTorch #3468](https://github.com/meta-pytorch/botorch/pull/3468) |
 | Periodic/cosine second derivatives | New [GPyTorch #2816](https://github.com/cornellius-gp/gpytorch/pull/2816) |
