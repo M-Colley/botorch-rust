@@ -264,8 +264,10 @@ def test_fixed_noise_model(kind: str, data: tuple[list, list]) -> None:
         "mean_module.raw_constant",
         "covar_module.raw_lengthscale",
     ]
-    with pytest.raises(UnsupportedError):
-        FixedNoiseGaussianLikelihood(noise=Yvar)
+    supplied = FixedNoiseGaussianLikelihood(noise=as_kind(Yvar, kind))
+    assert isinstance(supplied, FixedNoiseGaussianLikelihood)
+    check_kind(supplied.noise, kind)
+    assert_close(supplied.noise, Yvar)
     with pytest.raises(InputDataError):
         SingleTaskGP(X, Y, [[-1.0]] * len(Y))
 
