@@ -196,18 +196,9 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
                 "Tensor LatentKronecker outcomes currently support Standardize(m=1) or None."
             )
         if isinstance(likelihood, nn.Module):
-            external_noise: Any = getattr(likelihood, "noise", None)
-            if (
-                not isinstance(external_noise, Tensor)
-                or external_noise.shape[-1:] != (1,)
-                or not any(
-                    cls.__name__ in {"GaussianLikelihood", "TorchGaussianLikelihood"}
-                    for cls in type(likelihood).__mro__
-                )
-            ):
-                raise UnsupportedError(
-                    "Tensor LatentKronecker inference requires scalar Gaussian noise."
-                )
+            from botorch_rs.models._torch_structured_likelihood import validate_scalar_likelihood
+
+            validate_scalar_likelihood(likelihood)
             self.likelihood = likelihood.to(train_X)
         else:
             self.likelihood = build_likelihood(
@@ -332,8 +323,14 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             value = value + module_log_prior(module, self.batch_shape)
         return value
 
-    def _exact_mll(self, output: Any = None, target: Any = None) -> Tensor:
+    def _exact_mll(
+        self, output: Any = None, target: Any = None, *params: Any, **kwargs: Any
+    ) -> Tensor:
+        from botorch_rs.models._torch_structured_likelihood import scalar_observed_law
+
         X, T, Y = self._training_values()
+        if output is None and type(self).forward is not TorchLatentKroneckerGP.forward:
+            output = nn.Module.__call__(self, self._train_X if self.training else X, T)
         covariance = (
             self._covariance(X, T, X, T)[..., self.mask_valid, :][..., :, self.mask_valid]
             if output is None
@@ -341,8 +338,11 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         )
         mean = self._get_mean(X, T, self.mask_valid) if output is None else output.mean
         target = Y if target is None else target
+        mean, covariance = scalar_observed_law(
+            self.likelihood, mean, covariance, (X, T), params=params, kwargs=kwargs
+        )
         return (
-            _rs.tensor_exact_mll(target, covariance, mean, self.likelihood.noise)
+            _rs.tensor_exact_mll(target, covariance, mean, torch.zeros_like(target))
             + self._log_prior()
         ) / target.shape[-1]
 

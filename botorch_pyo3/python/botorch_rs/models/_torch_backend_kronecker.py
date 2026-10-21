@@ -508,7 +508,11 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
             result = result + module_log_prior(module, self.batch_shape)
         return result
 
-    def _exact_mll(self, output: Any = None, target: Any = None) -> Tensor:
+    def _exact_mll(
+        self, output: Any = None, target: Any = None, *params: Any, **kwargs: Any
+    ) -> Tensor:
+        from botorch_rs.models._torch_structured_likelihood import multitask_observed_law
+
         X, Y = self._training_values()
         mean = self.mean_module(X)
         covariance = self.covar_module(X, X)
@@ -517,11 +521,11 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         if output is not None:
             mean, covariance = self._point_major_law(output)
             Y = Y if target is None else target
-        noise = tensor_kron(
-            torch.eye(X.shape[-2], dtype=X.dtype, device=X.device), self._noise_matrix()
+        mean, covariance = multitask_observed_law(
+            self, mean, covariance, X, params=params, kwargs=kwargs
         )
         value = _rs.tensor_exact_mll(
-            Y.flatten(-2), covariance + noise, mean.flatten(-2), torch.zeros_like(Y.flatten(-2))
+            Y.flatten(-2), covariance, mean.flatten(-2), torch.zeros_like(Y.flatten(-2))
         )
         return (value + self._log_prior()) / (Y.shape[-2] * Y.shape[-1])
 
