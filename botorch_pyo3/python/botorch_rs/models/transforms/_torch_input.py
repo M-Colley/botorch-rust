@@ -216,3 +216,145 @@ def round_apply(transform: Any, X: Any) -> Any:
 def log10_apply(transform: Any, X: Any, inverse: bool) -> Any:
     selected = X[..., transform.indices]
     return _replace(X, transform.indices, 10.0**selected if inverse else selected.log10())
+
+
+def append_apply(transform: Any, X: Any) -> Any:
+    import torch
+
+    if transform._f is not None:
+        selected = X if transform.indices is None else X[..., transform.indices]
+        features = transform._f(selected, **transform.fkwargs)
+        if not isinstance(features, torch.Tensor):
+            raise TypeError("An append callable must return a Tensor for Tensor inputs.")
+        count = features.shape[-2]
+    else:
+        features = _tensor(transform.feature_set, X)
+        count = features.shape[-2]
+    if transform.skip_expand:
+        expanded = X.reshape(*X.shape[:-2], -1, count, X.shape[-1])
+    else:
+        expanded = X.unsqueeze(-2).expand(*X.shape[:-1], count, X.shape[-1])
+    if transform._f is None:
+        features = features.expand(*expanded.shape[:-1], features.shape[-1])
+    result = torch.cat((expanded, features), -1)
+    transform._n_f = count
+    return result.reshape(*result.shape[:-3], -1, result.shape[-1])
+
+
+def one_hot_apply(transform: Any, X: Any, inverse: bool) -> Any:
+    import torch
+
+    if not transform.categorical_features:
+        return X
+    groups = [
+        list(range(start, start + cardinality))
+        for start, cardinality in transform.categorical_features.items()
+    ]
+    if inverse:
+        result = X.new_zeros(*X.shape[:-1], transform.dim)
+        result[..., transform.numerical_idx] = X[..., transform.new_numerical_idx]
+        for position, group in zip(transform.ordinal_idx, groups, strict=True):
+            result[..., group] = torch.nn.functional.one_hot(
+                X[..., position].long(), len(group)
+            ).to(X)
+    else:
+        result = X[..., : transform.numeric_dim].clone()
+        result[..., transform.new_numerical_idx] = X[..., transform.numerical_idx]
+        for position, group in zip(transform.ordinal_idx, groups, strict=True):
+            result[..., position] = X[..., group].argmax(-1)
+    return result
+
+
+def categorical_apply(transform: Any, X: Any) -> Any:
+    result = X.new_zeros(
+        *X.shape[:-1], len(transform.numerical_idx) + sum(transform.categorical_features.values())
+    )
+    result[..., transform.new_numerical_idx] = X[..., transform.numerical_idx]
+    for index, columns in zip(transform.ordinal_idx, transform.encoded_idx, strict=True):
+        encoded = transform.encoders[index](X[..., index].long())
+        if not is_tensor(encoded):
+            raise TypeError("A categorical encoder must return a Tensor for Tensor inputs.")
+        result[..., columns] = encoded.to(result)
+    return result
+
+
+def imputation_parameter(transform: Any, like: Any) -> Any:
+    import torch
+
+    parameters = transform.__dict__.setdefault("_direct_parameters", {})
+    if "raw_imputation_values" not in parameters:
+        parameters["raw_imputation_values"] = torch.nn.Parameter(
+            _tensor(transform._step.params, like)
+        )
+    return parameters["raw_imputation_values"]
+
+
+def imputation_values(transform: Any, like: Any) -> Any:
+    import torch
+
+    raw = (
+        imputation_parameter(transform, like)
+        if transform._model is None
+        else _tensor(transform.raw_imputation_values, like)
+    )
+    values = raw.reshape(transform.num_tasks, transform.d + 1)
+    if transform.bounds is not None:
+        bounds = _tensor(transform.bounds, values)
+        lower = torch.cat((bounds[0], values.new_zeros(1)))
+        upper = torch.cat((bounds[1], values.new_ones(1)))
+        values = lower + (upper - lower) * values.sigmoid()
+    return values
+
+
+def imputation_apply(transform: Any, X: Any) -> Any:
+    import torch
+
+    if X.shape[-1] == transform.d:
+        if transform.target_task is None:
+            raise ValueError("Inputs without a task column require target_task.")
+        X = torch.cat((X, X.new_full((*X.shape[:-1], 1), transform.target_task)), -1)
+    elif X.shape[-1] != transform.d + 1:
+        raise ValueError(f"Expected {transform.d} or {transform.d + 1} input columns.")
+    values = imputation_values(transform, X).to(X)
+    result = X.clone()
+    tasks = X[..., -1].long()
+    for position, (task, observed) in enumerate(sorted(transform.feature_indices.items())):
+        missing = [column for column in range(transform.d) if column not in observed]
+        result[..., missing] = torch.where(
+            (tasks == task).unsqueeze(-1), values[position, missing], result[..., missing]
+        )
+    return result
+
+
+def perturbation_apply(transform: Any, X: Any) -> Any:
+    import torch
+
+    selected = X if transform.indices is None else X[..., transform.indices]
+    if transform._function is None:
+        perturbations = _tensor(transform.perturbation_set, X)
+        perturbations = perturbations.expand(X.shape[-2], *perturbations.shape)
+    else:
+        perturbations = transform._function(selected)
+        if not isinstance(perturbations, torch.Tensor):
+            raise TypeError("A perturbation callable must return a Tensor for Tensor inputs.")
+    if (
+        perturbations.ndim < 3
+        or perturbations.shape[-3] != X.shape[-2]
+        or perturbations.shape[-1] != selected.shape[-1]
+    ):
+        raise ValueError("Perturbations must have shape (..., q, n_w, selected_features).")
+    transform._n_w = perturbations.shape[-2]
+    transform._perturbations = perturbations.transpose(-3, -2)
+    transform._last_batch_shape = tuple(transform._perturbations.shape[:-2])
+    batch = torch.broadcast_shapes(X.shape[:-2], perturbations.shape[:-3])
+    expanded = selected.unsqueeze(-2)
+    perturbed = expanded * perturbations if transform.multiplicative else expanded + perturbations
+    if transform.bounds is not None:
+        bounds = _tensor(transform.bounds, X)
+        perturbed = torch.maximum(torch.minimum(perturbed, bounds[1]), bounds[0])
+    if transform.indices is None:
+        result = perturbed
+    else:
+        result = X.unsqueeze(-2).expand(*batch, X.shape[-2], transform._n_w, X.shape[-1]).clone()
+        result[..., transform.indices] = perturbed
+    return result.reshape(*batch, X.shape[-2] * transform._n_w, X.shape[-1])

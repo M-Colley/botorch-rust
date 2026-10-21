@@ -1,6 +1,6 @@
 # Direct public input-transform Tensor calls
 
-The first device checkpoint covers direct calls to eight concrete families in
+Two device checkpoints cover direct calls to fifteen concrete families in
 `models.transforms.input`. Tensor numerical calls use port-owned Torch operations;
 list/NumPy calls and explicit native model descriptors retain the Rust path.
 Torch is not imported by an array-only program.
@@ -15,13 +15,13 @@ Torch is not imported by an array-only program.
 | Log10 | selected log/power maps and reverse | Implemented |
 | FilterFeatures | declared physical column order | Implemented |
 | InteractionFeatures | selected pair products and unchanged original features | Implemented |
-| AppendFeatures | fixed/callable/one-to-many feature expansion | Next checkpoint |
-| OneHotToNumeric | categorical reduction and inverse | Next checkpoint |
-| NumericToCategoricalEncoding | caller encoders and feature insertion | Next checkpoint |
-| LearnedFeatureImputation | live raw parameters, constraints and task masks | Next checkpoint |
-| InputPerturbation | fixed/callable additive/multiplicative expansion and bounds | Next checkpoint |
-| ChainedInputTransform | child numerical paths follow their status above | Partial until all children complete |
-| BatchBroadcastedInputTransform | device split/stack and child paths | Next checkpoint |
+| AppendFeatures | fixed/callable/one-to-many feature expansion and skip-expand layout | Implemented |
+| OneHotToNumeric | categorical reduction and inverse | Implemented |
+| NumericToCategoricalEncoding | actual caller encoders, including live embedding parameters, and feature insertion | Implemented |
+| LearnedFeatureImputation | persistent raw parameters, sigmoid constraints, target-task insertion and observed/missing task masks | Implemented |
+| InputPerturbation | fixed/callable additive/multiplicative expansion, partial-feature selection and bounds | Implemented |
+| ChainedInputTransform | child flags, order, inverse and preprocessing | Implemented |
+| BatchBroadcastedInputTransform | device split/stack and child paths | Implemented |
 
 Affine fitted statistics follow the reference's deliberate graph policy:
 learning in training mode keeps their input graph; evaluation and preprocessing
@@ -49,5 +49,24 @@ numerical calls and model integration. All 34 native-array transform tests and
 257 selected native/Tensor module/model parity regressions also pass. Torch
 2.14.1 CPU passes 23 new cases and skips 23 CUDA cases. Ruff and Mypy pass.
 
+The second checkpoint adds 38 CPU/CUDA cases for fixed/callable features,
+skip-expand ordering, fixed/callable perturbations, batch and selected-feature
+layouts, additive/multiplicative operations, bound graphs, categorical
+reductions/inverses, caller embedding graphs, imputation parameters and masks,
+chains and batch wrappers. Full first/higher derivatives are compared with the
+actual source; the imputation source is constructed in its supported global
+double dtype so GPyTorch Interval does not insert a float32 bound-gradient
+intermediate. Strict host-conversion guards cover constructors and calls;
+array-export and equality checks read current Tensor values. Torch 2.14.1 CPU
+passes 19 cases and skips 19 CUDA cases.
+
+A probe of the original port implementation at `cd25bd9` confirms detached
+outputs and CPU/list conversion for all eight initial families on both CPU and
+CUDA. This is a port-only gap, repaired in the main port PR; it is not a new
+upstream finding.
+
 This matrix describes the tested direct-call scope; it is not a claim that
 every input-transform model configuration is available on the Tensor backend.
+The next checkpoint expands the model builder, which previously converted only
+Normalize/Warp/chains, and checks transformed feature widths and training/query
+row semantics separately from these direct-call results.
