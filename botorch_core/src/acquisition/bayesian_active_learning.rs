@@ -513,8 +513,10 @@ mod tests {
             .forward_with_member_parameter_gradients(&x)
             .unwrap();
         assert_eq!(value, acquisition(&laws, None).forward(&x).unwrap());
-        for member in 0..2 {
-            for parameter in 0..3 {
+        assert_eq!(gradients.len(), 2);
+        for (member, member_gradient) in gradients.iter().enumerate() {
+            assert_eq!(member_gradient.len(), 3);
+            for (parameter, &analytic) in member_gradient.iter().enumerate() {
                 let mut plus = laws.clone();
                 let mut minus = laws.clone();
                 let perturb = |law: &mut JointLaw, step: f64| match parameter {
@@ -528,9 +530,9 @@ mod tests {
                     - acquisition(&minus, None).forward(&x).unwrap())
                     / 2e-6;
                 assert!(
-                    (gradients[member][parameter] - fd).abs() < 2e-8,
+                    (analytic - fd).abs() < 2e-8,
                     "member {member} parameter {parameter}: {} != {fd}",
-                    gradients[member][parameter]
+                    analytic
                 );
             }
         }
