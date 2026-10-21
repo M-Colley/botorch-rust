@@ -10,6 +10,8 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 
 | Finding | Submission / remaining work |
 | --- | --- |
+| Bivariate independence shortcut drops the correlation gradient | New [BoTorch #3513](https://github.com/meta-pytorch/botorch/pull/3513); 6 bivariate tests and 10 subtests pass on Torch 2.13 CPU/CUDA and 2.14.1 CPU |
+| Positive-tail `log_erfcx` first/second derivatives cancel; derived log-probability curvatures fail | New [BoTorch #3512](https://github.com/meta-pytorch/botorch/pull/3512); 8 probability-utils tests and 9 subtests pass on Torch 2.13 CPU/CUDA and 2.14.1 CPU |
 | Batched inducing allocation reuses the first model covariance | New [BoTorch #3511](https://github.com/meta-pytorch/botorch/pull/3511); allocator/approximate suites pass 27 tests and 14 subtests on Torch 2.13 CPU/CUDA and 2.14.1 CPU |
 | Batched LOO and fully Bayesian target layout | Existing [BoTorch #3386](https://github.com/meta-pytorch/botorch/pull/3386) |
 | Shared SAC prior counted repeatedly | New [GPyTorch #2812](https://github.com/cornellius-gp/gpytorch/pull/2812) |

@@ -250,8 +250,6 @@ pub(crate) fn bvnu<S: Scalar>(r: S, h: S, k: S) -> S {
         (-k).ndtr()
     } else if y_free {
         (-h).ndtr()
-    } else if r.value() == 0.0 {
-        (-h).ndtr() * (-k).ndtr()
     } else if r.value().abs() >= 0.925 {
         bvnu_taylor(r, h, k)
     } else {
@@ -647,6 +645,30 @@ mod tests {
             let e = 0.25 + r_asin(r) / (2.0 * PI);
             assert!((p - e).abs() < 1e-14, "{r}: {p} vs {e}");
         }
+    }
+
+    #[test]
+    fn independence_retains_correlation_derivative() {
+        use crate::utils::probability::{ndtr, phi};
+
+        let h = 0.4;
+        let k = -0.2;
+        let r = Dual::<1>::variable(0.0, 0, 1);
+        let probability = bvnu(r, Dual::constant(h, 1), Dual::constant(k, 1));
+        assert_eq!(probability.v, ndtr(-h) * ndtr(-k));
+        // Plackett's identity: d/dr P(X>h,Y>k) is the bivariate
+        // normal density at (h,k), which factors at independence.
+        let expected = phi(h) * phi(k);
+        assert!((probability.g[0] / expected - 1.0).abs() < 2e-15);
+        let rectangle = bvn_generic(
+            r,
+            Dual::constant(-0.3, 1),
+            Dual::constant(0.2, 1),
+            Dual::constant(1.1, 1),
+            Dual::constant(1.5, 1),
+        );
+        let expected = (phi(-0.3) - phi(1.1)) * (phi(0.2) - phi(1.5));
+        assert!((rectangle.g[0] / expected - 1.0).abs() < 3e-15);
     }
 
     fn r_asin(r: f64) -> f64 {
