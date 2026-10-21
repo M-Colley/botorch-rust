@@ -1,0 +1,994 @@
+{
+  "scope": "Frozen development checkpoint; later fixes and a new release are outside this receipt",
+  "source_revision": "c3e8317ce97bb6524d02f664b5e848e7852808bd",
+  "reference_revision": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+  "started_utc": "2026-10-21T18:10:03.716448+00:00",
+  "ended_utc": "2026-10-21T19:09:13.425537+00:00",
+  "canonical_collected": 13734,
+  "executed_exactly_once": 13734,
+  "counts": {
+    "passed": 13683,
+    "skipped": 51
+  },
+  "all_passed": true,
+  "exact_case_coverage": true,
+  "fingerprints_stable": true,
+  "before": {
+    "tests_sha256": "9369c882d58a2ac3c3e936dd230635623a7b5712a2c647ca2c045664565b749d",
+    "test_file_count": 343,
+    "worker_sha256": "f8739504af1e985aafc03d8dcc88067f1029a3d18a6bd6b4a75d8d7c102c0738",
+    "payload_sha256": "866c3d93c4ca395da1026eb21752e8ae2417a30b23b53410321876149d5fe5cf",
+    "file_count": 347,
+    "extension_sha256": "3b7c95aa07214afaf759badf111dec3b8a781e476fedd1006c65e5782709f04f",
+    "subprocess_extension_sha256": "3b7c95aa07214afaf759badf111dec3b8a781e476fedd1006c65e5782709f04f",
+    "head": "c3e8317ce97bb6524d02f664b5e848e7852808bd",
+    "status": "",
+    "reference_head": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "reference_status": ""
+  },
+  "after": {
+    "tests_sha256": "9369c882d58a2ac3c3e936dd230635623a7b5712a2c647ca2c045664565b749d",
+    "test_file_count": 343,
+    "worker_sha256": "f8739504af1e985aafc03d8dcc88067f1029a3d18a6bd6b4a75d8d7c102c0738",
+    "payload_sha256": "866c3d93c4ca395da1026eb21752e8ae2417a30b23b53410321876149d5fe5cf",
+    "file_count": 347,
+    "extension_sha256": "3b7c95aa07214afaf759badf111dec3b8a781e476fedd1006c65e5782709f04f",
+    "subprocess_extension_sha256": "3b7c95aa07214afaf759badf111dec3b8a781e476fedd1006c65e5782709f04f",
+    "head": "c3e8317ce97bb6524d02f664b5e848e7852808bd",
+    "status": "",
+    "reference_head": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "reference_status": ""
+  },
+  "batches": [
+    {
+      "label": "batch-001",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_10a_fully_bayesian.py",
+        "botorch_pyo3/tests/test_10b_preference.py",
+        "botorch_pyo3/tests/test_10c_approximate.py",
+        "botorch_pyo3/tests/test_10c_higher_order.py",
+        "botorch_pyo3/tests/test_11a_utils.py",
+        "botorch_pyo3/tests/test_6a_kernels.py"
+      ],
+      "counts": {
+        "passed": 305,
+        "skipped": 1
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-002",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_6b_transforms.py",
+        "botorch_pyo3/tests/test_7a_multitask.py",
+        "botorch_pyo3/tests/test_7b_models.py",
+        "botorch_pyo3/tests/test_8b_acquisition_rest.py",
+        "botorch_pyo3/tests/test_9_optim.py",
+        "botorch_pyo3/tests/test_acquisition.py"
+      ],
+      "counts": {
+        "passed": 213
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-003",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_acquisition_base_helpers.py",
+        "botorch_pyo3/tests/test_acquisition_gradient_dispatch.py",
+        "botorch_pyo3/tests/test_acquisition_helpers.py",
+        "botorch_pyo3/tests/test_acquisition_parameter_autograd.py",
+        "botorch_pyo3/tests/test_acquisition_sampler_protocols.py",
+        "botorch_pyo3/tests/test_additive_components.py"
+      ],
+      "counts": {
+        "passed": 158
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-004",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_all_fixed_constraint_regression.py",
+        "botorch_pyo3/tests/test_arrays.py",
+        "botorch_pyo3/tests/test_batched_deterministic_preferences.py",
+        "botorch_pyo3/tests/test_batched_learned_objective.py",
+        "botorch_pyo3/tests/test_batched_learned_objective_mc.py",
+        "botorch_pyo3/tests/test_batched_optimization_closure.py"
+      ],
+      "counts": {
+        "passed": 207
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-005",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_bo_loop.py",
+        "botorch_pyo3/tests/test_builtin_model_subclasses.py",
+        "botorch_pyo3/tests/test_cached_cholesky_mixin.py",
+        "botorch_pyo3/tests/test_candidate_generation_protocols.py",
+        "botorch_pyo3/tests/test_categorical_feature_batch_upstream.py",
+        "botorch_pyo3/tests/test_closure_gradient_contract.py"
+      ],
+      "counts": {
+        "passed": 97
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-006",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_constant_mean_initialization.py",
+        "botorch_pyo3/tests/test_constraints_api.py",
+        "botorch_pyo3/tests/test_contextual_lcea.py",
+        "botorch_pyo3/tests/test_contextual_sac.py",
+        "botorch_pyo3/tests/test_custom_model_protocol.py",
+        "botorch_pyo3/tests/test_data_loader.py"
+      ],
+      "counts": {
+        "passed": 117
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-007",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_default_approximate_tensor.py",
+        "botorch_pyo3/tests/test_deterministic.py",
+        "botorch_pyo3/tests/test_ehvi_cell_integrals.py",
+        "botorch_pyo3/tests/test_em_empirical_gp.py",
+        "botorch_pyo3/tests/test_em_kl.py",
+        "botorch_pyo3/tests/test_empirical_conditioning.py"
+      ],
+      "counts": {
+        "passed": 165
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-008",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_empirical_gp_models.py",
+        "botorch_pyo3/tests/test_empirical_gp_utils.py",
+        "botorch_pyo3/tests/test_empirical_multitask_gp.py",
+        "botorch_pyo3/tests/test_equality_duplicate_sums.py",
+        "botorch_pyo3/tests/test_equivalence.py",
+        "botorch_pyo3/tests/test_equivalence_10a_fully_bayesian.py"
+      ],
+      "counts": {
+        "passed": 315
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-009",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_equivalence_10b_preference.py",
+        "botorch_pyo3/tests/test_equivalence_10c_approximate.py",
+        "botorch_pyo3/tests/test_equivalence_11a_utils.py",
+        "botorch_pyo3/tests/test_equivalence_7b_models.py",
+        "botorch_pyo3/tests/test_equivalence_8b_acquisition_rest.py",
+        "botorch_pyo3/tests/test_equivalence_9_optim.py"
+      ],
+      "counts": {
+        "passed": 366,
+        "skipped": 7
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-010",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_equivalence_mo_entropy.py",
+        "botorch_pyo3/tests/test_equivalence_mo_hvkg.py",
+        "botorch_pyo3/tests/test_equivalence_multi_objective.py",
+        "botorch_pyo3/tests/test_equivalence_so_acquisition.py",
+        "botorch_pyo3/tests/test_expectation_posterior_transform.py",
+        "botorch_pyo3/tests/test_external_exact_loss_closures.py"
+      ],
+      "counts": {
+        "passed": 353,
+        "skipped": 8
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-011",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_fantasize_protocol.py",
+        "botorch_pyo3/tests/test_fast_path_diagnostic.py",
+        "botorch_pyo3/tests/test_fit.py",
+        "botorch_pyo3/tests/test_fit_all_attempts.py",
+        "botorch_pyo3/tests/test_fit_comparison.py",
+        "botorch_pyo3/tests/test_fully_bayesian_multitask_conditioning.py"
+      ],
+      "counts": {
+        "passed": 101
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-012",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_fully_bayesian_multitask_prior.py",
+        "botorch_pyo3/tests/test_fully_bayesian_multitask_subclasses.py",
+        "botorch_pyo3/tests/test_fully_bayesian_multitask_warp.py",
+        "botorch_pyo3/tests/test_fully_bayesian_outcome_compositions.py",
+        "botorch_pyo3/tests/test_fully_bayesian_prior_forward.py",
+        "botorch_pyo3/tests/test_fully_bayesian_subclass_backend.py"
+      ],
+      "counts": {
+        "passed": 200
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-013",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_gaussian_posterior_api.py",
+        "botorch_pyo3/tests/test_generic_approximate_module.py",
+        "botorch_pyo3/tests/test_generic_fit_protocol.py",
+        "botorch_pyo3/tests/test_gp_sample_mll_autograd.py",
+        "botorch_pyo3/tests/test_gpytorch_model_base.py",
+        "botorch_pyo3/tests/test_heterogeneous_mtgp.py"
+      ],
+      "counts": {
+        "passed": 189
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-014",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_heterogeneous_multitask_helpers.py",
+        "botorch_pyo3/tests/test_hierarchical_models.py",
+        "botorch_pyo3/tests/test_hierarchical_utils.py",
+        "botorch_pyo3/tests/test_higher_order_public_methods.py",
+        "botorch_pyo3/tests/test_iid_input_constructors.py",
+        "botorch_pyo3/tests/test_integrated_white_noise.py"
+      ],
+      "counts": {
+        "passed": 122
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-015",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_interop.py",
+        "botorch_pyo3/tests/test_kernel_feature_batches.py",
+        "botorch_pyo3/tests/test_kronecker_public_caches.py",
+        "botorch_pyo3/tests/test_latent_kronecker.py",
+        "botorch_pyo3/tests/test_lcemgp.py",
+        "botorch_pyo3/tests/test_lcemgp_conditioning.py"
+      ],
+      "counts": {
+        "passed": 222,
+        "skipped": 4
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-016",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_lcemgp_construct_inputs.py",
+        "botorch_pyo3/tests/test_learned_objective_mc.py",
+        "botorch_pyo3/tests/test_loo_cv.py",
+        "botorch_pyo3/tests/test_max_value_base.py",
+        "botorch_pyo3/tests/test_mc_sampler_mixin.py",
+        "botorch_pyo3/tests/test_mll_parameter_protocol.py"
+      ],
+      "counts": {
+        "passed": 155
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-017",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_mo_acquisition.py",
+        "botorch_pyo3/tests/test_mo_entropy.py",
+        "botorch_pyo3/tests/test_mo_hvkg.py",
+        "botorch_pyo3/tests/test_mo_robust.py",
+        "botorch_pyo3/tests/test_mo_test_functions.py",
+        "botorch_pyo3/tests/test_mobo_loop.py"
+      ],
+      "counts": {
+        "passed": 337
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-018",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_mock_optimize.py",
+        "botorch_pyo3/tests/test_model_buffers.py",
+        "botorch_pyo3/tests/test_model_list_parameter_autograd.py",
+        "botorch_pyo3/tests/test_model_optimization_help.py",
+        "botorch_pyo3/tests/test_model_utils_assorted.py",
+        "botorch_pyo3/tests/test_models.py"
+      ],
+      "counts": {
+        "passed": 146
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-019",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_multi_objective.py",
+        "botorch_pyo3/tests/test_multi_output.py",
+        "botorch_pyo3/tests/test_native_bald_model_list.py",
+        "botorch_pyo3/tests/test_native_batched_lbfgsb.py",
+        "botorch_pyo3/tests/test_native_generic_fit_arrays.py",
+        "botorch_pyo3/tests/test_native_module_rollback.py"
+      ],
+      "counts": {
+        "passed": 234
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-020",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_native_prediction_snapshots.py",
+        "botorch_pyo3/tests/test_noisy_acquisition_parameter_autograd.py",
+        "botorch_pyo3/tests/test_noisy_best_f_cache.py",
+        "botorch_pyo3/tests/test_normal_sampler_public_protocol.py",
+        "botorch_pyo3/tests/test_numpyro_fitting_extensions.py",
+        "botorch_pyo3/tests/test_numpyro_trace_protocol.py"
+      ],
+      "counts": {
+        "passed": 221
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-021",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_nuts_progress.py",
+        "botorch_pyo3/tests/test_optim.py",
+        "botorch_pyo3/tests/test_optim_constraint_helpers.py",
+        "botorch_pyo3/tests/test_optim_numpy_utils.py",
+        "botorch_pyo3/tests/test_optim_projections.py",
+        "botorch_pyo3/tests/test_optim_timeout.py"
+      ],
+      "counts": {
+        "passed": 77
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-022",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_optimize_sequence.py",
+        "botorch_pyo3/tests/test_optional_data_adapters.py",
+        "botorch_pyo3/tests/test_pairwise_batched_warp.py",
+        "botorch_pyo3/tests/test_pairwise_conditioned_data.py",
+        "botorch_pyo3/tests/test_pairwise_shared_normalization.py",
+        "botorch_pyo3/tests/test_pairwise_warp.py"
+      ],
+      "counts": {
+        "passed": 161
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-023",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_parameter_setter_aliases.py",
+        "botorch_pyo3/tests/test_parameterless_hypervolume.py",
+        "botorch_pyo3/tests/test_parity.py",
+        "botorch_pyo3/tests/test_parity_10a_fully_bayesian.py",
+        "botorch_pyo3/tests/test_parity_10b_preference.py",
+        "botorch_pyo3/tests/test_parity_10c_approximate.py"
+      ],
+      "counts": {
+        "passed": 553
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-024",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_parity_11a_utils.py",
+        "botorch_pyo3/tests/test_parity_6a_kernels.py",
+        "botorch_pyo3/tests/test_parity_6b_transforms.py",
+        "botorch_pyo3/tests/test_parity_7a_multitask.py",
+        "botorch_pyo3/tests/test_parity_7b_models.py",
+        "botorch_pyo3/tests/test_parity_8b_acquisition_rest.py"
+      ],
+      "counts": {
+        "passed": 825,
+        "skipped": 8
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-025",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_parity_9_optim.py",
+        "botorch_pyo3/tests/test_parity_clamp_bounds.py",
+        "botorch_pyo3/tests/test_parity_constraints.py",
+        "botorch_pyo3/tests/test_parity_deterministic.py",
+        "botorch_pyo3/tests/test_parity_fit_nonfinite.py",
+        "botorch_pyo3/tests/test_parity_gaussian_posterior_api.py"
+      ],
+      "counts": {
+        "passed": 238,
+        "skipped": 6
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-026",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_parity_lcemgp.py",
+        "botorch_pyo3/tests/test_parity_loo_cv.py",
+        "botorch_pyo3/tests/test_parity_mo_acquisition.py",
+        "botorch_pyo3/tests/test_parity_mo_entropy.py",
+        "botorch_pyo3/tests/test_parity_mo_hvkg.py",
+        "botorch_pyo3/tests/test_parity_mo_robust.py"
+      ],
+      "counts": {
+        "passed": 651,
+        "skipped": 6
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-027",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_parity_mo_test_functions.py",
+        "botorch_pyo3/tests/test_parity_mo_utils.py",
+        "botorch_pyo3/tests/test_parity_multi_output.py",
+        "botorch_pyo3/tests/test_parity_so_acquisition.py",
+        "botorch_pyo3/tests/test_pathwise_features.py",
+        "botorch_pyo3/tests/test_pathwise_override_protocols.py"
+      ],
+      "counts": {
+        "passed": 704,
+        "skipped": 7
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-028",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_pathwise_public_constructors.py",
+        "botorch_pyo3/tests/test_pathwise_utils.py",
+        "botorch_pyo3/tests/test_persistent_gp_parameters.py",
+        "botorch_pyo3/tests/test_posterior_parameter_gradients.py",
+        "botorch_pyo3/tests/test_posterior_protocol_defaults.py",
+        "botorch_pyo3/tests/test_posterior_query_autograd.py"
+      ],
+      "counts": {
+        "passed": 191
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-029",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_posterior_snapshot.py",
+        "botorch_pyo3/tests/test_rank_zero_task_kernels.py",
+        "botorch_pyo3/tests/test_relevance_pursuit.py",
+        "botorch_pyo3/tests/test_risk_prior_members.py",
+        "botorch_pyo3/tests/test_sampling.py",
+        "botorch_pyo3/tests/test_so_acquisition.py"
+      ],
+      "counts": {
+        "passed": 127
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-030",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_specialized_fit_protocol.py",
+        "botorch_pyo3/tests/test_standardize_native_tensor_state.py",
+        "botorch_pyo3/tests/test_structured_posterior_query_autograd.py",
+        "botorch_pyo3/tests/test_sum_mll_autograd.py",
+        "botorch_pyo3/tests/test_supplied_gaussian_posteriors.py",
+        "botorch_pyo3/tests/test_supplied_structured_posteriors.py"
+      ],
+      "counts": {
+        "passed": 153
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-031",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_tensor_kernel_catalogue.py",
+        "botorch_pyo3/tests/test_tensor_native_bindings.py",
+        "botorch_pyo3/tests/test_test_functions.py",
+        "botorch_pyo3/tests/test_thompson_ensemble_selection.py",
+        "botorch_pyo3/tests/test_threads.py",
+        "botorch_pyo3/tests/test_torch_acq_discrete.py"
+      ],
+      "counts": {
+        "passed": 216,
+        "skipped": 2
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-032",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_acq_homotopy.py",
+        "botorch_pyo3/tests/test_torch_acq_initializers.py",
+        "botorch_pyo3/tests/test_torch_acq_mixed.py",
+        "botorch_pyo3/tests/test_torch_acq_optimization.py",
+        "botorch_pyo3/tests/test_torch_acq_optimization_configs.py",
+        "botorch_pyo3/tests/test_torch_acquisition_ensembles.py"
+      ],
+      "counts": {
+        "passed": 199
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-033",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_acquisition_subclasses.py",
+        "botorch_pyo3/tests/test_torch_acquisition_wrappers.py",
+        "botorch_pyo3/tests/test_torch_active_learning.py",
+        "botorch_pyo3/tests/test_torch_additive.py",
+        "botorch_pyo3/tests/test_torch_backend_acquisition.py",
+        "botorch_pyo3/tests/test_torch_backend_cache_review.py"
+      ],
+      "counts": {
+        "passed": 235
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-034",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_backend_hypervolume.py",
+        "botorch_pyo3/tests/test_torch_backend_modules.py",
+        "botorch_pyo3/tests/test_torch_backend_multitask.py",
+        "botorch_pyo3/tests/test_torch_backend_outcomes.py",
+        "botorch_pyo3/tests/test_torch_baseline_pruning.py",
+        "botorch_pyo3/tests/test_torch_bayesian_active_learning.py"
+      ],
+      "counts": {
+        "passed": 490
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-035",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_binary_partition.py",
+        "botorch_pyo3/tests/test_torch_box_decomposition.py",
+        "botorch_pyo3/tests/test_torch_bvn.py",
+        "botorch_pyo3/tests/test_torch_constrained_analytic.py",
+        "botorch_pyo3/tests/test_torch_contextual.py",
+        "botorch_pyo3/tests/test_torch_core_kernels.py"
+      ],
+      "counts": {
+        "passed": 214
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-036",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_cost_aware.py",
+        "botorch_pyo3/tests/test_torch_direct_standardize.py",
+        "botorch_pyo3/tests/test_torch_em_empirical_gp.py",
+        "botorch_pyo3/tests/test_torch_em_helpers.py",
+        "botorch_pyo3/tests/test_torch_empirical_gp.py",
+        "botorch_pyo3/tests/test_torch_empirical_multitask.py"
+      ],
+      "counts": {
+        "passed": 218
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-037",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_empirical_utils.py",
+        "botorch_pyo3/tests/test_torch_equality_projection.py",
+        "botorch_pyo3/tests/test_torch_evaluation.py",
+        "botorch_pyo3/tests/test_torch_exact_evaluation_calls.py",
+        "botorch_pyo3/tests/test_torch_exact_gaussian_likelihood.py",
+        "botorch_pyo3/tests/test_torch_finite_ensemble.py"
+      ],
+      "counts": {
+        "passed": 308
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-038",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_fully_bayesian.py",
+        "botorch_pyo3/tests/test_torch_fully_bayesian_likelihood.py",
+        "botorch_pyo3/tests/test_torch_fully_bayesian_lists.py",
+        "botorch_pyo3/tests/test_torch_fully_bayesian_loader.py",
+        "botorch_pyo3/tests/test_torch_fully_bayesian_multitask.py",
+        "botorch_pyo3/tests/test_torch_fully_bayesian_multitask_calls.py"
+      ],
+      "counts": {
+        "passed": 252
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-039",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_fully_bayesian_multitask_loader.py",
+        "botorch_pyo3/tests/test_torch_fully_bayesian_nuts.py",
+        "botorch_pyo3/tests/test_torch_heterogeneous.py",
+        "botorch_pyo3/tests/test_torch_hierarchical.py",
+        "botorch_pyo3/tests/test_torch_higher_order.py",
+        "botorch_pyo3/tests/test_torch_hypervolume_knowledge_gradient.py"
+      ],
+      "counts": {
+        "passed": 220
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-040",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_inducing_allocators.py",
+        "botorch_pyo3/tests/test_torch_initialization_sampling.py",
+        "botorch_pyo3/tests/test_torch_input_model_conditioning.py",
+        "botorch_pyo3/tests/test_torch_input_model_persistence.py",
+        "botorch_pyo3/tests/test_torch_input_models.py",
+        "botorch_pyo3/tests/test_torch_input_transform_expansions.py"
+      ],
+      "counts": {
+        "passed": 243
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-041",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_input_transforms.py",
+        "botorch_pyo3/tests/test_torch_joint_entropy.py",
+        "botorch_pyo3/tests/test_torch_kernel_catalogue.py",
+        "botorch_pyo3/tests/test_torch_kg_initializers.py",
+        "botorch_pyo3/tests/test_torch_knowledge_gradient.py",
+        "botorch_pyo3/tests/test_torch_kronecker.py"
+      ],
+      "counts": {
+        "passed": 221
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-042",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_latent_iterative.py",
+        "botorch_pyo3/tests/test_torch_latent_kronecker.py",
+        "botorch_pyo3/tests/test_torch_lcem.py",
+        "botorch_pyo3/tests/test_torch_learned_ensembles.py",
+        "botorch_pyo3/tests/test_torch_learned_objective.py",
+        "botorch_pyo3/tests/test_torch_low_rank.py"
+      ],
+      "counts": {
+        "passed": 227
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-043",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_map_saas.py",
+        "botorch_pyo3/tests/test_torch_max_value_entropy.py",
+        "botorch_pyo3/tests/test_torch_mll_diagnostics.py",
+        "botorch_pyo3/tests/test_torch_mo_entropy.py",
+        "botorch_pyo3/tests/test_torch_mo_extra.py",
+        "botorch_pyo3/tests/test_torch_multi_step_lookahead.py"
+      ],
+      "counts": {
+        "passed": 282,
+        "skipped": 2
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-044",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_multitask_calls.py",
+        "botorch_pyo3/tests/test_torch_multitask_conditioning.py",
+        "botorch_pyo3/tests/test_torch_multitask_entropy.py",
+        "botorch_pyo3/tests/test_torch_mvnxpb.py",
+        "botorch_pyo3/tests/test_torch_neural_kernel.py",
+        "botorch_pyo3/tests/test_torch_noisy_analytic.py"
+      ],
+      "counts": {
+        "passed": 166
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-045",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_noisy_root_cache.py",
+        "botorch_pyo3/tests/test_torch_objective_parameters.py",
+        "botorch_pyo3/tests/test_torch_optim_public_utils.py",
+        "botorch_pyo3/tests/test_torch_pairwise_gp.py",
+        "botorch_pyo3/tests/test_torch_pareto_pruning.py",
+        "botorch_pyo3/tests/test_torch_pathwise.py"
+      ],
+      "counts": {
+        "passed": 204
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-046",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_pathwise_gaussian_likelihood.py",
+        "botorch_pyo3/tests/test_torch_pathwise_modules.py",
+        "botorch_pyo3/tests/test_torch_pathwise_outcome_transform.py",
+        "botorch_pyo3/tests/test_torch_pathwise_transform_modules.py",
+        "botorch_pyo3/tests/test_torch_pending_hypervolume.py",
+        "botorch_pyo3/tests/test_torch_posterior.py"
+      ],
+      "counts": {
+        "passed": 112
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-047",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_predictive_entropy.py",
+        "botorch_pyo3/tests/test_torch_preference_acquisitions.py",
+        "botorch_pyo3/tests/test_torch_prior_sampling.py",
+        "botorch_pyo3/tests/test_torch_public_math.py",
+        "botorch_pyo3/tests/test_torch_qanalytic_pi.py",
+        "botorch_pyo3/tests/test_torch_regularized_acquisitions.py"
+      ],
+      "counts": {
+        "passed": 283
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-048",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_relevance_conditioning.py",
+        "botorch_pyo3/tests/test_torch_relevance_pursuit.py",
+        "botorch_pyo3/tests/test_torch_sampler_prefix.py",
+        "botorch_pyo3/tests/test_torch_specialized_exact.py",
+        "botorch_pyo3/tests/test_torch_spectral.py",
+        "botorch_pyo3/tests/test_torch_stratified_models.py"
+      ],
+      "counts": {
+        "passed": 236
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-049",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_structured_conditioning_noise.py",
+        "botorch_pyo3/tests/test_torch_structured_evaluation_calls.py",
+        "botorch_pyo3/tests/test_torch_structured_gaussian_likelihoods.py",
+        "botorch_pyo3/tests/test_torch_structured_model_subclasses.py",
+        "botorch_pyo3/tests/test_torch_tensor_backend.py",
+        "botorch_pyo3/tests/test_torch_transform_utils.py"
+      ],
+      "counts": {
+        "passed": 273
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-050",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_unwhitened_variational.py",
+        "botorch_pyo3/tests/test_torch_variational_backend.py",
+        "botorch_pyo3/tests/test_torch_variational_backend_selection.py",
+        "botorch_pyo3/tests/test_torch_variational_categorical.py",
+        "botorch_pyo3/tests/test_torch_variational_ciq.py",
+        "botorch_pyo3/tests/test_torch_variational_decoupled.py"
+      ],
+      "counts": {
+        "passed": 221
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-051",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_variational_distributions.py",
+        "botorch_pyo3/tests/test_torch_variational_external_likelihood.py",
+        "botorch_pyo3/tests/test_torch_variational_factories.py",
+        "botorch_pyo3/tests/test_torch_variational_factory_adaptation.py",
+        "botorch_pyo3/tests/test_torch_variational_fit.py",
+        "botorch_pyo3/tests/test_torch_variational_gaussian_protocol.py"
+      ],
+      "counts": {
+        "passed": 274
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-052",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_variational_large_batch.py",
+        "botorch_pyo3/tests/test_torch_variational_noise.py",
+        "botorch_pyo3/tests/test_torch_variational_pathwise.py",
+        "botorch_pyo3/tests/test_torch_variational_probit.py",
+        "botorch_pyo3/tests/test_torch_variational_shared_distribution.py",
+        "botorch_pyo3/tests/test_torch_variational_strategy_factories.py"
+      ],
+      "counts": {
+        "passed": 232
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-053",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_torch_variational_supplied_modules.py",
+        "botorch_pyo3/tests/test_torch_variational_targetless_transforms.py",
+        "botorch_pyo3/tests/test_torch_wiener.py",
+        "botorch_pyo3/tests/test_trajectory_sampling_grid.py",
+        "botorch_pyo3/tests/test_value_function_initializers.py",
+        "botorch_pyo3/tests/test_variational_acquisition_support.py"
+      ],
+      "counts": {
+        "passed": 241
+      },
+      "collection_matches": true,
+      "failures": []
+    },
+    {
+      "label": "batch-054",
+      "exitstatus": 0,
+      "files": [
+        "botorch_pyo3/tests/test_variational_data_loader_closures.py",
+        "botorch_pyo3/tests/test_variational_parameter_autograd.py",
+        "botorch_pyo3/tests/test_variational_prior.py",
+        "botorch_pyo3/tests/test_variational_snapshots.py"
+      ],
+      "counts": {
+        "passed": 213
+      },
+      "collection_matches": true,
+      "failures": []
+    }
+  ],
+  "artifacts": {
+    "summary.json": {
+      "path": "D:/botorch-verification/full-c3e8317/summary.json",
+      "sha256": "fdc557b15d650df89f7cf2d1616b8c8076b71de3a1c409244b3f095bfee86aba"
+    },
+    "collection.json": {
+      "path": "D:/botorch-verification/full-c3e8317/collection.json",
+      "sha256": "04f2b5d9528e2a98994021796e234e32824ea2386a5085bf452a8c5f3116e215"
+    },
+    "run-botorch-full-c3e8317.py": {
+      "path": "D:/run-botorch-full-c3e8317.py",
+      "sha256": "b0f80795388c06715e95b22ffcddbe05beb13e1b6391cd5e1867f8b46086776a"
+    },
+    "run-botorch-checkpoint-worker.py": {
+      "path": "D:/run-botorch-checkpoint-worker.py",
+      "sha256": "f8739504af1e985aafc03d8dcc88067f1029a3d18a6bd6b4a75d8d7c102c0738"
+    }
+  },
+  "equivalence_included": true,
+  "equivalence_note": "The separate 1222/15 equivalence receipt overlaps this full suite; do not add their counts.",
+  "complete_scope": false,
+  "release_certificate": false,
+  "new_package_published": false,
+  "unity_updated": false
+}

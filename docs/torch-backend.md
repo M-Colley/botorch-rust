@@ -62,7 +62,13 @@ selected IDs accounted for. Python/test inventories, the production v8 native
 artifact, worker and pinned reference remain unchanged throughout the run.
 This covers the grouped variational, structured likelihood/iterative, and path
 module checkpoints at that commit. Subsequent ownership/configuration repairs
-remain outside its scope; the complete frozen suite is a separate ongoing run.
+remain outside its scope. The [complete frozen suite](verification-full-c3e8317-2026-10-21.json)
+now passes 13,683 cases with 51 skips and no failures. All 13,734 collected
+cases execute exactly once, with stable source/test/native/reference and
+worker fingerprints. The equivalence cases are included in this total.
+The [same checkpoint's CI](verification-main-ci-c3e8317-2026-10-21.json)
+passes all eleven jobs. These receipts precede the newer transform, sampler,
+conditioning and native iterative repairs and do not certify a new release.
 
 Construct supported models with `backend="torch"` to request these semantics
 explicitly. `backend="auto"` selects it for CUDA training data, training tensors
