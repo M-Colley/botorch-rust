@@ -18,6 +18,10 @@ Development after the frozen release adds [generic fitting protocols](fitting-pr
 [custom acquisition subclasses](torch-acquisition-subclasses.md),
 [supplied exact Gaussian likelihoods](torch-exact-gaussian-likelihood.md), and
 [binary hypervolume partitioning](torch-hypervolume-partitioning.md).
+The newer audit also repairs
+[direct input transforms](torch-input-transforms.md),
+[direct model/outcome protocols](torch-backend-modules.md), and
+[native prediction cache reuse](native-prediction-cache.md).
 Caller-defined model modules are covered by the
 [custom Torch model protocol](torch-custom-models.md).
 These focused results do not replace the frozen release certificate below.
@@ -186,10 +190,12 @@ tests; the current release certificate below records their integrated run.
 
 ## Measured prediction costs
 
-Synchronized release timings use one Torch thread, matching hyperparameters,
-warmed training factors, 16 batches of two queries, four input dimensions and
-31 shuffled interleaved repetitions. Construction, fitting and first-factor
-costs are excluded. Values below are BoTorch time divided by port time on the
+The historical October 20 release timings below use one Torch thread, matching hyperparameters,
+16 batches of two queries, four input dimensions and
+31 shuffled interleaved repetitions. Construction and fitting are excluded.
+Reference and Tensor training factors were warmed, but the native snapshot-cache
+defect meant native public calls continued to refactor training covariance.
+Values below are BoTorch time divided by port time on the
 local RTX 4050 Laptop GPU and CPU; values above one favor the port.
 
 | Training observations | Torch CPU float64 | Torch CUDA float64 | Torch CPU float32 | Torch CUDA float32 | Native CPU float64 |
@@ -205,10 +211,15 @@ samples, numerical checks, exact Python/native fingerprints and reference
 revisions are in [float64](benchmarks/tensor-main-prediction-2026-10-20-float64.json)
 and [float32](benchmarks/tensor-main-prediction-2026-10-20-float32.json).
 
-The native CPU backend takes 11.2 times as long as BoTorch in the 1,024-point
-cached prediction case. Its small-data BO-loop result below measures a different
-workload. The Torch CPU backend avoids this large cached-prediction cost on this
-machine.
+That native CPU build took 11.2 times as long as BoTorch in the 1,024-point
+public prediction case. A subsequent production cache repair reduces a controlled
+repeat of this workload from 50.50 ms to 4.30 ms, an 11.73x improvement over the
+preserved build. BoTorch takes 3.67 ms in the candidate run, leaving native
+17.3% slower for that case; native is faster at 32 and 256 observations. First
+native prediction time is unchanged. The fresh
+[cache measurements and validation receipt](native-prediction-cache.md) retain
+all raw samples, artifact/source fingerprints and limits. Those candidate
+results are separate from the historical table and the release certificate.
 
 The separate native float64 Hartmann-6 benchmark takes 0.207 s versus 13.09 s
 for BoTorch (63.2x), measured over three seeded 30-iteration loops after warmup
