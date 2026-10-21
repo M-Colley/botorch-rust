@@ -2,6 +2,14 @@
 
 Audited against official BoTorch revision `b0dd01be6`.
 
+Direct Tensor `OutcomeUntransformer` calls use the actual outcome transform's
+Tensor inverse, preserving calibration-target and path-value graphs. The former
+`Standardize` shortcut exported statistics to native arrays and detached
+calibration derivatives. Twelve new CPU/CUDA cases check batched/independent
+outputs, source values and gradients, independent mixed higher derivatives and
+no-host-copy guards; the new and existing path utility selection passes 48
+cases. Native array callers retain their affine path.
+
 `GeneralizedLinearPath(feature_map, weight, bias_module=None,
 input_transform=None, output_transform=None, is_ensemble=False,
 ensemble_as_batch=False)` evaluates the supplied feature map and multiplies

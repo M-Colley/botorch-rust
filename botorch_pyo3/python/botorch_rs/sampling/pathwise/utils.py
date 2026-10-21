@@ -188,6 +188,8 @@ class OutcomeUntransformer(TensorTransform):
         from botorch_rs.posteriors.transformed import _affine
 
         def untransform(values: Any) -> Any:
+            if is_torch_tensor(values):
+                return self.transform.untransform(values)[0]
             if type(self.transform) is Standardize:
                 if not self.transform._is_trained:
                     raise RuntimeError("Standardize must be fitted before untransforming paths.")
