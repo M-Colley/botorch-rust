@@ -1546,13 +1546,26 @@ def build_outcome_transform(source: Any, m: int, train_Y: Tensor) -> nn.Module |
         return None
     if source is DEFAULT or type(source).__name__ == "_DefaultType":
         result = TorchStandardize(m, train_Y.shape[:-2], train_Y)
-    elif type(source) is Standardize or (
+    elif (
+        isinstance(source, Standardize)
+        and type(source).forward is Standardize.forward
+        and type(source).untransform is Standardize.untransform
+        and type(source).__call__ is Standardize.__call__
+    ) or (
         isinstance(source, nn.Module)
         and all(
             hasattr(source, attribute)
             for attribute in ("_m", "_batch_shape", "_min_stdv", "_outputs", "means", "stdvs")
         )
         and not hasattr(source, "_stratification_idx")
+        and type(source).__call__ is nn.Module.__call__
+        and all(
+            getattr(getattr(type(source), name, None), "__module__", None)
+            == "botorch.models.transforms.outcome"
+            and getattr(getattr(type(source), name, None), "__qualname__", None)
+            == f"Standardize.{name}"
+            for name in ("forward", "untransform", "untransform_posterior")
+        )
     ):
         if source._m != m:
             raise ValueError("Standardize's m must equal the model's number of outputs.")
@@ -1573,6 +1586,17 @@ def build_outcome_transform(source: Any, m: int, train_Y: Tensor) -> nn.Module |
                 values, _ = transform(values)
         return TorchOutcomeChain(children).eval()
     elif isinstance(source, nn.Module):
+        if all(
+            hasattr(source, name) for name in ("_m", "_batch_shape", "_min_stdv", "means", "stdvs")
+        ) and not (
+            callable(getattr(source, "fit", None))
+            and getattr(source, "_tensor_backend", None) == "torch"
+        ):
+            raise UnsupportedError(
+                "Custom Standardize-like Torch modules must provide fit(Y) and "
+                "_tensor_backend='torch' for their training-statistics graph; "
+                "overridden behavior is not canonicalized."
+            )
         return source.to(train_Y)
     else:
         raise UnsupportedError(

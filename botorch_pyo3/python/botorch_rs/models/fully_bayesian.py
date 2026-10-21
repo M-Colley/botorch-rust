@@ -55,7 +55,7 @@ from botorch_rs.models.transforms.input import (
     Normalize,
     Warp,
 )
-from botorch_rs.models.transforms.outcome import OutcomeTransform, Standardize
+from botorch_rs.models.transforms.outcome import OutcomeTransform
 from botorch_rs.models.transforms.utils import kumaraswamy_warp, subset_transform
 from botorch_rs.posteriors.fully_bayesian import MCMC_DIM, GaussianMixturePosterior
 
@@ -743,8 +743,8 @@ class AbstractFullyBayesianSingleTaskGP(SingleTaskGP):
             indices_to_warp: An optional list of indices to warp. The default
                 is to warp all inputs.
 
-        botorch_rs supports ``Standardize`` (single-output) as the outcome
-        transform: BoTorch's posteriors of these models need a linear one.
+        Native models support scalar ``Standardize`` outcome compositions;
+        the posterior must remain Gaussian.
         """
         x = to_flat(train_X, "train_X")
         y = to_flat(train_Y, "train_Y")
@@ -753,13 +753,9 @@ class AbstractFullyBayesianSingleTaskGP(SingleTaskGP):
         if train_Yvar is not None:
             if tuple(to_flat(train_Yvar, "train_Yvar")[1]) != tuple(y[1]):
                 raise ValueError("Expected train_Yvar to be None or have the same shape as train_Y")
-        if outcome_transform is not None and not (
-            type(outcome_transform) is Standardize and outcome_transform._outputs is None
-        ):
-            raise UnsupportedError(
-                "botorch_rs supports the Standardize outcome transform on fully Bayesian models "
-                "(BoTorch's GaussianMixturePosterior needs a linear outcome transform)."
-            )
+        from botorch_rs.models._fully_bayesian_outcomes import validate_native_outcome
+
+        validate_native_outcome(outcome_transform)
         kind = kind_of(train_X)
         transformed_X = train_X
         if input_transform is not None:
@@ -915,17 +911,20 @@ class AbstractFullyBayesianSingleTaskGP(SingleTaskGP):
         xdata, xshape = self._fb_train_X
         ydata, yshape = self._fb_raw_Y
         user_ot = getattr(self, "outcome_transform", None)
-        ot: Any = None
-        if user_ot is not None:
-            ot = Standardize(m=1, batch_shape=(num,), min_stdv=user_ot.min_stdv)
+        from botorch_rs.models._fully_bayesian_outcomes import batched_native_outcome
+
+        ot = batched_native_outcome(user_ot, num)
         yvar = None
         if self.pyro_model.train_Yvar is not None:
             # The (outcome-transformed, clamped) noise variances of the
             # samples, in the outcome space of the batched model.
             vdata = [float(v) for v in to_flat(self.pyro_model.train_Yvar, "train_Yvar")[0]]
             if user_ot is not None:
-                sd = float(to_flat(user_ot.stdvs, "stdvs")[0][0])
-                vdata = [v * sd * sd for v in vdata]
+                _, raw_variance = user_ot.untransform(
+                    from_flat(*self._fb_train_Y, self._kind),
+                    from_flat(vdata, yshape, self._kind),
+                )
+                vdata = list(to_flat(raw_variance, "train_Yvar")[0])
             yvar = _repeat(vdata, yshape, num)
         SingleTaskGP.__init__(
             self,
@@ -1096,10 +1095,16 @@ class AbstractFullyBayesianSingleTaskGP(SingleTaskGP):
         saved = {
             key: self.__dict__.pop(key)
             for key in list(self.__dict__)
-            if key.startswith("_fb_") or key == "pyro_model"
+            if key.startswith("_fb_") or key in {"pyro_model", "outcome_transform"}
         }
         try:
-            return SingleTaskGP._member(self, k)
+            member = SingleTaskGP._member(self, k)
+            if "outcome_transform" in saved:
+                # All MCMC members share the original unbatched fitted map.
+                # The native batch_element already owns its numerical chain;
+                # retain the matching public metadata without re-fitting it.
+                member.outcome_transform = copy.deepcopy(saved["outcome_transform"])
+            return member
         finally:
             self.__dict__.update(saved)
 

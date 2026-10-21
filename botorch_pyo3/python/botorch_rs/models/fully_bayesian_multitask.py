@@ -45,7 +45,7 @@ from botorch_rs.models.transforms.input import (
     Normalize,
     Warp,
 )
-from botorch_rs.models.transforms.outcome import OutcomeTransform, Standardize
+from botorch_rs.models.transforms.outcome import OutcomeTransform
 from botorch_rs.posteriors.fully_bayesian import _StackedMixturePosterior
 
 
@@ -223,6 +223,7 @@ class _SampleMultiTaskGP(MultiTaskGP):
     adjustment of the task factors of unobserved tasks in ``eval()``)."""
 
     _eval_unobserved_tasks = False
+    outcome_transform: Any
 
     def __init__(self, task_kernel: Kernel, **kwargs: Any) -> None:
         self._sample_task_kernel = task_kernel
@@ -291,6 +292,7 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
 
     _is_fully_bayesian = True
     _is_ensemble = True
+    outcome_transform: Any
 
     def __new__(
         cls,
@@ -374,13 +376,9 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
             raise ValueError("Expected train_X to have shape n x d and train_Y to have shape n x 1")
         if train_Yvar is not None and tuple(to_flat(train_Yvar, "train_Yvar")[1]) != tuple(y[1]):
             raise ValueError("Expected train_Yvar to be None or have the same shape as train_Y")
-        if outcome_transform is not None and not (
-            type(outcome_transform) is Standardize and outcome_transform._outputs is None
-        ):
-            raise UnsupportedError(
-                "botorch_rs supports the Standardize outcome transform on fully Bayesian "
-                "multi-task models."
-            )
+        from botorch_rs.models._fully_bayesian_outcomes import validate_native_outcome
+
+        validate_native_outcome(outcome_transform)
         kind = kind_of(train_X)
         raw_Y = train_Y
         transformed_X = train_X
@@ -558,13 +556,9 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
         d = pm.ard_num_dims
         args = dict(self._fb_args)
         user_ot = self._fb_outcome_transform
-        if user_ot is not None and args["train_Yvar"] is not None:
-            # The (transformed, clamped) noise in the original outcome space.
-            sd = float(to_flat(user_ot.stdvs, "stdvs")[0][0])
-            vdata, vshape = to_flat(args["train_Yvar"], "train_Yvar")
-            args["train_Yvar"] = from_flat(
-                [float(v) * sd * sd for v in vdata], tuple(vshape), self._kind
-            )
+        from botorch_rs.models._fully_bayesian_outcomes import native_outcome_affine
+
+        affine = None if user_ot is None else native_outcome_affine(user_ot, self._kind)
         samples = []
         for s in range(num):
             mod = pm._member_modules(mcmc_samples, s)
@@ -600,7 +594,7 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
             member = _SampleMultiTaskGP(
                 task_kernel=task_kernel,
                 train_X=args["train_X"],
-                train_Y=args["raw_Y"],
+                train_Y=args["train_Y"],
                 task_feature=args["task_feature"],
                 train_Yvar=args["train_Yvar"],
                 covar_module=data_kernel,
@@ -608,12 +602,14 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
                 output_tasks=args["output_tasks"],
                 rank=t,
                 all_tasks=args["all_tasks"],
-                outcome_transform=(
-                    Standardize(m=1, min_stdv=user_ot.min_stdv) if user_ot is not None else None
-                ),
+                outcome_transform=None,
                 input_transform=copy.deepcopy(self._fb_input_transform),
                 validate_task_values=args["validate_task_values"],
             )
+            if affine is not None:
+                assert user_ot is not None
+                member._rs._set_fitted_outcome_affine(*affine)
+                member.outcome_transform = copy.deepcopy(user_ot).eval()
             if pm.use_input_warping:
                 indices = pm._warp_indices()
                 assert indices is not None
