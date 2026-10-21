@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -103,11 +104,19 @@ def _scalar_affine(transform: Any) -> tuple[float, float, tuple[Any, ...]]:
 
 def sync_native_outcome(model: Any) -> None:
     """Refresh only the inverse map before a prediction or native snapshot."""
+    if "torch" in sys.modules and sys.modules["torch"] is None:
+        return
     native = getattr(model, "_rs", None)
     setter = getattr(native, "_set_fitted_outcome_state", None)
     if setter is None:
         return
-    transform = getattr(model, "outcome_transform", None)
+    try:
+        transform = model.outcome_transform
+    except AttributeError:
+        # Native module binding can request a parameter snapshot before the
+        # constructor has attached its fitted outcome descriptor. Absence at
+        # that point must not erase the already-fitted inverse map in Rust.
+        return
     samples = model.__dict__.get("_samples")
     signature: tuple[Any, ...]
     key: tuple[Any, ...]
