@@ -101,14 +101,16 @@ def _likelihood(source: Any, outputs: int, like: Tensor) -> nn.Module:
 
 
 def _input_transform(source: Any, like: Tensor) -> nn.Module:
+    from botorch_rs.models._backend_selection import native_port_descriptor_type
     from botorch_rs.models._torch_backend_modules import TorchInputChain, TorchNormalize, TorchWarp
     from botorch_rs.models.transforms.input import ChainedInputTransform, Normalize, Warp
 
-    if type(source) is Normalize:
+    source_type = native_port_descriptor_type(source) or type(source)
+    if source_type is Normalize:
         result: nn.Module = TorchNormalize(source, source._d, like)
-    elif type(source) is Warp:
+    elif source_type is Warp:
         result = TorchWarp(source, source._d, like)
-    elif type(source) is ChainedInputTransform:
+    elif source_type is ChainedInputTransform:
         result = TorchInputChain(
             {name: _input_transform(child, like) for name, child in source.items()}, like
         )
@@ -120,6 +122,7 @@ def _input_transform(source: Any, like: Tensor) -> nn.Module:
 
 
 def _outcome_transform(source: Any, like: Tensor, outputs: int) -> nn.Module:
+    from botorch_rs.models._backend_selection import native_port_descriptor_type
     from botorch_rs.models._torch_backend_modules import (
         TorchElementwiseOutcome,
         TorchOutcomeChain,
@@ -133,7 +136,8 @@ def _outcome_transform(source: Any, like: Tensor, outputs: int) -> nn.Module:
         Standardize,
     )
 
-    if type(source) is Standardize:
+    source_type = native_port_descriptor_type(source) or type(source)
+    if source_type is Standardize:
         if source._m != outputs:
             raise ValueError("Standardize's m must equal the declared number of outputs.")
         result: Any = TorchStandardize(
@@ -142,9 +146,9 @@ def _outcome_transform(source: Any, like: Tensor, outputs: int) -> nn.Module:
         result.means = torch.as_tensor(source.means, dtype=like.dtype, device=like.device).clone()
         result.stdvs = torch.as_tensor(source.stdvs, dtype=like.dtype, device=like.device).clone()
         result._is_trained = source._is_trained
-    elif type(source) in (Log, Bilog, Power):
+    elif source_type in (Log, Bilog, Power):
         result = TorchElementwiseOutcome(source, outputs)
-    elif type(source) is ChainedOutcomeTransform:
+    elif source_type is ChainedOutcomeTransform:
         result = TorchOutcomeChain(
             {name: _outcome_transform(child, like, outputs) for name, child in source.items()}
         )

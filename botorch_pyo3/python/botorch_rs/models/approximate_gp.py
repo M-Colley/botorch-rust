@@ -57,6 +57,7 @@ from botorch_rs.exceptions.warnings import UserInputWarning
 from botorch_rs.kernels import Kernel, _batch_matrix, _indices
 from botorch_rs.likelihoods import GaussianLikelihood, Likelihood, MultitaskGaussianLikelihood
 from botorch_rs.means import ConstantMean, Mean, ZeroMean
+from botorch_rs.models._backend_selection import requires_tensor_backend
 from botorch_rs.models.gpytorch import GPyTorchModel
 from botorch_rs.models.transforms.input import InputTransform, chain_spec
 from botorch_rs.models.transforms.outcome import OutcomeTransform, Standardize
@@ -591,7 +592,7 @@ class ApproximateGPyTorchModel(GPyTorchModel):
                     or components.get("variational_strategy", VariationalStrategy)
                     is not VariationalStrategy
                     or any(
-                        isinstance(value, torch.nn.Module)
+                        requires_tensor_backend(value)
                         for value in (
                             likelihood,
                             components.get("covar_module"),
@@ -1160,7 +1161,7 @@ class SingleTaskVariationalGP(ApproximateGPyTorchModel):
                 or components.get("variational_strategy", VariationalStrategy)
                 is not VariationalStrategy
                 or any(
-                    torch is not None and isinstance(components.get(name), torch.nn.Module)
+                    requires_tensor_backend(components.get(name))
                     for name in (
                         "likelihood",
                         "covar_module",
