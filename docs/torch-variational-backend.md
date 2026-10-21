@@ -156,7 +156,12 @@ Symmetric CIQ whitening and its distinct Natural convention are covered in
 observation modules now retain their actual likelihood protocols, including
 multiple latent outputs for categorical observations;
 see [`torch-variational-likelihood-protocol.md`](torch-variational-likelihood-protocol.md).
-Unwhitened pseudo-points and online
-fantasy conversion are not implemented. Reallocation cannot resize the variational family.
-It does not imply GPU support for arbitrary `ApproximateGPyTorchModel` wrappers
-or every other approximate-model family.
+The canonical portable inner strategies do not reproduce GPyTorch-specific
+pseudo-point and online-fantasy internals. An actual caller-supplied approximate
+module or compatible strategy factory retains the methods supplied by that
+component, including its own derivative behavior. The public BoTorch approximate
+wrapper itself has no `get_fantasy_model`; outer conditioning retains that source
+boundary. Reallocation cannot resize the variational family. Constructor-compatible
+factories and supplied CPU/CUDA module wrappers are covered in
+[`variational-factory-configurations.md`](variational-factory-configurations.md)
+and [`caller-supplied-approximate-models.md`](caller-supplied-approximate-models.md).
