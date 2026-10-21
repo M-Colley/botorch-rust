@@ -40,3 +40,4 @@ indices required by its Hadamard likelihood and raises
 training task inputs to that likelihood. Its regression preserves the
 original source failure and compares the repaired result with the explicit
 source Gaussian law, parameter count and information-criterion formulas.
+The proposed upstream repair is [BoTorch #3515](https://github.com/meta-pytorch/botorch/pull/3515).

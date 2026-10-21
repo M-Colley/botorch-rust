@@ -10,6 +10,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 
 | Finding | Submission / remaining work |
 | --- | --- |
+| Multitask in-sample metrics omit task inputs and do not remap task-specific noise | New [BoTorch #3515](https://github.com/meta-pytorch/botorch/pull/3515); all evaluation tests pass with 8 new CPU/CUDA device/dtype/label subcases on Torch 2.13 and 4 subcases on Torch 2.14.1 CPU |
 | Taylor bivariate probability double backward fails at equal bounds | New [BoTorch #3514](https://github.com/meta-pytorch/botorch/pull/3514); 26 BVN/MVNXPB/linalg tests pass on Torch 2.13 CPU/CUDA and 2.14.1 CPU. The exact forward is unchanged; density/finite-difference and gradgradcheck regressions verify analytic derivatives, distinct from the independence shortcut |
 | Bivariate independence shortcut drops the correlation gradient | New [BoTorch #3513](https://github.com/meta-pytorch/botorch/pull/3513); 6 bivariate tests and 10 subtests pass on Torch 2.13 CPU/CUDA and 2.14.1 CPU |
 | Positive-tail `log_erfcx` first/second derivatives cancel; derived log-probability curvatures fail | New [BoTorch #3512](https://github.com/meta-pytorch/botorch/pull/3512); 8 probability-utils tests and 9 subtests pass on Torch 2.13 CPU/CUDA and 2.14.1 CPU |

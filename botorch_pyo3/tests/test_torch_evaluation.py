@@ -17,19 +17,20 @@ DEVICES = ["cpu", "cuda"] if torch.cuda.is_available() else ["cpu"]
 
 
 @pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.double])
 @pytest.mark.parametrize("m", [1, 2])
 @pytest.mark.parametrize("fixed", [False, True])
 @pytest.mark.parametrize("transforms", [False, True])
 @pytest.mark.parametrize("batched", [False, True])
 def test_metrics_match_reference_with_outputs_batches_transforms_and_noise(
-    device, m, fixed, transforms, batched
+    device, dtype, m, fixed, transforms, batched
 ):
     pytest.importorskip("botorch")
     from botorch.models import SingleTaskGP as ReferenceGP
     from botorch.models.transforms.input import Normalize as ReferenceNormalize
     from botorch.utils.evaluation import compute_in_sample_model_fit_metric as reference_metric
 
-    x = torch.linspace(0.1, 0.9, 6, dtype=torch.double, device=device).unsqueeze(-1)
+    x = torch.linspace(0.1, 0.9, 6, dtype=dtype, device=device).unsqueeze(-1)
     y = torch.cat([(x * (3 + i)).sin() for i in range(m)], dim=-1)
     if batched:
         x = torch.stack((x, x + 0.04))
@@ -46,7 +47,8 @@ def test_metrics_match_reference_with_outputs_batches_transforms_and_noise(
     for criterion in ("MLL", "AIC", "BIC"):
         a, e = metric(actual, criterion), reference_metric(expected, criterion)
         assert isinstance(a, float)
-        assert a == pytest.approx(e, rel=2e-9, abs=2e-9)
+        tolerance = 2e-4 if dtype == torch.float32 else 2e-9
+        assert a == pytest.approx(e, rel=tolerance, abs=tolerance)
         assert actual.training is False
 
 
@@ -97,13 +99,16 @@ def test_loaded_fully_bayesian_metrics_preserve_samples_and_average_components(d
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_multitask_metric_uses_correlated_task_law_and_task_noise(device):
+@pytest.mark.parametrize("labels", [(0, 1), (2, 5)])
+def test_multitask_metric_uses_correlated_task_law_and_task_noise(device, labels):
     pytest.importorskip("botorch")
     from botorch.utils.evaluation import compute_in_sample_model_fit_metric as reference_metric
     from test_torch_backend_multitask import data, paired_models
 
-    x, y, _ = data(device)
+    x, y, _ = data(device, labels=labels)
     actual, expected = paired_models(x, y)
+    for model in (actual, expected):
+        model.likelihood.noise = x.new_tensor([0.025, 0.07])
     # The pinned utility drops the task inputs required by its own default
     # Hadamard likelihood. Retain the raw failure and form the correct law
     # explicitly rather than changing the reference checkout.
@@ -111,7 +116,11 @@ def test_multitask_metric_uses_correlated_task_law_and_task_noise(device):
         reference_metric(expected, "MLL")
     expected.train()
     with torch.no_grad():
-        distribution = expected.likelihood(expected(*expected.train_inputs), *expected.train_inputs)
+        latent = expected(*expected.train_inputs)
+        noise = x.new_tensor([0.025, 0.07]).repeat(3)
+        distribution = torch.distributions.MultivariateNormal(
+            latent.mean, covariance_matrix=latent.covariance_matrix + torch.diag_embed(noise)
+        )
         log_probability = distribution.log_prob(expected.train_targets).mean().item()
     expected.eval()
     parameters = sum(parameter.numel() for parameter in expected.parameters())
