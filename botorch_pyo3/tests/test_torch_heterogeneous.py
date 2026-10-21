@@ -303,7 +303,7 @@ def test_conditioned_data_noise_and_parameter_graphs_repeat(device, fixed):
         *((noise,) if fixed else ()),
         *child.values(),
     )
-    for _ in range(2):
+    for sweep in range(2):
         p = conditioned.posterior(query)
         loss = (
             p.mean.sum()
@@ -314,7 +314,11 @@ def test_conditioned_data_noise_and_parameter_graphs_repeat(device, fixed):
             loss, tuple(original.values()), allow_unused=True, retain_graph=True
         ) == (None,) * len(original)
         first = torch.autograd.grad(loss, inputs, create_graph=True)
-        second = torch.autograd.grad(sum(g.square().sum() for g in first), inputs)
+        # Conditioning stores transformed nonleaf coordinates. Reusing that
+        # same data graph follows the source's ordinary Torch lifetime rule.
+        second = torch.autograd.grad(
+            sum(g.square().sum() for g in first), inputs, retain_graph=sweep == 0
+        )
         assert all(torch.isfinite(g).all() for g in (*first, *second))
 
 

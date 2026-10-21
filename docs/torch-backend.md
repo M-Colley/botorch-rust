@@ -336,5 +336,10 @@ persistence and conditioning cases pass; an additional 110-case run covers
 the final buffer-mutation and supplied-model checkpoint controls. Torch 2.14.1
 CPU passes 227 cases with 42 device skips. Source-only phase controls skip
 cleanly when BoTorch is absent (24 skips).
+Conditioned models retain transformed nonleaf training coordinates, as the
+pinned source does. Reusing that same conditioning graph for independent
+backward/Hessian sweeps requires `retain_graph=True` until the final sweep;
+construct a fresh conditioned model for independent graph lifetimes. Source
+controls cover ordinary Normalize and a parameterized custom input transform.
 [Upstream submissions](upstream-pull-requests.md) track verified defects and
 proposed repairs, including reused PRs and the SciPy human submission step.

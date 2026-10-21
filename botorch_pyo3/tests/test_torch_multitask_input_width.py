@@ -18,6 +18,7 @@ from botorch_rs.models.transforms.input import AppendFeatures, FilterFeatures
 @pytest.mark.parametrize("family", ["filter", "append"])
 @pytest.mark.parametrize("backend", ["auto", "torch"])
 def test_multitask_transformed_training_width_matches_source(device, family, backend):
+    pytest.importorskip("botorch")
     from botorch.models import MultiTaskGP as Source
     from botorch.models.transforms.input import AppendFeatures as SourceAppend
     from botorch.models.transforms.input import FilterFeatures as SourceFilter
