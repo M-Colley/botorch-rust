@@ -41,9 +41,15 @@ The actual supplied marginal remains authoritative. For example, GPyTorch
 learned noise components of `FixedNoiseGaussianLikelihood`. Both components
 then use that override, so this particular module doubles the provided noise.
 The adapter preserves that observed module behavior rather than silently
-rewriting caller-owned likelihood semantics. A separate upstream regression
-and repair are being prepared; this does not affect the port's default
-fixed-noise likelihood.
+rewriting caller-owned likelihood semantics. The separate upstream repair
+[GPyTorch #2826](https://github.com/cornellius-gp/gpytorch/pull/2826) strips the
+override only from the additional learned component. Fixed values `[0.1,0.2]`,
+learned noise `0.3` and explicit query noise `[0.4,0.5]` then add the intended
+`[0.7,0.8]`, instead of `[0.8,1.0]`; the learned parameter remains in the graph.
+The original source fails eight new CPU/CUDA value cases and two gradient
+cases. After repair, 37 source tests pass with one pre-existing expected
+failure on Torch 2.13 CPU/CUDA and Torch 2.14 CPU. This does not affect the
+port's default fixed-noise likelihood.
 
 Validation adds 44 CPU/CUDA cases. Independent dense Gaussian formulas check
 full correlated noise, scalar/multiple-output and training/query batches,
