@@ -55,8 +55,14 @@ whole-object serialization with picklable callables, and shared component aliase
 are covered separately from numerical parity. Generated device paths use
 picklable joins and inverse-transform modules, and migrate their explicit draw
 records with the path. Array constructors keep their native wrappers and do not
-require importing Torch. Direct array-transform descriptors retain their own
-module protocols; this checkpoint does not certify every inherited Torch API.
+require importing Torch. When Torch is already in use, the six public path
+transform families also expose actual module hooks, child registration, state
+dictionaries and migration. Their integer selector and output-count metadata
+are registered buffers. Fifty new CPU/CUDA cases exercise these contracts and
+independent first/mixed second derivatives; without reference dependencies,
+46 pass and four source comparisons skip. The path-transform subset passes 156
+cases. These focused counts are not a release certificate or evidence for every
+inherited Torch API.
 
 Factory-produced native generalized-linear paths still expose their existing
 fixed weight/draw metadata and reject assignment to their immutable native

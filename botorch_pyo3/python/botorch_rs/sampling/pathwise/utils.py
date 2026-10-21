@@ -16,6 +16,7 @@ from __future__ import annotations
 import itertools
 import math
 import operator
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any, NamedTuple
@@ -67,6 +68,15 @@ class TransformedModuleMixin:
 
 class TensorTransform(ABC, GPModule):
     """Base of callable array transforms, independent of a torch runtime."""
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        if sys.modules.get("torch") is not None:
+            from botorch_rs.sampling.pathwise._torch_transforms import tensor_transform_type
+
+            module_type = tensor_transform_type(cls)
+            if module_type is not None:
+                return object.__new__(module_type)
+        return object.__new__(cls)
 
     def __call__(self, values: Any, **kwargs: Any) -> Any:
         return self.forward(values, **kwargs)
