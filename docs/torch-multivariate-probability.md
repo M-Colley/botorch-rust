@@ -55,7 +55,9 @@ and explicit detachment keep their public state semantics. Tensor factor and
 plug-in updates create new arrays, so later state mutations do not invalidate
 an earlier forward's backward graph. Integer permutations and pivot choices
 are discrete; gradients flow through the chosen numerical branch. This also
-avoids the source's incorrect batched in-place pivot gradients.
+avoids the source's batched in-place pivot gradient defect, already reported
+with a fix and regression tests in
+[BoTorch #3433](https://github.com/meta-pytorch/botorch/pull/3433).
 
 `augment_cholesky` stays on the Tensor device even without gradients. Augmenting
 a completed solve accepts cross-covariances in the existing solver permutation
@@ -66,8 +68,8 @@ zero conditional variance use the limiting deterministic interval event;
 singular covariance derivatives are not advertised as smooth interior graphs.
 
 `test_torch_mvnxpb.py` compares one through six dimensions and float32/float64
-against the pinned reference, using memberwise source derivatives where its
-batched pivot graph is wrong. It checks gradcheck/gradgradcheck for fresh and
-resumed solves, old-forward preservation, augmentation, state views and
+against the pinned reference, using memberwise source derivatives for the
+batched pivot defect covered by #3433. It checks gradcheck/gradgradcheck for
+fresh and resumed solves, old-forward preservation, augmentation, state views and
 no-host-transfer operation with and without gradients. The existing phase11
 state and native-array regressions remain enabled.
