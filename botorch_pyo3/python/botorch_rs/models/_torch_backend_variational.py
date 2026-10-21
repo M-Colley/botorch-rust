@@ -783,13 +783,23 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             raise ValueError(
                 "Inducing-point batch dimensions must broadcast to the augmented model batch shape."
             )
-        if variational_distribution is not None and (
-            variational_distribution.num_inducing_points != points.shape[-2]
-            or tuple(variational_distribution.batch_shape) != tuple(self._aug_batch_shape)
-        ):
-            raise ValueError(
-                "Variational distribution dimensions must match the inducing points and augmented model batch shape."
-            )
+        distribution_batch = (
+            self._aug_batch_shape
+            if variational_distribution is None
+            else torch.Size(variational_distribution.batch_shape)
+        )
+        if variational_distribution is not None:
+            if variational_distribution.num_inducing_points != points.shape[-2]:
+                raise ValueError(
+                    "Variational distribution dimensions must match the inducing points."
+                )
+            try:
+                torch.broadcast_shapes(distribution_batch, self._aug_batch_shape)
+            except RuntimeError as error:
+                raise ValueError(
+                    "Variational distribution batch dimensions must broadcast with the "
+                    "augmented model batch shape."
+                ) from error
         if distribution_family == "external":
             distribution = variational_distribution.to(train_X)
         else:
@@ -799,7 +809,7 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
                 "delta": _TorchDeltaDistribution,
             }[distribution_family]
             distribution = distribution_class(
-                points.shape[-2], self._aug_batch_shape, train_X, variational_distribution
+                points.shape[-2], distribution_batch, train_X, variational_distribution
             )
         strategy: _TorchVariationalStrategy
         if decoupled:
@@ -1234,8 +1244,12 @@ class TorchVariationalELBO(nn.Module, VariationalELBO):
         else:
             y = target.transpose(-1, -2)
         if not owner._external_likelihood:
-            if y.shape != mean.shape:
-                raise ValueError("ELBO targets must match the q(f) event and batch shapes.")
+            try:
+                y = torch.broadcast_to(y, mean.shape)
+            except RuntimeError as error:
+                raise ValueError(
+                    "ELBO targets must broadcast to the q(f) event and batch shapes."
+                ) from error
             if hasattr(output, "_expected_log_prob"):
                 log_likelihood = output._expected_log_prob(y, mean, variance).mean(-1)
             else:
