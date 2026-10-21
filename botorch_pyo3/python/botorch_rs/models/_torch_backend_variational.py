@@ -623,8 +623,6 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             if not train_Y.shape[-1] or not bool(torch.isfinite(train_Y).all()):
                 raise ValueError("Training targets must be finite with nonempty outputs.")
             num_outputs = train_Y.shape[-1]
-        elif outcome_transform is not None:
-            raise ValueError("An outcome transform requires training targets.")
         if num_outputs <= 0:
             raise ValueError("num_outputs must be positive.")
         gpytorch = sys.modules.get("gpytorch")
@@ -705,12 +703,11 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         self.register_buffer("_train_X", train_X)
         self.register_buffer("_train_Y", train_Y)
         self.input_transform = build_input_transform(input_transform, train_X.shape[-1], train_X)
-        self.outcome_transform = (
-            None
-            if train_Y is None
-            else build_outcome_transform(outcome_transform, num_outputs, train_Y)
-        )
+        self.outcome_transform = None
         transformed = self._training_inputs()
+        self.outcome_transform = build_outcome_transform(
+            outcome_transform, num_outputs, train_Y, train_X=transformed
+        )
         if train_Y is not None:
             if transformed.ndim != train_Y.ndim or transformed.shape[-2] != train_Y.shape[-2]:
                 raise ValueError(
@@ -924,7 +921,17 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
                     and getattr(transform, "_tensor_backend", None) == "torch"
                 ):
                     transform.train()
-                    transform(values)
+                    if transform is self.input_transform:
+                        transform(values)
+                    else:
+                        context = (
+                            self._train_X
+                            if self.input_transform is None
+                            else getattr(
+                                self.input_transform, "preprocess_transform", self.input_transform
+                            )(self._train_X)
+                        )
+                        transform(values, X=context)
                 transform.eval()
 
     def _training_inputs(self) -> Tensor:
@@ -1023,7 +1030,11 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             raise ValueError("Training targets were not supplied; pass targets to VariationalELBO.")
         self._fit_transforms()
         outcome = training_outcome_transform(self)
-        return self._train_Y if outcome is None else outcome(self._train_Y)[0]
+        return (
+            self._train_Y
+            if outcome is None
+            else outcome(self._train_Y, X=self._training_inputs())[0]
+        )
 
     def _log_prior(self) -> Any:
         result = self._train_X.new_zeros(())
@@ -1221,8 +1232,12 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
                 observed = self.likelihood(gaussian(output))
             result: Any = TorchPosterior(observed)
             if self.outcome_transform is not None:
-                result = self.outcome_transform.untransform_posterior(result, X=X)
-            return result if posterior_transform is None else posterior_transform(result, X=X)
+                result = self.outcome_transform.untransform_posterior(result, X=transformed)
+            return (
+                result
+                if posterior_transform is None
+                else posterior_transform(result, X=transformed)
+            )
         blocks = output._blocks()
         covariance = independent_covariance(blocks) if self.num_outputs > 1 else blocks
         if observation_noise is not False:
@@ -1238,11 +1253,11 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             elif observation_noise is True and self.num_outputs > 1:
                 covariance = covariance + tensor_kron(
                     self.likelihood.noise_matrix(),
-                    torch.eye(X.shape[-2], device=X.device, dtype=X.dtype),
+                    torch.eye(transformed.shape[-2], device=X.device, dtype=X.dtype),
                 )
             else:
                 noise = (
-                    self.likelihood.noise_for(X.shape[-2])
+                    self.likelihood.noise_for(transformed.shape[-2])
                     if observation_noise is True
                     else observation_noise.movedim(-1, -2)
                     if self.num_outputs > 1
@@ -1261,8 +1276,12 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             if transform is not None:
                 transform = transform.subset_output(output_indices)
         if transform is not None:
-            posterior = transform.untransform_posterior(posterior, X=X)
-        return posterior if posterior_transform is None else posterior_transform(posterior, X=X)
+            posterior = transform.untransform_posterior(posterior, X=transformed)
+        return (
+            posterior
+            if posterior_transform is None
+            else posterior_transform(posterior, X=transformed)
+        )
 
 
 class TorchVariationalELBO(nn.Module, VariationalELBO):

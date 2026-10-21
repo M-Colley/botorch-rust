@@ -77,6 +77,25 @@ broadcast with the training-input batches. Source controls verify the changed
 feature width, selected-feature gradients, actual training rows and allocator
 count.
 
+## Optional targets and outcome context
+
+An outcome transform can be attached when `train_Y=None`. Stateless transforms
+and already-calibrated Standardize transforms retain their inverse posterior
+law without fabricating observations or fitting on input coordinates. An
+uncalibrated Standardize raises the source's error when inverse-transforming
+a posterior. The public Torch standardization module now enforces that check
+on its direct posterior path as well as its value path.
+
+Outcome fitting, explicit training targets and posterior inversion receive
+the actual transformed input coordinates. This includes
+`StratifiedStandardize` and chains containing it, with both canonical port
+inference and actual caller strategy components. Regression tests compare
+source values and query/module derivatives, and compare all data, query and
+parameter gradients/HVPs with independent per-stratum formulas. The source's
+NaN masked-calibration derivative is checked explicitly as the known
+[BoTorch #3520](https://github.com/meta-pytorch/botorch/pull/3520) defect;
+it is not used as a correct calibration-gradient oracle.
+
 ## Source constructor boundaries
 
 Constructor compatibility is separate from implementing every strategy in

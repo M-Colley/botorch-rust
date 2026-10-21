@@ -1312,6 +1312,8 @@ class TorchStandardize(nn.Module):
         from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
         from botorch_rs.posteriors.transformed import TransformedPosterior
 
+        if not self._is_trained:
+            raise RuntimeError("Standardize must be fitted before untransforming a posterior.")
         means, stdvs = self.means.clone(), self.stdvs.clone()
         if isinstance(posterior, TorchGPyTorchPosterior):
             q = posterior.mean.shape[-2]
