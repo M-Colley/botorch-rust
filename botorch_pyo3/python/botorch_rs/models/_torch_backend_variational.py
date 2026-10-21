@@ -789,17 +789,51 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             if inducing_points is None or isinstance(inducing_points, int)
             else inducing_points
         )
+        if self._uses_caller_strategy:
+            try:
+                from botorch_rs.models._torch_variational_factory import (
+                    CallerStrategyGP,
+                    caller_distribution,
+                    caller_likelihood,
+                )
+            except ModuleNotFoundError as error:
+                if error.name != "gpytorch":
+                    raise
+                raise UnsupportedError(
+                    "Caller-supplied variational strategy factories require optional GPyTorch "
+                    "for their approximate-model component protocol."
+                ) from error
+            # A factory may adapt these points or replace the distribution;
+            # canonical inference constraints apply after that user protocol,
+            # not to the constructor objects before the factory sees them.
+            self.model = CallerStrategyGP(
+                supplied_factory,
+                points,
+                caller_distribution(
+                    variational_distribution,
+                    distribution_family,
+                    points,
+                    self._aug_batch_shape,
+                    train_X,
+                ),
+                learn_inducing_points,
+                covariance,
+                mean,
+                num_outputs,
+                transformed,
+                None if train_Y is None else self._training_targets(),
+            ).to(train_X)
+            self.likelihood = caller_likelihood(self.likelihood, likelihood, train_X)
+            return
         if (
             not isinstance(points, Tensor)
             or points.ndim < 2
             or points.shape[-1] != transformed.shape[-1]
             or not points.shape[-2]
-            or points.dtype != train_X.dtype
-            or points.device != train_X.device
             or not bool(torch.isfinite(points).all())
         ):
             raise ValueError(
-                "Inducing points must be finite nonempty Tensors with the training device, dtype and feature dimension."
+                "Inducing points must be finite nonempty Tensors with the transformed feature dimension."
             )
         point_batch = points.shape[:-2]
         if num_outputs > 1 and points.ndim != train_X.ndim + 1:
@@ -837,33 +871,6 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
                 points.shape[-2], distribution_batch, train_X, variational_distribution
             )
         strategy: _TorchVariationalStrategy
-        if self._uses_caller_strategy:
-            try:
-                from botorch_rs.models._torch_variational_factory import (
-                    CallerStrategyGP,
-                    caller_distribution,
-                    caller_likelihood,
-                )
-            except ModuleNotFoundError as error:
-                if error.name != "gpytorch":
-                    raise
-                raise UnsupportedError(
-                    "Caller-supplied variational strategy factories require optional GPyTorch "
-                    "for their approximate-model component protocol."
-                ) from error
-            self.model = CallerStrategyGP(
-                supplied_factory,
-                points,
-                caller_distribution(distribution, distribution_family, train_X),
-                learn_inducing_points,
-                covariance,
-                mean,
-                num_outputs,
-                transformed,
-                None if train_Y is None else self._training_targets(),
-            )
-            self.likelihood = caller_likelihood(self.likelihood, likelihood, train_X)
-            return
         if decoupled:
             from botorch_rs.models._torch_backend_variational_decoupled import (
                 TorchBatchDecoupledStrategy,
@@ -902,6 +909,7 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             mean,
             _TorchIndependentStrategy(strategy) if num_outputs > 1 else strategy,
         )
+        self.to(train_X)
 
     @property
     def batch_shape(self) -> Any:

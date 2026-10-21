@@ -61,10 +61,29 @@ class CallerStrategyGP(gpytorch.models.ApproximateGP):
         )
 
 
-def caller_distribution(distribution: nn.Module, family: str, like: Tensor) -> nn.Module:
+def caller_distribution(
+    source: Any, family: str, points: Tensor, batch_shape: Any, like: Tensor
+) -> nn.Module:
     """Preserve actual modules; convert port specifications without copying leaves."""
-    if isinstance(distribution, gpytorch.variational._VariationalDistribution):
-        return distribution
+    if source is None:
+        # The source creates this module in the default dtype/device. Its
+        # final model.to(train_X) follows the actual factory invocation.
+        return gpytorch.variational.CholeskyVariationalDistribution(
+            points.shape[-2], batch_shape=batch_shape
+        )
+    if isinstance(source, gpytorch.variational._VariationalDistribution):
+        return source
+    from botorch_rs.models._torch_backend_variational import (
+        _TorchCholeskyDistribution,
+        _TorchDeltaDistribution,
+        _TorchMeanFieldDistribution,
+    )
+
+    distribution = {
+        "cholesky": _TorchCholeskyDistribution,
+        "meanfield": _TorchMeanFieldDistribution,
+        "delta": _TorchDeltaDistribution,
+    }[family](source.num_inducing_points, source.batch_shape, like, source)
     classes = {
         "cholesky": gpytorch.variational.CholeskyVariationalDistribution,
         "meanfield": gpytorch.variational.MeanFieldVariationalDistribution,
@@ -74,7 +93,7 @@ def caller_distribution(distribution: nn.Module, family: str, like: Tensor) -> n
         distribution.num_inducing_points,
         batch_shape=distribution.batch_shape,
         mean_init_std=distribution.mean_init_std,
-    ).to(like)
+    )
     for name, parameter in distribution.named_parameters(recurse=False):
         result.register_parameter(name, parameter)
     return result

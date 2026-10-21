@@ -36,6 +36,18 @@ inducing points and learn-location options override partial keyword defaults
 through the ordinary Python call protocol. A malformed factory return is
 rejected explicitly.
 
+The factory sees the original supplied inducing points and actual supplied
+distribution before canonical shape checks. It may adapt event sizes,
+feature dimensions or point batches, or construct its own distribution,
+provided its returned strategy defines a coherent GP law. Default and actual
+supplied GPyTorch distributions retain their constructor dtype/device until
+the factory has run. The complete returned module then follows the source's
+`to(train_X)` conversion, including additional factory-created parameters.
+Canonical strategies apply the same final conversion to supplied inducing
+points, including fixed-location buffers. The adaptation regression module
+checks these protocols against the unmodified source on CPU and CUDA, with
+all five canonical strategies and float16/float32 or other-device points.
+
 The optional strategy host is a port-defined approximate GP whose Gaussian
 prior uses the port's mean and covariance modules. It imports GPyTorch for
 the caller's strategy-component protocol and never imports or delegates to a
