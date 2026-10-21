@@ -7,10 +7,10 @@ kind (phase 11a).
 broadcast arrays, and :func:`reduce` a reduction over one or more
 dimensions (``_botorch_rs.reduce``). Inputs may be torch tensors, NumPy
 arrays, nested lists or numbers; results have the type of the first array
-argument. For torch tensors that require gradients (with gradients enabled)
-the values and their exact first derivatives are computed together in Rust
-and connected to the autograd graph by a ``torch.autograd.Function``
-(first-order: the derivatives themselves are not differentiable).
+argument. Scalar algebra and reductions on torch tensors use device-resident
+Torch operations, preserving higher derivatives. Multivariate Gaussian
+elementwise operations still use the native CPU bridge, whose saved first
+derivatives are not themselves differentiable.
 """
 
 from __future__ import annotations
@@ -184,9 +184,17 @@ def apply(name: str, *xs: Any, params: Sequence[float] = (), kind: ArrayKind | N
     of the first array argument."""
     kind = kind or first_kind(*xs)
     single = is_single_precision(kind)
+    if kind.lib == "torch":
+        from botorch_rs import _torch_math
+
+        if name in _torch_math.ELEMENTWISE_NAMES:
+            # Keep zero-dimensional Tensor operands scalar until the operation:
+            # eagerly expanding them changes PyTorch's dtype promotion rules.
+            return _torch_math.elementwise(name, [_as_array(x, kind) for x in xs], params)
     arrays, shape = _broadcast(xs, kind)
-    if kind.lib == "torch" and _requires_grad(arrays):
-        return _elementwise_function().apply(name, [float(p) for p in params], single, *arrays)
+    if kind.lib == "torch":
+        if _requires_grad(arrays):
+            return _elementwise_function().apply(name, [float(p) for p in params], single, *arrays)
     values, _ = _rs.elementwise(
         name, [_flat(a) for a in arrays], [float(p) for p in params], single, False
     )
@@ -272,11 +280,9 @@ def reduce(
     order = (*keep, *dims)
     if kind.lib == "torch":
         xp = x.reshape(shape_eff).permute(*order).reshape(-1, n)
-        if _requires_grad([x]):
-            values = _reduce_function().apply(name, params, xp)
-            return values.reshape(out_shape)
-        vals, _ = _rs.reduce(name, to_flat(xp)[0], n, params, False)
-        return from_flat(vals, out_shape, kind)
+        from botorch_rs._torch_math import reduce_rows
+
+        return reduce_rows(name, xp, params).reshape(out_shape)
     if kind.lib == "numpy":
         np = importlib.import_module("numpy")
         xp = np.transpose(np.reshape(np.asarray(x), shape_eff), order).reshape(-1, n)

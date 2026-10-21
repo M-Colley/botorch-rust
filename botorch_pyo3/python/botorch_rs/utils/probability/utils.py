@@ -2,8 +2,8 @@
 ``phi``, ``log_phi``, ``log_ndtr``, ``log_erfc``, ``log_erfcx``,
 ``standard_normal_log_hazard``, ``log_prob_normal_in``,
 ``compute_log_prob_feas_from_bounds`` and ``percentile_of_score`` evaluated
-in Rust (BoTorch's formulas, with exact first derivatives for torch tensors
-that require gradients), and the tensor helpers ``case_dispatcher``,
+with device-resident Torch operations for Tensor inputs or native Rust for
+NumPy arrays and lists, and the tensor helpers ``case_dispatcher``,
 ``gen_positional_indices``, ``build_positional_indices`` and
 ``swap_along_dim_`` for torch tensors, NumPy arrays and nested lists.
 """
@@ -465,9 +465,36 @@ def compute_log_prob_feas_from_bounds(
     Returns:
         A ``(b)``-dim tensor of log feasibility probabilities
 
-    Gradients flow to ``means`` and ``sigmas`` (not to the bounds).
+    Torch inputs retain gradients to ``means``, ``sigmas`` and tensor bounds,
+    including mixed and higher derivatives. Native arrays have no autograd graph.
     """
     kind = first_kind(means, sigmas)
+    if kind.lib == "torch":
+        torch = importlib.import_module("torch")
+        arrays, _ = _ops._broadcast([means, sigmas], kind)
+        means, sigmas = arrays
+        log_prob = torch.zeros_like(means[..., 0])
+        for indices, bounds, is_lower in (
+            (con_lower_inds, con_lower, True),
+            (con_upper_inds, con_upper, False),
+        ):
+            indices = torch.as_tensor(indices, dtype=torch.long, device=means.device).reshape(-1)
+            bounds = torch.as_tensor(bounds, dtype=means.dtype, device=means.device).reshape(-1)
+            if indices.numel() != bounds.numel():
+                raise ValueError("The constraint indices and bounds do not match.")
+            if indices.numel():
+                distance = (bounds - means[..., indices]) / sigmas[..., indices]
+                log_prob = log_prob + log_ndtr(-distance if is_lower else distance).sum(dim=-1)
+        indices = torch.as_tensor(con_both_inds, dtype=torch.long, device=means.device).reshape(-1)
+        bounds = torch.as_tensor(con_both, dtype=means.dtype, device=means.device)
+        if bounds.numel() != 2 * indices.numel():
+            raise ValueError("The constraint indices and bounds do not match.")
+        if indices.numel():
+            bounds = bounds.reshape(-1, 2)
+            lower = (bounds[:, 0] - means[..., indices]) / sigmas[..., indices]
+            upper = (bounds[:, 1] - means[..., indices]) / sigmas[..., indices]
+            log_prob = log_prob + log_prob_normal_in(lower, upper).sum(dim=-1)
+        return log_prob
     lo = [float(v) for v in to_flat(con_lower, "con_lower")[0]]
     up = [float(v) for v in to_flat(con_upper, "con_upper")[0]]
     both = [float(v) for v in to_flat(con_both, "con_both")[0]]
@@ -541,6 +568,14 @@ def percentile_of_score(data: Any, score: Any, dim: int = -1) -> Any:
     in that precision, as in BoTorch (an integer count times a Python float).
     """
     kind = first_kind(data, score)
+    if kind.lib == "torch":
+        torch = importlib.import_module("torch")
+        data, score = _ops._as_array(data, kind), _ops._as_array(score, kind)
+        left = torch.count_nonzero(data < score, dim=dim)
+        right = torch.count_nonzero(data <= score, dim=dim)
+        value = (left + right + (left < right)) * (50.0 / data.shape[dim])
+        invalid = torch.isnan(score.squeeze(dim)) | torch.isnan(data).any(dim=dim)
+        return value.masked_fill(invalid, torch.nan)
     dshape = _ops.shape_of(data)
     d = dim % len(dshape)
     n = dshape[d]

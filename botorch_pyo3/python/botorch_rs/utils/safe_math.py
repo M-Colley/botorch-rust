@@ -2,15 +2,11 @@ r"""
 Special implementations of mathematical functions that
 solve numerical issues of naive implementations (``botorch.utils.safe_math``).
 
-The functions are evaluated in Rust with BoTorch's formulas (operation by
-operation, with float32's constants for float32 arrays) on torch tensors,
-NumPy arrays or nested lists; results have the type of the first array
-argument. For torch tensors that require gradients, the exact first
-derivatives are computed with the values and enter the autograd graph (the
-derivatives of PyTorch's autograd of BoTorch's expressions, including the
-subgradients of PyTorch >= 2.14 at clamp bounds), also with respect to a
-tensor ``tau`` (for ``log_softplus`` including the path through softplus's
-``beta = 1 / tau``, which BoTorch's autograd drops).
+Torch arguments use device-resident operations and retain higher derivatives,
+including mixed derivatives with a tensor temperature ``tau``. The
+``log_softplus`` temperature graph includes the path through softplus's
+``beta = 1 / tau``, which BoTorch's autograd drops. NumPy arrays and nested
+lists retain the native Rust implementation with dtype-specific constants.
 
 .. [Maechler2012accurate]
     M. Mächler. Accurately Computing log (1 - exp (-| a|))
@@ -49,6 +45,20 @@ def _out(result: Any, kwargs: dict[str, Any]) -> Any:
 
 def _tau_requires_grad(tau: Any) -> bool:
     return is_torch_tensor(tau) and bool(tau.requires_grad)
+
+
+def _tensor_temperature_reduction(
+    name: str, x: Any, dim: Any, keepdim: bool, tau: Any, alpha: float = ALPHA
+) -> Any:
+    from botorch_rs._torch_math import temperature_reduction
+
+    torch = importlib.import_module("torch")
+    tau = (
+        tau.to(device=x.device)
+        if is_torch_tensor(tau)
+        else torch.as_tensor(tau, dtype=x.dtype, device=x.device)
+    )
+    return temperature_reduction(name, x, dim, keepdim, tau, alpha)
 
 
 def _scalar(value: Any, name: str) -> float:
@@ -240,6 +250,8 @@ def smooth_amax(
     Returns:
         A Tensor of smooth approximations to ``max(X, dim=dim)``.
     """
+    if is_torch_tensor(X):
+        return _tensor_temperature_reduction("smooth_amax", X, dim, keepdim, tau)
     if not isinstance(tau, (int, float)) and len(to_flat(tau, "tau")[0]) != 1:
         if first_kind(X, tau).lib == "list":
             raise UnsupportedError("A non-scalar `tau` requires torch tensors or NumPy arrays.")
@@ -256,6 +268,8 @@ def smooth_amin(
     tau: Any = 1.0,
 ) -> Any:
     """A smooth approximation to ``min(X, dim=dim)``, similar to ``smooth_amax``."""
+    if is_torch_tensor(X):
+        return _tensor_temperature_reduction("smooth_amin", X, dim, keepdim, tau)
     if not isinstance(tau, (int, float)) and len(to_flat(tau, "tau")[0]) != 1:
         return -smooth_amax(X=-X, dim=dim, keepdim=keepdim, tau=tau)
     if _tau_requires_grad(tau):
@@ -319,6 +333,8 @@ def fatmax(
     Returns:
         A Tensor of smooth approximations to ``amax(X, dim=dim)`` with a fat tail.
     """
+    if is_torch_tensor(x):
+        return _tensor_temperature_reduction("fatmax", x, dim, keepdim, tau, alpha)
     try:
         if _tau_requires_grad(tau):
             return _reduce_tau("fatmax", x, dim, keepdim, tau, (float(alpha),), -math.inf)
@@ -350,6 +366,8 @@ def fatmin(
     Returns:
         A Tensor of smooth approximations to ``amin(X, dim=dim)`` with a fat tail.
     """
+    if is_torch_tensor(x):
+        return _tensor_temperature_reduction("fatmin", x, dim, keepdim, tau, alpha)
     try:
         if _tau_requires_grad(tau):
             return _reduce_tau("fatmin", x, dim, keepdim, tau, (float(alpha),), math.inf)
@@ -382,6 +400,10 @@ def fatmaximum(a: Any, b: Any, tau: Any = TAU, alpha: float = ALPHA) -> Any:
     Returns:
         A smooth approximation of torch.maximum(a, b).
     """
+    if first_kind(a, b, tau).lib == "torch":
+        torch = importlib.import_module("torch")
+        arrays, _ = _ops._broadcast([a, b], first_kind(a, b, tau))
+        return fatmax(torch.stack(arrays, dim=-1), dim=-1, tau=tau, alpha=alpha)
     if _tau_requires_grad(tau):
         torch = importlib.import_module("torch")
         return fatmax(
@@ -407,6 +429,9 @@ def fatminimum(a: Any, b: Any, tau: Any = TAU, alpha: float = ALPHA) -> Any:
     Returns:
         A smooth approximation of torch.minimum(a, b).
     """
+    if first_kind(a, b, tau).lib == "torch":
+        arrays, _ = _ops._broadcast([a, b], first_kind(a, b, tau))
+        return -fatmaximum(-arrays[0], -arrays[1], tau=tau, alpha=alpha)
     if _tau_requires_grad(tau):
         return -fatmaximum(-a, -b, tau=tau, alpha=alpha)
     return _ops.apply("fatminimum", a, b, params=(_scalar(tau, "tau"), float(alpha)))
