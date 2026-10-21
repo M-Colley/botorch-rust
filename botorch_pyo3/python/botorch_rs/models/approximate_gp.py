@@ -538,22 +538,90 @@ class ApproximateGPyTorchModel(GPyTorchModel):
 
     _has_train_inputs = False
 
-    def __new__(cls, model: Any = None, *args: Any, **kwargs: Any) -> Any:
+    def __new__(
+        cls,
+        model: Any = None,
+        likelihood: Any = None,
+        num_outputs: int = 1,
+        *args: Any,
+        backend: str = "auto",
+        **kwargs: Any,
+    ) -> Any:
         from botorch_rs.models.gp_regression import _is_tensor_factory_target
 
+        if not _is_tensor_factory_target(cls, ApproximateGPyTorchModel):
+            return object.__new__(cls)
+        if backend not in ("auto", "native", "torch"):
+            raise ValueError("backend must be 'auto', 'native', or 'torch'.")
         torch = sys.modules.get("torch")
-        if (
-            _is_tensor_factory_target(cls, ApproximateGPyTorchModel)
-            and torch is not None
-            and isinstance(model, torch.nn.Module)
-        ):
+        tensor_class: Any = None
+        if torch is not None and isinstance(model, torch.nn.Module):
             from botorch_rs.models._torch_backend_approximate import TorchApproximateGPyTorchModel
 
+            tensor_class = TorchApproximateGPyTorchModel
+        elif model is None:
+            from botorch_rs.variational import (
+                DeltaVariationalDistribution,
+                MeanFieldVariationalDistribution,
+            )
+
+            names = (
+                "train_X",
+                "train_Y",
+                "num_outputs",
+                "learn_inducing_points",
+                "covar_module",
+                "mean_module",
+                "variational_distribution",
+                "variational_strategy",
+                "inducing_points",
+                "inducing_point_allocator",
+            )
+            components = dict(zip(names, args, strict=False))
+            components.update(kwargs)
+            train_X = components.get("train_X")
+            needs_tensor = False
+            if torch is not None and train_X is not None and isinstance(train_X, torch.Tensor):
+                needs_tensor = (
+                    train_X.ndim > 2
+                    or isinstance(
+                        components.get("variational_distribution"),
+                        (MeanFieldVariationalDistribution, DeltaVariationalDistribution),
+                    )
+                    or components.get("variational_strategy", VariationalStrategy)
+                    is not VariationalStrategy
+                    or any(
+                        isinstance(value, torch.nn.Module)
+                        for value in (
+                            likelihood,
+                            components.get("covar_module"),
+                            components.get("mean_module"),
+                            components.get("variational_distribution"),
+                        )
+                    )
+                )
+            if backend == "torch" or (
+                backend == "auto"
+                and (
+                    needs_tensor
+                    or any(
+                        getattr(value, "requires_grad", False)
+                        or getattr(getattr(value, "device", None), "type", "cpu") != "cpu"
+                        for value in (train_X, components.get("inducing_points"))
+                    )
+                )
+            ):
+                from botorch_rs.models._torch_backend_approximate import (
+                    TorchDefaultApproximateGPyTorchModel,
+                )
+
+                tensor_class = TorchDefaultApproximateGPyTorchModel
+        if tensor_class is not None:
             if cls is ApproximateGPyTorchModel:
-                return object.__new__(TorchApproximateGPyTorchModel)
+                return object.__new__(tensor_class)
             from botorch_rs.models._torch_model_subclasses import model_type
 
-            return object.__new__(model_type(cls, TorchApproximateGPyTorchModel))
+            return object.__new__(model_type(cls, tensor_class))
         return object.__new__(cls)
 
     def __init__(
@@ -577,6 +645,7 @@ class ApproximateGPyTorchModel(GPyTorchModel):
             kwargs: Optional keyword arguments passed to the
                 ``_SingleTaskVariationalGP`` constructor if no model is provided.
         """
+        kwargs.pop("backend", None)
         if model is None:
             options = dict(kwargs, num_outputs=num_outputs)
             model = _SingleTaskVariationalGP(*args, **options)
@@ -1053,7 +1122,9 @@ class SingleTaskVariationalGP(ApproximateGPyTorchModel):
         backend: str = "auto",
         **kwargs: Any,
     ) -> Any:
-        if cls is SingleTaskVariationalGP:
+        from botorch_rs.models.gp_regression import _is_tensor_factory_target
+
+        if _is_tensor_factory_target(cls, SingleTaskVariationalGP):
             if backend not in ("auto", "native", "torch"):
                 raise ValueError("backend must be 'auto', 'native', or 'torch'.")
             from botorch_rs.likelihoods import BernoulliLikelihood
@@ -1116,7 +1187,11 @@ class SingleTaskVariationalGP(ApproximateGPyTorchModel):
                     TorchSingleTaskVariationalGP,
                 )
 
-                return object.__new__(TorchSingleTaskVariationalGP)
+                if cls is SingleTaskVariationalGP:
+                    return object.__new__(TorchSingleTaskVariationalGP)
+                from botorch_rs.models._torch_model_subclasses import model_type
+
+                return object.__new__(model_type(cls, TorchSingleTaskVariationalGP))
         return object.__new__(cls)
 
     def __init__(

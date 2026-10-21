@@ -901,6 +901,39 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         object.__setattr__(new._strategy, "_owner_ref", weakref.ref(new))
         return new
 
+    def __getstate__(self) -> Any:
+        # Serialize module shells without the two implementation-only weak
+        # owner links. Parameters, buffers and shared child modules retain
+        # their aliases through pickle's normal object memo.
+        memo: dict[int, nn.Module] = {}
+
+        def module_state(module: nn.Module) -> nn.Module:
+            if id(module) in memo:
+                return memo[id(module)]
+            shell = copy.copy(module)
+            memo[id(module)] = shell
+            for name in ("_outer_ref", "_owner_ref"):
+                value = shell.__dict__.get(name)
+                if isinstance(value, weakref.ReferenceType) and value() is self:
+                    shell.__dict__.pop(name)
+            shell._modules = {
+                name: None if child is None else module_state(child)
+                for name, child in module._modules.items()
+            }
+            return shell
+
+        state = nn.Module.__getstate__(self)
+        state["_modules"] = {
+            name: None if module is None else module_state(module)
+            for name, module in self._modules.items()
+        }
+        return state
+
+    def __setstate__(self, state: Any) -> None:
+        nn.Module.__setstate__(self, state)
+        object.__setattr__(self.model, "_outer_ref", weakref.ref(self))
+        object.__setattr__(self._strategy, "_owner_ref", weakref.ref(self))
+
     def _training_targets(self) -> Tensor:
         from botorch_rs.models._pathwise_context import training_outcome_transform
 
@@ -1141,6 +1174,9 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
 
 class TorchVariationalELBO(nn.Module, VariationalELBO):
     _tensor_backend = "torch"
+    # The likelihood is registered on this MLL, separately from the inner GP.
+    # Fit retries must checkpoint both rather than the model child alone.
+    _external_model_protocol = True
 
     def __init__(
         self,

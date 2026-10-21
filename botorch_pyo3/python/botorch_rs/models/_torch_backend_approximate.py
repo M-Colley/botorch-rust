@@ -14,7 +14,8 @@ from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.likelihoods import GaussianLikelihood, MultitaskGaussianLikelihood
 from botorch_rs.models._torch_backend_kronecker import TorchMultitaskGaussianLikelihood
 from botorch_rs.models._torch_backend_modules import TorchGaussianLikelihood
-from botorch_rs.models.approximate_gp import ApproximateGPyTorchModel
+from botorch_rs.models._torch_backend_variational import TorchSingleTaskVariationalGP
+from botorch_rs.models.approximate_gp import ApproximateGPyTorchModel, _SingleTaskVariationalGP
 from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior, TorchMultivariateNormal
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 from botorch_rs.posteriors.torch import TorchPosterior
@@ -266,3 +267,70 @@ class TorchApproximateGPyTorchModel(nn.Module, ApproximateGPyTorchModel):
         memo[id(self)] = duplicate
         duplicate.__dict__ = copy.deepcopy(self.__dict__, memo)
         return duplicate
+
+
+class TorchDefaultApproximateGPyTorchModel(TorchSingleTaskVariationalGP):
+    """The generic default constructor, using the port's actual variational owner."""
+
+    _has_train_inputs = False
+
+    def __init__(
+        self,
+        model: Any = None,
+        likelihood: Any = None,
+        num_outputs: int = 1,
+        *args: Any,
+        backend: str = "torch",
+        **kwargs: Any,
+    ) -> None:
+        from inspect import signature
+
+        if model is not None:
+            raise TypeError("This constructor builds the default approximate model.")
+        if isinstance(num_outputs, bool) or not isinstance(num_outputs, int) or num_outputs < 1:
+            raise ValueError("num_outputs must be a positive integer.")
+        arguments = signature(_SingleTaskVariationalGP.__init__).bind(
+            None, *args, num_outputs=num_outputs, **kwargs
+        )
+        arguments.apply_defaults()
+        options = dict(arguments.arguments)
+        options.pop("self")
+        # The generic inner constructor documents train_Y as unused. In
+        # particular, it must not infer num_outputs or register target graphs.
+        options.pop("train_Y")
+        if likelihood is None:
+            likelihood = (
+                GaussianLikelihood()
+                if num_outputs == 1
+                else MultitaskGaussianLikelihood(num_tasks=num_outputs)
+            )
+        TorchSingleTaskVariationalGP.__init__(self, likelihood=likelihood, **options)
+
+    __setattr__ = TorchApproximateGPyTorchModel.__setattr__
+
+    def _fit_transforms(self) -> None:
+        # Unlike SingleTaskVariationalGP, the generic wrapper never fits
+        # attached transforms to stored constructor data. Their actual
+        # train/eval forward calls own their updates.
+        pass
+
+    def posterior(
+        self,
+        X: Tensor,
+        output_indices: Any = None,
+        observation_noise: Any = False,
+        posterior_transform: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        if output_indices is not None:
+            raise NotImplementedError(
+                f"{self.__class__.__name__}.posterior does not support output indices."
+            )
+        if not isinstance(observation_noise, bool):
+            raise TypeError("observation_noise must be a bool for this approximate-model wrapper.")
+        return super().posterior(
+            X,
+            observation_noise=observation_noise,
+            posterior_transform=posterior_transform,
+            **kwargs,
+        )

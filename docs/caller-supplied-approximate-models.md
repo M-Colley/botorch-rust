@@ -37,7 +37,24 @@ detach those graphs. The tests compare values, first derivatives and higher
 derivatives with the same actual modules and the pinned source wrapper/ELBO,
 alongside independent port-only modules, state and host-transfer checks.
 
-This adapter targets an explicitly supplied module. Default port variational
-model construction remains available through `SingleTaskVariationalGP`; this
-checkpoint does not add a new Tensor default model for the generic
-`ApproximateGPyTorchModel(model=None)` constructor.
+`ApproximateGPyTorchModel(model=None, train_X=X, backend="torch", ...)` also
+constructs the port's actual Tensor variational model. CUDA or differentiable
+inputs/inducing locations, input batches, supplied Torch components and supported
+alternative variational configurations select that path automatically. Ordinary
+native/list construction remains available. Its generic constructor binds the
+inner model's arguments, ignores `train_Y` as documented by the source, and
+retains the explicit `num_outputs`. Default Gaussian likelihoods have no
+likelihood prior, matching this generic source wrapper rather than the separate
+`SingleTaskVariationalGP` defaults. Train against explicit targets or a closure/
+loader; constructor targets are not retained or used to infer the output count.
+
+The default Tensor owner, its inner model and variational strategy are the
+actual objects used for inference and ELBO fitting. Deep copies and pickle
+round trips restore their owner links, modes, leaves, buffers and module aliases.
+Attached transforms update through their ordinary train/eval forward protocol;
+the generic wrapper does not fit them to the unused constructor targets.
+
+Caller subclasses of both public approximate model constructors retain their
+constructors, forward/posterior overrides and additional Parameters when the
+Tensor backend is selected. Native built-in allocation and already concrete
+Tensor classes keep their own factory paths.
