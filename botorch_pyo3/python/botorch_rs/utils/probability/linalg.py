@@ -3,13 +3,11 @@
 ``augment_cholesky`` and the partial pivoted Cholesky factorization
 ``PivotedCholesky``.
 
-The decomposition steps (``update_``, ``pivot_``) and ``augment_cholesky``
-run in Rust on the flattened batch; the arrays may be torch tensors, NumPy
-arrays or nested lists. Unlike BoTorch, ``update_`` and ``pivot_`` replace
-``tril``, ``perm`` and ``diag`` by new arrays (BoTorch modifies them in
-place) and are not differentiable; ``augment_cholesky`` of torch tensors
-that require gradients is computed with torch's linear algebra (BoTorch's
-expressions) so that gradients flow.
+Tensor decomposition steps and ``augment_cholesky`` use device-resident
+operations with higher derivatives through the selected pivot path. NumPy
+arrays and lists use native Rust. Unlike BoTorch, ``update_`` and ``pivot_``
+replace ``tril``, ``perm`` and ``diag`` by new arrays, preserving previous
+Tensor forward graphs; the integer pivot decision is discrete metadata.
 """
 
 from __future__ import annotations
@@ -94,8 +92,11 @@ def augment_cholesky(
         raise ValueError("One and only one of `Kba` or `Lba` must be provided.")
     other = Kba if Kba is not None else Lba
     kind = first_kind(Laa, Kbb, other)
-    if kind.lib == "torch" and _ops._requires_grad([Laa, Kbb, other]):
-        return _augment_cholesky_torch(Laa, Kbb, Kba, Lba, jitter)
+    if kind.lib == "torch":
+        Laa, Kbb, other = (_ops._as_array(x, kind) for x in (Laa, Kbb, other))
+        return _augment_cholesky_torch(
+            Laa, Kbb, other if Kba is not None else None, other if Lba is not None else None, jitter
+        )
     sa, sb, so = _ops.shape_of(Laa), _ops.shape_of(Kbb), _ops.shape_of(other)
     na, nb = sa[-1], sb[-1]
     batch = _broadcast_batch(sa[:-2], sb[:-2], so[:-2])
@@ -145,6 +146,10 @@ class PivotedCholesky:
         self.tril = tril
         self.perm = perm
         self.diag = diag
+        if is_torch_tensor(tril):
+            torch = importlib.import_module("torch")
+            self.perm = torch.as_tensor(perm, device=tril.device)
+            self.diag = None if diag is None else _ops._as_array(diag, kind_of(tril))
         self.__post_init__(validate_init)
 
     def __post_init__(self, validate_init: bool = True) -> None:
@@ -204,6 +209,11 @@ class PivotedCholesky:
 
     def update_(self, eps: float = 1e-10) -> None:
         r"""Performs a single matrix decomposition step."""
+        if is_torch_tensor(self.tril):
+            from botorch_rs.utils.probability._torch_mvnxpb import cholesky_update
+
+            cholesky_update(self, eps)
+            return
         batch, n = self._batch
         data, _ = _rs.pivoted_cholesky_update(
             to_flat(self.tril)[0], math.prod(batch), n, self.step, float(eps)
@@ -217,6 +227,11 @@ class PivotedCholesky:
         batch, n = self._batch
         if _ops.shape_of(pivot) != tuple(batch):
             raise ValueError("Argument `pivot` does to match with batch shape`.")
+        if is_torch_tensor(self.tril):
+            from botorch_rs.utils.probability._torch_mvnxpb import cholesky_pivot
+
+            cholesky_pivot(self, pivot)
+            return
         kind = kind_of(self.tril)
         tril, perm, diag = _rs.pivoted_cholesky_pivot(
             to_flat(self.tril)[0],

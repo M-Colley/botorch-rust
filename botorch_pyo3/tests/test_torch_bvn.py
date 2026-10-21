@@ -137,3 +137,49 @@ def test_unmodified_reference_independence_shortcut_drops_correlation_gradient()
     actual_gradient = torch.autograd.grad(bvnu(r, h, k).sum(), r)[0]
     torch.testing.assert_close(actual_gradient, expected_density)
     torch.testing.assert_close(actual_gradient, finite_difference, atol=1e-10, rtol=1e-9)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("correlation,other", [(0.98, 0.4), (-0.98, -0.4)])
+def test_equal_signed_bounds_have_smooth_correct_hessians(device, correlation, other):
+    args = tuple(
+        torch.tensor([v], device=device, dtype=torch.double, requires_grad=True)
+        for v in (correlation, 0.4, other)
+    )
+    assert torch.autograd.gradcheck(bvnu, args)
+    assert torch.autograd.gradgradcheck(bvnu, args)
+    r, h, k = args
+    dh = torch.autograd.grad(bvnu(*args).sum(), h, create_graph=True)[0]
+    mixed = torch.autograd.grad(dh.sum(), k)[0]
+    torch.testing.assert_close(mixed, _density(r, h, k), atol=1e-12, rtol=1e-12)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_bivariate_forward_mode_and_vmap_keep_analytic_derivatives(device):
+    r = torch.tensor([0.98, 0.4], device=device, dtype=torch.double)
+    h = torch.tensor([0.4, -0.2], device=device, dtype=torch.double)
+    k = torch.tensor([0.4, 0.3], device=device, dtype=torch.double)
+    value, tangent = torch.func.jvp(
+        bvnu, (r, h, k), (torch.ones_like(r), torch.zeros_like(h), torch.zeros_like(k))
+    )
+    torch.testing.assert_close(tangent, _density(r, h, k))
+    torch.testing.assert_close(torch.vmap(bvnu)(r, h, k), value)
+    jacobian = torch.func.jacrev(bvnu, argnums=0)(r, h, k)
+    torch.testing.assert_close(jacobian, _density(r, h, k).diag())
+
+
+def test_unmodified_reference_equal_bound_hessian_fails_density_and_finite_differences():
+    pytest.importorskip("botorch")
+    reference = importlib.import_module("botorch.utils.probability.bvn")
+    r, h, k = (torch.tensor([v], dtype=torch.double, requires_grad=True) for v in (0.98, 0.4, 0.4))
+    first = torch.autograd.grad(reference.bvnu(r, h, k).sum(), h, create_graph=True)[0]
+    mixed = torch.autograd.grad(first.sum(), k)[0]
+    correct = _density(r, h, k)
+    assert bool((mixed - correct).abs() > 1e-3)
+    step = 1e-5
+    samples = []
+    for sign in (-1, 1):
+        value = reference.bvnu(r.detach(), h, k.detach() + sign * step)
+        samples.append(torch.autograd.grad(value.sum(), h)[0])
+    finite_difference = (samples[1] - samples[0]) / (2 * step)
+    torch.testing.assert_close(finite_difference, correct, atol=2e-8, rtol=2e-8)

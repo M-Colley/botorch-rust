@@ -3,7 +3,10 @@ Bivariate conditioning algorithm for approximating Gaussian probabilities,
 see [Genz2016numerical]_ and [Trinh2015bivariate]_
 (``botorch.utils.probability.mvnxpb``).
 
-The solver runs in Rust: ``MVNXPB`` keeps BoTorch's state (``step``,
+NumPy and list solvers run in Rust. Tensor solvers use device-resident
+out-of-place state transitions and retain higher derivatives through their
+selected pivot paths, including partial solves and augmentation.
+``MVNXPB`` keeps BoTorch's state (``step``,
 ``perm``, ``bounds``, ``piv_chol``, ``plug_ins``, ``log_prob``,
 ``log_prob_extra``) as arrays of the caller's type and every operation
 (``solve``, ``select_pivot``, ``pivot_``, ``augment``) processes the
@@ -12,7 +15,7 @@ modifies some of them in place). ``solve()`` of a freshly constructed
 instance whose torch covariance or bounds require gradients returns log
 probabilities with exact gradients (forward-mode dual numbers through the
 whole algorithm; BoTorch's are wrong for batches whose members pivot
-differently); partial solves, pivots and augmentations are not
+differently); partial native solves, pivots and augmentations are not
 differentiable. Solving a complete problem again returns the log
 probabilities (BoTorch raises ``UnboundLocalError`` for an odd number of
 variables).
@@ -111,6 +114,11 @@ class MVNXPB:
                 bounds are standardized internally and clipped to STANDARDIZED_RANGE.
         """
         kind = first_kind(covariance_matrix, bounds)
+        if kind.lib == "torch":
+            from botorch_rs.utils.probability._torch_mvnxpb import initialize
+
+            initialize(self, _ops._as_array(covariance_matrix, kind), _ops._as_array(bounds, kind))
+            return
         cshape = _ops.shape_of(covariance_matrix)
         bshape = _ops.shape_of(bounds)
         n = cshape[-1]
@@ -216,6 +224,10 @@ class MVNXPB:
         Calculates a bivariate conditional approximation to P(X \in bounds), where
         X ~ N(0, Σ). For details, see [Genz2016numerical] or [Trinh2015bivariate]_.
         """
+        if is_torch_tensor(self.bounds):
+            from botorch_rs.utils.probability._torch_mvnxpb import solve
+
+            return solve(self, num_steps, eps)
         if self.step > self.piv_chol.step:
             raise ValueError("Invalid state: solver ran ahead of matrix decomposition.")
         source = getattr(self, "_source", None)
@@ -247,11 +259,20 @@ class MVNXPB:
         argmin_{i = t, ..., n} P(X[i] \in bounds[i] | X[:t-1] = y[:t -1]),
         ```
         where ``t`` denotes the current step."""
+        if is_torch_tensor(self.bounds):
+            from botorch_rs.utils.probability._torch_mvnxpb import select_pivot
+
+            return select_pivot(self)
         state, batch = self._state()
         return _ops.int_array(state.select_pivot(), batch, self._kind)
 
     def pivot_(self, pivot: Any) -> None:
         r"""Swap random variables at ``pivot`` and ``step`` positions."""
+        if is_torch_tensor(self.bounds):
+            from botorch_rs.utils.probability._torch_mvnxpb import pivot as tensor_pivot
+
+            tensor_pivot(self, pivot)
+            return
         if self.step > self.piv_chol.step:
             raise ValueError
         state, batch = self._state()
@@ -332,6 +353,19 @@ class MVNXPB:
         additional random variables.
         """
         n = _ops.shape_of(self.perm)[-1]
+        if is_torch_tensor(self.bounds):
+            from botorch_rs.utils.probability._torch_mvnxpb import augment
+
+            kind = kind_of(self.bounds)
+            return augment(
+                self,
+                _ops._as_array(covariance_matrix, kind),
+                _ops._as_array(bounds, kind),
+                _ops._as_array(cross_covariance_matrix, kind),
+                disable_pivoting,
+                jitter,
+                max_tries,
+            )
         if n != self.piv_chol.step:
             raise NotImplementedError("Augmentation of incomplete solutions not implemented yet.")
         state, batch = self._state()
