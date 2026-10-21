@@ -511,7 +511,10 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
     def _exact_mll(
         self, output: Any = None, target: Any = None, *params: Any, **kwargs: Any
     ) -> Tensor:
-        from botorch_rs.models._torch_structured_likelihood import multitask_observed_law
+        from botorch_rs.models._torch_structured_likelihood import (
+            conditioned_observed_law,
+            multitask_observed_law,
+        )
 
         X, Y = self._training_values()
         mean = self.mean_module(X)
@@ -521,9 +524,11 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         if output is not None:
             mean, covariance = self._point_major_law(output)
             Y = Y if target is None else target
+        latent_covariance = covariance
         mean, covariance = multitask_observed_law(
             self, mean, covariance, X, params=params, kwargs=kwargs
         )
+        covariance = conditioned_observed_law(self, mean, latent_covariance, covariance)
         value = _rs.tensor_exact_mll(
             Y.flatten(-2), covariance, mean.flatten(-2), torch.zeros_like(Y.flatten(-2))
         )
@@ -566,7 +571,10 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         untransform: bool = True,
         **kwargs: Any,
     ) -> Any:
-        from botorch_rs.models._torch_structured_likelihood import multitask_observed_law
+        from botorch_rs.models._torch_structured_likelihood import (
+            conditioned_observed_law,
+            multitask_observed_law,
+        )
 
         if kwargs or not isinstance(observation_noise, bool):
             raise UnsupportedError(
@@ -606,6 +614,9 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
             query_mean = full_mean[..., n:, :]
         observed_mean, observed_covariance = multitask_observed_law(
             self, train_mean, ktt, train, training=True
+        )
+        observed_covariance = conditioned_observed_law(
+            self, observed_mean, ktt, observed_covariance
         )
         noise = observed_covariance - ktt
         train_mean = observed_mean
@@ -676,7 +687,7 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
     def condition_on_observations(
         self, X: Tensor, Y: Tensor, noise: Any = None, **kwargs: Any
     ) -> Any:
-        if noise is not None or kwargs:
+        if kwargs:
             raise UnsupportedError(
                 "Structured conditioning uses the model's configured Gaussian task noise."
             )
@@ -709,6 +720,10 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
             ),
             dim=-2,
         )
+        from botorch_rs.models._torch_structured_likelihood import condition_likelihood
+
+        self.eval()
+        condition_likelihood(self, model, noise, Y)
         return model.eval()
 
     def fantasize(

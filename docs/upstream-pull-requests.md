@@ -42,6 +42,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | Empirical multitask unseen-task noise | Existing [BoTorch #3389](https://github.com/meta-pytorch/botorch/pull/3389) |
 | Sparse-outlier / relevance-pursuit numerical and state defects | New [BoTorch #3482](https://github.com/meta-pytorch/botorch/pull/3482), including gradient-probe rollback; 43 tests and 120 subtests pass |
 | Selecting one output from a multi-output GP | Existing [BoTorch #3396](https://github.com/meta-pytorch/botorch/pull/3396) |
+| Kronecker ambiguous/ignored Tensor observation noise and HigherOrderGP ignored Tensor/boolean observation noise | Existing [BoTorch #3396](https://github.com/meta-pytorch/botorch/pull/3396), verified open at `6329e9fb1750016a85e2187243058d768468ee28`; no duplicate PR |
 | Additive component bias broadcasting and repeated outcome location | New [BoTorch #3486](https://github.com/meta-pytorch/botorch/pull/3486) |
 | Orthogonal additive quadrature/interaction buffers after module migration | New [BoTorch #3495](https://github.com/meta-pytorch/botorch/pull/3495); two source tests and ten subtests pass |
 | Validated empty Beta expansion | New [BoTorch #3473](https://github.com/meta-pytorch/botorch/pull/3473) |

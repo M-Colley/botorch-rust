@@ -34,6 +34,7 @@ class TorchLatentKroneckerPosterior(TorchGPyTorchPosterior, LatentKroneckerGPPos
     """A full Gaussian conditional with observed-mask Matheron samples."""
 
     _uses_matheron = True
+    _likelihood_inputs: tuple[Tensor, ...]
 
     def __init__(
         self,
@@ -485,7 +486,7 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             ),
             -2,
         )
-        return TorchLatentKroneckerPosterior(
+        posterior = TorchLatentKroneckerPosterior(
             mean,
             cov,
             joint,
@@ -499,6 +500,8 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             location,
             scale,
         )
+        posterior._likelihood_inputs = (query, T)
+        return posterior
 
     def __call__(self, X: Tensor, T: Any = None, **kwargs: Any) -> Any:
         if not self.training:
@@ -596,15 +599,24 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         propagate = kwargs.pop("propagate_grads", False)
         if observation_noise is not None or kwargs:
             raise UnsupportedError("LatentKronecker fantasies use the configured Gaussian noise.")
-        posterior = self.posterior(X)
+        from botorch_rs.models._torch_structured_likelihood import scalar_observed_law
+
+        posterior = self._posterior(X, untransform=False)
         # Sample the full observed law through the supplied sampler. No extra
         # ambient RNG draws are introduced outside its base-sample protocol.
-        variance = self.likelihood.noise
-        if self.outcome_transform is not None:
-            variance = variance * self.outcome_transform.stdvs.squeeze(-1).square()
-        diagonal = variance.expand(*posterior._batch, posterior._q * posterior._m)
-        observed = TorchGPyTorchPosterior(
-            posterior.mean, posterior._covariance_tensor + torch.diag_embed(diagonal)
+        mean, covariance = scalar_observed_law(
+            self.likelihood,
+            posterior.mean.flatten(-2),
+            posterior.distribution.covariance_matrix,
+            posterior._likelihood_inputs,
         )
+        mean = mean.reshape(*posterior._batch, posterior._q, posterior._m)
+        index = torch.arange(posterior._q * posterior._m, device=X.device)
+        index = index.reshape(posterior._q, posterior._m).T.flatten()
+        covariance = covariance.index_select(-2, index).index_select(-1, index)
+        if self.outcome_transform is not None:
+            mean = mean * self.outcome_transform.stdvs + self.outcome_transform.means
+            covariance = covariance * self.outcome_transform.stdvs.square()
+        observed = TorchGPyTorchPosterior(mean, covariance)
         Y = sampler(observed)
         return self.condition_on_observations(X, Y if propagate else Y.detach())

@@ -221,8 +221,8 @@ def test_explicit_unsupported_and_input_validation(device):
     a = HigherOrderGP(X, Y, backend="torch", covar_modules=None)
     with pytest.raises(UnsupportedError, match="overrides"):
         a.posterior(Q, output_indices=[0])
-    with pytest.raises(UnsupportedError, match="configured"):
-        a.condition_on_observations(Q, Y[:2], noise=Y[:2].square())
+    conditioned = a.condition_on_observations(Q, Y[:2], noise=Y[:2].square())
+    assert torch.isfinite(conditioned.posterior(Q).mean).all()
     with pytest.raises(ValueError, match="targets"):
         a.condition_on_observations(Q, Y)
     with pytest.raises(ValueError, match="num_latent_dims"):

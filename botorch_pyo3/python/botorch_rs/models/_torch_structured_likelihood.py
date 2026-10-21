@@ -36,6 +36,7 @@ def scalar_observed_law(
     params: tuple[Any, ...] | None = None,
     kwargs: dict[str, Any] | None = None,
     training: bool = False,
+    fixed_noise: Tensor | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Keep a supplied scalar marginal, its inputs and observation overrides."""
     arguments = ((list(inputs),) if training else inputs) if params is None else params
@@ -51,13 +52,26 @@ def scalar_observed_law(
             posterior_from_gaussian,
         )
 
-        observed = likelihood(
-            MultivariateNormal(mean, DenseLinearOperator(covariance)),
-            *arguments,
-            **(kwargs or {}),
-        )
+        distribution = MultivariateNormal(mean, DenseLinearOperator(covariance))
+        if fixed_noise is None:
+            observed = likelihood(distribution, *arguments, **(kwargs or {}))
+        else:
+            observed = torch.func.functional_call(
+                likelihood,
+                {"noise_covar.noise": fixed_noise},
+                (distribution, *arguments),
+                kwargs or {},
+            )
         posterior = posterior_from_gaussian(observed)
         return posterior.mean.squeeze(-1), posterior._covariance_tensor
+    if fixed_noise is not None:
+        from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+
+        distribution = TorchGPyTorchPosterior(mean.unsqueeze(-1), covariance).distribution
+        observed = torch.func.functional_call(
+            likelihood, {"noise": fixed_noise}, (distribution,), kwargs or {}
+        )
+        return observed.mean, observed.covariance_matrix
     return gaussian_marginal(
         likelihood,
         mean,
@@ -157,3 +171,110 @@ def multitask_observed_law(
     ):
         raise ValueError("A Gaussian marginal must preserve the structured event shape.")
     return observed_mean, observed_covariance
+
+
+def condition_likelihood(model: Any, conditioned: Any, noise: Any, Y: Tensor) -> None:
+    """Retain the likelihood's fantasy protocol and explicit observation noise."""
+    if noise is not None:
+        if (
+            not isinstance(noise, Tensor)
+            or noise.dtype != Y.dtype
+            or noise.device != Y.device
+            or not bool(torch.isfinite(noise).all() & (noise >= 0).all())
+            or torch.broadcast_shapes(noise.shape, Y.shape) != Y.shape
+        ):
+            raise ValueError("Conditioning noise must be finite, nonnegative and broadcast to Y.")
+        noise = noise.expand_as(Y)
+    dimensions = len(getattr(model, "target_shape", (model.num_outputs,)))
+    likelihood = model.likelihood
+    hook = getattr(likelihood, "get_fantasy_likelihood", None)
+    if is_fixed_noise(likelihood) and noise is None:
+        raise RuntimeError("FixedNoiseGaussianLikelihood.fantasize requires a `noise` kwarg")
+    transformed = noise
+    if noise is not None and model.outcome_transform is not None and hasattr(model, "target_shape"):
+        model._training_values()
+        transformed = model.outcome_transform(Y, noise)[1]
+    if callable(hook):
+        options = {} if transformed is None else {"noise": transformed.flatten(-dimensions - 1)}
+        conditioned.likelihood = hook(**options)
+        validate_scalar = not hasattr(conditioned, "_noise_matrix")
+        if validate_scalar:
+            validate_scalar_likelihood(conditioned.likelihood)
+        elif not isinstance(conditioned.likelihood, torch.nn.Module):
+            raise TypeError("The fantasy likelihood must be a Gaussian module.")
+    elif is_fixed_noise(likelihood):
+        import copy
+
+        conditioned.likelihood = copy.copy(likelihood)
+        conditioned.likelihood._buffers = likelihood._buffers.copy()
+        original = likelihood.noise
+        flat = transformed.flatten(-dimensions - 1)
+        batch = torch.broadcast_shapes(original.shape[:-1], flat.shape[:-1])
+        conditioned.likelihood.noise = torch.cat(
+            (original.expand(*batch, original.shape[-1]), flat.expand(*batch, flat.shape[-1])),
+            -1,
+        )
+    if noise is not None:
+        segments = getattr(model, "_conditioned_noise_segments", ())
+        name = f"_botorch_conditioning_noise_{len(segments)}"
+        conditioned.register_buffer(name, noise)
+        conditioned._conditioned_noise_segments = (*segments, (model._train_X.shape[-2], name))
+    if is_fixed_noise(likelihood):
+        if not hasattr(model, "_conditioning_fixed_noise"):
+            conditioned.register_buffer(
+                "_conditioning_fixed_noise",
+                likelihood.noise_covar.noise
+                if is_gpytorch_gaussian(likelihood)
+                else likelihood.noise,
+            )
+
+
+def conditioned_observed_law(
+    model: Any, mean: Tensor, covariance: Tensor, observed: Tensor
+) -> Tensor:
+    """Replace specified fantasy blocks without rebuilding registered modules."""
+    segments = getattr(model, "_conditioned_noise_segments", ())
+    if not segments or is_fixed_noise(model.likelihood):
+        return observed
+    n, m = model._train_X.shape[-2], getattr(model, "_grid_size", model.num_outputs)
+    dimensions = len(getattr(model, "target_shape", (m,)))
+    batch = torch.broadcast_shapes(covariance.shape[:-2], model.batch_shape)
+    keep = covariance.new_ones(n * m)
+    diagonal = covariance.new_zeros(*batch, n * m)
+    for start, name in segments:
+        noise = getattr(model, name)
+        count = noise.shape[-dimensions - 1]
+        if model.outcome_transform is not None and hasattr(model, "target_shape"):
+            noise = model.outcome_transform(torch.zeros_like(noise), noise)[1]
+        flat = noise.flatten(-dimensions - 1)
+        keep[start * m : (start + count) * m] = 0
+        # cat keeps the supplied noise graph and allows broadcast fantasy axes.
+        diagonal = torch.cat(
+            (
+                diagonal[..., : start * m],
+                flat.expand(*batch, count * m),
+                diagonal[..., (start + count) * m :],
+            ),
+            -1,
+        )
+    return (
+        covariance
+        + (observed - covariance) * keep[:, None] * keep[None, :]
+        + torch.diag_embed(diagonal)
+    )
+
+
+def fixed_conditioning_noise(model: Any) -> Tensor | None:
+    segments = getattr(model, "_conditioned_noise_segments", ())
+    if not segments or not is_fixed_noise(model.likelihood):
+        return None
+    original = model._conditioning_fixed_noise
+    dimensions = len(getattr(model, "target_shape", (model.num_outputs,)))
+    values = [original]
+    for _, name in segments:
+        noise = getattr(model, name)
+        if model.outcome_transform is not None:
+            noise = model.outcome_transform(torch.zeros_like(noise), noise)[1]
+        values.append(noise.flatten(-dimensions - 1))
+    batch = torch.broadcast_shapes(*(value.shape[:-1] for value in values))
+    return torch.cat([value.expand(*batch, value.shape[-1]) for value in values], -1)

@@ -36,8 +36,28 @@ the observed training mask and correlated observation noise.
 
 The reference explicitly rejects a fixed-noise likelihood in
 `LatentKroneckerGP.posterior`; the port preserves this boundary while permitting
-the supplied module for direct model evaluation and training. Supplied-noise
-conditioning and the iterative solver configuration require separate audits.
+the supplied module for direct model evaluation and training.
+
+Kronecker and higher-order conditioning invoke the actual supplied likelihood's
+`get_fantasy_likelihood` protocol. Explicit conditioning noise is retained as
+registered buffers and applied to the new observation blocks. Higher-order
+noise follows that model's raw-outcome variance convention; Kronecker noise is
+already in outcome-transformed units, following the generic GPyTorch model
+contract. Existing observation blocks retain their full Gaussian law. Fixed
+noise modules retain both original/supplied noise gradients and optional
+additional learned noise. Calibration is evaluated afresh for repeated
+backward calls, rather than storing a consumed standardization graph.
+
+Conditioned noise follows state dictionaries, model copies, serialization and
+dtype/device migration. Correlated supplied marginals also determine the law
+sampled for fantasies, including the port's latent Kronecker fantasy extension.
+The reference's latent model explicitly does not implement conditioning.
+Direct Tensor observation-noise overrides in Kronecker/higher-order posterior
+remain unsupported, consistent with the upstream repairs in
+[BoTorch #3396](https://github.com/meta-pytorch/botorch/pull/3396).
+
+Latent iterative Tensor inference is described in
+[latent-iterative-methods.md](latent-iterative-methods.md).
 
 `test_torch_structured_gaussian_likelihoods.py` independently builds complete
 observation covariances and checks values, every data/parameter gradient and

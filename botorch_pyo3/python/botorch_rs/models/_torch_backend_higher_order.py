@@ -377,7 +377,11 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
     def _exact_mll(
         self, output: Any = None, target: Any = None, *params: Any, **kwargs: Any
     ) -> Tensor:
-        from botorch_rs.models._torch_structured_likelihood import scalar_observed_law
+        from botorch_rs.models._torch_structured_likelihood import (
+            conditioned_observed_law,
+            fixed_conditioning_noise,
+            scalar_observed_law,
+        )
 
         X, Y = self._training_values()
         if output is None and type(self).forward is not TorchHigherOrderGP.forward:
@@ -388,6 +392,8 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
             else output.covariance_matrix
         )
         targets = Y.flatten(-2) if target is None else target
+        latent_covariance = covariance
+        fixed = fixed_conditioning_noise(self)
         mean, covariance = scalar_observed_law(
             self.likelihood,
             torch.zeros_like(targets) if output is None else output.mean,
@@ -395,7 +401,9 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
             (X,),
             params=params,
             kwargs=kwargs,
+            fixed_noise=fixed if "noise" not in kwargs else None,
         )
+        covariance = conditioned_observed_law(self, mean, latent_covariance, covariance)
         value = _rs.tensor_exact_mll(targets, covariance, mean, torch.zeros_like(targets))
         return (value + self._log_prior()) / targets.shape[-1]
 
@@ -420,7 +428,11 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
         untransform: bool = True,
         **kwargs: Any,
     ) -> Any:
-        from botorch_rs.models._torch_structured_likelihood import scalar_observed_law
+        from botorch_rs.models._torch_structured_likelihood import (
+            conditioned_observed_law,
+            fixed_conditioning_noise,
+            scalar_observed_law,
+        )
 
         if (
             output_indices is not None
@@ -463,8 +475,17 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
             count = n * m
             ktq, kqq = joint[..., :count, count:], joint[..., count:, count:]
             train_mean, query_mean = training_prior.mean, joint_prior.mean[..., count:]
+        fixed = fixed_conditioning_noise(self)
         observed_mean, observed_covariance = scalar_observed_law(
-            self.likelihood, train_mean, ktt, (train,), training=True
+            self.likelihood,
+            train_mean,
+            ktt,
+            (train,),
+            training=True,
+            fixed_noise=fixed,
+        )
+        observed_covariance = conditioned_observed_law(
+            self, observed_mean, ktt, observed_covariance
         )
         noise = observed_covariance - ktt
         train_mean = observed_mean
@@ -549,7 +570,7 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
     def condition_on_observations(
         self, X: Tensor, Y: Tensor, noise: Any = None, **kwargs: Any
     ) -> Any:
-        if noise is not None or kwargs:
+        if kwargs:
             raise UnsupportedError(
                 "Higher-order conditioning currently uses the configured Gaussian noise."
             )
@@ -587,6 +608,10 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
             ),
             dim=-dims - 1,
         )
+        from botorch_rs.models._torch_structured_likelihood import condition_likelihood
+
+        self.eval()
+        condition_likelihood(self, model, noise, Y)
         return model.eval()
 
     def fantasize(
