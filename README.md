@@ -452,13 +452,19 @@ native implementation follow-ups from the Tensor implementation. The strict core
 reference, including audited constructor parameters and public members.
 Configuration and numerical parity remain separate requirements.
 
-The [integrated release verification](docs/verification-main-device-release-2026-10-20.json)
-records 532 passing Rust tests/doctests and 10,542 passing Python cases, with
-49 recorded skips. The installed Windows wheel is tested on CPU and CUDA
-against the pinned official reference, including specialized models,
-entropy/search acquisitions and device NUTS. The report includes wheel hashes,
-exact case accounting, packaging checks, benchmark settings and configuration
-limits. Earlier release certificates remain preserved separately.
+The [0.3.0 installed-wheel verification](docs/verification-release-030-2026-10-21.json) records
+**14,509 passing Python cases and 51 skips**, including **1,222 equivalence
+passes and 15 skips**, on CPU and CUDA against pinned BoTorch
+`b0dd01be61d517c387e234903a6e2cc38c057ea2`. All 14,560 canonical cases are
+accounted for exactly, and source, wheel, native, verifier and dependency
+fingerprints remain stable. The [native checks](docs/native-030-verification.md)
+pass 551 all-target tests and 3 doctests, strict Clippy and formatting.
+The [reference-blocked run](docs/verification-reference-blocked-030-2026-10-21.json)
+passes 4,154 cases with 2,777 case skips; module collection skips are separate.
+All eleven [cross-platform CI jobs](docs/verification-main-ci-258ff6b-2026-10-21.json)
+pass. These finite checks and the 776-name inventory measure different scopes.
+Earlier [release certificates](docs/verification-main-device-release-2026-10-20.json)
+remain preserved separately; overlapping counts are not added together.
 
 The previously separate fully Bayesian, approximate and utility worktrees
 are integrated in this branch:
@@ -540,8 +546,8 @@ for 180 baseline points, while full joint evaluation is roughly equal
 (0.995x). Raw timings, value checks and extension hashes are retained.
 [Correctness findings and proposed upstream solutions](docs/correctness-findings.md)
 record the reference bugs, deliberate corrections and a fresh release LOO benchmark.
-The coverage inventory describes this source checkout; these additions have not
-been published to PyPI by this work.
+Version 0.3.0 includes this main-package implementation. The
+[backend guide](docs/torch-backend.md) records configuration and performance limits.
 
 <details>
 <summary>Coverage by area (public classes and functions)</summary>

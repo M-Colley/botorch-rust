@@ -9,7 +9,7 @@ higher derivatives retain the ordinary PyTorch graph for supported operations.
 The audited main-package API inventory and tested numerical configurations
 are reported separately. Family-specific configuration limits still apply.
 
-The 0.3.0 candidate consolidates the specialized, variational, fully Bayesian,
+Release 0.3.0 consolidates the specialized, variational, fully Bayesian,
 utility and acquisition worktrees. Its finite configuration audits include
 [generic fitting](fitting-protocol.md),
 [candidate generation](candidate-generation-protocols.md),
@@ -22,18 +22,29 @@ Supplied Gaussian/non-Gaussian likelihoods, public posterior adapters, custom
 outcome callbacks, conditioning ownership and native fitted-state synchronization
 have dedicated source-positive and independent derivative checks.
 
-The candidate's complete installed-wheel verification is in progress. It
-collects 14,560 canonical CPU/CUDA cases against the pinned official source,
-including the strict equivalence selection. Source, installed package, native
-extension, wheel manifest, verifier, dependency and reference fingerprints are
-bound together. Failed and interrupted checkpoints remain preserved separately.
-Publication follows successful integrated verification and cross-platform CI.
+The [0.3.0 installed-wheel verification](verification-release-030-2026-10-21.json)
+passes **14,509 cases with 51 skips** on CPU and CUDA against official BoTorch
+`b0dd01be61d517c387e234903a6e2cc38c057ea2`. Its strict equivalence selection
+passes **1,222 cases with 15 skips**. All 14,560 canonical collected IDs are
+accounted for exactly once across 69 batches, with no collection skips or
+failures and stable source, installed package, native extension, wheel manifest,
+verifier, dependency and reference fingerprints. This certifies the recorded
+configurations and artifacts; it does not claim arbitrary configuration coverage.
+
+The [native certificate](verification-native-030-2026-10-21.json) records
+551 all-target tests and 3 doctests, strict Clippy and formatting. With reference
+dependencies blocked, the [separate installed-wheel run](verification-reference-blocked-030-2026-10-21.json)
+passes 4,154 cases with 2,777 case skips; its 146 module collection skips are
+reported separately. All eleven [cross-platform CI jobs](verification-main-ci-258ff6b-2026-10-21.json)
+pass, including an independent CPU source comparison. Ruff checks 751 files,
+and both Mypy configurations check 357 files. Failed and interrupted checkpoints
+remain preserved separately; overlapping runs are not added into a release total.
 
 Earlier [frozen full-suite](verification-full-c3e8317-2026-10-21.json) and
 [equivalence](verification-equivalence-c3e8317-2026-10-21.json) checkpoints at
 `c3e8317` passed 13,683 cases with 51 skips, including 1,222 equivalence cases
 with 15 skips. Those historical receipts precede the latest changes; their
-counts are not added to candidate results. The
+counts are not added to the 0.3.0 results. The
 [equivalence notes](equivalence-verification.md) distinguish strict comparisons,
 stabilization controls, statistical fitting and independent derivative oracles.
 
@@ -244,7 +255,7 @@ Further details: [tensor algebra](tensor-native-algebra.md),
 ## Release verification
 
 The following describes the historical October 20 release, rather than the
-0.3.0 candidate under verification above.
+0.3.0 release verified above.
 
 The frozen Windows release wheel passes **10,542 Python cases**,
 with 49 recorded skips, and **532 Rust tests and

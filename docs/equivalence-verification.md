@@ -60,7 +60,10 @@ has underflowed to exactly zero. Finite covariance/diagonal comparisons retain
 their existing tolerances. These state/domain checks do not count matching NaNs
 as numerical equivalence, and no runtime behavior changes in that correction.
 
-A final release needs a fresh source and installed-wheel run with matching
-Python/native fingerprints and every canonical test ID accounted for exactly
-once. Earlier successful checkpoints and focused runs remain separate evidence;
-their overlapping pass counts must not be added into a release total.
+The [0.3.0 installed-wheel run](verification-release-030-2026-10-21.json)
+accounts for all 14,560 canonical CPU/CUDA cases exactly once: 14,509 pass and
+51 skip, including 1,222 passes and 15 skips in the 1,237-case equivalence
+selection. Python/native, wheel, verifier and pinned reference fingerprints
+remain stable. The finite case set retains the scoped distinctions above.
+Earlier successful checkpoints and focused runs remain separate evidence;
+their overlapping pass counts are not added into the release total.

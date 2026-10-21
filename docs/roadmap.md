@@ -1,6 +1,6 @@
 # Port coverage and native follow-up work
 
-botorch-rust 0.3.0's candidate implementation includes the GP core
+botorch-rust 0.3.0's implementation includes the GP core
 with kernel trees, priors and all input and outcome transforms; multi-task,
 multi-fidelity, mixed, MAP SAAS, ensemble, deterministic and contextual
 models; fully Bayesian GPs and NUTS; preference, variational and higher-order
