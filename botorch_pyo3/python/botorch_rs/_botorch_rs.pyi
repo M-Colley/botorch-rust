@@ -423,6 +423,11 @@ Transform = tuple[Sequence[float], float]
 ElementFit = tuple[float, int, int, str, str, int]
 
 class SingleTaskGP:
+    def _set_fitted_outcome_state(
+        self,
+        standardize: Standardize | None = None,
+        chains: list[list[OutcomeStep]] | None = None,
+    ) -> None: ...
     def __init__(
         self,
         train_x: Array,
@@ -648,6 +653,11 @@ class ModelListGP:
     ) -> ArrayBuf: ...
 
 class LCEMGP:
+    def _set_fitted_outcome_state(
+        self,
+        standardize: Standardize | None = None,
+        chains: list[list[OutcomeStep]] | None = None,
+    ) -> None: ...
     def __init__(
         self,
         train_x: Array,
@@ -745,6 +755,11 @@ class LCEMGP:
     ) -> tuple[float, int, int, str, str, int, list[ElementFit]]: ...
 
 class MultiTaskGP:
+    def _set_fitted_outcome_state(
+        self,
+        standardize: Standardize | None = None,
+        chains: list[list[OutcomeStep]] | None = None,
+    ) -> None: ...
     def _set_fitted_outcome_affine(self, offset: float, scale: float) -> None: ...
     def set_input_feature_offsets(
         self, indices: Sequence[int], offsets: Sequence[float]
@@ -855,6 +870,11 @@ def multitask_model(
 def multitask_task_inputs_model(model: MultiTaskGP) -> Model: ...
 
 class KroneckerMultiTaskGP:
+    def _set_fitted_outcome_state(
+        self,
+        standardize: Standardize | None = None,
+        chains: list[list[OutcomeStep]] | None = None,
+    ) -> None: ...
     def __init__(
         self,
         train_x: Array,
@@ -3103,6 +3123,11 @@ def psd_safe_cholesky(
 # -- Higher-order GP models (phase 10c) ---------------------------------------
 
 class HigherOrderGP:
+    def _set_fitted_outcome_state(
+        self,
+        standardize: Standardize | None = None,
+        chains: list[list[OutcomeStep]] | None = None,
+    ) -> None: ...
     def __init__(
         self,
         train_x: Array,
@@ -3227,6 +3252,11 @@ class EmpiricalGP:
     def fit_torch(self, **kwargs: Any) -> tuple[int, float, int, float | None, str | None]: ...
 
 class LatentKroneckerGP:
+    def _set_fitted_outcome_state(
+        self,
+        standardize: Standardize | None = None,
+        chains: list[list[OutcomeStep]] | None = None,
+    ) -> None: ...
     def __init__(
         self,
         train_x: Array,
