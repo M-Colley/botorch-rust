@@ -17,13 +17,16 @@ from botorch_rs.acquisition._torch_backend_acquisition import (
     _log_softplus,
     _TensorAcquisition,
 )
-from botorch_rs.acquisition._torch_box_decomposition import nondominated_mask, partition_nd
+from botorch_rs.acquisition._torch_box_decomposition import (
+    nondominated_mask,
+    partition_binary,
+    partition_nd,
+)
 from botorch_rs.acquisition._torch_reductions import fatmax, logsumexp, smooth_amax
 from botorch_rs.acquisition.multi_objective.objective import IdentityMCMultiOutputObjective
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import legacy_ei_numerics_warning
 from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
-from botorch_rs.utils.transforms import is_ensemble
 
 
 def partition_2d(
@@ -57,9 +60,15 @@ def partition_2d(
 
 
 def _partition(
-    Y: Tensor, ref: Tensor, feasible: Tensor | None = None
+    Y: Tensor, ref: Tensor, feasible: Tensor | None = None, alpha: float | None = None
 ) -> tuple[Tensor, Tensor, Tensor]:
-    return partition_2d(Y, ref, feasible) if Y.shape[-1] == 2 else partition_nd(Y, ref, feasible)
+    if Y.shape[-1] == 2:
+        return partition_2d(Y, ref, feasible)
+    return (
+        partition_nd(Y, ref, feasible)
+        if alpha is None
+        else partition_binary(Y, ref, feasible, alpha)
+    )
 
 
 def _log_difference(even: Tensor, odd: Tensor) -> Tensor:
@@ -76,6 +85,7 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
     _cell_lower_tensor: Tensor
     _cell_upper_tensor: Tensor
     _observed_source: Tensor | None
+    _observed_alpha: float | None
     _reference_cells: Tensor
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -132,20 +142,12 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
         source = getattr(partitioning, "_tensor_source_Y", None)
         if source is None:
             source = getattr(partitioning, "Y", None)
-        if isinstance(source, Tensor) and (
-            source.requires_grad or (ref.requires_grad and ref.numel() == 2)
-        ):
+        self._observed_alpha = None
+        if isinstance(source, Tensor) and (source.requires_grad or ref.requires_grad):
             fast = getattr(partitioning, "_rs_kind", None) == "fast_nondominated" or any(
                 cls.__name__ == "FastNondominatedPartitioning" for cls in type(partitioning).__mro__
             )
-            if ref.numel() > 2 and not fast:
-                raise UnsupportedError(
-                    "Differentiable observed fronts above two objectives require FastNondominatedPartitioning."
-                )
-            if getattr(partitioning, "alpha", 0) != 0:
-                raise UnsupportedError(
-                    "Differentiable observed fronts require exact partitioning (alpha=0)."
-                )
+            self._observed_alpha = None if fast else float(getattr(partitioning, "alpha", 0))
             self.register_buffer("_observed_source", source)
         else:
             self.register_buffer("_observed_source", None)
@@ -176,7 +178,9 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
 
     def _cells(self, obj: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         if self._observed_source is not None:
-            return _partition(self._observed_source.to(obj), self.ref_point.to(obj))
+            return _partition(
+                self._observed_source.to(obj), self.ref_point.to(obj), alpha=self._observed_alpha
+            )
         lower = self.cell_lower_bounds.to(obj)
         # The mathematical reference vertex stays differentiable even when a
         # fixed native decomposition supplied its other boundary coordinates.
@@ -312,13 +316,8 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
             raise ValueError(
                 "The reference point must match the model outcomes unless an objective selects or expands outputs."
             )
-        marginalize = values["marginalize_dim"]
-        if values["alpha"] != 0 or (
-            marginalize is not None and not (is_ensemble(self.model) and marginalize == -3)
-        ):
-            raise UnsupportedError(
-                "Torch noisy hypervolume requires exact alpha=0 partitioning and automatic ensemble marginalization or marginalize_dim=-3."
-            )
+        self.marginalize_dim = values["marginalize_dim"]
+        self.alpha = float(values["alpha"])
         baseline = values["X_baseline"]
         if not isinstance(baseline, Tensor) or baseline.ndim != 2:
             raise ValueError("X_baseline must be an n x d Torch tensor.")
@@ -371,7 +370,12 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
                 (*self.sample_shape, *self.model.batch_shape, 0, self.model.num_outputs)
             )
         objective = self.objective(samples, X=baseline)
-        cells = _partition(objective, self.ref_point, self._feasible(samples))
+        cells = _partition(
+            objective,
+            self.ref_point,
+            self._feasible(samples),
+            alpha=self.alpha if self.alpha > 0 else None,
+        )
         self._cell_lower_tensor, self._cell_upper_tensor, self._last_cell_mask = cells
         self._last_baseline_objective = objective
 
@@ -433,23 +437,18 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
     def _prune_front(self) -> None:
         if not self._X_baseline.shape[-2]:
             return
-        with torch.no_grad():
-            samples = SobolQMCNormalSampler((2048,), seed=self.sampler.seed)(
-                self.model.posterior(self._X_baseline)
-            )
-            obj = self.objective(samples, X=self._X_baseline)
-            feasible = self._feasible(samples)
-            if is_ensemble(self.model):
-                if len(self.model.batch_shape) != 1:
-                    raise UnsupportedError(
-                        "Ensemble noisy hypervolume pruning supports a single MCMC batch dimension."
-                    )
-                obj = obj.mean(dim=-3)
-                feasible = feasible.to(obj).mean(dim=-2).round().bool()
-            possible = nondominated_mask(obj, self.ref_point, feasible)
-            possible = possible.any(dim=tuple(range(possible.ndim - 1)))
-            indices = possible.nonzero().flatten()
-            self._X_baseline = self._X_baseline.index_select(-2, indices)
+        from botorch_rs.acquisition._torch_pruning import prune_indices_multi_objective
+
+        indices = prune_indices_multi_objective(
+            self.model,
+            self._X_baseline,
+            self.ref_point,
+            objective=self.objective,
+            constraints=self._constraints,
+            marginalize_dim=self.marginalize_dim,
+            sampler=SobolQMCNormalSampler((2048,), seed=self.sampler.seed),
+        )
+        self._X_baseline = self._X_baseline.index_select(-2, indices)
 
     @staticmethod
     def _prefix_posterior(posterior: Any, count: int) -> Any:
@@ -523,7 +522,13 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
         count = baseline.shape[-2]
         posterior = self.model.posterior(joint)
         samples = self._joint_samples(posterior, count)
-        baseline_samples = samples[..., :count, :]
+        if count:
+            # Source partition geometry uses the standalone prefix draw.
+            # A repeated query can require jitter in the full joint factor;
+            # that stabilization must not perturb the fixed baseline frontier.
+            baseline_samples = self.base_sampler(self.model.posterior(joint[..., :count, :]))
+        else:
+            baseline_samples = samples[..., :0, :]
         if self.detach_baseline:
             baseline_samples = baseline_samples.detach()
         processed = torch.cat((baseline_samples, samples[..., count:, :]), dim=-2)
@@ -532,7 +537,12 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
         self.baseline_samples, self.baseline_obj = baseline_samples, baseline_obj
         self._last_baseline_objective = baseline_obj
         feasible = self._feasible(baseline_samples)
-        cells = _partition(baseline_obj, self.ref_point.to(objective), feasible)
+        cells = _partition(
+            baseline_obj,
+            self.ref_point.to(objective),
+            feasible,
+            alpha=self.alpha if self.alpha > 0 else None,
+        )
         self._cell_lower_tensor, self._cell_upper_tensor, self._last_cell_mask = cells
         value = self._hypervolume(samples[..., count:, :], candidate_obj, cells)
         if not self.incremental_nehvi and self._cached_pending_count:

@@ -441,5 +441,8 @@ def test_noisy_hypervolume_cache_fallback_and_explicit_boundaries():
         acquisition(True, noisy=True)(
             model, torch.zeros(3, dtype=torch.double), X_baseline=X.detach()
         )
-    with pytest.raises(NotImplementedError, match="alpha=0"):
-        acquisition(True, noisy=True)(model, ref, X_baseline=X.detach(), alpha=0.1)
+    approximate = acquisition(True, noisy=True)(
+        model, ref, X_baseline=X.detach(), alpha=0.1, cache_root=False
+    )
+    assert approximate.alpha == 0.1
+    assert torch.isfinite(approximate(X.detach()[:1])).all()

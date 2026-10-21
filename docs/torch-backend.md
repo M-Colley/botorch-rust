@@ -13,11 +13,13 @@ Development after the frozen release adds [generic fitting protocols](fitting-pr
 [candidate-generation protocols](candidate-generation-protocols.md),
 [analytic batch probability](torch-analytic-batch-probability.md),
 [device pruning and constraint utilities](torch-baseline-pruning.md),
-[cached sampling and model-fit metrics](torch-low-rank-evaluation.md), and
-[probit variational observations](torch-variational-probit.md).
+[cached sampling and model-fit metrics](torch-low-rank-evaluation.md),
+[probit variational observations](torch-variational-probit.md),
+[custom acquisition subclasses](torch-acquisition-subclasses.md), and
+[binary hypervolume partitioning](torch-hypervolume-partitioning.md).
 These focused results do not replace the frozen release certificate below.
 The complete behavior/configuration audit is still open, including remaining
-variational distributions, specialized fitting extensions, custom subclasses,
+variational strategies, specialized fitting extensions, custom module protocols,
 and acquisition approximation/cache configurations. A new release and Unity
 integration require a fresh integrated verification of the completed scope.
 

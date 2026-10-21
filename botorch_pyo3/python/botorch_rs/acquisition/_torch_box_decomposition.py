@@ -110,3 +110,119 @@ def partition_nd(
         upper.reshape(*batch, cells, m),
         active.reshape(*batch, cells),
     )
+
+
+def partition_binary(
+    Y: Tensor, ref: Tensor, feasible: Tensor | None = None, alpha: float = 0.0
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Couckuyt rank bisection, including the reference approximation threshold.
+
+    Each sample has its own Pareto count and rank grid. Boundary coordinates
+    remain live tensors; only integer widths cross the device boundary when
+    compacting the ragged search tree. Breadth-first traversal changes cell
+    order, while retaining exactly the source's accepted cells.
+    """
+    batch, n, m = Y.shape[:-2], Y.shape[-2], Y.shape[-1]
+    count_batch = math.prod(batch)
+    points = Y.reshape(count_batch, n, m)
+    reference = ref.expand(*batch, m).reshape(count_batch, m)
+    if n == 0:
+        return (
+            reference.reshape(*batch, 1, m),
+            torch.full((*batch, 1, m), torch.inf, dtype=Y.dtype, device=Y.device),
+            torch.ones((*batch, 1), dtype=torch.bool, device=Y.device),
+        )
+    valid = nondominated_mask(
+        points, reference, None if feasible is None else feasible.reshape(count_batch, n)
+    )
+    count = valid.sum(-1)
+    negative = -points
+    ordered = negative.masked_fill(~valid.unsqueeze(-1), torch.inf).sort(dim=-2).values
+    empty = count == 0
+    ideal = torch.where(empty.unsqueeze(-1), -reference, ordered[:, 0]) - 1
+    anti_ideal = (
+        torch.where(
+            empty.unsqueeze(-1),
+            -reference,
+            negative.masked_fill(~valid.unsqueeze(-1), -torch.inf).amax(-2),
+        )
+        + 1
+    )
+    ranks = torch.arange(n, device=Y.device).reshape(1, n, 1)
+    interior = ranks < count[:, None, None]
+    search_values = torch.cat(
+        (
+            ideal.unsqueeze(-2),
+            torch.where(interior, ordered, anti_ideal.unsqueeze(-2)),
+            anti_ideal.unsqueeze(-2),
+        ),
+        -2,
+    )
+    boundary_values = torch.cat(
+        (
+            torch.full_like(ideal.unsqueeze(-2), -torch.inf),
+            torch.where(interior, ordered, -reference.unsqueeze(-2)),
+            -reference.unsqueeze(-2),
+        ),
+        -2,
+    )
+    total_volume = (anti_ideal - ideal).prod(-1)
+    cells = torch.stack(
+        (
+            torch.zeros((count_batch, m), dtype=torch.long, device=Y.device),
+            (count + 1).unsqueeze(-1).expand(count_batch, m),
+        ),
+        -2,
+    ).unsqueeze(-3)
+    active = torch.ones((count_batch, 1), dtype=torch.bool, device=Y.device)
+    accepted, masks = [], []
+    while cells.shape[-3]:
+        bounds = search_values.gather(-2, cells.reshape(count_batch, -1, m)).reshape_as(cells)
+        upper_better = (
+            (bounds[..., 1, :].unsqueeze(-2) <= negative.unsqueeze(-3)).any(-1)
+            | ~valid.unsqueeze(-2)
+        ).all(-1)
+        lower_better = (
+            (bounds[..., 0, :].unsqueeze(-2) <= negative.unsqueeze(-3)).any(-1)
+            | ~valid.unsqueeze(-2)
+        ).all(-1)
+        accept = active & upper_better
+        accepted.append(cells)
+        masks.append(accept)
+        distances = cells[..., 1, :] - cells[..., 0, :]
+        length, dimension = distances.max(-1)
+        volume = (bounds[..., 1, :] - bounds[..., 0, :]).prod(-1)
+        split = active & ~upper_better & lower_better & (length > 1)
+        split = split & (volume / total_volume.unsqueeze(-1) > alpha)
+        width = int(split.sum(-1).amax().item())
+        if width == 0:
+            break
+        indices = split.to(torch.int8).argsort(dim=-1, descending=True, stable=True)[..., :width]
+        cells = cells.gather(-3, indices[..., None, None].expand(count_batch, width, 2, m))
+        dimension = dimension.gather(-1, indices)
+        length = length.gather(-1, indices)
+        active = split.gather(-1, indices).repeat(1, 2)
+        first_length = (length.to(torch.double) / 2).round().to(torch.long)
+        second_length = length - first_length
+        axis = torch.arange(m, device=Y.device) == dimension.unsqueeze(-1)
+        first = torch.stack(
+            (cells[..., 0, :], cells[..., 1, :] - axis * first_length.unsqueeze(-1)), -2
+        )
+        second = torch.stack(
+            (cells[..., 0, :] + axis * second_length.unsqueeze(-1), cells[..., 1, :]), -2
+        )
+        cells = torch.cat((first, second), -3)
+    cells, active = torch.cat(accepted, -3), torch.cat(masks, -1)
+    width = max(int(active.sum(-1).amax().item()), 1)
+    indices = active.to(torch.int8).argsort(dim=-1, descending=True, stable=True)[..., :width]
+    cells = cells.gather(-3, indices[..., None, None].expand(count_batch, width, 2, m))
+    active = active.gather(-1, indices)
+    bounds = -boundary_values.gather(-2, cells.reshape(count_batch, -1, m)).reshape_as(cells)
+    lower, upper = bounds[..., 1, :], bounds[..., 0, :]
+    lower = torch.where(active.unsqueeze(-1), lower, reference.unsqueeze(-2))
+    upper = torch.where(active.unsqueeze(-1), upper, reference.unsqueeze(-2) + 1)
+    return (
+        lower.reshape(*batch, width, m),
+        upper.reshape(*batch, width, m),
+        active.reshape(*batch, width),
+    )
