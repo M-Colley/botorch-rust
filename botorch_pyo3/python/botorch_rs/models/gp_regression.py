@@ -42,6 +42,22 @@ def _is_default(value: Any) -> bool:
     return value is DEFAULT or type(value).__name__ == "_DefaultType"
 
 
+def _is_tensor_factory_target(cls: type, canonical: type) -> bool:
+    """Let the nearest built-in model family select a caller subclass backend.
+
+    Other built-in families own their own construction and must not be
+    reinterpreted as an ordinary SingleTaskGP/MultiTaskGP by an ancestor.
+    Already allocated Tensor classes also keep their concrete implementation.
+    """
+    return (
+        next(
+            (base for base in cls.__mro__ if base.__module__.startswith("botorch_rs.models.")),
+            None,
+        )
+        is canonical
+    )
+
+
 def _validate_tensor_args(
     xshape: tuple[int, ...], yshape: tuple[int, ...], vshape: tuple[int, ...] | None
 ) -> None:
@@ -261,7 +277,7 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
         backend: str = "auto",
         **kwargs: Any,
     ) -> Any:
-        if cls is SingleTaskGP:
+        if _is_tensor_factory_target(cls, SingleTaskGP):
             if backend not in ("auto", "native", "torch"):
                 raise ValueError("backend must be 'auto', 'native', or 'torch'.")
             values = (train_X, train_Y, kwargs.get("train_Yvar"), *args[:1])
@@ -300,11 +316,18 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
                 )
 
                 likelihood = kwargs.get("likelihood", args[1] if len(args) > 1 else None)
+                concrete: type
                 if isinstance(likelihood, SparseOutlierGaussianLikelihood):
                     from botorch_rs.models._torch_backend_relevance import TorchSparseSingleTaskGP
 
-                    return object.__new__(TorchSparseSingleTaskGP)
-                return object.__new__(TorchSingleTaskGP)
+                    concrete = TorchSparseSingleTaskGP
+                else:
+                    concrete = TorchSingleTaskGP
+                if cls is SingleTaskGP:
+                    return object.__new__(concrete)
+                from botorch_rs.models._torch_model_subclasses import model_type
+
+                return object.__new__(model_type(cls, concrete))
         return object.__new__(cls)
 
     def __init__(

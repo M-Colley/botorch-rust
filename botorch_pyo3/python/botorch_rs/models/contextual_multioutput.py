@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 from collections.abc import Iterator
 from typing import Any
 
@@ -21,7 +22,11 @@ from botorch_rs.exceptions.errors import BotorchTensorDimensionError, Unsupporte
 from botorch_rs.kernels import Kernel, RBFKernel
 from botorch_rs.likelihoods import HadamardGaussianLikelihood
 from botorch_rs.means import MultitaskMean
-from botorch_rs.models.gp_regression import _is_default, _validate_tensor_args
+from botorch_rs.models.gp_regression import (
+    _is_default,
+    _is_tensor_factory_target,
+    _validate_tensor_args,
+)
 from botorch_rs.models.multitask import MultiTaskGP
 from botorch_rs.models.transforms.outcome import Standardize, is_plain_standardize
 from botorch_rs.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
@@ -211,10 +216,34 @@ class LCEMGP(MultiTaskGP):
     ) -> Any:
         from botorch_rs.models.map_saas import _use_torch_backend
 
-        if cls is LCEMGP and _use_torch_backend(backend, train_X, train_Y, *args, *kwargs.values()):
+        selected = _use_torch_backend(backend, train_X, train_Y, *args, *kwargs.values())
+        torch = sys.modules.get("torch")
+        tensor_only_options = any(
+            kwargs.get(name, args[index] if len(args) > index else None) is not None
+            for index, name in (
+                (1, "train_Yvar"),
+                (2, "mean_module"),
+                (4, "likelihood"),
+                (11, "input_transform"),
+            )
+        )
+        if _is_tensor_factory_target(cls, LCEMGP) and (
+            selected
+            or (
+                backend == "auto"
+                and torch is not None
+                and isinstance(train_X, torch.Tensor)
+                and isinstance(train_Y, torch.Tensor)
+                and tensor_only_options
+            )
+        ):
             from botorch_rs.models._torch_backend_lcem import TorchLCEMGP
 
-            return object.__new__(TorchLCEMGP)
+            if cls is LCEMGP:
+                return object.__new__(TorchLCEMGP)
+            from botorch_rs.models._torch_model_subclasses import model_type
+
+            return object.__new__(model_type(cls, TorchLCEMGP))
         return object.__new__(cls)
 
     def __init__(

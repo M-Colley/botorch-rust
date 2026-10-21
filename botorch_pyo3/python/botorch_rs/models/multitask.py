@@ -28,6 +28,7 @@ from botorch_rs.likelihoods import (
     Likelihood,
 )
 from botorch_rs.means import ConstantMean, MultitaskMean
+from botorch_rs.models.gp_regression import _is_tensor_factory_target
 from botorch_rs.models.gpytorch import GPyTorchModel, MultiTaskGPyTorchModel
 from botorch_rs.models.transforms.outcome import Standardize, is_plain_standardize
 from botorch_rs.utils.types import DEFAULT
@@ -96,7 +97,7 @@ class MultiTaskGP(MultiTaskGPyTorchModel):
     _eval_unobserved_tasks = True
 
     def __new__(cls, train_X: Any = None, train_Y: Any = None, *args: Any, **kwargs: Any) -> Any:
-        if cls is MultiTaskGP:
+        if _is_tensor_factory_target(cls, MultiTaskGP):
             backend = kwargs.get("backend", "auto")
             if backend not in ("auto", "native", "torch"):
                 raise ValueError("backend must be 'auto', 'native', or 'torch'.")
@@ -129,7 +130,11 @@ class MultiTaskGP(MultiTaskGPyTorchModel):
             ):
                 from botorch_rs.models._torch_backend_multitask import TorchMultiTaskGP
 
-                return object.__new__(TorchMultiTaskGP)
+                if cls is MultiTaskGP:
+                    return object.__new__(TorchMultiTaskGP)
+                from botorch_rs.models._torch_model_subclasses import model_type
+
+                return object.__new__(model_type(cls, TorchMultiTaskGP))
         return object.__new__(cls)
 
     def __init__(

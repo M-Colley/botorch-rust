@@ -186,6 +186,10 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             transform.eval()
 
     def _prediction_key(self) -> Any:
+        if type(self).forward is not TorchSingleTaskGP.forward:
+            # A virtual prior may depend on unregistered caller state. Preserve
+            # its full graph rather than reusing a stale training factor.
+            return None
         tensors = (*self.parameters(), *self.buffers())
         if torch.is_grad_enabled() and any(tensor.requires_grad for tensor in tensors):
             return None
@@ -282,6 +286,51 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         # objects. Densifying them retains their Torch graph and device.
         return value if isinstance(value, torch.Tensor) else value.to_dense()
 
+    def _prior_blocks(
+        self, train_X: Any, query_X: Any, *, need_training: bool = True
+    ) -> tuple[Any, Any, Any, Any, Any]:
+        """Prior Gaussian blocks on already transformed independent-output inputs.
+
+        The default path keeps blockwise kernel evaluation. A caller's forward
+        override defines the actual prior, including cross-covariances, so use
+        its joint Gaussian just as ExactGP does.
+        """
+        if type(self).forward is TorchSingleTaskGP.forward:
+            return (
+                self.mean_module(train_X) if need_training else None,
+                self._covariance(train_X, train_X) if need_training else None,
+                self._covariance(train_X, query_X),
+                self.mean_module(query_X),
+                self._covariance(query_X, query_X),
+            )
+        train_prior: Any = torch.nn.Module.__call__(self, train_X) if need_training else None
+        batch = torch.broadcast_shapes(train_X.shape[:-2], query_X.shape[:-2])
+        joint_X = torch.cat(
+            (
+                train_X.expand(*batch, *train_X.shape[-2:]),
+                query_X.expand(*batch, *query_X.shape[-2:]),
+            ),
+            dim=-2,
+        )
+        prior = torch.nn.Module.__call__(self, joint_X)
+        if any(
+            not isinstance(getattr(distribution, attribute, None), torch.Tensor)
+            for distribution in ((train_prior, prior) if need_training else (prior,))
+            for attribute in ("mean", "covariance_matrix")
+        ):
+            raise TypeError(
+                "forward must return a Gaussian with Tensor mean and covariance_matrix."
+            )
+        n = train_X.shape[-2]
+        covariance = prior.covariance_matrix
+        return (
+            train_prior.mean if need_training else None,
+            train_prior.covariance_matrix if need_training else None,
+            covariance[..., :n, n:],
+            prior.mean[..., n:],
+            covariance[..., n:, n:],
+        )
+
     def _posterior_tensors(
         self,
         X: Any,
@@ -308,20 +357,22 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             raise TypeError("observation_noise must be bool or a Tensor.")
         key = self._prediction_key()
         cache = self._prediction_cache
-        if key is not None and cache is not None and cache[0] == key:
+        cached = key is not None and cache is not None and cache[0] == key
+        train_mean, train_covar, cross_covar, query_mean, query_covar = self._prior_blocks(
+            train_X, query_X, need_training=not cached
+        )
+        if cached:
             factor, alpha = cache[1:]
         else:
-            factor, alpha = _rs.tensor_exact_gp_factor(
-                Y, self._covariance(train_X, train_X), self.mean_module(train_X), train_noise
-            )
+            factor, alpha = _rs.tensor_exact_gp_factor(Y, train_covar, train_mean, train_noise)
             if key is not None:
                 self._prediction_cache = (key, factor, alpha)
         mean, covariance = _rs.tensor_exact_gp_predict(
             factor,
             alpha,
-            self._covariance(train_X, query_X),
-            self._covariance(query_X, query_X),
-            self.mean_module(query_X),
+            cross_covar,
+            query_covar,
+            query_mean,
             observation_noise=query_noise,
         )
         return mean, covariance
@@ -376,12 +427,21 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
                 posterior = TorchGPyTorchPosterior(mean, independent_covariance(blocks))
         return posterior if posterior_transform is None else posterior_transform(posterior, X=X)
 
+    def __call__(self, X: Any, *args: Any, **kwargs: Any) -> Any:
+        if self.training:
+            return torch.nn.Module.__call__(self, X, *args, **kwargs)
+        if args or kwargs:
+            raise UnsupportedError(
+                "Evaluation calls accept one input Tensor; use posterior for posterior options."
+            )
+        mean, covariance = self._posterior_tensors(X)
+        return TorchGPyTorchPosterior(mean.unsqueeze(-1), covariance).distribution
+
     def forward(self, X: Any) -> Any:
-        if not self.training:
-            mean, covariance = self._posterior_tensors(X)
-            return TorchGPyTorchPosterior(mean.unsqueeze(-1), covariance).distribution
-        self._fit_transform_graphs()
-        if self.input_transform is not None:
+        """The latent prior; evaluation-mode calls condition through __call__."""
+        if self.training:
+            self._fit_transform_graphs()
+        if self.training and self.input_transform is not None:
             transform = getattr(self.input_transform, "preprocess_transform", self.input_transform)
             original = (
                 X.select(-3, 0) if self.num_outputs > 1 and X.ndim > self._train_X.ndim else X
@@ -407,7 +467,11 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
     def _exact_mll(self, output: Any = None, target: Any = None) -> Any:
         if output is None:
             X, Y, fixed_noise = self._training_values()
-            mean, covariance = self.mean_module(X), self._covariance(X, X)
+            if type(self).forward is TorchSingleTaskGP.forward:
+                mean, covariance = self.mean_module(X), self._covariance(X, X)
+            else:
+                prior = torch.nn.Module.__call__(self, self.train_inputs[0] if self.training else X)
+                mean, covariance = prior.mean, prior.covariance_matrix
         else:
             _, _, fixed_noise = self._training_values()
             Y = self.train_targets if target is None else target
