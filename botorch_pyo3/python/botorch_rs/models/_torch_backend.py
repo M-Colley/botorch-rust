@@ -340,6 +340,8 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         self,
         X: Any,
         observation_noise: Any = False,
+        *,
+        inputs_transformed: bool = False,
     ) -> Any:
         from botorch_rs.models._torch_gaussian_likelihood import is_fixed_noise, uses_marginal
 
@@ -348,14 +350,22 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         ):
             from botorch_rs.models._torch_fully_bayesian_likelihood import posterior_tensors
 
-            return posterior_tensors(self, X, observation_noise)
-        if not isinstance(X, torch.Tensor) or X.ndim < 2 or X.shape[-1] != self._train_X.shape[-1]:
+            return posterior_tensors(
+                self, X, observation_noise, inputs_transformed=inputs_transformed
+            )
+        if (
+            not isinstance(X, torch.Tensor)
+            or X.ndim < 2
+            or (not inputs_transformed and X.shape[-1] != self._train_X.shape[-1])
+        ):
             raise ValueError("X must be a Tensor with shape (..., q, d).")
         if X.dtype != self._train_X.dtype or X.device != self._train_X.device:
             raise ValueError("X must share the model's dtype and device; use model.to(X).")
         self.eval()
         train_X, Y, fixed_noise = self._training_values()
-        query_X = self._augment_X(self.transform_inputs(X))
+        if inputs_transformed and X.shape[-1] != train_X.shape[-1]:
+            raise ValueError("Evaluation inputs must use the transformed feature dimension.")
+        query_X = X if inputs_transformed else self._augment_X(self.transform_inputs(X))
         train_noise = self._training_noise(Y, fixed_noise)
         query_noise = None
         if isinstance(observation_noise, torch.Tensor):
@@ -447,7 +457,7 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             raise UnsupportedError(
                 "Evaluation calls accept one input Tensor; use posterior for posterior options."
             )
-        mean, covariance = self._posterior_tensors(X)
+        mean, covariance = self._posterior_tensors(X, inputs_transformed=True)
         return TorchGPyTorchPosterior(mean.unsqueeze(-1), covariance).distribution
 
     def forward(self, X: Any) -> Any:

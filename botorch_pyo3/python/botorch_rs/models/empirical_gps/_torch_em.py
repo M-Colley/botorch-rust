@@ -618,7 +618,9 @@ class TensorEMGaussianProcess(TorchSingleTaskGP, EMEmpiricalGaussianProcess):
             + self._log_prior()
         ) / targets.shape[-1]
 
-    def _posterior_tensors(self, X: Any, observation_noise: Any = False) -> Any:
+    def _posterior_tensors(
+        self, X: Any, observation_noise: Any = False, *, inputs_transformed: bool = False
+    ) -> Any:
         if not isinstance(X, torch.Tensor) or X.ndim < 2 or X.shape[-1] != self._train_X.shape[-1]:
             raise ValueError("X must have shape (..., q, d).")
         if X.device != self._train_X.device or X.dtype != self._train_X.dtype:

@@ -574,14 +574,16 @@ class TorchSparseSingleTaskGP(TorchSingleTaskGP):
             _rs.tensor_exact_mll(Y, covariance, mean, noise, normalize=False) + self._log_prior()
         ) / Y.shape[-1]
 
-    def _posterior_tensors(self, X: Any, observation_noise: Any = False) -> Any:
+    def _posterior_tensors(
+        self, X: Any, observation_noise: Any = False, *, inputs_transformed: bool = False
+    ) -> Any:
         if not isinstance(X, torch.Tensor) or X.ndim < 2 or X.shape[-1] != self._train_X.shape[-1]:
             raise ValueError("X must be a Tensor with shape (..., q, d).")
         if X.dtype != self._train_X.dtype or X.device != self._train_X.device:
             raise ValueError("X must share the model's dtype and device.")
         self.eval()
         train_X, Y, fixed = self._training_values()
-        query = self._augment_X(self.transform_inputs(X))
+        query = X if inputs_transformed else self._augment_X(self.transform_inputs(X))
         covariance = self._covariance(train_X, train_X)
         # Training inputs always establish the match cache before query noise.
         self.likelihood.noise_covar._cached_train_inputs = train_X.detach().clone()

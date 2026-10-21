@@ -11,15 +11,23 @@ from botorch_rs.models._torch_gaussian_likelihood import gaussian_marginal, is_f
 from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
 
 
-def posterior_tensors(model: Any, X: torch.Tensor, observation_noise: Any) -> tuple[Any, Any]:
+def posterior_tensors(
+    model: Any, X: torch.Tensor, observation_noise: Any, *, inputs_transformed: bool = False
+) -> tuple[Any, Any]:
     """Condition using the actual returned Gaussian likelihood's covariance."""
-    if not isinstance(X, torch.Tensor) or X.ndim < 2 or X.shape[-1] != model._train_X.shape[-1]:
+    if (
+        not isinstance(X, torch.Tensor)
+        or X.ndim < 2
+        or (not inputs_transformed and X.shape[-1] != model._train_X.shape[-1])
+    ):
         raise ValueError("X must be a Tensor with shape (..., q, d).")
     if X.dtype != model._train_X.dtype or X.device != model._train_X.device:
         raise ValueError("X must share the model's dtype and device; use model.to(X).")
     model.eval()
     train_X, targets, _ = model._training_values()
-    query_X = model._augment_X(model.transform_inputs(X))
+    if inputs_transformed and X.shape[-1] != train_X.shape[-1]:
+        raise ValueError("Evaluation inputs must use the transformed feature dimension.")
+    query_X = X if inputs_transformed else model._augment_X(model.transform_inputs(X))
     blocks = getattr(model, "_prior_blocks", None)
     if blocks is None:
         train_mean, train_cov = model.mean_module(train_X), model._covariance(train_X, train_X)

@@ -147,3 +147,20 @@ native transform and transform parity suites pass 207 cases. Torch 2.14 CPU
 passes all 59 selected direct/domain/randomized checks and skips nine CUDA
 cases. Undefined inverse-power samples are classified separately as described
 in [equivalence verification](equivalence-verification.md).
+
+Direct evaluation-mode calls on exact scalar/independent-output Tensor GPs now
+consume already transformed coordinates, as ExactGP does. They broadcast the
+existing model/output axes and return Gaussian laws in transformed outcome
+units. Previously this path transformed the query again and could insert a
+duplicate independent-output axis. `forward` remains the latent prior;
+`posterior` retains its separate raw-input/output-axis/outcome-untransform
+protocol. The distinction also propagates through scalar fully Bayesian,
+supplied Gaussian likelihood, relevance-pursuit and empirical overrides.
+
+Thirty-six new CPU/CUDA cases compare source conditional/prior values and
+query gradients across normalization, warping, model/query/output batches and
+actual supplied likelihoods. Independent dense Gaussian calculations verify
+complete data/parameter Hessians, including actual fully Bayesian loader
+transforms and correlated noise. The initial 32 cases and existing exact,
+subclass, cache, relevance, fully Bayesian loader and empirical regressions
+pass 322 combined cases; the four additional loader controls pass separately.

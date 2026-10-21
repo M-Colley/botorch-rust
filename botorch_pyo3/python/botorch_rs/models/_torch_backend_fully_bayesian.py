@@ -186,12 +186,18 @@ class _TorchFullyBayesianBase(TorchSingleTaskGP):
             noise = noise.clamp_min(MIN_INFERRED_NOISE_LEVEL)
         return X, Y, noise
 
-    def _posterior_tensors(self, X: Tensor, observation_noise: Any = False) -> Any:
+    def _posterior_tensors(
+        self, X: Tensor, observation_noise: Any = False, *, inputs_transformed: bool = False
+    ) -> Any:
         if getattr(self, "_fb_custom_likelihood", False):
             from botorch_rs.models._torch_fully_bayesian_likelihood import posterior_tensors
 
-            return posterior_tensors(self, X, observation_noise)
-        return TorchSingleTaskGP._posterior_tensors(self, X, observation_noise)
+            return posterior_tensors(
+                self, X, observation_noise, inputs_transformed=inputs_transformed
+            )
+        return TorchSingleTaskGP._posterior_tensors(
+            self, X, observation_noise, inputs_transformed=inputs_transformed
+        )
 
     def load_mcmc_samples(self, mcmc_samples: dict[str, Tensor]) -> None:
         """Load detached hyperparameter draws as actual registered Parameters."""

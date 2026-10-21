@@ -608,7 +608,9 @@ class TensorCorrelatedGP(TensorEmpiricalGP, MultiOutputEmpiricalOneDimensionalGP
             + self._log_prior()
         ) / Y.shape[-1]
 
-    def _posterior_tensors(self, X: Any, observation_noise: Any = False) -> Any:
+    def _posterior_tensors(
+        self, X: Any, observation_noise: Any = False, *, inputs_transformed: bool = False
+    ) -> Any:
         self.eval()
         if X.shape[-1] != 1 or X.dtype != self._train_X.dtype or X.device != self._train_X.device:
             raise ValueError(
