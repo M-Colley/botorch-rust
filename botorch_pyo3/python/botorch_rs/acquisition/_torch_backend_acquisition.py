@@ -44,6 +44,8 @@ _MC = frozenset(
     }
 )
 _NOISY = frozenset({"qNoisyExpectedImprovement", "qLogNoisyExpectedImprovement"})
+_EXTRA_MULTI_OBJECTIVE = frozenset({"ExpectedHypervolumeImprovement", "MOMF", "qLogNParEGO"})
+_NOISY_ANALYTIC = frozenset({"NoisyExpectedImprovement", "LogNoisyExpectedImprovement"})
 _MULTI_OBJECTIVE = frozenset(
     {
         "qExpectedHypervolumeImprovement",
@@ -98,6 +100,13 @@ _PREFERENCE = frozenset(
         "PairwiseBayesianActiveLearningByDisagreement",
     }
 )
+_ACTIVE_LEARNING = frozenset(
+    {
+        "qLogProbabilityOfFeasibility",
+        "qNegIntegratedPosteriorVariance",
+        "PairwiseMCPosteriorVariance",
+    }
+)
 _TYPES: dict[type, type] = {}
 _LOG_2PI = math.log(2 * math.pi)
 
@@ -114,16 +123,41 @@ def tensor_acquisition(public_class: type) -> Any:
         | _WRAPPERS
         | _ENTROPY
         | _PREFERENCE
+        | _EXTRA_MULTI_OBJECTIVE
+        | _ACTIVE_LEARNING
+        | _NOISY_ANALYTIC
         or not public_class.__module__.startswith("botorch_rs.acquisition.")
     ):
         raise UnsupportedError(f"{public_class.__name__} does not yet support backend='torch'.")
     subtype = _TYPES.get(public_class)
     if subtype is None:
         mixin: type = _TensorAcquisition
-        if public_class.__name__ in _PREFERENCE:
+        if public_class.__name__ in _EXTRA_MULTI_OBJECTIVE:
+            from botorch_rs.acquisition._torch_backend_mo_extra import (
+                TensorAnalyticHypervolume,
+                TensorMOMF,
+                TensorParego,
+            )
+
+            mixin = {
+                "ExpectedHypervolumeImprovement": TensorAnalyticHypervolume,
+                "MOMF": TensorMOMF,
+                "qLogNParEGO": TensorParego,
+            }[public_class.__name__]
+        elif public_class.__name__ in _NOISY_ANALYTIC:
+            from botorch_rs.acquisition._torch_backend_noisy_analytic import TensorNoisyAnalytic
+
+            mixin = TensorNoisyAnalytic
+        elif public_class.__name__ in _PREFERENCE:
             from botorch_rs.acquisition._torch_backend_preference import TensorPreferenceAcquisition
 
             mixin = TensorPreferenceAcquisition
+        elif public_class.__name__ in _ACTIVE_LEARNING:
+            from botorch_rs.acquisition._torch_backend_active_learning import (
+                TensorActiveLearning,
+            )
+
+            mixin = TensorActiveLearning
         elif public_class.__name__ in _MULTI_OBJECTIVE:
             from botorch_rs.acquisition._torch_backend_multi_objective import (
                 TensorMultiObjectiveAcquisition,
