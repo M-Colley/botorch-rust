@@ -248,7 +248,7 @@ mod tests {
     fn positive_tail_derivatives_do_not_cancel() {
         // Independent 100-digit mpmath evaluations of the defining derivative.
         for (x, expected) in [
-            (21.0, -0.047_511_674_968_101_945),
+            (21.0, -0.047_511_674_968_101_94),
             (1000.0, -0.0009999990000025),
             (1e50, -1e-50),
             (1e150, -1e-150),
