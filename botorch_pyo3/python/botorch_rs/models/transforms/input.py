@@ -1115,7 +1115,9 @@ class Warp(ReversibleInputTransform):
                 # the caller's existing leaf instead of exposing old values
                 # or replacing a Parameter held by its optimizer.
                 with torch.no_grad():
-                    parameter.copy_(_torch_input._tensor(value, parameter).reshape_as(parameter))
+                    current = _torch_input._tensor(value, parameter).reshape_as(parameter)
+                    if not torch.equal(parameter, current):
+                        parameter.copy_(current)
                 return parameter
             return value
         if parameter is not None:

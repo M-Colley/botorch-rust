@@ -270,3 +270,10 @@ def test_native_pairwise_owner_refreshes_existing_warp_leaf(device):
     assert warp.concentration0 is held0 and warp.concentration1 is held1
     torch.testing.assert_close(held0, X.new_tensor([1.3, 0.8]))
     torch.testing.assert_close(held1, X.new_tensor([0.9, 1.2]))
+    saved_loss = held0.square().sum() + held1.square().sum()
+    versions = held0._version, held1._version
+    assert warp.concentration0 is held0 and warp.concentration1 is held1
+    assert (held0._version, held1._version) == versions
+    gradients = torch.autograd.grad(saved_loss, (held0, held1))
+    torch.testing.assert_close(gradients[0], 2 * held0)
+    torch.testing.assert_close(gradients[1], 2 * held1)
