@@ -219,7 +219,17 @@ def adopt_buffer_dtype(module: Any, kind: Any) -> None:
             current._buffer_cast_dtype = dtype
         torch = sys.modules.get("torch")
         if torch is not None and isinstance(current, torch.nn.Module):
+            dormant_affine = [
+                child
+                for child in current.modules()
+                if child.__dict__.get("_native_affine_dormant", False)
+            ]
             current.to(dtype=getattr(torch, dtype))
+            # Native model dtype adoption updates inspection buffers without
+            # changing the authoritative array state or its public array kind.
+            # A caller's explicit Module.to still activates live Tensor state.
+            for child in dormant_affine:
+                child.__dict__["_native_affine_dormant"] = True
         else:
             for name in current.__dict__.get("_registered_buffers", {}):
                 value = getattr(current, name)

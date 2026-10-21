@@ -232,3 +232,18 @@ def test_fixed_array_buffers_keep_native_precision_and_live_module_updates(famil
     actual.load_state_dict(state)
     loaded = [[0.2, 0.4]] if family == "append" else [[0.2 + 0.4]]
     assert actual([[0.2]]) == loaded
+
+
+def test_native_numpy_model_dtype_adoption_retains_affine_array_kind():
+    numpy = pytest.importorskip("numpy")
+    X = numpy.array([[0.1234567890123], [0.7345678901234], [1.3456789012345]])
+    transform = port.Normalize(1)
+    SingleTaskGP(X, numpy.sin(X), outcome_transform=None, input_transform=transform)
+    assert isinstance(transform.bounds, numpy.ndarray)
+    numpy.testing.assert_array_equal(transform.bounds, [[X.min()], [X.max()]])
+    assert dict(transform.named_buffers())["_coefficient"].dtype == torch.double
+    transform.double()
+    assert isinstance(transform.bounds, torch.Tensor)
+    torch.testing.assert_close(
+        transform.bounds, torch.from_numpy(numpy.array([[X.min()], [X.max()]])), atol=0, rtol=0
+    )
