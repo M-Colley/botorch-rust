@@ -222,11 +222,11 @@ def test_noisy_full_joint_gradient_extension_matches_finite_difference(device, n
     assert value.device == query.device
 
 
-def test_tensor_acquisition_rejects_unknown_options_and_unsupported_family():
+def test_tensor_acquisition_rejects_unknown_options_and_invalid_noisy_model():
     model = TensorModel("cpu")
     with pytest.raises(TypeError, match="unexpected keyword"):
         acquisition("PosteriorMean")(model, nonexistent=True)
-    with pytest.raises(NotImplementedError, match="does not yet support"):
+    with pytest.raises(NotImplementedError, match="single-output SingleTaskGP"):
         from botorch_rs.acquisition.analytic import NoisyExpectedImprovement
 
         NoisyExpectedImprovement(model, X_observed=model.train_X)

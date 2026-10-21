@@ -69,6 +69,7 @@ _EXTRA_ANALYTIC = frozenset(
         "LogConstrainedExpectedImprovement",
         "LogProbabilityOfFeasibility",
         "ScalarizedPosteriorMean",
+        "qAnalyticProbabilityOfImprovement",
     }
 )
 _WRAPPERS = frozenset(

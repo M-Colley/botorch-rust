@@ -43,9 +43,12 @@ class TensorAnalyticExtra(nn.Module):
         self.model = values["model"]
         self.posterior_transform = values.get("posterior_transform")
         self.maximize = values.get("maximize", True)
-        if self._name == "ScalarizedPosteriorMean":
+        if self._name in {"ScalarizedPosteriorMean", "qAnalyticProbabilityOfImprovement"}:
             if self.model.num_outputs != 1 and self.posterior_transform is None:
                 raise UnsupportedError("A multi-output model requires a posterior transform.")
+            if self._name == "qAnalyticProbabilityOfImprovement":
+                self.register_buffer("best_f", torch.as_tensor(values["best_f"]))
+                return
             weights = torch.as_tensor(values["weights"])
             if weights.ndim != 1:
                 raise ValueError("weights must be a one-dimensional tensor.")
@@ -111,7 +114,10 @@ class TensorAnalyticExtra(nn.Module):
         if not isinstance(X, Tensor) or X.ndim < 2:
             raise ValueError("X must have shape batch_shape x q x d.")
         X = X.unsqueeze(0) if X.ndim == 2 else X
-        if self._name != "ScalarizedPosteriorMean" and X.shape[-2] != 1:
+        if (
+            self._name not in {"ScalarizedPosteriorMean", "qAnalyticProbabilityOfImprovement"}
+            and X.shape[-2] != 1
+        ):
             raise ValueError("Constrained analytic acquisitions require q=1.")
         posterior = self.model.posterior(X, posterior_transform=self.posterior_transform)
         if self._name == "ScalarizedPosteriorMean":
@@ -124,6 +130,18 @@ class TensorAnalyticExtra(nn.Module):
             raise UnsupportedError(
                 "Analytic Gaussian constraints require a Gaussian posterior; use an MC acquisition for nonlinear outcome transforms."
             )
+        if self._name == "qAnalyticProbabilityOfImprovement":
+            from botorch_rs.utils.probability.mvnxpb import MVNXPB
+
+            if posterior.mean.shape[-1] != 1:
+                raise UnsupportedError("The posterior transform must produce one output.")
+            centered = self.best_f.to(X).unsqueeze(-1) - posterior.distribution.mean
+            infinite = torch.full_like(centered, -torch.inf if self.maximize else torch.inf)
+            bounds = torch.stack(
+                (infinite, centered) if self.maximize else (centered, infinite), dim=-1
+            )
+            value = -MVNXPB(posterior.distribution.covariance_matrix, bounds).solve().expm1()
+            return _average_ensemble(value, self.model)
         means = posterior.mean.squeeze(-2)
         sigmas = posterior.variance.clamp_min(1e-12).sqrt().squeeze(-2)
         log_probability = self._compute_log_prob_feas(means, sigmas)
