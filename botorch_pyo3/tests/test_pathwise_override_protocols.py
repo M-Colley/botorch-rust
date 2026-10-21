@@ -64,10 +64,41 @@ def _models(device="cpu", backend="torch", standardized=False):
     return actual, expected, x
 
 
+def _dense_gaussian_update_oracle(
+    model, sample_values, *, points, target_values, noise_covariance, noise, scale_tril=None
+):
+    """Independent Gaussian conditioning with supplied normal samples.
+
+    Pinned BoTorch's Tensor covariance override calls Tensor.cholesky(), removed
+    in Torch2.14. Use its reference kernel but dense linalg for this law; do not
+    weaken the point/target/noise/factor graph checks or patch global Torch APIs.
+    """
+    # The covariance domain is symmetric: match the Cholesky derivative's
+    # symmetric tangent when using a general dense solve.
+    noise_covariance = (noise_covariance + noise_covariance.mT) / 2
+    errors = (
+        target_values
+        - sample_values
+        - (torch.linalg.cholesky(noise_covariance) @ noise.unsqueeze(-1)).squeeze(-1)
+    )
+    if scale_tril is None:
+        covariance = model.covar_module(points).to_dense() + noise_covariance
+        weights = torch.linalg.solve(covariance, errors.unsqueeze(-1))
+    else:
+        intermediate = torch.linalg.solve_triangular(scale_tril, errors.unsqueeze(-1), upper=False)
+        weights = torch.linalg.solve_triangular(scale_tril.mT, intermediate, upper=True)
+
+    def evaluate(query):
+        cross = model.covar_module(query, points).to_dense()
+        return (cross @ weights).squeeze(-1)
+
+    return evaluate
+
+
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("provided_root", [False, True])
 def test_exact_tensor_update_overrides_match_reference_values_and_full_graphs(
-    device, provided_root, monkeypatch
+    device, provided_root
 ):
     actual, expected, x = _models(device)
     leaves, paths = [], []
@@ -91,13 +122,10 @@ def test_exact_tensor_update_overrides_match_reference_values_and_full_graphs(
         query = x[[1, 4]].clone().requires_grad_()
         options = dict(points=points, target_values=target, noise_covariance=covariance)
         if provided_root:
-            options["scale_tril"] = root
+            # A Cholesky factor's free coordinates are its lower triangle.
+            options["scale_tril"] = root.tril()
         if index:
-            with monkeypatch.context() as patch:
-                patch.setattr(
-                    torch, "randn_like", lambda value, noise=noise: noise.expand_as(value)
-                )
-                path = reference_update(model, prior, **options)
+            path = _dense_gaussian_update_oracle(model, prior, noise=noise, **options)
         else:
             path = gaussian_update(model, prior, noise=noise, **options)
         paths.append(path(query))
@@ -127,9 +155,7 @@ def test_exact_tensor_update_overrides_match_reference_values_and_full_graphs(
 
 @pytest.mark.parametrize("kind", ["list", "numpy", "torch"])
 @pytest.mark.parametrize("provided_root", [False, True])
-def test_native_exact_update_overrides_match_independent_reference(
-    kind, provided_root, monkeypatch
-):
+def test_native_exact_update_overrides_match_independent_reference(kind, provided_root):
     actual, expected, x = _models(backend="native")
     points = x[[0, 2, 5]]
     target = x.new_tensor([0.3, -0.2, 0.6])
@@ -144,9 +170,7 @@ def test_native_exact_update_overrides_match_independent_reference(
     options = dict(points=points, target_values=target, noise_covariance=covariance)
     if provided_root:
         options["scale_tril"] = root
-    with monkeypatch.context() as patch:
-        patch.setattr(torch, "randn_like", lambda value: noise.expand_as(value))
-        reference = reference_update(expected, prior, **options)(x[[1, 4]])
+    reference = _dense_gaussian_update_oracle(expected, prior, noise=noise, **options)(x[[1, 4]])
     path = gaussian_update(
         actual,
         convert(prior),

@@ -184,7 +184,12 @@ def test_allocator_cases() -> None:
     zb = alloc_b.allocate_inducing_points(Xb, kb1, 4, torch.Size([2]))
     zr = alloc_r.allocate_inducing_points(Xb, kr1, 4, (2,))
     check.check("allocation, batched inputs", zr, zb, 0.0)
-    zb = alloc_b.allocate_inducing_points(X, kb1, 4, torch.Size([3]))
+    # The pinned allocator drops a metadata-only input batch when X is 2D.
+    # Supply that batch explicitly to the independent source allocator; each
+    # expanded row represents the same input law, so all three choices agree.
+    zb = torch.stack(
+        [alloc_b.allocate_inducing_points(X, kb1, 4, torch.Size([])) for _ in range(3)]
+    )
     zr = alloc_r.allocate_inducing_points(X, kr1, 4, (3,))
     check.check("allocation, unbatched inputs expanded to the batch", zr, zb, 0.0)
 
