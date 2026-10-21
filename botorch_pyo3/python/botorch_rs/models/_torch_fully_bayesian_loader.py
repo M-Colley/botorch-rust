@@ -195,9 +195,27 @@ def load_custom_modules(model: Any, samples: dict[str, Any]) -> None:
             raise ValueError(
                 "Returned mean/kernel must expose one scalar GP batch per MCMC sample."
             )
-        noise_value = validation._training_noise(train_Y, fixed)
-        if not bool(torch.isfinite(noise_value).all() & (noise_value >= 0).all()):
-            raise ValueError("Returned Gaussian observation noise must be finite and nonnegative.")
+        if validation._fb_custom_likelihood:
+            from botorch_rs.models._torch_fully_bayesian_likelihood import gaussian_marginal
+
+            _, observed = gaussian_marginal(
+                validation.likelihood, mean_value, covariance_value, train_X, training=True
+            )
+            noise = observed - covariance_value
+            if not bool(torch.isfinite(noise).all()):
+                raise ValueError("Returned Gaussian noise covariance must be finite and PSD.")
+            tolerance = 100 * torch.finfo(noise.dtype).eps * noise.abs().amax((-2, -1)).clamp_min(1)
+            symmetric = (noise - noise.transpose(-1, -2)).abs() <= tolerance[..., None, None]
+            if not bool(symmetric.all()) or not bool(
+                (torch.linalg.eigvalsh(noise) >= -tolerance[..., None]).all()
+            ):
+                raise ValueError("Returned Gaussian noise covariance must be finite and PSD.")
+        else:
+            noise_value = validation._training_noise(train_Y, fixed)
+            if not bool(torch.isfinite(noise_value).all() & (noise_value >= 0).all()):
+                raise ValueError(
+                    "Returned Gaussian observation noise must be finite and nonnegative."
+                )
         posterior = validation.posterior(like[: min(2, like.shape[-2])], observation_noise=True)
         if posterior.mean.shape[-3] != count or not bool(
             torch.isfinite(posterior.mean).all() & torch.isfinite(posterior.variance).all()

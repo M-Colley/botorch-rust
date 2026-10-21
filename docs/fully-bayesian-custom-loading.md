@@ -13,9 +13,10 @@ descriptors for supported kernels and means are converted to Tensor modules.
 
 The supported prediction law is scalar Gaussian conditioning, with one batch
 per MCMC sample. A kernel can return a dense Tensor or a differentiable operator
-with `to_dense()`. Observation noise must be a supported diagonal Gaussian law:
-the port's Gaussian/fixed-noise likelihoods or explicitly supplied GPyTorch
-Gaussian/fixed-noise likelihoods with their canonical Gaussian marginal.
+with `to_dense()`. Observation noise uses the port's Gaussian/fixed-noise
+likelihoods or explicitly supplied GPyTorch Gaussian likelihoods with their
+canonical Gaussian marginal. These include correlated, input-dependent noise
+operators supplied through `_GaussianLikelihoodBase.noise_covar`.
 Overridden arbitrary likelihood marginals are rejected, rather than evaluated
 as a different Gaussian law. Returned modules must already use the training
 dtype/device; loading does not silently move caller-owned parameters.
@@ -27,6 +28,19 @@ Bayesian source policy. The ordinary descriptor loader continues to recompute
 transformed constructor noise from the original Tensor so training-data and
 noise graphs stay live. An explicitly supplied fixed-noise Tensor likewise
 retains its graph.
+
+For an explicitly returned likelihood, conditioning evaluates that module's
+actual Gaussian marginal on the training prior and uses the full observed
+covariance in the port's native Tensor solve. Noisy query predictions apply
+the actual marginal again, with the source's explicit-noise/fixed-noise
+override rules. Training receives the source's one-element input sequence;
+prediction receives the query Tensor. No noise vector is substituted for a
+correlated covariance. Training and test noise are applied separately, matching
+the source prediction strategy rather than inventing a cross-noise block.
+Optional GPyTorch distributions/operators are used only to call an explicitly
+supplied GPyTorch likelihood; inference and conditioning use no upstream model.
+The adapter validates finite symmetric PSD noise per MCMC component before
+adoption, without changing its higher-order differentiation graph.
 
 Loading stages the model and fitted user transforms, validates an isolated copy
 of returned mutable buffers, and checks component shapes and finite Gaussian
@@ -65,3 +79,16 @@ Validation: 21 new CPU/CUDA cases pass on Torch 2.13, together with 145 existing
 scalar/native/custom-program cases. The new checks include query counts equal
 to and different from the training count for fixed-noise predictions. Ruff and
 Mypy pass for the changed production modules.
+
+The correlated-likelihood checkpoint adds CPU/CUDA independent full covariance
+values, all training-input/target/query/module-parameter first derivatives and
+mixed HVPs; direct GPyTorch ExactGP values and first derivatives; explicit noisy
+query overrides; host-conversion guards; and failed-loading rollback, including
+mixed-scale component noise PSD validation. It also checks that substituting
+only the public diagonal noise vector produces a different answer, so a
+diagonal shortcut cannot satisfy the regression.
+
+The 35 module-loader/correlated-likelihood cases pass on Torch 2.13 CPU/CUDA;
+Torch 2.14 CPU passes 18 cases with 17 CUDA skips. A custom model's virtual
+Gaussian prior and its own scale Parameter are tested through the shared
+`_prior_blocks` hook, independently of the returned covariance module.

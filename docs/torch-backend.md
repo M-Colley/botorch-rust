@@ -155,8 +155,13 @@ core, categorical, fidelity and task kernels with device prior graphs.
 Direct empirical utility entry points also retain device calculations and
 derivative graphs. The installed-wheel verification below includes these paths.
 Device-resident NUTS fits scalar and
-latent-task multitask Matérn, SAAS and linear fully Bayesian models. Custom
-probabilistic overrides remain unsupported. See
+latent-task multitask Matérn, SAAS and linear fully Bayesian models. Explicit
+custom probabilistic hooks use the port's optional NumPyro adapter on the
+installed JAX backend, matching the source's inference-device semantics;
+they are not translated into Torch NUTS. Scalar Tensor models adopt supported
+custom Gaussian module loaders, including full correlated likelihood noise,
+with device prediction and higher-order graphs. Custom multitask returned-module
+composition remains an explicit boundary. See
 [sampler semantics and verification](torch-fully-bayesian.md).
 Noisy acquisition root caching currently falls back to exact joint sampling
 with an explicit warning. The 776-name API availability audit does not measure
