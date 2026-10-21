@@ -385,6 +385,8 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
 
     def _exact_mll(self, output: Any = None, target: Any = None) -> Tensor:
         X, Y = self._training_values()
+        if output is None and type(self).forward is not TorchHigherOrderGP.forward:
+            output = nn.Module.__call__(self, self._train_X if self.training else X)
         covariance = (
             tensor_kron(self._kernel(self.covar_modules[0], X, X), self._latent_covariance())
             if output is None
@@ -392,7 +394,10 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
         )
         targets = Y.flatten(-2) if target is None else target
         value = _rs.tensor_exact_mll(
-            targets, covariance, torch.zeros_like(targets), self.likelihood.noise
+            targets,
+            covariance,
+            torch.zeros_like(targets) if output is None else output.mean,
+            self.likelihood.noise,
         )
         return (value + self._log_prior()) / targets.shape[-1]
 
@@ -443,23 +448,32 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
             train.expand(*batch, *train.shape[-2:]),
             query.expand(*batch, *query.shape[-2:]),
         )
-        latent = self._latent_covariance()
-        ktt = tensor_kron(self._kernel(self.covar_modules[0], train, train), latent)
-        ktq = tensor_kron(self._kernel(self.covar_modules[0], train, query), latent)
-        kqq = tensor_kron(self._kernel(self.covar_modules[0], query, query), latent)
+        joint_X = torch.cat((train, query), -2)
+        if type(self).forward is TorchHigherOrderGP.forward:
+            latent = self._latent_covariance()
+            ktt = tensor_kron(self._kernel(self.covar_modules[0], train, train), latent)
+            ktq = tensor_kron(self._kernel(self.covar_modules[0], train, query), latent)
+            kqq = tensor_kron(self._kernel(self.covar_modules[0], query, query), latent)
+            train_mean, query_mean = torch.zeros_like(Y.flatten(-2)), query.new_zeros(*batch, q * m)
+            joint = tensor_kron(self._kernel(self.covar_modules[0], joint_X, joint_X), latent)
+        else:
+            training_prior = nn.Module.__call__(self, train)
+            joint_prior = nn.Module.__call__(self, joint_X)
+            ktt, joint = training_prior.covariance_matrix, joint_prior.covariance_matrix
+            count = n * m
+            ktq, kqq = joint[..., :count, count:], joint[..., count:, count:]
+            train_mean, query_mean = training_prior.mean, joint_prior.mean[..., count:]
         variance = self.likelihood.noise
         noise = torch.diag_embed(variance.expand(*batch, n * m))
         test_noise = torch.diag_embed(variance.expand(*batch, q * m)) if observation_noise else None
         targets = Y.flatten(-2)
-        factor, alpha = _rs.tensor_exact_gp_factor(
-            targets, ktt, torch.zeros_like(targets), variance
-        )
+        factor, alpha = _rs.tensor_exact_gp_factor(targets, ktt, train_mean, variance)
         mean, covariance = _rs.tensor_exact_gp_predict(
             factor,
             alpha,
             ktq,
             kqq + (0 if test_noise is None else test_noise),
-            query.new_zeros(*batch, q * m),
+            query_mean,
         )
         mean = mean.reshape(*batch, q, m)
         index = torch.arange(q * m, device=X.device).reshape(q, m).T.flatten()
@@ -472,16 +486,14 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
             )
             mean = mean * scale + location
             covariance = covariance * scale.square()
-        joint_X = torch.cat((train, query), -2)
-        joint = tensor_kron(self._kernel(self.covar_modules[0], joint_X, joint_X), latent)
         base = TorchKroneckerPosterior(
             mean,
             covariance,
             joint,
             ktt,
             ktq.transpose(-1, -2),
-            Y,
-            torch.zeros_like(mean),
+            Y - train_mean.reshape(*train_mean.shape[:-1], n, m),
+            query_mean.reshape(*batch, q, m),
             noise,
             test_noise,
             n,

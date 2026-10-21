@@ -30,6 +30,7 @@ from botorch_rs.exceptions.errors import (
 )
 from botorch_rs.kernels import Kernel
 from botorch_rs.likelihoods import GaussianLikelihood, Likelihood
+from botorch_rs.models.gp_regression import _is_tensor_factory_target
 from botorch_rs.models.gpytorch import BatchedMultiOutputGPyTorchModel
 from botorch_rs.models.model import FantasizeMixin
 from botorch_rs.models.transforms.input import InputTransform, chain_spec
@@ -246,7 +247,7 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
         backend: str = "auto",
         **kwargs: Any,
     ) -> Any:
-        if cls is HigherOrderGP:
+        if _is_tensor_factory_target(cls, HigherOrderGP):
             if backend not in {"auto", "native", "torch"}:
                 raise ValueError("backend must be 'auto', 'native', or 'torch'.")
             torch = sys.modules.get("torch")
@@ -265,7 +266,11 @@ class HigherOrderGP(BatchedMultiOutputGPyTorchModel, FantasizeMixin):
             if backend == "torch" or (backend == "auto" and (requested or modules)):
                 from botorch_rs.models._torch_backend_higher_order import TorchHigherOrderGP
 
-                return object.__new__(TorchHigherOrderGP)
+                if cls is HigherOrderGP:
+                    return object.__new__(TorchHigherOrderGP)
+                from botorch_rs.models._torch_model_subclasses import model_type
+
+                return object.__new__(model_type(cls, TorchHigherOrderGP))
         return object.__new__(cls)
 
     def __init__(

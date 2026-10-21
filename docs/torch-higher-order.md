@@ -76,3 +76,10 @@ first and mixed higher derivatives without host copies. All 14 CPU cases pass
 on Torch 2.14. The integrated input, scalar/multitask/structured direct calls,
 standardization, module and native higher-order fantasy selection passes 429
 cases. Counts overlap the family-specific suites above.
+
+Caller-defined Tensor model subclasses retain their cooperative constructors
+and registered state. Prediction and exact MLLs use a custom `forward` Gaussian,
+including its nonzero mean and full input/grid covariance; saved Matheron laws
+retain the corresponding training residuals and query means. See
+[the subclass checks](builtin-model-subclasses.md) for independent complete
+derivative checks and unmodified-source controls.

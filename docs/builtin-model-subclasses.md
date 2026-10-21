@@ -1,6 +1,7 @@
 # Built-in model subclasses
 
-Caller subclasses of `SingleTaskGP`, `MultiTaskGP`, and `LCEMGP` participate in
+Caller subclasses of `SingleTaskGP`, `MultiTaskGP`, `LCEMGP`,
+`KroneckerMultiTaskGP`, `HigherOrderGP` and `LatentKroneckerGP` participate in
 Torch backend selection. Explicit `backend="torch"`, CUDA data, differentiable
 data, and supplied Torch modules preserve the caller's cooperative constructor,
 methods, buffers, class identity, deepcopy, and pickle through the shared model
@@ -41,6 +42,22 @@ the triangular operator defect. The analytic child derivative in
 reduces the complete model Hessian discrepancy to 2.3e-12. Applying only the
 previous triangular repair does not fix this case.
 
-This checkpoint does not extend the other specialized model family factories,
-or change `MultiTaskGP`/`LCEMGP` virtual-prior semantics. Those paths remain
-separate from the `SingleTaskGP` prior override implementation described here.
+The later structured-model checkpoint extends the cooperative factory to
+Kronecker, higher-order and latent-Kronecker models, including supplied-module
+automatic selection, registered parameters/buffers, method overrides, migration,
+deepcopy and pickle. Kronecker and higher-order prediction and exact MLLs also
+honor the actual virtual Gaussian prior. Their joint prior supplies query/train
+cross-covariance and mean terms, while the training prior supplies the observed
+covariance. Default families retain their separate covariance-block evaluation.
+Kronecker conversion respects the Gaussian's explicit interleaving convention.
+
+Thirty-six new CPU/CUDA cases verify these factories and laws, including actual
+Gaussian prior objects with point-major and output-major covariance layouts. Independent dense
+Gaussian solves check all data/parameter first derivatives and mixed higher
+derivatives for prediction and training-mode MLLs. Four cases compare unmodified
+source conditional values and query/added-parameter derivatives. With BoTorch,
+GPyTorch, linear_operator, SciPy and inference adapters blocked, the 20 independent
+port cases still pass and the four source checks skip; twelve actual-GPyTorch
+Gaussian cases also require that optional dependency. Latent-Kronecker virtual
+prior/likelihood extensions remain under audit; its new checks certify factory
+and registered-state behavior. Other specialized families remain separate audits.

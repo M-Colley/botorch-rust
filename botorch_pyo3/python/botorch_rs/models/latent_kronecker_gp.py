@@ -15,6 +15,7 @@ from botorch_rs.exceptions.warnings import InputDataWarning
 from botorch_rs.kernels import Kernel, MaternKernel, ScaleKernel
 from botorch_rs.likelihoods import GaussianLikelihood
 from botorch_rs.means import ConstantMean, ZeroMean
+from botorch_rs.models.gp_regression import _is_tensor_factory_target
 from botorch_rs.models.gpytorch import GPyTorchModel
 from botorch_rs.models.higher_order_gp import _initial_raw_noise
 from botorch_rs.models.model import FantasizeMixin
@@ -69,7 +70,7 @@ class LatentKroneckerGP(GPyTorchModel, FantasizeMixin):
         backend: str = "auto",
         **kwargs: Any,
     ) -> Any:
-        if cls is LatentKroneckerGP:
+        if _is_tensor_factory_target(cls, LatentKroneckerGP):
             if backend not in {"auto", "native", "torch"}:
                 raise ValueError("backend must be 'auto', 'native', or 'torch'.")
             torch = sys.modules.get("torch")
@@ -86,7 +87,11 @@ class LatentKroneckerGP(GPyTorchModel, FantasizeMixin):
             if backend == "torch" or (backend == "auto" and (requested or modules)):
                 from botorch_rs.models._torch_backend_latent_kronecker import TorchLatentKroneckerGP
 
-                return object.__new__(TorchLatentKroneckerGP)
+                if cls is LatentKroneckerGP:
+                    return object.__new__(TorchLatentKroneckerGP)
+                from botorch_rs.models._torch_model_subclasses import model_type
+
+                return object.__new__(model_type(cls, TorchLatentKroneckerGP))
         return object.__new__(cls)
 
     def __init__(

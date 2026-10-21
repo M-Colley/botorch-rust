@@ -91,3 +91,9 @@ outcome units. The structured direct-call regressions compare values and query
 gradients and check finite query Hessians on CPU/CUDA, including query/model batch axes.
 The source batch-factor defect is filed as
 [GPyTorch #2817](https://github.com/cornellius-gp/gpytorch/pull/2817).
+
+Tensor factory selection also preserves caller-defined subclasses. Their
+`forward` Gaussian defines the full prior used by prediction and exact MLLs;
+both interleaved actual Gaussian and port output-major covariance layouts are
+recognized. The [subclass checks](builtin-model-subclasses.md) cover complete
+first/higher graphs, actual source controls, registered state and serialization.

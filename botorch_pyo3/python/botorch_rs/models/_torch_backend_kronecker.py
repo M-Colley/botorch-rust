@@ -512,18 +512,10 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         X, Y = self._training_values()
         mean = self.mean_module(X)
         covariance = self.covar_module(X, X)
+        if output is None and type(self).forward is not TorchKroneckerMultiTaskGP.forward:
+            output = nn.Module.__call__(self, self._train_X if self.training else X)
         if output is not None:
-            mean = output.mean
-            q = X.shape[-2]
-            permutation = (
-                torch.arange(q * self.num_outputs, device=X.device)
-                .reshape(self.num_outputs, q)
-                .transpose(-1, -2)
-                .flatten()
-            )
-            covariance = output.covariance_matrix.index_select(-2, permutation).index_select(
-                -1, permutation
-            )
+            mean, covariance = self._point_major_law(output)
             Y = Y if target is None else target
         noise = tensor_kron(
             torch.eye(X.shape[-2], dtype=X.dtype, device=X.device), self._noise_matrix()
@@ -532,6 +524,22 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
             Y.flatten(-2), covariance + noise, mean.flatten(-2), torch.zeros_like(Y.flatten(-2))
         )
         return (value + self._log_prior()) / (Y.shape[-2] * Y.shape[-1])
+
+    def _point_major_law(self, distribution: Any) -> tuple[Tensor, Tensor]:
+        mean, covariance = distribution.mean, distribution.covariance_matrix
+        if not isinstance(mean, Tensor) or not isinstance(covariance, Tensor):
+            raise TypeError(
+                "forward must return a Gaussian with Tensor mean and covariance_matrix."
+            )
+        if self.num_outputs == 1 and len(getattr(distribution, "event_shape", ())) == 1:
+            mean = mean.unsqueeze(-1)
+        if mean.ndim < 2 or mean.shape[-1] != self.num_outputs:
+            raise ValueError("The Gaussian prior must retain the point and task event axes.")
+        if not getattr(distribution, "_interleaved", False):
+            q, m = mean.shape[-2:]
+            index = torch.arange(q * m, device=mean.device).reshape(m, q).T.flatten()
+            covariance = covariance.index_select(-2, index).index_select(-1, index)
+        return mean, covariance
 
     def posterior(
         self,
@@ -575,11 +583,21 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
             train.expand(*batch, n, train.shape[-1]),
             query.expand(*batch, q, query.shape[-1]),
         )
-        ktt, ktq, kqq = (
-            self.covar_module(train, train),
-            self.covar_module(train, query),
-            self.covar_module(query, query),
-        )
+        full = torch.cat((train, query), -2)
+        if type(self).forward is TorchKroneckerMultiTaskGP.forward:
+            ktt, ktq, kqq = (
+                self.covar_module(train, train),
+                self.covar_module(train, query),
+                self.covar_module(query, query),
+            )
+            train_mean, query_mean = self.mean_module(train), self.mean_module(query)
+            joint = self.covar_module(full, full)
+        else:
+            train_mean, ktt = self._point_major_law(nn.Module.__call__(self, train))
+            full_mean, joint = self._point_major_law(nn.Module.__call__(self, full))
+            count = n * m
+            ktq, kqq = joint[..., :count, count:], joint[..., count:, count:]
+            query_mean = full_mean[..., n:, :]
         task_noise = self._noise_matrix()
         noise = tensor_kron(torch.eye(n, dtype=X.dtype, device=X.device), task_noise)
         test_noise = (
@@ -587,7 +605,6 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
             if observation_noise
             else None
         )
-        train_mean, query_mean = self.mean_module(train), self.mean_module(query)
         factor, alpha = _rs.tensor_exact_gp_factor(
             Y.flatten(-2), ktt + noise, train_mean.flatten(-2), torch.zeros_like(Y.flatten(-2))
         )
@@ -601,8 +618,6 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         mean = mean.reshape(*batch, q, m)
         permutation = torch.arange(q * m, device=X.device).reshape(q, m).transpose(-1, -2).flatten()
         covariance = covariance.index_select(-2, permutation).index_select(-1, permutation)
-        full = torch.cat((train, query), -2)
-        joint = self.covar_module(full, full)
         location, scale = 0.0, 1.0
         if untransform and self.outcome_transform is not None:
             location, scale = (

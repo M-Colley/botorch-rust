@@ -832,7 +832,7 @@ class KroneckerMultiTaskGP(GPyTorchModel):
         backend: str = "auto",
         **kwargs: Any,
     ) -> Any:
-        if cls is KroneckerMultiTaskGP:
+        if _is_tensor_factory_target(cls, KroneckerMultiTaskGP):
             if backend not in {"auto", "native", "torch"}:
                 raise ValueError("backend must be 'auto', 'native', or 'torch'.")
             torch = sys.modules.get("torch")
@@ -857,7 +857,11 @@ class KroneckerMultiTaskGP(GPyTorchModel):
             if backend == "torch" or (backend == "auto" and (requested or modules)):
                 from botorch_rs.models._torch_backend_kronecker import TorchKroneckerMultiTaskGP
 
-                return object.__new__(TorchKroneckerMultiTaskGP)
+                if cls is KroneckerMultiTaskGP:
+                    return object.__new__(TorchKroneckerMultiTaskGP)
+                from botorch_rs.models._torch_model_subclasses import model_type
+
+                return object.__new__(model_type(cls, TorchKroneckerMultiTaskGP))
         return object.__new__(cls)
 
     def __init__(
