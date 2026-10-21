@@ -435,6 +435,9 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             factor, alpha = _rs.tensor_exact_gp_factor(Y, train_covar, train_mean, train_noise)
             if key is not None:
                 self._prediction_cache = (key, factor, alpha)
+        from botorch_rs.models._torch_fantasy import prediction_factor
+
+        factor, alpha = prediction_factor(factor, alpha)
         mean, covariance = _rs.tensor_exact_gp_predict(
             factor,
             alpha,
@@ -648,6 +651,9 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         return model.eval()
 
     def fantasize(self, X: Any, sampler: Any, observation_noise: Any = None, **kwargs: Any) -> Any:
+        from botorch_rs.models._torch_fantasy import prediction_cache_gradients
+        from botorch_rs.models.utils.assorted import fantasize
+
         propagate = kwargs.pop("propagate_grads", False)
         if kwargs:
             raise UnsupportedError(f"Unsupported fantasy arguments: {sorted(kwargs)}.")
@@ -663,13 +669,13 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
                     if self.num_outputs > 1
                     else observation_noise.unsqueeze(-1)
                 ).mean(-2, keepdim=True)
-        posterior = self.posterior(
-            X, observation_noise=True if observation_noise is None else observation_noise
-        )
-        Y = sampler(posterior)
-        if not propagate:
-            Y = Y.detach()
-        return self.condition_on_observations(X, Y, noise=observation_noise)
+        with fantasize():
+            with prediction_cache_gradients(propagate):
+                posterior = self.posterior(
+                    X, observation_noise=True if observation_noise is None else observation_noise
+                )
+            Y = sampler(posterior)
+            return self.condition_on_observations(X, Y, noise=observation_noise)
 
     def _sync_torch_parameters(self) -> Any:
         # Parameters already are the tensors consumed by the inference graph.

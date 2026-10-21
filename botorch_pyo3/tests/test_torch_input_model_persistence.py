@@ -11,10 +11,15 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from test_torch_input_models import DEVICES, _case, _data, _derivatives
+from test_torch_input_models import DEVICES, _case, _data, _derivatives, _manual
 
 from botorch_rs.models import SingleTaskGP
-from botorch_rs.models.transforms.input import AppendFeatures, ChainedInputTransform, Warp
+from botorch_rs.models.transforms.input import (
+    AppendFeatures,
+    ChainedInputTransform,
+    NumericToCategoricalEncoding,
+    Warp,
+)
 from botorch_rs.priors import LogNormalPrior
 
 FAMILIES = [
@@ -101,6 +106,55 @@ def test_whole_model_pickle_keeps_caller_module_and_parameter_aliases(device):
         actual.distribution.covariance_matrix, expected.distribution.covariance_matrix
     )
     _derivatives(actual.mean, actual.distribution.covariance_matrix, (Q, *restored.parameters()))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_categorical_encoder_modules_keep_full_model_graphs_and_state(device):
+    X, Y, Q = _data(device)
+    X = (
+        torch.cat((X[..., :1], X.new_tensor([[0.0], [1.0], [0.0], [1.0]])), -1)
+        .detach()
+        .requires_grad_()
+    )
+    Q = torch.cat((Q[..., :1], Q.new_tensor([[1.0], [0.0]])), -1).detach().requires_grad_()
+    encoder = torch.nn.Embedding(2, 2, dtype=X.dtype, device=X.device)
+    source = NumericToCategoricalEncoding(2, {1: 2}, {1: encoder})
+    model = SingleTaskGP(X, Y, input_transform=source, outcome_transform=None)
+    assert (
+        dict(model.named_parameters())["input_transform._encoder_modules.1.weight"]
+        is encoder.weight
+    )
+    assert model.input_transform.encoders[1] is encoder
+    actual = model.posterior(Q)
+    expected = _manual(
+        model,
+        torch.cat((X[..., :1], encoder(X[..., 1].long())), -1),
+        Y,
+        torch.cat((Q[..., :1], encoder(Q[..., 1].long())), -1),
+    )
+    torch.testing.assert_close(actual.mean, expected[0])
+    torch.testing.assert_close(actual.distribution.covariance_matrix, expected[1])
+    leaves = (X, Y, Q, *model.parameters())
+    for values, reference in zip(
+        _derivatives(actual.mean, actual.distribution.covariance_matrix, leaves),
+        _derivatives(*expected, leaves),
+        strict=True,
+    ):
+        for value, oracle in zip(values, reference, strict=True):
+            torch.testing.assert_close(value, oracle, atol=3e-9, rtol=3e-8)
+    restored, alias = _roundtrip((model, encoder))
+    assert restored.input_transform.encoders[1] is alias
+    assert (
+        dict(restored.named_parameters())["input_transform._encoder_modules.1.weight"]
+        is alias.weight
+    )
+    restored.to(dtype=torch.float32)
+    assert alias.weight.dtype == torch.float32
+    restored.eval()
+    assert not alias.training
+    restored.train()
+    assert alias.training
+    assert restored.posterior(Q.float()).mean.dtype == torch.float32
 
 
 @pytest.mark.parametrize("device", DEVICES)

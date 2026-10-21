@@ -102,8 +102,11 @@ changes, one-to-many query ordering, frozen child modes, alias ownership,
 parameter identity, strict host-conversion guards and registration without
 fitting are tested explicitly. This describes the verified scalar model and
 generic-builder scope; it does not establish every specialized model's
-transform configuration. Conditioning/fantasy layouts for transforms with
-different raw training/query widths require separate model integration tests.
+transform configuration. Eight families now have conditioning controls with
+unmodified source models and independent dense Gaussian laws, including
+transforms that change feature width. Layouts with different original raw
+training/query widths fail the source's original-input concatenation too; an
+AppendFeatures source boundary control records that behavior explicitly.
 
 Whole-model pickle now retains every family's actual Tensor buffers, caller
 callback modules and Parameters. Ordinary pickle memoization preserves shared
@@ -132,3 +135,26 @@ subclasses that use a flattened correlated-output training representation.
 Torch 2.14.1 CPU passes 29 persistence cases and skips 29 CUDA cases (before
 adding the two native precision controls). It does not certify the complete
 package.
+
+Module encoders stored inside NumericToCategoricalEncoding's dictionary are
+registered with the Tensor model too, retaining caller identity, optimizer
+visibility, state, modes and device/dtype migration. The corresponding source
+registration defect is proposed for repair in BoTorch #3522.
+
+Scalar fantasize now enters the public fantasy context, so the default
+InputPerturbation environmental expansion is skipped during sampling and
+conditioning. With propagate_grads=False, only the training prediction factor
+and alpha are detached during sampling; the sampled query path remains live.
+The source checks explicitly enable gradient propagation and rebuild its
+prediction cache for subsequent posterior comparisons. Both flags have
+independent dense first/mixed higher derivative controls. The 280-case
+integrated selection includes knowledge gradient, its initializers,
+multi-step lookahead and supplied Gaussian likelihood conditioning.
+
+An existing behavioral difference remains: conditioned port models share
+hyperparameters with the original model, while the source copies them. The
+current shared physical hyperparameter derivative control sums the two
+corresponding source partials; it does not establish identical parameter
+ownership or mutation independence. This difference needs a separate repair.
+Standalone public transform module methods are also a separate scope from
+their model registration and numerical methods.

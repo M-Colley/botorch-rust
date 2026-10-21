@@ -61,6 +61,15 @@ class TorchPublicInputTransform(_TorchModule):
         for name, value in source.__dict__.items():
             if isinstance(value, nn.Module) and name not in self._modules:
                 self.add_module(name, value.to(like))
+        encoders = getattr(source, "encoders", {})
+        if isinstance(encoders, dict):
+            modules = {
+                str(index): encoder.to(like)
+                for index, encoder in encoders.items()
+                if isinstance(encoder, nn.Module)
+            }
+            if modules:
+                self.add_module("_encoder_modules", nn.ModuleDict(modules))
         self._sync_from_source()
         if isinstance(source, Warp):
             for i in (0, 1):
