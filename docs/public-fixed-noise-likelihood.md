@@ -22,10 +22,13 @@ additional learned component. This follows the repaired Gaussian contract in
 the pinned implementation's duplicated explicit override. Conditioning appends
 fixed observations once and independently copies learned likelihood parameters.
 
-Thirty-two focused CPU/CUDA cases compare source values, all active first and
+Thirty-six focused CPU/CUDA cases compare source values, all active first and
 mixed second derivatives, actual module protocols and independent corrected
 override/conditioning laws. They also preserve supplied constraint/prior identity,
 constraint initial values, raw optimizer bounds and prior derivative graphs.
+Four additional multitask conditioning cases verify that the fixed component
+is appended once and learned parameters belong to the independently copied
+child, with full data/query/parameter derivatives and Hessian products.
 The eight new constraint controls fail before the repair. All 212 related
 integrated cases pass. The earlier 24-case focused selection passes twelve cases
 on Torch 2.14 CPU; with reference packages blocked, eight pass and sixteen
