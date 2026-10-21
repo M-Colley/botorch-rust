@@ -203,10 +203,10 @@ class TensorStandardizeState(nn.Module):
 
         if not bool(self._is_trained):
             raise RuntimeError("Standardize must be fitted before untransform_posterior.")
-        if posterior.mean.shape[-1] != self._m and not self._requires_X:
+        q, m = posterior._extended_shape()[-2:]
+        if m != self._m and not self._requires_X:
             raise RuntimeError("Incompatible output dimensions encountered.")
         means, stdvs, squared = (value.clone() for value in self.statistics(X))
-        q, m = posterior.mean.shape[-2:]
         if self._requires_X and means.shape[-2] != q:
             if means.shape[-2] != q * m:
                 raise RuntimeError("Stratified input context does not match the posterior event.")
@@ -242,6 +242,7 @@ def untransform_multitask_outcome(transform: Any, posterior: Any, X: Tensor) -> 
         for name in reversed(transform._transform_names):
             posterior = untransform_multitask_outcome(transform[name], posterior, X)
         return posterior
-    if not getattr(transform, "_requires_X", False) and posterior.mean.shape[-1] > 1:
-        transform = transform.subset_output([0] * posterior.mean.shape[-1])
+    m = posterior._extended_shape()[-1]
+    if not getattr(transform, "_requires_X", False) and m > 1:
+        transform = transform.subset_output([0] * m)
     return transform.untransform_posterior(posterior, X=X)

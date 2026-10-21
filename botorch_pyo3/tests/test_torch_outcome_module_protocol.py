@@ -345,6 +345,35 @@ def test_native_fit_keeps_float64_statistics_after_default_module_initialization
         torch.testing.assert_close(torch.tensor(actual, dtype=torch.double), reference)
 
 
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("outer", ["log", "standardize", "stratified"])
+def test_chains_construct_sample_only_laws_without_requesting_moments(device, outer):
+    y = torch.tensor([[1.2], [1.7], [2.4], [3.1]], dtype=torch.double, device=device)
+    y.requires_grad_()
+    x = y.new_tensor([[0.1, 1], [0.3, 3], [0.6, 1], [0.9, 3]])
+    outer_transform = {
+        "log": Log,
+        "standardize": lambda: Standardize(1),
+        "stratified": lambda: StratifiedStandardize(1, [1, 3]),
+    }[outer]()
+    power = Power(nn.Parameter(y.new_tensor(2.0)))
+    chain = ChainedOutcomeTransform(outer=outer_transform, power=power).to(y)
+    chain.train()(y, X=x)
+    chain.eval()
+    mean = y.new_tensor([[2.1], [2.6]]).requires_grad_()
+    covariance = torch.eye(2, dtype=y.dtype, device=device) * 0.02
+    base = TorchGPyTorchPosterior(mean, covariance)
+    posterior = chain.untransform_posterior(base, X=x[:2])
+    normals = y.new_full((3, *base.base_sample_shape), 0.2)
+    actual = posterior.rsample_from_base_samples(torch.Size([3]), normals)
+    transformed = base.rsample_from_base_samples(torch.Size([3]), normals).pow(1 / power.power)
+    expected = outer_transform.untransform(transformed, X=x[:2])[0]
+    leaves = (mean, power.power) if outer == "log" else (y, mean, power.power)
+    _compare_hessian(actual.sin().sum(), expected.sin().sum(), leaves)
+    with pytest.raises(NotImplementedError, match="mean"):
+        _ = posterior.mean
+
+
 @pytest.mark.parametrize("protocol", ["to", "state_dict", "hook", "buffers", "pickle"])
 def test_pre_torch_outcomes_promote_in_place_on_explicit_module_protocol(protocol):
     from botorch_rs import _botorch_rs

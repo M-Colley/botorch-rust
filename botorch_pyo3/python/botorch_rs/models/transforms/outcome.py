@@ -274,12 +274,12 @@ class _Elementwise(OutcomeTransform):
 
     def untransform_posterior(self, posterior: Any, X: Any = None) -> Any:
         r"""Un-transform a posterior: a ``TransformedPosterior``."""
-        if first_kind(posterior.mean).lib == "torch":
+        if _tensor_posterior_like(posterior) is not None:
             from botorch_rs.models._torch_backend_modules import TorchElementwiseOutcome
 
-            return TorchElementwiseOutcome(self, posterior.mean.shape[-1]).untransform_posterior(
-                posterior, X=X
-            )
+            return TorchElementwiseOutcome(
+                self, posterior._extended_shape()[-1]
+            ).untransform_posterior(posterior, X=X)
         if self._outputs is not None:
             raise NotImplementedError(
                 f"{self._name} does not yet support output selection for untransform_posterior"
@@ -709,8 +709,8 @@ class Standardize(OutcomeTransform):
         affine maps of the samples, mean and variance (BoTorch returns a
         rescaled ``GPyTorchPosterior`` for Gaussian posteriors; botorch_rs's
         models un-standardize natively)."""
-        if first_kind(posterior.mean).lib == "torch":
-            return self._tensor_state(posterior.mean).untransform_posterior(posterior, X=X)
+        if (like := _tensor_posterior_like(posterior)) is not None:
+            return self._tensor_state(like).untransform_posterior(posterior, X=X)
         if self._outputs is not None:
             raise NotImplementedError(
                 "Standardize does not yet support output selection for untransform_posterior"
@@ -922,8 +922,8 @@ class StratifiedStandardize(Standardize):
     def untransform_posterior(self, posterior: Any, X: Any = None) -> Any:
         if X is None:
             raise ValueError("X is required for StratifiedStandardize.")
-        if first_kind(posterior.mean).lib == "torch":
-            return self._tensor_state(posterior.mean).untransform_posterior(posterior, X=X)
+        if (like := _tensor_posterior_like(posterior)) is not None:
+            return self._tensor_state(like).untransform_posterior(posterior, X=X)
         raise UnsupportedError(
             "StratifiedStandardize.untransform_posterior is only supported inside botorch_rs "
             "models."
@@ -1035,6 +1035,15 @@ class ChainedOutcomeTransform(OutcomeTransform):
     def __repr__(self) -> str:
         inner = ", ".join(f"{k}={v!r}" for k, v in self._transforms.items())
         return f"ChainedOutcomeTransform({inner})"
+
+
+def _tensor_posterior_like(posterior: Any) -> Any:
+    """Inspect sample metadata without requiring unavailable posterior moments."""
+    torch = sys.modules.get("torch")
+    dtype = getattr(posterior, "dtype", None)
+    if torch is not None and isinstance(dtype, torch.dtype):
+        return torch.empty(0, dtype=dtype, device=posterior.device)
+    return None
 
 
 def is_plain_standardize(tf: Any) -> bool:
