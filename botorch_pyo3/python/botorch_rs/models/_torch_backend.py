@@ -674,7 +674,10 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
                 dim=-1,
             )
         if self._train_Yvar is not None and not self._is_custom_likelihood:
-            model.likelihood.noise = model._training_values()[2]
+            from botorch_rs.models._torch_gaussian_likelihood import is_fixed_noise
+
+            if is_fixed_noise(model.likelihood):
+                model.likelihood.noise = model._training_values()[2]
         return model.eval()
 
     def fantasize(self, X: Any, sampler: Any, observation_noise: Any = None, **kwargs: Any) -> Any:
