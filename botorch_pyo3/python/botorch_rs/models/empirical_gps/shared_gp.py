@@ -44,6 +44,7 @@ class _SharedBinding:
 class _SharedBackend:
     def __init__(self, models: list[Any], mean: Mean, kernel: Kernel, freeze_noise: bool) -> None:
         self.models, self.mean, self.kernel = models, mean, kernel
+        self.freeze_noise = freeze_noise
         self._native = _rs.SharedGPFit(
             [m._rs for m in models], isinstance(mean, ConstantMean), freeze_noise
         )
@@ -98,9 +99,37 @@ class _SharedBackend:
         self._install()
         return result
 
+    def sample_all_priors(self, seed: int | None = None, max_retries: int = 100) -> None:
+        """Sample one shared mean/kernel and independent likelihood noises."""
+        self._sync()
+        raw = self.raw_parameters()
+        shapes = self.models[0]._rs.parameter_shapes()
+        count = len(self.models)
+        for index, model in enumerate(self.models):
+            _rs.sample_all_priors(model._rs, None if seed is None else seed + index)
+            local = model._rs.raw_parameters()
+            offset = 0
+            for name, shape in shapes:
+                size = math.prod(shape)
+                if "raw_noise" in name and not self.freeze_noise:
+                    raw[index] = local[offset]
+                elif (
+                    index == 0
+                    and name == "mean_module.raw_constant"
+                    and isinstance(self.mean, ConstantMean)
+                ):
+                    raw[count] = local[offset]
+                offset += size
+            if index == 0:
+                start = count + int(isinstance(self.mean, ConstantMean))
+                raw[start:] = model.covar_module._raw_flat()
+        self.set_raw_parameters(raw)
+
 
 class _SharedSumMarginalLogLikelihood(SumMarginalLogLikelihood):
     _rs_shared_fit = True
+    _rs_custom_objective = True
+    _joint_fit = True
 
     def __init__(self, model: ModelListGP, backend: _SharedBackend) -> None:
         super().__init__(model.likelihood, model)
@@ -153,8 +182,16 @@ class _SharedSumMarginalLogLikelihood(SumMarginalLogLikelihood):
         optimizer_kwargs: Any = None,
         **kwargs: Any,
     ) -> Any:
-        if closure is not None or closure_kwargs is not None:
-            raise UnsupportedError("Shared GP fitting requires native analytic likelihoods.")
+        from botorch_rs.fit import _fit_generic, _requires_generic_fit
+
+        if (
+            _requires_generic_fit(
+                self, closure, optimizer, closure_kwargs, optimizer_kwargs, kwargs
+            )
+            or kwargs.get("pick_best_of_all_attempts", False)
+            or getattr(optimizer, "__name__", None) == "fit_gpytorch_mll_torch"
+        ):
+            return _fit_generic(self, closure, optimizer, closure_kwargs, optimizer_kwargs, kwargs)
         name = getattr(optimizer, "__name__", None)
         settings = dict(optimizer_kwargs or {})
         self.train()
@@ -255,10 +292,11 @@ def build_shared_gp_model_list(
     covar_module._bind(binding, "covar_module.")
     for model in models:
         model.mean_module, model.covar_module = mean_module, covar_module
-    result = ModelListGP(*models)
+    result: Any = ModelListGP(*models)
     shared_backend = _SharedBackend(
         models, mean_module, covar_module, observation_noise is not None
     )
+    result._sample_all_priors = shared_backend.sample_all_priors
     return result, _SharedSumMarginalLogLikelihood(result, shared_backend)
 
 

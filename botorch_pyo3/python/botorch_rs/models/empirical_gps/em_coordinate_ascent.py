@@ -132,6 +132,8 @@ class KLPriorFitMLL(MarginalLogLikelihood):
     this objective. Native fitting updates the mean and kernel in place.
     """
 
+    _rs_custom_objective = True
+
     def __init__(self, likelihood: Any, model: Any, X_ref: Any, mu_em: Any, Sigma_em: Any) -> None:
         if getattr(model, "num_outputs", 1) != 1 or tuple(getattr(model, "batch_shape", ())):
             raise UnsupportedError(
@@ -208,15 +210,18 @@ class KLPriorFitMLL(MarginalLogLikelihood):
         optimizer_kwargs: Any = None,
         **kwargs: Any,
     ) -> KLPriorFitMLL:
+        from botorch_rs.fit import _fit_generic, _requires_generic_fit
+
         if (
-            closure is not None
-            or closure_kwargs is not None
-            or (
-                optimizer is not None
-                and getattr(optimizer, "__name__", "") != "fit_gpytorch_mll_scipy"
+            getattr(self.model, "_tensor_backend", None) == "torch"
+            or _requires_generic_fit(
+                self, closure, optimizer, closure_kwargs, optimizer_kwargs, kwargs
             )
+            or kwargs.get("pick_best_of_all_attempts", False)
+            or getattr(optimizer, "__name__", None) == "fit_gpytorch_mll_torch"
         ):
-            raise UnsupportedError("KL prior fitting supports the default native L-BFGS-B closure.")
+            _fit_generic(self, closure, optimizer, closure_kwargs, optimizer_kwargs, kwargs)
+            return self
         self._fit_result = self._objective.fit(optimizer_kwargs, **kwargs)
         self.eval()
         return self

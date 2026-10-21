@@ -614,6 +614,14 @@ class EMEmpiricalGaussianProcess(GPyTorchModel):
             self._rs.refresh_em()
         self._sync_em_state(force=True)
 
+    def _fit_snapshot(self) -> Any:
+        """Retain warm EM moments along with native raw parameters for retries."""
+        return self._rs.copy()
+
+    def _fit_restore(self, state: Any) -> None:
+        self._rs = state.copy()
+        self._sync_em_state(force=True)
+
     @property
     def _X_inducing(self) -> Any:
         return self._inducing_locations
@@ -764,6 +772,7 @@ class EMEmpiricalMarginalLogLikelihood(MarginalLogLikelihood):
 
     _rs_fit = True
     _rs_em_fit = True
+    _rs_custom_objective = True
 
     def __init__(self, likelihood: Any, model: EMEmpiricalGaussianProcess) -> None:
         if not isinstance(model, EMEmpiricalGaussianProcess):
@@ -812,9 +821,19 @@ class EMEmpiricalMarginalLogLikelihood(MarginalLogLikelihood):
         optimizer_kwargs: Any = None,
         **kwargs: Any,
     ) -> EMEmpiricalMarginalLogLikelihood:
+        from botorch_rs.fit import _fit_generic, _requires_generic_fit
+
         self._validate_fit()
-        if closure is not None or closure_kwargs is not None:
-            raise UnsupportedError("EM fitting requires the native analytic likelihood closure.")
+        if (
+            getattr(self.model, "_tensor_backend", None) == "torch"
+            or _requires_generic_fit(
+                self, closure, optimizer, closure_kwargs, optimizer_kwargs, kwargs
+            )
+            or kwargs.get("pick_best_of_all_attempts", False)
+            or getattr(optimizer, "__name__", None) == "fit_gpytorch_mll_torch"
+        ):
+            _fit_generic(self, closure, optimizer, closure_kwargs, optimizer_kwargs, kwargs)
+            return self
         options = dict(optimizer_kwargs or {})
         name = getattr(optimizer, "__name__", None)
         self.train()

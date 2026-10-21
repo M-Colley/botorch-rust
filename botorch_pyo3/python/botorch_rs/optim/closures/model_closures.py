@@ -44,6 +44,20 @@ class MllLossClosure:
         if kwargs:
             raise UnsupportedError(f"Unsupported closure keyword arguments: {sorted(kwargs)}.")
         entries = {e.name: e for e in _entries(self.mll)}
+        if getattr(self.mll, "_rs_custom_objective", False):
+            # KL, EM and globally shared likelihoods have their own analytic
+            # objective. Evaluating the ordinary GP MLL would optimize a
+            # different law (and shared offsets do not belong to each child).
+            value, gradient = self.mll.value_and_grad()
+            return -value, {
+                name: [
+                    -g
+                    for g in gradient[
+                        entries[name].offset : entries[name].offset + entries[name].size
+                    ]
+                ]
+                for name in names
+            }
         total = 0.0
         grads: dict[str, list[float]] = {}
         cache: dict[int, list[float]] = {}

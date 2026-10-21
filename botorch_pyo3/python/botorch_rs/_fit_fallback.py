@@ -6,7 +6,7 @@ import copy
 import functools
 import warnings
 from contextlib import ExitStack
-from typing import Any
+from typing import Any, NamedTuple
 
 from botorch_rs.exceptions.errors import InvalidArgumentError, ModelFittingError, NotPSDError
 from botorch_rs.exceptions.warnings import OptimizationWarning
@@ -34,11 +34,19 @@ def _roots(model: Any) -> list[Any]:
     return list({id(root): root for root in roots}.values())
 
 
+class _FitCheckpoint(NamedTuple):
+    state: Any
+
+
 def _snapshots(roots: list[Any]) -> list[Any]:
     from botorch_rs.utils.context_managers import module_rollback_ctx
 
-    snapshots = []
+    snapshots: list[Any] = []
     for root in roots:
+        capture = getattr(root, "_fit_snapshot", None)
+        if callable(capture) and getattr(root, "_tensor_backend", None) != "torch":
+            snapshots.append(_FitCheckpoint(capture()))
+            continue
         with module_rollback_ctx(root, device="cpu") as checkpoint:
             snapshots.append(copy.deepcopy(checkpoint))
             checkpoint.clear()
@@ -50,6 +58,9 @@ def _restore(roots: list[Any], snapshots: list[Any]) -> None:
 
     with ExitStack() as stack:
         for root, checkpoint in zip(roots, snapshots, strict=True):
+            if isinstance(checkpoint, _FitCheckpoint):
+                root._fit_restore(checkpoint.state)
+                continue
             stack.enter_context(module_rollback_ctx(root, checkpoint=checkpoint))
 
 

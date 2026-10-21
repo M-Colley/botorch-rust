@@ -114,6 +114,11 @@ and gradients of shared parameters in one native optimization. Gaussian
 noises are learned independently or pinned exactly when supplied. List,
 NumPy and Torch array interfaces and native L-BFGS-B/Adam are supported;
 custom Python modules and batched historical datasets are explicit boundaries.
+Custom optimizers and closures, parameter subsets, callbacks, schedulers and
+retry policies now use the generic fitting drivers over that same joint
+objective and global parameter layout. They preserve shared parameters and
+fixed noises. Native EM retry snapshots include the learned warm moments, not
+only raw hyperparameters; see [fitting protocols](fitting-protocol.md).
 
 `coordinate_ascent_em` alternates native EM with native fixed-moment kernel
 fitting, pins observation noise, updates caller-owned parametric modules, and

@@ -58,11 +58,11 @@ def _model_sources(module: Any) -> list[tuple[str, Any]]:
     parameter names (an MLL registers the likelihood before the model)."""
     from botorch_rs.mlls import MarginalLogLikelihood, SumMarginalLogLikelihood
 
+    if hasattr(module, "_param_entries"):
+        # Approximate and globally shared MLLs own their flat parameter layout.
+        return [("", module)]
     if isinstance(module, SumMarginalLogLikelihood):
         return [(f"model.models.{i}.", m.model) for i, m in enumerate(module.mlls)]
-    if hasattr(module, "_param_entries"):
-        # An approximate MLL: the parameters with the MLL's names.
-        return [("", module)]
     if isinstance(module, MarginalLogLikelihood):
         return [("model.", module.model)]
     return [("", module)]
@@ -111,7 +111,9 @@ def _entries(module: Any) -> list[_Entry]:
             hi = max(x[1] for x in b) if b else math.inf
             entries.append(_Entry(prefix + name, value, (lo, hi), model, offset, size))
             offset += size
-    if isinstance(module, (MarginalLogLikelihood, SumMarginalLogLikelihood)):
+    if isinstance(module, (MarginalLogLikelihood, SumMarginalLogLikelihood)) and not getattr(
+        module, "_rs_shared_fit", False
+    ):
         # The likelihood's parameters come first, under the MLL's likelihood.
         def is_likelihood(name: str) -> bool:
             return ".likelihood." in name or name.startswith("model.likelihood.")
@@ -252,6 +254,10 @@ def sample_all_priors(model: Any, max_retries: int = 100, seed: int | None = Non
     if getattr(model, "_tensor_backend", None) == "torch":
         _sample_tensor_priors(model, max_retries, seed)
         return
+    custom = getattr(model, "_sample_all_priors", None)
+    if callable(custom):
+        custom(max_retries=max_retries, seed=seed)
+        return
     models = model.models if hasattr(model, "models") else [model]
     visited: set[int] = set()
     for i, m in enumerate(models):
@@ -262,12 +268,15 @@ def sample_all_priors(model: Any, max_retries: int = 100, seed: int | None = Non
         sync = getattr(m, "_sync_torch_parameters", None)
         if sync is not None:
             sync()
-        if isinstance(rs, _rs.SingleTaskVariationalGP):
-            rs.sample_all_priors(None if seed is None else int(seed) + i)
+        sample = getattr(rs, "sample_all_priors", None)
+        if callable(sample):
+            sample(None if seed is None else int(seed) + i)
         elif isinstance(rs, _rs.SingleTaskGP):
             _rs.sample_all_priors(rs, None if seed is None else int(seed) + i)
         else:
-            raise UnsupportedError("sample_all_priors requires botorch_rs SingleTaskGP models.")
+            raise UnsupportedError(
+                f"{type(m).__name__} does not expose a native prior-sampling protocol."
+            )
         if sync is not None:
             sync()
 

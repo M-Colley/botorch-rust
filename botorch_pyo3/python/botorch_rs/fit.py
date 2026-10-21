@@ -79,9 +79,7 @@ def fit_gpytorch_mll(
             **kwargs,
         )
 
-    if isinstance(mll, SumMarginalLogLikelihood) and not isinstance(
-        mll, _SharedSumMarginalLogLikelihood
-    ):
+    if isinstance(mll, SumMarginalLogLikelihood) and not getattr(mll, "_joint_fit", False):
         mll.train()
         results = []
         for sub_mll in mll.mlls:
@@ -109,32 +107,8 @@ def fit_gpytorch_mll(
     ):
         return mll._fit(closure, optimizer, closure_kwargs, optimizer_kwargs, **kwargs)
 
-    generic = (
-        closure is not None
-        or closure_kwargs is not None
-        or any(key in kwargs for key in ("warning_handler", "caught_exception_types"))
-        or (
-            optimizer is not None
-            and callable(optimizer)
-            and getattr(optimizer, "__name__", None)
-            not in ("fit_gpytorch_mll_scipy", "fit_gpytorch_mll_torch")
-        )
-        or any(
-            value is not None
-            for name, value in (optimizer_kwargs or {}).items()
-            if name in ("bounds", "parameters", "callback", "timeout_sec", "closure_kwargs")
-        )
-        or (optimizer_kwargs or {}).get("method", "L-BFGS-B") != "L-BFGS-B"
-        or bool(
-            set((optimizer_kwargs or {}).get("options") or {}) - _LBFGSB_OPTIONS - _IGNORED_OPTIONS
-        )
-        or (
-            isinstance(mll, _ApproximateMarginalLogLikelihood)
-            and (
-                kwargs.get("data_loader") is not None
-                or kwargs.get("pick_best_of_all_attempts", False)
-            )
-        )
+    generic = _requires_generic_fit(
+        mll, closure, optimizer, closure_kwargs, optimizer_kwargs, kwargs
     )
     if generic:
         if not isinstance(mll, MarginalLogLikelihood):
@@ -153,12 +127,7 @@ def fit_gpytorch_mll(
         raise UnsupportedError("Custom closures are not supported by botorch_rs.")
     if kwargs.pop("pick_best_of_all_attempts", False):
         from botorch_rs._fit_attempts import fit_all_attempts
-        from botorch_rs.models.gp_regression import SingleTaskGP
 
-        if not isinstance(mll.model, SingleTaskGP):
-            raise UnsupportedError(
-                "Best-of-all fitting currently requires a SingleTaskGP family model."
-            )
         return fit_all_attempts(mll, optimizer, optimizer_kwargs, kwargs)
     if optimizer is not None and getattr(optimizer, "__name__", None) == "fit_gpytorch_mll_torch":
         if not isinstance(mll, ExactMarginalLogLikelihood):
@@ -235,6 +204,50 @@ def fit_gpytorch_mll(
         ],
     }
     return mll.eval()
+
+
+def _requires_generic_fit(
+    mll: Any,
+    closure: Any,
+    optimizer: Any,
+    closure_kwargs: dict[str, Any] | None,
+    optimizer_kwargs: dict[str, Any] | None,
+    kwargs: dict[str, Any],
+) -> bool:
+    """Whether a caller supplied an extension of the native default fit."""
+    from botorch_rs.models.gp_regression import SingleTaskGP
+
+    return bool(
+        closure is not None
+        or closure_kwargs is not None
+        or any(key in kwargs for key in ("warning_handler", "caught_exception_types"))
+        or (
+            optimizer is not None
+            and callable(optimizer)
+            and getattr(optimizer, "__name__", None)
+            not in ("fit_gpytorch_mll_scipy", "fit_gpytorch_mll_torch")
+        )
+        or any(
+            value is not None
+            for name, value in (optimizer_kwargs or {}).items()
+            if name in ("bounds", "parameters", "callback", "timeout_sec", "closure_kwargs")
+        )
+        or (optimizer_kwargs or {}).get("method", "L-BFGS-B") != "L-BFGS-B"
+        or bool(
+            set((optimizer_kwargs or {}).get("options") or {}) - _LBFGSB_OPTIONS - _IGNORED_OPTIONS
+        )
+        or (
+            isinstance(mll, _ApproximateMarginalLogLikelihood)
+            and (
+                kwargs.get("data_loader") is not None
+                or kwargs.get("pick_best_of_all_attempts", False)
+            )
+        )
+        or (
+            kwargs.get("pick_best_of_all_attempts", False)
+            and not isinstance(mll.model, SingleTaskGP)
+        )
+    )
 
 
 def _fit_generic(

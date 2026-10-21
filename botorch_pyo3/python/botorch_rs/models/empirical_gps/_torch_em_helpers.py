@@ -145,6 +145,8 @@ def shared_models(
 class TensorSharedMLL(SumMarginalLogLikelihood):
     """A joint Tensor objective; shared mean/kernel leaves occur once."""
 
+    _joint_fit = True
+
     def __init__(self, likelihood: Any, model: Any, mean_source: Any, kernel_source: Any) -> None:
         super().__init__(likelihood, model)
         self._mean_source, self._kernel_source = mean_source, kernel_source

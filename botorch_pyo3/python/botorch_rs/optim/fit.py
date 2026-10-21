@@ -222,26 +222,6 @@ def fit_gpytorch_mll_scipy(
         return _fit_scipy_approximate(
             mll, parameters, bounds, closure, closure_kwargs, method, options, callback, timeout_sec
         )
-    if getattr(mll, "_rs_shared_fit", False) and (
-        parameters is not None
-        or bounds is not None
-        or closure is not None
-        or closure_kwargs is not None
-        or method != "L-BFGS-B"
-        or callback is not None
-        or timeout_sec is not None
-    ):
-        raise UnsupportedError(
-            "Shared GP lists require the native L-BFGS-B closure over all parameters."
-        )
-    if getattr(mll, "_rs_em_fit", False) and (
-        closure is not None
-        or closure_kwargs is not None
-        or method != "L-BFGS-B"
-        or callback is not None
-        or timeout_sec is not None
-    ):
-        raise UnsupportedError("EM likelihoods require the native L-BFGS-B closure.")
     if (
         _is_higher_order(mll)
         and ((parameters is None and bounds is None) or getattr(mll, "_rs_em_fit", False))
@@ -529,10 +509,6 @@ def fit_gpytorch_mll_torch(
             if getattr(mll, "_rs_em_fit", False):
                 mll.model._sync_em_state(force=True)
             return result
-        if getattr(mll, "_rs_shared_fit", False) or getattr(mll, "_rs_em_fit", False):
-            raise UnsupportedError(
-                "EM and shared-GP Adam fitting require the native closure and stopping criterion, with no scheduler or callback."
-            )
     if _is_approximate(mll):
         native = (
             closure is None
@@ -631,7 +607,11 @@ def _fit_generic_torch(
     names = list(param_dict if parameters is None else parameters)
     state: Any = None
     selected = dict(param_dict if parameters is None else parameters)
-    if closure is None or any(not isinstance(value, torch.Tensor) for value in selected.values()):
+    if closure is None or any(
+        not isinstance(value, torch.nn.Parameter) for value in selected.values()
+    ):
+        # Native array/Tensor descriptors are snapshots, rather than optimizer
+        # leaves linked to Rust state. Bridge them even for a caller's closure.
         native = (
             get_loss_closure_with_grads(mll, {n: param_dict[n] for n in names})
             if closure is None
