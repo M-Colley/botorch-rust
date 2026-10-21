@@ -112,8 +112,20 @@ class TensorMultiObjectiveAcquisition(_TensorAcquisition):
         self.register_buffer("_eta", torch.as_tensor(values["eta"]))
         self.fat = self._fat = values["fat"]
         self.register_buffer("_X_pending", None)
-        like = next(self.model.parameters())
-        ref = torch.as_tensor(values["ref_point"], dtype=like.dtype, device=like.device)
+        # The reference follows the observed geometry (or noisy baseline),
+        # including for stateless models with no parameters or buffers.
+        like = values.get("X_baseline")
+        if like is None:
+            like = getattr(values.get("partitioning"), "pareto_Y", None)
+        if not isinstance(like, Tensor):
+            like = values["ref_point"]
+        if not isinstance(like, Tensor):
+            like = next(itertools.chain(self.model.parameters(), self.model.buffers()), None)
+        ref = torch.as_tensor(
+            values["ref_point"],
+            dtype=like.dtype if isinstance(like, Tensor) else None,
+            device=like.device if isinstance(like, Tensor) else None,
+        )
         if ref.ndim != 1 or ref.numel() < 2:
             raise ValueError(
                 "Hypervolume improvement requires a one-dimensional reference with m>=2."

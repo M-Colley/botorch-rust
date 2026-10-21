@@ -23,3 +23,11 @@ unmodified source's complete first derivatives verify the port's mixed higher
 derivatives. No source patch or tolerance relaxation hides that discrepancy.
 The new cases and existing model-buffer/fantasy regressions pass together:
 66 CPU/CUDA cases.
+
+Hypervolume acquisitions also accept parameterless models, including fully
+stateless Gaussian models and models with only buffers. The reference point
+uses the partition geometry's dtype/device for observed improvement and the
+baseline's dtype/device for noisy improvement, matching the official
+constructors. Tensor reference points retain their conversion graphs.
+`test_parameterless_hypervolume.py` checks ordinary/log and observed/noisy
+improvement, buffer graphs, query higher derivatives and metadata on CPU/CUDA.
