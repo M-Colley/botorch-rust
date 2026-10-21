@@ -70,6 +70,8 @@ def test_joint_learned_noisy_improvement_cache_request_and_complete_graphs(devic
     outcome, preference, data = _models(device)
     query = data[0].new_tensor([[0.25, 0.45], [0.6, 0.3]], requires_grad=True)
     cls = getattr(logei if name.startswith("qLog") else monte_carlo, name)
+    generator = torch.Generator(device=device).manual_seed(83)
+    normals = torch.randn(8, 1, 4, 2, device=device, dtype=query.dtype, generator=generator)
     results = []
     for cached in (False, True):
         objective = LearnedObjective(preference, sample_shape=torch.Size([4]), seed=82)
@@ -81,14 +83,13 @@ def test_joint_learned_noisy_improvement_cache_request_and_complete_graphs(devic
             prune_baseline=False,
             sampler=IIDNormalSampler(torch.Size([8]), seed=83),
         )
+        acquisition = cls(**kwargs)
+        acquisition.sampler.base_samples = normals
         if cached:
-            with pytest.warns(RuntimeWarning, match="full-joint"):
-                acquisition = cls(**kwargs)
-        else:
-            acquisition = cls(**kwargs)
+            acquisition.base_sampler.base_samples = normals[..., :2, :]
         value = acquisition(query)
         assert acquisition.baseline_obj.shape[0] == 32
-        assert not acquisition._cache_root
+        assert acquisition._cache_root is cached
         targets = (
             *data,
             query,
@@ -100,8 +101,9 @@ def test_joint_learned_noisy_improvement_cache_request_and_complete_graphs(devic
         assert all(bool(torch.isfinite(t).all()) for t in (value, *first, *second))
         results.append((value, *first, *second))
     for left, right in zip(*results, strict=True):
-        torch.testing.assert_close(left, right, atol=0, rtol=0)
+        torch.testing.assert_close(left, right, atol=2e-7, rtol=2e-6)
     if name == "qNoisyExpectedImprovement":
+        acquisition.sampler.base_samples = normals[..., :3, :]
         duplicate = acquisition(data[0][:1])
         # Only the small numerical covariance-root jitter can separate an
         # exactly repeated candidate and baseline draw under the joint law.

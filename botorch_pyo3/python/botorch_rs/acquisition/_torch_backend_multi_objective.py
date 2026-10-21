@@ -6,8 +6,7 @@ import copy
 import inspect
 import itertools
 import math
-import warnings
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch import Tensor, nn
@@ -27,6 +26,9 @@ from botorch_rs.acquisition.multi_objective.objective import IdentityMCMultiOutp
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import legacy_ei_numerics_warning
 from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
+
+if TYPE_CHECKING:
+    from botorch_rs.acquisition._torch_root_cache import TensorRootCache
 
 
 def partition_2d(
@@ -313,6 +315,7 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
     _observed_sampler: Any
     _last_baseline_objective: Tensor | None
     _last_cell_mask: Tensor | None
+    _tensor_root_cache: TensorRootCache
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         nn.Module.__init__(self)
@@ -338,13 +341,9 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
                 "Noisy hypervolume requires a normal sampler supporting baseline base-sample updates."
             )
         self.register_buffer("_X_baseline", baseline)
-        self.cache_root = self._cache_root = False
-        if values["cache_root"]:
-            warnings.warn(
-                "backend='torch' uses full-joint noisy hypervolume sampling; setting cache_root=False.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
+        from botorch_rs.acquisition._torch_root_cache import configure
+
+        configure(self, values["cache_root"])
         self.cache_pending = bool(values["cache_pending"])
         self._max_iep = int(values["max_iep"])
         if self._max_iep < 0:
@@ -408,8 +407,9 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
 
     def _new_sampler(self) -> Any:
         if isinstance(self.sampler, NormalMCSampler):
-            sampler_type: Any = type(self.sampler)
-            return sampler_type(sample_shape=self.sample_shape, seed=self.sampler.seed)
+            from botorch_rs.acquisition._torch_root_cache import new_sampler
+
+            return new_sampler(self.sampler)
         return copy.deepcopy(self.sampler)
 
     @property
@@ -525,6 +525,12 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
             self._last_prefix_count = baseline_count
         if baseline_count:
             self.sampler._update_base_samples(posterior, self.base_sampler)
+            if self._cache_root:
+                from botorch_rs.acquisition._torch_root_cache import joint_samples
+
+                samples = joint_samples(self, posterior, self.X_baseline, self.base_sampler)
+                if samples is not None:
+                    return samples
         return self.sampler(posterior)
 
     def forward(self, X: Any) -> Tensor:
@@ -551,7 +557,11 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
             # Source partition geometry uses the standalone prefix draw.
             # A repeated query can require jitter in the full joint factor;
             # that stabilization must not perturb the fixed baseline frontier.
-            baseline_samples = self.base_sampler(self.model.posterior(joint[..., :count, :]))
+            baseline_samples = (
+                samples[..., :count, :]
+                if self._cache_root and self._last_root_cache_used
+                else self.base_sampler(self.model.posterior(joint[..., :count, :]))
+            )
         else:
             baseline_samples = samples[..., :0, :]
         if self.detach_baseline:
@@ -574,7 +584,29 @@ class TensorNoisyMultiObjectiveAcquisition(TensorMultiObjectiveAcquisition):
             n = self._X_baseline.shape[-2]
             pending_hv = _dominated_volume(baseline_obj, self.ref_point, feasible)
             if n:
-                observed_samples = self._observed_sampler(self._prefix_posterior(posterior, n))
+                if self._cache_root:
+                    from botorch_rs.acquisition._torch_root_cache import root_samples
+
+                    observed_posterior = self.model.posterior(self._X_baseline)
+                    root = self._tensor_root_cache.factor(
+                        self.model, self._X_baseline, observed_posterior
+                    )
+                    observed_samples = root_samples(
+                        observed_posterior,
+                        root,
+                        self._observed_sampler.base_samples,
+                        self.sample_shape,
+                    )
+                    missing = baseline_samples.ndim - observed_samples.ndim
+                    if missing:
+                        sample_dims = len(self.sample_shape)
+                        observed_samples = observed_samples.reshape(
+                            *observed_samples.shape[:sample_dims],
+                            *([1] * missing),
+                            *observed_samples.shape[sample_dims:],
+                        )
+                else:
+                    observed_samples = self._observed_sampler(self._prefix_posterior(posterior, n))
                 if self.detach_baseline:
                     observed_samples = observed_samples.detach()
                 observed_obj = self.objective(observed_samples, X=self._X_baseline)

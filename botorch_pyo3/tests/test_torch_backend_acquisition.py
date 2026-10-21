@@ -371,7 +371,7 @@ def test_forward_and_double_backward_do_not_transfer_tensor_data_to_host(device,
 
 def test_noisy_cache_warning_and_invalid_constraint_temperature():
     model = TensorModel("cpu")
-    with pytest.warns(RuntimeWarning, match="full-joint"):
+    with pytest.warns(RuntimeWarning, match="independent Gaussian"):
         actual = acquisition("qLogNoisyExpectedImprovement")(
             model,
             X_baseline=model.train_X.detach(),

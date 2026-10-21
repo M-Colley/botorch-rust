@@ -805,7 +805,19 @@ class _TensorAcquisition(nn.Module):
         joint = torch.cat(
             (baseline.expand(*batch, *baseline.shape[-2:]), X.expand(*batch, *X.shape[-2:])), dim=-2
         )
-        samples, objective = self._draw(joint)
+        if self._cache_root:
+            from botorch_rs.acquisition._torch_root_cache import joint_samples
+
+            posterior = self._posterior(joint)
+            samples = joint_samples(self, posterior, baseline, self.base_sampler)
+            if samples is None:
+                samples = self.sampler(posterior)
+            objective = self._objective_values(samples, joint)
+            samples = _objective_samples(
+                samples, objective, len(self.sample_shape), self._preference_ensemble
+            )
+        else:
+            samples, objective = self._draw(joint)
         n = baseline.shape[-2]
         self.baseline_samples, self.baseline_obj = samples[..., :n, :], objective[..., :n]
         self._last_best_f = self._best_baseline(self.baseline_samples, self.baseline_obj)
@@ -838,14 +850,10 @@ class _TensorAcquisition(nn.Module):
             raise ValueError("X_baseline must be a nonempty batch_shape x n x d Torch tensor.")
         self.marginalize_dim = values.get("marginalize_dim")
         self.incremental = bool(values.get("incremental", False))
-        self.cache_root = self._cache_root = False
-        if values.get("cache_root"):
-            warnings.warn(
-                "backend='torch' currently uses exact full-joint noisy sampling; "
-                "setting cache_root=False.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
+        from botorch_rs.acquisition._torch_root_cache import configure, new_sampler
+
+        configure(self, values.get("cache_root"))
+        self.base_sampler = new_sampler(self.sampler) if self._cache_root else None
         self.prune_baseline = bool(values.get("prune_baseline", True))
         self.register_buffer("_lower_bound_points", values.get("lower_bound_points"))
         self.register_buffer("_baseline_source", baseline)

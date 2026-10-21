@@ -93,7 +93,7 @@ the model. Nested posterior-mean wrappers retain the same member mapping.
 
 ## Correcting the noisy-improvement cache law
 
-With a stochastic or batched learned preference, NEI and LogNEI use full-joint sampling
+On the native CPU backend, with a stochastic or batched learned preference, NEI and LogNEI use full-joint sampling
 even if `cache_root=True` was requested. An explicit request emits a warning;
 the default selects the correct path quietly. Pointwise deterministic
 preferences without preference training batches retain native baseline-root
@@ -177,8 +177,12 @@ with the leading outcome Monte Carlo dimension, following the port's existing
 convention. Ordinary preference-model batch axes are distinct from that
 outcome Monte Carlo dimension.
 
-Tensor NEI and LogNEI use full-joint noisy sampling; requesting root caching
-explicitly warns and selects that law. Default baseline pruning now repeats
+Tensor NEI and LogNEI evaluate the learned objective once on the complete
+baseline/candidate outcome draw. With `cache_root=True`, outcome draws now use
+baseline roots and Schur conditional sampling while preserving that joint
+learned-preference law. Frozen roots are reused; live training-data and
+parameter graphs rebuild their baseline factor on every forward call. See
+[Tensor cache semantics](torch-noisy-root-cache.md). Default baseline pruning now repeats
 outcome samples to match augmented preference draws before computing
 feasibility, including added preference-model batch axes. Pruning stores its
 discrete selected indices and reconstructs selected baseline inputs on every

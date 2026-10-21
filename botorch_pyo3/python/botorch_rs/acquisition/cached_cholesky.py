@@ -41,6 +41,13 @@ class CachedCholeskyMCSamplerMixin(MCSamplerMixin):
         self._cache_root = cache_root
 
     def _compute_root_decomposition(self, posterior: Any) -> Any:
+        if getattr(posterior, "_tensor_backend", None) == "torch":
+            from botorch_rs.utils._torch_low_rank import covariance_blocks
+
+            root = _rs.tensor_psd_safe_cholesky(
+                covariance_blocks(posterior.distribution, posterior._q, posterior._m)
+            )
+            return root if posterior._is_mt else root.squeeze(-3)
         if not isinstance(posterior, GPyTorchPosterior):
             raise UnsupportedError("Cached roots require a botorch_rs Gaussian posterior.")
         covariance: FloatData
@@ -73,7 +80,11 @@ class CachedCholeskyMCSamplerMixin(MCSamplerMixin):
         from botorch_rs.models.higher_order_gp import HigherOrderGP
 
         axis = -self.model._num_dimensions if isinstance(self.model, HigherOrderGP) else -2
-        shape = to_flat(samples)[1]
+        shape = (
+            tuple(samples.shape)
+            if getattr(posterior, "_tensor_backend", None) == "torch"
+            else to_flat(samples)[1]
+        )
         index = [slice(None)] * len(shape)
         index[axis] = slice(shape[axis] - q_in, shape[axis])
         return _ops.getitem(samples, tuple(index))

@@ -163,8 +163,10 @@ custom Gaussian module loaders, including full correlated likelihood noise,
 with device prediction and higher-order graphs. Task-aware loaders preserve
 cross-task covariance, mapped labels and physical feature selection. See
 [sampler semantics and verification](torch-fully-bayesian.md).
-Noisy acquisition root caching currently falls back to exact joint sampling
-with an explicit warning. The 776-name API availability audit does not measure
+Noisy Tensor acquisitions use baseline Cholesky roots and Schur conditional
+sampling for independent Gaussian posteriors. Frozen roots are reused; live
+data and parameter graphs rebuild the baseline factor on each call. See
+[cache semantics and checks](torch-noisy-root-cache.md). The 776-name API availability audit does not measure
 GPU or behavioral parity. New checkpoints receive focused CPU/CUDA and autograd
 tests; the current release certificate below records their integrated run.
 

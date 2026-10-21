@@ -431,12 +431,12 @@ def test_noisy_pruning_to_empty_front_matches_empty_ehvi(device, log, outcomes):
     assert actual.cell_lower_bounds.device == query.device
 
 
-def test_noisy_hypervolume_cache_fallback_and_explicit_boundaries():
+def test_noisy_hypervolume_cache_and_explicit_boundaries():
     X, Y, ref, _ = data("cpu", 2)
     model = SingleTaskGP(X, Y, backend="torch")
-    with pytest.warns(RuntimeWarning, match="full-joint"):
-        actual = acquisition(True, noisy=True)(model, ref, X_baseline=X.detach(), cache_root=True)
-    assert actual.cache_root is False
+    actual = acquisition(True, noisy=True)(model, ref, X_baseline=X.detach(), cache_root=True)
+    assert actual.cache_root is True
+    assert torch.isfinite(actual(X.detach()[:1])).all()
     with pytest.raises(ValueError, match="model outcomes"):
         acquisition(True, noisy=True)(
             model, torch.zeros(3, dtype=torch.double), X_baseline=X.detach()
