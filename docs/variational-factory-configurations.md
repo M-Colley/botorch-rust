@@ -25,14 +25,66 @@ It also checks posterior snapshots after later distribution parameter edits.
 CPU and CUDA run the same tests; reference-dependent cases require the
 optional reference packages, while port-specification dense-law cases do not.
 
+## Caller-supplied strategy factories
+
+A compatible callable `variational_strategy` now executes its actual
+constructor. This includes subclasses, functions, callable objects and
+`functools.partial` with extra constructor options or positional prefixes.
+The returned strategy module, variational distribution, registered parameters,
+buffers and virtual `forward` method are retained. Constructor-supplied
+inducing points and learn-location options override partial keyword defaults
+through the ordinary Python call protocol. A malformed factory return is
+rejected explicitly.
+
+The optional strategy host is a port-defined approximate GP whose Gaussian
+prior uses the port's mean and covariance modules. It imports GPyTorch for
+the caller's strategy-component protocol and never imports or delegates to a
+BoTorch model. It wraps prior covariance in a dense linear operator without
+factoring it eagerly: a joint prior containing repeated inducing/training
+inputs can be singular before the strategy adds its intended jitter.
+Port Gaussian likelihood descriptors gain the public `expected_log_prob`
+protocol without changing parameter names or duplicating their leaves.
+Actual supplied likelihood modules keep their identity. The ordinary
+VariationalELBO module adapter supplies fitting, priors, KL and loss terms.
+
+Canonical `VariationalStrategy`, `UnwhitenedVariationalStrategy`,
+`BatchDecoupledVariationalStrategy` and `CiqVariationalStrategy` still use the
+port's device-resident algebra. Arbitrary caller components retain their own
+autograd behavior, including any limitations in external operations they
+choose to call. In particular, a subclass using GPyTorch's optimized
+`ComputePredictiveUpdates` inherits the upstream higher-derivative defect
+reported in [GPyTorch #2824](https://github.com/cornellius-gp/gpytorch/pull/2824).
+The new independent dense-Gaussian HVP controls use a caller-defined strategy
+whose operations retain the full higher-order graph; they do not treat a
+known broken external second derivative as an oracle.
+
+`test_torch_variational_factories.py` checks source values and every first
+derivative, custom strategy parameters and forward laws, independent dense
+HVPs, actual Adam steps and public Torch fitting, Gaussian default descriptors,
+module links, modes, state loading, deepcopy and pickle on CPU and CUDA.
+Training data graphs remain shared across deepcopy, as with the existing
+outer data buffers; module parameters and mutable state are copied. No hidden
+owner shell or weak reference is introduced for the actual strategy host.
+
+## Input-transform construction
+
+Default kernel ARD width, inducing-point coordinates, target row validation,
+and default inducing count use the actual transformed training inputs. The
+public posterior still receives inputs in the original feature coordinates.
+This permits feature-filtering transforms and training transforms that expand
+rows when targets describe those transformed rows. Target model batches may
+broadcast with the training-input batches. Source controls verify the changed
+feature width, selected-feature gradients, actual training rows and allocator
+count.
+
+## Source constructor boundaries
+
 Constructor compatibility is separate from implementing every strategy in
 GPyTorch. Direct `GridInterpolationVariationalStrategy`,
 `NNVariationalStrategy`, and `OrthogonallyDecoupledVariationalStrategy` are
 not interchangeable with the constructor call made by the pinned BoTorch
 wrapper: they reject its `inducing_points` or
 `learn_inducing_locations` keyword arguments. A caller can instead supply a
-compatible factory or an already-constructed approximate model. Working
-source factories, subclasses, `LargeBatchVariationalStrategy`, and targetless
-outcome-transform attachment are additional audited configurations; they
-must preserve the supplied strategy's actual behavior rather than replacing
-a subclass with a canonical strategy by name.
+compatible factory or an already-constructed approximate model. A caller's
+factory must adapt the actual constructor arguments and supply a coherent
+strategy; accepting a class name cannot substitute for that protocol.

@@ -7,7 +7,7 @@ import functools
 import math
 import sys
 import weakref
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import Tensor, nn
@@ -576,6 +576,7 @@ class _TorchVariationalOutput:
 
 class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
     _tensor_backend = "torch"
+    _uses_caller_strategy = False
     _train_X: Tensor
     _train_Y: Tensor | None
     model: Any
@@ -602,7 +603,6 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         backend: str = "torch",
     ) -> None:
         from botorch_rs.likelihoods import GaussianLikelihood, MultitaskGaussianLikelihood
-        from botorch_rs.models._torch_backend import TorchSingleTaskGP
         from botorch_rs.models.utils.inducing_point_allocators import GreedyVarianceReduction
 
         nn.Module.__init__(self)
@@ -616,27 +616,25 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
                 "Torch variational training inputs must be finite float32/float64 Tensors (...,n,d)."
             )
         if train_Y is not None:
-            TorchSingleTaskGP._validate_data(train_X, train_Y)
+            if not isinstance(train_Y, Tensor) or train_Y.ndim < 2:
+                raise TypeError("Variational training targets must be Tensors (...,n,m).")
+            if train_Y.dtype != train_X.dtype or train_Y.device != train_X.device:
+                raise TypeError("Training inputs and targets must share dtype and device.")
+            if not train_Y.shape[-1] or not bool(torch.isfinite(train_Y).all()):
+                raise ValueError("Training targets must be finite with nonempty outputs.")
             num_outputs = train_Y.shape[-1]
         elif outcome_transform is not None:
             raise ValueError("An outcome transform requires training targets.")
         if num_outputs <= 0:
             raise ValueError("num_outputs must be positive.")
         gpytorch = sys.modules.get("gpytorch")
+        supplied_factory = variational_strategy
+        strategy_class = (
+            variational_strategy.func
+            if isinstance(variational_strategy, functools.partial)
+            else variational_strategy
+        )
         strategy_options: dict[str, Any] = {}
-        if isinstance(variational_strategy, functools.partial):
-            strategy_options = dict(variational_strategy.keywords or {})
-            if variational_strategy.args or "model" in strategy_options:
-                raise TypeError("A variational strategy factory must leave its model unbound.")
-            variational_strategy = variational_strategy.func
-            # SingleTaskVariationalGP supplies these keyword arguments itself,
-            # overriding partial defaults just as the source constructor does.
-            for name in ("inducing_points", "variational_distribution", "learn_inducing_locations"):
-                strategy_options.pop(name, None)
-            if set(strategy_options) - {"jitter_val", "mean_var_batch_dim"}:
-                raise TypeError(
-                    f"Unexpected variational strategy arguments: {sorted(strategy_options)}."
-                )
         strategies = {
             VariationalStrategy: True,
             UnwhitenedVariationalStrategy: False,
@@ -652,14 +650,26 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             decoupled_types.add(gpytorch.variational.BatchDecoupledVariationalStrategy)
             strategies[gpytorch.variational.CiqVariationalStrategy] = True
             ciq_types.add(gpytorch.variational.CiqVariationalStrategy)
-        if variational_strategy not in strategies:
-            raise UnsupportedError(
-                "Torch variational models support VariationalStrategy, "
-                "UnwhitenedVariationalStrategy, BatchDecoupledVariationalStrategy and "
-                "CiqVariationalStrategy."
-            )
-        whitened = strategies[variational_strategy]
-        decoupled = variational_strategy in decoupled_types
+        canonical = next((kind for kind in strategies if strategy_class is kind), None)
+        self._uses_caller_strategy = canonical is None
+        if self._uses_caller_strategy:
+            if not callable(supplied_factory):
+                raise TypeError("variational_strategy must be a callable factory.")
+        elif isinstance(variational_strategy, functools.partial):
+            strategy_options = dict(variational_strategy.keywords or {})
+            if variational_strategy.args or "model" in strategy_options:
+                raise TypeError("A variational strategy factory must leave its model unbound.")
+            # The model supplies these arguments itself, overriding partial
+            # defaults just as the source constructor does.
+            for name in ("inducing_points", "variational_distribution", "learn_inducing_locations"):
+                strategy_options.pop(name, None)
+            if set(strategy_options) - {"jitter_val", "mean_var_batch_dim"}:
+                raise TypeError(
+                    f"Unexpected variational strategy arguments: {sorted(strategy_options)}."
+                )
+        variational_strategy = canonical
+        whitened = True if canonical is None else strategies[canonical]
+        decoupled = canonical in decoupled_types
         if not decoupled and "mean_var_batch_dim" in strategy_options:
             raise TypeError("mean_var_batch_dim configures BatchDecoupledVariationalStrategy only.")
         distribution_family = _distribution_family(variational_distribution)
@@ -700,7 +710,19 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             if train_Y is None
             else build_outcome_transform(outcome_transform, num_outputs, train_Y)
         )
-        covariance = build_kernel(covar_module, train_X.shape[-1], self._aug_batch_shape, train_X)
+        transformed = self._training_inputs()
+        if train_Y is not None:
+            if transformed.ndim != train_Y.ndim or transformed.shape[-2] != train_Y.shape[-2]:
+                raise ValueError(
+                    "Transformed training inputs and targets must contain the same rows and ranks."
+                )
+            try:
+                torch.broadcast_shapes(transformed.shape[:-2], train_Y.shape[:-2])
+            except RuntimeError as error:
+                raise ValueError("Training input and target batches must broadcast.") from error
+        covariance = build_kernel(
+            covar_module, transformed.shape[-1], self._aug_batch_shape, train_X
+        )
         mean = build_mean(mean_module, self._aug_batch_shape, train_X)
         from botorch_rs.likelihoods import BernoulliLikelihood
         from botorch_rs.models._torch_backend_variational_likelihoods import (
@@ -751,13 +773,14 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
                     "The Torch variational backend supports Gaussian and scalar Bernoulli probit observations."
                 )
             self.likelihood = build_likelihood(likelihood, None, self.batch_shape, train_X)
-        transformed = self._training_inputs()
         points = (
             self._inducing_point_allocator.allocate_inducing_points(
                 inputs=transformed,
                 covar_module=covariance,
                 num_inducing=(
-                    int(0.25 * train_X.shape[-2]) if inducing_points is None else inducing_points
+                    int(0.25 * transformed.shape[-2])
+                    if inducing_points is None
+                    else inducing_points
                 ),
                 input_batch_shape=self.batch_shape,
             )
@@ -767,7 +790,7 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         if (
             not isinstance(points, Tensor)
             or points.ndim < 2
-            or points.shape[-1] != train_X.shape[-1]
+            or points.shape[-1] != transformed.shape[-1]
             or not points.shape[-2]
             or points.dtype != train_X.dtype
             or points.device != train_X.device
@@ -812,6 +835,33 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
                 points.shape[-2], distribution_batch, train_X, variational_distribution
             )
         strategy: _TorchVariationalStrategy
+        if self._uses_caller_strategy:
+            try:
+                from botorch_rs.models._torch_variational_factory import (
+                    CallerStrategyGP,
+                    caller_distribution,
+                    caller_likelihood,
+                )
+            except ModuleNotFoundError as error:
+                if error.name != "gpytorch":
+                    raise
+                raise UnsupportedError(
+                    "Caller-supplied variational strategy factories require optional GPyTorch "
+                    "for their approximate-model component protocol."
+                ) from error
+            self.model = CallerStrategyGP(
+                supplied_factory,
+                points,
+                caller_distribution(distribution, distribution_family, train_X),
+                learn_inducing_points,
+                covariance,
+                mean,
+                num_outputs,
+                transformed,
+                None if train_Y is None else self._training_targets(),
+            )
+            self.likelihood = caller_likelihood(self.likelihood, likelihood, train_X)
+            return
         if decoupled:
             from botorch_rs.models._torch_backend_variational_decoupled import (
                 TorchBatchDecoupledStrategy,
@@ -886,7 +936,8 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         )
 
     def _ensure_initialized(self) -> None:
-        self._strategy._initialize()
+        if not self._uses_caller_strategy:
+            self._strategy._initialize()
 
     def init_inducing_points(self, inputs: Tensor) -> Tensor:
         points = self._inducing_point_allocator.allocate_inducing_points(
@@ -895,8 +946,15 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             num_inducing=self._strategy.inducing_points.shape[-2],
             input_batch_shape=self.batch_shape,
         )
-        if points.shape != self._strategy.inducing_points.shape:
-            raise ValueError("Reallocated inducing points must retain their shape.")
+        try:
+            points = torch.broadcast_to(points, self._strategy.inducing_points.shape)
+        except RuntimeError as error:
+            raise ValueError("Reallocated inducing points must retain their shape.") from error
+        if self._uses_caller_strategy:
+            for module in (self.model.variational_strategy, self._strategy):
+                clear = getattr(module, "_clear_cache", None)
+                if clear is not None:
+                    clear()
         with torch.no_grad():
             self._strategy.inducing_points.copy_(points)
             self._strategy.variational_params_initialized.fill_(0)
@@ -905,13 +963,26 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
     def __deepcopy__(self, memo: dict[int, Any]) -> Any:
         new = object.__new__(type(self))
         memo[id(self)] = new
+        if self._uses_caller_strategy:
+            # As with the outer's data buffers, retain the actual data graph.
+            # In particular squeeze(targets) is a non-leaf view, which Torch
+            # cannot deepcopy; parameters and other module state still copy.
+            for value in (
+                *getattr(self.model, "train_inputs", ()),
+                getattr(self.model, "train_targets", None),
+            ):
+                if isinstance(value, Tensor):
+                    memo.setdefault(id(value), value)
         for name, value in self.__dict__.items():
             new.__dict__[name] = value.copy() if name == "_buffers" else copy.deepcopy(value, memo)
-        object.__setattr__(new.model, "_outer_ref", weakref.ref(new))
-        object.__setattr__(new._strategy, "_owner_ref", weakref.ref(new))
+        if not self._uses_caller_strategy:
+            object.__setattr__(new.model, "_outer_ref", weakref.ref(new))
+            object.__setattr__(new._strategy, "_owner_ref", weakref.ref(new))
         return new
 
     def __getstate__(self) -> Any:
+        if self._uses_caller_strategy:
+            return nn.Module.__getstate__(self)
         # Serialize module shells without the two implementation-only weak
         # owner links. Parameters, buffers and shared child modules retain
         # their aliases through pickle's normal object memo.
@@ -941,8 +1012,9 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
 
     def __setstate__(self, state: Any) -> None:
         nn.Module.__setstate__(self, state)
-        object.__setattr__(self.model, "_outer_ref", weakref.ref(self))
-        object.__setattr__(self._strategy, "_owner_ref", weakref.ref(self))
+        if not self._uses_caller_strategy:
+            object.__setattr__(self.model, "_outer_ref", weakref.ref(self))
+            object.__setattr__(self._strategy, "_owner_ref", weakref.ref(self))
 
     def _training_targets(self) -> Tensor:
         from botorch_rs.models._pathwise_context import training_outcome_transform
@@ -1101,6 +1173,17 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         posterior_transform: Any = None,
         **kwargs: Any,
     ) -> Any:
+        if self._uses_caller_strategy:
+            from botorch_rs.models._torch_backend_approximate import TorchApproximateGPyTorchModel
+
+            return TorchApproximateGPyTorchModel.posterior(
+                cast(Any, self),
+                X,
+                output_indices=output_indices,
+                observation_noise=observation_noise,
+                posterior_transform=posterior_transform,
+                **kwargs,
+            )
         if kwargs:
             raise UnsupportedError(
                 f"Unsupported variational posterior arguments: {sorted(kwargs)}."
