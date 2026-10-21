@@ -341,7 +341,7 @@ class _TorchVariationalStrategy(nn.Module):
     def _inducing_prior(self, jitter: float) -> Any:
         owner = self._owner_ref()
         points = self.inducing_points
-        inducing = points if points.ndim == owner._train_X.ndim + 1 else owner._augment(points)
+        inducing = points
         mean = owner.model.mean_module(inducing)
         covariance = _dense(owner.model.covar_module(inducing, inducing))
         covariance = covariance + jitter * torch.eye(
@@ -688,11 +688,6 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             raise NotImplementedError(
                 "BatchDecoupledVariationalStrategy does not work with DeltaVariationalDistribution"
             )
-        if decoupled and train_X.ndim > 2 and num_outputs > 1:
-            raise UnsupportedError(
-                "Batches of multi-output decoupled models are not supported by the source wrapper; "
-                "use a model list."
-            )
         if getattr(variational_distribution, "_owner", None) is not None:
             raise UnsupportedError(
                 "This variational distribution already belongs to a native model; create a new specification."
@@ -835,13 +830,12 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             raise ValueError(
                 "Inducing points must be finite nonempty Tensors with the transformed feature dimension."
             )
-        point_batch = points.shape[:-2]
-        if num_outputs > 1 and points.ndim != train_X.ndim + 1:
-            point_batch = point_batch + (1,)
-        if torch.broadcast_shapes(point_batch, self._aug_batch_shape) != self._aug_batch_shape:
+        try:
+            torch.broadcast_shapes(points.shape[:-2], self._aug_batch_shape)
+        except RuntimeError as error:
             raise ValueError(
-                "Inducing-point batch dimensions must broadcast to the augmented model batch shape."
-            )
+                "Inducing-point batch dimensions must broadcast with the augmented model batch shape."
+            ) from error
         distribution_batch = (
             self._aug_batch_shape
             if variational_distribution is None
@@ -1102,7 +1096,7 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         augmented = self._augment(X)
         strategy = self._strategy
         points = strategy.inducing_points
-        inducing = points if points.ndim == self._train_X.ndim + 1 else self._augment(points)
+        inducing = points
         kernel = self.model.covar_module
         M, N = points.shape[-2], X.shape[-2]
         jitter = strategy.jitter_val
@@ -1144,7 +1138,7 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         strategy = self._strategy
         distribution = strategy._variational_distribution
         points = strategy.inducing_points
-        inducing = points if points.ndim == self._train_X.ndim + 1 else self._augment(points)
+        inducing = points
         moments = _distribution_moments(distribution)
         variational_mean, covariance_q, delta_distribution = moments
         if torch.equal(augmented, inducing):

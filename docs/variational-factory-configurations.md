@@ -11,6 +11,16 @@ broadcast with the kernel. Port Cholesky/MeanField/Delta specifications and
 actual caller-supplied GPyTorch distribution modules follow the same rule.
 The inducing event size must still match the number of inducing points.
 
+Supplied inducing-point batches may also introduce additional broadcasting
+axes. They retain the strategy's actual coordinate layout; the port does not
+guess that a supplied point axis is a raw model axis and insert a task axis.
+This matters when equally sized model and output dimensions would otherwise
+silently exchange their meaning. Extra scalar/model/task point batches and
+batched multi-output decoupled models are checked against the unmodified
+source, including full covariance ordering and every first derivative. The
+ordinary and grouped whitened paths also have independent dense all-leaf
+HVP controls for these shapes.
+
 ELBO targets broadcast to the resulting `q(f)` batch and event dimensions,
 as in the Gaussian likelihood protocol. Independent multitask KL reduction
 retains the reference strategy's actual reduction over its variational batch

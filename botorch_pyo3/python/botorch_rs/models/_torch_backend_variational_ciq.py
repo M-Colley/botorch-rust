@@ -129,7 +129,7 @@ class TorchCiqVariationalStrategy(_TorchVariationalStrategy):
         X = X.clone()
         query = owner._augment(X)
         points = self.inducing_points
-        inducing = points if points.ndim == owner._train_X.ndim + 1 else owner._augment(points)
+        inducing = points
         kernel = owner.model.covar_module
         m, n = points.shape[-2], X.shape[-2]
         eye = torch.eye(m, dtype=X.dtype, device=X.device)
