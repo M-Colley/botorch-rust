@@ -183,6 +183,8 @@ migrates, as a nonpersistent buffer. These descriptors retain optional-package
 support and do not claim the complete `torch.nn.Module` protocol. Explicitly
 returning to list or NumPy calls transfers the fitted statistics to Rust;
 batched stratification requires Tensor inputs.
+The source mapping-migration repair is submitted in
+[BoTorch #3521](https://github.com/meta-pytorch/botorch/pull/3521).
 
 Stratified fitting reduces each batch and task independently and applies an
 identity transform to unknown tasks. Affine posterior conversion scales the
