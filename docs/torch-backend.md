@@ -341,5 +341,13 @@ pinned source does. Reusing that same conditioning graph for independent
 backward/Hessian sweeps requires `retain_graph=True` until the final sweep;
 construct a fresh conditioned model for independent graph lifetimes. Source
 controls cover ordinary Normalize and a parameterized custom input transform.
+Native preference models also retain explicit float64 Warp initializers while
+preserving the standalone public Parameter's source dtype and identity. A
+Tensor call or explicit migration makes the live Tensor state authoritative;
+native fitted normalization survives that transition. The three preference
+Warp suites pass all 115 cases, with direct source controls for both precision
+and array-to-Tensor normalization. Supplied approximate models preserve the
+device of attached transforms, as ordinary source module assignment does;
+call `model.to(query)` after attaching CPU-fitted transforms to a CUDA model.
 [Upstream submissions](upstream-pull-requests.md) track verified defects and
 proposed repairs, including reused PRs and the SciPy human submission step.

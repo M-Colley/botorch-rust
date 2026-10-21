@@ -85,6 +85,21 @@ def native_buffer_value(transform: Any, name: str) -> Any:
     return value
 
 
+def native_warp_values(transform: Any, name: str) -> Any:
+    record = transform.__dict__.get("_native_warp_values", {}).get(name)
+    if record is None:
+        return None
+    values, parameter = record
+    if transform.__dict__.get("_native_default_parameters", {}).get(name) is not parameter:
+        return None
+    import torch
+
+    snapshot = torch.tensor(values, dtype=parameter.dtype, device=parameter.device).reshape_as(
+        parameter
+    )
+    return values if torch.equal(parameter, snapshot) else None
+
+
 def affine_stat(transform: Any, which: int) -> Any:
     if transform.__dict__.get("_native_affine_dormant", False):
         return None
@@ -258,10 +273,13 @@ def warp_apply(transform: Any, X: Any, inverse: bool) -> Any:
         if transform._model is None
         else {f"concentration{i}": transform._get(i) for i in (0, 1)}
     )
-    if not is_tensor(getattr(transform._normalize, "_coefficient", None)):
+    if transform._normalize.__dict__.get("_native_affine_dormant", False) or not is_tensor(
+        getattr(transform._normalize, "_coefficient", None)
+    ):
         offset, coefficient = transform._steps[0].affine_state
         transform._normalize._coefficient = _tensor(coefficient, X).unsqueeze(-2)
         transform._normalize._offset = _tensor(offset, X).unsqueeze(-2)
+        transform._normalize.__dict__["_native_affine_dormant"] = False
     transform._normalize.train(transform.training)
     if not inverse:
         X = transform._normalize.transform(X)

@@ -275,6 +275,8 @@ class TorchInputModule(nn.Module):
                     self.register_prior(f"{name}_prior", prior, name)
 
     def initialize(self, **values: Any) -> Any:
+        from botorch_rs.models.transforms.input import Warp
+
         for path, value in values.items():
             prefix, _, name = path.rpartition(".")
             owner = self.get_submodule(prefix) if prefix else self
@@ -304,10 +306,14 @@ class TorchInputModule(nn.Module):
                         "Attempting to manually set a parameter value out of bounds."
                     )
             with torch.no_grad():
-                if owner.__dict__.get("_model") is not None and name in owner.__dict__.get(
+                if isinstance(owner, Warp) and name in ("concentration0", "concentration1"):
+                    # Preserve the original native precision independently
+                    # of the source-compatible public Parameter dtype.
+                    setattr(owner, name, value)
+                elif owner.__dict__.get("_model") is not None and name in owner.__dict__.get(
                     "_direct_parameters", {}
                 ):
-                    setattr(owner, name, tensor)
+                    setattr(owner, name, value)
                 else:
                     current.copy_(tensor.expand_as(current))
         return self
@@ -450,6 +456,7 @@ class TorchInputModule(nn.Module):
     def _apply(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         if not callable(fn):
             return type(self)._native_port_descriptor._apply(self, fn, *args, **kwargs)
+        self.__dict__.get("_native_warp_values", {}).clear()
         for name in tuple(self.__dict__.get("_native_buffer_values", {})):
             original = _torch_input.native_buffer_value(self, name)
             if not isinstance(original, Tensor):

@@ -1156,9 +1156,12 @@ class Warp(ReversibleInputTransform):
         parameters = self.__dict__.get("_direct_parameters", {})
         k = len(self.indices)
         for i in (0, 1):
-            parameter = parameters.get(f"concentration{i}")
+            name = f"concentration{i}"
+            parameter = parameters.get(name)
             if parameter is not None:
-                values, _ = to_flat(parameter)
+                values = _torch_input.native_warp_values(self, name)
+                if values is None:
+                    values, _ = to_flat(parameter)
                 for b, row in enumerate(result):
                     row[i * k : (i + 1) * k] = values[b * k : (b + 1) * k]
         return result
@@ -1215,10 +1218,23 @@ class Warp(ReversibleInputTransform):
                     raise ValueError(f"concentration{i} must have shape {self._param_shape()}.")
                 self.__dict__.setdefault("_direct_parameters", {})[f"concentration{i}"] = value
             else:
-                like = value if _torch_input.is_tensor(value) else next(iter(parameters.values()))
+                like = next(iter(parameters.values())) if parameters else value
                 parameters = _torch_input.warp_parameters(self, like)
                 with torch.no_grad():
                     parameters[f"concentration{i}"].copy_(_torch_input._tensor(value, like))
+                name = f"concentration{i}"
+                if (
+                    self.__dict__.get("_native_default_parameters", {}).get(name)
+                    is parameters[name]
+                ):
+                    from botorch_rs._arrays import broadcast_to
+
+                    data, shape = to_flat(value, name)
+                    values = broadcast_to(list(data), tuple(shape), self._param_shape())
+                    self.__dict__.setdefault("_native_warp_values", {})[name] = (
+                        values,
+                        parameters[name],
+                    )
             return
         from botorch_rs._arrays import broadcast_to
 
@@ -1325,6 +1341,7 @@ class Warp(ReversibleInputTransform):
                 self._steps = [
                     s.with_params(list(o.params)) for s, o in zip(steps, self._steps, strict=True)
                 ]
+                _torch_input.clear_affine_tensor_state(self._normalize)
         if len(steps) == 1:
             step = steps[0]
             out = step.untransform((data, shape)) if inverse else step.transform((data, shape))
@@ -1405,6 +1422,16 @@ class Warp(ReversibleInputTransform):
     def _bind(self, model: Any, prefix: str) -> None:
         self._model = model
         self._prefix = prefix
+        # A native model owns float64 concentrations. Keep the caller's
+        # default leaf identity while refreshing its native precision.
+        parameters = self.__dict__.get("_native_default_parameters", {})
+        if parameters:
+            import torch
+
+            for name, parameter in parameters.items():
+                value = list(model._raw_param(prefix + name))
+                with torch.no_grad():
+                    parameter.data = torch.tensor(value, dtype=torch.double).reshape_as(parameter)
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Warp:
         new = self.__class__.__new__(self.__class__)

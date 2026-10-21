@@ -451,6 +451,9 @@ def test_port_transform_specs_keep_fixed_state_on_supplied_module(device):
     transform(torch.tensor([[0.2], [0.6], [0.8]], dtype=torch.double))
     model.outcome_transform = transform
     query = supplied.scale.new_tensor([[0.2], [0.6]]).requires_grad_()
+    # Ordinary module assignment preserves the supplied transform's device.
+    # Move the complete wrapper after attaching CPU-fitted module state.
+    model.to(query)
     actual = model.posterior(query)
     raw = supplied((query - 0.1) / 0.8)
     scale = model.outcome_transform.stdvs
@@ -467,11 +470,40 @@ def test_port_transform_specs_keep_fixed_state_on_supplied_module(device):
     assert not torch.equal(input_transform._offset, state["input_transform._offset"])
     model.load_state_dict(state)
     torch.testing.assert_close(model.posterior(query).mean, actual.mean)
-    if importlib.util.find_spec("botorch") is not None:
-        from botorch.models.transforms.input import Normalize as SourceNormalize
 
-        source = SourceNormalize(1, bounds=query.new_tensor([[0.1], [0.9]]))
-        assert source.state_dict().keys() == input_transform.state_dict().keys()
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_supplied_transform_attachment_matches_source_explicit_device_migration(device):
+    gpytorch = pytest.importorskip("gpytorch")
+    source = pytest.importorskip("botorch.models.approximate_gp")
+    source_outcome = pytest.importorskip("botorch.models.transforms.outcome")
+    from botorch_rs.models.transforms.outcome import Standardize
+
+    class GaussianLaw(_DenseApproximate):
+        def forward(self, X):
+            value = super().forward(X)
+            return gpytorch.distributions.MultivariateNormal(value.mean, value.covariance_matrix)
+
+    for constructor, transform_type in (
+        (source.ApproximateGPyTorchModel, source_outcome.Standardize),
+        (ApproximateGPyTorchModel, Standardize),
+    ):
+        supplied = GaussianLaw(device)
+        model = constructor(supplied, gpytorch.likelihoods.GaussianLikelihood().to(supplied.scale))
+        transform = transform_type(1).double()
+        transform(torch.tensor([[0.2], [0.6], [0.8]], dtype=torch.double))
+        model.outcome_transform = transform
+        assert model.outcome_transform is transform
+        assert transform.means.device.type == "cpu"
+        query = supplied.scale.new_tensor([[0.2], [0.6]])
+        if device == "cuda":
+            with pytest.raises(RuntimeError, match="device"):
+                _ = model.posterior(query).mean
+        model.to(query)
+        assert model.outcome_transform is transform
+        assert transform.means.device == query.device
+        posterior = model.posterior(query)
+        assert posterior.mean.device == query.device and torch.isfinite(posterior.mean).all()
 
 
 @pytest.mark.parametrize("device", DEVICES)

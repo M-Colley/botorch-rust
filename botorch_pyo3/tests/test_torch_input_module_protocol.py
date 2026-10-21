@@ -247,3 +247,38 @@ def test_native_numpy_model_dtype_adoption_retains_affine_array_kind():
     torch.testing.assert_close(
         transform.bounds, torch.from_numpy(numpy.array([[X.min()], [X.max()]])), atol=0, rtol=0
     )
+
+
+def test_warp_default_leaf_precision_and_native_initializer_authority():
+    source = pytest.importorskip("botorch.models.transforms.input")
+    values = torch.tensor([0.8, 1.23456789012345], dtype=torch.double)
+    bounds = [[0.0, 0.0], [1.0, 1.0]]
+    actual = port.Warp(2, [0, 1], bounds=bounds).eval()
+    expected = source.Warp(2, [0, 1], bounds=torch.tensor(bounds)).eval()
+    held = actual.concentration0
+    actual.initialize(concentration0=values)
+    expected.initialize(concentration0=values)
+    assert actual.concentration0 is held
+    torch.testing.assert_close(actual.concentration0, expected.concentration0, atol=0, rtol=0)
+    precise = source.Warp(2, [0, 1], bounds=torch.tensor(bounds)).double().eval()
+    precise.initialize(concentration0=values)
+    X = torch.tensor([[0.32, 0.73]], dtype=torch.double)
+    torch.testing.assert_close(
+        torch.tensor(actual(X.tolist()), dtype=X.dtype), precise(X), atol=2e-16, rtol=2e-16
+    )
+    # A Tensor operation activates the actual source-like default-dtype leaf.
+    torch.testing.assert_close(actual(X), expected(X), atol=2e-16, rtol=2e-16)
+    assert actual.concentration0 is held
+
+
+def test_warp_array_fitted_normalizer_survives_tensor_activation():
+    source = pytest.importorskip("botorch.models.transforms.input")
+    actual = port.Warp(2, [0, 1]).double()
+    expected = source.Warp(2, [0, 1]).double()
+    X = torch.tensor([[0.1, 0.2], [0.5, 0.9], [0.8, 0.4]], dtype=torch.double)
+    actual(X.tolist())
+    expected(X)
+    actual.eval()
+    expected.eval()
+    query = X.new_tensor([[0.22, 0.31], [0.61, 0.44]])
+    torch.testing.assert_close(actual(query), expected(query), atol=2e-16, rtol=2e-16)
