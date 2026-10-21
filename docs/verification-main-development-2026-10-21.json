@@ -1,0 +1,333 @@
+{
+  "recorded_utc": "2026-10-21T14:16:20.188533+00:00",
+  "kind": "development_integration",
+  "status": "completed_with_two_known_failures",
+  "release_certificate": false,
+  "behavioral_parity_complete": false,
+  "gpu_coverage_complete": false,
+  "started_utc": "2026-10-21T13:07:59.416782+00:00",
+  "ended_utc": "2026-10-21T13:57:18.885877+00:00",
+  "fingerprint_before": {
+    "payload_sha256": "38a3621bd0a5308d3cc4e67cdb59cbb975ec63a84062832104af952ac66a6437",
+    "file_count": 321,
+    "extension_sha256": "f5ebd3cda06dc9ffcaaa83f66452160983c32c7b2a7270c1fde6168ec7bc9434",
+    "subprocess_extension_sha256": "f5ebd3cda06dc9ffcaaa83f66452160983c32c7b2a7270c1fde6168ec7bc9434",
+    "head": "c156b9685985984a526723a40a1a560661481af3",
+    "status": "",
+    "reference_head": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "reference_status": ""
+  },
+  "fingerprint_after": {
+    "payload_sha256": "38a3621bd0a5308d3cc4e67cdb59cbb975ec63a84062832104af952ac66a6437",
+    "file_count": 321,
+    "extension_sha256": "f5ebd3cda06dc9ffcaaa83f66452160983c32c7b2a7270c1fde6168ec7bc9434",
+    "subprocess_extension_sha256": "f5ebd3cda06dc9ffcaaa83f66452160983c32c7b2a7270c1fde6168ec7bc9434",
+    "head": "c156b9685985984a526723a40a1a560661481af3",
+    "status": "",
+    "reference_head": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "reference_status": ""
+  },
+  "fingerprints_stable": true,
+  "test_cases": {
+    "collected": 11840,
+    "executed": 11840,
+    "canonical_case_ids_sha256": "35267721e50441286c4a95be4a1d5c5b03b64e8e25f7999ebfbec84e72da7df4",
+    "case_ids_exactly_once": true,
+    "batch_count": 55,
+    "counts": {
+      "passed": 11787,
+      "skipped": 51,
+      "failed": 2
+    },
+    "all_passed": false,
+    "failures": [
+      "tests/test_torch_learned_objective.py::test_default_pruning_augmented_utilities_and_independent_backwards[True-cpu]",
+      "tests/test_torch_learned_objective.py::test_default_pruning_augmented_utilities_and_independent_backwards[True-cuda]"
+    ]
+  },
+  "remediation": {
+    "source_revision": "d65f947b479d3647067280a3ae69b761233d33fb",
+    "change": "Retain specialized LearnedObjective baseline pruning when preference samples add utility batch axes.",
+    "focused_result": {
+      "passed": 127,
+      "failed": 0,
+      "devices": [
+        "cpu",
+        "cuda"
+      ]
+    },
+    "focused_log": {
+      "path": "target/learned-pruning-regression-2026-10-21.log",
+      "sha256": "0ad188f34e6e5478a05fc0a7d61aa2dc657c68767d14ef0851721a89613dddf3"
+    },
+    "note": "Remediation was verified after the frozen run; its two failures remain recorded as failures."
+  },
+  "evidence": {
+    "summary": {
+      "path": "target/complete-port-batched-c156b96-r2/summary.json",
+      "sha256": "b3eb8d87035983c7c18de10fefb4c739288d6084ad9fc9c6cca33e99e3b66425"
+    },
+    "collection": {
+      "path": "target/complete-port-batched-c156b96-r2/collection.json",
+      "sha256": "5bef94dad2795c7e54c60965b9f140772b6fb84a0f33cc2797b6f223f7964f41"
+    },
+    "controller": {
+      "path": "D:/run-botorch-checkpoint-batches.py",
+      "sha256": "4f69819d7e1183c872e8ec4523104672f324318850c21d5991ea24aac5abd49e"
+    },
+    "worker": {
+      "path": "D:/run-botorch-checkpoint-worker.py",
+      "sha256": "f8739504af1e985aafc03d8dcc88067f1029a3d18a6bd6b4a75d8d7c102c0738"
+    },
+    "batch_ledgers": [
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-001.json",
+        "sha256": "755397bdf4f57fe7bc9e6bc11ee2a8ff670e6fe9dccaaaf3e330f1d45acd21c2"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-002.json",
+        "sha256": "23a1b0579b609ef491b18c39ee38eca04d45f26e0650f54bf331e789789f7ec7"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-003.json",
+        "sha256": "3b69f6d35275e10aba31849e16f34d9bbef5d6fb795f73cf14bd83d0e48c4bc6"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-004.json",
+        "sha256": "8a0d8a3fc1fafd09404b12df506ec38267edd9074ac48af4caa72421ce6483a8"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-005.json",
+        "sha256": "7faab9e49946c82a4af39f31ea83e1c52f557462b95d06c0fbca4a55522a6c92"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-006.json",
+        "sha256": "c1cec4a82a14c70c391b343e31474c1ec3dfde3d9539fcfc8cddcdd4b967311b"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-007.json",
+        "sha256": "31b1477e6fff67454a3f34aba4a33bf042b2f16e835cd753b7069f5105bf627d"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-008.json",
+        "sha256": "f191bfbd2da8927add467f4423039210795be6790221abed8ae4077a11583d23"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-009.json",
+        "sha256": "1343695dc4e97efc72e27db6cacf3723b8af4ab6fed9803ed89e218355991445"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-010.json",
+        "sha256": "f5d28619d5f7b726470d5defbc3696f535f27897a0ac7c145b618b0fabe901e3"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-011.json",
+        "sha256": "0117e7b0fb397af8aba81711a77a5ab6da84408c3db7b9b48485c63ba93a3072"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-012.json",
+        "sha256": "dc7263631f8d99023f9accd8ac077a8d390c5343f380c75465aa088a0cea22e5"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-013.json",
+        "sha256": "0185e6deaf5c1341119a04748867047e46b78d30331363f6b9d2a7590c9e1480"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-014.json",
+        "sha256": "3dc7c123829436fc48b6c058fd16c46a428d9f5dbdb568f9f19091b9975eb9b6"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-015.json",
+        "sha256": "a5dde0a2a13c793da6253f83ce8553091f6afc52e8dd218be67d291ad6dda648"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-016.json",
+        "sha256": "0e21680ac3813912215cd7ebdd21c6d74f8525c8d97b619023283f42bcdc0c45"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-017.json",
+        "sha256": "98a3168cc02af5356ed0c2fdc703cec5a8e62b19a9dcfdbacdc3fbb97a0e30a9"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-018.json",
+        "sha256": "e951a3c897fa1bc4c0d864b04d1a0f8181955dc6cb09f5928c6748b83f200b95"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-019.json",
+        "sha256": "fb01815bf71a9dd70a174e59ce0a0036aeba9a1f7e894cfa9e7149849397be46"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-020.json",
+        "sha256": "7ceb291cd4d0f850c36017414db4dd847e36a22088810d053064c08656f6ae66"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-021.json",
+        "sha256": "8ee1b016b5de4e314755386d1828e3c4bd24e740e7bdd724d650ac51b0ea6c25"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-022.json",
+        "sha256": "de8eab518cb283eb839172179d3297f46a6c76527c1c6371ca4991f44d72648c"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-023.json",
+        "sha256": "49d041e0c24823f1470b78cd61993c7e544a527fb61f3f7bdbde0b8393223234"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-024.json",
+        "sha256": "f36d1371caf8e8f0871ed4e9459a0d7f4f87200fee16a4e051a951f044a3523d"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-025.json",
+        "sha256": "6c9dc5683f9f143feb54e58144c81b837792eaba33aebd2de212ed09df6d3930"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-026.json",
+        "sha256": "09653ce707bb1a47c2603417b39f11bec1cde91818866056ae2f4ba124d30aab"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-027.json",
+        "sha256": "3d4c946e0d40c1594aac5c941a96fb0dde58a0149977110a2dd9436185a9b858"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-028.json",
+        "sha256": "79d7ce75ded673fb844002d940d4c993f2bc682f91bc815b80df48a469f4f0a7"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-029.json",
+        "sha256": "af13a5e873fdadd837d288f000479bb7ebeb1b1d6388e10e9310bb07a5fe2ddb"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-030.json",
+        "sha256": "1d701f1270d3e0ac2fe370f823d0ea56efa91c31b3a6dae1c6c3e761116dd996"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-031.json",
+        "sha256": "5b6a8075116c7e9ec18585156bc5c7dac2561145eb7e4ced28ab19277507f19b"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-032.json",
+        "sha256": "f264112b64f918fa4b255a4aa57d0171595686c1163368bd1f85dfaada92abe1"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-033.json",
+        "sha256": "42fa3eb6baf24dda6025a7fede2468fd1c8fc8f69eb22cdb5b542a3a51ac8e4b"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-034.json",
+        "sha256": "602356e9fb7aefb9c9e2e610de5b8685df8652ee87eff682bff650b7375bfdbb"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-035.json",
+        "sha256": "ff4dec547d6f3303b42f711a830d75ed0c5609957b82ad6b3a88517fd2ded26c"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-036.json",
+        "sha256": "891c0041e888445cea4dbf8c40fbbd03cd17567d1f810ccb657c1e76c436ca2c"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-037.json",
+        "sha256": "c8738d95bb4f1295f8ef4f8c2ed9ebe1368319639f8cd9345a8aa64f7ec4677d"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-038.json",
+        "sha256": "c4543e17427c71f945889f9a4eccc465937c7a76a023105abcdad449ea4ed841"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-039.json",
+        "sha256": "21872e6b3cd8d534bb0785e22e570e12a046ebb0fbc68599e5f8d2f7edff89f0"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-040.json",
+        "sha256": "1a584d7f2e203144dd1a1163f963cc59a5ab36479421f93e62241b87782748d8"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-041.json",
+        "sha256": "467e309d6577793df442fe8af34007ee865e2f3ebe271787b329bf524c39f0d3"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-042.json",
+        "sha256": "f92fa3e5b1240608105a7afdfcb7841168e60ba1e7d7e54e5236207781cc538e"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-043.json",
+        "sha256": "c042df0ad0b45c31b79cbbb4be7559cf7623c66b860df4cb56808b3c9ad33aef"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-044.json",
+        "sha256": "7744b1bfd6b8c2e7d85dd4122d0dab66e380bc7fe22e095055eedaab08b717b9"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-045.json",
+        "sha256": "72661619527abe628ab387e17243dbec5397f4ba89f731f1c323e45427cb7ac6"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-046.json",
+        "sha256": "552b46658d1fa1a79626f09cc50e48b99a1bf0cbfb5226ab07fa1063f8fdc938"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-047.json",
+        "sha256": "f090637c4fb089ecf8f96b030c5edd46e7abb1067e0ce8b5d2986d5d5d89a67e"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-048.json",
+        "sha256": "f4733d46d5da2009abd616eb5447eac3e896c2a8f4628b2f8163159a191dee7e"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-049.json",
+        "sha256": "60b3b0ec42b42d1df21424ebbb081d24e712ceb405b8127438c7696c38fda457"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-050.json",
+        "sha256": "7a21864e5aaabafb215ca773740ca6f8fcf61aeeaa41c09561457010535d3dcd"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-051.json",
+        "sha256": "7559b12ac619a3ff8127154a0e3e6827c17d30fe7355249a83339552a21ea618"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-052.json",
+        "sha256": "c41eb9e1958207fc8ad2790a2029f31b5291ec3b1649162fa52ac96b60339770"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-053.json",
+        "sha256": "678c277ecc002b4cae325d57991213ba20a69a7a1bffdd9fa4587cf441add5e0"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-054.json",
+        "sha256": "f89a40ceeb044ccf38dfd187530a64fa69f6746c3817745ee789f4e981691411"
+      },
+      {
+        "path": "target/complete-port-batched-c156b96-r2/batch-055.json",
+        "sha256": "b99d4d02ed57158203e54faac3ac579c7a152fc2d49f237cc50ef8f345875a13"
+      }
+    ]
+  },
+  "later_ci_checkpoint": {
+    "source_revision": "d50bca8dbc1de6f68dc422d3fa11c41c33e48d4d",
+    "url": "https://github.com/M-Colley/botorch-rust/actions/runs/39612182512",
+    "jobs_passed": 11,
+    "pinned_reference_cpu": {
+      "broad": {
+        "passed": 8721,
+        "skipped": 715,
+        "deselected": 1237
+      },
+      "equivalence": {
+        "passed": 1222,
+        "skipped": 15,
+        "deselected": 9436
+      }
+    },
+    "pinned_reference_log": {
+      "path": "target/ci-d50bca8-parity-2026-10-21.log",
+      "sha256": "0063024c53edf82ccbcd5a20ff83bbbeedd98b88bfddae9f31c87f394c740c25"
+    },
+    "note": "A separate later checkpoint; these counts do not replace or add to the frozen CPU/CUDA run."
+  },
+  "limitations": [
+    "Main package only; the separate community package is excluded.",
+    "A collected test ledger does not prove all supported configurations or subclass behavior.",
+    "Subsequent CIQ, custom model and likelihood protocols, joint native BALD and LCEM conditioning require a fresh integrated run.",
+    "No package release or Unity migration is certified by this development record."
+  ]
+}

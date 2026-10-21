@@ -20,6 +20,12 @@ Development after the frozen release adds [generic fitting protocols](fitting-pr
 Caller-defined model modules are covered by the
 [custom Torch model protocol](torch-custom-models.md).
 These focused results do not replace the frozen release certificate below.
+The [October 21 development verification](verification-main-development-2026-10-21.json)
+records all 11,840 collected CPU/CUDA cases at checkpoint `c156b96`: 11,787
+passed, 51 skipped and two learned-objective pruning failures. Both failures
+were repaired in `d65f947` and pass focused checks. A separate later checkpoint,
+`d50bca8`, passes all 11 CI jobs, including 1,222 pinned-reference equivalence
+cases. These checkpoints do not certify subsequent changes or a new release.
 The complete behavior/configuration audit is still open, including remaining
 variational strategies, specialized fitting extensions, custom module protocols,
 and acquisition approximation/cache configurations. A new release and Unity
