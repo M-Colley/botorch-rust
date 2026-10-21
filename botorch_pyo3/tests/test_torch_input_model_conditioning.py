@@ -113,6 +113,7 @@ def test_conditioning_transformed_width_matches_source_and_dense_law(device, fam
     ).posterior(Q)
     conditioned = actual.condition_on_observations(extra, observations)
     posterior = conditioned.posterior(Q)
+    training_mapping = mapping
     if family == "impute":
         parameter = conditioned.input_transform.raw_imputation_values
 
@@ -125,7 +126,7 @@ def test_conditioning_transformed_width_matches_source_and_dense_law(device, fam
 
     independent = _manual(
         conditioned,
-        torch.cat((mapping(X), mapping(extra)), -2),
+        torch.cat((training_mapping(X), training_mapping(extra)), -2),
         torch.cat((Y, observations), -2),
         mapping(Q),
     )

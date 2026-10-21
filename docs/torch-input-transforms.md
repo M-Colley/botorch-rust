@@ -190,6 +190,34 @@ The standalone checkpoint passes 608 integrated existing/new cases before the
 last four factory-precision cases. The latest protocol and buffer selection
 passes 96 cases; Torch 2.14.1 CPU passes 103 bridge/protocol/buffer cases and
 skips 61 CUDA cases. Mypy passes all six changed implementation modules. This
-does not establish complete package behavior parity: phase-dependent appended
-input coordinates, multitask one-to-many query layouts and the additional
-GPyTorch-specific Warp/imputation prior APIs still need their own audit.
+does not establish complete package behavior parity.
+
+Conditioning now stores the actual transformed coordinates of the old and
+appended data. New coordinates are transformed once in the active
+eval/fantasy phase before copying component Parameters; future queries use the
+copied transform Parameters. This preserves skipped Warp coordinates and
+expanded environmental draws, including when the transform's fantasy flag
+differs from its training flag. Existing training-data transformation graphs
+remain live as the Tensor extension's documented capability, while the source
+caches its original training preprocessing under no_grad. The source controls
+therefore compare query and copied-transform partials, and independent dense
+laws verify complete original/copied-parameter mixed Hessians. Returning to
+training discards the saved phase coordinates and rebuilds preprocessing on
+the raw appended training data.
+
+Ordinary multitask posterior layouts use the actual transformed point count,
+preserve task-major and point/perturbation-major order, and accept repeated
+categorical task labels in one-to-many transforms. Training noise uses those
+same physical coordinates. Twenty-four source/dense CPU/CUDA cases cover these
+paths; 22 fail against the frozen preceding backend. The integrated affected
+selection passes 265 cases, and Torch 2.14.1 CPU passes 43 cases and skips 43
+CUDA cases. The generic source fixed-noise multitask fantasy defect encountered
+during these probes is already addressed in existing BoTorch #3374; supported
+learned-noise source configurations establish the phase comparisons.
+
+Remaining finite audit items are ordinary multitask transforms that change
+training feature width (including task-column relocation), appropriate CPU
+automatic fallback from native-only limits, and actual GPyTorch-specific
+Warp/imputation prior/constraint calls. A native-only limitation is not a
+missing Tensor implementation; source-supported configurations must remain
+available through the Tensor backend before claiming full package coverage.

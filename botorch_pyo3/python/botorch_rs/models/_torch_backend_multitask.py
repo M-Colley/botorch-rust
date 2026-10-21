@@ -194,6 +194,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
     _supports_batched_models = False
     _supports_cache_root = False
     _train_X: Any
+    _conditioned_train_X: Any
     _train_Y: Any
     _train_Yvar: Any
     _noise_override: Any
@@ -211,6 +212,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
     covar_module: Any
     _validate_data = staticmethod(TorchSingleTaskGP._validate_data)
     _fit_transform_graphs: Any = TorchSingleTaskGP._fit_transform_graphs
+    train: Any = TorchSingleTaskGP.train
     transform_inputs: Any = TorchSingleTaskGP.transform_inputs
     _covariance: Any = TorchSingleTaskGP._covariance
     _sync_torch_parameters: Any = TorchSingleTaskGP._sync_torch_parameters
@@ -286,6 +288,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         self.register_buffer("_transform_fit_X", train_X)
         self.register_buffer("_transform_fit_Y", train_Y)
         self.register_buffer("_noise_override", None)
+        self.register_buffer("_conditioned_train_X", None)
         sorted_tasks = sorted(tasks)
         labels = torch.tensor(sorted_tasks, dtype=torch.long, device=train_X.device)
         self.register_buffer("_task_labels", labels)
@@ -418,15 +421,25 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
 
     def _training_values(self) -> Any:
         X, Y, noise = TorchSingleTaskGP._training_values(cast(Any, self))
-        if not torch.equal(X[..., self._task_feature], self._train_X[..., self._task_feature]):
+        if getattr(self, "_conditioned_train_X", None) is None:
+            self._check_task_transform(self._train_X, X)
+        return X, Y, noise
+
+    def _check_task_transform(self, original: Any, transformed: Any) -> None:
+        count = original.shape[-2]
+        if count == 0:
+            return
+        copies, remainder = divmod(transformed.shape[-2], count)
+        expected = original[..., self._task_feature].repeat_interleave(copies, dim=-1)
+        if remainder or not bool((transformed[..., self._task_feature] == expected).all()):
             raise UnsupportedError(
                 "Input transforms must preserve categorical task labels; exclude task_feature."
             )
-        return X, Y, noise
 
     @property
     def train_inputs(self) -> Any:
-        return (self._train_X,)
+        conditioned = getattr(self, "_conditioned_train_X", None)
+        return (self._train_X if conditioned is None or self.training else conditioned,)
 
     @property
     def train_targets(self) -> Any:
@@ -467,17 +480,21 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         return self.mean_module(X)
 
     def _training_noise(self, Y: Any, fixed_noise: Any) -> Any:
+        inputs = getattr(self, "_conditioned_train_X", None)
+        if inputs is None:
+            inputs = self._train_X
         result = (
-            fixed_noise
-            if fixed_noise is not None
-            else self._noise_at(self._mapped_inputs(self._train_X))
+            fixed_noise if fixed_noise is not None else self._noise_at(self._mapped_inputs(inputs))
         )
         if self._noise_override is not None:
             result = torch.where(torch.isnan(self._noise_override), result, self._noise_override)
         return result
 
     def _fixed_noise_at(self, mapped_X: Any, fixed: Any) -> Any:
-        train_tasks = self._mapped_inputs(self._train_X)[..., self._task_feature].long()
+        inputs = getattr(self, "_conditioned_train_X", None)
+        if inputs is None:
+            inputs = self._train_X
+        train_tasks = self._mapped_inputs(inputs)[..., self._task_feature].long()
         mask = train_tasks.unsqueeze(-1) == torch.arange(self.num_tasks, device=mapped_X.device)
         counts = mask.sum(-2)
         noise_by_task = (fixed.unsqueeze(-1) * mask).sum(-2) / counts.clamp_min(1)
@@ -614,10 +631,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         self.eval()
         train, targets, fixed = self._training_values()
         query = X if inputs_transformed else self.transform_inputs(X)
-        if not torch.equal(query[..., self._task_feature], X[..., self._task_feature]):
-            raise UnsupportedError(
-                "Input transforms must preserve categorical task labels; exclude task_feature."
-            )
+        self._check_task_transform(X, query)
         batch = torch.broadcast_shapes(train.shape[:-2], query.shape[:-2])
         query = query.expand(*batch, *query.shape[-2:])
         train_mean, train_cov, cross, query_mean, query_cov = self._task_prior_blocks(train, query)
@@ -705,8 +719,15 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             raise NotImplementedError("Tensor observation_noise is not supported by MultiTaskGP.")
         if not isinstance(observation_noise, bool):
             raise TypeError("observation_noise must be bool.")
-        full, m, q = self._query_inputs(X, output_indices)
-        mean, covariance = self._conditioned_tensors(full, observation_noise)
+        self.eval()
+        self._fit_transform_graphs()
+        full, m, _ = self._query_inputs(X, output_indices)
+        transformed = self.transform_inputs(full)
+        self._check_task_transform(full, transformed)
+        mean, covariance = self._conditioned_tensors(
+            transformed, observation_noise, inputs_transformed=True
+        )
+        q = transformed.shape[-2] // m
         mean = mean.reshape(*mean.shape[:-1], m, q).transpose(-1, -2)
         posterior = TorchGPyTorchPosterior(mean, covariance)
         if self.outcome_transform is not None:
@@ -719,7 +740,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
                 # Long-format inputs preserve physical task labels through the
                 # input transform; task-specific outcome statistics need these
                 # labels, including for a taskless public query expanded above.
-                posterior = untransform_multitask_outcome(outcome, posterior, full)
+                posterior = untransform_multitask_outcome(outcome, posterior, transformed)
                 return (
                     posterior
                     if posterior_transform is None
@@ -744,10 +765,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         transform = self.input_transform if self.training else None
         if transform is not None:
             X_transformed = getattr(transform, "preprocess_transform", transform)(X)
-            if not torch.equal(X_transformed[..., self._task_feature], X[..., self._task_feature]):
-                raise UnsupportedError(
-                    "Input transforms must preserve categorical task labels; exclude task_feature."
-                )
+            self._check_task_transform(X, X_transformed)
             X = X_transformed
         X = self._mapped_inputs(X)
         return TorchGPyTorchPosterior(
@@ -811,6 +829,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             raise RuntimeError("Cannot modify training data shape with strict=True.")
         self._train_X, self._train_Y = X, Y
         self._transform_fit_X, self._transform_fit_Y = X, Y
+        self._conditioned_train_X = None
 
     def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
         from botorch_rs.models._torch_gaussian_likelihood import (
@@ -819,7 +838,6 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         )
 
         if getattr(self, "_is_custom_likelihood", False) and is_fixed_noise(self.likelihood):
-            from botorch_rs.models._numpyro_fitting import _copy_transform
             from botorch_rs.models._torch_fully_bayesian_loader import _copy_model
 
             original_fixed = (
@@ -832,7 +850,6 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             if self.outcome_transform is not None:
                 fixed = self.outcome_transform.untransform(torch.zeros_like(fixed), fixed)[1]
             stage = _copy_model(self)
-            stage.likelihood = _copy_transform(self.likelihood)
             stage._train_Yvar, stage._is_custom_likelihood = fixed, False
             conditioned = TorchMultiTaskGP.condition_on_observations(
                 stage, X, Y, noise=noise, **kwargs
@@ -841,7 +858,7 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             # already use fitted target units. Preserve their actual graph
             # directly instead of retaining an unnecessary transform round trip.
             extra = noise.squeeze(-1) if noise.ndim > 1 and noise.shape[-1] == 1 else noise
-            batch, count = conditioned.batch_shape, X.shape[-2]
+            batch, count = conditioned.batch_shape, Y.shape[-2]
             conditioned.likelihood.noise = torch.cat(
                 (
                     original_fixed.expand(*batch, original_fixed.shape[-1]),
@@ -863,7 +880,10 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             raise TypeError("Conditioning targets must be a Tensor.")
         if Y.ndim == X.ndim - 1:
             Y = Y.unsqueeze(-1)
-        if Y.ndim < 2 or Y.shape[-1] != 1 or Y.shape[-2] != X.shape[-2]:
+        self._fit_transform_graphs()
+        transformed = self.transform_inputs(X)
+        self._check_task_transform(X, transformed)
+        if Y.ndim < 2 or Y.shape[-1] != 1 or Y.shape[-2] != transformed.shape[-2]:
             raise ValueError("Multitask targets must have shape (...,q,1).")
         if any(t.dtype != self._train_X.dtype or t.device != self._train_X.device for t in (X, Y)):
             raise ValueError("Conditioning data must have the model dtype and device.")
@@ -889,6 +909,14 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         memo = {} if self._prediction_cache is None else {id(self._prediction_cache): None}
         model = copy.deepcopy(self, memo)
         model._prediction_cache, model._transform_fit_versions = None, {}
+        previous_inputs = self._training_values()[0]
+        model._conditioned_train_X = torch.cat(
+            (
+                previous_inputs.expand(*batch, *previous_inputs.shape[-2:]),
+                transformed.expand(*batch, *transformed.shape[-2:]),
+            ),
+            dim=-2,
+        )
         model._train_X = torch.cat(
             (
                 self._train_X.expand(*batch, *self._train_X.shape[-2:]),

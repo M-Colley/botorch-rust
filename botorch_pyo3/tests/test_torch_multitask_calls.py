@@ -419,7 +419,7 @@ def test_actual_fixed_likelihood_conditioning_keeps_old_and_new_noise_graphs(dev
     if learned_noise:
         assert (
             conditioned.likelihood.second_noise_covar.raw_noise
-            is likelihood.second_noise_covar.raw_noise
+            is not likelihood.second_noise_covar.raw_noise
         )
     train, targets, _ = conditioned._training_values()
     transformed = conditioned.transform_inputs(query)
@@ -476,8 +476,9 @@ def test_custom_gaussian_conditioning_noise_override_defines_actual_mll(device):
     mapped = conditioned._mapped_inputs(train)
     mapped_query = conditioned._mapped_inputs(query)
     mean_train, mean_query = conditioned._mean(mapped), conditioned._mean(mapped_query)
-    feature = (X[..., 0].sin() + 0.2) * likelihood.noise_covar.amplitude
-    old_diagonal = likelihood.noise_covar.noise.expand_as(feature) + feature.square()
+    future_noise = conditioned.likelihood.noise_covar
+    feature = (X[..., 0].sin() + 0.2) * future_noise.amplitude
+    old_diagonal = future_noise.noise.expand_as(feature) + feature.square()
     # This supplied noise module explicitly returns a diagonal covariance for
     # a noise= override. Its actual protocol determines the resulting law.
     diagonal = torch.cat((old_diagonal, noise.squeeze(-1)))

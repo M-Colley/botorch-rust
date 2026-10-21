@@ -34,6 +34,7 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
     _train_X: Any
     _train_Y: Any
     _train_Yvar: Any
+    _conditioned_train_X: Any
     _noise_override: Any
     _transform_fit_X: Any
     _transform_fit_Y: Any
@@ -74,6 +75,7 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         self.register_buffer("_train_Y", train_Y)
         self.register_buffer("_train_Yvar", train_Yvar)
         self.register_buffer("_noise_override", None)
+        self.register_buffer("_conditioned_train_X", None)
         # Sources for fitted transform statistics stay unchanged when adding
         # fantasies. Recompute their graph on every evaluation, allowing
         # independent backward calls without retaining a stale fit graph.
@@ -266,6 +268,9 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
     def train(self, mode: bool = True) -> Any:
         if mode:
             self._prediction_cache = None
+            if getattr(self, "_conditioned_train_X", None) is not None:
+                self._conditioned_train_X = None
+                self._transform_fit_X = self._train_X
         return torch.nn.Module.train(self, mode)
 
     def _apply(self, fn: Any, recurse: bool = True) -> Any:
@@ -277,8 +282,10 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         from botorch_rs.models._pathwise_context import training_outcome_transform
 
         self._fit_transform_graphs()
-        X = self._train_X
-        if self.input_transform is not None:
+        X = getattr(self, "_conditioned_train_X", None)
+        if X is None:
+            X = self._train_X
+        if self.input_transform is not None and getattr(self, "_conditioned_train_X", None) is None:
             transform = getattr(self.input_transform, "preprocess_transform", self.input_transform)
             X = transform(X)
         Y, noise = self._train_Y, self._train_Yvar
@@ -299,7 +306,9 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
 
     @property
     def train_inputs(self) -> tuple[Any]:
-        return (self._augment_X(self._train_X),)
+        conditioned = getattr(self, "_conditioned_train_X", None)
+        inputs = self._train_X if conditioned is None or self.training else conditioned
+        return (self._augment_X(inputs),)
 
     @property
     def train_targets(self) -> Any:
@@ -584,6 +593,7 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             raise RuntimeError("Cannot modify the training data shape with strict=True.")
         self._train_X, self._train_Y = X, Y
         self._transform_fit_X, self._transform_fit_Y = X, Y
+        self._conditioned_train_X = None
 
     def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
         if getattr(self, "_is_custom_likelihood", False):
@@ -596,8 +606,13 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
                 return condition_fixed_likelihood(self, X, Y, noise, **kwargs)
         if kwargs:
             raise UnsupportedError(f"Unsupported conditioning arguments: {sorted(kwargs)}.")
-        if X.shape[-2] != Y.shape[-2] or Y.shape[-1] != self.num_outputs:
+        self._fit_transform_graphs()
+        transformed = self.transform_inputs(X)
+        if transformed.shape[-2] != Y.shape[-2] or Y.shape[-1] != self.num_outputs:
             raise ValueError("Conditioning X and Y dimensions must match the model.")
+        previous_inputs = self._training_values()[0]
+        if self.num_outputs > 1:
+            previous_inputs = previous_inputs.select(-3, 0)
         batch = torch.broadcast_shapes(self.batch_shape, X.shape[:-2], Y.shape[:-2])
         # ExactGP copies its component parameters when creating a fantasy.
         # Keep appended training data connected to their leaves, but isolate
@@ -605,6 +620,13 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         memo = {} if self._prediction_cache is None else {id(self._prediction_cache): None}
         model = copy.deepcopy(self, memo)
         model._prediction_cache, model._transform_fit_versions = None, {}
+        model._conditioned_train_X = torch.cat(
+            (
+                previous_inputs.expand(*batch, *previous_inputs.shape[-2:]),
+                transformed.expand(*batch, *transformed.shape[-2:]),
+            ),
+            dim=-2,
+        )
         model._train_X = torch.cat(
             (
                 self._train_X.expand(*batch, *self._train_X.shape[-2:]),
@@ -651,6 +673,8 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
                 ),
                 dim=-1,
             )
+        if self._train_Yvar is not None and not self._is_custom_likelihood:
+            model.likelihood.noise = model._training_values()[2]
         return model.eval()
 
     def fantasize(self, X: Any, sampler: Any, observation_noise: Any = None, **kwargs: Any) -> Any:
@@ -782,7 +806,10 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Any:
         for module in self.modules():
-            for buffer in module.buffers(recurse=False):
+            values = (*module.buffers(recurse=False), *module.__dict__.values())
+            for buffer in values:
+                if not isinstance(buffer, torch.Tensor):
+                    continue
                 if not buffer.is_leaf and id(buffer) not in memo:
                     memo[id(buffer)] = buffer.clone()
         new = object.__new__(type(self))
