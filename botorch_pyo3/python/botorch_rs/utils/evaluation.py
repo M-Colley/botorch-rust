@@ -36,6 +36,40 @@ def compute_in_sample_model_fit_metric(model: Any, criterion: str) -> float:
     """
     if criterion not in (AIC, BIC, MLL):
         raise ValueError(f"Invalid evaluation criterion {criterion}.")
+    if getattr(model, "_tensor_backend", None) == "torch":
+        import torch
+
+        if is_fully_bayesian(model):
+            model.train(reset=False)
+        else:
+            model.train()
+        try:
+            # The public metric deliberately returns a Python scalar without
+            # a gradient, just as BoTorch does. Its Gaussian algebra remains
+            # on the model's device and excludes parameter priors/MLL scaling.
+            with torch.no_grad():
+                output = model(*model.train_inputs)
+                if getattr(model.likelihood, "task_feature_index", None) is not None:
+                    inputs = model.train_inputs[0]
+                    mapper = getattr(model, "_mapped_inputs", None)
+                    if mapper is not None:
+                        inputs = mapper(inputs)
+                    output = model.likelihood(output, inputs)
+                else:
+                    output = model.likelihood(output)
+                mll = output.log_prob(model.train_targets)
+                mll_scalar = float(mll.mean().item())
+            tensor_num_params = float(sum(parameter.numel() for parameter in model.parameters()))
+            if is_fully_bayesian(model):
+                tensor_num_params /= mll.shape[0]
+            n_train = model.train_inputs[0].shape[-2]
+        finally:
+            model.eval()
+        if criterion == AIC:
+            return 2 * tensor_num_params - 2 * mll_scalar
+        if criterion == BIC:
+            return tensor_num_params * log(n_train) - 2 * mll_scalar
+        return mll_scalar
     from botorch_rs.models.gp_regression import SingleTaskGP
 
     if not isinstance(model, SingleTaskGP):

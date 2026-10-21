@@ -67,6 +67,10 @@ def extract_batch_covar(mt_mvn: Any) -> Any:
     handled as in BoTorch (the ``base_linear_op`` of the block-diagonal
     operator).
     """
+    if getattr(getattr(mt_mvn, "_p", None), "_tensor_backend", None) == "torch":
+        from botorch_rs.utils._torch_low_rank import covariance_blocks
+
+        return covariance_blocks(mt_mvn, mt_mvn._p._q, mt_mvn._p._m)
     if isinstance(mt_mvn, MultitaskMultivariateNormal):
         data, shape = _blocks(mt_mvn._p)
         return from_flat(data, shape, mt_mvn._p._kind)
@@ -108,6 +112,10 @@ def sample_cached_cholesky(
     """
     if not isinstance(posterior, GPyTorchPosterior):
         raise UnsupportedError("sample_cached_cholesky requires a botorch_rs GPyTorchPosterior.")
+    if getattr(posterior._kind, "lib", None) == "torch":
+        from botorch_rs.utils._torch_low_rank import sample_cached_cholesky as tensor_sample
+
+        return tensor_sample(posterior, baseline_L, q, base_samples, sample_shape, max_tries)
     sample_shape = tuple(int(v) for v in sample_shape)
     S = math.prod(sample_shape)
     m = posterior._m
