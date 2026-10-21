@@ -84,7 +84,14 @@ class LatentKroneckerGP(GPyTorchModel, FantasizeMixin):
                 if torch
                 else False
             )
-            if backend == "torch" or (backend == "auto" and (requested or modules)):
+            tensor_batches = (
+                torch is not None
+                and isinstance(train_X, torch.Tensor)
+                and (train_X.ndim > 2 or getattr(train_T, "ndim", 0) > 2)
+            )
+            if backend == "torch" or (
+                backend == "auto" and (requested or modules or tensor_batches)
+            ):
                 from botorch_rs.models._torch_backend_latent_kronecker import TorchLatentKroneckerGP
 
                 if cls is LatentKroneckerGP:

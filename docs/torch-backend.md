@@ -59,7 +59,9 @@ integration require a fresh integrated verification of the completed scope.
 Construct supported models with `backend="torch"` to request these semantics
 explicitly. `backend="auto"` selects it for CUDA training data, training tensors
 requiring gradients, or supported custom Torch module components. Ordinary CPU
-data retain the native backend. A later query requiring gradients does not
+data retain the native backend; batched CPU Tensor inputs for `LatentKroneckerGP`
+select its Tensor implementation because its native route is unbatched. A later
+query requiring gradients does not
 switch an already constructed model; select the backend at construction.
 
 ```python

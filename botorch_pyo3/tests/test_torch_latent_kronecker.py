@@ -65,7 +65,7 @@ def law(model, X, T, Q, U):
     alpha = torch.linalg.solve(covariance, (model.train_targets - mean_train).unsqueeze(-1))
     mean = mean_test + (cross.transpose(-1, -2) @ alpha).squeeze(-1)
     posterior = test - cross.transpose(-1, -2) @ torch.linalg.solve(covariance, cross)
-    if hasattr(model, "outcome_transform"):
+    if getattr(model, "outcome_transform", None) is not None:
         mean = mean * model.outcome_transform.stdvs.squeeze(
             -1
         ) + model.outcome_transform.means.squeeze(-1)
