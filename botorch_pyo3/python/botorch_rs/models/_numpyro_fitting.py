@@ -54,12 +54,24 @@ def requires_numpyro_inference(model: Any) -> bool:
     )
 
 
+def _copy_module_shell(module: Any) -> Any:
+    """Isolate Python state without invoking caller pickle/copy hooks."""
+    result = object.__new__(type(module))
+    object.__setattr__(result, "__dict__", module.__dict__.copy())
+    for base in type(module).__mro__:
+        slots = getattr(base, "__slots__", ())
+        for name in (slots,) if isinstance(slots, str) else slots:
+            if name not in ("__dict__", "__weakref__") and hasattr(module, name):
+                object.__setattr__(result, name, getattr(module, name))
+    return result
+
+
 def _copy_transform(module: Any) -> Any:
     """Copy mutable buffers while retaining explicit user parameter identities."""
     torch = sys.modules.get("torch")
     if torch is None or not isinstance(module, torch.nn.Module):
         return copy.deepcopy(module)
-    result = copy.copy(module)
+    result = _copy_module_shell(module)
     result._parameters = module._parameters.copy()
     result._buffers = {
         name: None if value is None else value.detach().clone()
@@ -73,10 +85,14 @@ def _copy_transform(module: Any) -> Any:
 
 
 def _candidate(model: Any) -> Any:
-    candidate = copy.copy(model)
+    candidate = (
+        _copy_module_shell(model)
+        if getattr(model, "_tensor_backend", None) == "torch"
+        else copy.copy(model)
+    )
     if getattr(model, "_tensor_backend", None) == "torch":
         candidate._modules = model._modules.copy()
-    candidate.pyro_model = copy.copy(model.pyro_model)
+    candidate.pyro_model = _copy_module_shell(model.pyro_model)
     candidate.pyro_model._trace_inputs = {}
     candidate.pyro_model._rs = None
     if getattr(model, "_tensor_backend", None) == "torch":
@@ -116,10 +132,6 @@ def _candidate(model: Any) -> Any:
         ):
             raise UnsupportedError(
                 "Custom Tensor NumPyro loading requires a declared Matern, SAAS or Linear family."
-            )
-        if custom_loader and hasattr(candidate.pyro_model, "task_feature"):
-            raise UnsupportedError(
-                "Custom multitask returned-module loading is not implemented yet."
             )
     return candidate
 

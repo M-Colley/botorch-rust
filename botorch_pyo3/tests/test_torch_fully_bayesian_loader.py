@@ -314,3 +314,39 @@ def test_public_module_build_hooks_receive_source_keywords_and_state_load_uses_d
     model.load_state_dict(state)
     assert model.pyro_model.dummy_calls == 1
     torch.testing.assert_close(model.posterior(X[:2]).mean, expected, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_actual_gpytorch_kernel_validation_keeps_registries_and_failed_load_atomic(device):
+    gpytorch = pytest.importorskip("gpytorch")
+    model, X, _, program = _model(device)
+    kernel = gpytorch.kernels.ScaleKernel(
+        gpytorch.kernels.RBFKernel(ard_num_dims=1, batch_shape=torch.Size([2])),
+        batch_shape=torch.Size([2]),
+    ).to(X)
+    kernel.base_kernel.lengthscale = X.new_tensor([[[0.6]], [[0.9]]])
+    kernel.outputscale = X.new_tensor([0.7, 1.1])
+    # Kernel.__getstate__ on the pinned GPyTorch source aliases __dict__.
+    # Calling copy.copy during validation must not be allowed to rewrite the
+    # supplied kernel's registries or invoke that state-mutating pickle hook.
+    distance_module = object()
+    kernel.base_kernel.distance_module = distance_module
+    parameters = tuple(kernel.parameters())
+    constraint = kernel.base_kernel.raw_lengthscale_constraint
+    program.kernel = kernel
+    draws = {"arbitrary_site": X.new_tensor([1.0, 2.0])}
+    model.load_mcmc_samples(draws)
+    assert model.covar_module is kernel and tuple(kernel.parameters()) == parameters
+    assert kernel.base_kernel.raw_lengthscale_constraint is constraint
+    assert kernel.base_kernel.distance_module is distance_module
+    expected = model.posterior(X[:2]).mean.detach().clone()
+    state = copy.deepcopy(model.state_dict())
+    program.fail = True
+    with pytest.raises((ValueError, RuntimeError), match="finite|positive-definite|cholesky"):
+        model.load_mcmc_samples(draws)
+    assert model.covar_module is kernel and tuple(kernel.parameters()) == parameters
+    assert kernel.base_kernel.raw_lengthscale_constraint is constraint
+    assert kernel.base_kernel.distance_module is distance_module
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, state[name], atol=0, rtol=0)
+    torch.testing.assert_close(model.posterior(X[:2]).mean, expected, atol=0, rtol=0)

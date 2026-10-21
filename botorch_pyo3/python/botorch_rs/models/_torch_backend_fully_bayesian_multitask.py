@@ -192,6 +192,12 @@ class TorchSaasFullyBayesianMultiTaskGP(TorchMultiTaskGP, SaasFullyBayesianMulti
         if self._mcmc_count is not None:
             batch = torch.broadcast_shapes(X.shape[:-2], torch.Size([self._mcmc_count]))
             X = X.expand(*batch, *X.shape[-2:])
+        if getattr(self, "_fb_custom_likelihood", False):
+            return (
+                X,
+                Y,
+                (self.likelihood.noise if getattr(self, "_fb_custom_fixed_noise", False) else None),
+            )
         if noise is not None and clamp_noise:
             noise = noise.clamp_min(1e-4)
         return X, Y, noise
@@ -236,7 +242,12 @@ class TorchSaasFullyBayesianMultiTaskGP(TorchMultiTaskGP, SaasFullyBayesianMulti
         if not isinstance(X, Tensor) or X.ndim < 2:
             raise ValueError("X must be a Tensor with shape (..., q, d).")
         expanded = X.unsqueeze(-3).expand(*X.shape[:-2], self.num_mcmc_samples, *X.shape[-2:])
-        posterior = TorchMultiTaskGP.posterior(
+        method: Any = TorchMultiTaskGP.posterior
+        if getattr(self, "_fb_custom_likelihood", False):
+            from botorch_rs.models._torch_fully_bayesian_likelihood import multitask_posterior
+
+            method = multitask_posterior
+        posterior = method(
             self,
             expanded,
             output_indices=output_indices,
@@ -255,7 +266,37 @@ class TorchSaasFullyBayesianMultiTaskGP(TorchMultiTaskGP, SaasFullyBayesianMulti
     def _exact_mll(self, output: Any = None, target: Any = None) -> Any:
         raise UnsupportedError("Fully Bayesian models use NUTS, not MAP fitting.")
 
+    def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
+        if not getattr(self, "_fb_custom_fixed_noise", False):
+            return super().condition_on_observations(X, Y, noise=noise, **kwargs)
+        from botorch_rs.models._numpyro_fitting import _copy_transform
+        from botorch_rs.models._torch_fully_bayesian_loader import _copy_model
+
+        # The returned likelihood, rather than constructor Yvar, owns the
+        # fixed observations. Stage those as raw data so the existing task
+        # conditioning validation/broadcast logic appends the supplied noise.
+        stage = _copy_model(self)
+        stage.likelihood = _copy_transform(self.likelihood)
+        fixed = self.likelihood.noise.unsqueeze(-1)
+        if self.outcome_transform is not None:
+            fixed = self.outcome_transform.untransform(torch.zeros_like(fixed), fixed)[1]
+        stage._train_Yvar = fixed
+        stage._fb_custom_likelihood = False
+        conditioned = TorchMultiTaskGP.condition_on_observations(stage, X, Y, noise=noise, **kwargs)
+        fixed = conditioned._training_values()[2]
+        conditioned.likelihood.noise = fixed
+        conditioned._fb_custom_likelihood = True
+        return conditioned
+
     def load_mcmc_samples(self, samples: dict[str, Tensor]) -> None:
+        from botorch_rs.models._torch_fully_bayesian_loader import (
+            has_custom_loader,
+            load_custom_modules,
+        )
+
+        if has_custom_loader(self.pyro_model):
+            load_custom_modules(self, samples)
+            return
         like, d, tasks = self._train_X, self.num_non_task_features, self.num_tasks
         means = samples.get("mean")
         if (
@@ -383,16 +424,28 @@ class TorchSaasFullyBayesianMultiTaskGP(TorchMultiTaskGP, SaasFullyBayesianMulti
             TorchCompositeKernel([data, cast(Any, task_kernel)], "product", like),
             likelihood,
         )
+        self._fb_custom_likelihood = self._fb_custom_fixed_noise = False
         self._prediction_cache, self._transform_fit_versions = None, {}
 
     @property
     def median_lengthscale(self) -> Tensor:
         self._check_if_fitted()
         kernel = self.covar_module.kernels[0]
-        return getattr(kernel, "base_kernel", kernel).lengthscale.median(0).values.squeeze(0)
+        while getattr(kernel, "lengthscale", None) is None:
+            kernel = kernel.base_kernel
+        return kernel.lengthscale.median(0).values.squeeze(0)
 
     def load_state_dict(self, state_dict: Any, strict: bool = True, assign: bool = False) -> Any:
+        from botorch_rs.models._torch_fully_bayesian_loader import has_custom_loader
+
         mean = state_dict["mean_module.base_means.0.raw_constant"]
+        if has_custom_loader(self.pyro_model):
+            self.load_mcmc_samples(
+                self.pyro_model.get_dummy_mcmc_samples(
+                    mean.numel(), dtype=mean.dtype, device=mean.device
+                )
+            )
+            return nn.Module.load_state_dict(self, state_dict, strict=strict, assign=assign)
         count, tasks, rank, d = (
             mean.numel(),
             self.num_tasks,

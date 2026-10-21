@@ -158,10 +158,10 @@ Device-resident NUTS fits scalar and
 latent-task multitask Matérn, SAAS and linear fully Bayesian models. Explicit
 custom probabilistic hooks use the port's optional NumPyro adapter on the
 installed JAX backend, matching the source's inference-device semantics;
-they are not translated into Torch NUTS. Scalar Tensor models adopt supported
+they are not translated into Torch NUTS. Scalar and latent-task Tensor models adopt supported
 custom Gaussian module loaders, including full correlated likelihood noise,
-with device prediction and higher-order graphs. Custom multitask returned-module
-composition remains an explicit boundary. See
+with device prediction and higher-order graphs. Task-aware loaders preserve
+cross-task covariance, mapped labels and physical feature selection. See
 [sampler semantics and verification](torch-fully-bayesian.md).
 Noisy acquisition root caching currently falls back to exact joint sampling
 with an explicit warning. The 776-name API availability audit does not measure

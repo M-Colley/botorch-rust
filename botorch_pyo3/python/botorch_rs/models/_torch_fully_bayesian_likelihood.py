@@ -81,4 +81,77 @@ def posterior_tensors(model: Any, X: torch.Tensor, observation_noise: Any) -> tu
     return gaussian_marginal(model.likelihood, mean, covariance, query_X, noise=noise)
 
 
-__all__ = ["gaussian_marginal", "posterior_tensors"]
+def multitask_posterior(
+    model: Any,
+    X: torch.Tensor,
+    output_indices: Any = None,
+    observation_noise: Any = False,
+    posterior_transform: Any = None,
+    **kwargs: Any,
+) -> Any:
+    """Long-format task conditioning with an actual returned Gaussian likelihood."""
+    from botorch_rs.exceptions.errors import UnsupportedError
+
+    if kwargs:
+        raise UnsupportedError(f"Unsupported posterior arguments: {sorted(kwargs)}.")
+    if (
+        not isinstance(X, torch.Tensor)
+        or X.ndim < 2
+        or X.dtype != model._train_X.dtype
+        or X.device != model._train_X.device
+    ):
+        raise ValueError("X must be a Tensor with the model's dtype/device and shape (...,q,d).")
+    if isinstance(observation_noise, torch.Tensor):
+        raise NotImplementedError("Tensor observation_noise is not supported by MultiTaskGP.")
+    if not isinstance(observation_noise, bool):
+        raise TypeError("observation_noise must be bool.")
+    full, outputs, points = model._query_inputs(X, output_indices)
+    model.eval()
+    raw_train, targets, _ = model._training_values()
+    transformed = model.transform_inputs(full)
+    if not torch.equal(transformed[..., model._task_feature], full[..., model._task_feature]):
+        raise UnsupportedError("Input transforms must preserve categorical task labels.")
+    train, query = model._mapped_inputs(raw_train), model._mapped_inputs(transformed)
+    observed_mean, observed_cov = gaussian_marginal(
+        model.likelihood,
+        model._mean(train),
+        model._covariance(train, train),
+        raw_train,
+        training=True,
+    )
+    factor, alpha = _rs.tensor_exact_gp_factor(
+        targets, observed_cov, observed_mean, torch.zeros_like(observed_mean)
+    )
+    mean, covariance = _rs.tensor_exact_gp_predict(
+        factor,
+        alpha,
+        model._covariance(train, query),
+        model._covariance(query, query),
+        model._mean(query),
+    )
+    if observation_noise:
+        noise = (
+            model._fixed_noise_at(query, model.likelihood.noise)
+            if getattr(model, "_fb_custom_fixed_noise", False)
+            else None
+        )
+        mean, covariance = gaussian_marginal(
+            model.likelihood, mean, covariance, transformed, noise=noise
+        )
+    posterior = TorchGPyTorchPosterior(
+        mean.reshape(*mean.shape[:-1], outputs, points).transpose(-1, -2), covariance
+    )
+    if model.outcome_transform is not None:
+        outcome = model.outcome_transform
+        if outputs > 1:
+            subset = getattr(outcome, "subset_output", None)
+            if subset is None:
+                raise UnsupportedError(
+                    "Multi-output outcome transforms must support subset_output."
+                )
+            outcome = subset([0] * outputs)
+        posterior = outcome.untransform_posterior(posterior, X=X)
+    return posterior if posterior_transform is None else posterior_transform(posterior, X=X)
+
+
+__all__ = ["gaussian_marginal", "posterior_tensors", "multitask_posterior"]

@@ -86,12 +86,15 @@ class MultiTaskPyroMixin:
                 inferred from the task feature column of the training data.
         """
         super().set_inputs(train_X, train_Y, train_Yvar)  # type: ignore[misc]
-        data, shape = to_flat(train_X, "train_X")
+        shape = (
+            tuple(train_X.shape) if hasattr(train_X, "shape") else to_flat(train_X, "train_X")[1]
+        )
         cols = shape[-1]
         assert task_feature is not None
         task_feature = task_feature % cols
         self.task_feature = task_feature
         if all_tasks is None:
+            data, _ = to_flat(train_X, "train_X")
             all_tasks = sorted({int(data[i * cols + task_feature]) for i in range(shape[0])})
         self.num_tasks = len(all_tasks)
         self.task_rank = task_rank or self.num_tasks
@@ -120,6 +123,16 @@ class MultiTaskPyroMixin:
 
     def sample_mean(self) -> Any:
         return _numpyro.mean(self, self.num_tasks)
+
+    def _get_task_indices_and_base_idxr(self, **tkwargs: Any) -> tuple[Any, Any]:
+        """Tensor task indices and physical non-task columns, matching the public hook."""
+        if kind_of(self.train_X).lib != "torch":  # type: ignore[attr-defined]
+            raise UnsupportedError("Tensor task-index hooks require Tensor training inputs.")
+        import torch
+
+        values = self.train_X.to(device=tkwargs.get("device", self.train_X.device))  # type: ignore[attr-defined]
+        indices = torch.arange(values.shape[-1], device=values.device)
+        return values[..., self.task_feature].long(), indices[indices != self.task_feature]
 
     def _get_task_indices_and_base_idxr_jax(self) -> tuple[Any, Any]:
         jnp, _, _ = _numpyro.backend()
@@ -161,6 +174,28 @@ class LatentFeatureMultiTaskPyroMixin(MultiTaskPyroMixin):
     def _maybe_multitask_transform(self, K_noiseless: Any, mean: Any) -> tuple[Any, Any]:
         task_covar, tasks = self._build_task_covar()
         return K_noiseless * task_covar, mean[tasks]
+
+    def _build_mean_module(
+        self, mcmc_samples: dict[str, Any], batch_shape: tuple[int, ...], **tkwargs: Any
+    ) -> Any:
+        if kind_of(self.train_X).lib != "torch":  # type: ignore[attr-defined]
+            raise UnsupportedError("Returned multitask module hooks require Tensor inputs.")
+        from botorch_rs.models._torch_pyro_modules import multitask_mean
+
+        return multitask_mean(self, mcmc_samples, batch_shape)
+
+    def _build_multitask_covariance(
+        self,
+        mcmc_samples: dict[str, Any],
+        covar_module: Any,
+        batch_shape: tuple[int, ...],
+        **tkwargs: Any,
+    ) -> Any:
+        if kind_of(self.train_X).lib != "torch":  # type: ignore[attr-defined]
+            raise UnsupportedError("Returned multitask module hooks require Tensor inputs.")
+        from botorch_rs.models._torch_pyro_modules import multitask_covariance
+
+        return multitask_covariance(self, mcmc_samples, covar_module, batch_shape)
 
     def _member_modules(self, mcmc_samples: dict[str, Any], s: int) -> dict[str, Any]:
         """The hyperparameters of sample ``s`` of a multi-task model."""

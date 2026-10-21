@@ -391,9 +391,23 @@ class PyroModel:
         self, mcmc_samples: dict[str, Any], batch_shape: tuple[int, ...], **tkwargs: Any
     ) -> Any:
         """Public loader extension hook, including the reference dtype/device keywords."""
+        if (
+            kind_of(self.train_X).lib == "torch"
+            and (getattr(self, "_tensor_module_loading", False) or hasattr(self, "task_feature"))
+            and getattr(self._mean_module, "__module__", "") == __name__
+        ):
+            from botorch_rs.models._torch_pyro_modules import mean_module
+
+            return mean_module(self, mcmc_samples, batch_shape)
         return self._mean_module(mcmc_samples, batch_shape)
 
     def _likelihood(self, mcmc_samples: dict[str, Any], batch_shape: tuple[int, ...]) -> Any:
+        if kind_of(self.train_X).lib == "torch" and (
+            getattr(self, "_tensor_module_loading", False) or hasattr(self, "task_feature")
+        ):
+            from botorch_rs.models._torch_pyro_modules import likelihood_module
+
+            return likelihood_module(self, mcmc_samples, batch_shape)
         if self.train_Yvar is not None:
             return None  # fixed noise: train_Yvar of every sample
         likelihood = GaussianLikelihood(
@@ -409,6 +423,12 @@ class PyroModel:
     def _warping_function(
         self, mcmc_samples: dict[str, Any], batch_shape: tuple[int, ...]
     ) -> Warp | None:
+        if kind_of(self.train_X).lib == "torch" and (
+            getattr(self, "_tensor_module_loading", False) or hasattr(self, "task_feature")
+        ):
+            from botorch_rs.models._torch_pyro_modules import warping_module
+
+            return warping_module(self, mcmc_samples, batch_shape)
         if not self.use_input_warping:
             return None
         d = self.ard_num_dims
@@ -493,6 +513,12 @@ class MaternPyroModel(PyroModel):
         Returns botorch_rs modules (the mean and the likelihood receive their
         values when the model is built from them) and the warping function.
         """
+        if kind_of(self.train_X).lib == "torch" and (
+            getattr(self, "_tensor_module_loading", False) or hasattr(self, "task_feature")
+        ):
+            from botorch_rs.models._torch_pyro_modules import family_modules
+
+            return family_modules(self, mcmc_samples)
         mean_values, _ = _values(mcmc_samples, "mean")
         num = len(mean_values)
         batch_shape = (num,)
@@ -624,6 +650,12 @@ class LinearPyroModel(PyroModel):
 
     def load_mcmc_samples(self, mcmc_samples: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
         r"""Load the MCMC samples into their corresponding modules."""
+        if kind_of(self.train_X).lib == "torch" and (
+            getattr(self, "_tensor_module_loading", False) or hasattr(self, "task_feature")
+        ):
+            from botorch_rs.models._torch_pyro_modules import family_modules
+
+            return family_modules(self, mcmc_samples, linear=True)
         wv, shape = _values(mcmc_samples, "weight_variance")
         num = shape[0]
         batch_shape = (num,)

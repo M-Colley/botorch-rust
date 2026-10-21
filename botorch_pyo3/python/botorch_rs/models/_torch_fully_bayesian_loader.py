@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from typing import Any
 
 import torch
@@ -12,6 +11,7 @@ from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models._numpyro_fitting import (
     _adopt_transform,
     _commit_transform_identities,
+    _copy_module_shell,
     _copy_transform,
 )
 from botorch_rs.models._torch_backend_modules import (
@@ -56,7 +56,7 @@ def _module_device(module: nn.Module, like: torch.Tensor) -> None:
 
 
 def _copy_model(model: Any) -> Any:
-    result = copy.copy(model)
+    result = _copy_module_shell(model)
     result._modules = model._modules.copy()
     result._parameters = model._parameters.copy()
     result._buffers = model._buffers.copy()
@@ -66,7 +66,7 @@ def _copy_model(model: Any) -> Any:
 
 def _validation_module(module: nn.Module) -> nn.Module:
     """Isolate mutable buffers without breaking supplied parameter graphs."""
-    result = copy.copy(module)
+    result = _copy_module_shell(module)
     result._parameters = module._parameters.copy()
     result._buffers = {
         name: None if value is None else value.clone() for name, value in module._buffers.items()
@@ -121,17 +121,32 @@ def load_custom_modules(model: Any, samples: dict[str, Any]) -> None:
     batch = torch.Size([count])
     stage = _copy_model(model)
     original_pyro = model.pyro_model
-    stage.pyro_model = copy.copy(original_pyro)
+    stage.pyro_model = _copy_module_shell(original_pyro)
     user = _copy_transform(model._fb_user_input_transform)
     object.__setattr__(stage, "_fb_user_input_transform", user)
     stage.input_transform = user
     stage.outcome_transform = _copy_transform(model.outcome_transform)
     stage._mcmc_count, stage._initializing, stage._fb_custom_likelihood = None, True, False
     X, Y, fixed = stage._training_values()
+    multitask = hasattr(stage, "_task_feature")
+    kwargs: dict[str, Any] = {}
+    if multitask:
+        X = stage._mapped_inputs(X)
+        kwargs.update(
+            task_feature=stage._task_feature,
+            task_rank=stage._rank,
+            all_tasks=list(range(stage.num_tasks)),
+        )
     # The program trace receives detached snapshots separately. Loader code
     # is allowed to retain the live transformed training-data graph.
-    stage.pyro_model.set_inputs(X, Y.unsqueeze(-1), None if fixed is None else fixed.unsqueeze(-1))
-    returned = stage.pyro_model.load_mcmc_samples(mcmc_samples=samples)
+    stage.pyro_model.set_inputs(
+        X, Y.unsqueeze(-1), None if fixed is None else fixed.unsqueeze(-1), **kwargs
+    )
+    stage.pyro_model._tensor_module_loading = True
+    try:
+        returned = stage.pyro_model.load_mcmc_samples(mcmc_samples=samples)
+    finally:
+        stage.pyro_model.__dict__.pop("_tensor_module_loading", None)
     if not isinstance(returned, (tuple, list)) or len(returned) != 4:
         raise ValueError(
             "load_mcmc_samples must return mean, covariance, likelihood and input transform."
@@ -188,7 +203,9 @@ def load_custom_modules(model: Any, samples: dict[str, Any]) -> None:
     }
     with torch.no_grad():
         train_X, train_Y, fixed = validation._training_values()
-        mean_value = validation.mean_module(train_X)
+        likelihood_inputs = train_X
+        train_X = validation._mapped_inputs(train_X) if multitask else train_X
+        mean_value = validation._mean(train_X) if multitask else validation.mean_module(train_X)
         covariance_value = validation._covariance(train_X, train_X)
         expected = (count, like.shape[-2])
         if mean_value.shape != expected or covariance_value.shape != (*expected, like.shape[-2]):
@@ -199,7 +216,11 @@ def load_custom_modules(model: Any, samples: dict[str, Any]) -> None:
             from botorch_rs.models._torch_fully_bayesian_likelihood import gaussian_marginal
 
             _, observed = gaussian_marginal(
-                validation.likelihood, mean_value, covariance_value, train_X, training=True
+                validation.likelihood,
+                mean_value,
+                covariance_value,
+                likelihood_inputs,
+                training=True,
             )
             noise = observed - covariance_value
             if not bool(torch.isfinite(noise).all()):

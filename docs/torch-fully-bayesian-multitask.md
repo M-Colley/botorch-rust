@@ -36,8 +36,12 @@ The legacy `jit_compile` flag is accepted as a no-op, matching the pinned
 official fitter, which never reads that argument. Explicit custom probabilistic
 programs and prior mode use the optional NumPyro adapter described in
 `torch-fully-bayesian.md`; the built-in families retain native/device NUTS.
-Custom returned-module loaders remain outside the Tensor adapter's supported
-scope. A Gaussian mixture requires a linear outcome transform. Tensor
+Custom returned Gaussian module loaders are adopted with their actual
+Parameter identities, including custom data kernels and correlated likelihood
+noise. Their public mean/covariance/likelihood/transform hooks and dummy-state
+hooks are exercised on CPU/CUDA; see the
+[loading protocol](fully-bayesian-custom-loading.md). A Gaussian mixture
+requires a linear outcome transform. Tensor
 observation-noise arguments retain the ordinary multitask model's explicit
 unsupported boundary. Inputs are an unbatched long-format training table
 with one observed scalar per row, as in the reference family.
