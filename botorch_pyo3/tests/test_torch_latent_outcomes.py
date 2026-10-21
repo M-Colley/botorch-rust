@@ -359,3 +359,20 @@ def test_latent_fantasy_state_roundtrip_has_writable_time_batches(device, family
         restored = fantasy.posterior(Q, U)
     torch.testing.assert_close(restored.mean, means)
     torch.testing.assert_close(restored.variance, variances)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("batch", [False, True])
+def test_training_time_updates_remain_live_until_an_explicit_state_load(device, batch):
+    X, T, Y, Q, U = _data(device, batch=batch)
+    model = LatentKroneckerGP(X, T, Y, outcome_transform=None, backend="torch")
+    assert model.train_T.untyped_storage().data_ptr() == T.untyped_storage().data_ptr()
+    initial = model.posterior(Q, U).mean.detach().clone()
+    saved = copy.deepcopy(model.state_dict())
+    with torch.no_grad():
+        T.add_(T.new_tensor([[0.05], [-0.08]]))
+    torch.testing.assert_close(model.train_T, T.expand(*model.batch_shape, *T.shape))
+    assert not torch.allclose(model.posterior(Q, U).mean, initial)
+    model.load_state_dict(saved)
+    torch.testing.assert_close(model.train_T, saved["_train_T"])
+    torch.testing.assert_close(model.posterior(Q, U).mean, initial)

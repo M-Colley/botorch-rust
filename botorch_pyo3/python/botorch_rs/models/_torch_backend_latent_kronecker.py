@@ -186,7 +186,7 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
                 "Expected train_X batch x n x d, train_T batch x t x 1 and train_Y batch x n x t."
             )
         try:
-            train_T = train_T.expand(*batch, *train_T.shape[-2:]).clone()
+            train_T = train_T.expand(*batch, *train_T.shape[-2:])
         except RuntimeError as error:
             raise ValueError(
                 "train_T batch shape must broadcast to train_X's batch shape."
@@ -257,6 +257,16 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         if not bool(masks[0].any()):
             raise ValueError("At least one finite observation is required.")
         return masks[0].clone()
+
+    def _load_from_state_dict(
+        self, state_dict: Any, prefix: str, *args: Any, **kwargs: Any
+    ) -> None:
+        # Keep caller time tensors live during ordinary inference and
+        # optimization. Expanded shared grids need writable storage only when
+        # an explicit state load copies values into the registered buffer.
+        if prefix + "_train_T" in state_dict and not self._train_T.is_contiguous():
+            self._train_T = self._train_T.clone()
+        nn.Module._load_from_state_dict(self, state_dict, prefix, *args, **kwargs)
 
     @property
     def num_outputs(self) -> int:
@@ -611,7 +621,7 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             ),
             -2,
         )
-        model._train_T = self._train_T.expand(*batch, *self._train_T.shape[-2:]).clone()
+        model._train_T = self._train_T.expand(*batch, *self._train_T.shape[-2:])
         model._mask_valid = self._validate_mask(model._train_Y)
         model._freeze_outcome_statistics = True
         return model.eval()
