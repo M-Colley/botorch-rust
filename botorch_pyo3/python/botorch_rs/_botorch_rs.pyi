@@ -2582,6 +2582,7 @@ class PyroModel:
         dense_mass: bool = True,
         step_size: float = 1.0,
         stop_when_draws_fail: bool = False,
+        progress: Callable[[int, int, bool, float, int, bool], None] | None = None,
     ) -> dict[str, Any]: ...
 
 def q_bayesian_active_learning_by_disagreement(

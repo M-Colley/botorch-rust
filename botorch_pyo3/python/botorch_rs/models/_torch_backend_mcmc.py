@@ -661,6 +661,7 @@ def sample_torch_nuts(
     adapt_mass_matrix: bool = True,
     regularize_mass_matrix: bool = True,
     max_delta_energy: float = 1000.0,
+    progress: Any = None,
 ) -> dict[str, Any]:
     """NumPyro/native-port multinomial NUTS with Tensor states and GPU algebra.
 
@@ -671,6 +672,8 @@ def sample_torch_nuts(
     """
     if torch.is_inference_mode_enabled():
         raise UnsupportedError("NUTS needs autograd and cannot run under torch.inference_mode.")
+    if progress is not None and not callable(progress):
+        raise ValueError("progress must be callable or None")
     if (
         not isinstance(initial, Tensor)
         or initial.ndim != 1
@@ -766,6 +769,15 @@ def sample_torch_nuts(
         )
         if iteration >= num_warmup:
             samples.append(point)
+        if progress is not None:
+            progress(
+                iteration + 1,
+                num_warmup + num_samples,
+                iteration < num_warmup,
+                float(acceptance),
+                tree.count,
+                tree.diverging,
+            )
     return dict(
         samples=torch.stack(samples),
         trace=trace,
@@ -789,6 +801,7 @@ def fit_torch_fully_bayesian_nuts(
     seed: int,
     draws: Any,
     init_params: Any,
+    disable_progbar: bool = False,
 ) -> None:
     """Fit a Tensor model without resetting previously loaded draws on failure."""
     if torch.is_inference_mode_enabled():
@@ -826,15 +839,19 @@ def fit_torch_fully_bayesian_nuts(
         initial = torch.as_tensor(init_params, device=like.device, dtype=like.dtype)
         if initial.shape != (potential.dim,):
             raise ValueError(f"Expected {potential.dim} initial unconstrained parameters.")
-    result = sample_torch_nuts(
-        potential,
-        initial,
-        num_warmup=warmup_steps,
-        num_samples=num_samples,
-        max_tree_depth=max_tree_depth,
-        seed=int(seed) & 0xFFFFFFFFFFFFFFFF,
-        draws=draws,
-    )
+    from botorch_rs.models._nuts_progress import nuts_progress
+
+    with nuts_progress(disable_progbar) as progress:
+        result = sample_torch_nuts(
+            potential,
+            initial,
+            num_warmup=warmup_steps,
+            num_samples=num_samples,
+            max_tree_depth=max_tree_depth,
+            seed=int(seed) & 0xFFFFFFFFFFFFFFFF,
+            draws=draws,
+            progress=progress,
+        )
     samples = potential.postprocess(result["samples"])
     model.load_mcmc_samples({name: values[::thinning] for name, values in samples.items()})
     model._nuts_result = result

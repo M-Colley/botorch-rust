@@ -859,6 +859,25 @@ pub fn sample_nuts<P: Potential + ?Sized>(
     options: &NutsOptions,
     rng: &mut (impl NutsRandom + ?Sized),
 ) -> Result<NutsRun> {
+    sample_nuts_with_callback(potential, z0, options, rng, |_, _| Ok(()))
+}
+
+/// Runs [`sample_nuts`], reporting each completed warmup or sample transition.
+///
+/// The callback receives a one-based transition count and its diagnostics.
+/// It runs before the next transition, does not draw random numbers, and can
+/// cancel the run by returning an error. No partial result is returned on error.
+///
+/// # Errors
+/// Returns the validation and random-draw errors of [`sample_nuts`], or an
+/// error returned by the callback.
+pub fn sample_nuts_with_callback<P: Potential + ?Sized>(
+    potential: &P,
+    z0: &[f64],
+    options: &NutsOptions,
+    rng: &mut (impl NutsRandom + ?Sized),
+    mut callback: impl FnMut(usize, &NutsIteration) -> Result<()>,
+) -> Result<NutsRun> {
     let dim = potential.dim();
     if z0.len() != dim {
         return Err(BotorchError::InvalidArgument(format!(
@@ -924,14 +943,16 @@ pub fn sample_nuts<P: Potential + ?Sized>(
                 num_windows,
             );
         }
-        trace.push(NutsIteration {
+        let iteration = NutsIteration {
             z: z.clone(),
             potential_energy: pe,
             step_size: adapt.step_size,
             accept_prob,
             num_steps: tree.num_proposals,
             diverging: tree.diverging,
-        });
+        };
+        callback(i + 1, &iteration)?;
+        trace.push(iteration);
         if !warmup {
             samples.push(z.clone());
         }
@@ -1092,6 +1113,59 @@ mod tests {
             let g = vec![2.0 * z[0] + 0.6 * z[1], 0.6 * z[0] + z[1]];
             (0.5 * (z[0] * g[0] + z[1] * g[1]), g)
         }
+    }
+
+    #[test]
+    fn iteration_callbacks_preserve_seeded_trajectories_and_can_cancel() {
+        let options = NutsOptions {
+            num_warmup: 4,
+            num_samples: 3,
+            max_tree_depth: (2, 2),
+            ..Default::default()
+        };
+        let expected =
+            sample_nuts(&Gaussian, &[1.0, -1.0], &options, &mut SeededDraws::new(17)).unwrap();
+        let mut reported = Vec::new();
+        let actual = sample_nuts_with_callback(
+            &Gaussian,
+            &[1.0, -1.0],
+            &options,
+            &mut SeededDraws::new(17),
+            |completed, iteration| {
+                assert_eq!(completed, reported.len() + 1);
+                reported.push(iteration.clone());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(actual.samples, expected.samples);
+        assert_eq!(actual.step_size, expected.step_size);
+        assert_eq!(reported.len(), 7);
+        for (a, b) in reported.iter().zip(&expected.trace) {
+            assert_eq!(a.z, b.z);
+            assert_eq!(a.potential_energy, b.potential_energy);
+            assert_eq!(a.accept_prob, b.accept_prob);
+            assert_eq!(a.num_steps, b.num_steps);
+            assert_eq!(a.diverging, b.diverging);
+        }
+        let mut completed = 0;
+        let error = sample_nuts_with_callback(
+            &Gaussian,
+            &[1.0, -1.0],
+            &options,
+            &mut SeededDraws::new(17),
+            |i, _| {
+                completed = i;
+                if i == 2 {
+                    Err(BotorchError::Runtime("cancelled during warmup".into()))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+        assert_eq!(completed, 2);
+        assert!(error.to_string().contains("cancelled during warmup"));
     }
 
     #[test]

@@ -19,8 +19,8 @@ pub mod nuts;
 pub mod pyro_models;
 
 pub use nuts::{
-    find_valid_initial_params, sample_nuts, MassMatrix, NutsOptions, NutsRandom, NutsRun,
-    Potential, RecordedDraw, RecordedDraws, SeededDraws, UniformKind,
+    find_valid_initial_params, sample_nuts, sample_nuts_with_callback, MassMatrix, NutsOptions,
+    NutsRandom, NutsRun, Potential, RecordedDraw, RecordedDraws, SeededDraws, UniformKind,
 };
 pub use pyro_models::{
     PyroKernel, PyroModel, PyroModelSpec, Site, Support, TaskStructure, MIN_INFERRED_NOISE_LEVEL,

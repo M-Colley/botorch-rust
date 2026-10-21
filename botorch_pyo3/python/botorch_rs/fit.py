@@ -361,7 +361,8 @@ def fit_fully_bayesian_model_nuts(
             num_samples / thinning samples are retained.
         thinning: The amount of thinning. Every nth sample is retained.
         disable_progbar: A boolean indicating whether to print the progress
-            bar and diagnostics during MCMC (ignored: botorch_rs prints none).
+            bar and diagnostics during MCMC. False reports each completed
+            warmup and sample transition to stderr.
         jit_compile: Whether to use jit (ignored on the compiled native backend;
             Accepted for compatibility; it is a legacy no-op in the pinned
             reference. The Torch sampler is eager and the native sampler compiled).
@@ -414,20 +415,24 @@ def fit_fully_bayesian_model_nuts(
             seed,
             draws,
             init_params,
+            disable_progbar,
         )
-    model.train()
     potential = model.pyro_model._potential()
     if (draws is None) != (init_params is None):
         raise ValueError("`draws` and `init_params` must be given together.")
     z0 = None if init_params is None else [float(v) for v in init_params]
-    result = potential.sample_nuts(
-        int(warmup_steps),
-        int(num_samples),
-        max_tree_depth=(int(max_tree_depth), int(max_tree_depth)),
-        seed=int(seed) & 0xFFFFFFFFFFFFFFFF,
-        z0=z0,
-        draws=None if draws is None else list(draws),
-    )
+    from botorch_rs.models._nuts_progress import nuts_progress
+
+    with nuts_progress(disable_progbar) as progress:
+        result = potential.sample_nuts(
+            int(warmup_steps),
+            int(num_samples),
+            max_tree_depth=(int(max_tree_depth), int(max_tree_depth)),
+            seed=int(seed) & 0xFFFFFFFFFFFFFFFF,
+            z0=z0,
+            draws=None if draws is None else list(draws),
+            progress=progress,
+        )
     samples = result["samples"]
     mcmc_samples = {}
     for name, shape, values in potential.postprocess(samples):
@@ -435,8 +440,9 @@ def fit_fully_bayesian_model_nuts(
         rows = [values[i * size : (i + 1) * size] for i in range(len(samples))][::thinning]
         flat = [v for row in rows for v in row]
         mcmc_samples[name] = from_flat(flat, (len(rows), *shape), model._kind)
-    model._nuts_result = result
+    model.train()
     model.load_mcmc_samples(mcmc_samples)
+    model._nuts_result = result
     model.eval()
 
 

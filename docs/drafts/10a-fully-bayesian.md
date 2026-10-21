@@ -99,7 +99,9 @@ revision; see [the current warping audit](../fully-bayesian-multitask-warping.md
    `ChainedInputTransform` used all samples' concentrations for every
    sample; qLogNEI's `X_baseline` of an ensemble raised; qLogNParEGO of an
    ensemble normalized every member by its own `Y_baseline`.
-10. `jit_compile` and `disable_progbar` are accepted and ignored.
+10. `jit_compile` is accepted as the pinned reference's legacy no-op.
+    `disable_progbar=False` now reports actual completed NUTS transitions;
+    see [iteration reporting](../fully-bayesian-nuts-progress.md).
 11. Dummy warping samples use `len(indices_to_warp)` concentrations when
     only a subset of the input features is warped; BoTorch uses the full
     input dimension and cannot load its own samples in this case.

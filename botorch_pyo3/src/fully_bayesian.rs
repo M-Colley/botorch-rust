@@ -3,8 +3,9 @@
 //! them, with seeded or recorded random draws.
 
 use botorch_core::fully_bayesian::{
-    find_valid_initial_params, sample_nuts, MassMatrix, NutsOptions, NutsRandom, PyroKernel,
-    PyroModel, PyroModelSpec, RecordedDraw, RecordedDraws, SeededDraws, Support, TaskStructure,
+    find_valid_initial_params, sample_nuts, sample_nuts_with_callback, MassMatrix, NutsOptions,
+    NutsRandom, PyroKernel, PyroModel, PyroModelSpec, RecordedDraw, RecordedDraws, SeededDraws,
+    Support, TaskStructure,
 };
 use std::sync::Arc;
 
@@ -250,9 +251,12 @@ impl PyPyroModel {
     /// taken, e.g. where a replay left the recorded chain) and, for
     /// recorded draws, `consumed`, `num_draws`, `max_probability_error`,
     /// `first_flip` and `min_margin`.
+    /// Optional `progress(completed, total, warmup, accept_prob, num_steps,
+    /// diverging)` runs after each transition, including warmup; its errors
+    /// abort sampling and are re-raised unchanged.
     #[pyo3(signature = (num_warmup, num_samples, max_tree_depth=(6, 6), seed=0, z0=None,
         draws=None, target_accept_prob=0.8, dense_mass=true, step_size=1.0,
-        stop_when_draws_fail=false))]
+        stop_when_draws_fail=false, progress=None))]
     #[allow(clippy::too_many_arguments)]
     fn sample_nuts<'py>(
         &self,
@@ -267,7 +271,11 @@ impl PyPyroModel {
         dense_mass: bool,
         step_size: f64,
         stop_when_draws_fail: bool,
+        progress: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyDict>> {
+        if progress.as_ref().is_some_and(|f| !f.bind(py).is_callable()) {
+            return Err(value_error("progress must be callable or None"));
+        }
         let options = NutsOptions {
             num_warmup,
             num_samples,
@@ -281,6 +289,30 @@ impl PyPyroModel {
         let recorded = draws.as_ref().map(parse_draws).transpose()?;
         let model = &self.inner;
         let (run, diagnostics) = crate::threads::run(py, move || {
+            let sample = |z0: &[f64], rng: &mut dyn NutsRandom| {
+                if let Some(callback) = &progress {
+                    sample_nuts_with_callback(model, z0, &options, rng, |completed, it| {
+                        Python::attach(|py| -> PyResult<()> {
+                            py.check_signals()?;
+                            callback.call1(
+                                py,
+                                (
+                                    completed,
+                                    num_warmup + num_samples,
+                                    completed <= num_warmup,
+                                    it.accept_prob,
+                                    it.num_steps,
+                                    it.diverging,
+                                ),
+                            )?;
+                            Ok(())
+                        })
+                        .map_err(crate::callbacks::callback_error)
+                    })
+                } else {
+                    sample_nuts(model, z0, &options, rng)
+                }
+            };
             let result: botorch_core::Result<_> = (|| match recorded {
                 Some(d) => {
                     let z0 = z0.ok_or_else(|| {
@@ -289,7 +321,7 @@ impl PyPyroModel {
                         )
                     })?;
                     let mut rng = RecordedDraws::new(d);
-                    let run = sample_nuts(model, &z0, &options, &mut rng)?;
+                    let run = sample(&z0, &mut rng)?;
                     let diag = Some((
                         rng.consumed(),
                         rng.len(),
@@ -305,7 +337,7 @@ impl PyPyroModel {
                         Some(z) => z,
                         None => find_valid_initial_params(model, &mut rng)?,
                     };
-                    let run = sample_nuts(model, &z0, &options, &mut rng as &mut dyn NutsRandom)?;
+                    let run = sample(&z0, &mut rng)?;
                     Ok((run, None))
                 }
             })();
