@@ -97,13 +97,20 @@ def test_component_query_gradients_match_official(second_order, mode):
     actual, reference = pair(second_order)
     query = torch.tensor([[0.27, 0.64, 0.39], [0.76, 0.43, 0.61]], dtype=DT, requires_grad=True)
     other = query.detach().clone().requires_grad_()
+    # The bias component is constant, so its latent q=2 covariance has rank
+    # one. Equivalent rounded covariances can select different adaptive jitter
+    # and therefore different coupled draws. Use the configured observation
+    # noise for this common-normal sample comparison; latent moments and their
+    # query derivatives remain checked in the other modes.
+    noisy = mode == "samples"
     ap, bp = (
-        actual.posterior(query, infer_all_components=True),
-        reference.posterior(other, infer_all_components=True),
+        actual.posterior(query, infer_all_components=True, observation_noise=noisy),
+        reference.posterior(other, infer_all_components=True, observation_noise=noisy),
     )
     if mode == "covariance":
         a, b = ap.distribution.covariance_matrix, bp.distribution.covariance_matrix
     elif mode == "samples":
+        assert torch.linalg.eigvalsh(ap.distribution.covariance_matrix).amin() > 1e-8
         z = torch.linspace(
             -0.8, 0.7, 3 * torch.Size(ap.base_sample_shape).numel(), dtype=DT
         ).reshape(3, *ap.base_sample_shape)

@@ -38,6 +38,13 @@ Validation includes 32 Python cases for values, covariances, samples, input
 gradients, batching, quadrature, grid evaluation and snapshots. Native finite
 differences independently check every component's mean and covariance Jacobian
 for RBF, Matérn-3/2 and Matérn-5/2 kernels, including original-unit reconstruction.
+Common-normal component samples use the configured observation noise so that
+the constant bias component has a positive definite covariance. Its noiseless
+multi-point covariance has rank one: equivalent rounded covariances can select
+different adaptive jitter and therefore different coupled draws. Latent means,
+variances, covariances and their query derivatives are checked separately.
+All 32 cases pass on CPU with Torch 2.13 and 2.14.1 after this fixture correction;
+comparison tolerances and runtime sampling are unchanged.
 
 ## Verified official BoTorch defects
 
