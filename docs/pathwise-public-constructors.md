@@ -64,6 +64,15 @@ independent first/mixed second derivatives; without reference dependencies,
 cases. These focused counts are not a release certificate or evidence for every
 inherited Torch API.
 
+Caller-defined subclasses of the public path, feature-map and transform
+classes retain their constructors and forward overrides while exposing the
+same module registration, hooks, migration and serialization protocols. Forty-four
+additional CPU/CUDA controls cover eleven subclass families and compare values,
+all active first derivatives and mixed second derivatives with the unmodified
+reference. The combined module and subclass selection passes 226 cases;
+the subclass controls also pass 22 cases on Torch 2.14 CPU and 22 without
+reference dependencies (22 reference-only cases skip).
+
 Factory-produced native generalized-linear paths still expose their existing
 fixed weight/draw metadata and reject assignment to their immutable native
 weight snapshots. Their feature metadata is not a replacement for the fully

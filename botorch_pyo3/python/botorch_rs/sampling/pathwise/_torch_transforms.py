@@ -13,6 +13,7 @@ from botorch_rs.sampling.pathwise import utils
 
 class _TorchPathTransform(nn.Module):
     _port_type: Any
+    _tensor_backend = "torch"
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         nn.Module.__init__(self)
@@ -104,4 +105,15 @@ _TYPES: dict[type[Any], type[Any]] = {
 
 
 def tensor_transform_type(public_type: type[Any]) -> type[Any] | None:
-    return _TYPES.get(public_type)
+    if getattr(public_type, "_tensor_backend", None) == "torch":
+        return None
+    from botorch_rs.sampling.pathwise._torch_types import module_type
+
+    for base in public_type.__mro__:
+        if base in _TYPES:
+            return module_type(public_type, _TYPES[base], base)
+    return module_type(public_type, TorchTensorTransformModule, utils.TensorTransform)
+
+
+class TorchTensorTransformModule(nn.Module, utils.TensorTransform):
+    _tensor_backend = "torch"

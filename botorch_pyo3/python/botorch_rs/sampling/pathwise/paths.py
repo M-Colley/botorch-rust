@@ -31,6 +31,19 @@ class SamplePath:
     input_transform: Any = None
     output_transform: Any = None
 
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        if (
+            sys.modules.get("torch") is not None
+            and getattr(cls, "_tensor_backend", None) != "torch"
+        ):
+            from botorch_rs.sampling.pathwise._torch_modules import TorchSamplePathModule
+            from botorch_rs.sampling.pathwise._torch_types import module_type
+
+            result: Any = object.__new__(module_type(cls, TorchSamplePathModule, SamplePath))
+            sys.modules["torch"].nn.Module.__init__(result)
+            return result
+        return object.__new__(cls)
+
     def __call__(self, x: Any, **kwargs: Any) -> Any:
         from botorch_rs.models.transforms.input import InputTransform
         from botorch_rs.models.transforms.outcome import OutcomeTransform
@@ -62,11 +75,12 @@ class PathDict(SamplePath):
 
     def __new__(cls, paths: Any = None, *args: Any, **kwargs: Any) -> Any:
         torch = sys.modules.get("torch")
-        if cls is PathDict and torch is not None:
+        if getattr(cls, "_tensor_backend", None) != "torch" and torch is not None:
             if all(isinstance(path, torch.nn.Module) for path in (paths or {}).values()):
                 from botorch_rs.sampling.pathwise._torch_modules import TorchPathDictModule
+                from botorch_rs.sampling.pathwise._torch_types import module_type
 
-                return object.__new__(TorchPathDictModule)
+                return object.__new__(module_type(cls, TorchPathDictModule, PathDict))
         return object.__new__(cls)
 
     def __init__(
@@ -122,12 +136,13 @@ class PathList(SamplePath):
 
     def __new__(cls, paths: Any = None, *args: Any, **kwargs: Any) -> Any:
         torch = sys.modules.get("torch")
-        if cls is PathList and torch is not None:
+        if getattr(cls, "_tensor_backend", None) != "torch" and torch is not None:
             paths = [] if paths is None else list(paths)
             if all(isinstance(path, torch.nn.Module) for path in paths):
                 from botorch_rs.sampling.pathwise._torch_modules import TorchPathListModule
+                from botorch_rs.sampling.pathwise._torch_types import module_type
 
-                result: Any = object.__new__(TorchPathListModule)
+                result: Any = object.__new__(module_type(cls, TorchPathListModule, PathList))
                 result.__dict__["_constructor_paths"] = paths
                 return result
             # A one-shot iterable must remain available to the public initializer.
@@ -257,10 +272,13 @@ class GeneralizedLinearPath(_RsPaths, SamplePath):
     ensemble_as_batch = False
 
     def __new__(cls, feature_map: Any = None, weight: Any = None, *args: Any, **kwargs: Any) -> Any:
-        if cls is GeneralizedLinearPath and is_torch_tensor(weight):
+        if getattr(cls, "_tensor_backend", None) != "torch" and is_torch_tensor(weight):
             from botorch_rs.sampling.pathwise._torch_backend import TorchGeneralizedLinearPath
+            from botorch_rs.sampling.pathwise._torch_types import module_type
 
-            return object.__new__(TorchGeneralizedLinearPath)
+            return object.__new__(
+                module_type(cls, TorchGeneralizedLinearPath, GeneralizedLinearPath)
+            )
         return object.__new__(cls)
 
     def __init__(

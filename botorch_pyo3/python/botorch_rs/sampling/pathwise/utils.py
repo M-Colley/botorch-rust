@@ -70,12 +70,16 @@ class TensorTransform(ABC, GPModule):
     """Base of callable array transforms, independent of a torch runtime."""
 
     def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        if getattr(cls, "__abstractmethods__", None):
+            return object.__new__(cls)
         if sys.modules.get("torch") is not None:
             from botorch_rs.sampling.pathwise._torch_transforms import tensor_transform_type
 
             module_type = tensor_transform_type(cls)
             if module_type is not None:
-                return object.__new__(module_type)
+                result = object.__new__(module_type)
+                sys.modules["torch"].nn.Module.__init__(result)
+                return result
         return object.__new__(cls)
 
     def __call__(self, values: Any, **kwargs: Any) -> Any:

@@ -10,11 +10,13 @@ from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.transforms.input import InputTransform
 from botorch_rs.models.transforms.outcome import OutcomeTransform
 from botorch_rs.sampling.pathwise.features.maps import KernelEvaluationMap, KernelFeatureMap
-from botorch_rs.sampling.pathwise.paths import GeneralizedLinearPath, PathDict, PathList
+from botorch_rs.sampling.pathwise.paths import GeneralizedLinearPath, PathDict, PathList, SamplePath
 
 
 class TorchTransformedModule(nn.Module):
     """Keep transforms outside the module's hooks, as in the source mixin."""
+
+    _tensor_backend = "torch"
 
     @property
     def input_transform(self) -> Any:
@@ -61,6 +63,10 @@ def register_tensor(module: nn.Module, name: str, value: Tensor | None) -> None:
         module.register_parameter(name, value)
     else:
         module.register_buffer(name, value)
+
+
+class TorchSamplePathModule(TorchTransformedModule, SamplePath):
+    pass
 
 
 class TorchLinearPathModule(TorchTransformedModule, GeneralizedLinearPath):

@@ -54,10 +54,11 @@ class KernelEvaluationMap(FeatureMap):
     """Features obtained by evaluating a kernel against fixed points."""
 
     def __new__(cls, kernel: Any = None, points: Any = None, *args: Any, **kwargs: Any) -> Any:
-        if cls is KernelEvaluationMap and is_torch_tensor(points):
+        if getattr(cls, "_tensor_backend", None) != "torch" and is_torch_tensor(points):
             from botorch_rs.sampling.pathwise._torch_modules import TorchEvaluationFeatureMap
+            from botorch_rs.sampling.pathwise._torch_types import module_type
 
-            return object.__new__(TorchEvaluationFeatureMap)
+            return object.__new__(module_type(cls, TorchEvaluationFeatureMap, KernelEvaluationMap))
         return object.__new__(cls)
 
     def __init__(
@@ -92,10 +93,11 @@ class KernelFeatureMap(FeatureMap):
     kernel: Any
 
     def __new__(cls, kernel: Any = None, weight: Any = None, *args: Any, **kwargs: Any) -> Any:
-        if cls is KernelFeatureMap and is_torch_tensor(weight):
+        if getattr(cls, "_tensor_backend", None) != "torch" and is_torch_tensor(weight):
             from botorch_rs.sampling.pathwise._torch_modules import TorchAffineFeatureMap
+            from botorch_rs.sampling.pathwise._torch_types import module_type
 
-            return object.__new__(TorchAffineFeatureMap)
+            return object.__new__(module_type(cls, TorchAffineFeatureMap, KernelFeatureMap))
         return object.__new__(cls)
 
     def __init__(

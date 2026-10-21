@@ -62,13 +62,14 @@ class MatheronPath(_RsPaths, PathDict):
         cls, prior_paths: Any = None, update_paths: Any = None, *args: Any, **kwargs: Any
     ) -> Any:
         torch = sys.modules.get("torch")
-        if cls is MatheronPath and torch is not None:
+        if getattr(cls, "_tensor_backend", None) != "torch" and torch is not None:
             if isinstance(prior_paths, torch.nn.Module) and isinstance(
                 update_paths, torch.nn.Module
             ):
                 from botorch_rs.sampling.pathwise._torch_backend import TorchMatheronPath
+                from botorch_rs.sampling.pathwise._torch_types import module_type
 
-                return object.__new__(TorchMatheronPath)
+                return object.__new__(module_type(cls, TorchMatheronPath, MatheronPath))
         return object.__new__(cls)
 
     def __init__(
