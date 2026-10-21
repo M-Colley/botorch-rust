@@ -34,6 +34,9 @@ Thompson maxima and Gumbel fitting run on device. The Gumbel sampler solves the
 independent Gaussian maximum's three quantiles with batched log-CDF bisection.
 It retains posterior precision, consistent with the existing native CPU sampler;
 the pinned BoTorch helper rounds its SciPy roots through the default dtype.
+Existing [BoTorch #3431](https://github.com/meta-pytorch/botorch/pull/3431)
+preserves the candidates' dtype/device when constructing those quantiles;
+its regression checks the fitted samples against the double-precision roots.
 Independent float64 SciPy roots provide the stricter numerical oracle, with the
 unmodified reference compared separately. Standalone Tensor Gumbel sampling
 retains implicit first and second training-data derivatives through Newton
@@ -144,9 +147,12 @@ The one/eight-observation regressions run on both CPU and CUDA. The native
 control mean is centered before summation, so an exactly constant control
 retains exactly zero variance instead of a floating-point mean residual.
 
-These are local implementations and proposed upstream repairs. Root-level
-publication work tracks their issues and pull requests; this chapter does not
-claim an upstream submission.
+The query-batch correction is submitted in
+[BoTorch #3483](https://github.com/meta-pytorch/botorch/pull/3483), and the
+control-variate correction in
+[BoTorch #3481](https://github.com/meta-pytorch/botorch/pull/3481).
+The [submission ledger](upstream-pull-requests.md) tracks these proposed repairs;
+an open PR does not mean the repair is in an upstream release.
 
 ## Joint entropy search
 
