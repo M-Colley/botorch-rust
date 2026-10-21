@@ -11,8 +11,9 @@ use botorch_core::acquisition::{
     LogConstrainedExpectedImprovement, LogExpectedImprovement, LogProbabilityOfImprovement,
     McAcquisitionOptions, OutputConstraint, PosteriorMean, PosteriorStandardDeviation,
     ProbabilityOfImprovement, PruneOptions, QExpectedImprovement, QLogExpectedImprovement,
-    QLogNoisyExpectedImprovement, QLogNoisyExpectedImprovementOptions, QSimpleRegret,
-    QUpperConfidenceBound, ScalarizedModel, ScalarizedPosteriorTransform, UpperConfidenceBound,
+    QLogExpectedImprovementOptions, QLogNoisyExpectedImprovement,
+    QLogNoisyExpectedImprovementOptions, QSimpleRegret, QUpperConfidenceBound, ScalarizedModel,
+    ScalarizedPosteriorTransform, UpperConfidenceBound,
 };
 use botorch_core::sampling::SobolQMCNormalSampler;
 use botorch_core::{
@@ -243,7 +244,18 @@ fn scalarized_acquisition_gradients_match_finite_differences() {
             ),
             (
                 "qLogEI",
-                Box::new(QLogExpectedImprovement::new(m(), best, Default::default()).unwrap()),
+                Box::new(
+                    QLogExpectedImprovement::new(
+                        m(),
+                        best,
+                        QLogExpectedImprovementOptions {
+                            // The sharp MC smoothing needs a reproducible FD fixture.
+                            sampler: sampler(3),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap(),
+                ),
             ),
             (
                 "qUCB",
