@@ -148,13 +148,26 @@ def test_numpy_gp_logical_buffers(dtype):
     assert_buffers(actual, expected)
 
 
-def test_native_snapshot_changes_do_not_mutate_rust_state():
+def test_native_outcome_named_buffers_retain_registered_state_and_prediction_semantics():
     x, y = data()
-    model = SingleTaskGP(x, y)
-    original = model.outcome_transform.means.clone()
-    snapshot = dict(model.named_buffers())["outcome_transform.means"]
-    snapshot.fill_(100.0)
-    torch.testing.assert_close(model.outcome_transform.means, original)
+    model, reference = SingleTaskGP(x, y), RefGP(x, y)
+    query = x[:2] + 0.03
+    before = model.posterior(query).mean.clone()
+    reference.posterior(query)
+    originals = []
+    for candidate in (model, reference):
+        original = candidate.outcome_transform.means.clone()
+        originals.append(original)
+        registered = dict(candidate.named_buffers())["outcome_transform.means"]
+        assert registered is candidate.outcome_transform.means
+        registered.fill_(100.0)
+        torch.testing.assert_close(
+            candidate.outcome_transform.means, torch.full_like(original, 100)
+        )
+    torch.testing.assert_close(model.posterior(query).mean, reference.posterior(query).mean)
+    for candidate, original in zip((model, reference), originals, strict=True):
+        candidate.outcome_transform.means.copy_(original)
+    torch.testing.assert_close(model.posterior(query).mean, before)
 
 
 @pytest.mark.parametrize(
