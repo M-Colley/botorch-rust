@@ -376,9 +376,31 @@ def tensor_gaussian_update(
     )
     if likelihood is DEFAULT:
         likelihood = model.likelihood
+    prior_covariance = None
+    noise_mean: Any = 0
     if noise_covariance is None:
+        from botorch_rs.models._torch_gaussian_likelihood import gaussian_marginal, uses_marginal
+
         if likelihood is None:
             covariance_noise = None
+        elif uses_marginal(likelihood):
+            prior_covariance = model._covariance(points, points)
+            prior_mean = model.mean_module(points)
+            observed_mean, observed_covariance = gaussian_marginal(
+                likelihood, prior_mean, prior_covariance, points, training=True
+            )
+            covariance_noise = observed_covariance - prior_covariance
+            noise_mean = observed_mean - prior_mean
+            if (
+                type(likelihood).__name__ == "FixedNoiseGaussianLikelihood"
+                and type(likelihood).__module__ == "gpytorch.likelihoods.gaussian_likelihood"
+                and likelihood.noise_covar.noise.shape[-1] != points.shape[-2]
+                and likelihood.second_noise_covar is None
+            ):
+                # The canonical fixed likelihood returns ZeroLinearOperator
+                # on an unmatched grid. Do not turn that zero into jittered
+                # observation noise by factoring a dense zero difference.
+                covariance_noise = None
         elif likelihood is model.likelihood:
             variance = (
                 likelihood.noise_for(points.shape[-2])
@@ -407,7 +429,7 @@ def tensor_gaussian_update(
         covariance_noise = None
     else:
         covariance_noise = _dense(noise_covariance)
-    errors = target - sample_values
+    errors = target - noise_mean - sample_values
     if covariance_noise is not None:
         if noise is None:
             generator = torch.Generator(device=targets.device).manual_seed(_seed(seed))
@@ -422,7 +444,7 @@ def tensor_gaussian_update(
         errors = errors - (noise_factor @ noise.unsqueeze(-1)).squeeze(-1)
     factor = (
         _rs.tensor_psd_safe_cholesky(
-            model._covariance(points, points)
+            (model._covariance(points, points) if prior_covariance is None else prior_covariance)
             + (0 if covariance_noise is None else covariance_noise)
         )
         if scale_tril is None

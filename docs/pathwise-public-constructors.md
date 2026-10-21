@@ -71,6 +71,13 @@ parameter graphs on CPU/CUDA. A native model rejects differentiable override
 arrays explicitly; construct it with `backend="torch"` for those graphs.
 Fixed training noise contributes zero covariance when alternate point counts
 have no corresponding noise entries, matching `FixedGaussianNoise`.
+For a supplied actual Gaussian likelihood, Tensor updates evaluate its full
+Gaussian marginal at the update points. The observation covariance includes
+correlated input-dependent noise, and any additive observation-mean shift is
+subtracted from the residual. A diagonal `.noise` view is not substituted for
+that marginal. Independent dense conditioning checks include all training,
+query, likelihood, kernel, prior-sample, and base-normal first and mixed second
+derivatives, with repeated independent backward calls.
 
 The override suite compares independent official values, full noise/factor
 derivatives and Hessians, callback transform semantics and restoration, all
