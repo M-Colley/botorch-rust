@@ -151,6 +151,14 @@ class MCSampler:
         result.__dict__.update(copy.deepcopy(self.__dict__, memo))
         return result
 
+    def __copy__(self) -> Any:
+        # Ordinary nn.Module shallow copies retain the live Tensor buffers.
+        # Reconstructing through pickle would refill a disposable Rust cache
+        # by copying those inference tensors to host arrays.
+        result = object.__new__(type(self))
+        result.__dict__.update(self.__dict__)
+        return result
+
     def _get_batch_range(self, posterior: Any) -> tuple[int, int]:
         return _batch_range(posterior, getattr(self, "batch_range_override", None))
 
