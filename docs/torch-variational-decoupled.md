@@ -39,8 +39,13 @@ the base strategy. A separate regression proves the unchanged source behavior
 against the analytic Gaussian/Delta expression. Only the affected independent
 output reference terms are corrected using that same source base strategy;
 other conditional, likelihood, ELBO and derivative comparisons use unchanged
-source implementations. An upstream repair is being prepared for this wrapper
-and the equivalent LMC delegation defect.
+source implementations. [GPyTorch #2823](https://github.com/cornellius-gp/gpytorch/pull/2823)
+repairs this wrapper and the equivalent LMC delegation defect, and respects the
+Independent wrapper's configured task axis. The unchanged source fails all 72
+new CPU/CUDA subcases on Torch 2.13 and 36 CPU subcases on Torch 2.14.1. With
+the repair, all 651 tests in the wrapper, LMC and batch-decoupled test modules
+pass on both interpreters. The repair is proposed upstream, not part of the
+pinned reference used by the parity tests.
 
 The focused suite checks distinct inducing effects, complete conditional/ELBO
 first derivatives, mixed data/parameter Hessian-vector products against finite
