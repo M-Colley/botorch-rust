@@ -207,6 +207,47 @@ class TorchSaasFullyBayesianMultiTaskGP(TorchMultiTaskGP, SaasFullyBayesianMulti
         batch = torch.broadcast_shapes(noise.shape[:-1], X.shape[:-2])
         return noise.expand(*batch, X.shape[-2])
 
+    def __call__(self, X: Tensor, *args: Any, **kwargs: Any) -> Any:
+        """ExactGP calls condition in eval mode; forward remains the prior.
+
+        Direct eval calls take already transformed long-format inputs, like
+        ExactGP. Their batch axes broadcast with the existing MCMC axis;
+        posterior() separately accepts raw inputs and adds that axis itself.
+        """
+        if self.training:
+            return nn.Module.__call__(self, X, *args, **kwargs)
+        self._check_if_fitted()
+        if args or kwargs:
+            raise UnsupportedError(
+                "Evaluation calls accept one input Tensor; use posterior for options."
+            )
+        if (
+            not isinstance(X, Tensor)
+            or X.ndim < 2
+            or X.shape[-1] != self._train_X.shape[-1]
+            or X.dtype != self._train_X.dtype
+            or X.device != self._train_X.device
+        ):
+            raise ValueError(
+                "Evaluation inputs must include tasks and match the model's dtype/device."
+            )
+        train, targets, fixed = self._training_values()
+        batch = torch.broadcast_shapes(train.shape[:-2], X.shape[:-2])
+        query = X.expand(*batch, *X.shape[-2:])
+        train_mean, train_cov, cross, query_mean, query_cov = self._task_prior_blocks(train, query)
+        if getattr(self, "_fb_custom_likelihood", False):
+            from botorch_rs.models._torch_gaussian_likelihood import gaussian_marginal
+
+            train_mean, train_cov = gaussian_marginal(
+                self.likelihood, train_mean, train_cov, train, training=True
+            )
+            noise = torch.zeros_like(train_mean)
+        else:
+            noise = self._training_noise(targets, fixed)
+        root, alpha = _rs.tensor_exact_gp_factor(targets, train_cov, train_mean, noise)
+        mean, covariance = _rs.tensor_exact_gp_predict(root, alpha, cross, query_cov, query_mean)
+        return TorchGPyTorchPosterior(mean.unsqueeze(-1), covariance).distribution
+
     def forward(self, X: Tensor) -> Any:
         self._check_if_fitted()
         if not isinstance(X, Tensor) or X.ndim < 2 or X.shape[-1] != self._train_X.shape[-1]:

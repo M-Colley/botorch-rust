@@ -148,3 +148,21 @@ CPU/CUDA and Torch 2.14.1 CPU. Maximum state-error/bound ratios are `0.01857`,
 `0.007877`, and `0.01446`, respectively. Maximum potential errors are below
 `1.3e-13`, and maximum gradient errors below `2.2e-13`. The sampler runtime
 is unchanged; this finding does not establish an upstream NUTS defect.
+
+## Direct Gaussian calls
+
+Tensor task-mixture `forward(X)` remains the latent prior. Calling `model(X)`
+in evaluation mode now conditions on the training data, retaining ExactGP's
+transformed outcome units. Direct calls take already transformed long-format
+inputs with physical task labels; `posterior(X)` separately accepts raw inputs,
+adds the MCMC axis and reverses the outcome transform. Existing query/MCMC batch
+axes broadcast without inserting a second sample axis. Actual supplied
+Gaussian likelihoods and virtual prior overrides participate in conditioning.
+
+Thirty-two new CPU/CUDA cases check unmodified source conditional values and
+query gradients, fixed/learned noise, input/outcome transforms, explicit MCMC
+and query batches, actual loader modules, training/evaluation distinctions,
+independent dense all-data/parameter Hessians and device guards. These and the
+existing loader/subclass checks pass 82 cases. Torch 2.14.1 CPU passes 16 new
+cases and skips the 16 CUDA cases. These checks do not replace the independent
+NUTS replay verification above.
