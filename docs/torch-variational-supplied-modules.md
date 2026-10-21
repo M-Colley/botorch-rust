@@ -26,6 +26,15 @@ model exposes `variational_parameters()` / `named_variational_parameters()` and
 the complementary hyperparameter iterators for separate optimizers. Natural
 parameter Hessians are not advertised as ordinary Euclidean Hessians.
 
+Both ordinary strategies accept `functools.partial(Strategy, jitter_val=...)`
+factories with port or GPyTorch classes. The configured finite nonnegative
+jitter, including zero, enters the inducing conditional and predictive law;
+the existing unwhitened prior-cache convention remains unchanged. The model's
+explicit inducing-point/distribution/learn-location arguments override partial
+defaults, matching the source call semantics. CPU float64 automatic backend
+selection recognizes these factories. Value, complete first-gradient and
+constructor-override regressions cover CPU/CUDA and Torch 2.14.1 CPU.
+
 CPU and CUDA tests cover whitened and unwhitened strategies, independent outputs,
 model batches, float32/float64 execution, full data/parameter VJPs, repeated NGD
 steps, first-call initialization, custom-module registration and current-q path

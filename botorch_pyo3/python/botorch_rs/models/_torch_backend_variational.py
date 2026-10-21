@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import math
 import sys
 import weakref
@@ -292,8 +293,8 @@ class _TorchVariationalStrategy(nn.Module):
 
     @jitter_val.setter
     def jitter_val(self, value: float) -> None:
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError("Variational jitter must be finite and positive.")
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("Variational jitter must be finite and nonnegative.")
         self._jitter_val = value
 
     @property
@@ -613,6 +614,20 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         if num_outputs <= 0:
             raise ValueError("num_outputs must be positive.")
         gpytorch = sys.modules.get("gpytorch")
+        strategy_options: dict[str, Any] = {}
+        if isinstance(variational_strategy, functools.partial):
+            strategy_options = dict(variational_strategy.keywords or {})
+            if variational_strategy.args or "model" in strategy_options:
+                raise TypeError("A variational strategy factory must leave its model unbound.")
+            variational_strategy = variational_strategy.func
+            # SingleTaskVariationalGP supplies these keyword arguments itself,
+            # overriding partial defaults just as the source constructor does.
+            for name in ("inducing_points", "variational_distribution", "learn_inducing_locations"):
+                strategy_options.pop(name, None)
+            if set(strategy_options) - {"jitter_val"}:
+                raise TypeError(
+                    f"Unexpected variational strategy arguments: {sorted(strategy_options)}."
+                )
         strategies = {VariationalStrategy: True, UnwhitenedVariationalStrategy: False}
         if gpytorch is not None:
             strategies[gpytorch.variational.VariationalStrategy] = True
@@ -740,6 +755,8 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         strategy = _TorchVariationalStrategy(
             self, points, distribution, learn_inducing_points, whitened=whitened
         )
+        if strategy_options.get("jitter_val") is not None:
+            strategy.jitter_val = float(strategy_options["jitter_val"])
         self.model = _TorchVariationalInner(
             self,
             covariance,
