@@ -112,6 +112,9 @@ def multitask_posterior(
     factor, alpha = _rs.tensor_exact_gp_factor(
         targets, observed_cov, observed_mean, torch.zeros_like(observed_mean)
     )
+    from botorch_rs.models._torch_fantasy import prediction_factor
+
+    factor, alpha = prediction_factor(factor, alpha)
     mean, covariance = _rs.tensor_exact_gp_predict(
         factor,
         alpha,

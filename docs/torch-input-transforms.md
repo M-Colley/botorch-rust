@@ -151,10 +151,20 @@ independent dense first/mixed higher derivative controls. The 280-case
 integrated selection includes knowledge gradient, its initializers,
 multi-step lookahead and supplied Gaussian likelihood conditioning.
 
-An existing behavioral difference remains: conditioned port models share
-hyperparameters with the original model, while the source copies them. The
-current shared physical hyperparameter derivative control sums the two
-corresponding source partials; it does not establish identical parameter
-ownership or mutation independence. This difference needs a separate repair.
-Standalone public transform module methods are also a separate scope from
-their model registration and numerical methods.
+Conditioned scalar and ordinary multitask models now copy their child modules
+and Parameters, matching the source's independent ownership. Appended training
+data remain connected to the original data and fantasy sample leaves. The
+source controls compare the original and fantasy parameter partials separately;
+they no longer sum the two hyperparameter paths. Updating a conditioned
+hyperparameter, changing its modes or migrating its dtype leaves the original
+model unchanged. Supplied fixed-noise likelihoods also copy their additional
+learned noise Parameter; two unmodified source controls establish this behavior.
+The older test that required aliasing that Parameter has been corrected.
+
+The ownership checkpoint passes 413 integrated cases across input transforms,
+scalar/multitask conditioning, supplied Gaussian likelihoods, empirical models,
+knowledge gradient, its initializers and multi-step lookahead. Torch 2.14.1 CPU
+passes 52 cases and skips 38 CUDA cases in the affected conditioning selection.
+Standalone public transform module methods and phase-dependent appended input
+coordinates remain separate scopes from model registration and numerical
+methods; these receipts do not establish complete package behavior parity.

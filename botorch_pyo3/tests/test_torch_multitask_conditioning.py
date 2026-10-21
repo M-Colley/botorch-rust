@@ -76,7 +76,7 @@ def test_conditioning_noise_and_data_keep_full_mixed_second_derivatives(device, 
     new_noise = torch.full_like(new_Y, 0.035, requires_grad=True)
     query = Q[0].requires_grad_()
     conditioned = model.condition_on_observations(new_X, new_Y, noise=new_noise)
-    arguments = (X, Y, new_X, new_Y, new_noise, query, *model.parameters())
+    arguments = (X, Y, new_X, new_Y, new_noise, query, *conditioned.parameters())
     if noise is not None:
         arguments = (*arguments, noise)
 
@@ -99,6 +99,12 @@ def test_conditioning_noise_and_data_keep_full_mixed_second_derivatives(device, 
     # graph-connected concatenations, rather than mutable aliases of these leaves.
     def first_at_current():
         updated = model.condition_on_observations(new_X, new_Y, noise=new_noise)
+        # Perturb the independent conditioned hyperparameters while rebuilding
+        # only the appended data graph for every finite-difference evaluation.
+        for name, parameter in conditioned.named_parameters():
+            path, _, attribute = name.rpartition(".")
+            owner = updated.get_submodule(path) if path else updated
+            setattr(owner, attribute, parameter)
         posterior = updated.posterior(query)
         value = (
             0.4 * posterior.mean.square().sum()

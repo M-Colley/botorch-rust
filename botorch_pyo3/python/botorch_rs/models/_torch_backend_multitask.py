@@ -638,6 +638,9 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         else:
             train_noise = self._training_noise(targets, fixed)
         chol, alpha = _rs.tensor_exact_gp_factor(targets, train_cov, train_mean, train_noise)
+        from botorch_rs.models._torch_fantasy import prediction_factor
+
+        chol, alpha = prediction_factor(chol, alpha)
         mean, covariance = _rs.tensor_exact_gp_predict(chol, alpha, cross, query_cov, query_mean)
         if observation_noise:
             if self._uses_likelihood_marginal():
@@ -883,11 +886,9 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         batch = torch.broadcast_shapes(
             self.batch_shape, X.shape[:-2], Y.shape[:-2], () if noise is None else noise.shape[:-2]
         )
-        model = copy.copy(self)
-        model._buffers = self._buffers.copy()
-        model._modules = self._modules.copy()
-        model._transform_fit_versions = self._transform_fit_versions.copy()
-        model._prediction_cache = None
+        memo = {} if self._prediction_cache is None else {id(self._prediction_cache): None}
+        model = copy.deepcopy(self, memo)
+        model._prediction_cache, model._transform_fit_versions = None, {}
         model._train_X = torch.cat(
             (
                 self._train_X.expand(*batch, *self._train_X.shape[-2:]),
@@ -933,12 +934,13 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         model._observed_task_indices = observed.nonzero().squeeze(-1)
         model._unobserved_task_indices = (~observed).nonzero().squeeze(-1)
         if self._train_Yvar is not None and not self._is_custom_likelihood:
-            model.likelihood = copy.copy(self.likelihood)
-            model.likelihood._buffers = self.likelihood._buffers.copy()
             model.likelihood.noise = model._training_values()[2].clone()
         return model.eval()
 
     def fantasize(self, X: Any, sampler: Any, observation_noise: Any = None, **kwargs: Any) -> Any:
+        from botorch_rs.models._torch_fantasy import prediction_cache_gradients
+        from botorch_rs.models.utils.assorted import fantasize
+
         propagate = kwargs.pop("propagate_grads", False)
         if kwargs:
             raise UnsupportedError(f"Unsupported fantasy arguments: {sorted(kwargs)}.")
@@ -952,21 +954,21 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             or X.shape[-1] != self.num_non_task_features + 1
         ):
             raise ValueError("Multitask fantasies require inputs including the task feature.")
-        posterior = self.posterior(X, observation_noise=True)
-        targets = sampler(posterior)
-        if not propagate:
-            targets = targets.detach()
-        noise = None
-        if self._train_Yvar is not None and not self._is_custom_likelihood:
-            _, _, fixed = self._training_values()
-            noise = self._fixed_noise_at(
-                self._mapped_inputs(self.transform_inputs(X)), fixed
-            ).unsqueeze(-1)
-        elif getattr(self, "_is_custom_likelihood", False):
-            from botorch_rs.models._torch_gaussian_likelihood import is_fixed_noise
-
-            if is_fixed_noise(self.likelihood):
+        with fantasize():
+            with prediction_cache_gradients(propagate):
+                posterior = self.posterior(X, observation_noise=True)
+            targets = sampler(posterior)
+            noise = None
+            if self._train_Yvar is not None and not self._is_custom_likelihood:
+                _, _, fixed = self._training_values()
                 noise = self._fixed_noise_at(
-                    self._mapped_inputs(self.transform_inputs(X)), self.likelihood.noise
+                    self._mapped_inputs(self.transform_inputs(X)), fixed
                 ).unsqueeze(-1)
-        return self.condition_on_observations(X, targets, noise=noise)
+            elif getattr(self, "_is_custom_likelihood", False):
+                from botorch_rs.models._torch_gaussian_likelihood import is_fixed_noise
+
+                if is_fixed_noise(self.likelihood):
+                    noise = self._fixed_noise_at(
+                        self._mapped_inputs(self.transform_inputs(X)), self.likelihood.noise
+                    ).unsqueeze(-1)
+            return self.condition_on_observations(X, targets, noise=noise)

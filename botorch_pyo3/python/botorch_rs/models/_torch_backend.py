@@ -599,9 +599,12 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         if X.shape[-2] != Y.shape[-2] or Y.shape[-1] != self.num_outputs:
             raise ValueError("Conditioning X and Y dimensions must match the model.")
         batch = torch.broadcast_shapes(self.batch_shape, X.shape[:-2], Y.shape[:-2])
-        model = copy.copy(self)
-        model._buffers = self._buffers.copy()
-        model._modules = self._modules.copy()
+        # ExactGP copies its component parameters when creating a fantasy.
+        # Keep appended training data connected to their leaves, but isolate
+        # module state and discard any disposable prediction-cache graph.
+        memo = {} if self._prediction_cache is None else {id(self._prediction_cache): None}
+        model = copy.deepcopy(self, memo)
+        model._prediction_cache, model._transform_fit_versions = None, {}
         model._train_X = torch.cat(
             (
                 self._train_X.expand(*batch, *self._train_X.shape[-2:]),

@@ -283,7 +283,7 @@ def test_supplied_fixed_likelihood_conditions_actual_noise_and_preserves_all_gra
     if additional:
         assert (
             conditioned.likelihood.second_noise_covar.raw_noise
-            is likelihood.second_noise_covar.raw_noise
+            is not likelihood.second_noise_covar.raw_noise
         )
     query = X.new_tensor([[0.22, 0.45], [0.56, 0.63]], requires_grad=True)
     posterior = conditioned.posterior(query, observation_noise=True)
@@ -416,3 +416,33 @@ def test_supplied_fixed_likelihood_fantasies_append_its_actual_noise(device):
         sum(g.square().sum() for g in first), (X, Y, fixed, extra, query, *fantasy.parameters())
     )
     assert all(bool(torch.isfinite(value).all()) for value in (*first, *second))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_unmodified_source_copies_additional_fixed_noise_parameters(device):
+    source_gp = pytest.importorskip("botorch.models.gp_regression").SingleTaskGP
+    model, X, Y = _model(device, 1, ())
+    likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(
+        noise=X.new_full((4,), 0.04), learn_additional_noise=True
+    ).to(X)
+    source = source_gp(
+        X,
+        Y,
+        likelihood=likelihood,
+        covar_module=model.covar_module,
+        mean_module=model.mean_module,
+        outcome_transform=None,
+    )
+    extra_X = X.new_tensor([[0.45, 0.57]])
+    source.posterior(extra_X)
+    original = likelihood.second_noise_covar.raw_noise
+    conditioned = source.condition_on_observations(
+        extra_X, Y.new_full((1, 1), 0.6), noise=Y.new_full((1, 1), 0.03)
+    )
+    copied = conditioned.likelihood.second_noise_covar.raw_noise
+    assert copied is not original and copied.data_ptr() != original.data_ptr()
+    torch.testing.assert_close(copied, original)
+    before = original.detach().clone()
+    with torch.no_grad():
+        copied.add_(0.2)
+    torch.testing.assert_close(original, before)

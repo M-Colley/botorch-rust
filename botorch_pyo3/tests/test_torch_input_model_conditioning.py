@@ -113,8 +113,18 @@ def test_conditioning_transformed_width_matches_source_and_dense_law(device, fam
     ).posterior(Q)
     conditioned = actual.condition_on_observations(extra, observations)
     posterior = conditioned.posterior(Q)
+    if family == "impute":
+        parameter = conditioned.input_transform.raw_imputation_values
+
+        def mapping(value):
+            result = value.clone()
+            raw = parameter.reshape(2, 4).sigmoid()
+            result[..., 1] = torch.where(value[..., -1] == 0, raw[0, 1], value[..., 1])
+            result[..., 0] = torch.where(value[..., -1] == 1, raw[1, 0], value[..., 0])
+            return result
+
     independent = _manual(
-        actual,
+        conditioned,
         torch.cat((mapping(X), mapping(extra)), -2),
         torch.cat((Y, observations), -2),
         mapping(Q),
@@ -130,7 +140,7 @@ def test_conditioning_transformed_width_matches_source_and_dense_law(device, fam
     torch.testing.assert_close(
         posterior.distribution.covariance_matrix, independent[1], atol=3e-11, rtol=3e-10
     )
-    leaves = (X, Y, extra, observations, Q, *actual.parameters())
+    leaves = (X, Y, extra, observations, Q, *conditioned.parameters())
     for values, oracle in zip(
         _derivatives(posterior.mean, posterior.distribution.covariance_matrix, leaves),
         _derivatives(*independent, leaves),
@@ -166,7 +176,7 @@ def test_fantasize_skips_default_environmental_expansion(device, propagate):
         result, expected = fantasy.posterior(query), reference.posterior(query)
     actual_gradient = torch.autograd.grad(
         result.mean.sin().sum() + result.distribution.covariance_matrix.square().sum(),
-        (X, Y, Q, query, actual.covar_module.raw_lengthscale),
+        (X, Y, Q, query, actual.covar_module.raw_lengthscale, fantasy.covar_module.raw_lengthscale),
         retain_graph=True,
     )
     source_gradient = torch.autograd.grad(
@@ -181,10 +191,6 @@ def test_fantasize_skips_default_environmental_expansion(device, propagate):
         ),
         retain_graph=True,
     )
-    # ExactGP deepcopies its fantasy kernel while the port retains one live
-    # physical hyperparameter. Sum the two source partials for that tied
-    # hyperparameter direction; data and query leaves are shared directly.
-    source_gradient = source_gradient[:4] + (source_gradient[4] + source_gradient[5],)
     for value, oracle in zip(actual_gradient, source_gradient, strict=True):
         torch.testing.assert_close(value, oracle, atol=3e-8, rtol=3e-7)
     # A dense independent law also checks mixed higher derivatives. The
@@ -203,7 +209,7 @@ def test_fantasize_skips_default_environmental_expansion(device, propagate):
     samples = constant + kernel(X, Q).transpose(-1, -2) @ alpha
     samples = torch.stack((samples - 0.05, samples + 0.05))
     independent = _manual(
-        actual,
+        fantasy,
         torch.cat((X, Q), -2),
         torch.cat((Y.expand(2, *Y.shape), samples), -2),
         mapping(query),
@@ -211,7 +217,17 @@ def test_fantasize_skips_default_environmental_expansion(device, propagate):
     independent = (independent[0], independent[1].expand_as(result.distribution.covariance_matrix))
     torch.testing.assert_close(result.mean, independent[0])
     torch.testing.assert_close(result.distribution.covariance_matrix, independent[1])
-    leaves = (X, Y, Q, query, *actual.parameters())
+    leaves = (
+        X,
+        Y,
+        Q,
+        query,
+        actual.mean_module.raw_constant,
+        actual.covar_module.raw_lengthscale,
+        *fantasy.parameters(),
+    )
+    if propagate:
+        leaves += (actual.likelihood.raw_noise,)
     for values, oracle in zip(
         _derivatives(result.mean, result.distribution.covariance_matrix, leaves),
         _derivatives(*independent, leaves),
@@ -239,3 +255,34 @@ def test_source_different_raw_width_conditioning_boundary(device):
     # with new raw observations; differing widths are unsupported there too.
     with pytest.raises(RuntimeError, match="Sizes of tensors must match"):
         model.condition_on_observations(Q.detach(), Y.new_zeros(4, 1))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("family", ["normalize", "filter", "impute", "categorical"])
+def test_conditioned_parameters_and_modes_are_independent_like_source(device, family):
+    actual, source, _, Y, Q, _ = _models(device, family)
+    values = Y.new_tensor([[0.17], [-0.21]])
+    original = actual.posterior(Q).mean.detach().clone()
+    source_original = source.posterior(Q).mean.detach().clone()
+    conditioned = actual.condition_on_observations(Q, values)
+    reference = source.condition_on_observations(
+        Q, values, noise=actual.likelihood.noise.detach().expand_as(values)
+    )
+    for (name, parameter), (copy_name, copied) in zip(
+        actual.named_parameters(), conditioned.named_parameters(), strict=True
+    ):
+        assert copy_name == name
+        assert copied is not parameter and copied.data_ptr() != parameter.data_ptr()
+        torch.testing.assert_close(copied, parameter)
+    assert reference.covar_module.raw_lengthscale is not source.covar_module.raw_lengthscale
+    with torch.no_grad():
+        conditioned.covar_module.raw_lengthscale.add_(0.07)
+        reference.covar_module.raw_lengthscale.add_(0.07)
+    torch.testing.assert_close(actual.posterior(Q).mean, original)
+    torch.testing.assert_close(source.posterior(Q).mean, source_original)
+    conditioned.train()
+    assert actual.input_transform.training is False
+    assert conditioned.input_transform.training is True
+    conditioned.to(dtype=torch.float32)
+    assert actual.covar_module.raw_lengthscale.dtype == torch.float64
+    assert conditioned.covar_module.raw_lengthscale.dtype == torch.float32
