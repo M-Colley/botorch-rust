@@ -160,11 +160,17 @@ class TorchSaasFullyBayesianMultiTaskGP(TorchMultiTaskGP, SaasFullyBayesianMulti
 
     @property
     def batch_shape(self) -> torch.Size:
-        return torch.Size() if self._initializing else torch.Size([self.num_mcmc_samples])
+        return (
+            torch.Size()
+            if self._initializing
+            else torch.broadcast_shapes(
+                self._train_X.shape[:-2], torch.Size([self.num_mcmc_samples])
+            )
+        )
 
     @property
     def _input_batch_shape(self) -> torch.Size:
-        return torch.Size()
+        return self._train_X.shape[:-2]
 
     def train(self, mode: bool = True, reset: bool = True) -> Any:
         nn.Module.train(self, mode)

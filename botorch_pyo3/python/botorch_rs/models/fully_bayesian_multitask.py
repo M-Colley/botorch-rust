@@ -197,6 +197,38 @@ class MultitaskSaasPyroModel(LatentFeatureMultiTaskPyroMixin, SaasPyroModel):
     """
 
 
+def _mcmc_slice(value: Any, batch: tuple[int, ...], sample: int) -> Any:
+    """Broadcast full event arrays, then remove their final MCMC batch axis."""
+    if value is None:
+        return None
+    data, shape = to_flat(value)
+    if len(shape) < 2:
+        raise ValueError("MCMC inputs and observations require at least two event dimensions.")
+    expanded = broadcast_to(data, tuple(shape), (*batch, *shape[-2:]))
+    width = math.prod(shape[-2:])
+    count = batch[-1]
+    selected = [
+        v
+        for outer in range(math.prod(batch[:-1]))
+        for v in expanded[(outer * count + sample) * width : (outer * count + sample + 1) * width]
+    ]
+    return from_flat(selected, (*batch[:-1], *shape[-2:]), kind_of(value))
+
+
+def _stack_mcmc_events(values: list[Any]) -> Any:
+    """Stack equal-shaped arrays before their trailing two event dimensions."""
+    flats = [to_flat(value) for value in values]
+    shape = tuple(flats[0][1])
+    width = math.prod(shape[-2:])
+    data = [
+        v
+        for outer in range(math.prod(shape[:-2]))
+        for flat, _ in flats
+        for v in flat[outer * width : (outer + 1) * width]
+    ]
+    return from_flat(data, (*shape[:-2], len(values), *shape[-2:]), kind_of(values[0]))
+
+
 def _cholesky(a: list[list[float]]) -> list[list[float]]:
     """linear_operator's ``psd_safe_cholesky`` of a small dense matrix: the
     plain factor, else with a jitter of 1e-8, 1e-7, 1e-6 on the diagonal."""
@@ -293,6 +325,7 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
     _is_fully_bayesian = True
     _is_ensemble = True
     outcome_transform: Any
+    _fb_conditioned = False
 
     def __new__(
         cls,
@@ -527,7 +560,26 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
         """
         self._check_if_fitted()
         assert self._samples is not None
-        return (len(self._samples), *self._samples[0].batch_shape)
+        return (*self._samples[0].batch_shape, len(self._samples))
+
+    @property
+    def train_inputs(self) -> tuple[Any]:
+        if not getattr(self, "_fb_conditioned", False):
+            return super().train_inputs
+        assert self._samples is not None
+        return (_stack_mcmc_events([member.train_inputs[0] for member in self._samples]),)
+
+    @property
+    def train_targets(self) -> Any:
+        if not getattr(self, "_fb_conditioned", False):
+            return super().train_targets
+        assert self._samples is not None
+        values = []
+        for member in self._samples:
+            data, shape = to_flat(member.train_targets)
+            values.append(from_flat(data, (*shape, 1), self._kind))
+        data, shape = to_flat(_stack_mcmc_events(values))
+        return from_flat(data, tuple(shape[:-1]), self._kind)
 
     def fantasize(self, *args: Any, **kwargs: Any) -> NoReturn:  # type: ignore[override]
         raise NotImplementedError("Fantasize is not implemented!")
@@ -721,14 +773,21 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
                     ),
                     dim=-1,
                 )
-                constants = query.new_tensor(
+                constants = torch.stack(
                     [
-                        float(to_flat(mean.constant, "constant")[0][0])
+                        torch.as_tensor(mean.constant, dtype=query.dtype, device=query.device)
                         for mean in member.mean_module.base_means
-                    ]
+                    ],
+                    dim=-1,
                 )
-                means.append(constants[tasks])
-                kernel = build_kernel(member.covar_module, X.shape[-1], (), X)
+                constants = constants.expand(*query.shape[:-2], self.num_tasks)
+                means.append(
+                    constants.unsqueeze(-2)
+                    .expand(*tasks.shape, self.num_tasks)
+                    .gather(-1, tasks.unsqueeze(-1))
+                    .squeeze(-1)
+                )
+                kernel = build_kernel(member.covar_module, X.shape[-1], member.batch_shape, X)
                 covariances.append(kernel(mapped, mapped))
             return TorchGPyTorchPosterior(
                 torch.stack(means, dim=-2).unsqueeze(-1), torch.stack(covariances, dim=-3)
@@ -736,34 +795,37 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
 
         from botorch_rs.posteriors.gpytorch import _MomentPosterior
 
-        data, shape = to_flat(X, "X")
+        _, shape = to_flat(X, "X")
         if len(shape) < 2 or shape[-1] != self.pyro_model.ard_num_dims + 1:
             raise ValueError("Prior inputs must include the task feature column.")
         batch = broadcast_shapes(tuple(shape[:-2]), self.batch_shape)
         if batch is None:
             raise RuntimeError("Query and MCMC batch dimensions do not broadcast.")
         q, cols = shape[-2:]
-        expanded_data = broadcast_to(data, tuple(shape), (*batch, q, cols))
-        means, covariances = [], []
-        for index in range(math.prod(batch)):
-            member = self._samples[index % len(self._samples)]
-            query = from_flat(
-                expanded_data[index * q * cols : (index + 1) * q * cols], (q, cols), kind
-            )
+        component_means, component_covariances = [], []
+        for s, member in enumerate(self._samples):
+            query = _mcmc_slice(X, batch, s)
             if self.training:
                 query = member.transform_inputs(query)
             values = list(to_flat(query, "X")[0])
-            constants = [
-                float(to_flat(m.constant, "constant")[0][0]) for m in member.mean_module.base_means
-            ]
-            for row in range(q):
+            flat_constants = []
+            for mean in member.mean_module.base_means:
+                constant_data, constant_shape = to_flat(mean.constant)
+                flat_constants.append(
+                    broadcast_to(constant_data, (*constant_shape, 1), (*batch[:-1], q))
+                )
+            flat_means = []
+            for row in range(math.prod(batch[:-1]) * q):
                 task = self._map_task_value(values[row * cols + self._task_feature])
-                means.append(constants[task])
+                flat_means.append(flat_constants[task][row])
                 values[row * cols + self._task_feature] = float(task)
-            mapped = from_flat(values, (q, cols), kind)
-            covariances.extend(to_flat(member.covar_module(mapped), "covariance")[0])
+            mapped = from_flat(values, (*batch[:-1], q, cols), kind)
+            component_means.append(from_flat(flat_means, (*batch[:-1], q, 1), kind))
+            component_covariances.append(member.covar_module(mapped))
+        mean_data, mean_shape = to_flat(_stack_mcmc_events(component_means))
+        covariance_data, covariance_shape = to_flat(_stack_mcmc_events(component_covariances))
         return _MomentPosterior(
-            (means, (*batch, q)), (covariances, (*batch, q, q)), kind
+            (mean_data, tuple(mean_shape[:-1])), (covariance_data, tuple(covariance_shape)), kind
         ).distribution
 
     def posterior(
@@ -815,35 +877,29 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
         """
         self._check_if_fitted()
         assert self._samples is not None
-        x = to_flat(X, "X")
-        y = to_flat(Y, "Y")
-        num = len(self._samples)
-
-        def part(values: Any, flat: Any, s: int) -> Any:
-            if values is None:
-                return None
-            data, shape = flat
-            if len(shape) == 2:
-                return values
-            if shape[0] != num:
-                raise UnsupportedError(
-                    "botorch_rs conditions a fully Bayesian multi-task GP on identical "
-                    "observations (n x d) or on one set per MCMC sample (num_mcmc_samples x n x "
-                    f"d), got shape {tuple(shape)}."
-                )
-            size = math.prod(shape[1:])
-            return from_flat(
-                list(data[s * size : (s + 1) * size]), tuple(shape[1:]), kind_of(values)
-            )
-
-        nz = None if noise is None else to_flat(noise, "noise")
+        shapes = [tuple(to_flat(value)[1]) for value in (X, Y, noise) if value is not None]
+        if any(len(shape) < 2 for shape in shapes):
+            raise ValueError("Conditioning data require shapes (...,n,d) and (...,n,1).")
+        batch = self.batch_shape
+        for shape in shapes:
+            expanded = broadcast_shapes(batch, shape[:-2])
+            if expanded is None:
+                raise ValueError("Conditioning and MCMC batch dimensions do not broadcast.")
+            batch = expanded
         new = copy.copy(self)
         new._samples = [
             m.condition_on_observations(
-                part(X, x, s), part(Y, y, s), noise=part(noise, nz, s), **kwargs
+                _mcmc_slice(X, batch, s),
+                _mcmc_slice(Y, batch, s),
+                noise=_mcmc_slice(noise, batch, s),
+                **kwargs,
             )
             for s, m in enumerate(self._samples)
         ]
+        new.mean_module = [m.mean_module for m in new._samples]
+        new.covar_module = [m.covar_module for m in new._samples]
+        new.likelihood = [m.likelihood for m in new._samples]
+        new._fb_conditioned = True
         new.training = False
         return new
 
