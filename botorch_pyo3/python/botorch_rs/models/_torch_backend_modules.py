@@ -1249,7 +1249,6 @@ class TorchInputChain(_TorchModule):
 class TorchStandardize(nn.Module):
     _tensor_backend = "torch"
     _is_linear = True
-    _fit_on_model_data = True
 
     def __init__(
         self, m: int, batch_shape: Any, like: Tensor, outputs: Any = None, min_stdv: float = 1e-8
@@ -1262,11 +1261,6 @@ class TorchStandardize(nn.Module):
         self.register_buffer("means", like.new_zeros(*batch_shape, 1, m))
         self.register_buffer("stdvs", like.new_ones(*batch_shape, 1, m))
         self._is_trained = False
-
-    def train(self, mode: bool = True) -> TorchStandardize:
-        if mode:
-            self._fit_on_model_data = True
-        return super().train(mode)
 
     @property
     def _stdvs_sq(self) -> Tensor:
@@ -1482,6 +1476,10 @@ class TorchOutcomeChain(nn.Module):
     def _is_linear(self) -> bool:
         return all(getattr(self[name], "_is_linear", False) for name in self._transform_names)
 
+    @property
+    def _requires_X(self) -> bool:
+        return any(getattr(self[name], "_requires_X", False) for name in self._transform_names)
+
     def forward(
         self, Y: Tensor, Yvar: Tensor | None = None, X: Tensor | None = None
     ) -> tuple[Tensor, Tensor | None]:
@@ -1489,12 +1487,12 @@ class TorchOutcomeChain(nn.Module):
             Y, Yvar = self[name](Y, Yvar, X=X)
         return Y, Yvar
 
-    def fit(self, Y: Tensor) -> TorchOutcomeChain:
+    def fit(self, Y: Tensor, X: Tensor | None = None) -> TorchOutcomeChain:
         states = [(self[name], self[name].training) for name in self._transform_names]
         try:
             for module, _ in states:
-                module.train(getattr(module, "_fit_on_model_data", True))
-                Y, _ = module(Y)
+                module.train()
+                Y, _ = module(Y, X=X)
         finally:
             for module, state in states:
                 module.train(state)
@@ -1545,20 +1543,100 @@ def build_input_transform(source: Any, d: int, train_X: Tensor) -> nn.Module | N
     )
 
 
-def build_outcome_transform(source: Any, m: int, train_Y: Tensor) -> nn.Module | None:
+def _canonical_outcome_module(source: Any, name: str) -> bool:
+    return (
+        isinstance(source, nn.Module)
+        and type(source).__call__ is nn.Module.__call__
+        and all(
+            getattr(getattr(type(source), method, None), "__module__", None)
+            == "botorch.models.transforms.outcome"
+            and getattr(getattr(type(source), method, None), "__qualname__", None)
+            == f"{name}.{method}"
+            for method in ("forward", "untransform", "untransform_posterior")
+        )
+    )
+
+
+def build_outcome_transform(
+    source: Any, m: int, train_Y: Tensor | None, train_X: Tensor | None = None
+) -> nn.Module | None:
     from botorch_rs.models.transforms.outcome import (
         Bilog,
         ChainedOutcomeTransform,
         Log,
         Power,
         Standardize,
+        StratifiedStandardize,
     )
     from botorch_rs.utils.types import DEFAULT
 
     if source is None:
         return None
+    like = train_Y if train_Y is not None else train_X
     if source is DEFAULT or type(source).__name__ == "_DefaultType":
-        result = TorchStandardize(m, train_Y.shape[:-2], train_Y)
+        if like is None:
+            raise ValueError("An outcome transform requires train_Y or train_X for dtype/device.")
+        result = TorchStandardize(m, like.shape[:-2], like)
+    elif (
+        isinstance(source, StratifiedStandardize)
+        and type(source).forward is StratifiedStandardize.forward
+        and type(source).untransform is StratifiedStandardize.untransform
+    ) or (
+        isinstance(source, nn.Module)
+        and hasattr(source, "strata_mapping")
+        and type(source).__call__ is nn.Module.__call__
+        and all(
+            getattr(getattr(type(source), name, None), "__module__", None)
+            == "botorch.models.transforms.outcome"
+            and getattr(getattr(type(source), name, None), "__qualname__", None)
+            == f"StratifiedStandardize.{name}"
+            for name in ("forward", "untransform", "untransform_posterior")
+        )
+    ):
+        from types import SimpleNamespace
+
+        from botorch_rs.models.transforms._torch_standardize import TensorStandardizeState
+
+        if m != 1:
+            raise ValueError("StratifiedStandardize requires a single observed output.")
+        if train_X is None:
+            raise ValueError(
+                "StratifiedStandardize requires train_X when building a model transform."
+            )
+        specification: Any = source
+        if not isinstance(source, StratifiedStandardize):
+            canonical: Any = source
+            mapping = canonical.strata_mapping
+            tasks = torch.nonzero(~mapping.isnan(), as_tuple=True)[0].tolist()
+            specification = SimpleNamespace(
+                _m=1,
+                _outputs=None,
+                _batch_shape=tuple(canonical._batch_shape),
+                _min_stdv=canonical._min_stdv,
+                _stratification_idx=canonical._stratification_idx,
+                _task_values=tasks,
+                _task_values_dtype=None,
+                _strata_dtype=mapping.dtype if mapping.is_floating_point() else None,
+                training=True,
+            )
+        assert like is not None
+        stratified = TensorStandardizeState(specification, like)
+        # GP constructors explicitly train their supplied outcome transform,
+        # even if the descriptor was already fitted and evaluated.
+        if train_Y is not None:
+            with torch.no_grad():
+                stratified.fit(train_Y, X=train_X)
+        elif bool(source._is_trained):
+            for name in ("means", "stdvs", "_stdvs_sq"):
+                setattr(
+                    stratified,
+                    name,
+                    torch.as_tensor(
+                        getattr(source, name), device=like.device, dtype=like.dtype
+                    ).clone(),
+                )
+            stratified._is_trained.fill_(True)
+        return stratified.eval()
     elif (
         isinstance(source, Standardize)
         and type(source).forward is Standardize.forward
@@ -1583,33 +1661,35 @@ def build_outcome_transform(source: Any, m: int, train_Y: Tensor) -> nn.Module |
         if source._m != m:
             raise ValueError("Standardize's m must equal the model's number of outputs.")
         minimum_stdv: Any = source._min_stdv
+        if like is None:
+            raise ValueError("An outcome transform requires train_Y or train_X for dtype/device.")
         result = TorchStandardize(
-            m, source._batch_shape, train_Y, source._outputs, float(minimum_stdv)
+            m, source._batch_shape, like, source._outputs, float(minimum_stdv)
         )
-        if not source.training:
-            # An explicitly evaluated descriptor owns its fitted law. Its
-            # statistics may come from a different calibration dataset.
-            result._fit_on_model_data = False
-            if bool(source._is_trained):
-                result.means = torch.as_tensor(
-                    source.means, device=train_Y.device, dtype=train_Y.dtype
-                ).clone()
-                result.stdvs = torch.as_tensor(
-                    source.stdvs, device=train_Y.device, dtype=train_Y.dtype
-                ).clone()
-                result._is_trained = True
-            return result.eval()
-    elif type(source) in (Log, Bilog, Power):
+        if train_Y is None and bool(source._is_trained):
+            result.means = torch.as_tensor(
+                source.means, device=like.device, dtype=like.dtype
+            ).clone()
+            result.stdvs = torch.as_tensor(
+                source.stdvs, device=like.device, dtype=like.dtype
+            ).clone()
+            result._is_trained = True
+    elif type(source) in (Log, Bilog, Power) or any(
+        _canonical_outcome_module(source, name) for name in ("Log", "Bilog", "Power")
+    ):
         return TorchElementwiseOutcome(source, m).eval()
-    elif type(source) is ChainedOutcomeTransform:
+    elif type(source) is ChainedOutcomeTransform or _canonical_outcome_module(
+        source, "ChainedOutcomeTransform"
+    ):
         children: dict[str, nn.Module] = {}
         values = train_Y
-        with torch.no_grad():
-            for name, child in source.items():
-                transform = build_outcome_transform(child, m, values)
-                assert transform is not None
-                children[name] = transform
-                values, _ = transform(values)
+        for name, child in source.items():
+            transform = build_outcome_transform(child, m, values, train_X=train_X)
+            assert transform is not None
+            children[name] = transform
+            if values is not None:
+                with torch.no_grad():
+                    values, _ = transform(values, X=train_X)
         return TorchOutcomeChain(children).eval()
     elif isinstance(source, nn.Module):
         if all(
@@ -1623,11 +1703,12 @@ def build_outcome_transform(source: Any, m: int, train_Y: Tensor) -> nn.Module |
                 "_tensor_backend='torch' for their training-statistics graph; "
                 "overridden behavior is not canonicalized."
             )
-        return source.to(train_Y)
+        return source.to(like)
     else:
         raise UnsupportedError(
             "Torch backend outcome transforms support Standardize, Log, Bilog, Power, ChainedOutcomeTransform or a torch.nn.Module."
         )
-    with torch.no_grad():
-        result(train_Y)
+    if train_Y is not None:
+        with torch.no_grad():
+            result(train_Y)
     return result.eval()

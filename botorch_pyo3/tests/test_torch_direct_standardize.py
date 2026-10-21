@@ -12,6 +12,7 @@ torch = pytest.importorskip("torch")
 gpytorch = pytest.importorskip("gpytorch")
 pytest.importorskip("botorch")
 
+from botorch.models.gp_regression import SingleTaskGP as RefGP
 from botorch.models.transforms.outcome import Standardize as RefStandardize
 from botorch.models.transforms.outcome import StratifiedStandardize as RefStratified
 
@@ -244,8 +245,8 @@ def test_direct_standardize_chain_and_error_protocols(device):
     torch.testing.assert_close(gradient, 2 * Y)
     with pytest.raises(RuntimeError, match="fitted"):
         Standardize(1).untransform(Y)
-    with pytest.raises(RuntimeError, match="same shape"):
-        Standardize(1)(Y, Y[:1])
+    with pytest.raises(RuntimeError, match="broadcast-compatible"):
+        Standardize(1)(Y, Y[:2])
     with pytest.raises(ValueError, match="X is required"):
         StratifiedStandardize(0, [0, 1])(Y)
     with pytest.raises(NotImplementedError):
@@ -310,46 +311,41 @@ def test_direct_standardize_nan_observations_and_fresh_training_graph(device, dt
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_fitted_eval_descriptor_preserves_calibration_law_and_gradients_in_model(device):
+@pytest.mark.parametrize("supplied", ["port", "source"])
+def test_gp_constructor_refits_supplied_eval_descriptor_as_source(device, supplied):
     X = torch.tensor([[0.1], [0.4], [0.8]], dtype=torch.double, device=device)
     Y = torch.tensor([[0.2], [0.7], [0.3]], dtype=X.dtype, device=device, requires_grad=True)
     calibration = torch.tensor(
         [[2.1], [4.3], [3.4]], dtype=X.dtype, device=device, requires_grad=True
     )
-    transform = Standardize(1)
+    transform = Standardize(1) if supplied == "port" else RefStandardize(1).to(Y)
     transform(calibration)
     transform.eval()
     model = SingleTaskGP(X, Y, outcome_transform=transform, backend="torch")
+    source_transform = RefStandardize(1).to(Y)
+    source_transform(calibration)
+    source_transform.eval()
+    source = RefGP(X, Y, outcome_transform=source_transform)
     query = X.new_tensor([[0.3], [0.6]], requires_grad=True)
-    model.posterior(query)
-    torch.testing.assert_close(model.outcome_transform.means, calibration.mean(-2, keepdim=True))
-    torch.testing.assert_close(model.outcome_transform.stdvs, calibration.std(-2, keepdim=True))
-    # A second model evaluation must not silently refit the calibration law to Y.
+    for name in ("means", "stdvs"):
+        torch.testing.assert_close(
+            getattr(model.outcome_transform, name), getattr(source.outcome_transform, name)
+        )
+    torch.testing.assert_close(model.outcome_transform.means, Y.mean(-2, keepdim=True))
     posterior = model.posterior(query)
-    torch.testing.assert_close(model.outcome_transform.means, calibration.mean(-2, keepdim=True))
     gradient = torch.autograd.grad(
         posterior.mean.square().sum() + posterior.variance.sum(),
-        (calibration, Y, query),
+        (Y, query),
         create_graph=True,
     )
     for tensor in gradient:
         assert bool(torch.isfinite(tensor).all())
-    second = torch.autograd.grad(sum(g.square().sum() for g in gradient), (calibration, Y, query))
+    second = torch.autograd.grad(sum(g.square().sum() for g in gradient), (Y, query))
     for tensor in second:
         assert bool(torch.isfinite(tensor).all())
     model.train()
     model.posterior(query)
     torch.testing.assert_close(model.outcome_transform.means, Y.mean(-2, keepdim=True))
-    # The same mode transition also works when no data-gradient tape forces
-    # a statistics refresh.
-    detached = Standardize(1)
-    detached(calibration.detach())
-    detached.eval()
-    frozen = SingleTaskGP(X, Y.detach(), outcome_transform=detached, backend="torch")
-    frozen.posterior(query.detach())
-    frozen.train()
-    frozen.posterior(query.detach())
-    torch.testing.assert_close(frozen.outcome_transform.means, Y.detach().mean(-2, keepdim=True))
 
 
 @pytest.mark.parametrize("device", DEVICES)

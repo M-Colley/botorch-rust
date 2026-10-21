@@ -92,11 +92,18 @@ class TensorStandardizeState(nn.Module):
         self.register_buffer("_is_trained", torch.tensor(False, device=like.device))
         self.train(source.training)
 
+    @property
+    def _requires_X(self) -> bool:
+        return self._stratification_idx is not None
+
     def _validate(self, Y: Tensor, Yvar: Tensor | None, X: Tensor | None) -> None:
         if Y.ndim < 2 or Y.shape[-1] != self._m:
             raise RuntimeError(f"Expected outcomes with shape ... x n x {self._m}.")
-        if Yvar is not None and Yvar.shape != Y.shape:
-            raise RuntimeError("Yvar and Y must have the same shape.")
+        if Yvar is not None:
+            try:
+                torch.broadcast_shapes(Yvar.shape, Y.shape)
+            except RuntimeError as error:
+                raise RuntimeError("Yvar and Y must have broadcast-compatible shapes.") from error
         if self._stratification_idx is not None:
             if X is None:
                 raise ValueError("X is required for StratifiedStandardize.")
@@ -200,9 +207,17 @@ class TensorStandardizeState(nn.Module):
             )
         if not bool(self._is_trained):
             raise RuntimeError("Standardize must be fitted before untransform_posterior.")
-        if posterior.mean.shape[-1] != self._m:
+        if posterior.mean.shape[-1] != self._m and not self._requires_X:
             raise RuntimeError("Incompatible output dimensions encountered.")
         means, stdvs, squared = (value.clone() for value in self.statistics(X))
+        q, m = posterior.mean.shape[-2:]
+        if self._requires_X and means.shape[-2] != q:
+            if means.shape[-2] != q * m:
+                raise RuntimeError("Stratified input context does not match the posterior event.")
+            means, stdvs, squared = (
+                value.reshape(*value.shape[:-2], m, q).transpose(-1, -2)
+                for value in (means, stdvs, squared)
+            )
         if isinstance(posterior, TorchGPyTorchPosterior):
             mean = posterior.mean * stdvs + means
             scale = stdvs.expand_as(mean).transpose(-1, -2).flatten(-2)
@@ -221,3 +236,16 @@ class TensorStandardizeState(nn.Module):
             mean_transform=lambda mean, variance: mean * stdvs + means,
             variance_transform=lambda mean, variance: variance * squared,
         )
+
+
+def untransform_multitask_outcome(transform: Any, posterior: Any, X: Tensor) -> Any:
+    """Apply long-format statistics to a task-expanded, output-major law."""
+    from botorch_rs.models._torch_backend_modules import TorchOutcomeChain
+
+    if isinstance(transform, TorchOutcomeChain):
+        for name in reversed(transform._transform_names):
+            posterior = untransform_multitask_outcome(transform[name], posterior, X)
+        return posterior
+    if not getattr(transform, "_requires_X", False) and posterior.mean.shape[-1] > 1:
+        transform = transform.subset_output([0] * posterior.mean.shape[-1])
+    return transform.untransform_posterior(posterior, X=X)

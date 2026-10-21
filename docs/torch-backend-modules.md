@@ -194,9 +194,32 @@ law. Other posterior types retain differentiable sample and moment closures.
 As in the reference, `StratifiedStandardize.subset_output` and standardization
 of selected outputs through `untransform_posterior` remain unsupported.
 
-An already-fitted eval `Standardize` descriptor passed to a Tensor GP keeps
-its calibration statistics. Calling `model.train()` enables fitting on the
-model's training targets again. Training calls produce fresh fitting graphs;
-eval mode retains the normal Torch graph lifetime of the stored statistics.
+GP constructors refit supplied outcome transforms on their training targets,
+including already-fitted eval descriptors, following the source constructors'
+explicit `outcome_transform.train()` call. Direct transform eval mode preserves
+its fitted calibration law. Training calls produce fresh fitting graphs;
+direct eval mode retains the normal Torch graph lifetime of stored statistics.
 Reusing an already-consumed external calibration graph still requires a new
 fit or the caller's usual `retain_graph` handling.
+
+Tensor scalar and long-format multitask GP constructors also convert
+`StratifiedStandardize`, including canonical supplied descriptors and chained
+outcomes. Fitting receives transformed training inputs; posterior conversion
+receives the full task-augmented query context. Per-task scales apply to the
+complete correlated covariance in output-major order. Conditioning and
+fantasies use task-specific observation-noise scales while retaining the
+original fitting data. Changes to task context invalidate fitted-statistics
+caches even when the training targets themselves are unchanged.
+
+Public chained outcome transforms forward state dictionaries, actual Tensor
+buffers and migration to their stateful children. Existing posterior closures
+retain the fitted law after the chain is refitted. Explicit access to a
+standardization descriptor's native `_rs` handle exports current Tensor
+statistics to Rust; ordinary Tensor calls and statistics getters do not copy
+numerical data to the host.
+
+The internal outcome builder also accepts absent training targets with real
+training-input dtype/device context. Stateless transforms need no fabricated
+observations. Fitted descriptors retain their calibration graph in that
+targetless case; untrained standardizations remain untrained and reject
+inverse use until fitted.

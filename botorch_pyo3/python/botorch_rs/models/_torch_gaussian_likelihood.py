@@ -73,7 +73,9 @@ def condition_fixed_likelihood(
     )
     fixed = fixed.transpose(-1, -2) if model.num_outputs > 1 else fixed.unsqueeze(-1)
     if model.outcome_transform is not None:
-        fixed = model.outcome_transform.untransform(torch.zeros_like(fixed), fixed)[1]
+        fixed = model.outcome_transform.untransform(
+            torch.zeros_like(fixed), fixed, X=model.transform_inputs(model._train_X)
+        )[1]
     stage._train_Yvar, stage._is_custom_likelihood = fixed, False
     conditioned = TorchSingleTaskGP.condition_on_observations(stage, X, Y, noise=noise, **kwargs)
     fixed = conditioned._training_values()[2]

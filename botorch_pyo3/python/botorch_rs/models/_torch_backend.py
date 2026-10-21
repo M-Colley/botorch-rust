@@ -80,8 +80,16 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         self.register_buffer("_transform_fit_X", train_X)
         self.register_buffer("_transform_fit_Y", train_Y)
         self.input_transform = build_input_transform(input_transform, train_X.shape[-1], train_X)
+        with torch.no_grad():
+            outcome_inputs = (
+                train_X
+                if self.input_transform is None
+                else getattr(self.input_transform, "preprocess_transform", self.input_transform)(
+                    train_X
+                )
+            )
         self.outcome_transform = build_outcome_transform(
-            outcome_transform, self.num_outputs, train_Y
+            outcome_transform, self.num_outputs, train_Y, train_X=outcome_inputs
         )
         _, _, noise = self._training_values(clamp_noise=False)
         self.covar_module = build_kernel(
@@ -160,6 +168,15 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             if getattr(transform, "_tensor_backend", None) == "torch":
                 parameters = tuple(transform.parameters())
                 versions = tuple(_mutation_version(tensor) for tensor in (values, *parameters))
+                context: tuple[Any, ...] = ()
+                if getattr(transform, "_requires_X", False):
+                    context = (self._transform_fit_X,)
+                    if self.input_transform is not None:
+                        context += (
+                            *self.input_transform.parameters(),
+                            *self.input_transform.buffers(),
+                        )
+                context_versions = tuple(_mutation_version(tensor) for tensor in context)
                 key = (
                     id(values),
                     versions[0],
@@ -171,8 +188,8 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
                         for parameter, version in zip(parameters, versions[1:], strict=True)
                     ),
                     tuple(
-                        getattr(module, "_fit_on_model_data", True)
-                        for module in transform.modules()
+                        (id(tensor), version)
+                        for tensor, version in zip(context, context_versions, strict=True)
                     ),
                 )
                 needs_graph = torch.is_grad_enabled() and (
@@ -182,14 +199,23 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
                     needs_graph
                     or transform.training
                     or None in versions
+                    or None in context_versions
                     or self._transform_fit_versions.get(id(transform)) != key
                 ):
-                    if getattr(transform, "transform_on_train", True) and getattr(
-                        transform, "_fit_on_model_data", True
-                    ):
+                    if getattr(transform, "transform_on_train", True):
                         fit = getattr(transform, "fit", None)
                         if fit is not None:
-                            fit(values)
+                            if getattr(transform, "_requires_X", False):
+                                inputs = self._transform_fit_X
+                                if self.input_transform is not None:
+                                    inputs = getattr(
+                                        self.input_transform,
+                                        "preprocess_transform",
+                                        self.input_transform,
+                                    )(inputs)
+                                fit(values, X=inputs)
+                            else:
+                                fit(values)
                     self._transform_fit_versions[id(transform)] = key
             transform.eval()
 
@@ -254,7 +280,7 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         Y, noise = self._train_Y, self._train_Yvar
         outcome = training_outcome_transform(self)
         if outcome is not None:
-            Y, noise = outcome(Y, noise, X=self._train_X)
+            Y, noise = outcome(Y, noise, X=X)
         if noise is not None and clamp_noise:
             noise = noise.clamp_min(1e-4 if noise.dtype == torch.float32 else 1e-6)
         if getattr(self, "_is_custom_likelihood", False):
@@ -424,6 +450,7 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             mean, blocks = mean.transpose(-1, -2), covariance
         posterior = TorchGPyTorchPosterior(mean, independent_covariance(blocks))
         outcome = self.outcome_transform
+        outcome_X = self.transform_inputs(X) if getattr(outcome, "_requires_X", False) else X
         if output_indices is not None:
             indices = torch.as_tensor(output_indices, device=mean.device, dtype=torch.long)
             if indices.ndim != 1 or not indices.numel():
@@ -436,7 +463,7 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
                 if subset is None:
                     method = getattr(outcome, "untransform_posterior", None)
                     if method is not None:
-                        posterior = method(posterior, X=X)
+                        posterior = method(posterior, X=outcome_X)
                     else:
                         mean, blocks = outcome.untransform_moments(mean, blocks)
                         posterior = TorchGPyTorchPosterior(mean, independent_covariance(blocks))
@@ -451,7 +478,7 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         if outcome is not None:
             method = getattr(outcome, "untransform_posterior", None)
             if method is not None:
-                posterior = method(posterior, X=X)
+                posterior = method(posterior, X=outcome_X)
             else:
                 mean, blocks = outcome.untransform_moments(mean, blocks)
                 posterior = TorchGPyTorchPosterior(mean, independent_covariance(blocks))
@@ -579,7 +606,9 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
                 noise = self._train_Yvar.mean(-2, keepdim=True).expand_as(Y)
             elif self.outcome_transform is not None:
                 # Conditioning noise follows BoTorch's transformed-space API.
-                noise = self.outcome_transform.untransform(torch.zeros_like(Y), noise)[1]
+                noise = self.outcome_transform.untransform(
+                    torch.zeros_like(Y), noise, X=self.transform_inputs(X)
+                )[1]
             model._train_Yvar = torch.cat(
                 (
                     self._train_Yvar.expand(*batch, *self._train_Y.shape[-2:]),

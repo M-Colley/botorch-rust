@@ -321,7 +321,17 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             ),
         )
         self.input_transform = build_input_transform(input_transform, d + 1, train_X)
-        self.outcome_transform = build_outcome_transform(outcome_transform, 1, train_Y)
+        with torch.no_grad():
+            outcome_inputs = (
+                train_X
+                if self.input_transform is None
+                else getattr(self.input_transform, "preprocess_transform", self.input_transform)(
+                    train_X
+                )
+            )
+        self.outcome_transform = build_outcome_transform(
+            outcome_transform, 1, train_Y, train_X=outcome_inputs
+        )
         self._is_custom_likelihood = likelihood is not None
         _, _, fixed_noise = self._training_values()
         if covar_module is None:
@@ -698,6 +708,20 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         posterior = TorchGPyTorchPosterior(mean, covariance)
         if self.outcome_transform is not None:
             outcome = self.outcome_transform
+            if getattr(outcome, "_requires_X", False):
+                from botorch_rs.models.transforms._torch_standardize import (
+                    untransform_multitask_outcome,
+                )
+
+                # Long-format inputs preserve physical task labels through the
+                # input transform; task-specific outcome statistics need these
+                # labels, including for a taskless public query expanded above.
+                posterior = untransform_multitask_outcome(outcome, posterior, full)
+                return (
+                    posterior
+                    if posterior_transform is None
+                    else posterior_transform(posterior, X=X)
+                )
             if m > 1:
                 subset = getattr(outcome, "subset_output", None)
                 if subset is None:
@@ -883,7 +907,9 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
             self._fit_transform_graphs()
             raw_noise = noise
             if self.outcome_transform is not None:
-                raw_noise = self.outcome_transform.untransform(torch.zeros_like(Y), noise)[1]
+                raw_noise = self.outcome_transform.untransform(
+                    torch.zeros_like(Y), noise, X=self.transform_inputs(X)
+                )[1]
             model._train_Yvar = torch.cat(
                 (
                     self._train_Yvar.expand(*batch, *self._train_Y.shape[-2:]),
