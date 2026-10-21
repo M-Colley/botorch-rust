@@ -120,7 +120,7 @@ def botorch_members(cls: type) -> set[str]:
     """Public methods and properties that BoTorch's own classes define for
     ``cls``: not those inherited from torch, GPyTorch or ``object``, and not
     overrides of ``torch.nn.Module``'s API (``forward``, ``load_state_dict``,
-    ...), which botorch_rs does not provide."""
+    ...). Backend factories and numerical behavior need separate runtime tests."""
     import torch
 
     module_api = set(dir(torch.nn.Module))
@@ -200,10 +200,15 @@ def report(entries: list[Entry], community: list[Entry], errors: dict[str, str])
         "botorch_rs provides it under the same path. For names that exist in both, it "
         "lists the parameters of BoTorch's signature (`__init__` for classes) that "
         "botorch_rs does not accept and the public methods and properties of BoTorch's "
-        "class that botorch_rs lacks (botorch_rs models and acquisition functions are not "
-        "`torch.nn.Module`s, so `forward`, state dicts and buffers are not listed). A name "
-        "being present does not mean every "
-        "configuration is supported: see the README for the supported options.",
+        "class that botorch_rs lacks. This static inventory excludes inherited Torch and "
+        "GPyTorch APIs and overrides of `torch.nn.Module` methods, including `forward`, "
+        "state dicts and buffers. Tensor backend factories can return actual "
+        "`torch.nn.Module` implementations; their protocols require separate runtime "
+        "checks. Accepting a parameter name (including through `**kwargs`) does not "
+        "establish support for its values. The percentages below measure public-name "
+        "availability, not behavior, GPU coverage, autograd equivalence or speed. "
+        "See the README and `docs/torch-backend.md` for supported configurations and "
+        "remaining verification work.",
         "",
         "## Summary",
         "",
@@ -274,7 +279,9 @@ def report(entries: list[Entry], community: list[Entry], errors: dict[str, str])
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--out", type=Path, default=Path("docs/api_coverage.md"))
-    parser.add_argument("--json-out", type=Path, help="Write a machine-readable API gap inventory.")
+    parser.add_argument(
+        "--json-out", type=Path, help="Write a machine-readable API gap inventory."
+    )
     parser.add_argument(
         "--minimum-coverage",
         type=float,
@@ -300,7 +307,9 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(report(entries, community, errors), encoding="utf-8")
     n, k = len(entries), sum(e.ported for e in entries)
-    print(f"{k} of {n} public BoTorch classes and functions are in botorch_rs; wrote {args.out}")
+    print(
+        f"{k} of {n} public BoTorch classes and functions are in botorch_rs; wrote {args.out}"
+    )
     missing = [e for e in entries if not e.ported or e.missing_params or e.missing_members]
     core_errors = {name: error for name, error in errors.items() if name.startswith("botorch.")}
     if args.json_out is not None:
