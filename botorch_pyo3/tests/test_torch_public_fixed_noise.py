@@ -200,3 +200,40 @@ def test_actual_constraint_optimizer_bounds_and_prior_graph_match_source(device,
     raw = likelihood.second_noise_covar.raw_noise
     first = torch.autograd.grad(log_prob, raw, create_graph=True)[0]
     assert torch.isfinite(torch.autograd.grad(first.sum(), raw)[0]).all()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("additional", [False, True])
+def test_multitask_conditioning_appends_only_fixed_noise_and_copies_learned_parameters(
+    device, additional
+):
+    from botorch_rs.models import MultiTaskGP
+
+    X = torch.tensor([[0.1, 0.0], [0.45, 1.0], [0.9, 0.0]], dtype=torch.double, device=device)
+    Y = (X[:, :1] * 4).sin()
+    noise = values(device, False).requires_grad_()
+    likelihood = FixedNoiseGaussianLikelihood(noise, additional)
+    model = MultiTaskGP(
+        X, Y, task_feature=1, likelihood=likelihood, outcome_transform=None, backend="torch"
+    )
+    added_X, added_Y = X.new_tensor([[0.3, 1.0]]), Y.new_tensor([[0.2]])
+    added_noise = Y.new_tensor([[0.04]], requires_grad=True)
+    child = model.condition_on_observations(added_X, added_Y, noise=added_noise)
+    torch.testing.assert_close(
+        child.likelihood.noise_covar.noise, torch.cat((noise, added_noise.squeeze(-1)))
+    )
+    torch.testing.assert_close(child.likelihood.second_noise, likelihood.second_noise)
+    assert {id(p) for p in child.likelihood.parameters()}.isdisjoint(
+        id(p) for p in likelihood.parameters()
+    )
+    query = X.new_tensor([[0.6, 0.0]], requires_grad=True)
+    posterior = child.posterior(query)
+    loss = posterior.mean.square().sum() + posterior.variance.sum()
+    if additional:
+        assert torch.autograd.grad(
+            loss, tuple(likelihood.parameters()), allow_unused=True, retain_graph=True
+        ) == (None,) * len(tuple(likelihood.parameters()))
+    leaves = (noise, added_noise, query, *child.parameters())
+    gradient = torch.autograd.grad(loss, leaves, create_graph=True)
+    hvp = torch.autograd.grad(sum(g.square().sum() for g in gradient), leaves)
+    assert all(torch.isfinite(value).all() for value in (*gradient, *hvp))

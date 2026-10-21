@@ -843,19 +843,12 @@ class TorchMultiTaskGP(nn.Module, MultiTaskGP):
         self._conditioned_train_X = None
 
     def condition_on_observations(self, X: Any, Y: Any, noise: Any = None, **kwargs: Any) -> Any:
-        from botorch_rs.models._torch_gaussian_likelihood import (
-            is_fixed_noise,
-            is_gpytorch_gaussian,
-        )
+        from botorch_rs.models._torch_gaussian_likelihood import is_fixed_noise
 
         if getattr(self, "_is_custom_likelihood", False) and is_fixed_noise(self.likelihood):
             from botorch_rs.models._torch_fully_bayesian_loader import _copy_model
 
-            original_fixed = (
-                self.likelihood.noise_covar.noise
-                if is_gpytorch_gaussian(self.likelihood)
-                else self.likelihood.noise
-            )
+            original_fixed = self.likelihood.noise_covar.noise
             fixed = original_fixed.unsqueeze(-1)
             self._fit_transform_graphs()
             if self.outcome_transform is not None:
