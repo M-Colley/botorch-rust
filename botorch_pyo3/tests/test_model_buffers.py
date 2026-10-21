@@ -33,7 +33,6 @@ from gpytorch import kernels as ref_kernels
 from gpytorch import priors as ref_priors
 
 from botorch_rs import constraints, kernels, priors
-from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.models.cost import AffineFidelityCostModel, FixedCostModel
 from botorch_rs.models.deterministic import (
     AffineDeterministicModel,
@@ -345,19 +344,47 @@ def test_pairwise_registered_data_and_laplace_buffers():
     torch.testing.assert_close(buffers["consolidated_comparisons"], comparisons)
 
 
-def test_unsupported_native_caches_are_explicit():
+def test_public_perturbation_registers_actual_cached_buffers():
     x, y = data()
     transform = port_input.InputPerturbation(torch.zeros(2, 2))
     model = SingleTaskGP(x, y, input_transform=transform)
-    with pytest.raises(UnsupportedError, match="cached perturbations"):
-        _ = model.dtypes_of_buffers
+    assert isinstance(transform, torch.nn.Module)
+    assert model.dtypes_of_buffers == {torch.double, torch.bool}
+    assert dict(transform.named_buffers())["perturbation_set"] is transform.perturbation_set
 
 
 def test_import_and_list_construction_do_not_import_torch():
-    code = """
+    import botorch_rs
+    from botorch_rs import _botorch_rs
+
+    # A source-checkout test runner may preload the extension without adding
+    # its Python package to child-process PYTHONPATH. Test this exact package.
+    code = f"""
+import importlib.util
+import pathlib
 import sys
+sys.path.insert(0, str(pathlib.Path({botorch_rs.__file__!r}).parent.parent))
+spec = importlib.util.spec_from_file_location('botorch_rs._botorch_rs', {_botorch_rs.__file__!r})
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
 from botorch_rs.models import SingleTaskGP
+from botorch_rs.models.transforms.input import Normalize, Warp
 model = SingleTaskGP([[0.0], [0.5], [1.0]], [[0.0], [1.0], [0.0]])
+normalize = Normalize(1)
+warp = Warp(1, [0])
+normalize([[0.0], [1.0]])
+warp([[0.2], [0.8]])
 assert 'torch' not in sys.modules
+import torch
+from botorch_rs.models.transforms.input import ChainedInputTransform
+normalize.to(dtype=torch.double)
+assert isinstance(normalize, torch.nn.Module)
+chain = ChainedInputTransform(normalize=normalize, warp=warp)
+assert chain.normalize is normalize
+assert chain.warp is warp
+assert isinstance(normalize, torch.nn.Module)
+assert isinstance(warp._normalize, torch.nn.Module)
+assert len(list(chain.parameters())) == 2
 """
     subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)

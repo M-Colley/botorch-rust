@@ -92,6 +92,54 @@ class InputTransform(NativeBufferModule):
     transform_on_eval: bool = True
     transform_on_fantasize: bool = True
 
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        if sys.modules.get("torch") is not None:
+            from botorch_rs.models.transforms._torch_input_protocol import allocate
+
+            return allocate(cls)
+        return object.__new__(cls)
+
+    def __getattr__(self, name: str) -> Any:
+        # An object created in an array-only process can acquire the optional
+        # module protocol later without replacing aliases held by its caller.
+        protocols = {
+            "to",
+            "cpu",
+            "cuda",
+            "double",
+            "float",
+            "half",
+            "bfloat16",
+            "type",
+            "state_dict",
+            "load_state_dict",
+            "children",
+            "named_children",
+            "modules",
+            "named_modules",
+            "get_buffer",
+            "get_parameter",
+            "get_submodule",
+            "set_submodule",
+            "requires_grad_",
+            "zero_grad",
+            "register_parameter",
+            "register_forward_hook",
+            "register_forward_pre_hook",
+            "register_full_backward_hook",
+            "register_full_backward_pre_hook",
+            "register_state_dict_pre_hook",
+            "register_state_dict_post_hook",
+            "register_load_state_dict_pre_hook",
+            "register_load_state_dict_post_hook",
+        }
+        if name in protocols:
+            from botorch_rs.models.transforms._torch_input_protocol import TorchInputModule, promote
+
+            if not isinstance(self, TorchInputModule):
+                return getattr(promote(self), name)
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
     def __getstate__(self) -> dict[str, Any]:
         from botorch_rs.models.transforms._input_pickle import get_state
 
@@ -1222,7 +1270,7 @@ class Warp(ReversibleInputTransform):
             return [
                 _rs.InputStep.warp(
                     self._d,
-                    self.indices,
+                    list(self.indices),
                     self._eps,
                     bounds,
                     self.concentration0_prior._rs if self.concentration0_prior else None,
@@ -1541,12 +1589,12 @@ class FilterFeatures(InputTransform):
         self.training = True
 
     def _step(self) -> Any:
-        return _rs.InputStep.filter(list(self._idx), self._flags())
+        return _rs.InputStep.filter(_indices_list(self.feature_indices) or [], self._flags())
 
     def transform(self, X: Any) -> Any:
         r"""Keep only the features ``feature_indices``."""
         if _torch_input.is_tensor(X):
-            return X[..., self._idx]
+            return X[..., self.feature_indices]
         kind = kind_of(X)
         flat = _check_flat_matrix(X)
         return from_pair(self._step().transform(flat), kind)
@@ -2153,7 +2201,7 @@ class ChainedInputTransform(InputTransform):
         transforms = self.__dict__.get("_transforms")
         if transforms is not None and name in transforms:
             return transforms[name]
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        return InputTransform.__getattr__(self, name)
 
     def __contains__(self, key: object) -> bool:
         return key in self._transforms

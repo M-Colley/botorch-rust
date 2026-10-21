@@ -58,7 +58,9 @@ class TorchPublicInputTransform(_TorchModule):
                 normalize = TorchPublicInputTransform(source._normalize, like, _memo=memo)
             self.add_module("_normalize", normalize)
         # Caller-supplied feature maps are genuine registered modules too.
-        for name, value in source.__dict__.items():
+        source_children = dict(source.__dict__.items())
+        source_children.update(source.__dict__.get("_modules", {}))
+        for name, value in source_children.items():
             if isinstance(value, nn.Module) and name not in self._modules:
                 self.add_module(name, value.to(like))
         encoders = getattr(source, "encoders", {})
@@ -127,6 +129,7 @@ class TorchPublicInputTransform(_TorchModule):
     def _sync_from_source(self) -> None:
         source = self._source
         parameters = dict(source.__dict__.get("_direct_parameters", {}))
+        parameters.update(source.__dict__.get("_parameters", {}))
         parameters.update(
             (name, value)
             for name, value in source.__dict__.items()
@@ -135,7 +138,9 @@ class TorchPublicInputTransform(_TorchModule):
         for name, parameter in parameters.items():
             self._parameters[name] = parameter
             self._source_parameters.add(name)
-        for name, value in source.__dict__.items():
+        buffers = dict(source.__dict__.items())
+        buffers.update(source.__dict__.get("_buffers", {}))
+        for name, value in buffers.items():
             if isinstance(value, Tensor) and not isinstance(value, nn.Parameter):
                 self._buffers[name] = value
                 self._source_buffers.add(name)
@@ -148,7 +153,7 @@ class TorchPublicInputTransform(_TorchModule):
             setattr(self._source, name, self._buffers[name])
         direct = self._source.__dict__.get("_direct_parameters", {})
         for name in self._source_parameters:
-            if name in direct:
+            if name in direct and not isinstance(self._source, nn.Module):
                 direct[name] = self._parameters[name]
             else:
                 setattr(self._source, name, self._parameters[name])
@@ -188,12 +193,16 @@ class TorchPublicInputTransform(_TorchModule):
         if not self._fit_on_model_data:
             return self
         with self._graphs():
-            if type(self._source) is ChainedInputTransform:
+            if isinstance(self._source, ChainedInputTransform) and (
+                type(self._source).transform is ChainedInputTransform.transform
+            ):
                 for name in self._source.keys():
                     child = self[name]
                     child.fit(X)
                     X = child.preprocess_transform(X)
-            elif type(self._source) is BatchBroadcastedInputTransform:
+            elif isinstance(self._source, BatchBroadcastedInputTransform) and (
+                type(self._source).transform is BatchBroadcastedInputTransform.transform
+            ):
                 for i, part in enumerate(X.unbind(self._source.broadcast_index)):
                     self[str(i)].fit(part)
             else:

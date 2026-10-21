@@ -70,6 +70,8 @@ def _tensor(value: Any, like: Any) -> Any:
 
 
 def affine_stat(transform: Any, which: int) -> Any:
+    if transform.__dict__.get("_native_affine_dormant", False):
+        return None
     value = getattr(transform, "_coefficient" if which else "_offset", None)
     if value is None or not is_tensor(value):
         return None
@@ -98,6 +100,10 @@ def affine_apply(transform: Any, X: Any, inverse: bool) -> Any:
     from botorch_rs._arrays import kind_of
     from botorch_rs.exceptions.errors import BotorchTensorDimensionError
 
+    if transform.__dict__.get("_native_affine_dormant", False):
+        transform._buffers["_coefficient"] = None
+        transform._buffers["_offset"] = None
+        transform.__dict__["_native_affine_dormant"] = False
     if X.ndim < 2:
         raise BotorchTensorDimensionError(f"`X` must have at least 2 dimensions, but has {X.ndim}.")
     transform._check_shape(tuple(X.shape))
@@ -153,6 +159,8 @@ def affine_apply(transform: Any, X: Any, inverse: bool) -> Any:
 
 def sync_affine_native(transform: Any) -> None:
     """Snapshot direct Tensor state when a native descriptor is requested."""
+    if transform.__dict__.get("_native_affine_dormant", False):
+        return
     if not is_tensor(getattr(transform, "_coefficient", None)) or not is_tensor(
         getattr(transform, "_offset", None)
     ):
@@ -187,6 +195,10 @@ def sync_affine_native(transform: Any) -> None:
 def clear_affine_tensor_state(transform: Any) -> None:
     transform.__dict__.pop("_coefficient", None)
     transform.__dict__.pop("_offset", None)
+    if "_buffers" in transform.__dict__:
+        transform._buffers["_coefficient"] = None
+        transform._buffers["_offset"] = None
+        transform.__dict__["_native_affine_dormant"] = True
 
 
 def warp_parameters(transform: Any, like: Any) -> dict[str, Any]:
@@ -349,6 +361,9 @@ def imputation_values(transform: Any, like: Any) -> Any:
     )
     values = raw.reshape(transform.num_tasks, transform.d + 1)
     if transform.bounds is not None:
+        constraint = getattr(transform, "raw_imputation_values_constraint", None)
+        if constraint is not None:
+            return constraint.transform(raw).reshape(transform.num_tasks, transform.d + 1)
         bounds = _tensor(transform.bounds, values)
         lower = torch.cat((bounds[0], values.new_zeros(1)))
         upper = torch.cat((bounds[1], values.new_ones(1)))
@@ -368,6 +383,13 @@ def imputation_apply(transform: Any, X: Any) -> Any:
     values = imputation_values(transform, X).to(X)
     result = X.clone()
     tasks = X[..., -1].long()
+    task_values = getattr(transform, "_task_values", None)
+    missing_mask = getattr(transform, "missing_mask", None)
+    if task_values is not None and missing_mask is not None:
+        for position, task in enumerate(task_values):
+            mask = (tasks == task).unsqueeze(-1) & missing_mask[position]
+            result = torch.where(mask, values[position], result)
+        return result
     for position, (task, observed) in enumerate(sorted(transform.feature_indices.items())):
         missing = [column for column in range(transform.d) if column not in observed]
         result[..., missing] = torch.where(
@@ -394,7 +416,9 @@ def perturbation_apply(transform: Any, X: Any) -> Any:
     ):
         raise ValueError("Perturbations must have shape (..., q, n_w, selected_features).")
     transform._n_w = perturbations.shape[-2]
-    transform._perturbations = perturbations.transpose(-3, -2)
+    # The expanded fixed set has overlapping storage. Cached buffers must be
+    # writable so Module.load_state_dict can copy their saved values back.
+    transform._perturbations = perturbations.transpose(-3, -2).clone()
     transform._last_batch_shape = tuple(transform._perturbations.shape[:-2])
     batch = torch.broadcast_shapes(X.shape[:-2], perturbations.shape[:-3])
     expanded = selected.unsqueeze(-2)

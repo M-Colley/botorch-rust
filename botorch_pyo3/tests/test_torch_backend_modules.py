@@ -418,7 +418,7 @@ def test_warp_and_chain_full_training_parameter_graphs(device, batch_shape, chai
     )
     source_warp = Warp(
         3, [0, 2], batch_shape=batch_shape, concentration0_prior=LogNormalPrior(0, 0.7)
-    )
+    ).to(x)
     source_warp.initialize(concentration0=0.9, concentration1=1.3)
     reference_warp = ReferenceWarp(3, [0, 2], batch_shape=torch.Size(batch_shape)).to(x)
     with torch.no_grad():

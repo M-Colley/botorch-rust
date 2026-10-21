@@ -1535,8 +1535,6 @@ def build_input_transform(
 
     if source is None:
         return None
-    if isinstance(source, nn.Module):
-        return source.to(train_X)
     if isinstance(source, InputTransform):
         from botorch_rs.models.transforms._torch_input_module import TorchPublicInputTransform
 
@@ -1545,6 +1543,8 @@ def build_input_transform(
             return result
         with torch.no_grad():
             return result.fit(train_X).eval()
+    if isinstance(source, nn.Module):
+        return source.to(train_X)
     raise UnsupportedError(
         "Torch backend input transforms must be port InputTransform objects or torch.nn.Module instances."
     )

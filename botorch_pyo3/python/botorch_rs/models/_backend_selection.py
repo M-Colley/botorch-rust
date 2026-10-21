@@ -58,6 +58,16 @@ def requires_tensor_backend(value: Any) -> bool:
         )
         if not (container or internal_state or native_port_descriptor_type(module) is not None):
             return False
+        if any(
+            module.__dict__.get(name)
+            for name in (
+                "_forward_hooks",
+                "_forward_pre_hooks",
+                "_backward_hooks",
+                "_backward_pre_hooks",
+            )
+        ):
+            return False
         defaults = module.__dict__.get("_native_default_parameters", {})
         for name, parameter in module._parameters.items():
             if parameter is not None and (

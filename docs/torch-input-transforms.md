@@ -165,6 +165,31 @@ The ownership checkpoint passes 413 integrated cases across input transforms,
 scalar/multitask conditioning, supplied Gaussian likelihoods, empirical models,
 knowledge gradient, its initializers and multi-step lookahead. Torch 2.14.1 CPU
 passes 52 cases and skips 38 CUDA cases in the affected conditioning selection.
-Standalone public transform module methods and phase-dependent appended input
-coordinates remain separate scopes from model registration and numerical
-methods; these receipts do not establish complete package behavior parity.
+The standalone public classes now acquire an actual Torch Module protocol when
+Torch is loaded. The cooperative class keeps the original public numerical
+methods, actual caller Parameters and child modules. All fifteen families
+support hooks, module/parameter/buffer traversal, device/dtype conversion,
+state dictionaries, and whole-object pickle. Objects created before importing
+Torch can acquire the protocol in place on an explicit module-method request,
+preserving caller aliases. Array construction and calls still do not import
+Torch. Unchanged CPU builtins remain eligible for native automatic selection;
+actual caller Parameters, modules, numerical overrides and hooks select Tensor
+inference.
+
+Native affine snapshots stay observational until a Tensor call or explicit
+migration, preserving the full precision of native array coefficients. The
+source state keys, values and loading behavior are checked directly for ten
+families, including Warp constraints and imputation masks. Cached fixed
+InputPerturbation tensors now own writable storage, repairing an own-state
+loading defect also proposed upstream in BoTorch #3525. The existing Warp
+graph fixture now migrates both actual and reference before initialization;
+four additional controls establish matching source factory precision when
+initialization precedes migration.
+
+The standalone checkpoint passes 608 integrated existing/new cases before the
+last four factory-precision cases. The latest protocol and buffer selection
+passes 96 cases; Torch 2.14.1 CPU passes 103 bridge/protocol/buffer cases and
+skips 61 CUDA cases. Mypy passes all six changed implementation modules. This
+does not establish complete package behavior parity: phase-dependent appended
+input coordinates, multitask one-to-many query layouts and the additional
+GPyTorch-specific Warp/imputation prior APIs still need their own audit.
