@@ -364,6 +364,15 @@ class UnwhitenedVariationalStrategy(VariationalStrategy):
     """
 
 
+class BatchDecoupledVariationalStrategy(VariationalStrategy):
+    """Tensor strategy with separate mean and covariance inducing locations.
+
+    Pass the class or a ``partial`` with ``mean_var_batch_dim`` and
+    ``jitter_val`` to ``SingleTaskVariationalGP``. The source's Gaussian-only
+    family restriction and decoupled KL convention apply.
+    """
+
+
 class IndependentMultitaskVariationalStrategy(_VariationalStrategy):
     """GPyTorch's ``IndependentMultitaskVariationalStrategy``: independent
     outputs as the batch dimension of a base strategy (``task_dim=-1``)."""
@@ -391,6 +400,7 @@ class IndependentMultitaskVariationalStrategy(_VariationalStrategy):
 
 
 __all__ = [
+    "BatchDecoupledVariationalStrategy",
     "CholeskyVariationalDistribution",
     "DeltaVariationalDistribution",
     "IndependentMultitaskVariationalStrategy",

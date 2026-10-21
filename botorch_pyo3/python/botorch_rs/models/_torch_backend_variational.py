@@ -30,6 +30,7 @@ from botorch_rs.models._torch_backend_modules import (
 from botorch_rs.models.approximate_gp import SingleTaskVariationalGP
 from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior, independent_covariance
 from botorch_rs.variational import (
+    BatchDecoupledVariationalStrategy,
     CholeskyVariationalDistribution,
     DeltaVariationalDistribution,
     MeanFieldVariationalDistribution,
@@ -624,20 +625,48 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             # overriding partial defaults just as the source constructor does.
             for name in ("inducing_points", "variational_distribution", "learn_inducing_locations"):
                 strategy_options.pop(name, None)
-            if set(strategy_options) - {"jitter_val"}:
+            if set(strategy_options) - {"jitter_val", "mean_var_batch_dim"}:
                 raise TypeError(
                     f"Unexpected variational strategy arguments: {sorted(strategy_options)}."
                 )
-        strategies = {VariationalStrategy: True, UnwhitenedVariationalStrategy: False}
+        strategies = {
+            VariationalStrategy: True,
+            UnwhitenedVariationalStrategy: False,
+            BatchDecoupledVariationalStrategy: True,
+        }
+        decoupled_types = {BatchDecoupledVariationalStrategy}
         if gpytorch is not None:
             strategies[gpytorch.variational.VariationalStrategy] = True
             strategies[gpytorch.variational.UnwhitenedVariationalStrategy] = False
+            strategies[gpytorch.variational.BatchDecoupledVariationalStrategy] = True
+            decoupled_types.add(gpytorch.variational.BatchDecoupledVariationalStrategy)
         if variational_strategy not in strategies:
             raise UnsupportedError(
-                "Torch variational models support VariationalStrategy and UnwhitenedVariationalStrategy."
+                "Torch variational models support VariationalStrategy, "
+                "UnwhitenedVariationalStrategy and BatchDecoupledVariationalStrategy."
             )
         whitened = strategies[variational_strategy]
+        decoupled = variational_strategy in decoupled_types
+        if not decoupled and "mean_var_batch_dim" in strategy_options:
+            raise TypeError("mean_var_batch_dim configures BatchDecoupledVariationalStrategy only.")
         distribution_family = _distribution_family(variational_distribution)
+        if decoupled and (
+            distribution_family == "delta"
+            or (
+                gpytorch is not None
+                and isinstance(
+                    variational_distribution, gpytorch.variational.DeltaVariationalDistribution
+                )
+            )
+        ):
+            raise NotImplementedError(
+                "BatchDecoupledVariationalStrategy does not work with DeltaVariationalDistribution"
+            )
+        if decoupled and train_X.ndim > 2 and num_outputs > 1:
+            raise UnsupportedError(
+                "Batches of multi-output decoupled models are not supported by the source wrapper; "
+                "use a model list."
+            )
         if getattr(variational_distribution, "_owner", None) is not None:
             raise UnsupportedError(
                 "This variational distribution already belongs to a native model; create a new specification."
@@ -752,9 +781,23 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             distribution = distribution_class(
                 points.shape[-2], self._aug_batch_shape, train_X, variational_distribution
             )
-        strategy = _TorchVariationalStrategy(
-            self, points, distribution, learn_inducing_points, whitened=whitened
-        )
+        strategy: _TorchVariationalStrategy
+        if decoupled:
+            from botorch_rs.models._torch_backend_variational_decoupled import (
+                TorchBatchDecoupledStrategy,
+            )
+
+            strategy = TorchBatchDecoupledStrategy(
+                self,
+                points,
+                distribution,
+                learn_inducing_points,
+                strategy_options.get("mean_var_batch_dim"),
+            )
+        else:
+            strategy = _TorchVariationalStrategy(
+                self, points, distribution, learn_inducing_points, whitened=whitened
+            )
         if strategy_options.get("jitter_val") is not None:
             strategy.jitter_val = float(strategy_options["jitter_val"])
         self.model = _TorchVariationalInner(
@@ -874,6 +917,8 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         )
 
     def _variational_output(self, X: Tensor) -> Any:
+        if getattr(self._strategy, "decoupled", False):
+            return self._strategy.variational_output(X)
         if not self._strategy.whitened:
             return self._unwhitened_output(X)
         X = X.clone()

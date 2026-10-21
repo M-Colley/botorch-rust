@@ -456,6 +456,10 @@ def _variational_update(
     model.eval()
     _fit_transforms(model)
     strategy, modules = model._strategy, model.model
+    if getattr(strategy, "decoupled", False):
+        raise UnsupportedError(
+            "Decoupled mean/covariance inducing sets require a custom pathwise update."
+        )
     if not strategy.whitened:
         raise NotImplementedError(
             "The reference Matheron dispatcher does not register UnwhitenedVariationalStrategy updates."
@@ -526,6 +530,12 @@ def tensor_matheron_paths(
             start = stop
         return PathList(paths)
     _require_model(model)
+    if isinstance(model, TorchSingleTaskVariationalGP) and getattr(
+        model._strategy, "decoupled", False
+    ):
+        raise UnsupportedError(
+            "Decoupled mean/covariance inducing sets require a custom pathwise update."
+        )
     if draws is not None and (len(draws) != model.num_outputs or any(len(d) != 3 for d in draws)):
         raise ValueError("Provide one (frequencies, weights, noise) tuple per output.")
     prior = _draw_components(

@@ -43,9 +43,10 @@ differences of independent reference first gradients because the pinned
 `linear_operator` triangular operations have a separately reported matrix-Hessian
 defect ([linear_operator #152](https://github.com/cornellius-gp/linear_operator/pull/152)).
 
-This checkpoint does not add `BatchDecoupledVariationalStrategy` or
-`CiqVariationalStrategy`; their different inducing/whitening laws require their
-own implementations. Strategies whose constructors require an additional base
+`BatchDecoupledVariationalStrategy` now has its own distinct inducing and KL law;
+see [torch-variational-decoupled.md](torch-variational-decoupled.md).
+`CiqVariationalStrategy` remains a different symmetric-whitening implementation
+gap. Strategies whose constructors require an additional base
 strategy, grid or task arguments are not interchangeable with the
 `SingleTaskVariationalGP` class argument in the upstream API. The source also
 does not register default unwhitened or independent-multitask Matheron updates.

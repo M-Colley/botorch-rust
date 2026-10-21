@@ -149,8 +149,9 @@ and the disclosed reference scalar-CDF repair. Supplied GPyTorch Gaussian/Delta
 distribution modules, including Natural and TrilNatural, retain their actual
 module and gradient semantics; see
 [`torch-variational-supplied-modules.md`](torch-variational-supplied-modules.md).
-BatchDecoupled/CIQ strategies and other non-Gaussian observation families remain
-configuration gaps.
+Batch-decoupled inference and its distinct KL are covered in
+[`torch-variational-decoupled.md`](torch-variational-decoupled.md).
+CIQ and other non-Gaussian observation families remain configuration gaps.
 Unwhitened pseudo-points and online
 fantasy conversion are not implemented. Reallocation cannot resize the variational family.
 It does not imply GPU support for arbitrary `ApproximateGPyTorchModel` wrappers
