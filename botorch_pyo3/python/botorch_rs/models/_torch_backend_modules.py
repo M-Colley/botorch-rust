@@ -1241,6 +1241,7 @@ class TorchInputChain(_TorchModule):
 class TorchStandardize(nn.Module):
     _tensor_backend = "torch"
     _is_linear = True
+    _fit_on_model_data = True
 
     def __init__(
         self, m: int, batch_shape: Any, like: Tensor, outputs: Any = None, min_stdv: float = 1e-8
@@ -1254,6 +1255,11 @@ class TorchStandardize(nn.Module):
         self.register_buffer("stdvs", like.new_ones(*batch_shape, 1, m))
         self._is_trained = False
 
+    def train(self, mode: bool = True) -> TorchStandardize:
+        if mode:
+            self._fit_on_model_data = True
+        return super().train(mode)
+
     @property
     def _stdvs_sq(self) -> Tensor:
         return self.stdvs.square()
@@ -1261,29 +1267,22 @@ class TorchStandardize(nn.Module):
     def forward(
         self, Y: Tensor, Yvar: Tensor | None = None, X: Tensor | None = None
     ) -> tuple[Tensor, Tensor | None]:
+        from botorch_rs.models.transforms._torch_standardize import apply_standardize
+
         if Y.ndim < 2 or Y.shape[-1] != self._m:
             raise ValueError(f"Standardize expected ... x n x {self._m} targets.")
         if self.training:
             self.fit(Y)
-        return (Y - self.means) / self.stdvs, None if Yvar is None else Yvar / self._stdvs_sq
+        return apply_standardize(Y, Yvar, self.means, self.stdvs, self._stdvs_sq)
 
     def fit(self, Y: Tensor) -> TorchStandardize:
+        from botorch_rs.models.transforms._torch_standardize import standardize_statistics
+
         if Y.shape[:-2] != self._batch_shape or Y.shape[-2] == 0 or Y.shape[-1] != self._m:
             raise ValueError(
                 "Standardize training targets must have its declared shape and at least one observation."
             )
-        self.means = Y.nanmean(dim=-2, keepdim=True)
-        if Y.shape[-2] == 1:
-            std = torch.ones_like(self.means)
-        else:
-            count = (~Y.isnan()).sum(dim=-2, keepdim=True)
-            variance = (Y - self.means).square().nansum(dim=-2, keepdim=True) / (count - 1)
-            # Masking sqrt(0) afterwards still backpropagates 0 * inf = NaN.
-            # Clamp before sqrt, keeping the original threshold and value-one
-            # branch below it so first and higher derivatives remain finite.
-            std = variance.clamp_min(self._min_stdv**2).sqrt()
-            std = torch.where(variance >= self._min_stdv**2, std, 1.0)
-        self.stdvs = torch.where(std >= self._min_stdv, std, 1.0)
+        self.means, self.stdvs = standardize_statistics(Y, self._min_stdv)
         if self._outputs is not None:
             used = torch.zeros(self._m, dtype=torch.bool, device=Y.device)
             used[list(self._outputs)] = True
@@ -1295,9 +1294,11 @@ class TorchStandardize(nn.Module):
     def untransform(
         self, Y: Tensor, Yvar: Tensor | None = None, X: Tensor | None = None
     ) -> tuple[Tensor, Tensor | None]:
+        from botorch_rs.models.transforms._torch_standardize import apply_standardize
+
         if not self._is_trained:
             raise RuntimeError("Standardize must be fitted before untransform.")
-        return Y * self.stdvs + self.means, None if Yvar is None else Yvar * self._stdvs_sq
+        return apply_standardize(Y, Yvar, self.means, self.stdvs, self._stdvs_sq, inverse=True)
 
     def untransform_moments(self, mean: Tensor, covariance: Tensor) -> tuple[Tensor, Tensor]:
         """Undo scaling for mean (...,q,m), covariance (...,m,q,q)."""
@@ -1484,7 +1485,7 @@ class TorchOutcomeChain(nn.Module):
         states = [(self[name], self[name].training) for name in self._transform_names]
         try:
             for module, _ in states:
-                module.train()
+                module.train(getattr(module, "_fit_on_model_data", True))
                 Y, _ = module(Y)
         finally:
             for module, state in states:
@@ -1577,6 +1578,19 @@ def build_outcome_transform(source: Any, m: int, train_Y: Tensor) -> nn.Module |
         result = TorchStandardize(
             m, source._batch_shape, train_Y, source._outputs, float(minimum_stdv)
         )
+        if not source.training:
+            # An explicitly evaluated descriptor owns its fitted law. Its
+            # statistics may come from a different calibration dataset.
+            result._fit_on_model_data = False
+            if bool(source._is_trained):
+                result.means = torch.as_tensor(
+                    source.means, device=train_Y.device, dtype=train_Y.dtype
+                ).clone()
+                result.stdvs = torch.as_tensor(
+                    source.stdvs, device=train_Y.device, dtype=train_Y.dtype
+                ).clone()
+                result._is_trained = True
+            return result.eval()
     elif type(source) in (Log, Bilog, Power):
         return TorchElementwiseOutcome(source, m).eval()
     elif type(source) is ChainedOutcomeTransform:

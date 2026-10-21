@@ -16,6 +16,7 @@ posteriors there (BoTorch raises ``NotImplementedError``).
 
 from __future__ import annotations
 
+import builtins
 import math
 from collections import OrderedDict
 from collections.abc import ItemsView, Iterator, KeysView, ValuesView
@@ -347,13 +348,117 @@ class Standardize(OutcomeTransform):
     def _set_fitted(self, fitted: _rs.Standardize, kind: ArrayKind) -> None:
         self._rs = fitted
         self._kind = kind
+        self.__dict__.pop("_tensor_standardize", None)
+
+    def _tensor_state(self, like: Any = None) -> Any:
+        """Create actual Tensor buffers only when a Tensor protocol is used."""
+        import torch
+
+        from botorch_rs.models.transforms._torch_standardize import TensorStandardizeState
+
+        state = self.__dict__.get("_tensor_standardize")
+        if state is None:
+            if like is None:
+                dtype = self.__dict__.get("_buffer_factory_dtype", "float32")
+                like = torch.empty(0, dtype=getattr(torch, dtype))
+            state = TensorStandardizeState(self, like)
+            if isinstance(self, StratifiedStandardize):
+                if self._step.is_trained:
+                    stats = self._step.stats
+                    assert stats is not None
+                    means, stdvs = stats
+                    count = len(self._task_values)
+                    state.means[..., :count, :] = like.new_tensor(means).unsqueeze(-1)
+                    state.stdvs[..., :count, :] = like.new_tensor(stdvs).unsqueeze(-1)
+                    state._stdvs_sq = state.stdvs.square()
+                    state._is_trained.fill_(True)
+            elif self._rs.is_trained:
+                for name in ("means", "stdvs"):
+                    data, shape = getattr(self._rs, name)
+                    setattr(state, name, like.new_tensor(data).reshape(shape))
+                state._stdvs_sq = state.stdvs.square()
+                state._is_trained.fill_(True)
+            self._tensor_standardize = state
+        return state.train(self.training)
+
+    def _sync_native_statistics(self) -> None:
+        """An explicit return to an array API transfers fitted statistics."""
+        state = self.__dict__.get("_tensor_standardize")
+        if state is None or not bool(state._is_trained):
+            return
+        if isinstance(self, StratifiedStandardize):
+            if self._batch_shape:
+                raise UnsupportedError("Batched StratifiedStandardize requires Tensor inputs.")
+            count = len(self._task_values)
+            means = list(to_flat(state.means[..., :count, :])[0])
+            stdvs = list(to_flat(state.stdvs[..., :count, :])[0])
+            self._step = _rs.OutcomeStep.stratified(
+                max(self._stratification_idx, 0), self._task_values, self._min_stdv, (means, stdvs)
+            )
+        else:
+            means = list(to_flat(state.means)[0])
+            stdvs = list(to_flat(state.stdvs)[0])
+            self._rs = _rs.Standardize.fitted(
+                [means[i : i + self._m] for i in range(0, len(means), self._m)],
+                [stdvs[i : i + self._m] for i in range(0, len(stdvs), self._m)],
+                self._min_stdv,
+                list(self._batch_shape),
+            )
+
+    def to(self, *args: Any, **kwargs: Any) -> Standardize:
+        self._tensor_state().to(*args, **kwargs)
+        return self
+
+    def cpu(self) -> Standardize:
+        return self.to(device="cpu")
+
+    def cuda(self, device: Any = None) -> Standardize:
+        import torch
+
+        return self.to(device=torch.device("cuda", device))
+
+    def float(self) -> Standardize:
+        import torch
+
+        return self.to(dtype=torch.float32)
+
+    def double(self) -> Standardize:
+        import torch
+
+        return self.to(dtype=torch.float64)
+
+    def state_dict(self, *args: Any, **kwargs: Any) -> Any:
+        return self._tensor_state().state_dict(*args, **kwargs)
+
+    def load_state_dict(self, state_dict: Any, strict: bool = True, assign: bool = False) -> Any:
+        return self._tensor_state().load_state_dict(state_dict, strict=strict, assign=assign)
+
+    def named_buffers(
+        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
+    ) -> Any:
+        state = self.__dict__.get("_tensor_standardize")
+        if state is None:
+            yield from super().named_buffers(prefix, recurse, remove_duplicate)
+        else:
+            yield from state.named_buffers(prefix, recurse, remove_duplicate)
+
+    def named_parameters(
+        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
+    ) -> Any:
+        yield from ()
+
+    def parameters(self, recurse: bool = True) -> Any:
+        yield from ()
 
     @property
     def _is_trained(self) -> bool:
+        state = self.__dict__.get("_tensor_standardize")
+        if state is not None:
+            return bool(state._is_trained)
         return self._rs.is_trained
 
     @property
-    def min_stdv(self) -> float:
+    def min_stdv(self) -> builtins.float:
         return self._rs.min_stdv
 
     @property
@@ -364,7 +469,7 @@ class Standardize(OutcomeTransform):
     def _is_linear(self) -> bool:
         return True
 
-    def _stats(self, pair: Any, fill: float) -> Any:
+    def _stats(self, pair: Any, fill: builtins.float) -> Any:
         if not self._rs.is_trained:
             shape = (*self._batch_shape, 1, self._m)
             return from_flat([fill] * math.prod(shape), shape, self._kind)
@@ -373,19 +478,40 @@ class Standardize(OutcomeTransform):
     @property
     def means(self) -> Any:
         """The output means, shape ``batch_shape x 1 x m`` (zeros until fitted)."""
+        state = self.__dict__.get("_tensor_standardize")
+        if state is not None:
+            return state.means
         return self._stats(self._rs.means, 0.0)
+
+    @means.setter
+    def means(self, value: Any) -> None:
+        self._tensor_state(value).means = value
 
     @property
     def stdvs(self) -> Any:
         """The output standard deviations, shape ``batch_shape x 1 x m``."""
+        state = self.__dict__.get("_tensor_standardize")
+        if state is not None:
+            return state.stdvs
         return self._stats(self._rs.stdvs, 1.0)
+
+    @stdvs.setter
+    def stdvs(self, value: Any) -> None:
+        self._tensor_state(value).stdvs = value
 
     @property
     def _stdvs_sq(self) -> Any:
+        state = self.__dict__.get("_tensor_standardize")
+        if state is not None:
+            return state._stdvs_sq
         if not self._rs.is_trained:
             return self._stats(None, 1.0)
         data, shape = self._rs.stdvs
         return from_flat([s * s for s in data], tuple(shape), self._kind)
+
+    @_stdvs_sq.setter
+    def _stdvs_sq(self, value: Any) -> None:
+        self._tensor_state(value)._stdvs_sq = value
 
     def _check(self, shape: tuple[int, ...], train: bool) -> None:
         if len(shape) < 2:
@@ -425,6 +551,10 @@ class Standardize(OutcomeTransform):
         """Standardizes ``Y`` (``batch_shape x n x m``) and ``Yvar``; in train
         mode the statistics are first fitted to ``Y``."""
         kind = first_kind(Y)
+        if kind.lib == "torch":
+            self._check(tuple(Y.shape), train=self.training)
+            return self._tensor_state(Y)(Y, Yvar, X=X)
+        self._sync_native_statistics()
         y = to_flat(Y, "Y")
         self._check(tuple(y[1]), train=self.training)
         v = to_flat(Yvar, "Yvar") if Yvar is not None else None
@@ -438,6 +568,10 @@ class Standardize(OutcomeTransform):
 
     def untransform(self, Y: Any, Yvar: Any = None, X: Any = None) -> tuple[Any, Any]:
         """Un-standardizes ``Y`` (``... x n x m``) and ``Yvar``."""
+        if first_kind(Y).lib == "torch":
+            self._check(tuple(Y.shape), train=False)
+            return self._tensor_state(Y).untransform(Y, Yvar, X=X)
+        self._sync_native_statistics()
         if not self._rs.is_trained:
             raise RuntimeError(
                 "`Standardize` transforms must be called on outcome data "
@@ -467,6 +601,13 @@ class Standardize(OutcomeTransform):
         new_tf = self.__class__(
             m=new_m, outputs=new_outputs, batch_shape=self._batch_shape, min_stdv=self._min_stdv
         )
+        if (state := self.__dict__.get("_tensor_standardize")) is not None:
+            result = new_tf._tensor_state(state.means)
+            result.means = state.means[..., nlzd].clone()
+            result.stdvs = state.stdvs[..., nlzd].clone()
+            result._stdvs_sq = state._stdvs_sq[..., nlzd].clone()
+            result._is_trained = state._is_trained.clone()
+            return new_tf.train(self.training)
         if self._rs.is_trained:
             mdata, _ = self._rs.means
             sdata, _ = self._rs.stdvs
@@ -486,10 +627,13 @@ class Standardize(OutcomeTransform):
         affine maps of the samples, mean and variance (BoTorch returns a
         rescaled ``GPyTorchPosterior`` for Gaussian posteriors; botorch_rs's
         models un-standardize natively)."""
+        if first_kind(posterior.mean).lib == "torch":
+            return self._tensor_state(posterior.mean).untransform_posterior(posterior, X=X)
         if self._outputs is not None:
             raise NotImplementedError(
                 "Standardize does not yet support output selection for untransform_posterior"
             )
+        self._sync_native_statistics()
         if not self._rs.is_trained:
             raise RuntimeError(
                 "`Standardize` transforms must be called on outcome data (e.g. `transform(Y)`) "
@@ -553,11 +697,15 @@ class StratifiedStandardize(Standardize):
         values = sorted({int(v) for v in data})
         self._stratification_idx = int(stratification_idx)
         self._task_values = values
+        self._task_values_dtype = (
+            getattr(all_task_values, "dtype", None)
+            if first_kind(all_task_values).lib == "torch"
+            else None
+        )
+        self._strata_dtype = dtype
         self._m = 1
         self._outputs = None
         self._batch_shape = tuple(int(b) for b in (batch_shape or ()))
-        if self._batch_shape:
-            raise UnsupportedError("StratifiedStandardize with a batch shape is not supported.")
         self._min_stdv = float(min_stdv)
         self._rs = _rs.Standardize(self._min_stdv, [])
         self._kind = LIST
@@ -577,19 +725,40 @@ class StratifiedStandardize(Standardize):
 
     @property
     def _is_trained(self) -> bool:
+        state = self.__dict__.get("_tensor_standardize")
+        if state is not None:
+            return bool(state._is_trained)
         return self._step.is_trained
+
+    @property
+    def strata_mapping(self) -> Any:
+        return self._tensor_state().strata_mapping
 
     @property
     def means(self) -> Any:
         """The means per stratum (``n_strata x 1``)."""
+        state = self.__dict__.get("_tensor_standardize")
+        if state is not None:
+            return state.means
         mu, _ = self._stratum_stats()
         return from_flat(list(mu), (len(mu), 1), self._kind)
+
+    @means.setter
+    def means(self, value: Any) -> None:
+        self._tensor_state(value).means = value
 
     @property
     def stdvs(self) -> Any:
         """The standard deviations per stratum (``n_strata x 1``)."""
+        state = self.__dict__.get("_tensor_standardize")
+        if state is not None:
+            return state.stdvs
         _, sd = self._stratum_stats()
         return from_flat(list(sd), (len(sd), 1), self._kind)
+
+    @stdvs.setter
+    def stdvs(self, value: Any) -> None:
+        self._tensor_state(value).stdvs = value
 
     def _stratum_stats(self) -> tuple[list[float], list[float]]:
         stats = self._step.stats
@@ -599,12 +768,21 @@ class StratifiedStandardize(Standardize):
 
     @property
     def _stdvs_sq(self) -> Any:
+        state = self.__dict__.get("_tensor_standardize")
+        if state is not None:
+            return state._stdvs_sq
         _, sd = self._stratum_stats()
         return from_flat([s * s for s in sd], (len(sd), 1), self._kind)
+
+    @_stdvs_sq.setter
+    def _stdvs_sq(self, value: Any) -> None:
+        self._tensor_state(value)._stdvs_sq = value
 
     def _xy(
         self, Y: Any, Yvar: Any, X: Any
     ) -> tuple[list[float], list[float] | None, Any, tuple[int, ...]]:
+        if self._batch_shape:
+            raise UnsupportedError("Batched StratifiedStandardize requires Tensor inputs.")
         if X is None:
             raise ValueError("X is required for StratifiedStandardize.")
         ydata, yshape = to_flat(Y, "Y")
@@ -617,6 +795,9 @@ class StratifiedStandardize(Standardize):
         return list(ydata), vdata, x, tuple(yshape)
 
     def forward(self, Y: Any, Yvar: Any = None, X: Any = None) -> tuple[Any, Any]:
+        if first_kind(Y).lib == "torch":
+            return self._tensor_state(Y)(Y, Yvar, X=X)
+        self._sync_native_statistics()
         ydata, vdata, x, shape = self._xy(Y, Yvar, X)
         kind = first_kind(Y)
         step = self._resolved_step(x[1][-1])
@@ -626,6 +807,7 @@ class StratifiedStandardize(Standardize):
             step, _, _ = step.fit_transform(ydata, vdata, x)
             self._step = step
             self._kind = kind
+            self.__dict__.pop("_tensor_standardize", None)
         y_tf, v_tf = step.apply(ydata, vdata, x, False)
         return (
             from_flat(list(y_tf), shape, kind),
@@ -635,6 +817,9 @@ class StratifiedStandardize(Standardize):
     __call__ = forward  # type: ignore[assignment]
 
     def untransform(self, Y: Any, Yvar: Any = None, X: Any = None) -> tuple[Any, Any]:
+        if first_kind(Y).lib == "torch":
+            return self._tensor_state(Y).untransform(Y, Yvar, X=X)
+        self._sync_native_statistics()
         ydata, vdata, x, shape = self._xy(Y, Yvar, X)
         kind = first_kind(Y)
         y_u, v_u = self._resolved_step(x[1][-1]).apply(ydata, vdata, x, True)
@@ -649,12 +834,16 @@ class StratifiedStandardize(Standardize):
     def untransform_posterior(self, posterior: Any, X: Any = None) -> Any:
         if X is None:
             raise ValueError("X is required for StratifiedStandardize.")
+        if first_kind(posterior.mean).lib == "torch":
+            return self._tensor_state(posterior.mean).untransform_posterior(posterior, X=X)
         raise UnsupportedError(
             "StratifiedStandardize.untransform_posterior is only supported inside botorch_rs "
             "models."
         )
 
     def _output_steps(self, m: int, t: int, batch: tuple[int, ...]) -> list[Any]:
+        if self._batch_shape:
+            raise UnsupportedError("Batched StratifiedStandardize requires Tensor inputs.")
         if m != 1:
             raise RuntimeError(f"Wrong output dimension. Y.size(-1) is {m}; expected 1.")
         if self._stratification_idx < 0:
@@ -670,6 +859,7 @@ class StratifiedStandardize(Standardize):
         for st in states:
             self._step = st.pop(0)
         self._kind = kind
+        self.__dict__.pop("_tensor_standardize", None)
 
     def __repr__(self) -> str:
         return f"StratifiedStandardize(stratification_idx={self._stratification_idx})"

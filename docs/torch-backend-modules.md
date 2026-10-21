@@ -164,3 +164,37 @@ complete data/parameter Hessians, including actual fully Bayesian loader
 transforms and correlated noise. The initial 32 cases and existing exact,
 subclass, cache, relevance, fully Bayesian loader and empirical regressions
 pass 322 combined cases; the four additional loader controls pass separately.
+
+## Direct standardization transforms
+
+Public `Standardize` and `StratifiedStandardize` calls now dispatch Tensor
+data to port-owned device calculations. Training mode fits graph-bearing
+means and unbiased standard deviations; eval mode applies the current
+statistics. Observation-noise scaling, inverse transforms and selected
+outputs retain first and higher derivatives. Constant and single-observation
+data use the documented scale-one branch with finite derivatives. NaN
+observations remain NaN in the result and are excluded from fitted statistics;
+masked observations cannot contaminate derivatives of the observed entries.
+
+`to`, `cpu`, `cuda`, `float` and `double` migrate actual Tensor statistics.
+`state_dict` and `load_state_dict` use the four reference statistics keys
+(`means`, `stdvs`, `_stdvs_sq`, `_is_trained`). Stratified task remapping also
+migrates, as a nonpersistent buffer. These descriptors retain optional-package
+support and do not claim the complete `torch.nn.Module` protocol. Explicitly
+returning to list or NumPy calls transfers the fitted statistics to Rust;
+batched stratification requires Tensor inputs.
+
+Stratified fitting reduces each batch and task independently and applies an
+identity transform to unknown tasks. Affine posterior conversion scales the
+complete Gaussian covariance, including cross-output terms, preserves
+Gaussian-mixture posteriors, and keeps an immutable snapshot of the fitted
+law. Other posterior types retain differentiable sample and moment closures.
+As in the reference, `StratifiedStandardize.subset_output` and standardization
+of selected outputs through `untransform_posterior` remain unsupported.
+
+An already-fitted eval `Standardize` descriptor passed to a Tensor GP keeps
+its calibration statistics. Calling `model.train()` enables fitting on the
+model's training targets again. Training calls produce fresh fitting graphs;
+eval mode retains the normal Torch graph lifetime of the stored statistics.
+Reusing an already-consumed external calibration graph still requires a new
+fit or the caller's usual `retain_graph` handling.
