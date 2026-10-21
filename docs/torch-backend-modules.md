@@ -135,3 +135,15 @@ to `min_stdv**2` before taking its square root, then applies the original
 constant-one branch according to the original variance. Values are unchanged.
 CPU/CUDA float32/float64 regressions cover constant, near-constant and single
 observations, with finite differences small enough to stay below the threshold.
+
+Direct public `Log`, `Power` and `Bilog` calls now select device Tensor algebra
+for Tensor outcomes, including inverse mappings, selected columns and supported
+noise transforms. Their public posterior sample transforms also preserve the
+incoming Gaussian graph. Previously these direct entry points flattened Tensors
+into native arrays even when a model's converted transform worked correctly.
+Eighteen new CPU/CUDA cases check source values, complete first/higher graphs,
+inverse round trips and no-host-copy guards. The combined direct/model outcome,
+native transform and transform parity suites pass 207 cases. Torch 2.14 CPU
+passes all 59 selected direct/domain/randomized checks and skips nine CUDA
+cases. Undefined inverse-power samples are classified separately as described
+in [equivalence verification](equivalence-verification.md).

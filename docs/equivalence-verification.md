@@ -38,6 +38,17 @@ values/first derivatives and independent Gaussian identities or convergent
 finite differences. Such cases do not certify the defective source derivative.
 Confirmed repairs are linked in `upstream-pull-requests.md`.
 
+The stricter audit exposed one randomized `Power(2)` transform fixture with
+negative Gaussian latent draws. Its inverse is a square root, so these samples
+and the affected acquisition gradients are undefined in both implementations.
+The transform suite now compares NaN/positive-infinity/negative-infinity classes
+explicitly for this inverse-power domain, and applies numerical tolerances only
+to finite entries. Undefined entries are reported as domain behavior, never
+zero numerical error. Ordinary gradient comparisons now reject every nonfinite
+entry. Separate regressions reject mismatched classes and finite-value errors;
+a fully defined positive-latent case checks common-normal samples, source first
+derivatives and independent dense Hessians.
+
 A final release needs a fresh source and installed-wheel run with matching
 Python/native fingerprints and every canonical test ID accounted for exactly
 once. Earlier successful checkpoints and focused runs remain separate evidence;

@@ -262,3 +262,67 @@ def test_standardize_constant_targets_have_finite_higher_gradients(device, dtype
             low, _ = module(y.detach() - delta)
             difference[i] = (weights * (high - low)).sum() / (2 * h)
         torch.testing.assert_close(gradient, difference, atol=2e-6, rtol=2e-6)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("kind", ["Log", "Bilog", "Power"])
+@pytest.mark.parametrize("outputs", [None, [1]])
+def test_public_elementwise_calls_preserve_device_and_complete_graphs(
+    device, kind, outputs, monkeypatch
+):
+    y = torch.tensor(
+        [[0.2, 0.7], [0.9, 0.4], [0.6, 0.8]], dtype=torch.double, device=device, requires_grad=True
+    )
+    kwargs = {"outputs": outputs, **({"power": 2.5} if kind == "Power" else {})}
+    transform = {"Log": Log, "Bilog": Bilog, "Power": Power}[kind](**kwargs)
+    source = getattr(reference_outcomes, kind)(**kwargs).to(y)
+    expected, _ = source(y)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError(
+            "Public Tensor outcome transforms must keep their numerical data on device"
+        )
+
+    with monkeypatch.context() as patch:
+        for name in ("cpu", "numpy", "tolist"):
+            patch.setattr(torch.Tensor, name, forbidden)
+        actual, _ = transform(y)
+        torch.testing.assert_close(actual, expected)
+        _compare_gradients(actual.sin(), expected.sin(), (y,))
+        inverse, _ = transform.untransform(actual)
+        torch.testing.assert_close(inverse, y)
+        _compare_gradients(inverse.sin(), y.sin(), (y,))
+        if kind == "Log":
+            noise = torch.full_like(y, 0.03, requires_grad=True)
+            actual, variance = transform(y, noise)
+            expected, expected_variance = source(y, noise)
+            _compare_gradients(
+                actual.sin() + variance, expected.sin() + expected_variance, (y, noise)
+            )
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("kind", ["Log", "Bilog", "Power"])
+def test_public_elementwise_posterior_samples_keep_higher_graphs(device, kind, monkeypatch):
+    mean = torch.tensor(
+        [[1.5], [1.9], [1.7]], dtype=torch.double, device=device, requires_grad=True
+    )
+    scale = mean.new_tensor(0.15, requires_grad=True)
+    covariance = torch.eye(3, dtype=mean.dtype, device=device) * scale.square()
+    transform = {"Log": Log, "Bilog": Bilog, "Power": lambda: Power(2)}[kind]()
+    posterior = transform.untransform_posterior(TorchGPyTorchPosterior(mean, covariance))
+    normals = torch.linspace(-0.8, 0.7, 12, dtype=mean.dtype, device=device).reshape(4, 3)
+    latent = mean.squeeze(-1) + scale * normals
+    expected = {"Log": latent.exp, "Bilog": latent.expm1, "Power": latent.sqrt}[kind]().unsqueeze(
+        -1
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Tensor posterior transformations must not flatten samples")
+
+    with monkeypatch.context() as patch:
+        for name in ("cpu", "numpy", "tolist"):
+            patch.setattr(torch.Tensor, name, forbidden)
+        actual = posterior.rsample_from_base_samples(torch.Size([4]), normals)
+        torch.testing.assert_close(actual, expected)
+        _compare_gradients(actual.sin(), expected.sin(), (mean, scale))

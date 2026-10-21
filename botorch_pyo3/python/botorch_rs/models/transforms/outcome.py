@@ -136,6 +136,14 @@ class _Elementwise(OutcomeTransform):
 
     def _map(self, Y: Any, Yvar: Any, inverse: bool) -> tuple[Any, Any]:
         kind = first_kind(Y)
+        if kind.lib == "torch":
+            if Yvar is not None and not self._noise_supported:
+                raise NotImplementedError(
+                    f"{self._name} does not yet support transforming observation noise"
+                )
+            from botorch_rs.models._torch_backend_modules import TorchElementwiseOutcome
+
+            return TorchElementwiseOutcome(self, Y.shape[-1])._map(Y, Yvar, inverse)
         data, shape = to_flat(Y, "Y")
         values, n, m = _columns(data, tuple(shape))
         outputs = _normalize_outputs(self._outputs, m)
@@ -207,8 +215,13 @@ class _Elementwise(OutcomeTransform):
 
     def _sample_fn(self) -> Any:
         step = self._step()
+        kind, power = self._name, float(getattr(self, "power", 1))
 
         def sample_transform(s: Any) -> Any:
+            if first_kind(s).lib == "torch":
+                from botorch_rs.models._torch_backend_modules import _elementwise_outcome
+
+                return _elementwise_outcome(s, kind, power, True)
             data, shape = to_flat(s, "samples")
             out, _ = step.apply(list(data), None, None, True)
             return from_flat(list(out), shape, first_kind(s))
