@@ -667,13 +667,9 @@ class _TensorAcquisition(nn.Module):
 
     def _init_noisy(self, values: dict[str, Any]) -> None:
         baseline = values["X_baseline"]
-        if not isinstance(baseline, Tensor) or baseline.ndim != 2 or baseline.shape[-2] == 0:
-            raise ValueError("X_baseline must be a nonempty n x d Torch tensor.")
-        marginalize = values.get("marginalize_dim")
-        if marginalize is not None and not (is_ensemble(self.model) and marginalize == -3):
-            raise UnsupportedError(
-                "Torch noisy EI supports automatic ensemble marginalization or marginalize_dim=-3 for an ensemble model."
-            )
+        if not isinstance(baseline, Tensor) or baseline.ndim < 2 or baseline.shape[-2] == 0:
+            raise ValueError("X_baseline must be a nonempty batch_shape x n x d Torch tensor.")
+        self.marginalize_dim = values.get("marginalize_dim")
         self.incremental = bool(values.get("incremental", False))
         self.cache_root = self._cache_root = False
         if values.get("cache_root"):
@@ -725,6 +721,27 @@ class _TensorAcquisition(nn.Module):
     def _prune_baseline(self) -> None:
         from botorch_rs.sampling.normal import SobolQMCNormalSampler
 
+        if not self._preference_ensemble:
+            from botorch_rs.acquisition._torch_pruning import prune_indices
+
+            indices = prune_indices(
+                self.model,
+                self._X_baseline,
+                self.objective,
+                self.posterior_transform,
+                self._constraints,
+                sampler=SobolQMCNormalSampler(
+                    (2048,), seed=int(getattr(self.sampler, "seed", 0) or 0)
+                ),
+                marginalize_dim=self.marginalize_dim,
+            )
+            if self._baseline_indices is not None:
+                indices = self._baseline_indices.index_select(0, indices)
+            self._baseline_indices = indices
+            self._X_baseline = self._baseline_source.index_select(-2, indices)
+            return
+        if self._X_baseline.ndim != 2:
+            raise UnsupportedError("Batched baseline pruning is unsupported.")
         ensemble = is_ensemble(self.model)
         if self.model.batch_shape and not (ensemble and len(self.model.batch_shape) == 1):
             raise UnsupportedError("Noisy baseline pruning requires an unbatched Torch model.")
@@ -764,11 +781,12 @@ class _TensorAcquisition(nn.Module):
             low, high = baseline.detach().amin(dim=-2), baseline.detach().amax(dim=-2)
             width = high - low
             uniform = torch.rand(
-                (32, baseline.shape[-1]),
+                (*baseline.shape[:-2], 32, baseline.shape[-1]),
                 dtype=baseline.dtype,
                 device=baseline.device,
                 generator=generator,
             )
+            low, width = low.unsqueeze(-2), width.unsqueeze(-2)
             self._lower_bound_points = low - 0.1 * width + 1.2 * width * uniform
         points = self._lower_bound_points
         posterior = self._posterior(points)

@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import bool_array, kind_of, to_flat
+from botorch_rs._arrays import bool_array, is_torch_tensor, kind_of, to_flat
 
 #: BoTorch's memory limit of its all-pairs comparison (not used here: the
 #: mask is the same for every input size).
@@ -36,6 +36,31 @@ def is_non_dominated(Y: Any, maximize: bool = True, deduplicate: bool = True) ->
         array or nested lists of bools) indicating whether each point is
         non-dominated.
     """
+    if is_torch_tensor(Y):
+        import torch
+
+        if Y.ndim < 2:
+            raise IndexError("tuple index out of range")
+        values = Y if maximize else -Y
+        valid = ~values.isnan().any(dim=-1)
+        n = values.shape[-2]
+        if n * n * values.shape[-1] * values.element_size() <= MAX_BYTES:
+            a, b = values.unsqueeze(-3), values.unsqueeze(-2)
+            dominates = (a >= b).all(-1) & (a > b).any(-1)
+            if deduplicate:
+                indices = torch.arange(n, device=Y.device)
+                earlier = indices.unsqueeze(-2) < indices.unsqueeze(-1)
+                dominates = dominates | ((a == b).all(-1) & earlier)
+            return valid & ~(dominates & valid.unsqueeze(-2)).any(dim=-1)
+        mask = valid.clone()
+        positions = torch.arange(n, device=Y.device)
+        for index in range(n):
+            point = values[..., index : index + 1, :]
+            dominates = (point >= values).all(-1) & (point > values).any(-1)
+            if deduplicate:
+                dominates = dominates | ((point == values).all(-1) & (positions > index))
+            mask = mask & ~(dominates & mask[..., index : index + 1])
+        return mask
     data, shape = to_flat(Y, "Y")
     if len(shape) < 2:
         raise IndexError("tuple index out of range")

@@ -325,6 +325,23 @@ def prune_inferior_points(
     require an ``objective`` or a scalarizing ``posterior_transform``. Without
     a ``sampler``, the samples are drawn with a random seed (like BoTorch).
     """
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.acquisition._torch_pruning import prune_indices
+
+        return X.index_select(
+            -2,
+            prune_indices(
+                model,
+                X,
+                objective,
+                posterior_transform,
+                constraints,
+                num_samples,
+                max_frac,
+                sampler,
+                marginalize_dim,
+            ),
+        )
     if hasattr(model, "_ensemble_acquisition"):
         # BoTorch marginalizes the ensemble dimension of an ensemble of GPs
         # (``marginalize_dim``) and samples members with an IndexSampler.

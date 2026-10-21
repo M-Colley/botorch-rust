@@ -157,6 +157,18 @@ def compute_feasibility_indicator(
     Returns:
         A ``batch_shape x q``-dim tensor of Boolean feasibility values.
     """
+    if is_torch_tensor(samples):
+        torch = sys.modules["torch"]
+        ind_tensor = torch.ones_like(samples[..., 0], dtype=torch.bool)
+        for constraint in constraints or []:
+            ind_tensor = ind_tensor.logical_and(constraint(samples) <= 0)
+        if ind_tensor.ndim >= 3 and marginalize_dim is not None:
+            if marginalize_dim < 0:
+                normalized = normalize_indices([marginalize_dim], d=ind_tensor.ndim)
+                assert normalized is not None
+                marginalize_dim = 1 + normalized[0]
+            ind_tensor = ind_tensor.float().mean(dim=marginalize_dim).round().bool()
+        return ind_tensor
     shape = tuple(_ops.shape_of(samples))[:-1]
     n = math.prod(shape)
     ind = [True] * n
@@ -168,7 +180,7 @@ def compute_feasibility_indicator(
 
                 vals = broadcast_to(vals, vshape, shape)
             ind = [a and float(v) <= 0 for a, v in zip(ind, vals, strict=True)]
-    if len(shape) >= 2 and marginalize_dim is not None:
+    if len(shape) >= 3 and marginalize_dim is not None:
         # make sure marginalize_dim is not negative
         if marginalize_dim < 0:
             # add 1 to the normalize marginalize_dim since we have already
@@ -244,7 +256,16 @@ def compute_smoothed_feasibility_indicator(
     Returns:
         A ``n_samples x b x q``-dim tensor of feasibility indicator values.
     """
-    if isinstance(eta, (int, float)):
+    if is_torch_tensor(samples):
+        torch = sys.modules["torch"]
+        etas = (
+            eta
+            if is_torch_tensor(eta)
+            else torch.full((len(constraints),), eta)
+            if isinstance(eta, (int, float))
+            else torch.as_tensor(eta)
+        )
+    elif isinstance(eta, (int, float)):
         etas = [float(eta)] * len(constraints)
     else:
         etas = [float(v) for v in to_flat(eta, "eta")[0]]

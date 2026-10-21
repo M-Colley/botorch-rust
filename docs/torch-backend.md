@@ -9,6 +9,18 @@ higher derivatives retain the ordinary PyTorch graph for supported operations.
 The audited main-package API inventory and tested numerical configurations
 are reported separately. Family-specific configuration limits still apply.
 
+Development after the frozen release adds [generic fitting protocols](fitting-protocol.md),
+[candidate-generation protocols](candidate-generation-protocols.md),
+[analytic batch probability](torch-analytic-batch-probability.md),
+[device pruning and constraint utilities](torch-baseline-pruning.md),
+[cached sampling and model-fit metrics](torch-low-rank-evaluation.md), and
+[probit variational observations](torch-variational-probit.md).
+These focused results do not replace the frozen release certificate below.
+The complete behavior/configuration audit is still open, including remaining
+variational distributions, specialized fitting extensions, custom subclasses,
+and acquisition approximation/cache configurations. A new release and Unity
+integration require a fresh integrated verification of the completed scope.
+
 Construct supported models with `backend="torch"` to request these semantics
 explicitly. `backend="auto"` selects it for CUDA training data, training tensors
 requiring gradients, or supported custom Torch module components. Ordinary CPU

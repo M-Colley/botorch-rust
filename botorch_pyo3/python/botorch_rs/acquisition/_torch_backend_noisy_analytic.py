@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 from contextlib import nullcontext
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import Tensor, nn
@@ -68,7 +68,7 @@ class TensorNoisyAnalytic(_TensorAcquisition):
             model.likelihood, TorchFixedNoiseLikelihood
         ):
             raise UnsupportedError("Fantasy-based NEI requires known observation noise.")
-        if X_observed.ndim < 2 or X_observed.shape[-1] != model._train_X.shape[-1]:
+        if X_observed.ndim < 2 or X_observed.shape[-1] != cast(Any, model)._train_X.shape[-1]:
             raise ValueError("X_observed must have shape (..., n, d).")
         sampler = sampler or SobolQMCNormalSampler((int(num_fantasies),))
         if tuple(sampler.sample_shape) != (int(num_fantasies),):

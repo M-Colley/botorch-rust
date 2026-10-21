@@ -77,6 +77,23 @@ def prune_inferior_points_multi_objective(
     Pareto optimal points are counted (BoTorch's ``marginalize_dim``, the
     ensemble dimension ``-3``).
     """
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.acquisition._torch_pruning import prune_indices_multi_objective
+
+        return X.index_select(
+            -2,
+            prune_indices_multi_objective(
+                model,
+                X,
+                ref_point,
+                objective,
+                constraints,
+                num_samples,
+                max_frac,
+                marginalize_dim,
+                sampler,
+            ),
+        )
     if hasattr(model, "_ensemble_members"):
         if marginalize_dim not in (None, -3):
             raise UnsupportedError(
