@@ -516,8 +516,15 @@ class MatheronPathModel(DeterministicModel):
         # The handle of the paths of all outputs (shared by the paths of the
         # models of a ModelListGP).
         path: Any = self._path
-        self._handle = path.paths[0]._handle if isinstance(model, ModelListGP) else path._handle
-        self._is_ensemble = len(self.sample_shape) > 0
+        first = path.paths[0] if isinstance(model, ModelListGP) else path
+        self._handle = getattr(first, "_handle", None)
+        if isinstance(model, ModelListGP) and any(
+            getattr(child, "_handle", None) is not self._handle for child in path.paths
+        ):
+            self._handle = None
+        from botorch_rs.utils.transforms import is_ensemble
+
+        self._is_ensemble = is_ensemble(model) or bool(self.sample_shape)
 
     @classmethod
     def _from_handle(cls, model: Any, handle: Any) -> MatheronPathModel:
@@ -543,6 +550,14 @@ class MatheronPathModel(DeterministicModel):
         from botorch_rs.sampling.pathwise.utils import arrange, input_shape, path_values
 
         handle = self._handle
+        if handle is None:
+            from botorch_rs._ops import concat, getitem, transpose
+
+            if hasattr(self.model, "models"):
+                return concat([getitem(v, (..., None)) for v in self._path(X)], -1)
+            if self.num_outputs == 1:
+                return getitem(self._path(X), (..., None))
+            return transpose(self._path(getitem(X, (..., None, slice(None), slice(None)))))
         shape = input_shape(X, handle.dim)
         pv = path_values(handle, X)
         return arrange(

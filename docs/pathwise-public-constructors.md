@@ -47,6 +47,10 @@ scaled, including ARD, active dimensions and model batches. Native loaded
 SAAS/Matérn fully Bayesian models retain their MCMC batch and ensemble query
 layout. Device paths also accept actual GPyTorch stationary kernel modules;
 their feature algebra retains first- and higher-order graphs.
+`MatheronPathModel` evaluates these composed native batch paths without assuming
+a shared native handle. It preserves the source ensemble flag even with an
+empty path sample shape. Its explicit seed also controls feature generation
+when the default prior is partially bound to a feature count.
 
 `draw_kernel_feature_paths` accepts `map_generator`, `weight_generator`,
 `input_transform`, `output_transform`, and model-list `join` overrides. The

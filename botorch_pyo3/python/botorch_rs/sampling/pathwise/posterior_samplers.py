@@ -277,15 +277,19 @@ def _compose_matheron_paths(
         (points,) = get_train_inputs(model, transformed=True)
         targets = get_train_targets(model, transformed=True)
     outcome = get_output_transform(model)
+    prior_options: dict[str, Any] = {}
+    if seed is not None:
+        try:
+            _num_features(prior_sampler)
+        except UnsupportedError:
+            pass
+        else:
+            prior_options["seed"] = seed
     with suppress_path_outcome(model):
         prior = prior_sampler(
             model=model,
             sample_shape=shape,
-            **(
-                {"seed": seed}
-                if prior_sampler is draw_kernel_feature_paths and seed is not None
-                else {}
-            ),
+            **prior_options,
         )
         values = prior.forward(points)
         options = {} if variational else {"target_values": targets}

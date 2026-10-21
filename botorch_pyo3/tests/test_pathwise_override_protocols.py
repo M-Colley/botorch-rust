@@ -29,6 +29,7 @@ from botorch_rs.sampling.pathwise import (
     gaussian_update,
 )
 from botorch_rs.sampling.pathwise.features import KernelFeatureMap, gen_kernel_features
+from botorch_rs.sampling.pathwise.posterior_samplers import get_matheron_path_model
 from botorch_rs.utils.context_managers import delattr_ctx
 
 DEVICES = [
@@ -393,11 +394,45 @@ def test_loaded_fully_bayesian_prior_and_matheron_batches(
     torch.testing.assert_close(
         x.new_tensor(list(result)).reshape(shape), oracle, atol=2e-11, rtol=2e-11
     )
+    with monkeypatch.context() as patch:
+        if backend == "torch":
+            from botorch_rs.sampling.pathwise import _torch_backend as path_backend
+
+            patch.setattr(path_backend, "tensor_matheron_paths", lambda *args: path)
+        else:
+            import botorch_rs.sampling.pathwise as path_backend
+
+            patch.setattr(path_backend, "draw_matheron_paths", lambda *args, **kwargs: path)
+        path_model = get_matheron_path_model(actual, (2,), num_features=16)
+    result, shape = to_flat(path_model(convert(query)))
+    torch.testing.assert_close(
+        x.new_tensor(list(result)).reshape(shape), oracle.unsqueeze(-1), atol=2e-11, rtol=2e-11
+    )
+    assert tuple(path_model.batch_shape) == (2, 3)
+    assert path_model._is_ensemble
+    posterior = path_model.posterior(convert(query))
+    result, shape = to_flat(posterior.mean)
+    torch.testing.assert_close(
+        x.new_tensor(list(result)).reshape(shape), oracle.unsqueeze(-1), atol=2e-11, rtol=2e-11
+    )
     # Default composition must also work without injecting callbacks or draws.
     default = draw_matheron_paths(actual, (2,), seed=29)
     values, shape = to_flat(default(convert(query)))
     assert tuple(shape) == (4, 2, 3, 2)
     assert bool(torch.isfinite(x.new_tensor(list(values))).all())
+    # With no additional path sample axis, the loaded model remains an ensemble.
+    path_model = get_matheron_path_model(actual, (), seed=31, num_features=16)
+    assert path_model._is_ensemble
+    assert tuple(path_model.batch_shape) == (3,)
+    values, shape = to_flat(path_model(convert(query)))
+    assert tuple(shape) == (4, 1, 3, 2, 1)
+    assert bool(torch.isfinite(x.new_tensor(list(values))).all())
+    repeated = get_matheron_path_model(actual, (), seed=31, num_features=16)
+    other, other_shape = to_flat(repeated(convert(query)))
+    assert tuple(other_shape) == tuple(shape)
+    torch.testing.assert_close(
+        x.new_tensor(list(values)), x.new_tensor(list(other)), atol=0, rtol=0
+    )
 
 
 @pytest.mark.parametrize("backend", ["native", "torch"])

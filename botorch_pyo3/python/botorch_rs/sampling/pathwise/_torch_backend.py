@@ -162,13 +162,15 @@ class TorchMatheronPathModel(nn.Module, MatheronPathModel):
         self._features, self._seed = num_features, seed
         self._path = tensor_matheron_paths(model, self.sample_shape, num_features, seed, draws)
         self._path.set_ensemble_as_batch(ensemble_as_batch)
-        self._is_ensemble = bool(self.sample_shape)
+        from botorch_rs.utils.transforms import is_ensemble
+
+        self._is_ensemble = is_ensemble(model) or bool(self.sample_shape)
 
     def forward(self, X: Tensor) -> Tensor:
-        if self.model.num_outputs == 1:
-            return self._path(X).unsqueeze(-1)
         if hasattr(self.model, "models"):
             return torch.stack(self._path(X), -1)
+        if self.model.num_outputs == 1:
+            return self._path(X).unsqueeze(-1)
         return self._path(X.unsqueeze(-3)).transpose(-1, -2)
 
     def posterior(
