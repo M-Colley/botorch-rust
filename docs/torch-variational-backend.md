@@ -90,6 +90,15 @@ allocator incorrectly uses the first model's hyperparameters for every batch.
 The regression compares each batch against the reference's standalone pivot
 routine with that batch's actual covariance.
 
+An explicit native kernel evaluated for CPU allocation retains its Rust
+covariance law. Discrete Tensor pivot selection still returns live selected
+inputs with first/second input derivatives. Allocation does not silently convert
+that kernel to a different backend: doing so changed finite native boundary
+values into NaNs for an initially zero, untransformed Periodic lengthscale.
+Tensor models supply their actual Tensor kernel modules, and accelerator
+allocation converts an explicitly supplied native kernel before computation.
+Nonfinite covariance and quality-score validation remains enforced.
+
 Twelve additional CPU/CUDA cases compare rank-zero, rank-one and full-rank task
 noise against independent GPyTorch/BoTorch likelihood, posterior and ELBO calls.
 They check complete first parameter derivatives, noise Hessians, noisy posterior
@@ -136,8 +145,12 @@ and rejects other configurations.
 Scalar Bernoulli probit observations are implemented with device quadrature,
 analytic observed marginals and complete ELBO graphs; see
 [`torch-variational-probit.md`](torch-variational-probit.md) for verification
-and the disclosed reference scalar-CDF repair. Other variational distributions,
-strategies and non-Gaussian observation families remain configuration gaps.
+and the disclosed reference scalar-CDF repair. Supplied GPyTorch Gaussian/Delta
+distribution modules, including Natural and TrilNatural, retain their actual
+module and gradient semantics; see
+[`torch-variational-supplied-modules.md`](torch-variational-supplied-modules.md).
+BatchDecoupled/CIQ strategies and other non-Gaussian observation families remain
+configuration gaps.
 Unwhitened pseudo-points and online
 fantasy conversion are not implemented. Reallocation cannot resize the variational family.
 It does not imply GPU support for arbitrary `ApproximateGPyTorchModel` wrappers

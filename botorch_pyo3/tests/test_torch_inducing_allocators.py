@@ -15,7 +15,8 @@ from botorch.models.approximate_gp import SingleTaskVariationalGP as ReferenceGP
 from botorch.models.utils import inducing_point_allocators as reference
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs.kernels import RBFKernel
+from botorch_rs.constraints import GreaterThan
+from botorch_rs.kernels import PeriodicKernel, RBFKernel
 from botorch_rs.mlls import VariationalELBO
 from botorch_rs.models.approximate_gp import SingleTaskVariationalGP
 from botorch_rs.models.utils.inducing_point_allocators import (
@@ -40,6 +41,27 @@ def _inputs(device, dtype):
         device=device,
         dtype=dtype,
     )
+
+
+def test_native_cpu_kernel_allocation_preserves_its_covariance_backend_and_input_graph():
+    x = _inputs("cpu", torch.double).requires_grad_()
+    # Untransformed constraints describe fitter bounds and leave the initial
+    # raw value at zero. Native Periodic's full covariance boundary is finite;
+    # silently converting it to a Tensor kernel made the diagonal 0/0 instead.
+    kernel = RBFKernel(ard_num_dims=2) + PeriodicKernel(
+        ard_num_dims=2, lengthscale_constraint=GreaterThan(0.05, transform=None)
+    )
+    covariance = kernel(x)
+    assert bool(torch.isfinite(covariance).all())
+    allocator = GreedyVarianceReduction()
+    expected = allocator.allocate_inducing_points(x.detach().tolist(), kernel, 3, ())
+    actual = allocator.allocate_inducing_points(x, kernel, 3, ())
+    torch.testing.assert_close(actual, x.new_tensor(expected), atol=0, rtol=0)
+    first = torch.autograd.grad(actual.square().sum(), x, create_graph=True)[0]
+    second = torch.autograd.grad(first.sum(), x)[0]
+    chosen = torch.isin(torch.arange(len(x)), torch.cdist(x, actual).argmin(0))
+    torch.testing.assert_close(first, 2 * x * chosen[:, None], atol=0, rtol=0)
+    torch.testing.assert_close(second, 2 * chosen[:, None].expand_as(x).to(x), atol=0, rtol=0)
 
 
 @pytest.mark.parametrize("device", DEVICES)

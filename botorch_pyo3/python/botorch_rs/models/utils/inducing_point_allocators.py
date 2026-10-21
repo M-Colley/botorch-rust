@@ -383,10 +383,15 @@ def _tensor_allocate(
     if type(count) is not int or count < 0:
         raise ValueError("num_inducing must be a nonnegative integer.")
     count = min(count, inputs.shape[-2])
-    if isinstance(kernel, Kernel):
+    if isinstance(kernel, Kernel) and inputs.device.type != "cpu":
         from botorch_rs.models._torch_backend_modules import build_kernel
 
         kernel = build_kernel(kernel, inputs.shape[-1], kernel.batch_shape, inputs)
+    # An explicit native kernel on CPU must retain its own covariance law.
+    # Converting it to another backend changes documented numerical boundary
+    # semantics (e.g. Periodic with an untransformed initial zero lengthscale).
+    # Tensor models already supply Tensor modules; accelerator inputs above
+    # convert explicitly so their allocation never falls back to CPU math.
     expanded = inputs.expand(*batch, *inputs.shape[-2:])
     kernel_batch = tuple(getattr(kernel, "batch_shape", ()))
     evaluated = expanded.unsqueeze(-3) if len(kernel_batch) > len(batch) else expanded
