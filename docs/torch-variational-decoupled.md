@@ -57,5 +57,6 @@ second-derivative oracle.
 The default common-inducing-set Gaussian Matheron updater is not a decoupled
 sampler. It raises an explicit request for a custom update rather than treating
 the two sets as extra model batches. Arbitrary callback composition remains
-available. CIQ's different symmetric whitening law is a separate implementation
-gap; this strategy does not substitute ordinary or CIQ whitening.
+available. CIQ's different symmetric whitening law has its own implementation,
+described in [torch-variational-ciq.md](torch-variational-ciq.md); the decoupled
+strategy does not substitute ordinary or CIQ whitening.

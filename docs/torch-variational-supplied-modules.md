@@ -45,8 +45,9 @@ defect ([linear_operator #152](https://github.com/cornellius-gp/linear_operator/
 
 `BatchDecoupledVariationalStrategy` now has its own distinct inducing and KL law;
 see [torch-variational-decoupled.md](torch-variational-decoupled.md).
-`CiqVariationalStrategy` remains a different symmetric-whitening implementation
-gap. Strategies whose constructors require an additional base
+`CiqVariationalStrategy` has its own symmetric contour-quadrature implementation;
+see [torch-variational-ciq.md](torch-variational-ciq.md), including its specialized
+Natural semantics and dense-computation limits. Strategies whose constructors require an additional base
 strategy, grid or task arguments are not interchangeable with the
 `SingleTaskVariationalGP` class argument in the upstream API. The source also
 does not register default unwhitened or independent-multitask Matheron updates.

@@ -373,6 +373,10 @@ class BatchDecoupledVariationalStrategy(VariationalStrategy):
     """
 
 
+class CiqVariationalStrategy(VariationalStrategy):
+    """Symmetric inverse-root whitening through device-resident contour quadrature."""
+
+
 class IndependentMultitaskVariationalStrategy(_VariationalStrategy):
     """GPyTorch's ``IndependentMultitaskVariationalStrategy``: independent
     outputs as the batch dimension of a base strategy (``task_dim=-1``)."""
@@ -402,6 +406,7 @@ class IndependentMultitaskVariationalStrategy(_VariationalStrategy):
 __all__ = [
     "BatchDecoupledVariationalStrategy",
     "CholeskyVariationalDistribution",
+    "CiqVariationalStrategy",
     "DeltaVariationalDistribution",
     "IndependentMultitaskVariationalStrategy",
     "MeanFieldVariationalDistribution",

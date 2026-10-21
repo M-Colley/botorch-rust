@@ -456,6 +456,10 @@ def _variational_update(
     model.eval()
     _fit_transforms(model)
     strategy, modules = model._strategy, model.model
+    if getattr(strategy, "symmetric_whitening", False):
+        raise NotImplementedError(
+            "The reference Matheron dispatcher does not register CiqVariationalStrategy updates."
+        )
     if getattr(strategy, "decoupled", False):
         raise UnsupportedError(
             "Decoupled mean/covariance inducing sets require a custom pathwise update."
@@ -530,6 +534,12 @@ def tensor_matheron_paths(
             start = stop
         return PathList(paths)
     _require_model(model)
+    if isinstance(model, TorchSingleTaskVariationalGP) and getattr(
+        model._strategy, "symmetric_whitening", False
+    ):
+        raise NotImplementedError(
+            "The reference Matheron dispatcher does not register CiqVariationalStrategy updates."
+        )
     if isinstance(model, TorchSingleTaskVariationalGP) and getattr(
         model._strategy, "decoupled", False
     ):

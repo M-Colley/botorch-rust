@@ -32,6 +32,7 @@ from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior, indepen
 from botorch_rs.variational import (
     BatchDecoupledVariationalStrategy,
     CholeskyVariationalDistribution,
+    CiqVariationalStrategy,
     DeltaVariationalDistribution,
     MeanFieldVariationalDistribution,
     UnwhitenedVariationalStrategy,
@@ -633,17 +634,22 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             VariationalStrategy: True,
             UnwhitenedVariationalStrategy: False,
             BatchDecoupledVariationalStrategy: True,
+            CiqVariationalStrategy: True,
         }
         decoupled_types = {BatchDecoupledVariationalStrategy}
+        ciq_types = {CiqVariationalStrategy}
         if gpytorch is not None:
             strategies[gpytorch.variational.VariationalStrategy] = True
             strategies[gpytorch.variational.UnwhitenedVariationalStrategy] = False
             strategies[gpytorch.variational.BatchDecoupledVariationalStrategy] = True
             decoupled_types.add(gpytorch.variational.BatchDecoupledVariationalStrategy)
+            strategies[gpytorch.variational.CiqVariationalStrategy] = True
+            ciq_types.add(gpytorch.variational.CiqVariationalStrategy)
         if variational_strategy not in strategies:
             raise UnsupportedError(
                 "Torch variational models support VariationalStrategy, "
-                "UnwhitenedVariationalStrategy and BatchDecoupledVariationalStrategy."
+                "UnwhitenedVariationalStrategy, BatchDecoupledVariationalStrategy and "
+                "CiqVariationalStrategy."
             )
         whitened = strategies[variational_strategy]
         decoupled = variational_strategy in decoupled_types
@@ -794,6 +800,12 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
                 learn_inducing_points,
                 strategy_options.get("mean_var_batch_dim"),
             )
+        elif variational_strategy in ciq_types:
+            from botorch_rs.models._torch_backend_variational_ciq import TorchCiqVariationalStrategy
+
+            strategy = TorchCiqVariationalStrategy(
+                self, points, distribution, learn_inducing_points
+            )
         else:
             strategy = _TorchVariationalStrategy(
                 self, points, distribution, learn_inducing_points, whitened=whitened
@@ -917,7 +929,9 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         )
 
     def _variational_output(self, X: Tensor) -> Any:
-        if getattr(self._strategy, "decoupled", False):
+        if getattr(self._strategy, "decoupled", False) or getattr(
+            self._strategy, "symmetric_whitening", False
+        ):
             return self._strategy.variational_output(X)
         if not self._strategy.whitened:
             return self._unwhitened_output(X)
