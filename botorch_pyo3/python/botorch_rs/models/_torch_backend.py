@@ -93,7 +93,9 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         )
         transformed_X, transformed_Y, noise = self._training_values(clamp_noise=False)
         if transformed_X.shape[-2] != transformed_Y.shape[-1]:
-            raise ValueError("The training input transform must preserve the number of target rows.")
+            raise ValueError(
+                "The training input transform must preserve the number of target rows."
+            )
         self.covar_module = build_kernel(
             covar_module, transformed_X.shape[-1], self._aug_batch_shape, train_X
         )
@@ -406,7 +408,9 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
             raise ValueError("Evaluation inputs must use the transformed feature dimension.")
         query_X = X if inputs_transformed else self._augment_X(self.transform_inputs(X))
         if query_X.shape[-1] != train_X.shape[-1]:
-            raise ValueError("Transformed query features must match the transformed training width.")
+            raise ValueError(
+                "Transformed query features must match the transformed training width."
+            )
         train_noise = self._training_noise(Y, fixed_noise)
         query_noise = None
         if isinstance(observation_noise, torch.Tensor):
