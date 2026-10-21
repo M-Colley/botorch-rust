@@ -136,8 +136,11 @@ class TorchInputModule(nn.Module):
 
     def _put_buffer(self, name: str, value: Any, *, integer: bool = False) -> None:
         if value is not None and not isinstance(value, Tensor):
+            original = value
             dtype = torch.long if integer else getattr(torch, _logical_dtype(self, name))
             value = torch.as_tensor(value, dtype=dtype)
+            if not integer:
+                self.__dict__.setdefault("_native_buffer_values", {})[name] = (original, value)
         self.__dict__.pop(name, None)
         self._buffers[name] = value
 
@@ -447,6 +450,11 @@ class TorchInputModule(nn.Module):
     def _apply(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         if not callable(fn):
             return type(self)._native_port_descriptor._apply(self, fn, *args, **kwargs)
+        for name in tuple(self.__dict__.get("_native_buffer_values", {})):
+            original = _torch_input.native_buffer_value(self, name)
+            if not isinstance(original, Tensor):
+                self._buffers[name] = torch.as_tensor(original, dtype=torch.double)
+        self.__dict__.get("_native_buffer_values", {}).clear()
         dormant = self.__dict__.get("_native_affine_dormant", False)
         if dormant:
             self._refresh_affine_buffers(dtype=torch.double)

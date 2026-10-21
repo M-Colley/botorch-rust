@@ -460,7 +460,7 @@ def test_normalize_with_indices() -> None:
     X = [[10 * r[0], r[1], r[2]] for r in X]
     tf = Normalize(d=3, indices=[0])
     model = MultiTaskGP(X, Y, task_feature=-1, input_transform=tf)
-    assert tf.indices == [0]
+    assert list(tf.indices) == [0]
     assert shape(tf.bounds) == (2, 1)
     out = tf(X)
     assert max(r[0] for r in out) <= 1.0 + 1e-12 and [r[1:] for r in out] == [r[1:] for r in X]

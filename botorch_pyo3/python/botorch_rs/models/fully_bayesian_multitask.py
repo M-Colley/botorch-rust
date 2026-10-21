@@ -785,7 +785,11 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
                             # The subclass only synchronizes native setters;
                             # its prior evaluation is exactly the public Warp.
                             result: Any = copy.copy(source)
-                            result.__class__ = Warp
+                            from botorch_rs.models.transforms._torch_input_protocol import (
+                                module_type,
+                            )
+
+                            result.__class__ = module_type(Warp)
                             return result
                         if isinstance(source, ChainedInputTransform):
                             return ChainedInputTransform(

@@ -327,5 +327,14 @@ GPyTorch priors retain caller identity and device/autograd behavior; native
 descriptors remain eligible for the native backend until a Tensor operation
 requires their live module state. Focused CPU/CUDA integration passes 517 cases,
 with 137 subsequent protocol cases covering the final call-hook changes.
+Native fully Bayesian loading preserves float64 sampled Warp concentrations
+when Torch modules are available, and prior evaluation retains the registered
+Warp normalizer. Untouched array feature/perturbation sets retain their native
+precision through copies; explicit casts, buffer edits and checkpoint loading
+use the live registered state. The 185 native/prior cases and 247 module,
+persistence and conditioning cases pass; an additional 110-case run covers
+the final buffer-mutation and supplied-model checkpoint controls. Torch 2.14.1
+CPU passes 227 cases with 42 device skips. Source-only phase controls skip
+cleanly when BoTorch is absent (24 skips).
 [Upstream submissions](upstream-pull-requests.md) track verified defects and
 proposed repairs, including reused PRs and the SciPy human submission step.

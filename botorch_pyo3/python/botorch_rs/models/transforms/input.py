@@ -1503,10 +1503,11 @@ class AppendFeatures(InputTransform):
         return [i + d if i < 0 else i for i in self.indices]
 
     def _step_for(self, d: int) -> Any:
+        features = (
+            _torch_input.native_buffer_value(self, "feature_set") if self._fs is not None else None
+        )
         return _rs.InputStep.append(
-            to_flat(self.feature_set)
-            if _torch_input.is_tensor(getattr(self, "feature_set", None))
-            else self._fs,
+            to_flat(features) if features is not None else self._fs,
             self._f,
             self._indices_for(d),
             getattr(self, "fkwargs", None) if self._f is not None else None,
@@ -2065,9 +2066,9 @@ class InputPerturbation(InputTransform):
     def _rs_step(self, d: int) -> _rs.InputPerturbation:
         """The transform for ``d``-dimensional inputs (negative ``indices``
         count from the end)."""
-        tensor_state = _torch_input.is_tensor(self.perturbation_set) or _torch_input.is_tensor(
-            self.bounds
-        )
+        perturbations = _torch_input.native_buffer_value(self, "perturbation_set")
+        bounds = _torch_input.native_buffer_value(self, "bounds")
+        tensor_state = _torch_input.is_tensor(perturbations) or _torch_input.is_tensor(bounds)
         step = None if tensor_state else self._rs_cache.get(d)
         if step is None:
             indices = None
@@ -2078,11 +2079,9 @@ class InputPerturbation(InputTransform):
                         f"indices {self.indices} are out of range for inputs with d = {d}."
                     )
             step = _rs.InputPerturbation(
-                to_flat(self.perturbation_set)
-                if _torch_input.is_tensor(self.perturbation_set)
-                else self._set,
+                to_flat(perturbations) if self._function is None else self._set,
                 self._function,
-                to_flat(self.bounds) if _torch_input.is_tensor(self.bounds) else self._bounds,
+                to_flat(bounds) if bounds is not None else self._bounds,
                 indices,
                 self.multiplicative,
                 self.transform_on_train,

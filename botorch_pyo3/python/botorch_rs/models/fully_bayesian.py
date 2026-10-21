@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -440,6 +441,11 @@ class PyroModel:
             bounds=[[0.0] * d, [1.0] * d],
             eps=self._eps,
         )
+        torch = sys.modules.get("torch")
+        if torch is not None and isinstance(warp, torch.nn.Module):
+            # Native MCMC members use float64 sampled values. Registering a
+            # default-dtype public leaf must not round them before installing.
+            warp.double()
         num = batch_shape[0]
         k = len(indices)
         for attr, name in (("concentration0", "c0"), ("concentration1", "c1")):

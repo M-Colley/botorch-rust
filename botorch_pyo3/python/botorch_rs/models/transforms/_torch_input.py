@@ -69,6 +69,22 @@ def _tensor(value: Any, like: Any) -> Any:
     )
 
 
+def native_buffer_value(transform: Any, name: str) -> Any:
+    """Keep untouched array constructor values exact at a native boundary."""
+    value = getattr(transform, name)
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return value
+    record = transform.__dict__.get("_native_buffer_values", {}).get(name)
+    if record is not None:
+        original, snapshot = record
+        if value is snapshot and torch.equal(
+            value, torch.as_tensor(original, dtype=value.dtype, device=value.device)
+        ):
+            return original
+    return value
+
+
 def affine_stat(transform: Any, which: int) -> Any:
     if transform.__dict__.get("_native_affine_dormant", False):
         return None

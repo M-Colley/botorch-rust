@@ -213,6 +213,7 @@ def test_one_to_many_scalar_fantasies_match_supported_source_phase(device, on_fa
 @pytest.mark.parametrize("with_tasks", [False, True])
 @pytest.mark.parametrize("observed", [False, True])
 def test_multitask_one_to_many_source_layout_values_and_gradients(device, with_tasks, observed):
+    pytest.importorskip("botorch")
     from botorch.models import MultiTaskGP as Source
     from botorch.models.transforms.input import InputPerturbation as SourceTransform
     from botorch.settings import propagate_grads
@@ -330,6 +331,7 @@ def test_multitask_one_to_many_source_layout_values_and_gradients(device, with_t
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("on_fantasy", [False, True])
 def test_multitask_fantasy_expansion_phase_matches_unmodified_source(device, on_fantasy):
+    pytest.importorskip("botorch")
     from botorch.models import MultiTaskGP as Source
     from botorch.models.transforms.input import InputPerturbation as SourceTransform
     from test_torch_backend_multitask import data

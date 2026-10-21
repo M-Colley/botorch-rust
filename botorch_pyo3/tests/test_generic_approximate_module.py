@@ -445,7 +445,8 @@ def test_port_transform_specs_keep_fixed_state_on_supplied_module(device):
 
     supplied = _PortGaussianApproximate(device)
     model = ApproximateGPyTorchModel(supplied, _Likelihood(supplied.scale))
-    model.input_transform = Normalize(1, bounds=[[0.1], [0.9]])
+    input_transform = Normalize(1, bounds=[[0.1], [0.9]])
+    model.input_transform = input_transform
     transform = Standardize(1)
     transform(torch.tensor([[0.2], [0.6], [0.8]], dtype=torch.double))
     model.outcome_transform = transform
@@ -457,8 +458,20 @@ def test_port_transform_specs_keep_fixed_state_on_supplied_module(device):
     torch.testing.assert_close(actual.mean, raw.mean.unsqueeze(-1) * scale + mean)
     first = torch.autograd.grad(actual.mean.square().sum(), query, create_graph=True)[0]
     assert torch.isfinite(torch.autograd.grad(first.square().sum(), query)[0]).all()
-    assert "input_transform.offset" in model.state_dict()
+    assert "input_transform._offset" in model.state_dict()
     assert "outcome_transform.stdvs" in model.state_dict()
+    assert model.input_transform is input_transform
+    state = {name: value.clone() for name, value in model.state_dict().items()}
+    with torch.no_grad():
+        input_transform._offset.add_(0.2)
+    assert not torch.equal(input_transform._offset, state["input_transform._offset"])
+    model.load_state_dict(state)
+    torch.testing.assert_close(model.posterior(query).mean, actual.mean)
+    if importlib.util.find_spec("botorch") is not None:
+        from botorch.models.transforms.input import Normalize as SourceNormalize
+
+        source = SourceNormalize(1, bounds=query.new_tensor([[0.1], [0.9]]))
+        assert source.state_dict().keys() == input_transform.state_dict().keys()
 
 
 @pytest.mark.parametrize("device", DEVICES)

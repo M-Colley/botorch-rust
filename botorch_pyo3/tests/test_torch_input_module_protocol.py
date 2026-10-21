@@ -202,3 +202,33 @@ def test_native_affine_snapshot_and_double_migration_preserve_original_precision
     torch.testing.assert_close(
         detached(torch.tensor(X, dtype=torch.double)), actual(torch.tensor(X, dtype=torch.double))
     )
+
+
+@pytest.mark.parametrize("family", ["append", "perturbation"])
+def test_fixed_array_buffers_keep_native_precision_and_live_module_updates(family):
+    value = 0.123456789012345
+    actual = (
+        port.AppendFeatures([[value]])
+        if family == "append"
+        else port.InputPerturbation([[value]], bounds=[[0.0], [1.0]])
+    ).eval()
+    name = "feature_set" if family == "append" else "perturbation_set"
+    expected = [[0.2, value]] if family == "append" else [[0.2 + value]]
+    assert actual([[0.2]]) == expected
+    assert getattr(actual, name).dtype == torch.get_default_dtype()
+    assert copy.deepcopy(actual)([[0.2]]) == expected
+    assert _roundtrip(actual)([[0.2]]) == expected
+    actual.double()
+    torch.testing.assert_close(
+        getattr(actual, name), torch.tensor([[value]], dtype=torch.double), atol=0, rtol=0
+    )
+    assert actual([[0.2]]) == expected
+    with torch.no_grad():
+        getattr(actual, name).fill_(0.3)
+    updated = [[0.2, 0.3]] if family == "append" else [[0.5]]
+    assert actual([[0.2]]) == updated
+    state = actual.state_dict()
+    state[name] = torch.tensor([[0.4]], dtype=torch.double)
+    actual.load_state_dict(state)
+    loaded = [[0.2, 0.4]] if family == "append" else [[0.2 + 0.4]]
+    assert actual([[0.2]]) == loaded
