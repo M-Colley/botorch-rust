@@ -129,3 +129,21 @@ intentional. Original-source regressions fail seven alias/cache checks;
 and Torch 2.14 CPU. The port has independent scalar and multitask supplied-kernel
 identity/registry/rollback controls, so it does not depend on this upstream
 repair being installed.
+
+Public `SaasFullyBayesianMultiTaskGP` subclasses select the same Tensor backend
+as the base class while retaining their cooperative constructor, posterior
+overrides and registered parameters. Generated device classes serialize via
+the public class and state, preserving `isinstance`, deepcopy, pickle and
+state-dict behavior. An actual `forward` override defines the Gaussian prior
+on transformed physical task inputs, as in ExactGP. Prediction evaluates its
+training and joint priors and conditions their blocks, retaining arbitrary
+custom-prior Parameters and all training/query graphs. The inherited builtin
+forward keeps its existing blockwise fast path.
+
+Twelve CPU/CUDA subclass cases check explicit and automatic backend selection,
+fixed/inferred observation noise, constructors and posterior hooks, complete
+data/parameter first derivatives and mixed HVPs against independent Gaussian
+conditioning, serialization, and pinned-source query/value parity with
+Normalize/Standardize. Together with the loader and multitask regressions,
+147 cases pass (two replay cases excluded from this narrower rerun). Torch
+2.14 CPU passes the six new CPU cases, skipping six CUDA cases.

@@ -107,17 +107,24 @@ def multitask_posterior(
         raise TypeError("observation_noise must be bool.")
     full, outputs, points = model._query_inputs(X, output_indices)
     model.eval()
-    raw_train, targets, _ = model._training_values()
+    raw_train, targets, fixed_noise = model._training_values()
     transformed = model.transform_inputs(full)
     if not torch.equal(transformed[..., model._task_feature], full[..., model._task_feature]):
         raise UnsupportedError("Input transforms must preserve categorical task labels.")
-    train, query = model._mapped_inputs(raw_train), model._mapped_inputs(transformed)
+    train_mean, train_cov, cross, query_mean, query_cov = model._task_prior_blocks(
+        raw_train, transformed
+    )
     observed_mean, observed_cov = gaussian_marginal(
         model.likelihood,
-        model._mean(train),
-        model._covariance(train, train),
+        train_mean,
+        train_cov,
         raw_train,
         training=True,
+        noise=(
+            None
+            if getattr(model, "_fb_custom_likelihood", False)
+            else model._training_noise(targets, fixed_noise)
+        ),
     )
     factor, alpha = _rs.tensor_exact_gp_factor(
         targets, observed_cov, observed_mean, torch.zeros_like(observed_mean)
@@ -125,14 +132,24 @@ def multitask_posterior(
     mean, covariance = _rs.tensor_exact_gp_predict(
         factor,
         alpha,
-        model._covariance(train, query),
-        model._covariance(query, query),
-        model._mean(query),
+        cross,
+        query_cov,
+        query_mean,
     )
     if observation_noise:
+        from botorch_rs.models._torch_backend_modules import TorchFixedNoiseLikelihood
+
+        fixed = getattr(model, "_fb_custom_fixed_noise", False) or isinstance(
+            model.likelihood, TorchFixedNoiseLikelihood
+        )
         noise = (
-            model._fixed_noise_at(query, model.likelihood.noise)
-            if getattr(model, "_fb_custom_fixed_noise", False)
+            model._fixed_noise_at(
+                model._mapped_inputs(transformed),
+                model.likelihood.noise
+                if getattr(model, "_fb_custom_likelihood", False)
+                else fixed_noise,
+            )
+            if fixed
             else None
         )
         mean, covariance = gaussian_marginal(

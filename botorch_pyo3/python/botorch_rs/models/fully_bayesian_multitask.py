@@ -372,7 +372,7 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
     ) -> Any:
         from botorch_rs.models.map_saas import _use_torch_backend
 
-        if cls is SaasFullyBayesianMultiTaskGP and _use_torch_backend(
+        if getattr(cls, "_tensor_backend", None) != "torch" and _use_torch_backend(
             backend,
             train_X,
             train_Y,
@@ -383,8 +383,14 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
             from botorch_rs.models._torch_backend_fully_bayesian_multitask import (
                 TorchSaasFullyBayesianMultiTaskGP,
             )
+            from botorch_rs.models._torch_model_subclasses import model_type
 
-            return object.__new__(TorchSaasFullyBayesianMultiTaskGP)
+            tensor_class = (
+                TorchSaasFullyBayesianMultiTaskGP
+                if cls is SaasFullyBayesianMultiTaskGP
+                else model_type(cls, TorchSaasFullyBayesianMultiTaskGP)
+            )
+            return object.__new__(tensor_class)
         return object.__new__(cls)
 
     def __init__(

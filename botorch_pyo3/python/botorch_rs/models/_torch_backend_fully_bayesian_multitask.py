@@ -230,6 +230,42 @@ class TorchSaasFullyBayesianMultiTaskGP(TorchMultiTaskGP, SaasFullyBayesianMulti
             self._mean(mapped).unsqueeze(-1), self._covariance(mapped, mapped)
         ).distribution
 
+    def _task_prior_blocks(self, train: Tensor, query: Tensor) -> tuple[Any, ...]:
+        if type(self).forward is TorchSaasFullyBayesianMultiTaskGP.forward:
+            train, query = self._mapped_inputs(train), self._mapped_inputs(query)
+            return (
+                self._mean(train),
+                self._covariance(train, train),
+                self._covariance(train, query),
+                self._mean(query),
+                self._covariance(query, query),
+            )
+        # ExactGP calls the actual virtual prior on physical transformed
+        # inputs. The override, including its cooperative super(), maps tasks.
+        training_prior = nn.Module.__call__(self, train)
+        batch = torch.broadcast_shapes(train.shape[:-2], query.shape[:-2])
+        joined = torch.cat(
+            (train.expand(*batch, *train.shape[-2:]), query.expand(*batch, *query.shape[-2:])), -2
+        )
+        joint = nn.Module.__call__(self, joined)
+        if any(
+            not isinstance(getattr(prior, attribute, None), Tensor)
+            for prior in (training_prior, joint)
+            for attribute in ("mean", "covariance_matrix")
+        ):
+            raise TypeError(
+                "forward must return a Gaussian with Tensor mean and covariance_matrix."
+            )
+        count = train.shape[-2]
+        covariance = joint.covariance_matrix
+        return (
+            training_prior.mean,
+            training_prior.covariance_matrix,
+            covariance[..., :count, count:],
+            joint.mean[..., count:],
+            covariance[..., count:, count:],
+        )
+
     def posterior(
         self,
         X: Tensor,
@@ -243,7 +279,9 @@ class TorchSaasFullyBayesianMultiTaskGP(TorchMultiTaskGP, SaasFullyBayesianMulti
             raise ValueError("X must be a Tensor with shape (..., q, d).")
         expanded = X.unsqueeze(-3).expand(*X.shape[:-2], self.num_mcmc_samples, *X.shape[-2:])
         method: Any = TorchMultiTaskGP.posterior
-        if getattr(self, "_fb_custom_likelihood", False):
+        if getattr(self, "_fb_custom_likelihood", False) or (
+            type(self).forward is not TorchSaasFullyBayesianMultiTaskGP.forward
+        ):
             from botorch_rs.models._torch_fully_bayesian_likelihood import multitask_posterior
 
             method = multitask_posterior
