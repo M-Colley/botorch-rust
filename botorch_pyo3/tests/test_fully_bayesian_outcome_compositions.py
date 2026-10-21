@@ -232,14 +232,15 @@ def test_explicit_standardize_like_module_preserves_custom_fit_identity_and_grap
 
 def test_custom_external_standardize_overrides_are_not_silently_canonicalized():
     pytest.importorskip("botorch")
+    from botorch.models import SingleTaskGP as ReferenceSingleTaskGP
     from botorch.models.transforms.outcome import Standardize as ReferenceStandardize
-
-    from botorch_rs.exceptions.errors import UnsupportedError
 
     class Changed(ReferenceStandardize):
         def forward(self, Y, Yvar=None, X=None):
             raise AssertionError("An override must not be replaced with canonical statistics.")
 
     x, y, noise = _data("cpu")
-    with pytest.raises(UnsupportedError, match="overridden behavior is not canonicalized"):
-        SingleTaskGP(x[:, [0, 2]], y, noise, outcome_transform=Changed(1), backend="torch")
+    for cls in (ReferenceSingleTaskGP, SingleTaskGP):
+        kwargs = {"backend": "torch"} if cls is SingleTaskGP else {}
+        with pytest.raises(AssertionError, match="An override must not be replaced"):
+            cls(x[:, [0, 2]], y, noise, outcome_transform=Changed(1), **kwargs)
