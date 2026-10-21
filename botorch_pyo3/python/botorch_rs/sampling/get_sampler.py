@@ -47,7 +47,13 @@ def _posterior_to_distribution_encoder(posterior: Any) -> type:
     posteriors and the type of the posterior for the rest.
     """
     if isinstance(posterior, (GPyTorchPosterior, TorchPosterior)):
-        return type(posterior.distribution)
+        distribution = posterior.distribution
+        if getattr(posterior, "_tensor_backend", None) == "torch":
+            from botorch_rs.posteriors._torch_backend import TorchMultivariateNormal
+
+            if isinstance(distribution, TorchMultivariateNormal):
+                return MultivariateNormal
+        return type(distribution)
     return type(posterior)
 
 

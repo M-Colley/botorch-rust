@@ -6,12 +6,22 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from botorch_rs._arrays import first_kind, from_flat, to_flat
+from botorch_rs._arrays import first_kind, from_flat, is_torch_tensor, to_flat
 from botorch_rs.posteriors.gpytorch import Posterior
 
 
 def _cat_last(arrays: list[Any]) -> Any:
     """Concatenates arrays along the last dimension (``torch.cat(..., -1)``)."""
+    if arrays and all(is_torch_tensor(array) for array in arrays):
+        import torch
+
+        shapes = [tuple(array.shape) for array in arrays]
+        if any(shape[:-1] != shapes[0][:-1] for shape in shapes):
+            raise NotImplementedError(
+                "`PosteriorList` is only supported if the constituent posteriors all have the "
+                f"same `batch_shape`. Batch shapes: {[shape[:-1] for shape in shapes]}."
+            )
+        return torch.cat(arrays, dim=-1)
     flats = [to_flat(a, "values") for a in arrays]
     lead = tuple(flats[0][1][:-1])
     if any(tuple(f[1][:-1]) != lead for f in flats):
