@@ -1096,13 +1096,15 @@ def test_transforms_on_phase7_models_match_botorch(name: str) -> None:
             check_grad("phase 7 models: ExpectedImprovement d / dx", gr, gb)
 
 
-def test_unsupported_transforms_on_phase7_models() -> None:
-    """Transforms that the phase-7 models do not support raise
+def test_native_transform_guards_on_phase7_models() -> None:
+    """Explicit native-backend transform limits raise
     ``UnsupportedError`` (a ``NotImplementedError``): an outcome transform
     other than ``Standardize`` on an ``EnsembleMapSaasSingleTaskGP`` (whose
     posterior BoTorch cannot build either: a ``TransformedPosterior`` has no
-    ``distribution``), and transforms other than ``Normalize`` /
-    ``Standardize`` on the multi-task GPs (supported by BoTorch, not ported)."""
+    ``distribution``), and unsupported native multi-task configurations.
+    The source-supported Tensor configurations have separate parity coverage;
+    automatic backend selection now routes those configurations to Tensor.
+    """
     from botorch.models.map_saas import EnsembleMapSaasSingleTaskGP as BtEnsembleSaas
 
     from botorch_rs.exceptions.errors import UnsupportedError
@@ -1127,7 +1129,11 @@ def test_unsupported_transforms_on_phase7_models() -> None:
     Xt[:, 2] = (torch.arange(14) % 2).to(DT)
     with pytest.raises(UnsupportedError, match="not supported by MultiTaskGP"):
         RsMultiTask(
-            Xt, Y, task_feature=-1, outcome_transform=build_outcome([{"type": "Log"}], "rs", 1)
+            Xt,
+            Y,
+            task_feature=-1,
+            outcome_transform=build_outcome([{"type": "Log"}], "rs", 1),
+            backend="native",
         )
     with pytest.raises(UnsupportedError, match="not supported by MultiTaskGP"):
         RsMultiTask(
@@ -1135,6 +1141,7 @@ def test_unsupported_transforms_on_phase7_models() -> None:
             Y,
             task_feature=-1,
             input_transform=build_input([{"type": "Warp", "d": 3, "indices": [0]}], "rs"),
+            backend="native",
         )
     with pytest.raises(UnsupportedError, match="center=0.5"):
         RsMultiTask(
@@ -1142,10 +1149,16 @@ def test_unsupported_transforms_on_phase7_models() -> None:
             Y,
             task_feature=-1,
             input_transform=build_input([{"type": "Normalize", "d": 3, "center": 0.0}], "rs"),
+            backend="native",
         )
     Y2 = torch.cat([Y, -Y], -1)
     with pytest.raises(UnsupportedError, match="Standardize"):
-        RsKronecker(X, Y2, outcome_transform=build_outcome([{"type": "Log"}], "rs", 2))
+        RsKronecker(
+            X,
+            Y2,
+            outcome_transform=build_outcome([{"type": "Log"}], "rs", 2),
+            backend="native",
+        )
 
 
 # ---------------------------------------------------------------------------
