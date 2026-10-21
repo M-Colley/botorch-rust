@@ -242,7 +242,13 @@ class _TorchFullyBayesianBase(TorchSingleTaskGP):
             transforms["user"] = original
         if c0 is not None:
             warp: Any = build_input_transform(
-                Warp(d=d, indices=indices, batch_shape=batch, bounds=[[0.0] * d, [1.0] * d]),
+                Warp(
+                    d=d,
+                    indices=indices,
+                    batch_shape=batch,
+                    bounds=[[0.0] * d, [1.0] * d],
+                    eps=self.pyro_model._eps,
+                ),
                 d,
                 like,
             )

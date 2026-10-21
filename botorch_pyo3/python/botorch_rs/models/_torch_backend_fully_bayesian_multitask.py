@@ -140,9 +140,11 @@ class TorchSaasFullyBayesianMultiTaskGP(TorchMultiTaskGP, SaasFullyBayesianMulti
             pyro_model._warp_indices()
         self.mean_module, self.covar_module, self.likelihood = None, None, None
         self._initializing = False
+        from botorch_rs.models._numpyro_fitting import requires_numpyro_inference
         from botorch_rs.models._torch_backend_mcmc import TorchMCMCPotential
 
-        TorchMCMCPotential.from_model(self)  # Validate supported probabilistic hooks eagerly.
+        if not requires_numpyro_inference(self):
+            TorchMCMCPotential.from_model(self)  # Validate built-in probabilistic hooks eagerly.
 
     def _check_if_fitted(self) -> None:
         if self.covar_module is None:

@@ -96,9 +96,43 @@ are currently omitted by both backends. MAP MLL fitting is explicitly rejected
 for fully Bayesian classes; ordinary MAP SAAS models are a separate family.
 Training inputs remain `n x d` with single-output `n x 1` observations, matching
 the official family. The subsequent [multitask checkpoint](torch-fully-bayesian-multitask.md)
-adds latent-feature multitask loaded inference and device NUTS. Arbitrary
-custom Pyro-model overrides remain unsupported. A Gaussian mixture requires
+adds latent-feature multitask loaded inference and device NUTS. Explicit
+custom Pyro programs use the optional adapter below. A Gaussian mixture requires
 linear outcome transforms. Ensemble acquisitions use the Torch adapter.
+
+## Custom probabilistic programs
+
+The public fitter recognizes caller-defined `sample` / `sample_*`, feature,
+or postprocessing overrides and `_prior_mode`. It fits the port's own NumPyro
+program using NumPyro NUTS, then invokes its public postprocessing and loading
+hooks. Built-in programs continue to use Rust or Tensor NUTS. The adapter
+does not import or call BoTorch inference.
+
+This is optional framework interoperability. JAX's installed backend selects
+the inference device, and its `jax_enable_x64` setting selects precision.
+Torch training data are transferred as detached snapshots into JAX; MCMC
+draws are not differentiable through Torch. Loading restores the model's
+array type, dtype and prediction device. Supported Tensor models retain
+their normal training-data, query and parameter prediction graphs, including
+higher derivatives. `_numpyro_result` records the actual JAX devices,
+precision, raw constrained samples and thinning. Same seeds repeat the JAX
+program; they do not reproduce the native or Tensor random streams.
+
+Custom priors and extra named sites with the existing Matern, SAAS, Linear,
+or latent-feature multitask loading structure are supported. Native scalar
+models also invoke a caller's returned-module loader when it returns modules
+supported by the native GP. Tensor returned-module loader overrides remain
+explicitly rejected: accepting a custom trace does not establish support for
+an arbitrary new prediction kernel or likelihood. Native/Tensor recorded-draw
+replay is also a separate protocol and is rejected on this adapter.
+
+The adapter stages inference and loading before replacing the live model.
+Tests check failed postprocessing and loading preserve its usable numerical
+law and module owners; successful Tensor fitting preserves caller-held
+transform modules. Arbitrary external side effects inside user hooks are
+outside that transaction. Tests compare custom seeded draws against direct
+NumPyro, exercise native loading hooks, prior-mode `f`/`Y` sites and task
+priors, and check loaded Tensor CPU/CUDA prediction derivatives.
 
 ## Canonical sampling and rectangular roots
 

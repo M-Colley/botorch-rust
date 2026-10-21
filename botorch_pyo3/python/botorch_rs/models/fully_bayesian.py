@@ -118,6 +118,9 @@ def _column(data: Any, rows: int) -> list[float]:
 
 
 def _values(samples: dict[str, Any], name: str) -> tuple[list[float], tuple[int, ...]]:
+    if _numpyro.is_jax(samples[name]):
+        value = samples[name]
+        return value.reshape(-1).tolist(), tuple(value.shape)
     data, shape = to_flat(samples[name], name)
     return [float(v) for v in data], tuple(shape)
 
@@ -143,8 +146,9 @@ class PyroModel:
     NumPyro's parameterization) and its gradient in Rust.
     ``fit_fully_bayesian_model_nuts`` samples it with a port of NumPyro's
     NUTS. The public ``sample`` / ``sample_*`` methods additionally implement
-    optional NumPyro named-site tracing. Custom trace overrides can be used
-    with NumPyro directly; the native fitter rejects such overrides.
+    optional NumPyro named-site tracing. Explicit custom probabilistic
+    overrides select the public fitter's optional NumPyro program path;
+    the fixed native potential does not pretend to implement such overrides.
     """
 
     _prior_mode: bool = False
@@ -339,7 +343,7 @@ class PyroModel:
         """
         out = dict(mcmc_samples)
         if "noise" in out:
-            data, shape = to_flat(out["noise"], "noise")
+            data, shape = _values(out, "noise")
             out["noise"] = from_flat(
                 [MIN_INFERRED_NOISE_LEVEL + float(v) for v in data],
                 tuple(shape),

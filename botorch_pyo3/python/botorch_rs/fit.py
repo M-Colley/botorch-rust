@@ -379,6 +379,24 @@ def fit_fully_bayesian_model_nuts(
         >>> fit_fully_bayesian_model_nuts(gp)
     """
     from botorch_rs._arrays import from_flat
+    from botorch_rs.models._numpyro_fitting import (
+        fit_numpyro_model_nuts,
+        requires_numpyro_inference,
+    )
+
+    if requires_numpyro_inference(model):
+        return fit_numpyro_model_nuts(
+            model,
+            max_tree_depth,
+            warmup_steps,
+            num_samples,
+            thinning,
+            disable_progbar,
+            jit_compile,
+            seed,
+            draws,
+            init_params,
+        )
 
     if getattr(model, "_tensor_backend", None) == "torch":
         from botorch_rs.models._torch_backend_mcmc import fit_torch_fully_bayesian_nuts
