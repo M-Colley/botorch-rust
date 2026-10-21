@@ -136,12 +136,15 @@ def test_fixed_noise_higher_conditioning_repeated_calibration_graphs(
         mean_train, mean_query, train, cross, test = prior_blocks(conditioned, "higher", Q)
         variance = noise
         if standardized:
+            before_std = conditioned.outcome_transform.stdvs.clone()
             variance = conditioned.outcome_transform(torch.zeros_like(noise), noise)[1]
         variance = torch.cat((original, variance.flatten(-2)))
         if additional:
             variance = variance + conditioned.likelihood.second_noise
         observed = train + torch.diag_embed(variance)
         values = conditioned.train_targets
+        if standardized:
+            torch.testing.assert_close(conditioned.outcome_transform.stdvs, before_std)
         mean = mean_query + (
             cross.T @ torch.linalg.solve(observed, (values - mean_train).unsqueeze(-1))
         ).squeeze(-1)
@@ -274,3 +277,71 @@ def test_conditioning_noise_buffers_follow_copy_state_and_migration(device, fami
     assert conditioned._botorch_conditioning_noise_0.device.type == "cpu"
     result = conditioned.posterior(query.detach().to(device="cpu", dtype=torch.float32)).mean
     torch.testing.assert_close(result.double(), baseline, atol=4e-5, rtol=4e-5)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("family", ["kron", "higher", "latent"])
+def test_conditioned_models_own_independent_parameter_leaves(device, family):
+    model, X, _ = make_model(family, device)
+    query = X.new_tensor([[0.2], [0.7]])
+    baseline = model.posterior(query).mean.detach().clone()
+    conditioned = model.condition_on_observations(
+        X.new_tensor([[0.25]]), X.new_tensor([[0.8, 0.3]])
+    )
+    original, updated = dict(model.named_parameters()), dict(conditioned.named_parameters())
+    assert original.keys() == updated.keys()
+    for name in original:
+        assert original[name] is not updated[name]
+        assert updated[name].is_leaf
+    with torch.no_grad():
+        for value in updated.values():
+            value.add_(0.15)
+    torch.testing.assert_close(model.posterior(query).mean, baseline)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("family", ["kron", "higher", "latent"])
+@pytest.mark.parametrize("propagate", [False, True])
+def test_fantasy_query_path_and_original_future_parameter_partials_and_hessians(
+    device, family, propagate
+):
+    model, X, Y = make_model(family, device)
+    Q = X.new_tensor([[0.2], [0.7]], requires_grad=True)
+    query = X.new_tensor([[0.35]], requires_grad=True)
+    shifts = X.new_tensor([-0.05, 0.08]).reshape(2, 1, 1)
+
+    def sampler(posterior):
+        return posterior.mean.unsqueeze(0) + shifts
+
+    future = model.fantasize(Q, sampler, propagate_grads=propagate)
+    mtrain, mquery, train, cross, _ = prior_blocks(model, family, Q)
+    observed_mean, observed_covariance = independent_observed(model, family, mtrain, train)
+    residual = Y.flatten(-2) - observed_mean
+    if not propagate:
+        observed_covariance, residual = observed_covariance.detach(), residual.detach()
+    sampled = mquery + (
+        cross.transpose(-1, -2) @ torch.linalg.solve(observed_covariance, residual.unsqueeze(-1))
+    ).squeeze(-1)
+    sampled = sampled + model.likelihood.offset
+    sampled = sampled.reshape(2, 2).unsqueeze(0) + shifts
+    targets = torch.cat((Y.expand(2, *Y.shape), sampled), dim=-2).flatten(-2)
+    train_mean, query_mean, train, cross, test = prior_blocks(future, family, query)
+    train_mean, train = independent_observed(future, family, train_mean, train)
+    mean = query_mean + (
+        cross.transpose(-1, -2) @ torch.linalg.solve(train, (targets - train_mean).unsqueeze(-1))
+    ).squeeze(-1)
+    covariance = test - cross.transpose(-1, -2) @ torch.linalg.solve(train, cross)
+    actual_mean, actual_covariance = point_major_posterior(future.posterior(query), family)
+    torch.testing.assert_close(actual_mean, mean, atol=2e-9, rtol=2e-9)
+    torch.testing.assert_close(actual_covariance, covariance, atol=2e-9, rtol=2e-9)
+    leaves = (X, Y, Q, query, *model.parameters(), *future.parameters())
+    aa = gradients(actual_mean.square().sum() + actual_covariance.square().sum(), leaves, True)
+    bb = gradients(mean.square().sum() + covariance.square().sum(), leaves, True)
+    for a, b in zip(aa, bb, strict=True):
+        torch.testing.assert_close(a, b, atol=3e-7, rtol=3e-7)
+    for a, b in zip(
+        gradients(sum(g.square().sum() for g in aa), leaves),
+        gradients(sum(g.square().sum() for g in bb), leaves),
+        strict=True,
+    ):
+        torch.testing.assert_close(a, b, atol=5e-6, rtol=5e-6)

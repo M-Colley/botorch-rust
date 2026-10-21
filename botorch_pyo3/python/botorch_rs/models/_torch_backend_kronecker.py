@@ -283,6 +283,22 @@ class TorchKroneckerPosterior(TorchGPyTorchPosterior, MultitaskGPPosterior):
         scale: Any = 1.0,
     ) -> None:
         super().__init__(mean, covariance)
+        from botorch_rs.models._torch_fantasy import prediction_factor
+
+        previous_train = train
+        train, residual = prediction_factor(train, residual)
+        noise, _ = prediction_factor(noise, noise)
+        if train is not previous_train:
+            count = num_train * tasks
+            joint = torch.cat(
+                (
+                    torch.cat(
+                        (joint[..., :count, :count].detach(), joint[..., :count, count:]), -1
+                    ),
+                    joint[..., count:, :],
+                ),
+                -2,
+            )
         self.joint_covariance_matrix, self.train_train_covar = joint, train
         self.test_train_covar, self.train_diff = cross, residual
         self.test_mean = query_mean
@@ -627,6 +643,9 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         factor, alpha = _rs.tensor_exact_gp_factor(
             Y.flatten(-2), ktt + noise, train_mean.flatten(-2), torch.zeros_like(Y.flatten(-2))
         )
+        from botorch_rs.models._torch_fantasy import prediction_factor
+
+        factor, alpha = prediction_factor(factor, alpha)
         mean, covariance = _rs.tensor_exact_gp_predict(
             factor,
             alpha,
@@ -702,10 +721,9 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
             )
         batch = torch.broadcast_shapes(self.batch_shape, X.shape[:-2], Y.shape[:-2])
         self._validate_data(X.expand(*batch, *X.shape[-2:]), Y.expand(*batch, *Y.shape[-2:]))
-        model = copy.copy(self)
-        model._buffers = self._buffers.copy()
-        model._modules = self._modules.copy()
-        model._transform_fit_versions = self._transform_fit_versions.copy()
+        self._fit_transform_graphs()
+        model = copy.deepcopy(self)
+        model._transform_fit_versions = {}
         model._train_X = torch.cat(
             (
                 self._train_X.expand(*batch, *self._train_X.shape[-2:]),
@@ -732,5 +750,11 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         propagate = kwargs.pop("propagate_grads", False)
         if kwargs or observation_noise is not None:
             raise UnsupportedError("Structured fantasies currently use the configured task noise.")
-        Y = sampler(self.posterior(X, observation_noise=True))
-        return self.condition_on_observations(X, Y if propagate else Y.detach())
+        from botorch_rs.models._torch_fantasy import prediction_cache_gradients
+        from botorch_rs.models.utils.assorted import fantasize
+
+        with fantasize():
+            with prediction_cache_gradients(propagate):
+                posterior = self.posterior(X, observation_noise=True)
+            Y = sampler(posterior)
+            return self.condition_on_observations(X, Y)

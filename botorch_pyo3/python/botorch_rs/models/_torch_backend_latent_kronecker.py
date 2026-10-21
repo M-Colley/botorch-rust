@@ -52,6 +52,22 @@ class TorchLatentKroneckerPosterior(TorchGPyTorchPosterior, LatentKroneckerGPPos
         scale: Any = 1.0,
     ) -> None:
         super().__init__(mean, covariance)
+        from botorch_rs.models._torch_fantasy import prediction_factor
+
+        previous = train_covariance
+        train_covariance, targets = prediction_factor(train_covariance, targets)
+        noise, train_mean = prediction_factor(noise, train_mean)
+        if train_covariance is not previous:
+            count = mask.numel()
+            joint = torch.cat(
+                (
+                    torch.cat(
+                        (joint[..., :count, :count].detach(), joint[..., :count, count:]), -1
+                    ),
+                    joint[..., count:, :],
+                ),
+                -2,
+            )
         self._joint_tensor, self._cross, self._train_covariance = joint, cross, train_covariance
         self._targets, self._train_mean, self._test_mean = targets, train_mean, test_mean
         self._noise, self._mask, self._location, self._scale = noise, mask, location, scale
@@ -457,8 +473,11 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         from botorch_rs.models._torch_structured_iterative import enabled, solve
 
         if enabled(observed_covariance, "solves", current()):
-            rhs = torch.cat(((targets - mean_train).unsqueeze(-1), cross), dim=-1)
-            solved = solve(observed_covariance, rhs)
+            from botorch_rs.models._torch_fantasy import prediction_factor
+
+            matrix, residual = prediction_factor(observed_covariance, targets - mean_train)
+            rhs = torch.cat((residual.unsqueeze(-1), cross), dim=-1)
+            solved = solve(matrix, rhs)
             mean = mean_test + (cross.transpose(-1, -2) @ solved[..., :1]).squeeze(-1)
             cov = test - cross.transpose(-1, -2) @ solved[..., 1:]
             cov = (cov + cov.transpose(-1, -2)) * 0.5
@@ -466,6 +485,9 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             factor, alpha = _rs.tensor_exact_gp_factor(
                 targets, observed_covariance, mean_train, torch.zeros_like(targets)
             )
+            from botorch_rs.models._torch_fantasy import prediction_factor
+
+            factor, alpha = prediction_factor(factor, alpha)
             mean, cov = _rs.tensor_exact_gp_predict(factor, alpha, cross, test, mean_test)
         q, t = query.shape[-2], T.shape[-2]
         mean = mean.reshape(*batch, q, t)
@@ -569,10 +591,9 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         if not bool(torch.isfinite(X).all()):
             raise ValueError("Conditioning feature inputs must be finite.")
         batch = torch.broadcast_shapes(self.batch_shape, X.shape[:-2], Y.shape[:-2])
-        model = copy.copy(self)
-        model._buffers = self._buffers.copy()
-        model._modules = self._modules.copy()
-        model._transform_fit_versions = self._transform_fit_versions.copy()
+        self._fit_transform_graphs()
+        model = copy.deepcopy(self)
+        model._transform_fit_versions = {}
         model._transform_fit_X = self._transform_fit_X.clone()
         model._train_X = torch.cat(
             (
@@ -599,9 +620,12 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         propagate = kwargs.pop("propagate_grads", False)
         if observation_noise is not None or kwargs:
             raise UnsupportedError("LatentKronecker fantasies use the configured Gaussian noise.")
+        from botorch_rs.models._torch_fantasy import prediction_cache_gradients
         from botorch_rs.models._torch_structured_likelihood import scalar_observed_law
+        from botorch_rs.models.utils.assorted import fantasize
 
-        posterior = self._posterior(X, untransform=False)
+        with fantasize(), prediction_cache_gradients(propagate):
+            posterior = self._posterior(X, untransform=False)
         # Sample the full observed law through the supplied sampler. No extra
         # ambient RNG draws are introduced outside its base-sample protocol.
         mean, covariance = scalar_observed_law(
@@ -618,5 +642,6 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             mean = mean * self.outcome_transform.stdvs + self.outcome_transform.means
             covariance = covariance * self.outcome_transform.stdvs.square()
         observed = TorchGPyTorchPosterior(mean, covariance)
-        Y = sampler(observed)
-        return self.condition_on_observations(X, Y if propagate else Y.detach())
+        with fantasize():
+            Y = sampler(observed)
+            return self.condition_on_observations(X, Y)

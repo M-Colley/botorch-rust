@@ -51,6 +51,12 @@ backward calls, rather than storing a consumed standardization graph.
 Conditioned noise follows state dictionaries, model copies, serialization and
 dtype/device migration. Correlated supplied marginals also determine the law
 sampled for fantasies, including the port's latent Kronecker fantasy extension.
+Conditioned models own independent Parameter leaves. Editing a fantasy model's
+parameters does not edit its parent; gradients with respect to parent and
+fantasy parameters are separate partial derivatives. The appended data keeps
+its graph. `propagate_grads=False` stops training prediction-cache gradients
+while preserving the query path through fantasy observations, instead of
+detaching the entire sampled observation tensor.
 The reference's latent model explicitly does not implement conditioning.
 Direct Tensor observation-noise overrides in Kronecker/higher-order posterior
 remain unsupported, consistent with the upstream repairs in

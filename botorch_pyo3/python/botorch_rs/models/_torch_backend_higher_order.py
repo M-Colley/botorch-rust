@@ -499,6 +499,9 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
         factor, alpha = _rs.tensor_exact_gp_factor(
             targets, ktt + noise, train_mean, torch.zeros_like(targets)
         )
+        from botorch_rs.models._torch_fantasy import prediction_factor
+
+        factor, alpha = prediction_factor(factor, alpha)
         mean, covariance = _rs.tensor_exact_gp_predict(
             factor,
             alpha,
@@ -590,10 +593,9 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
         if tuple(Y.shape[-dims:]) != tuple(self.target_shape) or Y.shape[-dims - 1] != X.shape[-2]:
             raise ValueError("Conditioning targets must match q and target_shape.")
         batch = torch.broadcast_shapes(self.batch_shape, X.shape[:-2], Y.shape[: -dims - 1])
-        model = copy.copy(self)
-        model._buffers = self._buffers.copy()
-        model._modules = self._modules.copy()
-        model._transform_fit_versions = self._transform_fit_versions.copy()
+        self._fit_transform_graphs()
+        model = copy.deepcopy(self)
+        model._transform_fit_versions = {}
         model._train_X = torch.cat(
             (
                 self._train_X.expand(*batch, *self._train_X.shape[-2:]),
@@ -622,5 +624,11 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
             raise UnsupportedError(
                 "Higher-order fantasies currently use the configured Gaussian noise."
             )
-        Y = sampler(self.posterior(X, observation_noise=True))
-        return self.condition_on_observations(X, Y if propagate else Y.detach())
+        from botorch_rs.models._torch_fantasy import prediction_cache_gradients
+        from botorch_rs.models.utils.assorted import fantasize
+
+        with fantasize():
+            with prediction_cache_gradients(propagate):
+                posterior = self.posterior(X, observation_noise=True)
+            Y = sampler(posterior)
+            return self.condition_on_observations(X, Y)
