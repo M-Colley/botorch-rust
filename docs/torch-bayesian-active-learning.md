@@ -34,7 +34,7 @@ values and query gradients agree at the existing strict tolerances. The
 metadata mutation alone is therefore not established as an upstream bug,
 and no PR was filed for it.
 
-The native CPU path now also accepts scalarized fully Bayesian ModelLists.
+The native CPU path also accepts scalarized fully Bayesian ModelLists.
 Each MCMC component is the native joint model of the corresponding members,
 then the requested scalarizing posterior transform is applied before the
 existing Rust information-gain and query-adjoint calculation. Singleton
@@ -43,11 +43,33 @@ non-singleton sizes still fail. IID and Sobol normal samplers are accepted,
 including explicit IID normals, seeded redraws when q changes, pending
 points and public cache reuse. Native gradients through supplied base
 normals require the Tensor backend and raise an explicit error otherwise.
-Unscalarized native multi-output BALD remains outside this scalar core path;
-the Tensor backend provides the joint calculation described above.
+Unscalarized native multi-output BALD now uses the same full joint law.
+Each component keeps its complete `q*m` mean and covariance, including
+cross-output blocks; public `q x m` normals are converted to the native
+output-major root coordinates. The mixture component is shared across outputs.
+The calculation is not the sum of marginal output information gains.
 
 Eighteen new native tests compare two kernel families, equal/singleton
 MCMC sizes, pending points, and both normal samplers with pinned official
 values and query gradients. They also check seeded IID cache contents,
 list/NumPy/Torch query parity, cache replacement and precise boundary
-errors. The complete native/Tensor BALD set passes 38 cases.
+errors.
+
+The joint extension adds an independent Rust two-output law with nonzero
+cross-output covariance. Its mixture values compare to component Gaussian
+densities, query adjoints compare to finite differences with and without
+pending points, and per-member raw-parameter VJPs compare to finite differences
+of the mean slope, cross-output correlation and observation noise. The core
+`forward_with_member_parameter_gradients` method returns those member vectors
+in each model's raw parameter order. Python persistent native-FB parameter
+leaf wiring is separate; use the Tensor backend for complete parameter and
+higher-order graphs.
+
+Python regressions compare native joint ModelLists against independent dense
+Gaussian densities and the pinned source with canonical root coordinates,
+covering Matern/linear members, pending points, IID/Sobol normals, changing
+point counts and list/NumPy/Torch inputs. The scalarized regressions remain
+unchanged.
+
+Validation of the joint checkpoint: both new Rust tests pass and all 46 native
+and Tensor BALD Python cases pass against a fresh optimized test-profile ABI.

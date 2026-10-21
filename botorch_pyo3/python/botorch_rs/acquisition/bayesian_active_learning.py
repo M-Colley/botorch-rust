@@ -79,13 +79,12 @@ class qBayesianActiveLearningByDisagreement(FullyBayesianAcquisitionFunction, MC
             model: A fully bayesian model (SaasFullyBayesianSingleTaskGP).
             sampler: The sampler used for drawing samples to approximate the entropy
                 of the Gaussian Mixture posterior.
-            posterior_transform: A PosteriorTransform. If using a multi-output model,
-                a PosteriorTransform that transforms the multi-output posterior into a
-                single-output posterior is required.
+            posterior_transform: An optional PosteriorTransform. Without scalarization,
+                multi-output models use their full joint Gaussian-mixture law.
             X_pending: A ``batch_shape x m x d``-dim Tensor of ``m`` design points
 
         botorch_rs evaluates BALD in Rust with exact gradients on the MCMC
-        samples of single-output fully Bayesian GPs, including scalarized
+        samples of fully Bayesian GPs, including joint multi-output or scalarized
         fully Bayesian ``ModelList`` models. Without a ``sampler``, a
         ``SobolQMCNormalSampler`` of 512 samples (BoTorch's default) with a
         random seed is used.
@@ -96,14 +95,9 @@ class qBayesianActiveLearningByDisagreement(FullyBayesianAcquisitionFunction, MC
         members_of = getattr(model, "_ensemble_members", None)
         if members_of is None:
             raise UnsupportedError(
-                "botorch_rs's qBayesianActiveLearningByDisagreement supports single-output fully "
-                "Bayesian GPs (e.g. SaasFullyBayesianSingleTaskGP), not ModelLists of them."
+                "Native BALD requires access to the Gaussian MCMC component models."
             )
         members = members_of()
-        if model.num_outputs != 1 and not getattr(posterior_transform, "scalarize", False):
-            raise UnsupportedError(
-                "Multi-output native BALD requires a scalarizing posterior transform."
-            )
         if sampler is None:
             sampler = SobolQMCNormalSampler(sample_shape=(512,))
         if not isinstance(sampler, (IIDNormalSampler, SobolQMCNormalSampler)):
@@ -117,8 +111,7 @@ class qBayesianActiveLearningByDisagreement(FullyBayesianAcquisitionFunction, MC
         self.sampler = sampler
         self.posterior_transform = posterior_transform
         handles = [m._acquisition_model(posterior_transform) for m in members]
-        if any(handle.num_outputs != 1 for handle in handles):
-            raise UnsupportedError("Native BALD requires scalar component posteriors.")
+        self._event_outputs = handles[0].num_outputs
         d = handles[0].dim
         self._native_sampler = sampler._rs
         self._rs = _rs.q_bayesian_active_learning_by_disagreement(
@@ -168,7 +161,7 @@ class qBayesianActiveLearningByDisagreement(FullyBayesianAcquisitionFunction, MC
         target = (
             *self.sampler.sample_shape,
             *(1 for _ in range(max(1, len(shape) - 2) + 1)),
-            points,
+            *((points,) if self._event_outputs == 1 else (points, self._event_outputs)),
         )
         current = self.sampler.base_samples
         if current is None or to_flat(current)[1] != target:

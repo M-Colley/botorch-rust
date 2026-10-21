@@ -1,7 +1,9 @@
-"""Native scalarized mixture information gain uses paired ModelList components."""
+"""Native joint mixture information gain uses paired ModelList components."""
 
 # ruff: noqa: E402
 from __future__ import annotations
+
+import math
 
 import pytest
 
@@ -111,7 +113,73 @@ def test_native_bald_iid_seed_cache_updates_and_array_query_parity():
         acq(query)
 
 
-def test_native_multioutput_bald_requires_scalarization_before_native_inference():
-    models, _, _ = _models()
-    with pytest.raises(UnsupportedError, match="scalarizing posterior transform"):
-        qBayesianActiveLearningByDisagreement(models[0])
+@pytest.mark.parametrize("family", ["matern", "linear"])
+@pytest.mark.parametrize("pending", [False, True])
+@pytest.mark.parametrize("sampler_name", ["IIDNormalSampler", "SobolQMCNormalSampler"])
+def test_native_joint_model_list_bald_matches_full_joint_density_and_source_root_law(
+    family, pending, sampler_name
+):
+    models, query, pending_x = _models(family)
+    points = 2 + int(pending)
+    normal = torch.linspace(-1.4, 1.7, 12 * points * 2, dtype=query.dtype).reshape(
+        12, 1, 1, points, 2
+    )
+    sampler = getattr(port_samplers, sampler_name)((12,), seed=29)
+    sampler.base_samples = normal
+    acquisition = qBayesianActiveLearningByDisagreement(
+        models[0], sampler, X_pending=pending_x if pending else None
+    )
+    actual, gradient = acquisition.value_and_grad(query)
+    variable = query.clone().requires_grad_()
+    full = (
+        torch.cat((variable, pending_x.expand(*variable.shape[:-2], 1, 3)), -2)
+        if pending
+        else variable
+    )
+    posterior = models[1].posterior(full, observation_noise=True)
+    means = posterior.mean.transpose(-1, -2).flatten(-2)
+    covariance = posterior.mvn.covariance_matrix
+    roots = torch.linalg.cholesky(covariance)
+    eps = normal.transpose(-1, -2).flatten(-2)
+    draws = means + (roots @ eps.unsqueeze(-1)).squeeze(-1)
+    laws = torch.distributions.MultivariateNormal(means, scale_tril=roots)
+    columns, own = [], []
+    for origin in range(3):
+        logp = laws.log_prob(draws[..., origin, :].unsqueeze(-2))
+        columns.append(torch.logsumexp(logp, -1) - math.log(3))
+        own.append(logp[..., origin])
+    expected = -torch.stack(columns).mean((0, 1)) + torch.stack(own).mean((0, 1))
+    expected_gradient = torch.autograd.grad(expected.sum(), variable)[0]
+    torch.testing.assert_close(actual, expected, atol=3e-10, rtol=3e-8)
+    torch.testing.assert_close(gradient, expected_gradient, atol=3e-9, rtol=3e-7)
+    # Source changes event-layout metadata; supply the same flattened Gaussian
+    # root coordinates explicitly, rather than equating differently ordered normals.
+    ref_sampler = getattr(reference_samplers, sampler_name)(torch.Size([12]), seed=29)
+    ref_sampler.base_samples = normal.transpose(-1, -2).contiguous().reshape_as(normal)
+    source = ReferenceBALD(models[1], ref_sampler, X_pending=pending_x if pending else None)
+    source_query = query.clone().requires_grad_()
+    source_value = source(source_query)
+    source_gradient = torch.autograd.grad(source_value.sum(), source_query)[0]
+    torch.testing.assert_close(actual, source_value, atol=3e-10, rtol=3e-8)
+    torch.testing.assert_close(gradient, source_gradient, atol=3e-9, rtol=3e-7)
+    for convert in (lambda x: x.tolist(), lambda x: x.numpy()):
+        value, derivative = acquisition.value_and_grad(convert(query))
+        torch.testing.assert_close(
+            torch.as_tensor(value, dtype=query.dtype), actual, atol=0, rtol=0
+        )
+        torch.testing.assert_close(
+            torch.as_tensor(derivative, dtype=query.dtype), gradient, atol=0, rtol=0
+        )
+
+
+def test_native_joint_bald_iid_public_normal_cache_replays_and_updates():
+    models, query, _ = _models()
+    sampler = port_samplers.IIDNormalSampler((12,), seed=29)
+    acquisition = qBayesianActiveLearningByDisagreement(models[0], sampler)
+    for points in (2, 1, 2):
+        actual = acquisition(query[..., :points, :])
+        assert sampler.base_samples.shape == (12, 1, 1, points, 2)
+        control_sampler = port_samplers.SobolQMCNormalSampler((12,), seed=29)
+        control_sampler.base_samples = sampler.base_samples
+        control = qBayesianActiveLearningByDisagreement(models[0], control_sampler)
+        torch.testing.assert_close(actual, control(query[..., :points, :]), atol=0, rtol=0)
