@@ -7,6 +7,10 @@ parameters survive prior resampling. A successful fit restores the selected
 attempt and enters evaluation mode; failed attempts restore the original state.
 The native default exact-GP fitter retains its Rust L-BFGS-B fast path.
 Advanced options and Torch models use the generic fitting protocol.
+Native generic SciPy fitting expands bounds using the complete parameter shape
+and retains the Rust parameter state through caller closures and closure keyword
+arguments. Generic Torch fitting bridges list and NumPy parameters to optimizer
+leaves, writes the returned gradients, and commits the final values to Rust.
 
 `ForwardBackwardClosure` leaves the returned gradients in the actual
 Parameters' `.grad` fields, matching the reference contract. This matters for
@@ -20,6 +24,10 @@ arguments, best-attempt state selection, and rollback after failure. These
 checks cover both native exact models and Torch models. Broader fitting,
 variational, optimization, and parameter-gradient regressions passed 117 cases
 before the additional nonfinite-objective and iteration-limit policy cases.
+A further 59-case run covers the generic fitting and minibatch closure suites,
+including 18 native exact/variational array-kind regressions. These verify real
+parameter changes and objective improvement with callbacks and custom closures;
+they caught and repaired truncated bounds and a missing Rust-state connection.
 
 This work does not imply support for every model-specific fitting extension.
 Specialized empirical models and external-data closure configurations still

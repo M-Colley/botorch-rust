@@ -87,6 +87,7 @@ def scipy_minimize(
     import numpy as np
     from scipy.optimize import minimize
 
+    from botorch_rs._arrays import to_flat
     from botorch_rs.optim.closures import NdarrayOptimizationClosure
 
     start_time = monotonic()
@@ -100,7 +101,7 @@ def scipy_minimize(
         lower, upper = [], []
         for name, p in parameters.items():
             lo, hi = bounds.get(name, (None, None))
-            size = int(np.prod(getattr(p, "shape", ()) or (1,)))
+            size = len(to_flat(p, name)[0])
             lower.extend([-np.inf if lo is None else float(lo)] * size)
             upper.extend([np.inf if hi is None else float(hi)] * size)
         bounds_np = list(zip(lower, upper, strict=True))

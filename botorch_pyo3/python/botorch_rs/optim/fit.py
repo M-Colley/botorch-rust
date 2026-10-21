@@ -383,6 +383,8 @@ def _fit_generic_scipy(
         closure = get_loss_closure_with_grads(mll, parameters=parameters)
     if closure_kwargs is not None:
         closure = functools.partial(closure, **closure_kwargs)
+    if getattr(getattr(mll, "model", None), "_tensor_backend", None) != "torch":
+        closure = _native_state_closure(mll, closure, parameters)
     return scipy_minimize(
         closure=closure,
         parameters=parameters,
@@ -392,6 +394,16 @@ def _fit_generic_scipy(
         callback=callback,
         timeout_sec=timeout_sec,
     )
+
+
+def _native_state_closure(mll: Any, closure: Any, parameters: dict[str, Any]) -> Any:
+    """Keep Rust parameter state available even behind a caller's closure."""
+    from botorch_rs.optim.closures import NdarrayOptimizationClosure
+    from botorch_rs.optim.closures.model_closures import MllLossClosure
+
+    wrapped = NdarrayOptimizationClosure(closure, parameters)
+    wrapped._native = MllLossClosure(mll)
+    return wrapped
 
 
 def _adam_kwargs(optimizer: Any) -> dict[str, Any] | None:
@@ -611,7 +623,6 @@ def _fit_generic_torch(
     import torch
 
     from botorch_rs.optim.closures import (
-        NdarrayOptimizationClosure,
         get_loss_closure_with_grads,
     )
     from botorch_rs.optim.utils.model_utils import get_parameters_and_bounds
@@ -619,11 +630,19 @@ def _fit_generic_torch(
     param_dict, bounds_dict = get_parameters_and_bounds(mll, requires_grad=True)
     names = list(param_dict if parameters is None else parameters)
     state: Any = None
-    if closure is None:
-        native = get_loss_closure_with_grads(mll, {n: param_dict[n] for n in names})
-        state = NdarrayOptimizationClosure(native, {n: param_dict[n] for n in names})
+    selected = dict(param_dict if parameters is None else parameters)
+    if closure is None or any(not isinstance(value, torch.Tensor) for value in selected.values()):
+        native = (
+            get_loss_closure_with_grads(mll, {n: param_dict[n] for n in names})
+            if closure is None
+            else closure
+        )
+        state = _native_state_closure(mll, native, selected)
         tensors = {
-            n: torch.tensor(param_dict[n], dtype=torch.float64).clone().requires_grad_(True)
+            n: torch.as_tensor(selected[n], dtype=torch.float64)
+            .detach()
+            .clone()
+            .requires_grad_(True)
             for n in names
         }
 
@@ -641,7 +660,7 @@ def _fit_generic_torch(
         closure = tensor_closure
         opt_parameters: dict[str, Any] = tensors
     else:
-        opt_parameters = dict(param_dict if parameters is None else parameters)
+        opt_parameters = selected
     if closure_kwargs is not None:
         closure = functools.partial(closure, **closure_kwargs)
     result = torch_minimize(
