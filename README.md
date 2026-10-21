@@ -76,7 +76,7 @@ balances compatibility and performance:
   likelihoods and acquisition values to about 1e-10, except documented upstream
   correctness fixes and numerical conventions (see
   [Equivalence with BoTorch](#equivalence-with-botorch)).
-- **Not a complete replacement yet.** botorch-rust covers exact GPs
+- **Main BoTorch package.** botorch-rust covers exact GPs
   (single- and multi-output, batched, model lists, multi-task, multi-fidelity,
   mixed, MAP SAAS and ensembles), fully Bayesian GPs with native and GPU NUTS,
   variational and higher-order GPs, preference learning, the single- and
@@ -84,9 +84,10 @@ balances compatibility and performance:
   An optional Torch backend adds GPU execution and complete autograd graphs
   through specialized/empirical models, entropy search, lookahead and
   candidate optimization. Its
-  [coverage and remaining limits](docs/torch-backend.md) are tracked separately.
-  Specialized configurations and remaining gradient configurations are listed below. Public-name
-  coverage and numerical parity are tracked separately.
+  [backend configuration and verification](docs/torch-backend.md) are tracked separately.
+  Select `backend="torch"` for device execution and complete training-data and
+  hyperparameter graphs. Public-name availability and numerical parity are
+  measured separately.
 
 ## Installation
 
@@ -114,7 +115,7 @@ extension into the source tree instead (see [Development](#development)).
 
 ```toml
 [dependencies]
-botorch_core = { git = "https://github.com/M-Colley/botorch-rust", tag = "v0.2.0" }
+botorch_core = { git = "https://github.com/M-Colley/botorch-rust", tag = "v0.3.0" }
 ```
 
 ## Quickstart
@@ -445,8 +446,8 @@ commit `b0dd01be6`. This measures public-name availability. It does not
 mean that every configuration or gradient is supported.
 The [generated report](docs/api_coverage.md) and
 [machine-readable gap inventory](docs/api_coverage.json) list missing
-names, parameters and members; [the roadmap](docs/roadmap.md) orders the
-remaining work. The strict core check,
+names, parameters and members; [the roadmap](docs/roadmap.md) distinguishes
+native implementation follow-ups from the Tensor implementation. The strict core check,
 `python scripts/api_coverage.py --require-full`, passes for this pinned
 reference, including audited constructor parameters and public members.
 Configuration and numerical parity remain separate requirements.
@@ -500,59 +501,35 @@ are integrated in this branch:
   factorizations with fixed hyperparameters. `batch_cross_validation`
   refits the model for each fold.
 
-Configuration limits are documented separately for each backend:
+Backend selection and source boundaries:
 
-- **Empirical fitting:** native derivatives through cold and warm EM reruns,
-  learned explicit inducing locations and both fitters are integrated.
-  Movement of historical index grids remains configuration work. Frozen
-  pretrained empirical priors also support native fitting and prediction.
-- **Model configurations:** batched training and additional transforms
-  for some specialized models; learned input transforms on approximate
-  models; some model-list conditioning and fantasy combinations; and the
-  shared-parameter fitting across some training batches. Each model chapter
-  documents its current limits. Unsupported options raise `UnsupportedError`.
-- **Tensor semantics:** the optional [Torch backend](docs/torch-backend.md)
-  supports device-resident float32/float64 and higher-order graphs for its
-  documented model and acquisition families, including training inputs,
-  targets, noise and actual model Parameters. Scalar/multitask NUTS, specialized
-  and empirical models, entropy/search acquisitions and device optimization
-  have independent CPU/CUDA validation. The availability inventory and tested
-  configurations are recorded separately from exhaustive behavioral parity.
-  The following limits describe the default native CPU backend. Ordinary CPU
-  Torch `SingleTaskGP` models have persistent parameters and first-order
-  parameter gradients through posterior moments, samples and exact MLLs
-  ([scope](docs/posterior-parameter-gradients.md)). Supported native Gaussian
-  posterior families also expose first-order Torch query autograd
-  ([scope](docs/posterior-query-autograd.md)); native structured Matheron
-  posteriors also expose query adjoints, with documented fantasy-batch limits.
-  Joint Gaussian model lists also carry child parameter graphs
-  ([scope](docs/joint-model-list-autograd.md)). Common analytic and scalar MC
-  acquisitions carry parameter graphs for unbatched exact GPs and Gaussian
-  model lists ([families and snapshot semantics](docs/acquisition-parameter-gradients.md)).
-  Other acquisition families remain configuration work. Exact GPs also expose explicit native
-  [posterior parameter pullbacks](docs/posterior-parameter-gradients.md).
-  Variational GPs support persistent Torch parameters and native ELBO
-  backward for full data and minibatches
-  ([scope](docs/approximate-models.md)).
-  Gradients to model training inputs and targets, including fantasy training
-  data, remain unavailable; `propagate_grads(True)` does not enable them.
-  Models compute on the CPU in float64
-  and restore the caller's array dtype and device. Acquisition functions
-  expose native input derivatives.
-- **Acquisition and optimization configurations:** remaining posterior
-  transforms and learned MC objectives, specialized-model combinations in
-  lookahead and entropy search, some ensemble and batched multi-objective
-  configurations, batched box decompositions, exact-GP external-data
-  closures and low-level optimizer interfaces. Variational data-loader
-  closures are implemented with native minibatch gradients. See
-  [acquisition construction](docs/acquisition-construction.md),
-  [model limitations](docs/models.md), [transforms](docs/transforms.md)
-  and [optimization](docs/optimization.md).
-- **Supporting APIs:** batched or approximate path models, full model-state
-  interoperability, remaining specialized-model methods, and
-  model-specific configuration limits. `botorch_community` is outside the
-  main-package audit requested for this port. Atomic target/noise replacement and model
-  restoration helpers support the documented native model protocol.
+- The native backend computes on CPU in float64, accepts lists without Torch,
+  and provides analytic derivatives and persistent parameter/query autograd for
+  its documented interfaces. Its native algorithm and descriptor restrictions
+  are listed in the model chapters.
+- `backend="torch"` provides CPU/CUDA float32/float64 computation and ordinary
+  PyTorch graphs through training inputs, targets, noise, queries and model
+  Parameters, including higher derivatives. It includes specialized, empirical,
+  variational and fully Bayesian models; entropy/search and lookahead;
+  continuous, mixed and discrete optimization; custom modules, fitting closures,
+  samplers, paths, conditioning and fantasies. See the
+  [backend guide](docs/torch-backend.md), [fitting protocol](docs/fitting-protocol.md)
+  and configuration-specific numerical checks linked there.
+- Structured Tensor models may use dense exact algebra where native models
+  use Kronecker or iterative algorithms. This affects memory and performance.
+  Sampler Markov-chain decisions and optimizer iterations are not differentiated;
+  loaded posterior parameters and the documented envelope interfaces retain
+  their ordinary derivative semantics. Discrete observations do not gain
+  reparameterized samples.
+- Source-rejected configurations remain source-rejected. Additional GPyTorch
+  strategies that need different constructors require an adapting model or
+  factory, as in BoTorch. Optional external module and numerical dependencies
+  are needed only when those interfaces are used. `botorch_community` is outside
+  this main-package port.
+
+The inventory and regression suite do not prove equivalence for every possible
+caller-defined subclass or numerical configuration. The verification receipts
+state the exact collected cases, skips, dependency versions and artifact hashes.
 
 Existing release benchmark results above apply to the measured exact-GP
 and acquisition workflows. They do not establish a speedup for every newly
@@ -1542,6 +1519,11 @@ The model fits alone are 140–550× faster.
 
 ## Migration notes and known differences
 
+Unless stated otherwise, the numerical implementation notes below describe the
+native CPU route. The [Torch backend](docs/torch-backend.md) has its own device,
+module, fitting and higher-derivative protocols. In particular, its training-data
+graphs and supplied module callbacks are preserved.
+
 - **Preference learning.** Where BoTorch is wrong, botorch-rust has the
   correct behaviour:
   - the pairwise samplers list the preferred item first, so fantasies
@@ -1815,7 +1797,8 @@ The model fits alone are 140–550× faster.
   in Rust), and `acqf.value_and_grad(X)` returns query gradients for any array type.
 - **Fitting.** `pick_best_of_all_attempts` selects the best native L-BFGS-B or
   Adam result for `SingleTaskGP` families ([scope](docs/fit-attempts.md)).
-  Custom high-level optimizers and closures remain unsupported. Retries
+  Supplied optimizers, closures, callbacks, retries and state rollback use the
+  [generic fitting protocol](docs/fitting-protocol.md). Native default retries
   sample hyperparameters from their priors with a seeded generator
   (`fit_gpytorch_mll(mll, seed=...)`).
 - **Warnings and errors** follow BoTorch (`InputDataWarning` for unscaled

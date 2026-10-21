@@ -9,71 +9,33 @@ higher derivatives retain the ordinary PyTorch graph for supported operations.
 The audited main-package API inventory and tested numerical configurations
 are reported separately. Family-specific configuration limits still apply.
 
-Development after the frozen release adds [generic fitting protocols](fitting-protocol.md),
-[candidate-generation protocols](candidate-generation-protocols.md),
-[analytic batch probability](torch-analytic-batch-probability.md),
-[device pruning and constraint utilities](torch-baseline-pruning.md),
-[cached sampling and model-fit metrics](torch-low-rank-evaluation.md),
-[probit variational observations](torch-variational-probit.md),
-[custom acquisition subclasses](torch-acquisition-subclasses.md),
-[supplied exact Gaussian likelihoods](torch-exact-gaussian-likelihood.md), and
-[binary hypervolume partitioning](torch-hypervolume-partitioning.md).
-The newer audit also repairs
-[direct input transforms](torch-input-transforms.md),
-[direct model/outcome protocols](torch-backend-modules.md), and
-[native prediction cache reuse](native-prediction-cache.md).
-Caller-defined model modules are covered by the
-[custom Torch model protocol](torch-custom-models.md).
-These focused results do not replace the frozen release certificate below.
-The [equivalence verification notes](equivalence-verification.md) distinguish
-strict numerical comparisons, stabilization checks, statistical fitting and
-test-specific independent derivative oracles.
-The [October 21 development verification](verification-main-development-2026-10-21.json)
-records all 11,840 collected CPU/CUDA cases at checkpoint `c156b96`: 11,787
-passed, 51 skipped and two learned-objective pruning failures. Both failures
-were repaired in `d65f947` and pass focused checks. A separate later checkpoint,
-`d50bca8`, passes all 11 CI jobs, including 1,222 pinned-reference equivalence
-cases. These checkpoints do not certify subsequent changes or a new release.
-The [stricter equivalence audit](verification-equivalence-audit-2026-10-21.json)
-at `30c1c95` executed all 1,237 selected cases exactly once: 1,201 passed,
-15 skipped and 21 failed. Twenty ensemble cases pass after the device repair;
-the remaining inverse-power domain case now classifies undefined values
-separately from finite numerical comparisons. The
-[fresh frozen equivalence run](verification-equivalence-f943100-2026-10-21.json)
-at `f943100` passes 1,222 cases with 15 recorded skips and no failures. Exact
-selected-case accounting and all source/native/reference fingerprints remain
-stable. The failed baseline remains preserved as failed, and subsequent changes
-remain outside the new checkpoint.
-The later [cross-platform CI checkpoint](verification-main-ci-4560b50-2026-10-21.json)
-at `4560b50` passes all 11 jobs. Its pinned-reference broad phase passes 9,145
-cases with 818 skips; its separate equivalence phase passes 1,222 with 15 skips.
-The earlier 21 deliberate nonfinite-state/domain comparison failures are repaired
-with explicit validity checks and a negative control rejecting shared computed
-NaNs. This CI checkpoint precedes the latest direct-transform, structured-call
-and native-cache changes and does not certify a new wheel.
-The API inventory measures availability rather than configuration equivalence.
-Later [variational factory](variational-factory-configurations.md),
-[supplied likelihood](torch-variational-likelihood-protocol.md),
-[custom model](torch-custom-models.md), [fitting](fitting-protocol.md), and
-[acquisition cache](torch-noisy-root-cache.md) checks address configurations
-listed as gaps in earlier checkpoints. Family-specific notes distinguish
-implemented behavior, native-only limits and source-unsupported calls. A new
-release and Unity integration require fresh integrated verification of that
-reviewed scope.
+The 0.3.0 candidate consolidates the specialized, variational, fully Bayesian,
+utility and acquisition worktrees. Its finite configuration audits include
+[generic fitting](fitting-protocol.md),
+[candidate generation](candidate-generation-protocols.md),
+[custom models](torch-custom-models.md),
+[public module protocols](torch-backend-modules.md),
+[outcome modules and registered buffer authority](torch-outcome-modules.md),
+[public samplers](torch-samplers.md), and
+[path constructors](pathwise-public-constructors.md).
+Supplied Gaussian/non-Gaussian likelihoods, public posterior adapters, custom
+outcome callbacks, conditioning ownership and native fitted-state synchronization
+have dedicated source-positive and independent derivative checks.
 
-The later [frozen development equivalence checkpoint](verification-equivalence-c3e8317-2026-10-21.json)
-at `c3e8317` passes 1,222 cases with 15 skips, no failures, and all 1,237
-selected IDs accounted for. Python/test inventories, the production v8 native
-artifact, worker and pinned reference remain unchanged throughout the run.
-This covers the grouped variational, structured likelihood/iterative, and path
-module checkpoints at that commit. Subsequent ownership/configuration repairs
-remain outside its scope. The [complete frozen suite](verification-full-c3e8317-2026-10-21.json)
-now passes 13,683 cases with 51 skips and no failures. All 13,734 collected
-cases execute exactly once, with stable source/test/native/reference and
-worker fingerprints. The equivalence cases are included in this total.
-The [same checkpoint's CI](verification-main-ci-c3e8317-2026-10-21.json)
-passes all eleven jobs. These receipts precede the newer transform, sampler,
-conditioning and native iterative repairs and do not certify a new release.
+The candidate's complete installed-wheel verification is in progress. It
+collects 14,560 canonical CPU/CUDA cases against the pinned official source,
+including the strict equivalence selection. Source, installed package, native
+extension, wheel manifest, verifier, dependency and reference fingerprints are
+bound together. Failed and interrupted checkpoints remain preserved separately.
+Publication follows successful integrated verification and cross-platform CI.
+
+Earlier [frozen full-suite](verification-full-c3e8317-2026-10-21.json) and
+[equivalence](verification-equivalence-c3e8317-2026-10-21.json) checkpoints at
+`c3e8317` passed 13,683 cases with 51 skips, including 1,222 equivalence cases
+with 15 skips. Those historical receipts precede the latest changes; their
+counts are not added to candidate results. The
+[equivalence notes](equivalence-verification.md) distinguish strict comparisons,
+stabilization controls, statistical fitting and independent derivative oracles.
 
 Construct supported models with `backend="torch"` to request these semantics
 explicitly. `backend="auto"` selects it for CUDA training data, training tensors
@@ -280,6 +242,9 @@ Further details: [tensor algebra](tensor-native-algebra.md),
 [public samplers](torch-samplers.md).
 
 ## Release verification
+
+The following describes the historical October 20 release, rather than the
+0.3.0 candidate under verification above.
 
 The frozen Windows release wheel passes **10,542 Python cases**,
 with 49 recorded skips, and **532 Rust tests and

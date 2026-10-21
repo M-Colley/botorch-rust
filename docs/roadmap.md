@@ -1,6 +1,6 @@
-# Roadmap to a full port
+# Port coverage and native follow-up work
 
-botorch-rust 0.2.0's consolidated development branch includes the GP core
+botorch-rust 0.3.0's candidate implementation includes the GP core
 with kernel trees, priors and all input and outcome transforms; multi-task,
 multi-fidelity, mixed, MAP SAAS, ensemble, deterministic and contextual
 models; fully Bayesian GPs and NUTS; preference, variational and higher-order
@@ -11,11 +11,12 @@ The generated [coverage report](api_coverage.md) and
 [JSON gap inventory](api_coverage.json) record public names and missing API
 members against a pinned official BoTorch revision. Symbol availability
 does not prove that every configuration, gradient or algorithm is supported.
-The goal is the whole of BoTorch, with every ported component
-tested for equivalence like the existing ones (Rust fixtures generated with
-BoTorch, live side-by-side tests, randomized sweeps). This file orders the
-remaining work. Foundations come first, because most models and acquisition
-functions build on them.
+The main-package implementation has Rust fixture, live source, randomized,
+device and higher-derivative checks. The current release gate is documented in
+the [backend guide](torch-backend.md). The phase notes below retain the native
+CPU implementation history and its algorithm/configuration follow-ups. Native
+restrictions are separate from the Tensor routes that provide device and
+autograd behavior; the availability inventory alone proves neither.
 
 The [integrated Tensor release](torch-backend.md#release-verification) includes
 specialized and empirical models, scalar/multitask device NUTS, entropy and

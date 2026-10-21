@@ -1,8 +1,8 @@
 {
-  "date": "2026-10-20",
-  "reference_version": "Unknown",
+  "date": "2026-10-21",
+  "reference_version": "0.18.2.dev41+gb0dd01be6",
   "reference_commit": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
-  "rust_version": "0.2.0",
+  "rust_version": "0.3.0",
   "public_symbols": 776,
   "available_symbols": 776,
   "availability_percent": 100.0,
