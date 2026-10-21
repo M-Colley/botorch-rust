@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from gpytorch.distributions import MultivariateNormal
+from gpytorch.distributions import MultitaskMultivariateNormal, MultivariateNormal
 from gpytorch.likelihoods import _OneDimensionalLikelihood
 from linear_operator.operators import DenseLinearOperator, DiagLinearOperator
 from torch import Tensor, nn
@@ -23,47 +23,71 @@ class _LikelihoodGaussian(MultivariateNormal):
         return self.mean + (root @ base_samples.unsqueeze(-1)).squeeze(-1)
 
 
+class _LikelihoodMultitaskGaussian(MultitaskMultivariateNormal):
+    def rsample(self, sample_shape: Any = (), base_samples: Any = None) -> Tensor:
+        if base_samples is None:
+            base_samples = self.get_base_samples(torch.Size(sample_shape))
+        root = _rs.tensor_psd_safe_cholesky(self.covariance_matrix)
+        centered = (root @ base_samples.flatten(-2).unsqueeze(-1)).squeeze(-1)
+        return self.mean + centered.reshape(*centered.shape[:-1], *self.event_shape)
+
+
 def gaussian(function: Any, *, diagonal: bool = False) -> Any:
     """Supply a Gaussian distribution without invoking an upstream GP model."""
+    multitask = bool(getattr(function, "_multitask", False))
+    variance = function.variance.flatten(-2) if multitask else function.variance
     covariance = (
-        DiagLinearOperator(function.variance)
+        DiagLinearOperator(variance)
         if diagonal
         else DenseLinearOperator(function.covariance_matrix)
     )
-    return _LikelihoodGaussian(function.mean, covariance)
+    cls: Any = _LikelihoodMultitaskGaussian if multitask else _LikelihoodGaussian
+    return cls(function.mean, covariance)
 
 
 class _ExpectedLogProbability(nn.Module):
     likelihood: Any
 
-    def __init__(self, likelihood: nn.Module) -> None:
+    def __init__(self, likelihood: nn.Module, multitask: bool) -> None:
         super().__init__()
         self.likelihood = likelihood
+        self.multitask = multitask
 
     def forward(
-        self, target: Tensor, mean: Tensor, variance: Tensor, covariance: Any = None
+        self,
+        target: Tensor,
+        mean: Tensor,
+        variance: Tensor,
+        covariance: Any = None,
+        **kwargs: Any,
     ) -> Tensor:
         # Scalar likelihood quadrature needs only the marginal variances;
         # an N x N training covariance is unnecessary for this ELBO term.
-        distribution = _LikelihoodGaussian(
+        cls: Any = _LikelihoodGaussian
+        if self.multitask:
+            mean, variance = mean.transpose(-1, -2), variance.transpose(-1, -2).flatten(-2)
+            cls = _LikelihoodMultitaskGaussian
+        distribution = cls(
             mean,
             DiagLinearOperator(variance) if covariance is None else DenseLinearOperator(covariance),
         )
-        return self.likelihood.expected_log_prob(target, distribution)
+        return self.likelihood.expected_log_prob(target, distribution, **kwargs)
 
 
 def snapshot_expected_log_prob(likelihood: nn.Module, function: Any) -> Any:
     """Capture likelihood Tensor state while retaining its original leaf graph."""
-    evaluator = _ExpectedLogProbability(likelihood)
+    evaluator = _ExpectedLogProbability(likelihood, function._multitask)
     parameters = {name: value.clone() for name, value in evaluator.named_parameters()}
     buffers = {name: value.clone() for name, value in evaluator.named_buffers()}
 
-    def expected(target: Tensor, mean: Tensor, variance: Tensor) -> Tensor:
+    def expected(target: Tensor, mean: Tensor, variance: Tensor, **kwargs: Any) -> Tensor:
         covariance = (
-            None if isinstance(likelihood, _OneDimensionalLikelihood) else function._blocks()
+            None
+            if isinstance(likelihood, _OneDimensionalLikelihood)
+            else function.covariance_matrix
         )
         return torch.func.functional_call(
-            evaluator, (parameters, buffers), (target, mean, variance, covariance)
+            evaluator, (parameters, buffers), (target, mean, variance, covariance), kwargs
         )
 
     return expected

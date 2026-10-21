@@ -32,6 +32,9 @@ class ShiftedStudentTLikelihood(gpytorch.likelihoods.StudentTLikelihood):
     def forward(self, samples, **kwargs):
         return super().forward(samples + self.offset, **kwargs)
 
+    def expected_log_prob(self, target, function, likelihood_weight=1, **kwargs):
+        return super().expected_log_prob(target, function, **kwargs) * likelihood_weight
+
 
 class JointLinearLikelihood(gpytorch.likelihoods.Likelihood):
     """A supplied likelihood whose expectation needs off-diagonal covariance."""
@@ -327,3 +330,27 @@ def test_dense_higher_oracle_matches_convergent_unmodified_source_first_gradient
     for actual, larger, smaller in zip(higher, *estimates, strict=True):
         torch.testing.assert_close(larger, smaller, rtol=2e-5, atol=2e-6)
         torch.testing.assert_close(actual, smaller, rtol=2e-5, atol=2e-6)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_elbo_likelihood_keyword_tensor_retains_mixed_graphs(device):
+    actual_model, source_model = pair(device, "ShiftedStudentTLikelihood")
+    model, x, y = actual_model
+    reference, xx, yy = source_model
+    weight = x.new_tensor(0.7, requires_grad=True)
+    value = VariationalELBO(model.likelihood, model.model, num_data=11)(
+        model.model(x), y.squeeze(-1), likelihood_weight=weight
+    )
+    output = reference.model(xx)
+    source = ReferenceELBO(reference.likelihood, reference.model, num_data=11)(
+        output, yy.squeeze(-1), likelihood_weight=weight
+    )
+    source_likelihood = ReferenceELBO(
+        reference.likelihood, reference.model, num_data=11, combine_terms=False
+    )(output, yy.squeeze(-1))[0]
+    torch.testing.assert_close(value, source, rtol=2e-9, atol=2e-10)
+    weight_gradient = torch.autograd.grad(value.sum(), weight, create_graph=True)[0]
+    torch.testing.assert_close(weight_gradient, source_likelihood.sum(), rtol=2e-9, atol=2e-10)
+    actual_mixed = torch.autograd.grad(weight_gradient, x)[0]
+    source_mixed = torch.autograd.grad(source_likelihood.sum(), xx)[0]
+    torch.testing.assert_close(actual_mixed, source_mixed, rtol=3e-7, atol=3e-8)

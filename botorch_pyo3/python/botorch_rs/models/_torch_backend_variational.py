@@ -709,7 +709,9 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         )
 
         bernoulli = type(likelihood) is BernoulliLikelihood or (
-            gpytorch is not None and type(likelihood) is gpytorch.likelihoods.BernoulliLikelihood
+            num_outputs == 1
+            and gpytorch is not None
+            and type(likelihood) is gpytorch.likelihoods.BernoulliLikelihood
         )
         external_gaussian = (
             gpytorch is not None and type(likelihood) is gpytorch.likelihoods.GaussianLikelihood
@@ -722,6 +724,7 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             )
         )
         self._non_gaussian_likelihood = bernoulli or external_non_gaussian
+        self._external_likelihood = external_non_gaussian and not bernoulli
         if bernoulli:
             if num_outputs != 1:
                 raise UnsupportedError(
@@ -729,10 +732,6 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
                 )
             self.likelihood = TorchBernoulliLikelihood(likelihood, train_X)
         elif external_non_gaussian:
-            if num_outputs != 1:
-                raise UnsupportedError(
-                    "Supplied non-Gaussian variational likelihoods currently require a scalar latent output."
-                )
             self.likelihood = likelihood.to(train_X)
         elif external_gaussian:
             if num_outputs != 1:
@@ -1163,9 +1162,9 @@ class TorchVariationalELBO(nn.Module, VariationalELBO):
     def forward(
         self, approximate_dist_f: Any = None, target: Tensor | None = None, **kwargs: Any
     ) -> Any:
-        if kwargs:
-            raise UnsupportedError(f"Unsupported Torch ELBO arguments: {sorted(kwargs)}.")
         owner = self.model._outer
+        if kwargs and not owner._external_likelihood:
+            raise UnsupportedError(f"Unsupported Torch ELBO arguments: {sorted(kwargs)}.")
         if approximate_dist_f is None:
             approximate_dist_f = self.model(self.model.train_inputs[0])
             target = self.model.train_targets if target is None else target
@@ -1184,22 +1183,28 @@ class TorchVariationalELBO(nn.Module, VariationalELBO):
             output._mean,
             output._variance.clamp_min(1e-6 if output._mean.dtype == torch.float32 else 1e-10),
         )
-        if owner.num_outputs == 1:
+        if owner._external_likelihood:
+            # Match the likelihood protocol and event normalization used by
+            # VariationalELBO, including categorical labels for latent outputs.
+            log_likelihood = output._expected_log_prob(target, mean, variance, **kwargs).sum(-1)
+            log_likelihood = log_likelihood / output.event_shape[0]
+        elif owner.num_outputs == 1:
             y = target.squeeze(-1) if target.ndim == mean.ndim + 1 else target
         else:
             y = target.transpose(-1, -2)
-        if y.shape != mean.shape:
-            raise ValueError("ELBO targets must match the q(f) event and batch shapes.")
-        if hasattr(output, "_expected_log_prob"):
-            log_likelihood = output._expected_log_prob(y, mean, variance).mean(-1)
-        else:
-            log_likelihood = -0.5 * (
-                ((y - mean).square() + variance) / output._noise
-                + output._noise.log()
-                + math.log(2 * math.pi)
-            ).mean(-1)
-        if owner.num_outputs > 1:
-            log_likelihood = log_likelihood.sum(-1)
+        if not owner._external_likelihood:
+            if y.shape != mean.shape:
+                raise ValueError("ELBO targets must match the q(f) event and batch shapes.")
+            if hasattr(output, "_expected_log_prob"):
+                log_likelihood = output._expected_log_prob(y, mean, variance).mean(-1)
+            else:
+                log_likelihood = -0.5 * (
+                    ((y - mean).square() + variance) / output._noise
+                    + output._noise.log()
+                    + math.log(2 * math.pi)
+                ).mean(-1)
+            if owner.num_outputs > 1:
+                log_likelihood = log_likelihood.sum(-1)
         kl = output._kl * (self.beta / self.num_data)
         prior = torch.zeros_like(log_likelihood) + output._log_prior / self.num_data
         return log_likelihood - kl + prior if self.combine_terms else (log_likelihood, kl, prior)
