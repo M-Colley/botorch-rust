@@ -319,5 +319,13 @@ Their counts are not added to this release's totals.
 
 The implementation is reviewable in
 [port PR #1](https://github.com/M-Colley/botorch-rust/pull/1).
+
+Public input transforms now also expose their actual parameter, prior and
+constraint traversal on the Torch module, including Warp prior closures and
+initialization, learned-imputation bounds, and custom call hooks. Actual
+GPyTorch priors retain caller identity and device/autograd behavior; native
+descriptors remain eligible for the native backend until a Tensor operation
+requires their live module state. Focused CPU/CUDA integration passes 517 cases,
+with 137 subsequent protocol cases covering the final call-hook changes.
 [Upstream submissions](upstream-pull-requests.md) track verified defects and
 proposed repairs, including reused PRs and the SciPy human submission step.

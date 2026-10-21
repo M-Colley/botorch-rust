@@ -144,13 +144,13 @@ def test_imputation_actual_parameter_identity_source_values_and_complete_graphs(
         dtype=X.dtype,
         device=device,
     )
-    actual = LearnedFeatureImputation(**options)
     # GPyTorch Interval constructs its bounds in the global default dtype.
     # Use the source's supported double-construction configuration so a
     # float32 intermediate does not quantize the explicit double bounds VJP.
     default_dtype = torch.get_default_dtype()
     try:
         torch.set_default_dtype(X.dtype)
+        actual = LearnedFeatureImputation(**options)
         expected = source.LearnedFeatureImputation(**options)
     finally:
         torch.set_default_dtype(default_dtype)

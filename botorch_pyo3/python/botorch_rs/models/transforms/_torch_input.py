@@ -225,6 +225,8 @@ def warp_apply(transform: Any, X: Any, inverse: bool) -> Any:
     from botorch_rs.exceptions.errors import BotorchTensorDimensionError
     from botorch_rs.models.transforms.utils import inv_kumaraswamy_warp, kumaraswamy_warp
 
+    transform.__dict__.get("_native_default_parameters", {}).clear()
+
     if X.ndim < 2 or X.shape[-1] != transform._d:
         raise BotorchTensorDimensionError(f"Warp inputs must have shape (..., n, {transform._d}).")
     if (
@@ -373,6 +375,8 @@ def imputation_values(transform: Any, like: Any) -> Any:
 
 def imputation_apply(transform: Any, X: Any) -> Any:
     import torch
+
+    transform.__dict__.get("_native_default_parameters", {}).clear()
 
     if X.shape[-1] == transform.d:
         if transform.target_task is None:

@@ -170,6 +170,11 @@ class InputTransform(NativeBufferModule):
         return X
 
     def __call__(self, X: Any) -> Any:
+        torch = sys.modules.get("torch")
+        if torch is not None and isinstance(self, torch.nn.Module):
+            result = torch.nn.Module.__call__(self, X)
+            self._refresh_affine_buffers()
+            return result
         return self.forward(X)
 
     def parameters(self, recurse: bool = True) -> Iterator[Any]:
@@ -793,7 +798,7 @@ class Normalize(AffineInputTransform):
             return self.transform(X)
         return super().forward(X)
 
-    __call__ = forward
+    __call__ = InputTransform.__call__
 
     @property
     def learn_coefficients(self) -> bool:
@@ -1100,8 +1105,14 @@ class Warp(ReversibleInputTransform):
             ("concentration0_prior", concentration0_prior),
             ("concentration1_prior", concentration1_prior),
         ):
-            if p is not None and not isinstance(p, Prior):
-                raise UnsupportedError(f"`{name}` must be a botorch_rs prior.")
+            torch = sys.modules.get("torch")
+            tensor_prior = (
+                torch is not None
+                and isinstance(p, torch.nn.Module)
+                and callable(getattr(p, "log_prob", None))
+            )
+            if p is not None and not isinstance(p, Prior) and not tensor_prior:
+                raise UnsupportedError(f"`{name}` must be a botorch_rs or Torch module prior.")
         self.concentration0_prior = concentration0_prior
         self.concentration1_prior = concentration1_prior
         self._normalize = Normalize(d=d, indices=idx, bounds=bounds)
@@ -1125,8 +1136,8 @@ class Warp(ReversibleInputTransform):
             list(self.indices),
             self._eps,
             self._bounds,
-            self.concentration0_prior._rs if self.concentration0_prior is not None else None,
-            self.concentration1_prior._rs if self.concentration1_prior is not None else None,
+            getattr(self.concentration0_prior, "_rs", None),
+            getattr(self.concentration1_prior, "_rs", None),
             self.reverse,
             self._flags(),
             batched=bool(self.batch_shape),
@@ -1273,8 +1284,8 @@ class Warp(ReversibleInputTransform):
                     list(self.indices),
                     self._eps,
                     bounds,
-                    self.concentration0_prior._rs if self.concentration0_prior else None,
-                    self.concentration1_prior._rs if self.concentration1_prior else None,
+                    getattr(self.concentration0_prior, "_rs", None),
+                    getattr(self.concentration1_prior, "_rs", None),
                     self.reverse,
                     self._flags(),
                     batched=bool(self.batch_shape),
@@ -1377,6 +1388,11 @@ class Warp(ReversibleInputTransform):
         # shape); a batched Warp's concentrations come from `_batch_params`,
         # or, in the chain of batch element `batch` of a model whose chain
         # differs per batch element, from that element.
+        if any(
+            p is not None and not hasattr(p, "_rs")
+            for p in (self.concentration0_prior, self.concentration1_prior)
+        ):
+            raise UnsupportedError("Native Warp fitting requires port priors; use backend='torch'.")
         steps = self._current_steps()
         index = batch if batch is not None and self.batch_shape else 0
         return [_Step(steps[index], self.training, prefix, self)]

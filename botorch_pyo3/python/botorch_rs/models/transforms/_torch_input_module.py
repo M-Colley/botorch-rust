@@ -82,12 +82,12 @@ class TorchPublicInputTransform(_TorchModule):
                         GreaterThan(source._min_concentration_level, transform=None), like
                     ),
                 )
-                self._register_prior(
-                    f"{name}_prior",
-                    getattr(source, f"{name}_prior"),
-                    name,
-                    2 if source.batch_shape else 1,
-                )
+                prior_name, prior = f"{name}_prior", getattr(source, f"{name}_prior")
+                if isinstance(prior, nn.Module):
+                    self._modules[prior_name] = prior.to(like)
+                    self._prior_parameters[prior_name] = name, 2 if source.batch_shape else 1
+                else:
+                    self._register_prior(prior_name, prior, name, 2 if source.batch_shape else 1)
         self.training = source.training
 
     def __getattr__(self, name: str) -> Any:

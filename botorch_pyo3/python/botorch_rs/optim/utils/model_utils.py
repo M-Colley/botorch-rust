@@ -196,6 +196,26 @@ def get_parameters_and_bounds(
     """
     params: dict[str, Any] = {}
     bounds: dict[str, tuple[Any, Any]] = {}
+    torch = sys.modules.get("torch")
+    traversal = getattr(module, "named_parameters_and_constraints", None)
+    if torch is not None and isinstance(module, torch.nn.Module) and callable(traversal):
+        for name, value, constraint in traversal():
+            if requires_grad is not None and value.requires_grad != requires_grad:
+                continue
+            if name_filter and not name_filter(name):
+                continue
+            params[name] = value
+            if constraint is not None:
+                limits = tuple(
+                    default if bound is None else constraint.inverse_transform(bound)
+                    for bound, default in zip(
+                        (constraint.lower_bound, constraint.upper_bound),
+                        default_bounds,
+                        strict=True,
+                    )
+                )
+                bounds[name] = limits[0], limits[1]
+        return params, bounds
     for name, value, (lo, hi) in _named_parameters(module):
         if requires_grad is not None and _requires_grad(value) != requires_grad:
             continue

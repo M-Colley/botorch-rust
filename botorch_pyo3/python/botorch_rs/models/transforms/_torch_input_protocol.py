@@ -7,6 +7,8 @@ the native descriptors and never acquire a Torch dependency.
 
 from __future__ import annotations
 
+import functools
+import inspect
 from typing import Any, SupportsIndex
 
 import torch
@@ -17,6 +19,14 @@ from botorch_rs._buffers import _logical_dtype
 from botorch_rs.models.transforms import _torch_input
 
 _types: dict[type, type] = {}
+
+
+def _get_parameter(owner: Any, name: str) -> Any:
+    return getattr(owner, name)
+
+
+def _set_parameter(owner: Any, value: Any, name: str) -> None:
+    owner.initialize(**{name: value})
 
 
 def _rebuild(public: Any, state: dict[str, Any]) -> Any:
@@ -61,6 +71,12 @@ def module_type(public: type) -> type:
         "_load_from_state_dict",
     ):
         attributes[name] = getattr(TorchInputModule, name)
+    from botorch_rs.models.transforms.input import InputTransform, Warp
+
+    if getattr(public, "initialize", None) is Warp.initialize:
+        attributes["initialize"] = TorchInputModule.initialize
+    if public.__call__ is not InputTransform.__call__:
+        attributes["__call__"] = public.__call__
     result = type(public.__name__, (public, TorchInputModule), attributes)
     _types[public] = result
     return result
@@ -87,6 +103,7 @@ def promote(value: Any) -> Any:
 
 class TorchInputModule(nn.Module):
     _native_port_descriptor: Any
+    _normalize: Any
 
     def __getattr__(self, name: str) -> Any:
         try:
@@ -140,7 +157,7 @@ class TorchInputModule(nn.Module):
 
     def _finish_module(self) -> None:
         from botorch_rs.constraints import GreaterThan
-        from botorch_rs.models._torch_backend_modules import TorchConstraint, TorchPrior
+        from botorch_rs.models._torch_backend_modules import TorchConstraint
         from botorch_rs.models.transforms.input import (
             AffineInputTransform,
             BatchBroadcastedInputTransform,
@@ -150,6 +167,9 @@ class TorchInputModule(nn.Module):
             NumericToCategoricalEncoding,
             Warp,
         )
+
+        self.__dict__.setdefault("_input_priors", {})
+        self.__dict__.setdefault("_constraints", {})
 
         # Constructor Tensor arguments remain the actual registered objects.
         for name, value in tuple(self.__dict__.items()):
@@ -226,26 +246,178 @@ class TorchInputModule(nn.Module):
                     "sigmoid",
                     True,
                 )
-                constraint.lower_bound = torch.cat((bounds[0], parameter.new_zeros(1))).repeat(
-                    self.num_tasks
+                constraint.lower_bound = (
+                    torch.cat((bounds[0], parameter.new_zeros(1)))
+                    .repeat(self.num_tasks)
+                    .to(dtype=torch.get_default_dtype())
                 )
-                constraint.upper_bound = torch.cat((bounds[1], parameter.new_ones(1))).repeat(
-                    self.num_tasks
+                constraint.upper_bound = (
+                    torch.cat((bounds[1], parameter.new_ones(1)))
+                    .repeat(self.num_tasks)
+                    .to(dtype=torch.get_default_dtype())
                 )
-                self.add_module("raw_imputation_values_constraint", constraint)
+                self.register_constraint("raw_imputation_values", constraint)
         if isinstance(self, Warp):
             like = self.concentration0
             for i in (0, 1):
                 name = f"concentration{i}"
-                self.add_module(
-                    f"{name}_constraint",
+                self.register_constraint(
+                    name,
                     TorchConstraint(
                         GreaterThan(self._min_concentration_level, transform=None), like
                     ),
                 )
                 prior = getattr(self, f"{name}_prior")
                 if prior is not None:
-                    self.add_module(f"_registered_{name}_prior", TorchPrior(prior, like))
+                    self.register_prior(f"{name}_prior", prior, name)
+
+    def initialize(self, **values: Any) -> Any:
+        for path, value in values.items():
+            prefix, _, name = path.rpartition(".")
+            owner = self.get_submodule(prefix) if prefix else self
+            current = getattr(owner, name)
+            if not isinstance(current, Tensor):
+                setattr(owner, name, value)
+                continue
+            tensor = torch.as_tensor(value, dtype=current.dtype, device=current.device)
+            constraint = getattr(owner, f"{name}_constraint", None)
+            if constraint is not None and (
+                not isinstance(value, Tensor) or getattr(constraint, "enforced", False)
+            ):
+                check = getattr(constraint, "check_raw", None)
+                constrained = constraint.transform(tensor) if constraint.enforced else tensor
+                valid = (
+                    check(tensor)
+                    if check is not None
+                    else bool(
+                        (
+                            (constrained >= constraint.lower_bound)
+                            & (constrained <= constraint.upper_bound)
+                        ).all()
+                    )
+                )
+                if not valid:
+                    raise RuntimeError(
+                        "Attempting to manually set a parameter value out of bounds."
+                    )
+            with torch.no_grad():
+                if owner.__dict__.get("_model") is not None and name in owner.__dict__.get(
+                    "_direct_parameters", {}
+                ):
+                    setattr(owner, name, tensor)
+                else:
+                    current.copy_(tensor.expand_as(current))
+        return self
+
+    def register_constraint(self, name: str, constraint: Any, replace: bool = True) -> None:
+        from botorch_rs.models._torch_backend_modules import TorchConstraint
+
+        if name not in self._parameters:
+            raise RuntimeError("Attempting to register constraint for nonexistent parameter.")
+        if not isinstance(constraint, nn.Module):
+            parameter = self._parameters[name]
+            constraint = TorchConstraint(
+                constraint, torch.empty(()) if parameter is None else parameter
+            )
+        key = f"{name}_constraint"
+        current = self.__dict__.setdefault("_constraints", {}).get(key)
+        if current is not None and not replace:
+            intersect = getattr(constraint, "intersect", None)
+            if intersect is None:
+                if constraint is not current:
+                    raise RuntimeError("Cannot intersect constraints with conflicting transforms.")
+                if not bool(
+                    torch.isfinite(constraint.lower_bound).all()
+                    & torch.isfinite(constraint.upper_bound).all()
+                ):
+                    raise RuntimeError("An Interval requires finite lower and upper bounds.")
+                merged = TorchConstraint(None, constraint.lower_bound)
+                merged.kind, merged.transform_name, merged.enforced = "Interval", "sigmoid", True
+                merged.lower_bound = constraint.lower_bound.to(dtype=torch.get_default_dtype())
+                merged.upper_bound = constraint.upper_bound.to(dtype=torch.get_default_dtype())
+                constraint = merged
+            else:
+                constraint = intersect(current)
+        self._modules[key] = constraint
+        self._constraints[key] = constraint
+        initial = getattr(constraint, "initial_value", None)
+        if initial is not None:
+            self.initialize(**{name: initial})
+
+    def constraint_for_parameter_name(self, name: str) -> Any:
+        prefix, _, local = name.rpartition(".")
+        owner = self.get_submodule(prefix) if prefix else self
+        return getattr(owner, f"{local}_constraint", None)
+
+    def named_parameters_and_constraints(self) -> Any:
+        for name, parameter in self.named_parameters():
+            yield name, parameter, self.constraint_for_parameter_name(name)
+
+    def named_hyperparameters(self) -> Any:
+        yield from self.named_parameters()
+
+    def hyperparameters(self) -> Any:
+        yield from self.parameters()
+
+    def named_variational_parameters(self) -> Any:
+        return iter(())
+
+    def variational_parameters(self) -> Any:
+        return iter(())
+
+    def named_constraints(self) -> Any:
+        seen: set[int] = set()
+        for prefix, owner in self.named_modules():
+            for name, constraint in owner.__dict__.get("_constraints", {}).items():
+                if id(constraint) not in seen:
+                    seen.add(id(constraint))
+                    yield f"{prefix}.{name}" if prefix else name, constraint
+
+    def constraints(self) -> Any:
+        for _, constraint in self.named_constraints():
+            yield constraint
+
+    def register_prior(
+        self, name: str, prior: Any, param_or_closure: Any, setting_closure: Any = None
+    ) -> None:
+        from botorch_rs.models._torch_backend_modules import TorchPrior
+
+        if isinstance(param_or_closure, str):
+            if not hasattr(self, param_or_closure):
+                raise AttributeError(f"Unknown parameter {param_or_closure}.")
+            if setting_closure is not None:
+                raise RuntimeError("Specify a closure when providing setting_closure.")
+            get = functools.partial(_get_parameter, name=param_or_closure)
+            setting_closure = functools.partial(_set_parameter, name=param_or_closure)
+        else:
+            if not callable(param_or_closure) or not inspect.signature(param_or_closure).parameters:
+                raise ValueError("The prior closure must operate on a module instance.")
+            get = param_or_closure
+        if not isinstance(prior, nn.Module):
+            like = next(self.parameters(), torch.empty(()))
+            prior = TorchPrior(prior, like)
+        self._modules[name] = prior
+        self.__dict__.setdefault("_input_priors", {})[name] = (prior, get, setting_closure)
+
+    def named_priors(self) -> Any:
+        seen: set[tuple[int, str]] = set()
+        for prefix, owner in self.named_modules():
+            records = owner.__dict__.get("_input_priors", {})
+            records = {**owner.__dict__.get("_priors", {}), **records}
+            for name, (prior, get, setting) in records.items():
+                key = id(owner), name
+                if key not in seen:
+                    seen.add(key)
+                    yield f"{prefix}.{name}" if prefix else name, owner, prior, get, setting
+
+    def sample_from_prior(self, name: str) -> None:
+        record = self.__dict__.get("_input_priors", {}).get(name)
+        if record is None:
+            raise RuntimeError(f"Unknown prior name '{name}'.")
+        prior, _, setting = record
+        if setting is None:
+            raise RuntimeError("Must provide inverse transform to sample from prior.")
+        setting(self, prior.sample())
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if args and isinstance(args[0], Tensor):
