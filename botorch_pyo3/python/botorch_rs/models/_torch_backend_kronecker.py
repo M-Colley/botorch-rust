@@ -566,6 +566,8 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
         untransform: bool = True,
         **kwargs: Any,
     ) -> Any:
+        from botorch_rs.models._torch_structured_likelihood import multitask_observed_law
+
         if kwargs or not isinstance(observation_noise, bool):
             raise UnsupportedError(
                 "Structured Tensor prediction requires bool observation_noise and no extra options."
@@ -602,13 +604,15 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
             count = n * m
             ktq, kqq = joint[..., :count, count:], joint[..., count:, count:]
             query_mean = full_mean[..., n:, :]
-        task_noise = self._noise_matrix()
-        noise = tensor_kron(torch.eye(n, dtype=X.dtype, device=X.device), task_noise)
-        test_noise = (
-            tensor_kron(torch.eye(q, dtype=X.dtype, device=X.device), task_noise)
-            if observation_noise
-            else None
+        observed_mean, observed_covariance = multitask_observed_law(
+            self, train_mean, ktt, train, training=True
         )
+        noise = observed_covariance - ktt
+        train_mean = observed_mean
+        test_noise = None
+        if observation_noise:
+            query_mean, observed_covariance = multitask_observed_law(self, query_mean, kqq, query)
+            test_noise = observed_covariance - kqq
         factor, alpha = _rs.tensor_exact_gp_factor(
             Y.flatten(-2), ktt + noise, train_mean.flatten(-2), torch.zeros_like(Y.flatten(-2))
         )
@@ -638,7 +642,7 @@ class TorchKroneckerMultiTaskGP(nn.Module, KroneckerMultiTaskGP):
             ktt,
             ktq.transpose(-1, -2),
             Y - train_mean,
-            query_mean,
+            query_mean.clone(),
             noise,
             test_noise,
             n,

@@ -91,13 +91,14 @@ class TorchLatentKroneckerPosterior(TorchGPyTorchPosterior, LatentKroneckerGPPos
         prior = (_rs.tensor_psd_safe_cholesky(self._joint_tensor) @ normal.unsqueeze(-1)).squeeze(
             -1
         )
-        epsilon = base[..., self._nfull : self._nfull + self._nobserved] * self._noise.sqrt()
+        epsilon = (
+            _rs.tensor_psd_safe_cholesky(self._noise)
+            @ base[..., self._nfull : self._nfull + self._nobserved].unsqueeze(-1)
+        ).squeeze(-1)
         residual = (
             self._targets - self._train_mean - prior[..., : self._nfull][..., self._mask] - epsilon
         )
-        factor = torch.linalg.cholesky(
-            self._train_covariance + torch.diag_embed(self._noise.expand_as(self._targets))
-        )
+        factor = torch.linalg.cholesky(self._train_covariance + self._noise)
         update = self._cross.transpose(-1, -2) @ torch.cholesky_solve(
             residual.unsqueeze(-1), factor
         )
@@ -311,6 +312,24 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         )
         return value if mask is None else value[..., mask]
 
+    def _get_test_prior_mean_and_covariances(
+        self,
+        train_inputs: list[Tensor],
+        test_inputs: list[Tensor],
+        **kwargs: Any,
+    ) -> Any:
+        """Source-compatible query-prior hook, separate from the training prior."""
+        train_X, train_T = train_inputs
+        X, T = test_inputs
+        mean = self._get_mean(X, T)
+        covariance = self._covariance(X, T, X, T)
+        cross = self._covariance(X, T, train_X, train_T)[..., :, self.mask_valid]
+        batch = torch.broadcast_shapes(train_X.shape[:-2], X.shape[:-2], T.shape[:-2])
+        distribution_type = type(
+            TorchGPyTorchPosterior(mean.unsqueeze(-1), covariance).distribution
+        )
+        return mean, covariance, cross, batch, torch.Size([mean.shape[-1]]), distribution_type
+
     def _log_prior(self) -> Tensor:
         value = self._train_X.new_zeros(self.batch_shape)
         for module in (
@@ -365,8 +384,17 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         *,
         inputs_transformed: bool = False,
         untransform: bool = True,
+        allow_fixed_noise: bool = False,
         **kwargs: Any,
     ) -> Any:
+        from botorch_rs.models._torch_gaussian_likelihood import is_fixed_noise
+        from botorch_rs.models._torch_structured_likelihood import scalar_observed_law
+
+        if is_fixed_noise(self.likelihood) and not allow_fixed_noise:
+            raise UnsupportedError(
+                "LatentKronecker public posterior requires GaussianLikelihood; "
+                "fixed-noise modules support training and direct evaluation."
+            )
         if kwargs or observation_noise is not False or posterior_transform is not None:
             raise UnsupportedError(
                 "LatentKronecker prediction supports latent outputs and no posterior transform overrides."
@@ -391,14 +419,29 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         train, time, query, T = [v.expand(*batch, *v.shape[-2:]) for v in (train, time, query, T)]
         full_train = self._covariance(train, time, train, time)
         full_cross = self._covariance(train, time, query, T)
-        test = self._covariance(query, T, query, T)
         mask = self.mask_valid
-        covariance = full_train[..., mask, :][..., :, mask]
-        cross = full_cross[..., mask, :]
-        mean_train = self._get_mean(train, time, mask)
-        mean_test = self._get_mean(query, T)
+        training_prior = nn.Module.__call__(self, train, time)
+        covariance, mean_train = training_prior.covariance_matrix, training_prior.mean
+        mean_test, test, test_train, _, _, _ = self._get_test_prior_mean_and_covariances(
+            [train, time], [query, T]
+        )
+        test = test if isinstance(test, Tensor) else test.to_dense()
+        test_train = test_train if isinstance(test_train, Tensor) else test_train.to_dense()
+        cross = test_train.transpose(-1, -2)
+        # The source evaluates a virtual training prior separately from its
+        # test/cross hook. Preserve those blocks in the full-grid Matheron law,
+        # including the masked training cells retained in its normal layout.
+        selection = torch.eye(mask.numel(), device=train.device, dtype=train.dtype)[mask]
+        baseline = full_train[..., mask, :][..., :, mask]
+        full_train = full_train + selection.T @ (covariance - baseline) @ selection
+        full_cross = full_cross + selection.T @ (cross - full_cross[..., mask, :])
+        observed_mean, observed_covariance = scalar_observed_law(
+            self.likelihood, mean_train, covariance, (train, time), training=True
+        )
+        noise = observed_covariance - covariance
+        mean_train = observed_mean
         factor, alpha = _rs.tensor_exact_gp_factor(
-            targets, covariance, mean_train, self.likelihood.noise
+            targets, observed_covariance, mean_train, torch.zeros_like(targets)
         )
         mean, cov = _rs.tensor_exact_gp_predict(factor, alpha, cross, test, mean_test)
         q, t = query.shape[-2], T.shape[-2]
@@ -428,8 +471,8 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
             covariance,
             targets,
             mean_train,
-            mean_test,
-            self.likelihood.noise,
+            mean_test.clone(),
+            noise,
             mask,
             location,
             scale,
@@ -439,7 +482,9 @@ class TorchLatentKroneckerGP(nn.Module, LatentKroneckerGP):
         if not self.training:
             if kwargs:
                 raise TypeError("LatentKroneckerGP evaluation accepts feature and time Tensors.")
-            return self._posterior(X, T, inputs_transformed=True, untransform=False).distribution
+            return self._posterior(
+                X, T, inputs_transformed=True, untransform=False, allow_fixed_noise=True
+            ).distribution
         return nn.Module.__call__(self, X, T, **kwargs)
 
     def forward(self, X: Tensor, T: Any = None) -> Any:

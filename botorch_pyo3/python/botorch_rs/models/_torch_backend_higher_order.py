@@ -420,6 +420,8 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
         untransform: bool = True,
         **kwargs: Any,
     ) -> Any:
+        from botorch_rs.models._torch_structured_likelihood import scalar_observed_law
+
         if (
             output_indices is not None
             or posterior_transform is not None
@@ -461,11 +463,21 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
             count = n * m
             ktq, kqq = joint[..., :count, count:], joint[..., count:, count:]
             train_mean, query_mean = training_prior.mean, joint_prior.mean[..., count:]
-        variance = self.likelihood.noise
-        noise = torch.diag_embed(variance.expand(*batch, n * m))
-        test_noise = torch.diag_embed(variance.expand(*batch, q * m)) if observation_noise else None
+        observed_mean, observed_covariance = scalar_observed_law(
+            self.likelihood, train_mean, ktt, (train,), training=True
+        )
+        noise = observed_covariance - ktt
+        train_mean = observed_mean
+        test_noise = None
+        if observation_noise:
+            query_mean, observed_covariance = scalar_observed_law(
+                self.likelihood, query_mean, kqq, (query,)
+            )
+            test_noise = observed_covariance - kqq
         targets = Y.flatten(-2)
-        factor, alpha = _rs.tensor_exact_gp_factor(targets, ktt, train_mean, variance)
+        factor, alpha = _rs.tensor_exact_gp_factor(
+            targets, ktt + noise, train_mean, torch.zeros_like(targets)
+        )
         mean, covariance = _rs.tensor_exact_gp_predict(
             factor,
             alpha,
@@ -491,7 +503,7 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
             ktt,
             ktq.transpose(-1, -2),
             Y - train_mean.reshape(*train_mean.shape[:-1], n, m),
-            query_mean.reshape(*batch, q, m),
+            query_mean.reshape(*batch, q, m).clone(),
             noise,
             test_noise,
             n,
@@ -502,14 +514,19 @@ class TorchHigherOrderGP(nn.Module, HigherOrderGP):
         return TorchHigherOrderPosterior(base, self.target_shape, self.num_outputs)
 
     def make_posterior_variances(self, joint_covariance_matrix: Any) -> Tensor:
+        from botorch_rs.models._torch_structured_likelihood import scalar_observed_law
+
         joint = joint_covariance_matrix
         if not isinstance(joint, Tensor):
             joint = joint.to_dense()
         count = self._train_X.shape[-2] * self._grid_size
         train = joint[..., :count, :count]
         cross = joint[..., :count, count:]
-        noise = torch.diag_embed(self.likelihood.noise.expand(*train.shape[:-2], count))
-        solve = torch.linalg.solve(train + noise, cross)
+        inputs, _ = self._training_values()
+        _, observed = scalar_observed_law(
+            self.likelihood, train.new_zeros(*train.shape[:-1]), train, (inputs,), training=True
+        )
+        solve = torch.linalg.solve(observed, cross)
         return joint[..., count:, count:].diagonal(dim1=-2, dim2=-1) - (cross * solve).sum(-2)
 
     def __call__(self, X: Tensor, *args: Any, **kwargs: Any) -> Any:
