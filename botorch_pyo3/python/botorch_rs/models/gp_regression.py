@@ -17,6 +17,7 @@ from botorch_rs.kernels import Kernel
 from botorch_rs.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood, Likelihood
 from botorch_rs.means import ConstantMean
 from botorch_rs.models.gpytorch import BatchedMultiOutputGPyTorchModel
+from botorch_rs.models.transforms._torch_input import has_tensor_state as _input_has_tensor_state
 from botorch_rs.models.transforms.input import (
     InputTransform,
     Normalize,
@@ -305,7 +306,14 @@ class SingleTaskGP(BatchedMultiOutputGPyTorchModel):
                     )
                     or (
                         torch is not None
-                        and any(isinstance(module, torch.nn.Module) for module in modules)
+                        and any(
+                            isinstance(module, torch.nn.Module)
+                            or (
+                                isinstance(module, InputTransform)
+                                and _input_has_tensor_state(module)
+                            )
+                            for module in modules
+                        )
                     )
                 )
             )

@@ -91,9 +91,11 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         self.outcome_transform = build_outcome_transform(
             outcome_transform, self.num_outputs, train_Y, train_X=outcome_inputs
         )
-        _, _, noise = self._training_values(clamp_noise=False)
+        transformed_X, transformed_Y, noise = self._training_values(clamp_noise=False)
+        if transformed_X.shape[-2] != transformed_Y.shape[-1]:
+            raise ValueError("The training input transform must preserve the number of target rows.")
         self.covar_module = build_kernel(
-            covar_module, train_X.shape[-1], self._aug_batch_shape, train_X
+            covar_module, transformed_X.shape[-1], self._aug_batch_shape, train_X
         )
         self.mean_module = build_mean(mean_module, self._aug_batch_shape, train_X)
         self.likelihood = build_likelihood(likelihood, noise, self._aug_batch_shape, train_X)
@@ -389,7 +391,11 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         if (
             not isinstance(X, torch.Tensor)
             or X.ndim < 2
-            or (not inputs_transformed and X.shape[-1] != self._train_X.shape[-1])
+            or (
+                not inputs_transformed
+                and self.input_transform is None
+                and X.shape[-1] != self._train_X.shape[-1]
+            )
         ):
             raise ValueError("X must be a Tensor with shape (..., q, d).")
         if X.dtype != self._train_X.dtype or X.device != self._train_X.device:
@@ -399,6 +405,8 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         if inputs_transformed and X.shape[-1] != train_X.shape[-1]:
             raise ValueError("Evaluation inputs must use the transformed feature dimension.")
         query_X = X if inputs_transformed else self._augment_X(self.transform_inputs(X))
+        if query_X.shape[-1] != train_X.shape[-1]:
+            raise ValueError("Transformed query features must match the transformed training width.")
         train_noise = self._training_noise(Y, fixed_noise)
         query_noise = None
         if isinstance(observation_noise, torch.Tensor):

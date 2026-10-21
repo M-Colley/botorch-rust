@@ -1517,29 +1517,30 @@ class TorchOutcomeChain(nn.Module):
         return result.train(self.training)
 
 
-def build_input_transform(source: Any, d: int, train_X: Tensor) -> nn.Module | None:
-    from botorch_rs.models.transforms.input import ChainedInputTransform, Normalize, Warp
+def build_input_transform(
+    source: Any, d: int | None, train_X: Tensor, *, fit: bool = True
+) -> nn.Module | None:
+    """Register the actual transform; ``fit=False`` attaches without training data.
+
+    In that mode ``train_X`` supplies only dtype/device and may be a scalar
+    parameter from an external approximate model.
+    """
+    from botorch_rs.models.transforms.input import InputTransform
 
     if source is None:
         return None
     if isinstance(source, nn.Module):
         return source.to(train_X)
-    if type(source) is Normalize:
+    if isinstance(source, InputTransform):
+        from botorch_rs.models.transforms._torch_input_module import TorchPublicInputTransform
+
+        result = TorchPublicInputTransform(source, train_X).to(train_X)
+        if not fit:
+            return result
         with torch.no_grad():
-            return TorchNormalize(source, d, train_X).fit(train_X).eval()
-    if type(source) is Warp:
-        with torch.no_grad():
-            return TorchWarp(source, d, train_X).fit(train_X).eval()
-    if type(source) is ChainedInputTransform:
-        children: dict[str, nn.Module] = {}
-        for name, child in source.items():
-            module = build_input_transform(child, d, train_X)
-            assert module is not None
-            children[name] = module
-        with torch.no_grad():
-            return TorchInputChain(children, train_X).fit(train_X).eval()
+            return result.fit(train_X).eval()
     raise UnsupportedError(
-        "Torch backend input transforms currently support Normalize, Warp, ChainedInputTransform or a torch.nn.Module."
+        "Torch backend input transforms must be port InputTransform objects or torch.nn.Module instances."
     )
 
 

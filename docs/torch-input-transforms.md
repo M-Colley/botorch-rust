@@ -73,8 +73,43 @@ outputs and CPU/list conversion for all eight initial families on both CPU and
 CUDA. This is a port-only gap, repaired in the main port PR; it is not a new
 upstream finding.
 
-This matrix describes the tested direct-call scope; it is not a claim that
-every input-transform model configuration is available on the Tensor backend.
-The next checkpoint expands the model builder, which previously converted only
-Normalize/Warp/chains, and checks transformed feature widths and training/query
-row semantics separately from these direct-call results.
+The model bridge now registers the actual public input transform in a Torch
+module shell, including all fifteen families above and caller subclasses. It
+calls the original numerical hooks, rather than substituting a canonical
+implementation for a subclass. Actual Warp/imputation Parameters, callback
+modules and fitted/static Tensor buffers stay registered; nested aliases retain
+one module/parameter/prior owner. Model training-data statistics are rebuilt
+with their full graph, while initially frozen affine statistics retain the
+direct API's detached fitted-buffer policy. Device/dtype conversion, model
+state dictionaries, deepcopy and actual callback parameter derivatives are
+covered separately.
+
+SingleTaskGP builds its default kernel from the transformed training feature
+width. Query validation checks the resulting feature width, allowing declared
+query expansion such as AppendFeatures with already augmented training inputs.
+Training transforms must preserve the number of target rows. The no-fit
+registration path accepts only a dtype/device reference and no fabricated
+training inputs or feature width, for external approximate-model attachment.
+CPU automatic selection also recognizes actual live transform leaves, feature
+Tensors and callback modules; explicit `backend="native"` preserves native
+selection.
+
+The model tests compare each family's Gaussian posterior and complete
+training-data/query/parameter first and higher derivatives with independent
+closed-form transforms and Gaussian conditioning on CPU/CUDA. Eight families
+also have direct official-model value/query-derivative controls. Feature-width
+changes, one-to-many query ordering, frozen child modes, alias ownership,
+parameter identity, strict host-conversion guards and registration without
+fitting are tested explicitly. This describes the verified scalar model and
+generic-builder scope; it does not establish every specialized model's
+transform configuration. Conditioning/fantasy layouts for transforms with
+different raw training/query widths require separate model integration tests.
+Whole-object pickle is also separate: the retained public objects contain
+unpicklable native descriptor caches; the tested persistence interface is the
+model state dictionary plus ordinary model construction.
+
+The bridge checkpoint passes 68 new CPU/CUDA cases and 507 integrated
+transform/module/Tensor-model cases. The existing native transform parity
+selection passes 48 cases without tolerance changes. Torch 2.14.1 CPU passes
+34 new cases and skips 34 CUDA cases; Ruff and Mypy pass for the six changed
+implementation modules.

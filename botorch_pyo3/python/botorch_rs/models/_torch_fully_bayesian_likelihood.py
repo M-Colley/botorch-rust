@@ -18,7 +18,11 @@ def posterior_tensors(
     if (
         not isinstance(X, torch.Tensor)
         or X.ndim < 2
-        or (not inputs_transformed and X.shape[-1] != model._train_X.shape[-1])
+        or (
+            not inputs_transformed
+            and model.input_transform is None
+            and X.shape[-1] != model._train_X.shape[-1]
+        )
     ):
         raise ValueError("X must be a Tensor with shape (..., q, d).")
     if X.dtype != model._train_X.dtype or X.device != model._train_X.device:
@@ -28,6 +32,8 @@ def posterior_tensors(
     if inputs_transformed and X.shape[-1] != train_X.shape[-1]:
         raise ValueError("Evaluation inputs must use the transformed feature dimension.")
     query_X = X if inputs_transformed else model._augment_X(model.transform_inputs(X))
+    if query_X.shape[-1] != train_X.shape[-1]:
+        raise ValueError("Transformed query features must match the transformed training width.")
     blocks = getattr(model, "_prior_blocks", None)
     if blocks is None:
         train_mean, train_cov = model.mean_module(train_X), model._covariance(train_X, train_X)

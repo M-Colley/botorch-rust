@@ -8,12 +8,51 @@ Tensor numerical call.
 from __future__ import annotations
 
 import sys
+from contextvars import ContextVar
 from typing import Any
+
+# Model adapters rebuild fitted-statistic graphs from training data. Direct
+# public calls retain the reference's detached eval/preprocessing getters.
+_model_affine_graphs: ContextVar[frozenset[int]] = ContextVar(
+    "botorch_input_model_affine_graphs", default=frozenset()
+)
 
 
 def is_tensor(value: Any) -> bool:
     torch = sys.modules.get("torch")
     return torch is not None and isinstance(value, torch.Tensor)
+
+
+def has_tensor_state(transform: Any) -> bool:
+    """Whether an actual leaf/module or device config requires the Tensor model.
+
+    Inspect only explicit transform/container state, without exporting any
+    native parameter arrays or importing Torch for an array-only program.
+    """
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return False
+    from botorch_rs.models.transforms.input import InputTransform
+
+    seen: set[int] = set()
+
+    def visit(value: Any) -> bool:
+        if id(value) in seen:
+            return False
+        seen.add(id(value))
+        if isinstance(value, torch.nn.Parameter) or isinstance(value, torch.nn.Module):
+            return True
+        if isinstance(value, torch.Tensor):
+            return value.requires_grad or value.device.type != "cpu"
+        if isinstance(value, InputTransform):
+            return any(visit(child) for child in value.__dict__.values())
+        if isinstance(value, dict):
+            return any(visit(child) for child in value.values())
+        if isinstance(value, (tuple, list)):
+            return any(visit(child) for child in value)
+        return False
+
+    return visit(transform)
 
 
 def _tensor(value: Any, like: Any) -> Any:
@@ -30,7 +69,8 @@ def affine_stat(transform: Any, which: int) -> Any:
     value = getattr(transform, "_coefficient" if which else "_offset", None)
     if value is None or not is_tensor(value):
         return None
-    return value if transform.learn_coefficients and transform.training else value.detach()
+    live = transform.learn_coefficients and transform.training
+    return value if live or id(transform) in _model_affine_graphs.get() else value.detach()
 
 
 def _select(X: Any, indices: Any) -> Any:
@@ -95,9 +135,11 @@ def affine_apply(transform: Any, X: Any, inverse: bool) -> Any:
         # Capture both old values before publishing either new attribute.
         coefficient, offset = transform.coefficient, transform.offset
         transform._coefficient, transform._offset = _tensor(coefficient, X), _tensor(offset, X)
-    coefficient = affine_stat(transform, 1).to(X)
-    offset = affine_stat(transform, 0).to(X)
-    transform._coefficient, transform._offset = coefficient, offset
+    # A detached getter must not overwrite the registered fitted buffer: its
+    # graph may still be needed by a model using the same caller transform.
+    transform._coefficient = transform._coefficient.to(X)
+    transform._offset = transform._offset.to(X)
+    coefficient, offset = affine_stat(transform, 1), affine_stat(transform, 0)
     transform._kind = kind_of(X)
     values = (
         selected * coefficient + offset if actual_inverse else (selected - offset) / coefficient
