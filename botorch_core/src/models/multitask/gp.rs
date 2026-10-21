@@ -88,6 +88,7 @@ use crate::priors::Prior;
 use crate::transforms::{Normalize, OutcomeTransformChoice, Standardize};
 use crate::{Matrix, Vector};
 
+mod outcome;
 mod warp;
 
 /// `log(2π)`.

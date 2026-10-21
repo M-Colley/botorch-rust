@@ -338,6 +338,11 @@ impl PyMultiTaskGP {
         self.update(|model| model.set_input_feature_offsets(indices.clone(), offsets.clone()))
     }
 
+    /// Install a fitted positive affine outcome map on transformed data.
+    fn _set_fitted_outcome_affine(&self, offset: f64, scale: f64) -> PyResult<()> {
+        self.update(|model| model.set_fitted_outcome_affine(offset, scale))
+    }
+
     // ------------------------------------------------------------------
     // Data and configuration
     // ------------------------------------------------------------------
