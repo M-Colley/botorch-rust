@@ -385,6 +385,17 @@ def test_bvn(seed: int) -> None:
     # Gradients where BoTorch's are finite (see the draft for its NaN cases).
     ga = grad_of(rs_bvn.bvn, r, xl, yl, xu, yu)
     ge = grad_of(bt_bvn.bvn, r, xl, yl, xu, yu)
+    # The source's r==0 shortcut drops correlation sensitivity. Correct only
+    # that entry with Plackett's independent bivariate density identity;
+    # test_torch_bvn.py reproduces the unmodified reference defect directly.
+    ge = list(ge)
+    independent_derivative = (
+        bt_pu.phi(xl) * bt_pu.phi(yl)
+        - bt_pu.phi(xl) * bt_pu.phi(yu)
+        - bt_pu.phi(xu) * bt_pu.phi(yl)
+        + bt_pu.phi(xu) * bt_pu.phi(yu)
+    )
+    ge[0] = torch.where(r == 0, independent_derivative, ge[0])
     ok = torch.stack([torch.isfinite(g) for g in ge]).all(0)
     for k in range(5):
         C.check("bvn.bvn grad", ga[k][ok], ge[k][ok], GTOL)

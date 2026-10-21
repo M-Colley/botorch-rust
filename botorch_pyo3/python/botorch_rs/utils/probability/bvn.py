@@ -1,8 +1,8 @@
 r"""
 Methods for computing bivariate normal probabilities and statistics
-(``botorch.utils.probability.bvn``), evaluated in Rust: Genz's algorithm
-step by step as BoTorch's, with exact first derivatives (forward-mode dual
-numbers) for torch tensors that require gradients.
+(``botorch.utils.probability.bvn``), using device-resident Torch expressions
+with higher derivatives for Tensor inputs and native Rust for NumPy/lists.
+Both routes implement Genz's polar/Taylor algorithms.
 
 One difference to BoTorch: the number of quadrature points of the polar
 integration (6, 12 or 20) is chosen from the correlation of each pair; BoTorch
@@ -10,6 +10,8 @@ chooses it from the largest correlation of all pairs of a call, so its value
 for one pair can depend on the others (at the level of the quadrature error,
 ~5e-16). BoTorch's NaN gradients where the probability is clipped (e.g.
 ``_bvnu_taylor`` with a lower bound of ``-1e6``) are finite here.
+The Tensor route also retains the nonzero correlation derivative at r=0,
+which the reference's independent-probability shortcut drops.
 
 .. [Genz2004bvnt]
     A. Genz. Numerical computation of rectangular bivariate and trivariate normal and
@@ -25,6 +27,7 @@ from __future__ import annotations
 from typing import Any
 
 from botorch_rs import _ops
+from botorch_rs._arrays import first_kind
 from botorch_rs.exceptions.errors import UnsupportedError
 
 
@@ -61,6 +64,11 @@ def bvn(r: Any, xl: Any, yl: Any, xu: Any, yu: Any) -> Any:
 
     """
     _same_shape("bvn", r, xl, xu, yl, yu)
+    kind = first_kind(r, xl, yl, xu, yu)
+    if kind.lib == "torch":
+        from botorch_rs.utils.probability import _torch_bvn
+
+        return _torch_bvn.bvn(*(_ops._as_array(x, kind) for x in (r, xl, yl, xu, yu)))
     return _ops.apply("bvn", r, xl, yl, xu, yu)
 
 
@@ -88,6 +96,11 @@ def bvnu(r: Any, h: Any, k: Any) -> Any:
         A tensor of probabilities ``P(x > h, y > k)``.
     """
     _same_shape("bvnu", r, h, k)
+    kind = first_kind(r, h, k)
+    if kind.lib == "torch":
+        from botorch_rs.utils.probability import _torch_bvn
+
+        return _torch_bvn.bvnu(*(_ops._as_array(x, kind) for x in (r, h, k)))
     return _ops.apply("bvnu", r, h, k)
 
 
@@ -127,6 +140,11 @@ def bvnmom(
     _same_shape("bvn", r, xl, xu, yl, yu)
     if p is None:
         p = bvn(r=r, xl=xl, xu=xu, yl=yl, yu=yu)
+    kind = first_kind(r, xl, yl, xu, yu, p)
+    if kind.lib == "torch":
+        from botorch_rs.utils.probability import _torch_bvn
+
+        return _torch_bvn.bvnmom(*(_ops._as_array(x, kind) for x in (r, xl, yl, xu, yu, p)))
     out = _ops.apply("bvnmom", r, xl, yl, xu, yu, p)
     return out[0], out[1]
 
