@@ -64,3 +64,8 @@ Strict source controls use configurations whose iterative errors satisfy the
 asserted moment/gradient tolerances; tighter requested source tolerances can
 reach its division guard and emit nonconvergence warnings. Those failed audit
 trials remain preserved separately from the successful controls.
+
+The [native verification receipt](verification-native-latent-iterative-2026-10-21.json)
+records the immutable binary, 303 committed build inputs, 552 passing Rust tests,
+strict Clippy, and focused integrated/source/Torch-version checks. Later Python
+configuration changes still require a fresh complete verification before release.

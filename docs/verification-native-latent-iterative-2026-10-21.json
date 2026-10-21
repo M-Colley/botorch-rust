@@ -1,0 +1,97 @@
+{
+  "scope": "Native iterative solver checkpoint and focused Python integration; not a release certificate",
+  "native_sha256": "c1b734c6d379cd86f9d5c5910a157538f751d1278ffeb941478e1d2b9319e0f8",
+  "source_revision": "4ec7976031b34a2040c049cea9c8998b005a5dae",
+  "integrated_committed_source_revision": "7c1e221b4283786d6dd0bfc87624fa2f1e844f96",
+  "native_input_count": 303,
+  "native_inputs_unchanged": true,
+  "committed_native_inputs_match": true,
+  "foreign_uncommitted_root_edits_excluded": true,
+  "build_manifest": {
+    "path": "C:/Users/Mark/Desktop/botorch-rs/target/complete-port-native-iterative-v9-c1b734c6d379/build-manifest.json",
+    "sha256": "732bdd383e010905f004e422ba9b4bbbc04420d9736a421f8cadeb4ed4daeddf"
+  },
+  "rust": {
+    "all_targets_passed": 549,
+    "doctests_passed": 3,
+    "failed": 0,
+    "strict_clippy": "passed",
+    "formatting": "passed"
+  },
+  "python_integrated": {
+    "passed": 87,
+    "skipped": 8,
+    "failed": 0,
+    "note": "All eight reference-only cases skipped because the isolated checkout lacked its default reference path; rerun below supplies the explicit pinned reference root."
+  },
+  "python_eight_reference_cases": {
+    "passed": 8,
+    "failed": 0
+  },
+  "python_torch214": {
+    "passed": 20,
+    "failed": 0
+  },
+  "python_no_reference": {
+    "passed": 18,
+    "skipped": 2,
+    "failed": 0
+  },
+  "latest_transform_sampler_phase_integration": {
+    "passed": 247,
+    "failed": 0
+  },
+  "counting_note": "Focused selections overlap; do not add their Python counts.",
+  "logs": {
+    "rust_all_targets": {
+      "path": "D:/native-latent-iterative-rust-full-j1-2026-10-21.log",
+      "sha256": "8693751b392d59717532f17676efc6e1973619cb82fac1790914ae9aa93c2555"
+    },
+    "rust_doctests": {
+      "path": "D:/native-latent-iterative-rust-doc-2026-10-21.log",
+      "sha256": "d2171183a18564fd221d131733f33d2388306f9d31c8506d33a8061b66128002"
+    },
+    "clippy": {
+      "path": "D:/native-latent-iterative-clippy-final-2026-10-21.log",
+      "sha256": "ca5a4ba9682e798d40f0023045da8abce48493fb65aa303baa7ff72f0d2417c3"
+    },
+    "python_integrated": {
+      "path": "D:/native-latent-iterative-python-final-2026-10-21.log",
+      "sha256": "2594c7275356d32b9f6e81cb8293bb483b34736b38bceb02cfebf9fc82ea639d"
+    },
+    "python_eight_reference_cases": {
+      "path": "D:/native-latent-iterative-source-eight-final-2026-10-21.log",
+      "sha256": "7252e285f29fd6c7c0d94bb114ba42437b30e1e1963c327e9981440f7aac9141"
+    },
+    "python_torch214": {
+      "path": "D:/native-latent-iterative-python-214-2026-10-21.log",
+      "sha256": "0120a52ad487fa24916f1532dd272ff58001fd54e26071d811a5a33b7590f842"
+    },
+    "python_no_reference": {
+      "path": "D:/native-latent-iterative-python-no-reference-2026-10-21.log",
+      "sha256": "b7e2f31bbd036210f842d9cea755b46fd5ff39ac0bd03b5a4ad4c4cb7c08197b"
+    },
+    "latest_integration": {
+      "path": "D:/v9-transform-sampler-phase-integration-first-2026-10-21.log",
+      "sha256": "54eca46db45baf97a90329a5f15fe1645e4204fd4136ceffd29fe346176f6924"
+    }
+  },
+  "preserved_failed_trials": [
+    {
+      "path": "D:/native-latent-iterative-rust-full-2026-10-21.log",
+      "reason": "Parallel compiler memory exhaustion; incomplete run, not a numerical pass"
+    },
+    {
+      "path": "D:/native-latent-iterative-python-first-2026-10-21.log",
+      "reason": "Source latent state-loading defect; tracked in BoTorch PR3526"
+    },
+    {
+      "path": "D:/native-latent-iterative-python-source-r2-2026-10-21.log",
+      "reason": "Source CG failed requested tolerance; the strict failed comparisons remain failed"
+    }
+  ],
+  "complete_scope": false,
+  "release_certificate": false,
+  "new_package_published": false,
+  "unity_updated": false
+}
