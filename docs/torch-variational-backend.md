@@ -95,8 +95,26 @@ noise against independent GPyTorch/BoTorch likelihood, posterior and ELBO calls.
 They check complete first parameter derivatives, noise Hessians, noisy posterior
 query/parameter derivatives and the sample-conditional event shape.
 
-This checkpoint does not implement other variational distributions or
-strategies or non-Gaussian observations. Those
-configurations raise `UnsupportedError`. Reallocation cannot resize the variational family.
+Tensor models also support `MeanFieldVariationalDistribution` and
+`DeltaVariationalDistribution`, supplied as port specifications or actual
+GPyTorch distribution modules. Actual supplied module parameters retain their
+identities and trainability flags. The port computes diagonal-Gaussian
+covariances and point-mass predictions itself. Delta's finite regularizer is
+the negative whitened Gaussian prior log density at its particle, matching
+GPyTorch's MAP convention; it is not a finite measure-theoretic KL between a
+point mass and a continuous Gaussian. Both families support current-q Matheron
+paths. Mean-field standard deviations use the reference's signed raw parameter
+layout, squared directly for covariance; only sampling takes the absolute value.
+
+The additional family suite compares independent reference predictions,
+covariances, all ELBO terms and all first data/parameter derivatives, scalar
+and independent-output model batches, actual Adam updates, supplied module
+leaf identities and frozen parameters, lazy initialization and sampling.
+Independent dense RBF formulas check all mixed second data/parameter
+derivatives on CPU/CUDA. These extra distributions require `backend="torch"`;
+the native CPU Cholesky family still rejects them explicitly.
+
+Other variational distributions, strategies and non-Gaussian observations
+remain unsupported configurations. Reallocation cannot resize the variational family.
 It does not imply GPU support for arbitrary `ApproximateGPyTorchModel` wrappers
 or every other approximate-model family.

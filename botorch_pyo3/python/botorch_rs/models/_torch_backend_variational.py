@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 import weakref
 from typing import Any
 
@@ -27,29 +28,85 @@ from botorch_rs.models._torch_backend_modules import (
 )
 from botorch_rs.models.approximate_gp import SingleTaskVariationalGP
 from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior, independent_covariance
-from botorch_rs.variational import CholeskyVariationalDistribution, VariationalStrategy
+from botorch_rs.variational import (
+    CholeskyVariationalDistribution,
+    DeltaVariationalDistribution,
+    MeanFieldVariationalDistribution,
+    VariationalStrategy,
+)
 
 
 def _dense(value: Any) -> Tensor:
     return value if isinstance(value, Tensor) else value.to_dense()
 
 
-class _TorchCholeskyDistribution(nn.Module):
+def _distribution_family(source: Any) -> str:
+    if source is None:
+        return "cholesky"
+    families = {
+        "CholeskyVariationalDistribution": CholeskyVariationalDistribution,
+        "MeanFieldVariationalDistribution": MeanFieldVariationalDistribution,
+        "DeltaVariationalDistribution": DeltaVariationalDistribution,
+    }
+    gpytorch = sys.modules.get("gpytorch")
+    for name, own_class in families.items():
+        external = None if gpytorch is None else getattr(gpytorch.variational, name)
+        if type(source) is own_class or (external is not None and type(source) is external):
+            return name.removesuffix("VariationalDistribution").lower()
+    raise UnsupportedError(
+        "Torch variational models support Cholesky, MeanField and Delta variational distributions."
+    )
+
+
+def _distribution_parameter(source: Any, name: str, default: Tensor) -> nn.Parameter:
+    value = default if source is None else getattr(source, name)
+    if isinstance(value, nn.Parameter):
+        # A caller's actual module retains the same leaves, like the reference.
+        return value
+    return nn.Parameter(torch.as_tensor(value, dtype=default.dtype, device=default.device).clone())
+
+
+class _TorchBaseDistribution(nn.Module):
     def __init__(self, m: int, batch_shape: Any, like: Tensor, source: Any) -> None:
         super().__init__()
+        if isinstance(source, nn.Module):
+            source.to(like)
         self.num_inducing_points = m
         self.batch_shape = torch.Size(batch_shape)
         self.mean_init_std = 1e-3 if source is None else source.mean_init_std
-        self.variational_mean = nn.Parameter(like.new_zeros(*batch_shape, m))
-        self.chol_variational_covar = nn.Parameter(
-            torch.eye(m, dtype=like.dtype, device=like.device).expand(*batch_shape, m, m).clone()
+        self.variational_mean = _distribution_parameter(
+            source, "variational_mean", like.new_zeros(*batch_shape, m)
         )
 
     def initialize_variational_distribution(self, prior_dist: Any = None) -> None:
         with torch.no_grad():
+            prior_mean = 0 if prior_dist is None else prior_dist.mean
             self.variational_mean.copy_(
-                torch.randn_like(self.variational_mean) * self.mean_init_std
+                prior_mean + torch.randn_like(self.variational_mean) * self.mean_init_std
             )
+
+    def covariance_matrix(self) -> Tensor:
+        raise NotImplementedError
+
+    def sample_with_base(self, noise: Tensor) -> Tensor:
+        raise NotImplementedError
+
+    def kl_divergence(self) -> Tensor:
+        raise NotImplementedError
+
+
+class _TorchCholeskyDistribution(_TorchBaseDistribution):
+    def __init__(self, m: int, batch_shape: Any, like: Tensor, source: Any) -> None:
+        super().__init__(m, batch_shape, like, source)
+        self.chol_variational_covar = _distribution_parameter(
+            source,
+            "chol_variational_covar",
+            torch.eye(m, dtype=like.dtype, device=like.device).expand(*batch_shape, m, m),
+        )
+
+    def initialize_variational_distribution(self, prior_dist: Any = None) -> None:
+        super().initialize_variational_distribution(prior_dist)
+        with torch.no_grad():
             self.chol_variational_covar.copy_(
                 torch.eye(
                     self.num_inducing_points,
@@ -59,10 +116,101 @@ class _TorchCholeskyDistribution(nn.Module):
             )
 
     def forward(self) -> Any:
-        factor = self.chol_variational_covar.tril()
         return TorchGPyTorchPosterior(
-            self.variational_mean.unsqueeze(-1), factor @ factor.mT
+            self.variational_mean.unsqueeze(-1), self.covariance_matrix()
         ).distribution
+
+    def covariance_matrix(self) -> Tensor:
+        factor = self.chol_variational_covar.tril()
+        return factor @ factor.mT
+
+    def sample_with_base(self, noise: Tensor) -> Tensor:
+        return self.variational_mean + (
+            self.chol_variational_covar.tril() @ noise.unsqueeze(-1)
+        ).squeeze(-1)
+
+    def kl_divergence(self) -> Tensor:
+        factor = self.chol_variational_covar.tril()
+        return 0.5 * (
+            self.variational_mean.square().sum(-1)
+            + factor.square().sum((-1, -2))
+            - self.num_inducing_points
+            - 2 * factor.diagonal(dim1=-2, dim2=-1).abs().log().sum(-1)
+        )
+
+
+class _TorchMeanFieldDistribution(_TorchBaseDistribution):
+    def __init__(self, m: int, batch_shape: Any, like: Tensor, source: Any) -> None:
+        super().__init__(m, batch_shape, like, source)
+        self._variational_stddev = _distribution_parameter(
+            source, "_variational_stddev", like.new_ones(*batch_shape, m)
+        )
+
+    @property
+    def variational_stddev(self) -> Tensor:
+        return self._variational_stddev.abs().clamp_min(1e-8)
+
+    def initialize_variational_distribution(self, prior_dist: Any = None) -> None:
+        super().initialize_variational_distribution(prior_dist)
+        with torch.no_grad():
+            if prior_dist is None:
+                self._variational_stddev.fill_(1)
+            else:
+                self._variational_stddev.copy_(prior_dist.stddev)
+
+    def covariance_matrix(self) -> Tensor:
+        return torch.diag_embed(self._variational_stddev.square())
+
+    def forward(self) -> Any:
+        return TorchGPyTorchPosterior(
+            self.variational_mean.unsqueeze(-1), self.covariance_matrix()
+        ).distribution
+
+    def sample_with_base(self, noise: Tensor) -> Tensor:
+        return self.variational_mean + self._variational_stddev.abs() * noise
+
+    def kl_divergence(self) -> Tensor:
+        variance = self._variational_stddev.square()
+        return 0.5 * (self.variational_mean.square() + variance - 1 - variance.log()).sum(-1)
+
+
+class _TorchPointMass(torch.distributions.Distribution):
+    arg_constraints: dict[str, Any] = {}
+    has_rsample = True
+
+    def __init__(self, value: Tensor) -> None:
+        self.v = value
+        super().__init__(value.shape, torch.Size(), validate_args=False)
+
+    @property
+    def mean(self) -> Tensor:
+        return self.v
+
+    @property
+    def variance(self) -> Tensor:
+        return torch.zeros_like(self.v)
+
+    def rsample(self, sample_shape: Any = ()) -> Tensor:
+        return self.v.expand(*sample_shape, *self.v.shape)
+
+    def log_prob(self, value: Tensor) -> Tensor:
+        return (value == self.v).to(value.dtype).log()
+
+
+class _TorchDeltaDistribution(_TorchBaseDistribution):
+    def covariance_matrix(self) -> Tensor:
+        return torch.diag_embed(torch.zeros_like(self.variational_mean))
+
+    def forward(self) -> Any:
+        return _TorchPointMass(self.variational_mean)
+
+    def sample_with_base(self, noise: Tensor) -> Tensor:
+        return self.variational_mean.expand_as(noise)
+
+    def kl_divergence(self) -> Tensor:
+        # GPyTorch's Delta/MVN registration defines the MAP regularizer as
+        # minus the prior log density at the single variational particle.
+        return 0.5 * (self.variational_mean.square() + math.log(2 * math.pi)).sum(-1)
 
 
 class _TorchVariationalStrategy(nn.Module):
@@ -70,7 +218,7 @@ class _TorchVariationalStrategy(nn.Module):
     _owner_ref: Any
     inducing_points: Tensor
     variational_params_initialized: Tensor
-    _variational_distribution: _TorchCholeskyDistribution
+    _variational_distribution: _TorchBaseDistribution
 
     def __init__(self, owner: Any, points: Tensor, distribution: Any, learn: bool) -> None:
         super().__init__()
@@ -120,14 +268,7 @@ class _TorchVariationalStrategy(nn.Module):
             self.variational_params_initialized.fill_(1)
 
     def kl_divergence(self) -> Tensor:
-        mean = self._variational_distribution.variational_mean
-        factor = self._variational_distribution.chol_variational_covar.tril()
-        return 0.5 * (
-            mean.square().sum(-1)
-            + factor.square().sum((-1, -2))
-            - mean.shape[-1]
-            - 2 * factor.diagonal(dim1=-2, dim2=-1).abs().log().sum(-1)
-        )
+        return self._variational_distribution.kl_divergence()
 
     def forward(self, X: Tensor, prior: bool = False) -> Any:
         owner = self._owner_ref()
@@ -340,16 +481,18 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             raise ValueError("An outcome transform requires training targets.")
         if num_outputs <= 0:
             raise ValueError("num_outputs must be positive.")
-        if variational_strategy is not VariationalStrategy:
+        gpytorch = sys.modules.get("gpytorch")
+        external_strategy = None if gpytorch is None else gpytorch.variational.VariationalStrategy
+        if variational_strategy is not VariationalStrategy and (
+            external_strategy is None or variational_strategy is not external_strategy
+        ):
             raise UnsupportedError(
                 "Torch variational models currently support the whitened VariationalStrategy only."
             )
-        if (
-            variational_distribution is not None
-            and type(variational_distribution) is not CholeskyVariationalDistribution
-        ):
+        distribution_family = _distribution_family(variational_distribution)
+        if getattr(variational_distribution, "_owner", None) is not None:
             raise UnsupportedError(
-                "Torch variational models currently support CholeskyVariationalDistribution only."
+                "This variational distribution already belongs to a native model; create a new specification."
             )
         self._inducing_point_allocator = (
             GreedyVarianceReduction()
@@ -425,7 +568,12 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             raise ValueError(
                 "Variational distribution dimensions must match the inducing points and augmented model batch shape."
             )
-        distribution = _TorchCholeskyDistribution(
+        distribution_class = {
+            "cholesky": _TorchCholeskyDistribution,
+            "meanfield": _TorchMeanFieldDistribution,
+            "delta": _TorchDeltaDistribution,
+        }[distribution_family]
+        distribution = distribution_class(
             points.shape[-2], self._aug_batch_shape, train_X, variational_distribution
         )
         strategy = _TorchVariationalStrategy(self, points, distribution, learn_inducing_points)
@@ -556,8 +704,7 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             root, _dense(kernel(inducing, augmented)), upper=False
         )
         distribution = strategy._variational_distribution
-        factor = distribution.chol_variational_covar.tril()
-        middle = factor @ factor.mT - eye
+        middle = distribution.covariance_matrix() - eye
         mean = self.model.mean_module(augmented) + (
             interpolation.mT @ distribution.variational_mean.unsqueeze(-1)
         ).squeeze(-1)

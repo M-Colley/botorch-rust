@@ -486,9 +486,7 @@ def _variational_update(
                     "Whitened variational base normals must match sample_values.shape."
                 )
         distribution = strategy._variational_distribution
-        whitened = distribution.variational_mean + (
-            distribution.chol_variational_covar.tril() @ noise.unsqueeze(-1)
-        ).squeeze(-1)
+        whitened = distribution.sample_with_base(noise)
         target = modules.mean_module(points) + (factor @ whitened.unsqueeze(-1)).squeeze(-1)
     else:
         if noise is not None:

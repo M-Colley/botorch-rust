@@ -7,6 +7,8 @@ family; once a model is built with them they are views of its parameters
 (the inducing points, the variational mean and the Cholesky factor of the
 variational covariance), which live in Rust. For several outputs the model
 wraps the strategy in an ``IndependentMultitaskVariationalStrategy``.
+The Tensor backend also accepts the diagonal-Gaussian ``MeanField`` and
+point-mass ``Delta`` specifications and implements their device operations.
 """
 
 from __future__ import annotations
@@ -146,6 +148,79 @@ class CholeskyVariationalDistribution(_VariationalDistribution):
 
     def __repr__(self) -> str:
         return f"CholeskyVariationalDistribution(num_inducing_points={self.num_inducing_points})"
+
+
+class DeltaVariationalDistribution(_VariationalDistribution):
+    """Point-mass variational variables for Tensor-backend MAP inference."""
+
+    def __init__(
+        self,
+        num_inducing_points: int,
+        batch_shape: Any = (),
+        mean_init_std: float = 1e-3,
+        **kwargs: Any,
+    ) -> None:
+        if kwargs:
+            raise UnsupportedError(f"Unsupported arguments: {sorted(kwargs)}.")
+        super().__init__(num_inducing_points, batch_shape, mean_init_std)
+        self._local_mean = [0.0] * (math.prod(self.batch_shape) * self.num_inducing_points)
+
+    @property
+    def variational_mean(self) -> Any:
+        return from_flat(self._local_mean, (*self.batch_shape, self.num_inducing_points), LIST)
+
+    @variational_mean.setter
+    def variational_mean(self, value: Any) -> None:
+        self._local_mean = _broadcast(value, len(self._local_mean), "variational_mean")
+
+    def _bind(self, owner: Any, prefix: str) -> None:
+        raise UnsupportedError("Delta variational distributions require backend='torch'.")
+
+    def _initialize(self) -> None:
+        self._local_mean = [
+            self.mean_init_std * v for v in _randn((*self.batch_shape, self.num_inducing_points))
+        ]
+
+
+class MeanFieldVariationalDistribution(DeltaVariationalDistribution):
+    """Diagonal Gaussian variational variables for the Tensor backend.
+
+    The signed raw standard deviations have the reference's unconstrained
+    ``_variational_stddev`` layout; covariance entries are their squares.
+    """
+
+    def __init__(
+        self,
+        num_inducing_points: int,
+        batch_shape: Any = (),
+        mean_init_std: float = 1e-3,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(num_inducing_points, batch_shape, mean_init_std, **kwargs)
+        self._local_stddev = [1.0] * len(self._local_mean)
+
+    @property
+    def _variational_stddev(self) -> Any:
+        return from_flat(self._local_stddev, (*self.batch_shape, self.num_inducing_points), LIST)
+
+    @_variational_stddev.setter
+    def _variational_stddev(self, value: Any) -> None:
+        self._local_stddev = _broadcast(value, len(self._local_stddev), "_variational_stddev")
+
+    @property
+    def variational_stddev(self) -> Any:
+        return from_flat(
+            [max(abs(v), 1e-8) for v in self._local_stddev],
+            (*self.batch_shape, self.num_inducing_points),
+            LIST,
+        )
+
+    def _bind(self, owner: Any, prefix: str) -> None:
+        raise UnsupportedError("Mean-field variational distributions require backend='torch'.")
+
+    def _initialize(self) -> None:
+        super()._initialize()
+        self._local_stddev = [1.0] * len(self._local_mean)
 
 
 def _broadcast(value: Any, size: int, name: str) -> list[float]:
@@ -309,6 +384,8 @@ class IndependentMultitaskVariationalStrategy(_VariationalStrategy):
 
 __all__ = [
     "CholeskyVariationalDistribution",
+    "DeltaVariationalDistribution",
     "IndependentMultitaskVariationalStrategy",
+    "MeanFieldVariationalDistribution",
     "VariationalStrategy",
 ]
