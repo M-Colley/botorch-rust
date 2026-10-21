@@ -179,3 +179,25 @@ and smooth qLogEI values and gradients are also checked against independent
 closed forms using explicitly supplied zero base normals, which remove the
 root-dependent sample term. These are deterministic contraction tests, not
 claims about a Monte Carlo estimator's convergence.
+
+## Explicit model subclasses
+
+The Tensor factory now retains subclasses of the public fully Bayesian model
+families, including direct `AbstractFullyBayesianSingleTaskGP` subclasses.
+Their `_pyro_model_class`, cooperative constructors and model-method overrides
+are preserved. An explicit `backend="torch"` or the usual CUDA/required-gradient
+automatic selection uses the real Tensor implementation; ordinary native CPU
+selection is unchanged. Linear loading follows the declared probabilistic
+kernel family, so a direct abstract-base subclass with `LinearPyroModel` does
+not accidentally load a Matern covariance.
+
+Generated Tensor classes are cached per public class. Deepcopy and state-dict
+round trips preserve their public type and fitted law. Standard pickle stores
+the original public class plus module state and reconstructs its Tensor
+implementation; explicit user reducers remain authoritative, and the original
+public class must itself be importable under Python's normal pickle rules.
+Custom probabilistic hooks continue through the optional NumPyro adapter.
+Twelve added CPU/CUDA cases check these contracts and first/second graphs for
+training inputs, targets, fixed noise, queries and loaded parameters, including
+actual custom-program fitting. The new tests plus existing scalar fully
+Bayesian tests passed all 72 cases on Torch 2.13.

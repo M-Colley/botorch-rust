@@ -675,7 +675,7 @@ class AbstractFullyBayesianSingleTaskGP(SingleTaskGP):
             SaasFullyBayesianSingleTaskGP,
             FullyBayesianLinearSingleTaskGP,
         )
-        if cls in families:
+        if getattr(cls, "_tensor_backend", None) != "torch":
             import sys
 
             torch = sys.modules.get("torch")
@@ -694,21 +694,23 @@ class AbstractFullyBayesianSingleTaskGP(SingleTaskGP):
                     TorchFullyBayesianLinearSingleTaskGP,
                     TorchFullyBayesianSingleTaskGP,
                     TorchSaasFullyBayesianSingleTaskGP,
+                    tensor_fully_bayesian_subclass,
                 )
 
-                return object.__new__(
-                    dict(
-                        zip(
-                            families,
-                            (
-                                TorchFullyBayesianSingleTaskGP,
-                                TorchSaasFullyBayesianSingleTaskGP,
-                                TorchFullyBayesianLinearSingleTaskGP,
-                            ),
-                            strict=True,
-                        )
-                    )[cls]
+                family = next((base for base in cls.__mro__ if base in families), None)
+                tensor_families: dict[type, type] = dict(
+                    zip(
+                        families,
+                        (
+                            TorchFullyBayesianSingleTaskGP,
+                            TorchSaasFullyBayesianSingleTaskGP,
+                            TorchFullyBayesianLinearSingleTaskGP,
+                        ),
+                        strict=True,
+                    )
                 )
+                tensor_family = None if family is None else tensor_families[family]
+                return object.__new__(tensor_fully_bayesian_subclass(cls, tensor_family))
         return object.__new__(cls)
 
     def __init__(

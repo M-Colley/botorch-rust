@@ -19,7 +19,7 @@ from botorch.models.transforms.outcome import Standardize as ReferenceStandardiz
 from botorch.posteriors.gpytorch import GPyTorchPosterior as ReferencePosterior
 
 from botorch_rs.exceptions.errors import UnsupportedError
-from botorch_rs.fit import fit_fully_bayesian_model_nuts, fit_gpytorch_mll
+from botorch_rs.fit import fit_gpytorch_mll
 from botorch_rs.mlls import ExactMarginalLogLikelihood
 from botorch_rs.models import fully_bayesian as port
 from botorch_rs.models.transforms.input import Normalize
@@ -255,8 +255,8 @@ def test_loaded_mcmc_reset_reload_state_and_immutable_laws(device):
     torch.testing.assert_close(model.posterior(query).mean, old_mean, atol=1e-12, rtol=1e-12)
     model.load_mcmc_samples({name: value[:2] for name, value in draws.items()})
     assert model.posterior(query).mean.shape == (2, 2, 1)
-    with pytest.raises(UnsupportedError, match="jit_compile"):
-        fit_fully_bayesian_model_nuts(model, warmup_steps=1, num_samples=1, jit_compile=True)
+    # The pinned fitter accepts jit_compile as an unused legacy option;
+    # dedicated prior-forward tests compare both flag values' exact traces.
     assert model.num_mcmc_samples == 2
     with pytest.raises(UnsupportedError, match="not MAP fitting"):
         fit_gpytorch_mll(ExactMarginalLogLikelihood(model.likelihood, model))

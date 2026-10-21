@@ -22,6 +22,7 @@ from botorch_rs.models._torch_backend_modules import (
 )
 from botorch_rs.models.fully_bayesian import (
     MIN_INFERRED_NOISE_LEVEL,
+    AbstractFullyBayesianSingleTaskGP,
     FullyBayesianLinearSingleTaskGP,
     FullyBayesianSingleTaskGP,
     SaasFullyBayesianSingleTaskGP,
@@ -205,7 +206,7 @@ class _TorchFullyBayesianBase(TorchSingleTaskGP):
             return result.detach()
 
         mean = sample("mean", 1).reshape(count)
-        linear = isinstance(self, FullyBayesianLinearSingleTaskGP)
+        linear = self.pyro_model._rs_kernel == "linear"
         values = sample("weight_variance" if linear else "lengthscale", d, positive=True)
         scale = (
             sample("outputscale", 1, positive=True)
@@ -344,11 +345,9 @@ class _TorchFullyBayesianBase(TorchSingleTaskGP):
         mean = state_dict["mean_module.raw_constant"]
         count, d = mean.numel(), self._train_X.shape[-1]
         samples = {"mean": torch.zeros_like(mean), "noise": mean.new_ones(count)}
-        samples[
-            "weight_variance"
-            if isinstance(self, FullyBayesianLinearSingleTaskGP)
-            else "lengthscale"
-        ] = mean.new_ones(count, d)
+        samples["weight_variance" if self.pyro_model._rs_kernel == "linear" else "lengthscale"] = (
+            mean.new_ones(count, d)
+        )
         if "covar_module.raw_outputscale" in state_dict:
             samples["outputscale"] = mean.new_ones(count)
         if self.pyro_model.use_input_warping:
@@ -380,3 +379,45 @@ class TorchFullyBayesianLinearSingleTaskGP(
     def median_weight_variance(self) -> Tensor:
         self._check_if_fitted()
         return self.covar_module.variance.median(0).values.squeeze(0)
+
+
+_CUSTOM_TENSOR_CLASSES: dict[type, type] = {}
+
+
+class _TorchAbstractFullyBayesianSingleTaskGP(
+    _TorchFullyBayesianBase, AbstractFullyBayesianSingleTaskGP
+):
+    """Common device implementation for direct public abstract-base subclasses."""
+
+
+def _restore_tensor_fully_bayesian(public_class: type) -> Any:
+    from botorch_rs.models.fully_bayesian import AbstractFullyBayesianSingleTaskGP
+
+    return AbstractFullyBayesianSingleTaskGP.__new__(public_class, backend="torch")
+
+
+def _reduce_tensor_fully_bayesian(self: Any, protocol: int) -> Any:
+    return (_restore_tensor_fully_bayesian, (self._public_model_class,), self.__getstate__())
+
+
+def tensor_fully_bayesian_subclass(public_class: type, tensor_family: type | None) -> type:
+    """Preserve explicit model subclasses and their cooperative overrides."""
+    if tensor_family is not None and public_class in tensor_family.__bases__:
+        return tensor_family
+    tensor_class = _CUSTOM_TENSOR_CLASSES.get(public_class)
+    if tensor_class is None:
+        attributes: dict[str, Any] = {"__module__": __name__, "_public_model_class": public_class}
+        if public_class.__reduce_ex__ is object.__reduce_ex__:
+            # Serialize the public class and module state, rather than a
+            # process-local generated class name. Explicit user reducers win.
+            attributes["__reduce_ex__"] = _reduce_tensor_fully_bayesian
+        tensor_class = type(
+            f"Torch{public_class.__name__}",
+            (
+                public_class,
+                _TorchAbstractFullyBayesianSingleTaskGP if tensor_family is None else tensor_family,
+            ),
+            attributes,
+        )
+        _CUSTOM_TENSOR_CLASSES[public_class] = tensor_class
+    return tensor_class
