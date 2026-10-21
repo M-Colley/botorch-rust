@@ -91,8 +91,10 @@ def affine_apply(transform: Any, X: Any, inverse: bool) -> Any:
         else:
             transform._update_coefficients(selected)
     if not is_tensor(getattr(transform, "_coefficient", None)):
-        transform._coefficient = _tensor(transform.coefficient, X)
-        transform._offset = _tensor(transform.offset, X)
+        # Reading either native property can export a complete Tensor state.
+        # Capture both old values before publishing either new attribute.
+        coefficient, offset = transform.coefficient, transform.offset
+        transform._coefficient, transform._offset = _tensor(coefficient, X), _tensor(offset, X)
     coefficient = affine_stat(transform, 1).to(X)
     offset = affine_stat(transform, 0).to(X)
     transform._coefficient, transform._offset = coefficient, offset
@@ -105,7 +107,9 @@ def affine_apply(transform: Any, X: Any, inverse: bool) -> Any:
 
 def sync_affine_native(transform: Any) -> None:
     """Snapshot direct Tensor state when a native descriptor is requested."""
-    if not is_tensor(getattr(transform, "_coefficient", None)):
+    if not is_tensor(getattr(transform, "_coefficient", None)) or not is_tensor(
+        getattr(transform, "_offset", None)
+    ):
         return
     import math
 

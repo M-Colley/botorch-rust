@@ -210,3 +210,30 @@ def test_flags_preprocess_constant_standardize_and_native_array_state(device):
     torch.testing.assert_close(duplicate(X), trained)
     clone = copy.deepcopy(normalize)
     torch.testing.assert_close(clone(X), trained)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("plain", [False, True])
+def test_list_bounds_materialize_both_tensor_statistics_atomically(device, plain):
+    X = _X(device)
+    bounds = [[0.1, -0.3, 0.1], [0.9, 1.2, 0.9]]
+    options = {} if plain else {"indices": [2, 0]}
+    transform = Normalize(3, bounds=bounds, **options).eval()
+    result = transform(X)
+    expected = X.clone()
+    indices = [0, 1, 2] if plain else [2, 0]
+    expected[..., indices] = (X[..., indices] - X.new_tensor(bounds[0])[indices]) / (
+        X.new_tensor(bounds[1])[indices] - X.new_tensor(bounds[0])[indices]
+    )
+    torch.testing.assert_close(result, expected, atol=3e-13, rtol=3e-12)
+    for a, e in zip(_derivatives(result, (X,)), _derivatives(expected, (X,)), strict=True):
+        torch.testing.assert_close(a, e, atol=3e-12, rtol=3e-11)
+    Y = X.new_tensor([[-0.4], [0.8], [0.1], [-0.2]])
+    model = SingleTaskGP(
+        X, Y, input_transform=Normalize(3, bounds=bounds, **options), backend="torch"
+    )
+    torch.testing.assert_close(model.transform_inputs(X), expected, atol=3e-13, rtol=3e-12)
+    native = SingleTaskGP(
+        X.detach(), Y, input_transform=Normalize(3, bounds=bounds, **options), backend="native"
+    )
+    torch.testing.assert_close(native.transform_inputs(X), expected, atol=3e-13, rtol=3e-12)
