@@ -197,10 +197,26 @@ class TorchSaasFullyBayesianMultiTaskGP(TorchMultiTaskGP, SaasFullyBayesianMulti
 
     def forward(self, X: Tensor) -> Any:
         self._check_if_fitted()
-        if not self.training:
-            return self.posterior(X).distribution
-        X = X.unsqueeze(-3).expand(*X.shape[:-2], self.num_mcmc_samples, *X.shape[-2:])
-        return TorchMultiTaskGP.forward(self, X)
+        if not isinstance(X, Tensor) or X.ndim < 2 or X.shape[-1] != self._train_X.shape[-1]:
+            raise ValueError("Prior inputs must include the task feature column.")
+        batch = torch.broadcast_shapes(X.shape[:-2], self.batch_shape)
+        X = X.expand(*batch, *X.shape[-2:])
+        if self.training:
+            self._fit_transform_graphs()
+            transform = self.input_transform
+            if transform is not None:
+                transformed = getattr(transform, "preprocess_transform", transform)(X)
+                if not torch.equal(
+                    transformed[..., self._task_feature], X[..., self._task_feature]
+                ):
+                    raise UnsupportedError(
+                        "Input transforms must preserve categorical task labels."
+                    )
+                X = transformed
+        mapped = self._mapped_inputs(X)
+        return TorchGPyTorchPosterior(
+            self._mean(mapped).unsqueeze(-1), self._covariance(mapped, mapped)
+        ).distribution
 
     def posterior(
         self,

@@ -23,10 +23,10 @@ import copy
 import math
 from typing import Any, NoReturn
 
-from botorch_rs._arrays import from_flat, kind_of, to_flat
+from botorch_rs._arrays import broadcast_shapes, broadcast_to, from_flat, kind_of, to_flat
 from botorch_rs.constraints import GreaterThan
 from botorch_rs.exceptions.errors import InputDataError, UnsupportedError
-from botorch_rs.kernels import IndexKernel, Kernel, MaternKernel, ScaleKernel
+from botorch_rs.kernels import IndexKernel, Kernel, LinearKernel, MaternKernel, ScaleKernel
 from botorch_rs.likelihoods import GaussianLikelihood
 from botorch_rs.models import _numpyro
 from botorch_rs.models.fully_bayesian import (
@@ -39,7 +39,12 @@ from botorch_rs.models.fully_bayesian import (
 )
 from botorch_rs.models.gp_regression import _validate_input_scaling
 from botorch_rs.models.multitask import MultiTaskGP
-from botorch_rs.models.transforms.input import ChainedInputTransform, InputTransform, Warp
+from botorch_rs.models.transforms.input import (
+    ChainedInputTransform,
+    InputTransform,
+    Normalize,
+    Warp,
+)
 from botorch_rs.models.transforms.outcome import OutcomeTransform, Standardize
 from botorch_rs.posteriors.fully_bayesian import _StackedMixturePosterior
 
@@ -536,10 +541,19 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
         has been fitted in order to create a batched MultiTaskGP model.
         """
         pm = self.pyro_model
+        if pm._rs_kernel not in {"saas", "matern", "linear"}:
+            raise UnsupportedError(
+                "Native multitask loading requires a declared Matern, SAAS or Linear kernel family."
+            )
         means, _ = _values(mcmc_samples, "mean")
         num = len(means) // pm.num_tasks
-        ls, _ = _values(mcmc_samples, "lengthscale")
-        outputscale, _ = _values(mcmc_samples, "outputscale")
+        linear = pm._rs_kernel == "linear"
+        parameters, _ = _values(mcmc_samples, "weight_variance" if linear else "lengthscale")
+        outputscale = (
+            _values(mcmc_samples, "outputscale")[0]
+            if "outputscale" in mcmc_samples and not linear
+            else None
+        )
         noise = None if pm.train_Yvar is not None else _values(mcmc_samples, "noise")[0]
         d = pm.ard_num_dims
         args = dict(self._fb_args)
@@ -566,10 +580,18 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
             )
             # var = 0 (BoTorch: raw_var = -inf; softplus(-1000) = 0 exactly).
             task_kernel.raw_var = from_flat([-1000.0] * t, (t,), kind_of(None))
-            base = MaternKernel(nu=2.5, ard_num_dims=d)
-            base.lengthscale = from_flat(ls[s * d : (s + 1) * d], (1, d), kind_of(None))
-            data_kernel = ScaleKernel(base)
-            data_kernel.outputscale = from_flat([outputscale[s]], (), kind_of(None))
+            base: Any = (
+                LinearKernel(ard_num_dims=d) if linear else MaternKernel(nu=2.5, ard_num_dims=d)
+            )
+            setattr(
+                base,
+                "variance" if linear else "lengthscale",
+                from_flat(parameters[s * d : (s + 1) * d], (1, d), kind_of(None)),
+            )
+            data_kernel = base
+            if outputscale is not None:
+                data_kernel = ScaleKernel(base)
+                data_kernel.outputscale = from_flat([outputscale[s]], (), kind_of(None))
             likelihood = None
             if noise is not None:
                 likelihood = GaussianLikelihood(
@@ -616,6 +638,21 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
                     if normalize is None
                     else ChainedInputTransform(normalize=normalize, warp=warp)
                 )
+            if linear:
+                cols = d + 1
+                indices = [i for i in range(cols) if i != self._task_feature]
+                member._rs.set_input_feature_offsets(indices, [-0.5] * d)
+                center = Normalize(
+                    d=cols,
+                    indices=indices,
+                    bounds=from_flat([0.5] * cols + [1.5] * cols, (2, cols), self._kind),
+                )
+                previous = getattr(member, "input_transform", None)
+                member.input_transform = (
+                    center
+                    if previous is None
+                    else ChainedInputTransform(previous=previous, center=center)
+                )
             for k in range(t):
                 member.mean_module.base_means[k].constant = mod["mean"][k]
             if noise is not None:
@@ -627,6 +664,111 @@ class SaasFullyBayesianMultiTaskGP(MultiTaskGP):
         self.mean_module = [m.mean_module for m in samples]
         self.covar_module = [m.covar_module for m in samples]  # type: ignore[assignment]
         self.likelihood = [m.likelihood for m in samples]  # type: ignore[assignment]
+
+    def forward(self, X: Any) -> Any:
+        """The loaded prior at inputs including the categorical task column.
+
+        Training mode applies the fitted input transformations. Evaluation
+        mode accepts already transformed inputs, matching the public GP
+        ``forward`` contract rather than computing a conditional posterior.
+        """
+        self._check_if_fitted()
+        assert self._samples is not None
+        kind = kind_of(X)
+        if kind.lib == "torch":
+            import torch
+
+            from botorch_rs.models._torch_backend_modules import build_input_transform, build_kernel
+            from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
+
+            if X.ndim < 2 or X.shape[-1] != self.pyro_model.ard_num_dims + 1:
+                raise ValueError("Prior inputs must include the task feature column.")
+            batch = torch.broadcast_shapes(X.shape[:-2], self.batch_shape)
+            expanded = X.expand(*batch, *X.shape[-2:])
+            means, covariances = [], []
+            for s, member in enumerate(self._samples):
+                query = expanded.select(-3, s)
+                transform = getattr(member, "input_transform", None)
+                if self.training and transform is not None:
+
+                    def prior_transform(source: Any) -> Any:
+                        if isinstance(source, _MCMCInputWarp):
+                            # The subclass only synchronizes native setters;
+                            # its prior evaluation is exactly the public Warp.
+                            result: Any = copy.copy(source)
+                            result.__class__ = Warp
+                            return result
+                        if isinstance(source, ChainedInputTransform):
+                            return ChainedInputTransform(
+                                **{name: prior_transform(child) for name, child in source.items()}
+                            )
+                        return source
+
+                    transform = prior_transform(transform)
+                    module = build_input_transform(transform, X.shape[-1], X)
+                    assert module is not None
+                    query = module.train()(query)
+                labels = query[..., self._task_feature]
+                tasks = torch.zeros_like(labels, dtype=torch.long)
+                valid = torch.zeros_like(labels, dtype=torch.bool)
+                for i, label in enumerate(self.all_tasks):
+                    match = labels == label
+                    tasks = torch.where(match, i, tasks)
+                    valid = valid | match
+                if self._validate_task_values and not bool(valid.all()):
+                    raise ValueError("Received invalid task labels; expected labels in all_tasks.")
+                mapped = torch.cat(
+                    (
+                        query[..., : self._task_feature],
+                        tasks.to(query).unsqueeze(-1),
+                        query[..., self._task_feature + 1 :],
+                    ),
+                    dim=-1,
+                )
+                constants = query.new_tensor(
+                    [
+                        float(to_flat(mean.constant, "constant")[0][0])
+                        for mean in member.mean_module.base_means
+                    ]
+                )
+                means.append(constants[tasks])
+                kernel = build_kernel(member.covar_module, X.shape[-1], (), X)
+                covariances.append(kernel(mapped, mapped))
+            return TorchGPyTorchPosterior(
+                torch.stack(means, dim=-2).unsqueeze(-1), torch.stack(covariances, dim=-3)
+            ).distribution
+
+        from botorch_rs.posteriors.gpytorch import _MomentPosterior
+
+        data, shape = to_flat(X, "X")
+        if len(shape) < 2 or shape[-1] != self.pyro_model.ard_num_dims + 1:
+            raise ValueError("Prior inputs must include the task feature column.")
+        batch = broadcast_shapes(tuple(shape[:-2]), self.batch_shape)
+        if batch is None:
+            raise RuntimeError("Query and MCMC batch dimensions do not broadcast.")
+        q, cols = shape[-2:]
+        expanded_data = broadcast_to(data, tuple(shape), (*batch, q, cols))
+        means, covariances = [], []
+        for index in range(math.prod(batch)):
+            member = self._samples[index % len(self._samples)]
+            query = from_flat(
+                expanded_data[index * q * cols : (index + 1) * q * cols], (q, cols), kind
+            )
+            if self.training:
+                query = member.transform_inputs(query)
+            values = list(to_flat(query, "X")[0])
+            constants = [
+                float(to_flat(m.constant, "constant")[0][0]) for m in member.mean_module.base_means
+            ]
+            for row in range(q):
+                task = self._map_task_value(values[row * cols + self._task_feature])
+                means.append(constants[task])
+                values[row * cols + self._task_feature] = float(task)
+            mapped = from_flat(values, (q, cols), kind)
+            covariances.extend(to_flat(member.covar_module(mapped), "covariance")[0])
+        return _MomentPosterior(
+            (means, (*batch, q)), (covariances, (*batch, q, q)), kind
+        ).distribution
 
     def posterior(
         self,

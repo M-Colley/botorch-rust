@@ -32,12 +32,45 @@ The existing device-resident multinomial NUTS implementation is reused,
 including dense/diagonal mass adaptation, dual averaging, thinning,
 private-generator random draws, and replay diagnostics. Python synchronizes
 scalar tree decisions; continuous states and matrix algebra stay on device.
-The eager sampler rejects `jit_compile=True`. Arbitrary custom probabilistic
-or loader overrides are rejected rather than silently replaced by a built-in
-potential. A Gaussian mixture requires a linear outcome transform. Tensor
+The legacy `jit_compile` flag is accepted as a no-op, matching the pinned
+official fitter, which never reads that argument. Explicit custom probabilistic
+programs and prior mode use the optional NumPyro adapter described in
+`torch-fully-bayesian.md`; the built-in families retain native/device NUTS.
+Custom returned-module loaders remain outside the Tensor adapter's supported
+scope. A Gaussian mixture requires a linear outcome transform. Tensor
 observation-noise arguments retain the ordinary multitask model's explicit
 unsupported boundary. Inputs are an unbatched long-format training table
 with one observed scalar per row, as in the reference family.
+
+## Prior evaluation and native compositions
+
+`forward(X)` returns the latent prior in transformed outcome units on both
+backends. Training mode applies fitted input transformations; evaluation mode
+expects kernel coordinates, as in the reference GP `forward` method. Inputs
+include their physical task column and may broadcast against the MCMC axis.
+This is distinct from `posterior(X)`, which conditions on training observations.
+Tensor priors preserve query and relevant kernel/mean/transform parameter
+graphs through second derivatives. Native models also accept list/NumPy prior
+queries; their Torch prior evaluation uses port-owned parameter snapshots and
+retains query graphs. Persistent hyperparameter graphs require `backend="torch"`.
+
+The native loader now supports the latent-feature mixin with Matern kernels
+without an outputscale and with Linear kernels. For Linear, continuous columns
+are centered **after** the sampled Warp, and task labels are preserved. A fixed
+native feature-offset stage stores this composition so cached training solves,
+conditioned models, and native query derivatives use the same coordinates.
+This implements the corrected Linear loader contract covered by existing
+BoTorch #3465, rather than relying on the broken pinned loader.
+
+The added `test_fully_bayesian_multitask_prior.py` has 68 cases. Independent
+closed-form latent-feature covariance tests cover native list/NumPy/Torch and
+Tensor CPU/CUDA priors, SAAS/Matern/Linear, warping, train/eval modes, query
+first derivatives and Hessian-vector products, and relevant Tensor parameter
+Hessians. Official-prior comparisons and native-versus-Tensor posterior and
+conditioning checks are separate. All 167 new and existing multitask cases
+passed against the development ABI containing native feature offsets; two
+native Rust regressions verify explicit transformed-input laws, query VJPs,
+conditioning, task-column zero derivatives, and invalid-update atomicity.
 
 ## Independent validation
 

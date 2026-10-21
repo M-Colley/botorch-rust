@@ -634,13 +634,24 @@ def test_float32_two_samples_shared_noise_atomic_reload_and_auto_backend(device)
     assert all(bool(torch.isfinite(value).all()) for value in (*first, *second))
 
 
-def test_task_custom_probabilistic_override_rejected_without_fitting():
-    from botorch_rs.exceptions.errors import UnsupportedError
+def test_task_custom_probabilistic_override_is_deferred_to_optional_program():
+    pytest.importorskip("jax")
+    pytest.importorskip("numpyro")
 
     class Custom(MultitaskSaasPyroModel):
         def sample_task_lengthscale(self):
-            raise AssertionError("A custom law must not be silently replaced.")
+            raise RuntimeError("The explicit custom task law is invoked.")
 
     x, y, noise = _data("cpu")
-    with pytest.raises(UnsupportedError, match="custom sample_task_lengthscale"):
-        SaasFullyBayesianMultiTaskGP(x, y, 1, noise, pyro_model=Custom(), backend="torch")
+    model = SaasFullyBayesianMultiTaskGP(x, y, 1, noise, pyro_model=Custom(), backend="torch")
+    with pytest.raises(RuntimeError, match="explicit custom task law"):
+        fit_fully_bayesian_model_nuts(
+            model,
+            warmup_steps=1,
+            num_samples=1,
+            thinning=1,
+            max_tree_depth=1,
+            disable_progbar=True,
+            seed=0,
+        )
+    assert model.covar_module is None
