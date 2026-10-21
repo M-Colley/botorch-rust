@@ -1,7 +1,7 @@
 # Supplied variational likelihood modules
 
 The Tensor `SingleTaskVariationalGP` accepts supplied GPyTorch
-non-Gaussian likelihood modules. The actual likelihood object, registered
+Gaussian and non-Gaussian likelihood modules. The actual likelihood object, registered
 Parameters, buffers and overridden methods remain in use. Gaussian inference
 and variational updates belong to the port; no upstream GP model computes them.
 GPyTorch is needed only when supplying one of its module objects.
@@ -47,5 +47,31 @@ Gaussian moments, direct likelihood quadrature and common-normal categorical
 calculations verify the higher graphs. The source's optimized variational
 predictive double backward is repaired separately in
 [GPyTorch #2824](https://github.com/cornellius-gp/gpytorch/pull/2824).
-Gaussian and canonical scalar probit likelihoods retain their existing
-port-owned numerical paths.
+Native Gaussian specifications and canonical scalar probit likelihoods retain
+their existing port-owned numerical paths.
+
+Actual Gaussian likelihoods also retain subclass overrides and multitask noise
+operators. The ELBO calls their actual `expected_log_prob`, including likelihood
+keyword arguments and saved parameter/buffer state. Standard Gaussian and
+multitask Gaussian expectations use only marginal variances, preserving the
+O(NM) training path. A custom Gaussian expectation can inspect the full saved
+q(f) covariance. Observed predictions use the actual Gaussian marginal,
+including shifted means and off-diagonal task noise, then convert its explicit
+event ordering into the port's posterior ordering. Parameter identities remain
+unchanged; full covariance and common-normal sample graphs remain on device.
+
+The adapter materializes supplied Gaussian noise operators through their Tensor
+multiplication rather than the generic LinearOperator Matmul autograd wrapper.
+That wrapper's inherited bilinear-derivative fallback detaches higher graphs
+for Kronecker noise; independent dense task-noise formulas check the complete
+sample Hessians instead. The source defect is being prepared separately for
+upstream review.
+
+`test_torch_variational_gaussian_protocol.py` adds 42 CPU/CUDA cases: canonical
+Gaussian module identity, shifted Gaussian subclass semantics, diagonal and
+rank-one correlated multitask noise, model batches, unmodified source ELBO
+values and first derivatives, independent dense all-parameter/data higher
+derivatives, common-normal observed sampling, saved state, likelihood Tensor
+keywords, deepcopy, repeated backward, and no-host-copy/no-square-training-
+covariance guards. The combined Gaussian/non-Gaussian/categorical/probit,
+distribution, noise and snapshot suites pass 246 cases.

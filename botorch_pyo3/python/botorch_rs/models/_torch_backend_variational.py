@@ -515,7 +515,7 @@ class _TorchVariationalOutput:
         if not prior:
             self._kl = owner.model.variational_strategy.kl_divergence(variational_moments)
             self._log_prior = owner._log_prior()
-            if owner._non_gaussian_likelihood:
+            if owner._non_gaussian_likelihood or owner._external_likelihood:
                 if getattr(owner.likelihood, "_non_gaussian", False):
                     self._expected_log_prob = owner.likelihood.snapshot_expected_log_prob()
                 else:
@@ -705,7 +705,6 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         from botorch_rs.likelihoods import BernoulliLikelihood
         from botorch_rs.models._torch_backend_variational_likelihoods import (
             TorchBernoulliLikelihood,
-            TorchExternalGaussianLikelihood,
         )
 
         bernoulli = type(likelihood) is BernoulliLikelihood or (
@@ -713,8 +712,8 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             and gpytorch is not None
             and type(likelihood) is gpytorch.likelihoods.BernoulliLikelihood
         )
-        external_gaussian = (
-            gpytorch is not None and type(likelihood) is gpytorch.likelihoods.GaussianLikelihood
+        external_gaussian = gpytorch is not None and isinstance(
+            likelihood, gpytorch.likelihoods.gaussian_likelihood._GaussianLikelihoodBase
         )
         external_non_gaussian = (
             gpytorch is not None
@@ -724,21 +723,16 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
             )
         )
         self._non_gaussian_likelihood = bernoulli or external_non_gaussian
-        self._external_likelihood = external_non_gaussian and not bernoulli
+        self._external_likelihood = (external_non_gaussian or external_gaussian) and not bernoulli
+        self._external_gaussian = external_gaussian
         if bernoulli:
             if num_outputs != 1:
                 raise UnsupportedError(
                     "Probit variational observations currently require a scalar output."
                 )
             self.likelihood = TorchBernoulliLikelihood(likelihood, train_X)
-        elif external_non_gaussian:
+        elif external_non_gaussian or external_gaussian:
             self.likelihood = likelihood.to(train_X)
-        elif external_gaussian:
-            if num_outputs != 1:
-                raise UnsupportedError(
-                    "Independent multiple outputs require multitask observation noise."
-                )
-            self.likelihood = TorchExternalGaussianLikelihood(likelihood, train_X)
         elif likelihood is None and num_outputs > 1:
             likelihood = MultitaskGaussianLikelihood(num_outputs)
             self.likelihood = _TorchMultitaskNoise(likelihood, train_X)
@@ -1106,7 +1100,16 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         blocks = output._blocks()
         covariance = independent_covariance(blocks) if self.num_outputs > 1 else blocks
         if observation_noise is not False:
-            if observation_noise is True and self.num_outputs > 1:
+            if observation_noise is True and self._external_gaussian:
+                from botorch_rs.models._torch_variational_external_likelihood import (
+                    gaussian,
+                    posterior_from_gaussian,
+                )
+
+                observed = self.likelihood(gaussian(output))
+                observed_posterior = posterior_from_gaussian(observed)
+                covariance = observed_posterior.distribution.covariance_matrix
+            elif observation_noise is True and self.num_outputs > 1:
                 covariance = covariance + tensor_kron(
                     self.likelihood.noise_matrix(),
                     torch.eye(X.shape[-2], device=X.device, dtype=X.dtype),
@@ -1123,6 +1126,8 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
                     noise.flatten(-2) if self.num_outputs > 1 else noise
                 )
         mean = output.mean if self.num_outputs > 1 else output.mean.unsqueeze(-1)
+        if observation_noise is True and self._external_gaussian:
+            mean = observed_posterior.mean
         posterior = TorchGPyTorchPosterior(mean, covariance)
         transform = self.outcome_transform
         if output_indices is not None:

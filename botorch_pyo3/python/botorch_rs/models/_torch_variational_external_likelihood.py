@@ -1,4 +1,4 @@
-"""Supplied scalar likelihood protocols over the port's variational Gaussian."""
+"""Supplied likelihood protocols over the port's variational Gaussian."""
 
 from __future__ import annotations
 
@@ -6,11 +6,17 @@ from typing import Any
 
 import torch
 from gpytorch.distributions import MultitaskMultivariateNormal, MultivariateNormal
-from gpytorch.likelihoods import _OneDimensionalLikelihood
+from gpytorch.likelihoods import (
+    FixedNoiseGaussianLikelihood,
+    GaussianLikelihood,
+    MultitaskGaussianLikelihood,
+    _OneDimensionalLikelihood,
+)
 from linear_operator.operators import DenseLinearOperator, DiagLinearOperator
 from torch import Tensor, nn
 
 from botorch_rs import _botorch_rs as _rs
+from botorch_rs.posteriors._torch_backend import TorchGPyTorchPosterior
 
 
 class _LikelihoodGaussian(MultivariateNormal):
@@ -43,6 +49,30 @@ def gaussian(function: Any, *, diagonal: bool = False) -> Any:
     )
     cls: Any = _LikelihoodMultitaskGaussian if multitask else _LikelihoodGaussian
     return cls(function.mean, covariance)
+
+
+def posterior_from_gaussian(distribution: Any) -> TorchGPyTorchPosterior:
+    """Preserve a supplied marginal, converting its explicit event ordering."""
+    mean = distribution.mean
+    operator = distribution.lazy_covariance_matrix.evaluate_kernel()
+    # LinearOperator's generic Matmul backward detaches the representation in
+    # its bilinear-derivative fallback (notably for Kronecker noise). Evaluate
+    # the actual operator's Tensor multiplication directly so higher gradients
+    # include both its representation and the upstream covariance adjoint.
+    identity = torch.eye(operator.shape[-1], dtype=mean.dtype, device=mean.device)
+    covariance = operator._matmul(identity.expand(*operator.batch_shape, *identity.shape))
+    if isinstance(distribution, MultitaskMultivariateNormal):
+        if distribution._interleaved:
+            n, m = mean.shape[-2:]
+            covariance = covariance.reshape(*covariance.shape[:-2], n, m, n, m)
+            covariance = (
+                covariance.transpose(-4, -3)
+                .transpose(-2, -1)
+                .reshape(*covariance.shape[:-4], n * m, n * m)
+            )
+    else:
+        mean = mean.unsqueeze(-1)
+    return TorchGPyTorchPosterior(mean, covariance)
 
 
 class _ExpectedLogProbability(nn.Module):
@@ -79,13 +109,14 @@ def snapshot_expected_log_prob(likelihood: nn.Module, function: Any) -> Any:
     evaluator = _ExpectedLogProbability(likelihood, function._multitask)
     parameters = {name: value.clone() for name, value in evaluator.named_parameters()}
     buffers = {name: value.clone() for name, value in evaluator.named_buffers()}
+    marginal_only = isinstance(likelihood, _OneDimensionalLikelihood) or type(likelihood) in (
+        GaussianLikelihood,
+        FixedNoiseGaussianLikelihood,
+        MultitaskGaussianLikelihood,
+    )
 
     def expected(target: Tensor, mean: Tensor, variance: Tensor, **kwargs: Any) -> Tensor:
-        covariance = (
-            None
-            if isinstance(likelihood, _OneDimensionalLikelihood)
-            else function.covariance_matrix
-        )
+        covariance = None if marginal_only else function.covariance_matrix
         return torch.func.functional_call(
             evaluator, (parameters, buffers), (target, mean, variance, covariance), kwargs
         )
