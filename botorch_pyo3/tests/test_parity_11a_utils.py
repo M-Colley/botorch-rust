@@ -809,11 +809,13 @@ def test_iid_sampler_in_mc_acquisition(name: str, kw: dict[str, Any], m: int) ->
 
 def test_iid_posterior_samples_forked_and_get_sampler() -> None:
     from botorch.sampling import IIDNormalSampler as BtIID
+    from botorch.sampling import SobolQMCNormalSampler as BtSobol
     from botorch.sampling.get_sampler import get_sampler as bt_get
     from botorch.sampling.stochastic_samplers import ForkedRNGSampler as BtF
 
     from botorch_rs.sampling import ForkedRNGSampler as RsF
     from botorch_rs.sampling import IIDNormalSampler as RsIID
+    from botorch_rs.sampling import SobolQMCNormalSampler as RsSobol
     from botorch_rs.sampling import get_sampler as rs_get
 
     for m in (1, 2):
@@ -827,7 +829,18 @@ def test_iid_posterior_samples_forked_and_get_sampler() -> None:
             TOL,
         )
         ra, rb = rs_get(pr, torch.Size([4]), seed=1), bt_get(pb, torch.Size([4]), seed=1)
-        assert type(ra).__name__ == type(rb).__name__
+        assert isinstance(ra, RsSobol) and isinstance(rb, BtSobol)
+        actual, expected = ra(pr), rb(pb)
+        # Native Owen scrambling and Torch use different seeded sequences.
+        # Compare the posterior law using identical actual normal draws.
+        native_normals = ra.base_samples.clone()
+        source_normals = rb.base_samples.clone()
+        ra.base_samples = source_normals.clone()
+        C.check("get_sampler posterior samples with source normals", ra(pr), expected, TOL)
+        rb.base_samples = native_normals.clone()
+        C.check("get_sampler source posterior with native normals", actual, rb(pb), TOL)
+        repeat = rs_get(pr, torch.Size([4]), seed=1)
+        torch.testing.assert_close(repeat(pr), actual, atol=0, rtol=0)
         assert RsF(torch.Size([5]), seed=2)(pr).shape == BtF(torch.Size([5]), seed=2)(pb).shape
 
 
