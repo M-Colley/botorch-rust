@@ -31,3 +31,19 @@ official BoTorch `b0dd01be61d517c387e234903a6e2cc38c057ea2`. The initial focused
 run passed 71 cases including existing sampling, cache-prefix, and sampler
 mixin regressions. This change does not extend the separate structured
 Matheron `_update_base_samples` layout boundary.
+
+The follow-up broadcast repair inserts omitted batch axes after every MC
+sample axis, so explicitly supplied `sample_shape x q` normals retain their
+identity and gradients when sampled across model batches. Full public
+single-output layouts take precedence over the legacy `q x 1` shorthand:
+when `q=1`, valid trailing singleton batch/event axes are not squeezed or
+reinterpreted as an output axis. The same shape-only expansion is shared by
+the sampler and the Tensor Gaussian posterior's direct base-sample method.
+
+The expanded protocol suite passes 76 cases on Torch 2.13 CPU/CUDA, including
+independent Gaussian sample values and all first/second derivatives through
+means, covariance matrices and explicit normals. Torch 2.14 CPU passes the
+same available cases plus the previous explicit-normal model regression
+(45 passed, 32 CUDA skips). The explicit model regression and complete KG
+and multistep lookahead modules pass 62 CPU/CUDA cases without changing
+numerical tolerances or acquisition formulas.

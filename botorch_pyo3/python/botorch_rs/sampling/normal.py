@@ -90,7 +90,7 @@ class NormalMCSampler(MCSampler):
             isinstance(self, IIDNormalSampler)
             and current is not None
             and getattr(self, "_tensor_sampler_key", None) is None
-            and tuple(current.shape) == shape
+            and tuple(current.shape[: len(self.sample_shape)]) == self.sample_shape
         ):
             explicit = True
         if explicit and current is not None:
@@ -127,10 +127,19 @@ class NormalMCSampler(MCSampler):
 
     def _tensor_samples(self, posterior: Any) -> Any:
         """Sample on the posterior device without flattening its graph."""
+        from botorch_rs.posteriors._base_samples import expand_base_samples
+
         self._construct_tensor_base_samples(posterior)
+        points = (
+            getattr(posterior, "_q", None) if getattr(posterior, "_is_mt", True) is False else None
+        )
+        if points is not None and posterior.base_sample_shape[-1] != points:
+            points = None  # Structured posterior layouts are not q-only events.
         return posterior.rsample_from_base_samples(
             sample_shape=self.sample_shape,
-            base_samples=self.base_samples.expand(self._get_extended_base_sample_shape(posterior)),
+            base_samples=expand_base_samples(
+                self.base_samples, self.sample_shape, posterior.base_sample_shape, points
+            ),
         )
 
     @property

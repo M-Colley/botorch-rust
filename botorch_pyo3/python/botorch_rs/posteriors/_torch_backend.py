@@ -8,6 +8,7 @@ import torch
 
 from botorch_rs import _botorch_rs as _rs
 from botorch_rs._arrays import kind_of
+from botorch_rs.posteriors._base_samples import expand_base_samples
 from botorch_rs.posteriors.gpytorch import GPyTorchPosterior
 from botorch_rs.posteriors.posterior_list import PosteriorList
 from botorch_rs.posteriors.transformed import TransformedPosterior
@@ -79,17 +80,9 @@ class TorchGPyTorchPosterior(GPyTorchPosterior):
         shape = torch.Size(sample_shape)
         if not isinstance(base_samples, torch.Tensor):
             base_samples = torch.as_tensor(base_samples, dtype=self.dtype, device=self.device)
-        if base_samples.shape[: len(shape)] != shape:
-            raise RuntimeError("sample_shape disagrees with base_samples.shape.")
-        event_dims = 2 if self._is_mt else 1
-        tail = base_samples.shape[len(shape) :]
-        if not self._is_mt and len(tail) >= 2 and tail[-2:] == (self._q, 1):
-            base_samples = base_samples.squeeze(-1)
-            tail = tail[:-1]
-        missing = len(self._batch) + event_dims - len(tail)
-        if missing > 0:
-            base_samples = base_samples.reshape(*shape, *(1 for _ in range(missing)), *tail)
-        normals = base_samples.expand(shape + self.base_sample_shape)
+        normals = expand_base_samples(
+            base_samples, shape, self.base_sample_shape, None if self._is_mt else self._q
+        )
         if self._is_mt:
             normals = normals.transpose(-1, -2).reshape(*shape, *self._batch, self._m * self._q)
         root = _rs.tensor_psd_safe_cholesky(self._covariance_tensor)
