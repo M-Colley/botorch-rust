@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import operator
+import sys
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
@@ -27,7 +28,8 @@ def gen_kernel_features(
     kernel: Any, num_inputs: int, num_outputs: int, **kwargs: Any
 ) -> KernelFeatureMap:
     """Generate RBF or Matérn sine/cosine features (optional native ``seed``)."""
-    if type(kernel).__module__ == "botorch_rs.models._torch_backend_modules":
+    torch = sys.modules.get("torch")
+    if torch is not None and isinstance(kernel, torch.nn.Module):
         from botorch_rs.sampling.pathwise._torch_backend import tensor_kernel_features
 
         return tensor_kernel_features(kernel, num_inputs, num_outputs, **kwargs)

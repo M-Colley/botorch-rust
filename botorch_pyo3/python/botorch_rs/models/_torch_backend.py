@@ -148,9 +148,11 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         return Y.transpose(-1, -2) if self.num_outputs > 1 else Y.squeeze(-1)
 
     def _fit_transform_graphs(self) -> None:
+        from botorch_rs.models._pathwise_context import training_outcome_transform
+
         for transform, values in (
             (self.input_transform, self._transform_fit_X),
-            (self.outcome_transform, self._transform_fit_Y),
+            (training_outcome_transform(self), self._transform_fit_Y),
         ):
             if transform is None:
                 continue
@@ -230,14 +232,17 @@ class TorchSingleTaskGP(torch.nn.Module, SingleTaskGP):
         return torch.nn.Module._apply(self, fn, recurse)
 
     def _training_values(self, clamp_noise: bool = True) -> tuple[Any, Any, Any]:
+        from botorch_rs.models._pathwise_context import training_outcome_transform
+
         self._fit_transform_graphs()
         X = self._train_X
         if self.input_transform is not None:
             transform = getattr(self.input_transform, "preprocess_transform", self.input_transform)
             X = transform(X)
         Y, noise = self._train_Y, self._train_Yvar
-        if self.outcome_transform is not None:
-            Y, noise = self.outcome_transform(Y, noise, X=self._train_X)
+        outcome = training_outcome_transform(self)
+        if outcome is not None:
+            Y, noise = outcome(Y, noise, X=self._train_X)
         if noise is not None and clamp_noise:
             noise = noise.clamp_min(1e-4 if noise.dtype == torch.float32 else 1e-6)
         return (

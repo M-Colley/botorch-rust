@@ -453,9 +453,11 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         return X.unsqueeze(-3) if self.num_outputs > 1 else X
 
     def _fit_transforms(self) -> None:
+        from botorch_rs.models._pathwise_context import training_outcome_transform
+
         for transform, values in (
             (self.input_transform, self._train_X),
-            (self.outcome_transform, self._train_Y),
+            (training_outcome_transform(self), self._train_Y),
         ):
             if transform is not None:
                 if (
@@ -503,14 +505,13 @@ class TorchSingleTaskVariationalGP(nn.Module, SingleTaskVariationalGP):
         return new
 
     def _training_targets(self) -> Tensor:
+        from botorch_rs.models._pathwise_context import training_outcome_transform
+
         if self._train_Y is None:
             raise ValueError("Training targets were not supplied; pass targets to VariationalELBO.")
         self._fit_transforms()
-        return (
-            self._train_Y
-            if self.outcome_transform is None
-            else self.outcome_transform(self._train_Y)[0]
-        )
+        outcome = training_outcome_transform(self)
+        return self._train_Y if outcome is None else outcome(self._train_Y)[0]
 
     def _log_prior(self) -> Any:
         result = self._train_X.new_zeros(())

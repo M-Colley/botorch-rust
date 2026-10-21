@@ -156,7 +156,7 @@ def _num_features(prior_sampler: Any) -> int:
         if prior_sampler.args:
             raise UnsupportedError("Positional arguments of the prior sampler are not supported.")
         func, kwargs = prior_sampler.func, dict(prior_sampler.keywords)
-    if getattr(func, "__name__", None) != "draw_kernel_feature_paths":
+    if func is not draw_kernel_feature_paths:
         raise UnsupportedError(
             "botorch_rs only supports draw_kernel_feature_paths as prior_sampler."
         )
@@ -183,9 +183,11 @@ def draw_matheron_paths(
     ``sample_shape x batch_shape x [m x] n`` values; the paths of a
     ``ModelListGP`` form a ``PathList`` of the ``MatheronPath`` of each model.
 
-    ``prior_sampler`` must be ``draw_kernel_feature_paths``, possibly with
-    ``num_features`` bound by ``functools.partial`` (default 1024);
-    ``update_strategy`` must be ``gaussian_update``.
+    ``prior_sampler`` is called with ``model`` and ``sample_shape``;
+    ``update_strategy`` receives ``model``, the resulting ``sample_values``
+    and the exact model's transformed ``target_values``. Defaults are
+    ``draw_kernel_feature_paths`` (1024 features) and ``gaussian_update``.
+    Outcome untransformation is applied once, after joining both components.
 
     botorch_rs extensions (keyword-only): ``seed`` (the random numbers of
     botorch_rs, which differ from torch's for the same seed; ``None`` draws a
@@ -202,10 +204,17 @@ def draw_matheron_paths(
     prior paths are supported, but their Matheron update is not registered
     by the reference's ``IndependentMultitaskVariationalStrategy`` dispatcher.
     """
-    num_features = _num_features(prior_sampler)
-    if getattr(update_strategy, "__name__", None) != "gaussian_update":
-        raise UnsupportedError("botorch_rs only supports gaussian_update as update_strategy.")
     shape = sample_shape_arg(sample_shape)
+    try:
+        num_features = _num_features(prior_sampler)
+    except UnsupportedError:
+        num_features = None
+    if (
+        num_features is None
+        or update_strategy is not gaussian_update
+        or (getattr(model, "_tensor_backend", None) != "torch" and bool(model.batch_shape))
+    ):
+        return _compose_matheron_paths(model, shape, prior_sampler, update_strategy, seed, draws)
     if getattr(model, "_tensor_backend", None) == "torch":
         from botorch_rs.sampling.pathwise._torch_backend import tensor_matheron_paths
 
@@ -219,6 +228,76 @@ def draw_matheron_paths(
         draws_arg(draws, ("frequencies", "weights", "noise")),
     )
     return as_paths(model, handle, sizes, shape, MatheronPath)
+
+
+def _compose_matheron_paths(
+    model: Any,
+    shape: tuple[int, ...],
+    prior_sampler: Any,
+    update_strategy: Any,
+    seed: Any,
+    draws: Any,
+) -> Any:
+    from botorch_rs.models._pathwise_context import suppress_path_outcome
+    from botorch_rs.sampling.pathwise.utils import (
+        get_output_transform,
+        get_train_inputs,
+        get_train_targets,
+    )
+
+    if not callable(prior_sampler) or not callable(update_strategy):
+        raise TypeError("prior_sampler and update_strategy must be callable.")
+    if draws is not None:
+        raise ValueError("Custom Matheron samplers cannot be combined with explicit native draws.")
+    if hasattr(model, "models"):
+        return PathList(
+            [
+                draw_matheron_paths(
+                    child,
+                    shape,
+                    prior_sampler,
+                    update_strategy,
+                    seed=None if seed is None else seed + i,
+                )
+                for i, child in enumerate(model.models)
+            ]
+        )
+    model.eval()
+    inner = getattr(model, "model", None)
+    variational = hasattr(inner, "variational_strategy")
+    if variational:
+        assert inner is not None
+        strategy = inner.variational_strategy
+        if hasattr(strategy, "base_variational_strategy"):
+            raise NotImplementedError(
+                "The reference Matheron dispatcher does not support independent multitask variational updates."
+            )
+        points, targets = strategy.inducing_points, None
+    else:
+        (points,) = get_train_inputs(model, transformed=True)
+        targets = get_train_targets(model, transformed=True)
+    outcome = get_output_transform(model)
+    with suppress_path_outcome(model):
+        prior = prior_sampler(
+            model=model,
+            sample_shape=shape,
+            **(
+                {"seed": seed}
+                if prior_sampler is draw_kernel_feature_paths and seed is not None
+                else {}
+            ),
+        )
+        values = prior.forward(points)
+        options = {} if variational else {"target_values": targets}
+        if update_strategy is gaussian_update and seed is not None:
+            options["seed"] = seed
+        update = update_strategy(model=model, sample_values=values, **options)
+    cls: Any = MatheronPath
+    if getattr(model, "_tensor_backend", None) == "torch":
+        from botorch_rs.sampling.pathwise._torch_backend import TorchMatheronPath
+
+        cls = TorchMatheronPath
+    return cls(prior_paths=prior, update_paths=update, output_transform=outcome)
 
 
 def get_matheron_path_model(

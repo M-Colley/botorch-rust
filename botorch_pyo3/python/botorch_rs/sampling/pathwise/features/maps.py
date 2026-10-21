@@ -139,9 +139,13 @@ class KernelFeatureMap(FeatureMap):
 
 def _kernel_values(kernel: Any, x: Any, points: Any) -> Any:
     global _KERNEL_FUNCTION
-    if type(kernel).__module__ == "botorch_rs.models._torch_backend_modules":
-        return kernel(x, points)
     kind = first_kind(x, points)
+    if kind.lib == "torch":
+        import torch
+
+        if isinstance(kernel, torch.nn.Module):
+            value = kernel(x, points)
+            return value.to_dense() if hasattr(value, "to_dense") else value
     if kind.lib != "torch" or not _requires_grad([x, points]):
         return kernel(x, points)
     import torch

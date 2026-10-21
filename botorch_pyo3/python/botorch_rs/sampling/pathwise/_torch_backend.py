@@ -7,6 +7,7 @@ bindings. All feature, solve, transform and path operations preserve graphs.
 from __future__ import annotations
 
 import math
+import sys
 from typing import Any
 
 import torch
@@ -21,6 +22,10 @@ from botorch_rs.models.deterministic import MatheronPathModel
 from botorch_rs.sampling.pathwise.features.maps import KernelEvaluationMap, KernelFeatureMap
 from botorch_rs.sampling.pathwise.paths import GeneralizedLinearPath, PathList
 from botorch_rs.sampling.pathwise.posterior_samplers import MatheronPath
+
+
+def _dense(value: Any) -> Tensor:
+    return value if isinstance(value, Tensor) else value.to_dense()
 
 
 def _seed(seed: int | None) -> int:
@@ -43,15 +48,31 @@ def _normals(shape: Any, like: Tensor, seed: int) -> Tensor:
     return uniforms.clamp(eps, 1 - eps).mul(2).sub(1).erfinv().mul(math.sqrt(2)).reshape(shape)
 
 
+def _external_kernel(kernel: Any, name: str) -> bool:
+    gpytorch = sys.modules.get("gpytorch")
+    return gpytorch is not None and isinstance(kernel, getattr(gpytorch.kernels, name))
+
+
+def _is_scale(kernel: Any) -> bool:
+    return isinstance(kernel, TorchScaleKernel) or _external_kernel(kernel, "ScaleKernel")
+
+
+def _family(kernel: Any) -> str:
+    if isinstance(kernel, TorchStationaryKernel):
+        return str(kernel.kind)
+    if _external_kernel(kernel, "RBFKernel"):
+        return "rbf"
+    if _external_kernel(kernel, "MaternKernel"):
+        return "matern"
+    raise UnsupportedError("Device Fourier paths require RBF/Matérn kernels, optionally scaled.")
+
+
 def _leaf(kernel: Any, num_inputs: int) -> tuple[Any, int]:
-    while isinstance(kernel, TorchScaleKernel):
+    while _is_scale(kernel):
         if kernel.active_dims is not None:
             num_inputs = kernel.active_dims.numel()
         kernel = kernel.base_kernel
-    if not isinstance(kernel, TorchStationaryKernel):
-        raise UnsupportedError(
-            "Device Fourier paths require RBF/Matérn kernels, optionally scaled."
-        )
+    _family(kernel)
     return kernel, num_inputs if kernel.active_dims is None else kernel.active_dims.numel()
 
 
@@ -67,8 +88,16 @@ class TorchKernelFeatureMap(KernelFeatureMap):
             raise UnsupportedError(f"Unsupported Fourier feature options: {sorted(kwargs)}.")
         kernel = self.kernel
         scale: Any = 1.0
-        while isinstance(kernel, TorchScaleKernel):
-            if kernel.active_dims is not None:
+        while _is_scale(kernel):
+            # ScaleKernel inherits its base's selection. GPyTorch shares the
+            # exact index object; the port registers separate device buffers.
+            # In both cases apply an inherited selection only at the base.
+            inherited = (
+                kernel.base_kernel.active_dims is not None
+                if isinstance(kernel, TorchScaleKernel)
+                else kernel.active_dims is kernel.base_kernel.active_dims
+            )
+            if kernel.active_dims is not None and not inherited:
                 x = x.index_select(-1, kernel.active_dims)
             scale = scale * kernel.outputscale.unsqueeze(-1).unsqueeze(-1)
             kernel = kernel.base_kernel
@@ -104,6 +133,8 @@ class TorchMatheronPath(MatheronPath):
 
     @property
     def draws(self) -> Any:
+        if not hasattr(self, "_draw_record"):
+            raise UnsupportedError("Explicitly composed paths do not have a joint draw record.")
         return self._draw_record
 
 
@@ -186,7 +217,7 @@ def tensor_kernel_features(kernel: Any, num_inputs: int, num_outputs: int, seed:
     like = leaf.lengthscale
     value = _seed(seed)
     weight = _normals((*kernel.batch_shape, num_outputs // 2, dimensions), like, value)
-    if leaf.kind == "matern":
+    if _family(leaf) == "matern":
         concentration = torch.full(
             (*kernel.batch_shape, num_outputs // 2, 1),
             leaf.nu,
@@ -218,7 +249,7 @@ def _fit_transforms(model: Any) -> None:
 
 
 def _outcome(model: Any) -> Any:
-    if model.outcome_transform is None:
+    if getattr(model, "outcome_transform", None) is None:
         return None
 
     def untransform(values: Tensor) -> Tensor:
@@ -279,6 +310,7 @@ def _draw_components(
         bias_module=modules.mean_module,
         input_transform=model.input_transform,
         output_transform=_outcome(model) if original else None,
+        is_ensemble=bool(getattr(model, "_is_ensemble", False)),
     )
 
 
@@ -310,22 +342,28 @@ def tensor_gaussian_update(
     noise: Any,
     seed: Any,
     noise_covariance: Any = None,
+    *,
+    points: Any = None,
+    scale_tril: Any = None,
 ) -> Any:
     from botorch_rs.sampling.pathwise.update_strategies import DEFAULT
 
     _require_model(model)
     if isinstance(model, TorchSingleTaskVariationalGP):
+        if points is not None or scale_tril is not None:
+            raise TypeError("points and scale_tril override exact-GP updates only.")
         return _variational_update(
             model, sample_values, target_values, noise, seed, noise_covariance
         )
-    if noise_covariance is not None:
-        raise UnsupportedError(
-            "Explicit noise covariance is not supported by device exact path updates."
-        )
-    if likelihood not in (DEFAULT, None) and likelihood is not model.likelihood:
-        raise UnsupportedError("Gaussian updates require the model likelihood or None.")
-    points, targets, fixed = model._training_values()
-    if not isinstance(sample_values, Tensor) or sample_values.shape[-1] != targets.shape[-1]:
+    training_points, targets, fixed = model._training_values()
+    points = training_points if points is None else points
+    if (
+        not isinstance(points, Tensor)
+        or points.device != training_points.device
+        or points.dtype != training_points.dtype
+    ):
+        raise ValueError("Update points must share the model dtype and device.")
+    if not isinstance(sample_values, Tensor) or sample_values.shape[-1] != points.shape[-2]:
         raise ValueError(
             "Prior sample values must be device Tensors ending in the training-point dimension."
         )
@@ -334,27 +372,67 @@ def tensor_gaussian_update(
         if target_values is None
         else torch.as_tensor(target_values, dtype=targets.dtype, device=targets.device)
     )
-    variance = (
-        torch.zeros_like(targets) if likelihood is None else model._training_noise(targets, fixed)
-    )
-    if noise is None:
-        generator = torch.Generator(device=targets.device).manual_seed(_seed(seed))
-        noise = torch.randn(
-            sample_values.shape, dtype=targets.dtype, device=targets.device, generator=generator
-        )
+    if likelihood is DEFAULT:
+        likelihood = model.likelihood
+    if noise_covariance is None:
+        if likelihood is None:
+            covariance_noise = None
+        elif likelihood is model.likelihood:
+            variance = (
+                likelihood.noise_for(points.shape[-2])
+                if fixed is None
+                else model._training_noise(targets, fixed)
+            )
+            # FixedGaussianNoise has no noise entries for an unmatched set of
+            # update points, exactly as its public noise_covar protocol.
+            covariance_noise = (
+                None
+                if fixed is not None and variance.shape[-1] != points.shape[-2]
+                else torch.diag_embed(variance)
+            )
+        elif callable(getattr(likelihood, "noise_covar", None)):
+            covariance_noise = likelihood.noise_covar(shape=points.shape[:-1])
+            covariance_noise = (
+                None
+                if type(covariance_noise).__name__ == "ZeroLinearOperator"
+                else _dense(covariance_noise)
+            )
+        elif hasattr(likelihood, "noise_for"):
+            covariance_noise = torch.diag_embed(likelihood.noise_for(points.shape[-2]))
+        else:
+            raise TypeError("Custom likelihoods must expose Gaussian noise_covar or noise_for.")
+    elif type(noise_covariance).__name__ == "ZeroLinearOperator":
+        covariance_noise = None
     else:
-        noise = torch.as_tensor(noise, dtype=targets.dtype, device=targets.device)
-        if noise.shape != sample_values.shape:
-            raise ValueError("Standard normal update noise must match sample_values.shape.")
-    factor = _rs.tensor_psd_safe_cholesky(
-        model._covariance(points, points) + torch.diag_embed(variance.expand_as(targets))
+        covariance_noise = _dense(noise_covariance)
+    errors = target - sample_values
+    if covariance_noise is not None:
+        if noise is None:
+            generator = torch.Generator(device=targets.device).manual_seed(_seed(seed))
+            noise = torch.randn(
+                sample_values.shape, dtype=targets.dtype, device=targets.device, generator=generator
+            )
+        else:
+            noise = torch.as_tensor(noise, dtype=targets.dtype, device=targets.device)
+            if noise.shape != sample_values.shape:
+                raise ValueError("Standard normal update noise must match sample_values.shape.")
+        noise_factor = _rs.tensor_psd_safe_cholesky(covariance_noise)
+        errors = errors - (noise_factor @ noise.unsqueeze(-1)).squeeze(-1)
+    factor = (
+        _rs.tensor_psd_safe_cholesky(
+            model._covariance(points, points)
+            + (0 if covariance_noise is None else covariance_noise)
+        )
+        if scale_tril is None
+        else _dense(scale_tril)
     )
-    errors = target - sample_values - variance.sqrt() * noise
     weight = torch.cholesky_solve(errors.unsqueeze(-1), factor).squeeze(-1)
     features = TorchKernelEvaluationMap(
         model.covar_module, points, input_transform=model.input_transform
     )
-    return TorchGeneralizedLinearPath(features, weight)
+    return TorchGeneralizedLinearPath(
+        features, weight, is_ensemble=bool(getattr(model, "_is_ensemble", False))
+    )
 
 
 def _variational_update(
@@ -369,7 +447,7 @@ def _variational_update(
         raise NotImplementedError(
             "Matheron updates require the scalar whitened VariationalStrategy; the reference does not register IndependentMultitaskVariationalStrategy updates."
         )
-    if noise_covariance is not None:
+    if noise_covariance is not None and type(noise_covariance).__name__ != "ZeroLinearOperator":
         raise NotImplementedError(
             "Variational path updates do not support observation noise covariance."
         )

@@ -53,6 +53,8 @@ def gaussian_update(
     noise: Any = None,
     seed: int | None = None,
     noise_covariance: Any = None,
+    points: Any = None,
+    scale_tril: Any = None,
 ) -> GeneralizedLinearPath:
     r"""The Gaussian pathwise update of a GP (BoTorch's
     ``gaussian_update``)::
@@ -71,8 +73,14 @@ def gaussian_update(
     variational distribution. The update factors ``K_ZZ`` without observation
     noise or the strategy's predictive jitter, matching BoTorch's update.
     ``target_values`` may supply these latent values explicitly. The device
-    update accepts ``noise_covariance=None``; explicit covariance overrides
-    are not supported.
+    update accepts ``noise_covariance=None`` or a ``ZeroLinearOperator``;
+    observation covariance overrides are unsupported by the reference too.
+
+    Exact updates accept transformed ``points``, ``target_values``, a full
+    ``noise_covariance`` and a supplied Cholesky ``scale_tril``. Gaussian
+    likelihood overrides may provide ``noise_covar`` or ``noise_for``.
+    Tensor-backend overrides preserve their device and differentiable graph;
+    native-backend overrides use Rust array factorization and solves.
 
     botorch_rs extensions (keyword-only): ``noise`` supplies standard normals
     for the exact observation-noise draw or the whitened variational draw,
@@ -84,10 +92,41 @@ def gaussian_update(
         from botorch_rs.sampling.pathwise._torch_backend import tensor_gaussian_update
 
         return tensor_gaussian_update(
-            model, sample_values, likelihood, target_values, noise, seed, noise_covariance
+            model,
+            sample_values,
+            likelihood,
+            target_values,
+            noise,
+            seed,
+            noise_covariance,
+            points=points,
+            scale_tril=scale_tril,
         )
-    if noise_covariance is not None:
-        raise UnsupportedError("Explicit noise covariance is not supported by native path updates.")
+    if (
+        noise_covariance is not None
+        or target_values is not None
+        or points is not None
+        or scale_tril is not None
+        or likelihood is None
+        or bool(model.batch_shape)
+        or (
+            likelihood not in (DEFAULT, None)
+            and likelihood is not getattr(model, "likelihood", None)
+        )
+    ):
+        from botorch_rs.sampling.pathwise._native_updates import native_gaussian_update
+
+        return native_gaussian_update(
+            model,
+            sample_values,
+            likelihood,
+            target_values,
+            noise,
+            seed,
+            noise_covariance,
+            points,
+            scale_tril,
+        )
     if not isinstance(model, SingleTaskGP):
         raise UnsupportedError("botorch_rs gaussian_update requires a botorch_rs SingleTaskGP.")
     if likelihood not in (DEFAULT, None) and likelihood is not getattr(model, "likelihood", None):

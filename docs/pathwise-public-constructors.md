@@ -42,8 +42,44 @@ Factory-produced native generalized-linear paths still expose their existing
 fixed weight/draw metadata and reject assignment to their immutable native
 weight snapshots. Their feature metadata is not a replacement for the fully
 callable maps returned by `gen_kernel_features` or supplied to the public
-constructor. Native model sampling restrictions, including unbatched
-`SingleTaskGP`/`ModelListGP` factories and supported stationary kernels,
-continue to apply. Optional Pyro/NumPyro generative effect-handler
+constructor. Default feature generation supports RBF/Matérn kernels, optionally
+scaled, including ARD, active dimensions and model batches. Native loaded
+SAAS/Matérn fully Bayesian models retain their MCMC batch and ensemble query
+layout. Device paths also accept actual GPyTorch stationary kernel modules;
+their feature algebra retains first- and higher-order graphs.
+
+`draw_kernel_feature_paths` accepts `map_generator`, `weight_generator`,
+`input_transform`, `output_transform`, and model-list `join` overrides. The
+weight generator receives the actual feature count returned by the map.
+`draw_matheron_paths` invokes arbitrary prior/update callables. During these
+callbacks `model.outcome_transform` is absent, matching the reference, while
+functional training-data helpers retain the fitted transform needed to compute
+transformed targets. Scoped state is restored on normal and exceptional exits.
+
+Exact `gaussian_update` supports alternate transformed `points`,
+`target_values`, full `noise_covariance`, Gaussian likelihoods and a caller's
+`scale_tril`. Native list/NumPy paths factor and solve in Rust. Tensor-backend
+paths retain all input, target, sample, covariance, factor and Gaussian-noise
+parameter graphs on CPU/CUDA. A native model rejects differentiable override
+arrays explicitly; construct it with `backend="torch"` for those graphs.
+Fixed training noise contributes zero covariance when alternate point counts
+have no corresponding noise entries, matching `FixedGaussianNoise`.
+
+The override suite compares independent official values, full noise/factor
+derivatives and Hessians, callback transform semantics and restoration, all
+native array kinds, loaded fully Bayesian ensemble layouts and actual GPyTorch
+feature modules. The reference's kernel-distance Hessian is unavailable in
+some versions, so its independent Hessian comparison uses the smooth
+root/noise/target algebra; port query Hessians are also checked for finiteness.
+
+The port-specific `draws` replay extension applies to the default optimized
+factories. Arbitrary callback compositions do not expose a joint draw record
+and cannot combine custom generators with explicit native `draws`. Native
+scalar variational posterior updates remain a separate unsupported model
+dispatch; device scalar whitened variational updates are implemented. The
+reference also does not register independent multitask variational Matheron
+updates or observation covariance overrides for variational updates.
+
+Optional Pyro/NumPyro generative effect-handler
 interoperability is documented separately in
 [`numpyro-trace-interoperability.md`](numpyro-trace-interoperability.md).
