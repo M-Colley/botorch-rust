@@ -69,7 +69,15 @@ _EXTRA_ANALYTIC = frozenset(
         "ScalarizedPosteriorMean",
     }
 )
-_WRAPPERS = frozenset({"FixedFeatureAcquisitionFunction", "ProjectedAcquisitionFunction"})
+_WRAPPERS = frozenset(
+    {
+        "FixedFeatureAcquisitionFunction",
+        "ProjectedAcquisitionFunction",
+        "PenalizedAcquisitionFunction",
+        "PriorGuidedAcquisitionFunction",
+        "ProximalAcquisitionFunction",
+    }
+)
 _ENTROPY = frozenset(
     {
         "qMaxValueEntropy",
@@ -151,16 +159,33 @@ def tensor_acquisition(public_class: type) -> Any:
 
             mixin = TensorAnalyticExtra
         elif public_class.__name__ in _WRAPPERS:
-            from botorch_rs.acquisition._torch_backend_wrappers import (
-                TensorFixedFeature,
-                TensorProjected,
-            )
+            if public_class.__name__ in {
+                "PenalizedAcquisitionFunction",
+                "PriorGuidedAcquisitionFunction",
+                "ProximalAcquisitionFunction",
+            }:
+                from botorch_rs.acquisition._torch_backend_regularized import (
+                    TensorPenalized,
+                    TensorPriorGuided,
+                    TensorProximal,
+                )
 
-            mixin = (
-                TensorFixedFeature
-                if public_class.__name__ == "FixedFeatureAcquisitionFunction"
-                else TensorProjected
-            )
+                mixin = {
+                    "PenalizedAcquisitionFunction": TensorPenalized,
+                    "PriorGuidedAcquisitionFunction": TensorPriorGuided,
+                    "ProximalAcquisitionFunction": TensorProximal,
+                }[public_class.__name__]
+            else:
+                from botorch_rs.acquisition._torch_backend_wrappers import (
+                    TensorFixedFeature,
+                    TensorProjected,
+                )
+
+                mixin = (
+                    TensorFixedFeature
+                    if public_class.__name__ == "FixedFeatureAcquisitionFunction"
+                    else TensorProjected
+                )
         elif public_class.__name__ in _ENTROPY:
             if "PredictiveEntropySearch" in public_class.__name__:
                 from botorch_rs.acquisition._torch_backend_predictive_entropy import (
