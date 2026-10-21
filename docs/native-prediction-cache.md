@@ -87,3 +87,29 @@ Reproduce with `scripts/benchmark_native_prediction.py`, supplying
 `--native-extension`, `--reference-root`, and `--output` for each artifact.
 The script records both artifact hashes, source/reference revisions, exact
 hyperparameters, numerical errors, and every timing sample.
+
+## Final 0.3.0 artifact recheck
+
+A fresh run at 2026-10-21 22:20 UTC used frozen source `258ff6b`, the same
+pinned reference and benchmark settings above, and final native artifact
+`8fa0323b0b1cf80ab4e35dee8216de497586c3213b8489a79abf5bf492ee3675`.
+The complete source suite and its independent hash audit had finished;
+no other local test or compiler workers ran during these timings.
+
+| Training points | Native public median | BoTorch public median | BoTorch / native |
+| --- | ---: | ---: | ---: |
+| 32 | 0.3901 ms | 1.5703 ms | 4.03x |
+| 256 | 0.7466 ms | 2.8014 ms | 3.75x |
+| 1024 | 12.2195 ms | 12.4674 ms | 1.02x |
+
+Mean and variance pass `atol=rtol=1e-9`; maximum absolute errors are
+`6.33e-15` and `2.66e-15`. At 1024 points the timing ranges overlap and
+the medians are effectively equal. Absolute timings vary between runs;
+the historical table and this recheck record separate measurements.
+This run measures warm CPU predictions for this exact GP configuration;
+fitting, gradients, GPU execution and broader workloads need separate timing.
+
+[Raw final-artifact samples and provenance](benchmarks/native-prediction-final-030-2026-10-21.json)
+have SHA256 `4b78f49a66336ecf6e285541c734e706be767fe4f86f2f12d3f2bace712348cd`.
+The artifact's build and native correctness checks are recorded in
+[the native verification report](verification-native-030-2026-10-21.json).
