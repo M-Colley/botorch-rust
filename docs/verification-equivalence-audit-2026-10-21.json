@@ -1,0 +1,98 @@
+{
+  "kind": "development_equivalence_audit",
+  "release_certificate": false,
+  "complete_scope": false,
+  "started_utc": "2026-10-21T15:08:30.711753+00:00",
+  "before": {
+    "head": "30c1c9501cd36d9a17c6a6489887478527a7d7dd",
+    "status": "",
+    "reference_head": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "reference_status": "",
+    "extension_sha256": "5082562554ee625b394d6fcaaa976d6d27c89a65eb5b7a4e338a24d075b78c66",
+    "worker_sha256": "f5ff61a399d28a757f6cb2354ccae668e890acdd3b88d5b0adb9aaad2c97b804",
+    "inventories": {
+      "python": {
+        "files": 330,
+        "sha256": "b163431fd80c4e6af30206c257a45305fea838ec8bdfc7dbb816e69fd2b72cb5"
+      },
+      "tests": {
+        "files": 310,
+        "sha256": "134c4ec967d4f9e9f97e852beb6a797d0cce5f4162cf3243b0d49bb9803a9784"
+      }
+    }
+  },
+  "ended_utc": "2026-10-21T15:17:54.436442+00:00",
+  "after": {
+    "head": "30c1c9501cd36d9a17c6a6489887478527a7d7dd",
+    "status": "",
+    "reference_head": "b0dd01be61d517c387e234903a6e2cc38c057ea2",
+    "reference_status": "",
+    "extension_sha256": "5082562554ee625b394d6fcaaa976d6d27c89a65eb5b7a4e338a24d075b78c66",
+    "worker_sha256": "f5ff61a399d28a757f6cb2354ccae668e890acdd3b88d5b0adb9aaad2c97b804",
+    "inventories": {
+      "python": {
+        "files": 330,
+        "sha256": "b163431fd80c4e6af30206c257a45305fea838ec8bdfc7dbb816e69fd2b72cb5"
+      },
+      "tests": {
+        "files": 310,
+        "sha256": "134c4ec967d4f9e9f97e852beb6a797d0cce5f4162cf3243b0d49bb9803a9784"
+      }
+    }
+  },
+  "selected_cases": 1237,
+  "counts": {
+    "passed": 1201,
+    "failed": 21,
+    "skipped": 15
+  },
+  "failures": [
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[0]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[1]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[2]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[3]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[4]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[5]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[6]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[7]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[8]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[9]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[10]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[11]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[12]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[13]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[14]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[15]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[16]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[17]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[18]",
+    "tests/test_equivalence_7b_models.py::test_random_ensemble_model_analytic_sweep[19]",
+    "tests/test_parity_6b_transforms.py::test_random_transform_chains_match_botorch[24]"
+  ],
+  "exitstatus": 1,
+  "exact_case_coverage": true,
+  "fingerprints_stable": true,
+  "all_passed": false,
+  "artifact_hashes": {
+    "target/equivalence-audit-30c1c95/collection.json": "9f490f4b589a64ab56fa6091fb41279a6a6256ee248c3e096aab5aee9676364f",
+    "target/equivalence-audit-30c1c95/execution.json": "f2b559d0268e10ca7407bd65e28508c238accb05f4de7c0a68582c9dc6047947",
+    "target/equivalence-audit-30c1c95/execution.log": "20d73d65ce01d1bd741fcc10dcd7071076a5854fb646bb256b7d36d794495b74",
+    "target/equivalence-audit-30c1c95/execution.xml": "36ce8eb7a9e56319bf594087a55f98934185b6e8ff7975ea1aa6295fbe34384a",
+    "target/equivalence-audit-30c1c95/summary.json": "565d29a00e34e45457ee550008f1d576c4b5bdbbbb554bbe5d81f788b1b60e7d"
+  },
+  "remediation": [
+    {
+      "cases": "20 randomized finite ensemble analytic sweeps",
+      "commit": "a528c4f",
+      "meaning": "Device ensemble moments, index sampling and analytic Gaussian-moment acquisition hooks repaired.",
+      "focused_result": "All 20 unchanged randomized scenarios pass on Torch 2.13 and 2.14 CPU; independent device graphs checked separately."
+    },
+    {
+      "cases": "random transform chain seed 24",
+      "commit": "8553d816cd2f0e708a3999d0b2904982e23568b0",
+      "meaning": "Power(2) inverse square-root samples outside its domain now receive explicit nonfinite-class checks rather than numerical equality. Ordinary numeric/gradient checks reject nonfinite values.",
+      "focused_result": "All 48 randomized transform scenarios and two explicit domain/numerical controls pass; fully defined independent sample Hessians pass."
+    }
+  ],
+  "interpretation": "This frozen baseline failed. Focused remediation is separate evidence; a new frozen complete equivalence audit and final wheel verification remain required. No new release or Unity migration is certified."
+}
