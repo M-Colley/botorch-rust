@@ -85,6 +85,57 @@ class OutcomeTransform(NativeBufferModule):
 
         set_state(self, state)
 
+    def __getattr__(self, name: str) -> Any:
+        torch = sys.modules.get("torch")
+        if torch is not None and name in vars(torch.nn.Module):
+            return getattr(self._torch_module(), name)
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
+    def _torch_module(self) -> Any:
+        from botorch_rs.models.transforms._torch_outcome_module import promote
+
+        return promote(self)
+
+    def to(self, *args: Any, **kwargs: Any) -> Any:
+        return self._torch_module().to(*args, **kwargs)
+
+    def cpu(self) -> Any:
+        return self._torch_module().cpu()
+
+    def cuda(self, device: Any = None) -> Any:
+        return self._torch_module().cuda(device)
+
+    def float(self) -> Any:
+        return self._torch_module().float()
+
+    def double(self) -> Any:
+        return self._torch_module().double()
+
+    def state_dict(self, *args: Any, **kwargs: Any) -> Any:
+        return self._torch_module().state_dict(*args, **kwargs)
+
+    def load_state_dict(self, *args: Any, **kwargs: Any) -> Any:
+        return self._torch_module().load_state_dict(*args, **kwargs)
+
+    def named_parameters(self, *args: Any, **kwargs: Any) -> Any:
+        return self._torch_module().named_parameters(*args, **kwargs)
+
+    def parameters(self, *args: Any, **kwargs: Any) -> Any:
+        return self._torch_module().parameters(*args, **kwargs)
+
+    def named_buffers(self, *args: Any, **kwargs: Any) -> Any:
+        return self._torch_module().named_buffers(*args, **kwargs)
+
+    def buffers(self, *args: Any, **kwargs: Any) -> Any:
+        return self._torch_module().buffers(*args, **kwargs)
+
+    def register_buffer(self, name: str, tensor: Any, persistent: bool = True) -> None:
+        torch = sys.modules.get("torch")
+        if torch is not None and not getattr(type(self), "_torch_outcome_factory", False):
+            self._torch_module().register_buffer(name, tensor, persistent=persistent)
+        else:
+            super().register_buffer(name, tensor, persistent=persistent)
+
     def train(self, mode: bool = True) -> OutcomeTransform:
         self.training = mode
         return self
@@ -465,59 +516,6 @@ class Standardize(OutcomeTransform):
                 self._min_stdv,
                 list(self._batch_shape),
             )
-
-    def to(self, *args: Any, **kwargs: Any) -> Standardize:
-        self._tensor_state().to(*args, **kwargs)
-        return self
-
-    def cpu(self) -> Standardize:
-        return self.to(device="cpu")
-
-    def cuda(self, device: Any = None) -> Standardize:
-        import torch
-
-        if device is None:
-            target = torch.device("cuda")
-        elif isinstance(device, int):
-            target = torch.device("cuda", device)
-        else:
-            target = torch.device(device)
-        if target.type != "cuda":
-            raise ValueError("cuda() requires a CUDA device.")
-        return self.to(device=target)
-
-    def float(self) -> Standardize:
-        import torch
-
-        return self.to(dtype=torch.float32)
-
-    def double(self) -> Standardize:
-        import torch
-
-        return self.to(dtype=torch.float64)
-
-    def state_dict(self, *args: Any, **kwargs: Any) -> Any:
-        return self._tensor_state().state_dict(*args, **kwargs)
-
-    def load_state_dict(self, state_dict: Any, strict: bool = True, assign: bool = False) -> Any:
-        return self._tensor_state().load_state_dict(state_dict, strict=strict, assign=assign)
-
-    def named_buffers(
-        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
-    ) -> Any:
-        state = self.__dict__.get("_tensor_standardize")
-        if state is None:
-            yield from super().named_buffers(prefix, recurse, remove_duplicate)
-        else:
-            yield from state.named_buffers(prefix, recurse, remove_duplicate)
-
-    def named_parameters(
-        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
-    ) -> Any:
-        yield from ()
-
-    def parameters(self, recurse: bool = True) -> Any:
-        yield from ()
 
     @property
     def _is_trained(self) -> bool:
@@ -988,122 +986,6 @@ class ChainedOutcomeTransform(OutcomeTransform):
         for tf in self._transforms.values():
             tf.train(mode)
         return self
-
-    def to(self, *args: Any, **kwargs: Any) -> ChainedOutcomeTransform:
-        seen: set[int] = set()
-        for transform in self.values():
-            if id(transform) in seen:
-                continue
-            seen.add(id(transform))
-            migrate = getattr(transform, "to", None)
-            if migrate is not None:
-                migrate(*args, **kwargs)
-            elif not isinstance(transform, _Elementwise) or transform.__dict__.get(
-                "_registered_buffers"
-            ):
-                raise UnsupportedError(
-                    f"{type(transform).__name__} must implement to() for chained migration."
-                )
-        return self
-
-    def cpu(self) -> ChainedOutcomeTransform:
-        return self.to(device="cpu")
-
-    def cuda(self, device: Any = None) -> ChainedOutcomeTransform:
-        import torch
-
-        target = (
-            torch.device("cuda")
-            if device is None
-            else torch.device("cuda", device)
-            if isinstance(device, int)
-            else torch.device(device)
-        )
-        if target.type != "cuda":
-            raise ValueError("cuda() requires a CUDA device.")
-        return self.to(device=target)
-
-    def float(self) -> ChainedOutcomeTransform:
-        import torch
-
-        return self.to(dtype=torch.float32)
-
-    def double(self) -> ChainedOutcomeTransform:
-        import torch
-
-        return self.to(dtype=torch.float64)
-
-    def state_dict(self, destination: Any = None, prefix: str = "", keep_vars: bool = False) -> Any:
-        if destination is None:
-            destination = OrderedDict()
-        for name, transform in self.items():
-            save = getattr(transform, "state_dict", None)
-            if save is not None:
-                save(destination=destination, prefix=prefix + name + ".", keep_vars=keep_vars)
-            elif not isinstance(transform, _Elementwise) or transform.__dict__.get(
-                "_registered_buffers"
-            ):
-                raise UnsupportedError(
-                    f"{type(transform).__name__} must implement state_dict() for chained state."
-                )
-        return destination
-
-    def load_state_dict(self, state_dict: Any, strict: bool = True, assign: bool = False) -> Any:
-        import torch
-
-        missing: list[str] = []
-        unexpected: list[str] = []
-        for name, transform in self.items():
-            prefix = name + "."
-            state = {
-                key[len(prefix) :]: value
-                for key, value in state_dict.items()
-                if key.startswith(prefix)
-            }
-            load = getattr(transform, "load_state_dict", None)
-            if load is not None:
-                result = load(state, strict=False, assign=assign)
-                missing.extend(prefix + key for key in result.missing_keys)
-                unexpected.extend(prefix + key for key in result.unexpected_keys)
-            elif isinstance(transform, _Elementwise):
-                unexpected.extend(prefix + key for key in state)
-            else:
-                raise UnsupportedError(
-                    f"{type(transform).__name__} must implement load_state_dict() for chained state."
-                )
-        unexpected.extend(key for key in state_dict if key.split(".", 1)[0] not in self._transforms)
-        if strict and (missing or unexpected):
-            raise RuntimeError(
-                f"Error(s) in loading state_dict: missing keys {missing}, unexpected keys {unexpected}."
-            )
-        return torch.nn.modules.module._IncompatibleKeys(missing, unexpected)
-
-    def named_buffers(
-        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
-    ) -> Any:
-        if not recurse:
-            return
-        seen: set[int] = set()
-        for name, transform in self.items():
-            if remove_duplicate and id(transform) in seen:
-                continue
-            seen.add(id(transform))
-            path = f"{prefix}.{name}" if prefix else name
-            yield from transform.named_buffers(path, recurse, remove_duplicate)
-
-    def named_parameters(
-        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
-    ) -> Any:
-        for transform in self.values():
-            if not isinstance(transform, (Standardize, _Elementwise, ChainedOutcomeTransform)):
-                raise UnsupportedError(
-                    "Custom chained outcomes must supply their parameter protocol."
-                )
-        yield from ()
-
-    def parameters(self, recurse: bool = True) -> Any:
-        for _, parameter in self.named_parameters(recurse=recurse):
-            yield parameter
 
     def forward(self, Y: Any, Yvar: Any = None, X: Any = None) -> tuple[Any, Any]:
         for tf in self._transforms.values():

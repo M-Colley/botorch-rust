@@ -6,6 +6,13 @@ When Torch is already loaded, constructing a public `Standardize`,
 transforms also implement the actual `nn.ModuleDict` interface. Importing and
 using the native package without Torch retains the native descriptor path.
 
+Descriptors constructed before Torch is imported promote in place when the
+caller explicitly requests migration, state serialization, buffer/parameter
+traversal, or module hooks. Existing aliases and fitted statistics are
+preserved, and chained children promote before module registration. Native
+pickles loaded after importing Torch restore directly into real modules.
+Native array calls alone never import Torch.
+
 These modules support registration in a parent module, registered Parameters
 and buffers, forward hooks, module traversal, device and dtype migration,
 `state_dict` loading including `assign=True`, deepcopy, pickle, and Torch

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from torch import nn
+from torch import Tensor, as_tensor, nn
 
 _TYPES: dict[type[Any], type[Any]] = {}
 
@@ -59,12 +59,6 @@ class TorchOutcomeModule(nn.Module):
 def _initialize(self: Any, *args: Any, **kwargs: Any) -> None:
     nn.Module.__init__(self)
     self._native_port_descriptor.__init__(self, *args, **kwargs)
-    from botorch_rs.models.transforms.outcome import ChainedOutcomeTransform
-
-    if isinstance(self, ChainedOutcomeTransform):
-        owner: Any = self
-        for name, child in self.items():
-            owner.add_module(name, child)
     _ensure_state(self)
 
 
@@ -97,13 +91,15 @@ def _reduce(self: Any, protocol: int) -> Any:
 
 
 def _setattr(self: Any, name: str, value: Any) -> None:
-    from botorch_rs.models.transforms.outcome import ChainedOutcomeTransform
+    from botorch_rs.models.transforms.outcome import ChainedOutcomeTransform, OutcomeTransform
 
     if name == "_transforms" and isinstance(self, ChainedOutcomeTransform):
         owner: Any = self
         children = list(value.items())
         owner._modules.clear()
         for key, child in children:
+            if isinstance(child, OutcomeTransform) and not isinstance(child, nn.Module):
+                child = promote(child)
             owner.add_module(key, child)
         object.__setattr__(self, name, owner._modules)
     else:
@@ -112,6 +108,34 @@ def _setattr(self: Any, name: str, value: Any) -> None:
 
 def rebuild(public_type: type[Any]) -> Any:
     return object.__new__(outcome_module_type(public_type))
+
+
+def promote(value: Any) -> Any:
+    """Promote an earlier native descriptor in place on an explicit protocol call."""
+    if isinstance(value, nn.Module) and "_modules" in value.__dict__:
+        return value
+    state = value.__dict__.copy()
+    public_type = getattr(type(value), "_native_port_descriptor", type(value))
+    registered = {
+        name: (getattr(value, name), persistent)
+        for name, persistent in state.get("_registered_buffers", {}).items()
+    }
+    value.__class__ = outcome_module_type(public_type)
+    nn.Module.__init__(value)
+    value.__dict__.update(state)
+    for name, (tensor, persistent) in registered.items():
+        if tensor is not None and not isinstance(tensor, Tensor):
+            tensor = as_tensor(tensor)
+        value.__dict__.pop(name, None)
+        nn.Module.register_buffer(value, name, tensor, persistent=persistent)
+    from botorch_rs.models.transforms.outcome import ChainedOutcomeTransform
+
+    if isinstance(value, ChainedOutcomeTransform):
+        value._transforms = dict(value._transforms)
+    if (statistics := value.__dict__.get("_tensor_standardize")) is not None:
+        expose_statistics(value, statistics)
+    _ensure_state(value)
+    return value
 
 
 def outcome_module_type(public_type: type[Any]) -> type[Any]:

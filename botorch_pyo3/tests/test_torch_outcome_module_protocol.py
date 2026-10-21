@@ -319,3 +319,74 @@ def test_explicit_native_refit_keeps_torch_module_destination(device, stratified
     expected = StratifiedStandardize(1, [1, 3]) if stratified else Standardize(1)
     expected(y.to(device), X=x.to(device))
     torch.testing.assert_close(transform.means, expected.means)
+
+
+@pytest.mark.parametrize("protocol", ["to", "state_dict", "hook", "buffers", "pickle"])
+def test_pre_torch_outcomes_promote_in_place_on_explicit_module_protocol(protocol):
+    from botorch_rs import _botorch_rs
+
+    script = r"""
+import importlib.util, pickle, sys
+sys.path.insert(0, sys.argv[1])
+sys.modules['torch'] = None
+name = 'botorch_rs._botorch_rs'
+spec = importlib.util.spec_from_file_location(name, sys.argv[2])
+module = importlib.util.module_from_spec(spec)
+sys.modules[name] = module
+spec.loader.exec_module(module)
+from botorch_rs.models.transforms.outcome import Standardize, StratifiedStandardize, ChainedOutcomeTransform, Log, Power, Bilog
+from botorch_rs.models.higher_order_gp import FlattenedStandardize
+y = [[0.2], [0.7], [1.4], [1.8]]
+x = [[0.1, 1], [0.3, 3], [0.6, 1], [0.8, 3]]
+sources = [Standardize(1), StratifiedStandardize(1, [1, 3]), FlattenedStandardize((1,)), Log(), Power(2.3), Bilog(), ChainedOutcomeTransform(log=Log(), standardize=Standardize(1))]
+expected = [source(y, X=x)[0] for source in sources]
+for source in sources:
+    source.eval()
+blobs = [pickle.dumps(source) for source in sources]
+assert sys.modules['torch'] is None
+assert 'botorch_rs.models.transforms._torch_outcome_module' not in sys.modules
+del sys.modules['torch']
+import torch
+from torch import nn
+for original, blob, values in zip(sources, blobs, expected):
+    alias = original
+    protocol = sys.argv[3]
+    if protocol == 'to':
+        assert original.to(dtype=torch.double) is original
+    elif protocol == 'state_dict':
+        original.state_dict()
+    elif protocol == 'hook':
+        calls = []
+        handle = original.register_forward_hook(lambda *args: calls.append(True))
+        original(torch.tensor(y), X=torch.tensor(x))
+        handle.remove()
+        assert calls == [True]
+    elif protocol == 'buffers':
+        list(original.buffers())
+    else:
+        original = pickle.loads(blob)
+        alias = original
+    assert isinstance(original, nn.Module)
+    assert original is alias
+    original.double()
+    actual = original(torch.tensor(y, dtype=torch.double), X=torch.tensor(x, dtype=torch.double))[0]
+    torch.testing.assert_close(actual, torch.tensor(values, dtype=torch.double), rtol=2e-6, atol=2e-6)
+    if isinstance(original, ChainedOutcomeTransform):
+        assert isinstance(original, nn.ModuleDict)
+        assert original['standardize'] is alias['standardize']
+        assert all(isinstance(child, nn.Module) for child in original.values())
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(Path(__file__).parents[1] / "python"),
+            _botorch_rs.__file__,
+            protocol,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

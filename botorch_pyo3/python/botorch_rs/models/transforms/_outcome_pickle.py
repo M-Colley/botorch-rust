@@ -47,3 +47,7 @@ def set_state(transform: Any, state: dict[str, Any]) -> None:
             transform._min_stdv,
             strata,
         )
+    if getattr(type(transform), "_torch_outcome_factory", False):
+        from botorch_rs.models.transforms._torch_outcome_module import promote
+
+        promote(transform)
