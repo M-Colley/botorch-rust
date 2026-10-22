@@ -23,8 +23,8 @@ mod binding_torch;
 mod callbacks;
 mod composite;
 mod contextual;
-mod deterministic;
 mod decision_making;
+mod deterministic;
 mod em_gp;
 mod em_kl;
 mod em_model;
@@ -83,7 +83,11 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     em_gp::register(m)?;
     em_model::register(m)?;
     em_shared::register(m)?;
-    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    // Match maturin's PEP 440 spelling for release candidates.
+    m.add(
+        "__version__",
+        env!("CARGO_PKG_VERSION").replace("-rc", "rc"),
+    )?;
     // Models and their components.
     m.add_class::<models::PySingleTaskGP>()?;
     m.add_class::<models::PyModelListGP>()?;
