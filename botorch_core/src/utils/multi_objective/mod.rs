@@ -51,6 +51,8 @@
 //!   per batch element when a front is empty).
 
 pub mod box_decompositions;
+pub mod decision_making;
+pub mod fpbi;
 pub mod hypervolume;
 pub mod optimize;
 pub mod pareto;

@@ -23,6 +23,7 @@ mod binding_torch;
 mod callbacks;
 mod composite;
 mod contextual;
+mod decision_making;
 mod deterministic;
 mod em_gp;
 mod em_kl;
@@ -82,7 +83,11 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     em_gp::register(m)?;
     em_model::register(m)?;
     em_shared::register(m)?;
-    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    // Match maturin's PEP 440 spelling for release candidates.
+    m.add(
+        "__version__",
+        env!("CARGO_PKG_VERSION").replace("-rc", "rc"),
+    )?;
     // Models and their components.
     m.add_class::<models::PySingleTaskGP>()?;
     m.add_class::<models::PyModelListGP>()?;
@@ -141,6 +146,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(threads::get_num_threads, m)?)?;
     // Multi-objective utilities, `sample_simplex` and `sample_hypersphere`.
     multi_objective::register(m)?;
+    decision_making::register(m)?;
     // Multi-objective acquisition functions.
     mo_acquisition::register(m)?;
     // Robust and multi-fidelity multi-objective optimization: input
