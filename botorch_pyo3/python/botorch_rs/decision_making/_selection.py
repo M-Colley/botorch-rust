@@ -67,9 +67,7 @@ def _pareto_tiled(costs: Tensor, *, max_bytes: int = _CUDA_COMPARISON_BYTES) -> 
         batch = flat[b : b + batch_step]
         for i in range(0, n, target_step):
             targets = batch[:, i : i + target_step].unsqueeze(-2)
-            dominated = torch.zeros(
-                targets.shape[:2], dtype=torch.bool, device=costs.device
-            )
+            dominated = torch.zeros(targets.shape[:2], dtype=torch.bool, device=costs.device)
             for j in range(0, n, source_step):
                 sources = batch[:, j : j + source_step].unsqueeze(-3)
                 no_worse = (sources <= targets).all(dim=-1)
@@ -108,9 +106,7 @@ def _prepare(Y: Tensor, alpha: float, maximize: bool) -> tuple[Tensor, Tensor]:
     scale = torch.maximum(lower.abs(), upper.abs()).clamp_min(1)
     lower_scaled, upper_scaled = lower / scale, upper / scale
     span = upper_scaled - lower_scaled
-    Z = (costs / scale - lower_scaled) / torch.where(
-        span > 0, span, torch.ones_like(span)
-    )
+    Z = (costs / scale - lower_scaled) / torch.where(span > 0, span, torch.ones_like(span))
     Z = torch.where(span > 0, Z, torch.zeros_like(Z))
     norm_squared = Z.square().sum(dim=-1).masked_fill(~pareto, -math.inf)
     q = norm_squared.argmax(dim=-1, keepdim=True)
