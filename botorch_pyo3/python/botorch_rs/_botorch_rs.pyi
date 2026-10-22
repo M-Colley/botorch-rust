@@ -3536,22 +3536,31 @@ def tensor_psd_safe_cholesky(
 
 # Schmitt et al. (2022) decision-making extensions.
 def decision_knee_region(y: Array, alpha: float = 0.5, maximize: bool = True) -> BoolBuf: ...
-
 def decision_select_preferred(
-    y: Array, preferences: Sequence[float], alpha: float = 0.5, maximize: bool = True,
+    y: Array,
+    preferences: Sequence[float],
+    alpha: float = 0.5,
+    maximize: bool = True,
 ) -> tuple[list[int], list[int]]: ...
-
 def decision_fpbi_geometry(
-    extreme_y: Array, n_steps: int = 10, focus: Sequence[float] | None = None,
-    maximize: bool = True, max_grid_points: int = 10000,
+    extreme_y: Array,
+    n_steps: int = 10,
+    focus: Sequence[float] | None = None,
+    maximize: bool = True,
+    max_grid_points: int = 10000,
 ) -> dict[str, Any]: ...
-
 def decision_fpbi_front(
-    objective: Callable[[list[float]], Sequence[float]], bounds: Array,
-    initial_conditions: Array, n_steps: int = 10, focus: Sequence[float] | None = None,
-    maximize: bool = True, maxiter: int = 200, tol: float = 1e-8,
+    objective: Callable[[list[float]], Sequence[float]],
+    bounds: Array,
+    initial_conditions: Array,
+    n_steps: int = 10,
+    focus: Sequence[float] | None = None,
+    maximize: bool = True,
+    maxiter: int = 200,
+    tol: float = 1e-8,
     inequality_constraints: Callable[[list[float]], Sequence[float]] | None = None,
     equality_constraints: Callable[[list[float]], Sequence[float]] | None = None,
-    feasibility_tolerance: float = 1e-6, finite_difference_step: float = 1e-6,
+    feasibility_tolerance: float = 1e-6,
+    finite_difference_step: float = 1e-6,
     max_grid_points: int = 10000,
 ) -> dict[str, Any]: ...
