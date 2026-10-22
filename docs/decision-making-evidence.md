@@ -8,7 +8,10 @@ stores the actual upper endpoints; it does not reconstruct them from a
 rounded lower endpoint and span. Cancellation-sensitive bounds agree with
 OpenBO and the community port in both objective orientations. The release
 core suite passed 10 tests, and the rebuilt checkout extension passed all
-24 Python decision tests. An installable wheel release remains pending.
+24 Python decision tests. A Windows abi3 release-candidate wheel has also
+passed native-only clean-install checks. The release record supplies the
+exact feature commit, wheel hash and installation results; PyPI publication
+is a separate action.
 
 The same audit fixed the external replay's portable dependency fixture and
 the community benchmark tests' CI import boundary. Historical numerical
@@ -119,7 +122,28 @@ common output capping and imports. Cheap vectorized objectives favor this
 batching; these measurements are not a general optimizer ranking or a noisy
 BO experiment. Local FPBI solves do not certify a global Pareto front.
 
-## Vectorization had mixed runtime results
+## GPU tiling follow-up on 22 October
+
+The current Torch facade uses bounded pairwise comparison tiles for large
+CUDA fronts, retaining first-duplicate semantics without point-by-point
+host synchronization. CPU and small CUDA inputs keep the existing Pareto
+utility. The 4 MiB comparison-tile budget is not a total process-memory cap.
+The expanded selector suite passed 22 CPU/CUDA tests, and both new 48-case
+comparisons retained exact masks and indices.
+
+For shape `(1,1024,3)`, full selection was 36.1x faster in float32 and 25.9x
+in float64 than the previous upstream-loop version in the same run. A second
+direct comparison with the original prototype measured 9.82 to 7.98 ms
+(float32) and 8.28 to 5.69 ms (float64). Incremental live CUDA allocation was
+about 3.62 MB, versus 6.31 MB for that prototype; the former loop version
+used much less memory. These are descriptive one-machine observations with
+concurrent work, not universal speed or total-memory guarantees. All timings
+and regressions are retained in the upstream evidence guide linked above.
+
+The original measurements below are historical; the old 24.1x slowdown is
+not a measurement of the current tiled implementation.
+
+## Historical vectorization had mixed runtime results
 
 All 396 selected indices and 79,104 knee-mask entries matched exactly across
 48 paired function configurations. Full selection improved in 11/12 CPU and
@@ -133,8 +157,8 @@ does not establish a universal memory improvement. The benchmark used one
 machine, two warmups, five repeats and observed independent background
 workloads; it is descriptive, not a cross-hardware speed claim. The baseline
 is the earlier Torch prototype; the measured candidate is the vectorized
-upstream selector. Its saved `after.py` hash matches that upstream selector
-at packaging time. The later FPBI port is a separate module and was not
+upstream selector before the GPU tiling follow-up. Its saved `after.py` hash
+identifies that earlier implementation. The later FPBI port is separate and was not
 retimed in this selector comparison.
 
 ## When to use each part
