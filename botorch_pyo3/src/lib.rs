@@ -24,6 +24,7 @@ mod callbacks;
 mod composite;
 mod contextual;
 mod deterministic;
+mod decision_making;
 mod em_gp;
 mod em_kl;
 mod em_model;
@@ -141,6 +142,7 @@ fn botorch_rs_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(threads::get_num_threads, m)?)?;
     // Multi-objective utilities, `sample_simplex` and `sample_hypersphere`.
     multi_objective::register(m)?;
+    decision_making::register(m)?;
     // Multi-objective acquisition functions.
     mo_acquisition::register(m)?;
     // Robust and multi-fidelity multi-objective optimization: input

@@ -5,6 +5,11 @@ Rust, with Python bindings that follow BoTorch's API for the supported features.
 It is an independent project, not affiliated with or endorsed by Meta or the
 BoTorch team.
 
+For human-preference selection and focus point boundary intersection (FPBI),
+see the [decision-making extensions](docs/decision-making.md). They share an
+API with OpenBO, accept BoTorch model predictions, and include native Rust
+implementations plus list, NumPy, and Torch interfaces.
+
 ## Why botorch-rust?
 
 ### Speed

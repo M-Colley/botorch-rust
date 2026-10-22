@@ -31,6 +31,9 @@ dependencies = []
 
 [project.optional-dependencies]
 torch = ["torch"]
+# Tensor-facing continuous FPBI uses a CPU SciPy solver. Native list/NumPy
+# FPBI continues to use Rust without these dependencies.
+decision = ["torch", "numpy", "scipy"]
 test = ["pytest>=8"]
 # The parity tests compare against BoTorch (and use torch, GPyTorch, NumPy).
 parity = ["pytest>=8", "botorch", "numpy"]
