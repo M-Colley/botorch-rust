@@ -48,9 +48,10 @@ the pinned source and was verified in 24 configurations: three bound
 layouts, four solver-option combinations and both batch-index modes.
 The repair and upstream regressions are submitted in
 [BoTorch #3471](https://github.com/meta-pytorch/botorch/pull/3471).
-The corresponding SciPy wrapper repair is tested and pushed; its contribution
-policy requires human PR submission. See the
-[submission ledger](upstream-pull-requests.md#scipy-human-submission-step).
+Mark submitted the corresponding tested wrapper repair in
+[SciPy #26458](https://github.com/scipy/scipy/pull/26458). See the
+[submission ledger](upstream-pull-requests.md#scipy-submission) for its status
+and recorded validation scope.
 
 Source inspection:
 [BoTorch driver](https://github.com/meta-pytorch/botorch/blob/b0dd01be61d517c387e234903a6e2cc38c057ea2/botorch/optim/batched_lbfgs_b.py),
