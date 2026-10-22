@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "botorch-rust"
-version = "0.3.1rc1"
+version = "0.3.1rc2"
 description = "A fast Rust implementation of BoTorch with the same Python API"
 readme = "README.md"
 requires-python = ">=3.11"

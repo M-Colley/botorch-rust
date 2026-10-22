@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import botorch_rs
 from botorch_rs.decision_making import knee_region, select_preferred
 
 FRONT = [[0.0, 1.0], [0.2, 0.4], [0.4, 0.2], [1.0, 0.0]]
@@ -55,7 +56,7 @@ def test_invalid_preferences(preferences):
 
 
 def test_native_decisions_have_no_torch_numpy_or_scipy_dependency():
-    source = Path(__file__).resolve().parents[1] / "python"
+    source = Path(botorch_rs.__file__).resolve().parent.parent
     script = (
         "import sys; "
         f"sys.path.insert(0, {str(source)!r}); "
@@ -72,6 +73,30 @@ def test_native_decisions_have_no_torch_numpy_or_scipy_dependency():
         "assert not {'torch','numpy','scipy'}.intersection(sys.modules)"
     )
     subprocess.run([sys.executable, "-S", "-c", script], check=True, capture_output=True, text=True)
+
+
+def test_tensor_geometry_does_not_require_scipy():
+    pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+    package_parent = Path(botorch_rs.__file__).resolve().parent.parent
+    script = f"""
+import importlib.abc
+import sys
+sys.path.insert(0, {str(package_parent)!r})
+
+class BlockSciPy(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.', 1)[0] == 'scipy':
+            raise ModuleNotFoundError('SciPy deliberately unavailable')
+
+sys.meta_path.insert(0, BlockSciPy())
+import torch
+from botorch_rs.decision_making import fpbi_geometry
+geometry = fpbi_geometry(torch.tensor([[0., 1.], [1., 0.]], dtype=torch.double), n_steps=2, maximize=False)
+assert geometry.anchors.tolist() == [[.5, .5], [1., 0.]]
+assert not any(name == 'scipy' or name.startswith('scipy.') for name in sys.modules)
+"""
+    subprocess.run([sys.executable, "-I", "-c", script], check=True, capture_output=True, text=True)
 
 
 def test_numpy_native_and_torch_parity():

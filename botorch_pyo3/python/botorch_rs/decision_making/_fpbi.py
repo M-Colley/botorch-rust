@@ -9,7 +9,6 @@ from typing import Protocol
 
 import numpy as np
 import torch
-from scipy.optimize import minimize
 from torch import Tensor
 
 from botorch_rs.decision_making._selection import _pareto, _validate_y
@@ -302,6 +301,9 @@ def sample_fpbi(
     expected_m = m
     if n_steps ** (m - 1) > max_rays:
         raise ValueError("FPBI grid exceeds max_rays.")
+    # Standalone geometry does not need the optional continuous solver.
+    from scipy.optimize import minimize
+
     sign = -1.0 if maximize else 1.0
     diagnostics: list[SolverDiagnostic] = []
     # SLSQP's default double-precision probes vanish after casting to float32;
