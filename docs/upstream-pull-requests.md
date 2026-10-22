@@ -57,7 +57,7 @@ New GPyTorch fixes target `e1302d24cbd334649ada70608cbe98e903a47a83`.
 | LCEA embeddings | Batch-table repair in existing [BoTorch #3387](https://github.com/meta-pytorch/botorch/pull/3387); declared feature order and label mapping in new [#3487](https://github.com/meta-pytorch/botorch/pull/3487) |
 | Hierarchical category validation, transform fitting, task-column mapping and cycles | New [BoTorch #3490](https://github.com/meta-pytorch/botorch/pull/3490); 19 tests and 22 subtests pass |
 | Batched L-BFGS-B restored objective | New [BoTorch #3471](https://github.com/meta-pytorch/botorch/pull/3471) |
-| SciPy L-BFGS-B restored objective | Tested [branch](https://github.com/M-Colley/scipy/compare/main...codex/lbfgsb-restored-objective); human submission required, see below |
+| SciPy L-BFGS-B restored objective | Human-submitted [SciPy #26458](https://github.com/scipy/scipy/pull/26458), containing the tested patch; open for upstream review |
 | Heterogeneous multitask conditioning input layout | New [BoTorch #3484](https://github.com/meta-pytorch/botorch/pull/3484) |
 | Empirical multitask unseen-task noise | Existing [BoTorch #3389](https://github.com/meta-pytorch/botorch/pull/3389) |
 | Sparse-outlier / relevance-pursuit numerical and state defects | New [BoTorch #3482](https://github.com/meta-pytorch/botorch/pull/3482), including gradient-probe rollback; 43 tests and 120 subtests pass |
@@ -153,14 +153,17 @@ when that advertised shape is supplied. It is not an upstream defect. The
 port's square covariance root remains a valid independent law for numerical
 comparisons. The incorrect finding and reproduction have been removed.
 
-## SciPy human submission step
+## SciPy submission
 
-SciPy's [AI contribution policy](https://scipy.github.io/devdocs/dev/conduct/ai_policy.html)
-requires a human to check generated code and submit the PR; it also requires
-human-authored communication and an AI-generation disclosure. No autonomous
-SciPy PR has been submitted.
+Mark reviewed the solution and submitted
+[SciPy #26458](https://github.com/scipy/scipy/pull/26458) on 2026-10-20.
+The PR records his verification and discloses AI assistance under SciPy's
+[AI contribution policy](https://scipy.github.io/devdocs/dev/conduct/ai_policy.html).
+It contains the tested commit `6a6995b`; the additional fork merge commit
+`326a28c` introduces no file changes. Human review and submission are complete;
+the proposed repair is awaiting upstream review.
 
-The prepared branch targets main `bbc137a014ae67572c79b0ffd9ef493a278b6c24`.
+The tested patch was prepared against main `bbc137a014ae67572c79b0ffd9ef493a278b6c24`.
 Its Python-wrapper fix and eight parameterized regressions are committed as
 `6a6995b` on `M-Colley/scipy:codex/lbfgsb-restored-objective`. The ten tests in
 the affected test module pass when loading the latest Python wrapper against

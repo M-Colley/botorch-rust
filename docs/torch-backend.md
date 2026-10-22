@@ -335,4 +335,5 @@ and array-to-Tensor normalization. Supplied approximate models preserve the
 device of attached transforms, as ordinary source module assignment does;
 call `model.to(query)` after attaching CPU-fitted transforms to a CUDA model.
 [Upstream submissions](upstream-pull-requests.md) track verified defects and
-proposed repairs, including reused PRs and the SciPy human submission step.
+proposed repairs, including reused PRs and the human-submitted
+[SciPy #26458](https://github.com/scipy/scipy/pull/26458).
