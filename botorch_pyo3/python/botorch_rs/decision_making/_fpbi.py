@@ -394,7 +394,7 @@ def sample_fpbi(
     ns = geometry.direction.detach().cpu().double().numpy()
     anchors = geometry.anchors.detach().cpu().double().numpy()
     all_u, all_y = list(extreme_U), list(np.asarray(extreme_y))
-    ray_ok = np.zeros(len(anchors), dtype=bool)
+    ray_ok: np.ndarray = np.zeros(len(anchors), dtype=bool)
     if not bool(geometry.degenerate):
         if not np.any(ns < 0):
             raise ValueError(
@@ -415,7 +415,7 @@ def sample_fpbi(
                 # A negative initial kappa is legitimate and sometimes needed.
                 diff = anchor - normalized(u0)
                 k0 = float(np.min(diff[ns < 0] / -ns[ns < 0]))
-                v0 = np.append(u0, min(k0, 0.0))
+                v0: np.ndarray = np.append(u0, min(k0, 0.0))
                 cons = base_constraints(True) + [{"type": "ineq", "fun": ray_residual}]
                 opt = minimize(
                     lambda v: -v[-1],
