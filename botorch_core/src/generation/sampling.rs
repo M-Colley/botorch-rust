@@ -154,8 +154,16 @@ pub fn boltzmann_weights(values: &[f64], eta: f64, temp_decrease: f64) -> (Vec<f
     let z: Vec<f64> = values.iter().map(|v| (v - mean) / std).collect();
     let mut eta = eta;
     let mut w: Vec<f64> = z.iter().map(|v| (eta * v).exp()).collect();
-    while w.iter().any(|v| v.is_infinite()) {
-        eta *= temp_decrease;
+    while eta.is_finite()
+        && temp_decrease.is_finite()
+        && (0.0..1.0).contains(&temp_decrease)
+        && w.iter().any(|v| v.is_infinite())
+    {
+        let next = eta * temp_decrease;
+        if next == eta {
+            break;
+        }
+        eta = next;
         w = z.iter().map(|v| (eta * v).exp()).collect();
     }
     (w, eta)

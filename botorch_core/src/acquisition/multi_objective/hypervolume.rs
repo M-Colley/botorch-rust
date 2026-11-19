@@ -367,12 +367,12 @@ pub fn qehvi(
     let results = run_samples(ns, work, |s| {
         let y = data.column(s);
         let (lower, upper, _) = cells.for_sample(s);
-        let w = feas.map(|f| f.column(s).iter().copied().collect::<Vec<f64>>());
+        let w = feas.map(|f| f.column(s));
         qehvi_sample(
             y.as_slice(),
             q,
             m,
-            w.as_deref(),
+            w.as_ref().map(|c| c.as_slice()),
             lower,
             upper,
             nc,
@@ -541,12 +541,12 @@ pub fn log_qehvi(
     let results = run_samples(ns, work, |s| {
         let y = data.column(s);
         let (lower, _, log_lengths) = cells.for_sample(s);
-        let lw = log_feas.map(|f| f.column(s).iter().copied().collect::<Vec<f64>>());
+        let lw = log_feas.map(|f| f.column(s));
         log_qehvi_sample(
             y.as_slice(),
             q,
             m,
-            lw.as_deref(),
+            lw.as_ref().map(|c| c.as_slice()),
             lower,
             log_lengths,
             nc,

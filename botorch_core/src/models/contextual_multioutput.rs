@@ -310,7 +310,7 @@ pub struct LCEMGP {
     output_tasks: Vec<usize>,
     provided_embedding: bool,
     params: LcemParameters,
-    cache: OnceLock<std::result::Result<Arc<LcemCache>, BotorchError>>,
+    cache: Arc<OnceLock<std::result::Result<Arc<LcemCache>, BotorchError>>>,
 }
 
 fn check_no_nan(m: &Matrix, what: &str) -> Result<()> {
@@ -494,7 +494,7 @@ impl LCEMGP {
             output_tasks,
             provided_embedding: options.provided_embedding,
             params,
-            cache: OnceLock::new(),
+            cache: Arc::new(OnceLock::new()),
         })
     }
 
@@ -634,7 +634,7 @@ impl LCEMGP {
         self.params.task_raw_lengthscale =
             Vector::from_element(spec.ard_num_dims, spec.initial_raw_lengthscale());
         self.task_covar_module = spec;
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 
@@ -684,7 +684,7 @@ impl LCEMGP {
         check_embedding_weights(&params.embedding_weights, &self.embedding_shapes)?;
         self.validate(&params)?;
         self.params = params;
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 
@@ -787,11 +787,11 @@ impl LCEMGP {
     /// unobserved constant has no gradient and never leaves its initial
     /// value otherwise). Observed tasks, the marginal log likelihood and
     /// every other hyperparameter are unchanged.
-    pub fn eval_unobserved_means(&mut self) {
+    pub fn eval_unobserved_means(&mut self) -> bool {
         let k = self.num_tasks();
         let observed: Vec<usize> = (0..k).filter(|&t| self.layout.is_observed(t)).collect();
         if observed.len() == k || observed.is_empty() {
-            return;
+            return false;
         }
         let c = &self.params.raw_constant;
         let level = observed.iter().map(|&t| c[t]).sum::<f64>() / observed.len() as f64;
@@ -803,8 +803,9 @@ impl LCEMGP {
             }
         }
         if changed {
-            self.cache = OnceLock::new();
+            self.cache = Arc::new(OnceLock::new());
         }
+        changed
     }
 
     /// The data kernel's lengthscales.
@@ -863,14 +864,32 @@ impl LCEMGP {
             .collect()
     }
 
+    /// Whether any looked-up embedding row exceeds [`EMBEDDING_MAX_NORM`].
+    pub fn needs_renorm(&self) -> bool {
+        self.params
+            .embedding_weights
+            .iter()
+            .enumerate()
+            .any(|(i, w)| {
+                self.looked_up_rows(i)
+                    .into_iter()
+                    .any(|r| w.row(r).norm() > EMBEDDING_MAX_NORM)
+            })
+    }
+
     /// Applies the in-place renormalization of BoTorch's forward pass to the
     /// stored embedding weights (the model's predictions do not change).
-    pub fn renorm_embeddings(&mut self) {
+    pub fn renorm_embeddings(&mut self) -> bool {
+        if !self.needs_renorm() {
+            return false;
+        }
         let renormed = self.renormed_weights(&self.params.embedding_weights);
         if renormed != self.params.embedding_weights {
             // The cache depends on the effective (renormalized) weights only.
             self.params.embedding_weights = renormed;
+            return true;
         }
+        false
     }
 
     /// The embeddings of every context row (`K' × D`: the renormalized
@@ -1476,7 +1495,7 @@ impl LCEMGP {
         base.train_tasks.extend(tasks);
         base.point_noise
             .extend((0..q).map(|i| noise.map(|values| values[i])));
-        base.cache = OnceLock::new();
+        base.cache = Arc::new(OnceLock::new());
         let mut shared: Option<LcemCache> = None;
         ys.iter()
             .map(|y| {
@@ -1505,7 +1524,7 @@ impl LCEMGP {
                         cache
                     }
                 };
-                model.cache = OnceLock::from(Ok(Arc::new(cache)));
+                model.cache = Arc::new(OnceLock::from(Ok(Arc::new(cache))));
                 Ok(model)
             })
             .collect()

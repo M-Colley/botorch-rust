@@ -1252,7 +1252,10 @@ impl InputTape {
         with_params: bool,
     ) -> Result<(Matrix, Vec<f64>)> {
         let total = self.points_per_input();
-        if rows.end > self.n || adjoint.shape() != (rows.len() * total, self.d_out) {
+        if rows.start > rows.end
+            || rows.end > self.n
+            || adjoint.shape() != (rows.len() * total, self.d_out)
+        {
             return Err(BotorchError::DimensionMismatch(format!(
                 "the adjoint of the transformed points of rows {rows:?} must be {}x{}, got {}x{}",
                 rows.len() * total,

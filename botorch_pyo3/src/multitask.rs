@@ -632,14 +632,35 @@ impl PyMultiTaskGP {
     /// BoTorch's `eval()` for tasks without data: the rows of the task
     /// factor of unobserved tasks become the mean of the observed rows.
     fn eval_unobserved(&self) -> PyResult<()> {
-        let m = self.first();
-        if m.task_layout().unobserved_task_indices().is_empty() {
+        let s = self.state();
+        if s.models[0]
+            .task_layout()
+            .unobserved_task_indices()
+            .is_empty()
+        {
             return Ok(());
         }
-        self.update(|m| {
-            m.eval_unobserved_task_factors();
-            Ok(())
-        })
+        let mut changed = false;
+        let models: Vec<Arc<MultiTaskGP>> = s
+            .models
+            .iter()
+            .map(|m| {
+                let mut c = (**m).clone();
+                if c.eval_unobserved_task_factors() {
+                    changed = true;
+                    Arc::new(c)
+                } else {
+                    Arc::clone(m)
+                }
+            })
+            .collect();
+        if changed {
+            *self.inner.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(MtBatch {
+                batch_shape: s.batch_shape.clone(),
+                models,
+            });
+        }
+        Ok(())
     }
 
     /// The task covariance matrix of the task kernel (`K x K`).
@@ -870,7 +891,7 @@ where
 }
 
 fn stack(batch: &[usize], mats: &[Matrix]) -> ArrayBuf {
-    let (r, c) = mats[0].shape();
+    let (r, c) = mats.first().map_or((0, 0), Matrix::shape);
     let mut data = Vec::with_capacity(mats.len() * r * c);
     for m in mats {
         data.extend(matrix_out(m).0);
@@ -1298,6 +1319,7 @@ impl PyKroneckerMultiTaskGP {
     ) -> PyResult<ArrayBuf> {
         let model = self.snapshot();
         let (xb, xs) = x.batches("X")?;
+        z.validate("base_samples")?;
         let nb = xs.len();
         let (s, total, per_batch) = match z.1.as_slice() {
             &[s, t] => (s, t, false),

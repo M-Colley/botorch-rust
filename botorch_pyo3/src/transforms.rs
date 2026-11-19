@@ -507,7 +507,13 @@ impl PyStandardize {
             )));
         }
         let yvs = match &yvar {
-            Some(v) => Some(split_batches(v, "Yvar")?.1),
+            Some(v) => {
+                let (vb, vs) = split_batches(v, "Yvar")?;
+                if vb != ybatch {
+                    return Err(dimension_error("Yvar must have the shape of Y."));
+                }
+                Some(vs)
+            }
             None => None,
         };
         let mut inner = Vec::with_capacity(ys.len());

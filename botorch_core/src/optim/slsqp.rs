@@ -21,10 +21,12 @@ use slsqp::{minimize_kraft, Evaluation, KraftOptions};
 use crate::acquisition::AcquisitionFunction;
 use crate::error::{BotorchError, Result};
 use crate::optim::initializers::apply_fixed_features;
+use crate::optim::optimize::check_fixed_features;
 use crate::optim::parameter_constraints::{
     evaluate_feasibility, project_to_equality_constraints, unfixed_constraints, LinearConstraint,
     ParameterConstraints, CONSTRAINT_TOLERANCE,
 };
+use crate::utils::sampling::check_bounds;
 use crate::Matrix;
 
 /// Default maximum number of SLSQP iterations of acquisition optimization
@@ -220,7 +222,14 @@ pub fn gen_candidates_slsqp(
     options: &SlsqpOptions,
 ) -> Result<SlsqpChunkResult> {
     let b = initial_conditions.len();
-    let d = bounds.ncols();
+    let d = check_bounds(bounds)?;
+    if d != acq_function.dim() {
+        return Err(BotorchError::DimensionMismatch(format!(
+            "bounds have {d} columns but the acquisition function has d = {}",
+            acq_function.dim()
+        )));
+    }
+    check_fixed_features(fixed_features, bounds)?;
     if b == 0 {
         return Err(BotorchError::InvalidArgument(
             "at least one initial condition is required".into(),
@@ -348,7 +357,7 @@ pub fn gen_candidates_slsqp(
     let res = minimize_kraft(evaluate, &x0, &lower, &upper, meq, m, &kraft)?;
     let mut candidates = assemble(&res.x);
     for s in candidates.iter_mut() {
-        clamp_to_bounds(s, bounds, true)?;
+        clamp_to_bounds(s, bounds, false)?;
         apply_fixed_features(s, fixed_features);
     }
     let mut warnings = Vec::new();

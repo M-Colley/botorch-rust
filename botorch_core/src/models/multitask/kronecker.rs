@@ -156,7 +156,7 @@ pub struct KroneckerMultiTaskGP {
     noise_spec: GaussianLikelihoodSpec,
     likelihood_rank: usize,
     raw: Vector,
-    cache: OnceLock<std::result::Result<Arc<KronCache>, BotorchError>>,
+    cache: Arc<OnceLock<std::result::Result<Arc<KronCache>, BotorchError>>>,
 }
 
 fn check_no_nan(m: &Matrix, what: &str) -> Result<()> {
@@ -282,7 +282,7 @@ impl KroneckerMultiTaskGP {
             noise_spec,
             likelihood_rank: lr,
             raw: Vector::from_vec(raw),
-            cache: OnceLock::new(),
+            cache: Arc::new(OnceLock::new()),
         })
     }
 
@@ -429,7 +429,7 @@ impl KroneckerMultiTaskGP {
         TreeKernel::build(&self.task, &values[self.task_range()], 1)?;
         TreeKernel::build(&self.data, &values[self.data_range()], self.dim())?;
         self.raw = Vector::from_column_slice(values);
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 

@@ -133,9 +133,21 @@ impl InverseCostWeightedUtility {
         with_grad: bool,
     ) -> Result<(f64, Option<Matrix>)> {
         let q = x.nrows();
+        if q == 0 {
+            return Err(BotorchError::InvalidArgument(
+                "X must have at least one point".into(),
+            ));
+        }
         let full = self.cost_model.forward(x)?;
         let outputs: Vec<usize> = match x_evaluation_mask {
             Some(mask) => {
+                if mask.shape() != (q, full.ncols()) {
+                    return Err(BotorchError::DimensionMismatch(format!(
+                        "X_evaluation_mask must have shape ({q}, {}), got {:?}",
+                        full.ncols(),
+                        mask.shape()
+                    )));
+                }
                 if (1..mask.nrows()).any(|i| mask.row(i) != mask.row(0)) {
                     return Err(BotorchError::Unsupported(
                         "Currently, all candidates must be evaluated on the same outputs.".into(),
@@ -162,7 +174,13 @@ impl InverseCostWeightedUtility {
         let (per_point, objective_pullback) = match &self.cost_objective {
             Some(obj) => {
                 let samples = McSamples::from_row_major(&row_major(&costs), 1, q, k)?;
-                let v = obj.evaluate(&samples, None, with_grad)?;
+                let v = obj.evaluate(&samples, Some(x), with_grad)?;
+                if v.values.shape() != (q, 1) {
+                    return Err(BotorchError::DimensionMismatch(format!(
+                        "cost_objective must return one value per point ({q} x 1), got {:?}",
+                        v.values.shape()
+                    )));
+                }
                 let values: Vec<f64> = (0..q).map(|p| v.values[(p, 0)]).collect();
                 (values, v.pullback.map(|pb| (pb, k)))
             }
@@ -175,7 +193,7 @@ impl InverseCostWeightedUtility {
                 (values, None)
             }
         };
-        if !per_point.iter().all(|&c| c > 0.0) {
+        if !per_point.iter().all(|&c| c.is_finite() && c > 0.0) {
             return Err(BotorchError::InvalidArgument(
                 "Costs must be strictly positive. Consider clamping cost_objective.".into(),
             ));
@@ -185,14 +203,14 @@ impl InverseCostWeightedUtility {
             return Ok((total, None));
         }
         // Adjoint of the selected costs (q × k) for an adjoint of one.
-        let costs_bar = match objective_pullback {
+        let (costs_bar, x_obj_bar) = match objective_pullback {
             Some((pb, _)) => {
-                let (sbar, _) = pb(&Matrix::from_element(q, 1, 1.0))?;
+                let (sbar, xbar) = pb(&Matrix::from_element(q, 1, 1.0))?;
                 let s = McSamples::new(sbar, q, k)?;
-                Matrix::from_fn(q, k, |p, j| s.value(0, p, j))
+                (Matrix::from_fn(q, k, |p, j| s.value(0, p, j)), xbar)
             }
             // The identity or the sum over the outputs.
-            None => Matrix::from_element(q, k, 1.0),
+            None => (Matrix::from_element(q, k, 1.0), None),
         };
         let mut full_bar = Matrix::zeros(q, full.ncols());
         for (j, &t) in outputs.iter().enumerate() {
@@ -200,7 +218,11 @@ impl InverseCostWeightedUtility {
                 full_bar[(p, t)] += costs_bar[(p, j)];
             }
         }
-        Ok((total, Some(self.cost_model.backward(x, &full_bar)?)))
+        let mut gx = self.cost_model.backward(x, &full_bar)?;
+        if let Some(xb) = x_obj_bar {
+            gx += xb;
+        }
+        Ok((total, Some(gx)))
     }
 }
 

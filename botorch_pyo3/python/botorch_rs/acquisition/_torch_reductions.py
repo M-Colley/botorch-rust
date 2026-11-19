@@ -157,10 +157,15 @@ def compute_smoothed_feasibility_indicator(
     ``log_fatmoid(-c / eta)`` (``fat=True``), ``logexpit(-c / eta)``
     (``fat=False``) or ``log(c)`` (``fat=None``: the constraint returns
     probabilities), summed, and exponentiated unless ``log``."""
-    if type(eta) is not Tensor:
+    if not isinstance(eta, Tensor):
         # float64 temperatures (BoTorch's ``torch.full`` rounds a Python float
         # to float32), like botorch_rs's native acquisition functions.
-        eta = torch.full((len(constraints),), eta, dtype=samples.dtype)
+        if isinstance(eta, (int, float)):
+            eta = torch.full((len(constraints),), eta, dtype=samples.dtype, device=samples.device)
+        else:
+            eta = torch.as_tensor(eta, dtype=samples.dtype, device=samples.device)
+    else:
+        eta = eta.to(dtype=samples.dtype, device=samples.device)
     if type(fat) is not list:
         fat = [fat] * len(constraints)
     if len(eta) != len(constraints):

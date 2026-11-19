@@ -229,6 +229,36 @@ impl ExpectedHypervolumeImprovement {
         }
         Ok((value, Some(grad)))
     }
+    fn ehvi_value(&self, mu: &[f64], var: &[f64]) -> f64 {
+        let m = self.cells.num_outcomes();
+        let nc = self.cells.num_cells();
+        let sigma: Vec<f64> = var
+            .iter()
+            .map(|&v| {
+                if v < MIN_EHVI_VARIANCE {
+                    MIN_EHVI_VARIANCE
+                } else {
+                    v
+                }
+                .sqrt()
+            })
+            .collect();
+        let (lower, upper) = (self.cells.lower(), self.cells.upper());
+        let mut value = 0.0;
+        let mut f = vec![0.0; m];
+        for k in 0..nc {
+            for j in 0..m {
+                let l = lower[k * m + j];
+                let u = upper[k * m + j].min(MAX_CELL_UPPER);
+                let (lu, _, _) = psi(l, u, mu[j], sigma[j]);
+                let (ll, _, _) = psi(l, l, mu[j], sigma[j]);
+                let (nv, _, _) = nu(l, u, mu[j], sigma[j]);
+                f[j] = ll - lu + nv;
+            }
+            value += f.iter().fold(1.0, |a, v| a * v);
+        }
+        value
+    }
 }
 
 impl AcquisitionFunction for ExpectedHypervolumeImprovement {
@@ -242,6 +272,38 @@ impl AcquisitionFunction for ExpectedHypervolumeImprovement {
 
     fn forward(&self, x: &Matrix) -> Result<f64> {
         Ok(self.evaluate(x, false)?.0)
+    }
+
+    fn forward_many(&self, xs: &[Matrix]) -> Result<Vec<f64>> {
+        use rayon::prelude::*;
+        let d = self.model.dim();
+        for x in xs {
+            check_candidates(x, d, Some(1))?;
+        }
+        let m = self.cells.num_outcomes();
+        let chunks: Vec<Result<Vec<f64>>> = xs
+            .par_chunks(64)
+            .map(|chunk| {
+                let stacked = Matrix::from_fn(chunk.len(), d, |i, j| chunk[i][(0, j)]);
+                let pp = self.model.point_posteriors(&stacked)?;
+                let mut mu = vec![0.0; m];
+                let mut var = vec![0.0; m];
+                let mut out = Vec::with_capacity(chunk.len());
+                for i in 0..chunk.len() {
+                    for j in 0..m {
+                        mu[j] = pp.mean[(i, j)];
+                        var[j] = pp.covariance[(i, j * m + j)];
+                    }
+                    out.push(self.ehvi_value(&mu, &var));
+                }
+                Ok(out)
+            })
+            .collect();
+        let mut out = Vec::with_capacity(xs.len());
+        for c in chunks {
+            out.extend(c?);
+        }
+        Ok(out)
     }
 
     fn forward_with_grad(&self, x: &Matrix) -> Result<(f64, Matrix)> {

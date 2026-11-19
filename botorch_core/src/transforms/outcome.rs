@@ -148,6 +148,12 @@ impl StratifiedStandardize {
                 stdvs.len()
             )));
         }
+        if means.iter().any(|v| !v.is_finite()) || stdvs.iter().any(|&v| !v.is_finite() || v <= 0.0)
+        {
+            return Err(BotorchError::InvalidArgument(
+                "means must be finite and standard deviations positive and finite".into(),
+            ));
+        }
         self.means = means;
         self.stdvs = stdvs;
         self.trained = true;
@@ -323,6 +329,13 @@ impl OutcomeStep {
         match self {
             OutcomeStep::Standardize(st) => st.transform(y, yvar),
             OutcomeStep::StratifiedStandardize(st) => {
+                if !st.is_trained() {
+                    return Err(BotorchError::InvalidArgument(
+                        "`StratifiedStandardize` transforms must be called on outcome data \
+                         before calling `transform` in eval mode."
+                            .into(),
+                    ));
+                }
                 let pp = st.per_point(x)?;
                 if pp.len() != y.nrows() {
                     return Err(BotorchError::DimensionMismatch(format!(
@@ -391,6 +404,13 @@ impl OutcomeStep {
                 st.untransform(y, yvar)
             }
             OutcomeStep::StratifiedStandardize(st) => {
+                if !st.is_trained() {
+                    return Err(BotorchError::Runtime(
+                        "`StratifiedStandardize` transforms must be called on outcome data \
+                         before calling `untransform`."
+                            .into(),
+                    ));
+                }
                 let pp = st.per_point(x)?;
                 if pp.len() != y.nrows() {
                     return Err(BotorchError::DimensionMismatch(format!(
@@ -817,9 +837,23 @@ impl OutcomeChain {
         for step in self.steps.iter().rev() {
             let a = match step {
                 OutcomeStep::Standardize(st) => {
+                    if !st.is_trained() || st.means().len() != 1 || st.stdvs().len() != 1 {
+                        return Err(BotorchError::Runtime(
+                            "`Standardize` transforms must be fitted on a single outcome before \
+                             untransforming a posterior."
+                                .into(),
+                        ));
+                    }
                     Some(PointAffine::Constant(st.means()[0], st.stdvs()[0]))
                 }
                 OutcomeStep::StratifiedStandardize(st) => {
+                    if !st.is_trained() {
+                        return Err(BotorchError::Runtime(
+                            "`StratifiedStandardize` transforms must be fitted before \
+                             untransforming a posterior."
+                                .into(),
+                        ));
+                    }
                     Some(PointAffine::PerPoint(st.per_point(x)?))
                 }
                 _ => None,

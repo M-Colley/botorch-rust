@@ -79,7 +79,7 @@ impl MultiTaskGP {
         self.input_feature_offsets = candidate.input_feature_offsets;
         self.train_kx = kx;
         self.train_tasks = tasks;
-        self.cache = OnceLock::new();
+        self.cache = OnceLock::new().into();
         Ok(())
     }
 
@@ -135,7 +135,7 @@ impl MultiTaskGP {
         self.train_kx = kx;
         self.train_tasks = tasks;
         self.input_warp = candidate.input_warp;
-        self.cache = OnceLock::new();
+        self.cache = OnceLock::new().into();
         Ok(())
     }
 }

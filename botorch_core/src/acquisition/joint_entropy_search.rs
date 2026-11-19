@@ -366,7 +366,7 @@ impl QJointEntropySearch {
         let m = gps.len();
         let posts = gps
             .iter()
-            .map(|g| Ok((g.posterior(x, false)?, g.posterior(x, true)?)))
+            .map(|g| g.posterior_and_noise_diag(x))
             .collect::<Result<Vec<_>>>()?;
         let (mean, cov, noise): (Vector, Matrix, Vec<f64>) = match &self.transform {
             Some(t) => {
@@ -380,24 +380,13 @@ impl QJointEntropySearch {
                         .sum::<f64>()
                 });
                 let noise = (0..n)
-                    .map(|p| {
-                        (0..m)
-                            .map(|k| {
-                                w[k] * w[k]
-                                    * (posts[k].1.covariance[(p, p)]
-                                        - posts[k].0.covariance[(p, p)])
-                            })
-                            .sum()
-                    })
+                    .map(|p| (0..m).map(|k| w[k] * w[k] * posts[k].1[p]).sum())
                     .collect();
                 (mean, cov, noise)
             }
             None => {
-                let (a, b) = &posts[0];
-                let noise = (0..n)
-                    .map(|p| b.covariance[(p, p)] - a.covariance[(p, p)])
-                    .collect();
-                (a.mean.clone(), a.covariance.clone(), noise)
+                let (a, noise) = &posts[0];
+                (a.mean.clone(), a.covariance.clone(), noise.clone())
             }
         };
         Ok((mean, cov, noise))

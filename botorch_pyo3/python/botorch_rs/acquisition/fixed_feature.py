@@ -59,7 +59,9 @@ def _values_flat(values: Any) -> tuple[list[float], tuple[int, ...]]:
             parts = [
                 torch.tensor([v], dtype=torch.float64)
                 if isinstance(v, Number)
-                else (v.unsqueeze(0) if v.ndim == 0 else v).detach().to(torch.float64)
+                else (v.unsqueeze(0) if v.ndim == 0 else v)
+                .detach()
+                .to(device="cpu", dtype=torch.float64)
                 for v in parts
             ]
             values = torch.cat(torch.broadcast_tensors(*parts), dim=-1)
@@ -90,7 +92,9 @@ def _values_arg(values: Any) -> tuple[list[float], tuple[int, int]]:
             parts = [
                 torch.tensor([v], dtype=torch.float64)
                 if isinstance(v, Number)
-                else (v.unsqueeze(0) if v.ndim == 0 else v).detach().to(torch.float64)
+                else (v.unsqueeze(0) if v.ndim == 0 else v)
+                .detach()
+                .to(device="cpu", dtype=torch.float64)
                 for v in parts
             ]
             values = torch.cat(torch.broadcast_tensors(*parts), dim=-1)

@@ -841,13 +841,33 @@ def initialize_q_batch_topn(
     return _select(X, acq_vals, idcs)
 
 
+_NONNEG_CLASS_NAMES = frozenset(
+    {
+        "ExpectedImprovement",
+        "ProbabilityOfImprovement",
+        "ConstrainedExpectedImprovement",
+        "NoisyExpectedImprovement",
+        "qExpectedImprovement",
+        "qNoisyExpectedImprovement",
+        "qProbabilityOfImprovement",
+        "PosteriorStandardDeviation",
+        "qPosteriorStandardDeviation",
+        "ExpectedHypervolumeImprovement",
+        "qExpectedHypervolumeImprovement",
+        "qNoisyExpectedHypervolumeImprovement",
+    }
+)
+
+
 def is_nonnegative(acq_function: Any) -> bool:
     r"""Whether an acquisition function is known to be non-negative
     (BoTorch's ``is_nonnegative``): expected and noisy expected improvement,
     probability of improvement and the expected hypervolume improvements
     (not their log versions)."""
     rs = getattr(acq_function, "_rs", None)
-    return bool(getattr(rs, "is_nonnegative", False))
+    if rs is not None:
+        return bool(getattr(rs, "is_nonnegative", False))
+    return any(cls.__name__ in _NONNEG_CLASS_NAMES for cls in type(acq_function).__mro__)
 
 
 def _objective_values(acq_function: Any, mean_rows: list[list[float]]) -> list[Any]:

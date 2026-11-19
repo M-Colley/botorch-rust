@@ -106,13 +106,13 @@ class TensorActiveLearning(_TensorAcquisition):
         if points.shape[-1] != X.shape[-1]:
             raise ValueError("mc_points and candidates must have the same input dimension.")
         if self.model.num_outputs > 1:
-            points = points.reshape(-1, *batch_singletons, 1, X.shape[-1])
+            points = points.reshape(-1, 1, *batch_singletons, 1, X.shape[-1])
         else:
-            points = points.reshape(*batch_singletons, -1, X.shape[-1])
+            points = points.reshape(1, *batch_singletons, -1, X.shape[-1])
         variance = fantasy.posterior(points, posterior_transform=self.posterior_transform).variance
         value = (
-            -variance.mean(dim=0).squeeze(-1).squeeze(-1)
+            -variance.mean(dim=(0, 1)).squeeze(-1).squeeze(-1)
             if self.model.num_outputs > 1
-            else -variance.mean(dim=-2).squeeze(-1).squeeze(0)
+            else -variance.mean(dim=-2).squeeze(-1).mean(dim=0)
         )
         return _average_ensemble(value, self.model)

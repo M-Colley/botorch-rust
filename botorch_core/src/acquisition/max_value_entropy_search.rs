@@ -843,6 +843,14 @@ impl MaxValueBase {
     /// The observation noise variance added by `posterior(x,
     /// observation_noise=True)` at the points `x` (untransformed).
     fn noise(&self, x: &Matrix) -> Result<Vector> {
+        if let Some(gps) = self.model.output_gps() {
+            if gps.len() == 1
+                && !gps[0].has_transformed_posterior()
+                && gps[0].points_per_input() == 1
+            {
+                return gps[0].noise_diagonal(x);
+            }
+        }
         let a = self.model.posterior(x, true)?;
         let b = self.model.posterior(x, false)?;
         let n = x.nrows();
@@ -1531,16 +1539,12 @@ impl QLowerBoundMaxValueEntropy {
             vals.extend([mean[1], cov[(1, 1)], cov[(0, 1)]]);
         }
         vals.extend((first_pending..np).map(|j| cov[(0, j)]));
-        let ig = value_with(&vals)?;
-        // Cost-aware utility (multi-fidelity).
-        let (value, pullback) = match &self.fidelity {
-            Some(f) => {
-                let out = f.cost_aware_utility.evaluate(x, &[ig], None, with_grad)?;
-                (out.values[0], out.pullback)
-            }
-            None => (ig, None),
-        };
         if !with_grad {
+            let ig = value_with(&vals)?;
+            let value = match &self.fidelity {
+                Some(f) => f.cost_aware_utility.evaluate(x, &[ig], None, false)?.values[0],
+                None => ig,
+            };
             return Ok((value, None));
         }
         macro_rules! grad_with {
@@ -1550,19 +1554,28 @@ impl QLowerBoundMaxValueEntropy {
                     .enumerate()
                     .map(|(i, &v)| Dual::<$n>::variable(v, i, ntan))
                     .collect();
-                self.gibbon(&duals, mf, rep.as_ref(), noise, w, &max_values)?
+                let d = self.gibbon(&duals, mf, rep.as_ref(), noise, w, &max_values)?;
+                (d.v, d.grad().to_vec())
             }};
         }
-        let g: Vec<f64> = if ntan <= 6 {
-            grad_with!(6).grad().to_vec()
+        let (ig, g): (f64, Vec<f64>) = if ntan <= 6 {
+            grad_with!(6)
         } else if ntan <= 16 {
-            grad_with!(16).grad().to_vec()
+            grad_with!(16)
         } else if ntan <= 64 {
-            grad_with!(64).grad().to_vec()
+            grad_with!(64)
         } else {
             return Err(BotorchError::Unsupported(
                 "too many pending points for the gradient of GIBBON".into(),
             ));
+        };
+        // Cost-aware utility (multi-fidelity).
+        let (value, pullback) = match &self.fidelity {
+            Some(f) => {
+                let out = f.cost_aware_utility.evaluate(x, &[ig], None, true)?;
+                (out.values[0], out.pullback)
+            }
+            None => (ig, None),
         };
         let (scale, xbar) = match pullback {
             Some(pb) => {

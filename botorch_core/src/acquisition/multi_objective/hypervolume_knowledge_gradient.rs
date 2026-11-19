@@ -783,7 +783,15 @@ impl QHypervolumeKnowledgeGradient {
         let (deltas, delta_grad): (Vec<f64>, Vec<f64>) = match self.current_value {
             Some(cv) if self.log => raw
                 .iter()
-                .map(|&v| (logdiffexp(cv, v), 1.0 / -(cv - v).exp_m1()))
+                .map(|&v| {
+                    if cv == f64::NEG_INFINITY {
+                        (v, 1.0)
+                    } else if v <= cv {
+                        (f64::NEG_INFINITY, 0.0)
+                    } else {
+                        (logdiffexp(cv, v), 1.0 / -(cv - v).exp_m1())
+                    }
+                })
                 .unzip(),
             Some(cv) => raw.iter().map(|&v| (v - cv, 1.0)).unzip(),
             None => (raw.clone(), vec![1.0; raw.len()]),
@@ -831,6 +839,9 @@ impl QHypervolumeKnowledgeGradient {
         };
         let mut accs: Vec<FantasyAdjoint> = fantasies.iter().map(|f| f.adjoint()).collect();
         for (i, v) in values.iter().enumerate() {
+            if deltas_bar[i] == 0.0 {
+                continue;
+            }
             let scale = deltas_bar[i] * delta_grad[i];
             let (gx, adjoints) = v.grad.as_ref().expect("gradient requested");
             let start = q + i * self.num_pareto;

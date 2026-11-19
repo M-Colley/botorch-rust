@@ -106,6 +106,9 @@ pub fn initialize_q_batch<R: Rng + ?Sized>(
     eta: f64,
     rng: &mut R,
 ) -> Result<(Vec<usize>, bool)> {
+    if !eta.is_finite() {
+        return Err(BotorchError::InvalidArgument("eta must be finite".into()));
+    }
     let n_samples = acq_values.len();
     if n > n_samples {
         return Err(BotorchError::InvalidArgument(format!(
@@ -157,6 +160,9 @@ pub fn initialize_q_batch_nonneg<R: Rng + ?Sized>(
     alpha: f64,
     rng: &mut R,
 ) -> Result<(Vec<usize>, bool)> {
+    if !eta.is_finite() {
+        return Err(BotorchError::InvalidArgument("eta must be finite".into()));
+    }
     let n_samples = acq_values.len();
     if n > n_samples {
         return Err(BotorchError::InvalidArgument(
@@ -166,9 +172,14 @@ pub fn initialize_q_batch_nonneg<R: Rng + ?Sized>(
     if n == n_samples {
         return Ok(((0..n).collect(), false));
     }
+    if !(alpha.is_finite() && alpha > 0.0) {
+        return Err(BotorchError::InvalidArgument(
+            "alpha must be positive and finite".into(),
+        ));
+    }
     let max_idx = argmax(acq_values);
     let max_val = acq_values[max_idx];
-    if max_val.is_nan() || max_val <= 0.0 {
+    if !max_val.is_finite() || max_val <= 0.0 {
         return Ok((random_subset(n_samples, n, rng), true));
     }
     let pos: Vec<usize> = (0..n_samples).filter(|&i| acq_values[i] > 0.0).collect();

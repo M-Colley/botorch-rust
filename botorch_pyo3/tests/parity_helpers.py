@@ -689,10 +689,13 @@ def botorch_allows_infeasible_starts() -> bool:
     constraints.", while botorch_rs follows main)."""
     import inspect
 
+    from botorch.generation import gen
     from botorch.optim import parameter_constraints as pc
 
     params = inspect.signature(pc.make_scipy_nonlinear_inequality_constraints).parameters
-    return "validate_feasibility" in params
+    return "validate_feasibility" in params and "validate_feasibility=False" in inspect.getsource(
+        gen.gen_candidates_scipy
+    )
 
 
 def feasible_starts(ics: Any, nonlinear: Any, fallback: Any) -> Any:

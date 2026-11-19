@@ -806,7 +806,10 @@ fn gen_candidates_torch_py(
         )
     })
     .into_py_result()?;
-    let (q, d) = res.candidates[0].shape();
+    let (q, d) = res
+        .candidates
+        .first()
+        .map_or((0, bounds.ncols()), Matrix::shape);
     Ok((
         stack_out(&res.candidates, &batch, q, d),
         res.acq_values,

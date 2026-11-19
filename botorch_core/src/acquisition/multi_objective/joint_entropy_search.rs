@@ -1130,7 +1130,7 @@ impl ConditionalEntropy<'_> {
                 let ns = z.nrows();
                 // Samples of N(μ, diag(v + noise)) and their log-densities
                 // (`rsample` with a Cholesky root, `MultivariateNormal.log_prob`).
-                let sd: Vec<f64> = vpn_raw.iter().map(|v| v.sqrt()).collect();
+                let sd: Vec<f64> = vpn_raw.iter().map(|v| v.max(MIN_VARIANCE).sqrt()).collect();
                 let samples = Matrix::from_fn(ns, m, |si, t| post.mean[t] + sd[t] * z[(si, t)]);
                 let log_prob: Vec<f64> = (0..ns)
                     .map(|si| {
@@ -1189,7 +1189,9 @@ impl ConditionalEntropy<'_> {
                     // y = μ + sd z.
                     mean_bar[t] += y_bar;
                     let sd_bar = sd_bar_lp + y_bar * z[(si, t)];
-                    vpn_raw_bar[t] += sd_bar / (2.0 * sd[t]);
+                    if vpn_raw[t] > MIN_VARIANCE {
+                        vpn_raw_bar[t] += sd_bar / (2.0 * sd[t]);
+                    }
                 }
             }
         }

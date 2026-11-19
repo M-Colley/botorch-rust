@@ -15,7 +15,7 @@
 //!   Kraft's exit modes with SciPy's messages;
 //! * returns the final iterate, like SciPy.
 
-use crate::slsqp::{length_work, slsqp, slsqpb_state};
+use crate::slsqp::{checked_work_lengths, slsqp, slsqpb_state};
 
 /// The objective, the constraints and (optionally) their derivatives at a
 /// point, as returned by the evaluation callback of [`minimize_kraft`].
@@ -209,23 +209,72 @@ where
     assert!(meq <= m, "meq must not exceed m");
     let la = m.max(1);
     let mut x = clip(x0, lower, upper);
+    // Initial evaluation (SciPy evaluates f, g, c and their Jacobian at x0).
+    let ev = evaluate(&x, true)?;
+    let mut f = ev.f;
+    assert_eq!(
+        ev.c.len(),
+        m,
+        "expected {m} constraint values, got {}",
+        ev.c.len()
+    );
+    assert_eq!(
+        ev.g.len(),
+        n,
+        "expected a gradient of length {n}, got {}",
+        ev.g.len()
+    );
+    let mn = m
+        .checked_mul(n)
+        .expect("constraint Jacobian dimensions overflow usize");
+    assert_eq!(
+        ev.a.len(),
+        mn,
+        "expected a {m} x {n} constraint Jacobian, got {} values",
+        ev.a.len()
+    );
+    if meq > n {
+        return Ok(KraftResult {
+            x,
+            f,
+            mode: 2,
+            iterations: 1,
+            evaluations: 1,
+            gradient_evaluations: 1,
+        });
+    }
+    if n == 0 {
+        let feasible = ev.c.iter().all(|&v| v >= -options.acc.abs());
+        return Ok(KraftResult {
+            x,
+            f,
+            mode: if feasible { 0 } else { 4 },
+            iterations: 0,
+            evaluations: 1,
+            gradient_evaluations: 1,
+        });
+    }
+    let Some((mut len_w, mut len_jw)) = checked_work_lengths(m, meq, la, n) else {
+        return Ok(KraftResult {
+            x,
+            f,
+            mode: 10_010,
+            iterations: 0,
+            evaluations: 1,
+            gradient_evaluations: 1,
+        });
+    };
     let mut c = vec![0.0; la];
     let mut g = vec![0.0; n + 1];
     let mut a = vec![0.0; la * (n + 1)];
-    let (mut len_w, mut len_jw) = (0i32, 0i32);
-    // SAFETY: `length_work` only writes the two integers.
-    unsafe { length_work(&mut len_w, &mut len_jw, m as i32, meq as i32, n as i32) };
-    let mut w = vec![0.0; len_w.max(1) as usize];
-    let mut jw = vec![0i32; len_jw.max(1) as usize];
+    let mut w = vec![0.0; len_w as usize];
+    let mut jw = vec![0i32; len_jw as usize];
     let mut state = new_state();
     let (mut mi, mut meqi, mut lai, mut ni) = (m as i32, meq as i32, la as i32, n as i32);
     let mut acc = options.acc;
     let mut iter = i32::try_from(options.maxiter).unwrap_or(i32::MAX);
     let mut mode = 0i32;
 
-    // Initial evaluation (SciPy evaluates f, g, c and their Jacobian at x0).
-    let ev = evaluate(&x, true)?;
-    let mut f = ev.f;
     store_constraints(&ev, m, &mut c);
     store_derivatives(&ev, n, m, la, &mut g, &mut a);
     let (mut evaluations, mut gradient_evaluations) = (1usize, 1usize);
@@ -291,6 +340,7 @@ where
             _ => break,
         }
     }
+    x = clip(&x, lower, upper);
     Ok(KraftResult {
         x,
         f,
@@ -416,5 +466,52 @@ mod tests {
         )
         .unwrap();
         assert!(r.evaluations <= 20 * 12 + 1, "{}", r.evaluations);
+    }
+
+    #[test]
+    fn more_equalities_than_variables_returns_mode_2_safely() {
+        let eval = |x: &[f64], _: bool| -> Result<Evaluation, ()> {
+            Ok(Evaluation {
+                f: x[0] * x[0] + x[1] * x[1],
+                c: vec![0.0; 10],
+                g: vec![2.0 * x[0], 2.0 * x[1]],
+                a: vec![1.0; 20],
+            })
+        };
+        let r = minimize_kraft(
+            eval,
+            &[1.0, 1.0],
+            &[-5.0, -5.0],
+            &[5.0, 5.0],
+            10,
+            10,
+            &KraftOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(r.mode, 2);
+        assert_eq!(
+            r.message(),
+            "More equality constraints than independent variables"
+        );
+    }
+
+    #[test]
+    fn workspace_i32_overflow_is_caught_safely() {
+        assert_eq!(checked_work_lengths(0, 0, 1, 20_000), None);
+        let n = 20_000;
+        let eval = |x: &[f64], _: bool| -> Result<Evaluation, ()> {
+            Ok(Evaluation {
+                f: x[0],
+                c: vec![],
+                g: vec![0.0; n],
+                a: vec![],
+            })
+        };
+        let x0 = vec![0.5; n];
+        let lo = vec![0.0; n];
+        let hi = vec![1.0; n];
+        let r = minimize_kraft(eval, &x0, &lo, &hi, 0, 0, &KraftOptions::default()).unwrap();
+        assert!(!r.success());
+        assert_eq!(r.evaluations, 1);
     }
 }

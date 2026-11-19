@@ -1289,7 +1289,23 @@ impl OneHotToNumericStep {
         categorical.sort_by_key(|&(s, _)| s);
         let mut onehot: Vec<usize> = Vec::new();
         for &(s, c) in &categorical {
-            onehot.extend(s..s + c);
+            if c <= 1 {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "Categorical feature starting at index {s} has cardinality {c}. \
+                     All categorical features must have cardinality greater than 1."
+                )));
+            }
+            let end = s.checked_add(c).ok_or_else(|| {
+                BotorchError::InvalidArgument(
+                    "Categorical features exceed the provided dimension.".into(),
+                )
+            })?;
+            if end > dim {
+                return Err(BotorchError::InvalidArgument(
+                    "Categorical features exceed the provided dimension.".into(),
+                ));
+            }
+            onehot.extend(s..end);
         }
         let mut uniq = onehot.clone();
         uniq.sort_unstable();
@@ -1385,6 +1401,13 @@ impl OneHotToNumericStep {
     fn invert(&self, x: &Matrix) -> Result<Matrix> {
         if self.categorical.is_empty() {
             return Ok(x.clone());
+        }
+        let expected = self.new_numerical_idx.len() + self.categorical.len();
+        if x.ncols() != expected {
+            return Err(BotorchError::DimensionMismatch(format!(
+                "OneHotToNumeric.untransform expects {expected} input dimensions, got {}",
+                x.ncols()
+            )));
         }
         let width = self.numerical_idx.len() + self.categorical.iter().map(|c| c.1).sum::<usize>();
         let mut out = Matrix::zeros(x.nrows(), width);
@@ -1491,6 +1514,11 @@ impl NumericToCategoricalStep {
             )));
         }
         for &(idx, card) in &categorical {
+            if idx >= dim {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "Categorical feature index {idx} exceeds the provided dimension ({dim})."
+                )));
+            }
             if card <= 1 {
                 return Err(BotorchError::InvalidArgument(format!(
                     "Categorical feature at index {idx} has cardinality {card}. All categorical \
@@ -1509,6 +1537,7 @@ impl NumericToCategoricalStep {
         let categorical: Vec<(usize, usize)> = pairs.iter().map(|p| p.0).collect();
         let encoders = pairs.into_iter().map(|p| p.1).collect();
         let ordinal: Vec<usize> = categorical.iter().map(|c| c.0).collect();
+        check_unique(&ordinal, "categorical_features")?;
         let numerical_idx: Vec<usize> = (0..dim).filter(|i| !ordinal.contains(i)).collect();
         let mut new_numerical_idx = Vec::new();
         let mut encoded_start = Vec::new();

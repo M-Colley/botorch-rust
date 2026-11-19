@@ -38,13 +38,13 @@ def minimize_with_timeout(
     iterations = 0
     wrapped_callback = callback
     if timeout_sec is not None:
-        start = time.monotonic()
+        start = time.perf_counter()
 
         def timeout_callback(xk: Any) -> bool:
             nonlocal iterations
             iterations += 1
-            runtime = time.monotonic() - start
-            if runtime > timeout_sec:
+            runtime = time.perf_counter() - start
+            if runtime > timeout_sec or timeout_sec <= 0.0:
                 raise OptimizationTimeoutError(current_x=xk.copy(), runtime=runtime)
             return False
 

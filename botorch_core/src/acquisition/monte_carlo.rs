@@ -402,16 +402,15 @@ impl JointSamples {
                 }
             }
             SampleRoots::Full(root) => {
-                let z = self.base_output_major();
+                let zt = self.base_output_major().transpose();
                 let full = root.to_matrix();
                 for t in 0..m {
+                    let rblock = full.rows(t * n + rows.start, k) * &zt;
                     for i in 0..k {
-                        let row = t * n + rows.start + i;
-                        let y = full.row(row) * z.transpose();
-                        let mu = self.mean[row];
+                        let mu = self.mean[t * n + rows.start + i];
                         let mut dst = data.row_mut(t * k + i);
                         for c in 0..s {
-                            dst[c] = y[c] + mu;
+                            dst[c] = rblock[(i, c)] + mu;
                         }
                     }
                 }
@@ -532,11 +531,13 @@ impl JointSamples {
             }
             SampleRoots::Full(root) => {
                 let z = self.base_output_major();
+                let rbar = ybar * &z;
                 let mut root_bar = Matrix::zeros(nm, nm);
                 for t in 0..m {
                     for i in 0..k {
-                        let r = ybar.row(t * k + i) * &z;
-                        root_bar.row_mut(t * n + cols.start + i).copy_from(&r);
+                        root_bar
+                            .row_mut(t * n + cols.start + i)
+                            .copy_from(&rbar.row(t * k + i));
                     }
                 }
                 cov_bar = root.backward(&root_bar)?;

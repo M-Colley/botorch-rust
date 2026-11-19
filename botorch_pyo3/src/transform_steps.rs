@@ -750,13 +750,15 @@ fn norm_to_lognorm_variance_py(mu: Array, var: Array) -> PyResult<ArrayOut> {
 /// `batch x n` means and `batch x n x n` covariances.
 #[pyfunction]
 fn lognormal_moments_py(mu: Array, cov: Array, inverse: bool) -> PyResult<(ArrayOut, ArrayOut)> {
+    mu.validate("mu")?;
+    cov.validate("Cov")?;
     let n = *mu
         .1
         .last()
         .ok_or_else(|| dimension_error("mu must have at least one dimension"))?;
     if cov.1.len() != mu.1.len() + 1
+        || cov.1[..cov.1.len() - 1] != mu.1[..]
         || cov.1[cov.1.len() - 1] != n
-        || cov.1[cov.1.len() - 2] != n
         || cov.0.len() != mu.0.len() * n
     {
         return Err(dimension_error(format!(
@@ -820,6 +822,7 @@ fn kumaraswamy_warp_py(
 /// `interaction_features(X)`: `batch x q x 1 x d(d-1)/2`.
 #[pyfunction]
 fn interaction_features_py(x: Array) -> PyResult<ArrayOut> {
+    x.validate("X")?;
     let d =
         *x.1.last()
             .ok_or_else(|| dimension_error("X must have at least one dimension"))?;
@@ -837,6 +840,7 @@ fn interaction_features_py(x: Array) -> PyResult<ArrayOut> {
 /// `nanstd(X, dim)` over the (non-negative) dimension `dim`.
 #[pyfunction]
 fn nanstd_py(x: Array, dim: usize, keepdim: bool) -> PyResult<ArrayOut> {
+    x.validate("X")?;
     if dim >= x.1.len() {
         return Err(dimension_error(format!(
             "Dimension out of range (expected to be in range of [{}, {}], but got {dim})",

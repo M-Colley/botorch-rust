@@ -464,14 +464,20 @@ pub fn reduce(
         )));
     }
     if matches!(name, "fatmax" | "fatmin") && params[0] < 0.0 {
-        // `_pareto(-y / tau)` with `y = x - max(x) <= 0`: negative for a
-        // negative tau unless every finite element is a maximum.
+        // `_pareto(-y / tau)` with `y = x - max(x) <= 0` (`fatmax`) or
+        // `y = -x - max(-x) = min(x) - x <= 0` (`fatmin`): negative for a
+        // negative tau unless every finite element equals the extremum.
         let neg = if n == 0 {
             false
-        } else {
+        } else if name == "fatmax" {
             x.chunks(n).any(|row| {
                 let m = row.iter().copied().fold(f64::NEG_INFINITY, f64::max);
                 m.is_finite() && row.iter().any(|&v| v < m)
+            })
+        } else {
+            x.chunks(n).any(|row| {
+                let m = row.iter().copied().fold(f64::INFINITY, f64::min);
+                m.is_finite() && row.iter().any(|&v| v > m)
             })
         };
         if neg {

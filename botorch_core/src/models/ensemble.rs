@@ -144,9 +144,9 @@ impl Model for EnsembleMomentsModel {
             for t in 0..m {
                 for p in 0..q {
                     let i = t * q + p;
-                    for k in 0..s {
+                    for (k, &wk) in self.weights.iter().take(s).enumerate() {
                         let j = (k * m + t) * q + p;
-                        dm[i] += self.weights[k] * dy[j];
+                        dm[i] += wk * dy[j];
                         dc[(i, i)] += dvar_dy[j] * dy[j];
                     }
                 }

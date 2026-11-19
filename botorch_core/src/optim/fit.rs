@@ -273,7 +273,8 @@ pub fn fit_gpytorch_mll_scipy(
                     let (v, g) = mll.value_and_grad(&full)?;
                     Ok((-v, free_e.iter().map(|&i| -g[i]).collect()))
                 };
-                lbfgsb_run(f, &x0, &lo, &hi, &element_options, None)?.0
+                let rem = timeout_sec.map(|t| (t - start.elapsed().as_secs_f64()).max(0.0));
+                lbfgsb_run(f, &x0, &lo, &hi, &element_options, rem)?.0
             };
             let mut full = x_e;
             for (j, &i) in free_e.iter().enumerate() {
@@ -287,7 +288,7 @@ pub fn fit_gpytorch_mll_scipy(
     let any_limit = outcomes.iter().any(|r| {
         matches!(
             r.status,
-            LbfgsbStatus::MaxIterations | LbfgsbStatus::MaxEvaluations
+            LbfgsbStatus::MaxIterations | LbfgsbStatus::MaxEvaluations | LbfgsbStatus::CallbackStop
         )
     });
     let status = if converged == n_elements {

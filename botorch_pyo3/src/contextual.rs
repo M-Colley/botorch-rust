@@ -445,8 +445,7 @@ impl PyLCEMGP {
     fn eval_unobserved_means(&self) {
         let model = self.snapshot();
         let mut updated = (*model).clone();
-        updated.eval_unobserved_means();
-        if updated.constant() != model.constant() {
+        if updated.eval_unobserved_means() {
             self.replace(updated);
         }
     }
@@ -546,9 +545,11 @@ impl PyLCEMGP {
     /// (`torch.nn.Embedding(max_norm=1.0)`) to the stored embedding weights.
     fn renorm_embeddings(&self) {
         let model = self.snapshot();
+        if !model.needs_renorm() {
+            return;
+        }
         let mut renormed = (*model).clone();
-        renormed.renorm_embeddings();
-        if renormed.embedding_weights() != model.embedding_weights() {
+        if renormed.renorm_embeddings() {
             self.replace(renormed);
         }
     }

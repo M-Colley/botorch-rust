@@ -23,8 +23,8 @@ use crate::lbfgsb::LbfgsbStatus;
 use crate::optim::discrete::lex_cmp;
 use crate::optim::initializers::{apply_fixed_features, initialize_q_batch};
 use crate::optim::optimize::{
-    default_lbfgsb_options, gen_candidates_lbfgsb, optimize_acqf_detailed, OptimizeAcqfOptions,
-    OptimizerStatus, PostProcessing,
+    check_fixed_features, default_lbfgsb_options, gen_candidates_lbfgsb, optimize_acqf_detailed,
+    OptimizeAcqfOptions, OptimizerStatus, PostProcessing,
 };
 use crate::optim::parameter_constraints::{
     evaluate_feasibility, ParameterConstraints, CONSTRAINT_TOLERANCE,
@@ -133,6 +133,17 @@ pub fn optimize_acqf_mixed(
         ));
     }
     let d = check_bounds(bounds)?;
+    if d != acq_function.dim() {
+        return Err(BotorchError::DimensionMismatch(format!(
+            "bounds have {d} columns but the acquisition function has d = {}",
+            acq_function.dim()
+        )));
+    }
+    if q == 0 || num_restarts == 0 {
+        return Err(BotorchError::InvalidArgument(
+            "q and num_restarts must be positive".into(),
+        ));
+    }
     if q == 1 {
         let n_ff = fixed_features_list.len();
         let timeout = options.timeout_sec.map(|t| t / n_ff as f64);
@@ -140,7 +151,7 @@ pub fn optimize_acqf_mixed(
             .par_iter()
             .map(|ff| {
                 let opts = OptimizeAcqfOptions {
-                    fixed_features: ff.iter().map(|(&k, &v)| (k % d.max(1), v)).collect(),
+                    fixed_features: ff.clone(),
                     timeout_sec: timeout,
                     ..options.clone()
                 };
@@ -308,16 +319,25 @@ pub fn get_nearest_neighbors(
     let d = x.len();
     let mut x_int = x.to_vec();
     for (&dim, values) in discrete_dims {
+        if values.is_empty() || dim >= d {
+            continue;
+        }
         x_int[dim] = closest_index(values, x[dim]) as f64;
     }
     let mut lower: Vec<f64> = (0..d).map(|j| bounds[(0, j)]).collect();
     let mut upper: Vec<f64> = (0..d).map(|j| bounds[(1, j)]).collect();
     for (&dim, values) in discrete_dims {
+        if values.is_empty() || dim >= d {
+            continue;
+        }
         lower[dim] = 0.0;
         upper[dim] = (values.len() - 1) as f64;
     }
     let mut rows: Vec<Vec<f64>> = Vec::with_capacity(2 * discrete_dims.len());
-    for &dim in discrete_dims.keys() {
+    for (&dim, values) in discrete_dims {
+        if values.is_empty() || dim >= d {
+            continue;
+        }
         let mut minus = x_int.clone();
         minus[dim] -= 1.0;
         for j in 0..d {
@@ -325,7 +345,10 @@ pub fn get_nearest_neighbors(
         }
         rows.push(minus);
     }
-    for &dim in discrete_dims.keys() {
+    for (&dim, values) in discrete_dims {
+        if values.is_empty() || dim >= d {
+            continue;
+        }
         let mut plus = x_int.clone();
         plus[dim] += 1.0;
         for j in 0..d {
@@ -338,6 +361,9 @@ pub fn get_nearest_neighbors(
     rows.retain(|r| r != &x_int);
     for r in &mut rows {
         for (&dim, values) in discrete_dims {
+            if values.is_empty() || dim >= d {
+                continue;
+            }
             r[dim] = values[r[dim] as usize];
         }
     }
@@ -357,6 +383,9 @@ pub fn get_categorical_neighbors<R: Rng + ?Sized>(
 ) -> Vec<Vec<f64>> {
     let mut rows: Vec<Vec<f64>> = Vec::new();
     for (&dim, values) in cat_dims {
+        if values.is_empty() || dim >= x.len() {
+            continue;
+        }
         let chosen: Vec<f64> = if values.len() <= max_num_cat_values {
             values.clone()
         } else {
@@ -1039,6 +1068,11 @@ pub fn continuous_step(
                  and relax them if needed. "
             )));
         }
+        for i in 0..b {
+            if !feasible[i] {
+                values[i] = f64::NEG_INFINITY;
+            }
+        }
     }
     let out = Matrix::from_fn(b, d, |i, j| sets[i][(0, j)]);
     Ok((out, values, warnings))
@@ -1086,6 +1120,13 @@ pub fn mixed_problem<'a>(
     x_baseline: Option<Matrix>,
 ) -> Result<(MixedProblem<'a>, DiscreteDims)> {
     let d = check_bounds(bounds)?;
+    if d != acq_function.dim() {
+        return Err(BotorchError::DimensionMismatch(format!(
+            "bounds have {d} columns but the acquisition function has d = {}",
+            acq_function.dim()
+        )));
+    }
+    check_fixed_features(fixed_features, bounds)?;
     if !constraints.nonlinear.is_empty() {
         return Err(BotorchError::Unsupported(
             "`optimize_acqf_mixed_alternating` does not support nonlinear inequality constraints."
@@ -1242,6 +1283,9 @@ pub fn optimize_acqf_mixed_alternating(
     starting_points: Option<&StartingPointsFn<'_>>,
     return_acq_values: bool,
 ) -> Result<MixedAlternatingResult> {
+    if q == 0 {
+        return Err(BotorchError::InvalidArgument("q must be positive".into()));
+    }
     let acq_function = problem.acq_function;
     let d = problem.bounds.ncols();
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed.unwrap_or_else(random_seed));

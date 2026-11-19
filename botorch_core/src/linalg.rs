@@ -59,27 +59,37 @@ impl CholeskyFactor {
         self.l.tr_solve_lower_triangular_unchecked_mut(b);
     }
 
-    /// Returns `L⁻¹ b` for a vector `b`.
-    pub fn solve_lower_vec(&self, b: &Vector) -> Vector {
+    /// Overwrites `b` with `L⁻¹ b` for a vector `b`.
+    pub fn solve_lower_vec_mut(&self, b: &mut Vector) {
         assert_eq!(
             b.len(),
             self.dim(),
             "dimension mismatch in triangular solve"
         );
+        self.l.solve_lower_triangular_unchecked_mut(b);
+    }
+
+    /// Overwrites `b` with `L⁻ᵀ b` for a vector `b`.
+    pub fn solve_lower_transpose_vec_mut(&self, b: &mut Vector) {
+        assert_eq!(
+            b.len(),
+            self.dim(),
+            "dimension mismatch in triangular solve"
+        );
+        self.l.tr_solve_lower_triangular_unchecked_mut(b);
+    }
+
+    /// Returns `L⁻¹ b` for a vector `b`.
+    pub fn solve_lower_vec(&self, b: &Vector) -> Vector {
         let mut out = b.clone();
-        self.l.solve_lower_triangular_unchecked_mut(&mut out);
+        self.solve_lower_vec_mut(&mut out);
         out
     }
 
     /// Returns `L⁻ᵀ b` for a vector `b`.
     pub fn solve_lower_transpose_vec(&self, b: &Vector) -> Vector {
-        assert_eq!(
-            b.len(),
-            self.dim(),
-            "dimension mismatch in triangular solve"
-        );
         let mut out = b.clone();
-        self.l.tr_solve_lower_triangular_unchecked_mut(&mut out);
+        self.solve_lower_transpose_vec_mut(&mut out);
         out
     }
 
@@ -100,20 +110,25 @@ impl CholeskyFactor {
         out
     }
 
-    /// Returns `L⁻¹` (lower triangular), computed by forward substitution that
-    /// exploits the triangular structure of the identity right-hand side.
+    /// Returns `L⁻¹` (lower triangular), computed by column-oriented forward
+    /// substitution that exploits the triangular structure of the identity
+    /// right-hand side and contiguous column slices of `L`.
     pub fn inverse_factor(&self) -> Matrix {
         let n = self.dim();
         let l = &self.l;
         let mut inv = Matrix::zeros(n, n);
         for j in 0..n {
-            inv[(j, j)] = 1.0 / l[(j, j)];
-            for i in (j + 1)..n {
-                let mut s = 0.0;
-                for k in j..i {
-                    s += l[(i, k)] * inv[(k, j)];
+            let mut col = inv.column_mut(j);
+            let col_slice = col.as_mut_slice();
+            col_slice[j] = 1.0;
+            for k in j..n {
+                let val = col_slice[k] / l[(k, k)];
+                col_slice[k] = val;
+                let col_k = l.column(k);
+                let l_col = &col_k.as_slice()[k + 1..];
+                for (dst, &lk) in col_slice[k + 1..].iter_mut().zip(l_col) {
+                    *dst -= lk * val;
                 }
-                inv[(i, j)] = -s / l[(i, i)];
             }
         }
         inv
@@ -144,15 +159,22 @@ impl CholeskyFactor {
         diagonal
     }
 
-    /// Returns `(L Lᵀ)⁻¹`, i.e. the inverse of the (jittered) factorized matrix.
+    /// Returns `(L Lᵀ)⁻¹ = L⁻ᵀ L⁻¹`, exploiting symmetry and lower
+    /// triangularity of `L⁻¹` (`~n³/3` flops over contiguous columns).
     pub fn inverse(&self) -> Matrix {
         let linv = self.inverse_factor();
-        let mut out = linv.transpose() * &linv;
-        // Symmetrize to remove round-off asymmetry.
-        let n = out.nrows();
+        let n = linv.nrows();
+        let mut out = Matrix::zeros(n, n);
         for i in 0..n {
-            for j in (i + 1)..n {
-                let v = 0.5 * (out[(i, j)] + out[(j, i)]);
+            let ci = linv.column(i);
+            let ci_slice = ci.as_slice();
+            for j in i..n {
+                let cj = linv.column(j);
+                let v: f64 = ci_slice[j..]
+                    .iter()
+                    .zip(&cj.as_slice()[j..])
+                    .map(|(&a, &b)| a * b)
+                    .sum();
                 out[(i, j)] = v;
                 out[(j, i)] = v;
             }
@@ -211,7 +233,8 @@ impl CholeskyFactor {
 /// Attempts a plain Cholesky factorization, returning `None` if `a` is not
 /// numerically positive definite.
 fn try_cholesky(a: &Matrix) -> Option<Matrix> {
-    Cholesky::new(a.clone()).map(|c| c.unpack())
+    let l = Cholesky::new(a.clone())?.unpack();
+    l.diagonal().iter().all(|v| v.is_finite()).then_some(l)
 }
 
 /// Cholesky factorization that adds jitter to the diagonal on failure,

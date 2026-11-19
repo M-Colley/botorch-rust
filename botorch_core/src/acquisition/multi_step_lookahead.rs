@@ -710,7 +710,7 @@ impl QMultiStepLookahead {
             .collect::<Result<_>>()?;
         let qn = self.batch_sizes[j];
         let mut out = Vec::with_capacity(f);
-        for i in 0..f {
+        for (i, &w_i) in self.weights[j].iter().take(f).enumerate() {
             let child_nu = i * count + nu;
             let mut gps = Vec::with_capacity(node.gps.len());
             for (t, g) in node.gps.iter().enumerate() {
@@ -728,7 +728,7 @@ impl QMultiStepLookahead {
                 child_nu,
                 Node {
                     gps,
-                    weight: node.weight * self.weights[j][i],
+                    weight: node.weight * w_i,
                     x: x.rows(first, qn).into_owned(),
                     x_rows,
                     appended_rows: Arc::clone(&rows),

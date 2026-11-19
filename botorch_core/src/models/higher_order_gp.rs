@@ -28,7 +28,7 @@
 //!   Cholesky factors).
 
 use std::ops::Range;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use nalgebra::SymmetricEigen;
 use rand::rngs::StdRng;
@@ -219,7 +219,7 @@ pub struct HigherOrderGP {
     raw: Vec<f64>,
     kernel_offsets: Vec<Range<usize>>,
     latent_offsets: Vec<Range<usize>>,
-    cache: OnceLock<std::result::Result<Cache, BotorchError>>,
+    cache: Arc<OnceLock<std::result::Result<Cache, BotorchError>>>,
 }
 
 impl HigherOrderGP {
@@ -387,7 +387,7 @@ impl HigherOrderGP {
             raw,
             kernel_offsets,
             latent_offsets,
-            cache: OnceLock::new(),
+            cache: Arc::new(OnceLock::new()),
         })
     }
 
@@ -419,7 +419,7 @@ impl HigherOrderGP {
             ));
         }
         self.raw = raw.to_vec();
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 

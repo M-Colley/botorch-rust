@@ -73,12 +73,32 @@ impl ProximalAcquisitionFunction {
                 "Proximal acquisition function requires `X_pending` to be None.".into(),
             ));
         }
-        if proximal_weights.len() != last_x.len() {
+        if proximal_weights.len() != last_x.len() || last_x.len() != base.dim() {
             return Err(BotorchError::InvalidArgument(
                 "`proximal_weights` must be a one dimensional tensor with same feature \
                  dimension as model."
                     .into(),
             ));
+        }
+        if proximal_weights
+            .iter()
+            .any(|&w| !(w.is_finite() && w > 0.0))
+        {
+            return Err(BotorchError::InvalidArgument(
+                "`proximal_weights` must be positive and finite.".into(),
+            ));
+        }
+        if last_x.iter().any(|v| !v.is_finite()) {
+            return Err(BotorchError::InvalidArgument(
+                "`last_x` must be finite.".into(),
+            ));
+        }
+        if let Some(b) = beta {
+            if !(b.is_finite() && b > 0.0) {
+                return Err(BotorchError::InvalidArgument(
+                    "`beta` must be positive and finite.".into(),
+                ));
+            }
         }
         Ok(Self {
             base,
@@ -159,7 +179,12 @@ impl AcquisitionFunction for ProximalAcquisitionFunction {
     }
 
     fn set_x_pending(&self, x_pending: Option<&Matrix>) -> Result<()> {
-        self.base.set_x_pending(x_pending)
+        if x_pending.is_some() {
+            return Err(BotorchError::Unsupported(
+                "Proximal acquisition function requires `X_pending` to be None.".into(),
+            ));
+        }
+        self.base.set_x_pending(None)
     }
 
     fn x_pending(&self) -> Option<Matrix> {
@@ -289,7 +314,11 @@ impl AcquisitionFunction for FixedFeatureAcquisitionFunction {
     }
 
     fn x_pending(&self) -> Option<Matrix> {
-        self.base.x_pending()
+        let p = self.base.x_pending()?;
+        let free = self.free_columns();
+        Some(Matrix::from_fn(p.nrows(), free.len(), |i, j| {
+            p[(i, free[j])]
+        }))
     }
 
     /// Sets the full pending points of the base acquisition function
@@ -424,7 +453,14 @@ impl PriorGuidedAcquisitionFunction {
                     (p * e, e)
                 } else {
                     let pe = p.powf(e);
-                    (pe, if p == 0.0 { 0.0 } else { e * pe / p })
+                    let dp = if e == 1.0 {
+                        1.0
+                    } else if p == 0.0 {
+                        0.0
+                    } else {
+                        e * pe / p
+                    };
+                    (pe, dp)
                 }
             })
             .unzip();

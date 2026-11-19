@@ -401,6 +401,15 @@ impl Standardize {
         yvar: Option<&Matrix>,
     ) -> Result<(Matrix, Option<Matrix>)> {
         self.check_trained(y.ncols())?;
+        if let Some(v) = yvar {
+            if v.shape() != y.shape() {
+                return Err(BotorchError::DimensionMismatch(format!(
+                    "Yvar has shape {:?} but Y has shape {:?}",
+                    v.shape(),
+                    y.shape()
+                )));
+            }
+        }
         let y_utf = Matrix::from_fn(y.nrows(), y.ncols(), |i, j| {
             self.means[j] + self.stdvs[j] * y[(i, j)]
         });

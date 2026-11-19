@@ -96,7 +96,7 @@ class ExpMAStoppingCriterion:
             import torch
 
             history = getattr(self, "_tensor_history", [])
-            history = history[-self.n_window :] + [fvals.detach()]
+            history = history[-self.n_window :] + [fvals.detach().clone()]
             self._tensor_history = history
             if len(history) < self.n_window + 1:
                 return False

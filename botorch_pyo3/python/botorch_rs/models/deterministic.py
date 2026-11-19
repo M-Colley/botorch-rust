@@ -348,7 +348,7 @@ class AffineDeterministicModel(DeterministicModel):
                 import torch
 
                 if isinstance(X, torch.Tensor):
-                    b = torch.as_tensor(self._b, dtype=X.dtype)
+                    b = torch.as_tensor(self._b, dtype=X.dtype, device=X.device)
                     return b + torch.einsum("...d,dm", X, self.a.to(X))
             except ImportError:  # pragma: no cover
                 pass

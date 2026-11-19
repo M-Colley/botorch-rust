@@ -119,6 +119,8 @@ struct NehviState {
     cached: Option<Arc<CachedRoot>>,
 }
 
+type JointBaseCache = HashMap<usize, (Arc<Matrix>, Arc<Matrix>)>;
+
 /// The NEHVI state machine shared by qNEHVI and qLogNEHVI.
 #[derive(Debug)]
 pub(crate) struct NehviCore {
@@ -129,8 +131,9 @@ pub(crate) struct NehviCore {
     /// baseline without an evaluation since (it is reused if the baseline
     /// has to be sampled again without a base sampler).
     sampler_unbatched: Mutex<Option<(usize, Arc<Matrix>)>>,
-    /// Base samples of `[baseline; new points]` per number of new points.
-    joint_base: Mutex<HashMap<usize, Arc<Matrix>>>,
+    /// Base samples of `[baseline; new points]` per number of new points,
+    /// paired with the sampler's underlying draw to detect `set_base_samples`.
+    joint_base: Mutex<JointBaseCache>,
 }
 
 /// How the samples of the new points were computed (for the backward pass).
@@ -401,10 +404,14 @@ impl NehviCore {
         }
         // Posterior points of the cached points.
         let n = js.num_points();
-        let caches = gps
-            .iter()
-            .map(|g| g.baseline_cache(x_cached))
-            .collect::<Result<Vec<_>>>()?;
+        let mut caches = Vec::with_capacity(gps.len());
+        for g in &gps {
+            match g.baseline_cache(x_cached) {
+                Ok(c) => caches.push(c),
+                Err(BotorchError::Unsupported(_)) => return Ok(None),
+                Err(e) => return Err(e),
+            }
+        }
         let s = z.nrows();
         let zbt = (0..m)
             .map(|t| Matrix::from_fn(n, s, |b, c| z[(c, b * m + t)]))
@@ -580,22 +587,24 @@ impl NehviCore {
     /// The base samples of `[cached points; q_new new points]`: the cached
     /// points' followed by rows `N..` of the draw for all points.
     fn joint_base(&self, st: &NehviState, q_new: usize) -> Result<Arc<Matrix>> {
-        let mut cache = self.joint_base.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(z) = cache.get(&q_new) {
-            return Ok(Arc::clone(z));
-        }
         let m = self.m();
         let n = st.x_cached.nrows();
         let all = self.mc.sampler.base_samples((n + q_new) * self.nw() * m)?;
+        let mut cache = self.joint_base.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_all, z)) = cache.get(&q_new) {
+            if Arc::ptr_eq(cached_all, &all) {
+                return Ok(Arc::clone(z));
+            }
+        }
         let z = match &st.base_z {
             Some(b) if n > 0 => {
                 let mut z = (*all).clone();
                 z.columns_mut(0, b.ncols()).copy_from(b.as_ref());
                 Arc::new(z)
             }
-            _ => all,
+            _ => Arc::clone(&all),
         };
-        cache.insert(q_new, Arc::clone(&z));
+        cache.insert(q_new, (all, Arc::clone(&z)));
         Ok(z)
     }
 

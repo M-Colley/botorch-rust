@@ -213,7 +213,7 @@ impl QLogNParEGO {
             Some(y) => y,
             None => {
                 let post = model.posterior(x_baseline, false)?;
-                let (n, m) = (x_baseline.nrows(), model.num_outputs());
+                let (n, m) = (post.num_points(), post.num_outputs());
                 let post_mean = if post.is_transformed() {
                     post.moments()?.0
                 } else {

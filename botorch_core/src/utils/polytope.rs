@@ -81,6 +81,23 @@ pub fn find_interior_point(
     equality: Option<(&Matrix, &Vector)>,
 ) -> Result<Vector> {
     let d = a.ncols();
+    if a.nrows() != b.len() {
+        return Err(BotorchError::InvalidArgument(format!(
+            "inequality constraints must be (A: k x {d}, b: k), got {}x{d} and {}",
+            a.nrows(),
+            b.len()
+        )));
+    }
+    if let Some((aeq, beq)) = equality {
+        if aeq.ncols() != d || aeq.nrows() != beq.len() {
+            return Err(BotorchError::InvalidArgument(format!(
+                "equality constraints must be (A_eq: k x {d}, b_eq: k), got {}x{} and {}",
+                aeq.nrows(),
+                aeq.ncols(),
+                beq.len()
+            )));
+        }
+    }
     let solve = |bounded: bool| -> std::result::Result<Vector, microlp::Error> {
         let mut problem = Problem::new(OptimizationDirection::Minimize);
         let x: Vec<_> = (0..d)
@@ -147,6 +164,15 @@ pub fn sample_polytope(
     n_thinning: usize,
     seed: Option<u64>,
 ) -> Result<Matrix> {
+    if a.nrows() != b.len() || a.ncols() != x0.len() {
+        return Err(BotorchError::InvalidArgument(format!(
+            "sample_polytope shape mismatch: A is {}x{}, b has length {}, x0 has length {}",
+            a.nrows(),
+            a.ncols(),
+            b.len(),
+            x0.len()
+        )));
+    }
     let slack0 = a * x0 - b;
     if slack0.iter().any(|&v| v.is_nan() || v > 0.0) {
         return Err(BotorchError::Infeasibility(format!(
@@ -310,13 +336,39 @@ impl HitAndRunPolytopeSampler {
                     bd.ncols()
                 )));
             }
+            if bd.iter().any(|v| v.is_nan()) {
+                return Err(BotorchError::InvalidArgument(
+                    "bounds must not contain NaN".into(),
+                ));
+            }
+            if (0..d).any(|k| bd[(0, k)] > bd[(1, k)]) {
+                return Err(BotorchError::Infeasibility(
+                    "No feasible point found. Lower bounds exceed upper bounds.".into(),
+                ));
+            }
+        }
+        if let Some(p) = &interior_point {
+            if p.len() != d {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "interior_point must have length {d}, got {}",
+                    p.len()
+                )));
+            }
         }
         let (mut inequality, mut equality, mut interior_point) =
             (inequality, equality, interior_point);
         let mut offset = None;
         let mut scale = None;
         let mut unit_bounds = bounds.cloned();
-        if let (Some(bd), true) = (bounds, inequality.is_some() || equality.is_some()) {
+        let can_normalize_bounds = bounds.is_some_and(|bd| {
+            (0..d).all(|k| {
+                bd[(0, k)].is_finite() && bd[(1, k)].is_finite() && bd[(0, k)] < bd[(1, k)]
+            })
+        });
+        if let (Some(bd), true) = (
+            bounds,
+            can_normalize_bounds && (inequality.is_some() || equality.is_some()),
+        ) {
             // normalize_dense_linear_constraints: A (u - l), b - A l.
             let lower = bd.row(0).transpose();
             let upper = bd.row(1).transpose();
@@ -417,7 +469,9 @@ impl HitAndRunPolytopeSampler {
         } else {
             0
         };
-        let shifted_b = &self.b - &self.a * &self.x0;
+        let shifted_b =
+            (&self.b - &self.a * &self.x0)
+                .map(|v| if (-1e-12..0.0).contains(&v) { 0.0 } else { v });
         let transformed = sample_polytope(
             &self.new_a,
             &shifted_b,

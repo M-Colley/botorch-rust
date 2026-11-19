@@ -19,8 +19,8 @@ def _mask_arg(mask: Any) -> tuple[list[bool], list[int]] | None:
         return None
     if is_torch_tensor(mask):
         return [bool(v) for v in mask.reshape(-1).tolist()], list(mask.shape)
-    rows = [[bool(v) for v in row] for row in (mask.tolist() if hasattr(mask, "tolist") else mask)]
-    return [v for r in rows for v in r], [len(rows), len(rows[0]) if rows else 0]
+    data, shape = to_flat(mask, "X_evaluation_mask")
+    return [bool(v) for v in data], list(shape)
 
 
 def _utility_args(X: Any, deltas: Any) -> tuple[Flat, Flat]:

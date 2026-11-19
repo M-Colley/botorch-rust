@@ -35,6 +35,9 @@ const DEFAULT_WEIGHT_BITS: [u32; 10] = [
 /// The float32 points of `torch.linspace(start, end, steps)` (torch's
 /// symmetric formula).
 fn linspace_f32(start: f32, end: f32, steps: usize) -> Vec<f32> {
+    if steps == 0 {
+        return Vec::new();
+    }
     if steps == 1 {
         return vec![start];
     }
@@ -54,6 +57,9 @@ fn linspace_f32(start: f32, end: f32, steps: usize) -> Vec<f32> {
 /// The normalized float32 weights `exp(linspace(-eta, 0, n_window))`; for
 /// the defaults (`eta = 1`, `n_window = 10`) torch's exact values.
 pub fn expma_weights(eta: f64, n_window: usize) -> Vec<f64> {
+    if n_window == 0 {
+        return Vec::new();
+    }
     if eta == 1.0 && n_window == 10 {
         return DEFAULT_WEIGHT_BITS
             .iter()
@@ -125,7 +131,7 @@ impl ExpMaStoppingCriterion {
 impl StoppingCriterion for ExpMaStoppingCriterion {
     fn evaluate(&mut self, fvals: &[f64]) -> bool {
         self.iter += 1;
-        if self.iter == self.maxiter {
+        if self.maxiter == 0 || self.iter == self.maxiter {
             return true;
         }
         // Keep the last `n_window + 1` values.

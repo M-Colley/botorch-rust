@@ -106,16 +106,25 @@ class DecoupledAcquisitionFunction(AcquisitionFunction, ABC):
 
             X_evaluation_mask = self.X_evaluation_mask
             n = _shape(X)[-2]
+            dev = (
+                X.device
+                if is_torch_tensor(X)
+                else (
+                    self.X_pending_evaluation_mask.device
+                    if is_torch_tensor(self.X_pending_evaluation_mask)
+                    else None
+                )
+            )
             if X_evaluation_mask is None:
-                X_evaluation_mask = torch.ones(n, self.num_outputs, dtype=torch.bool)
+                X_evaluation_mask = torch.ones(n, self.num_outputs, dtype=torch.bool, device=dev)
             elif _shape(X_evaluation_mask)[0] != n:
                 raise BotorchTensorDimensionError(
                     "Expected the -2 dimension of X and X_evaluation_mask to match."
                 )
             return torch.cat(
                 [
-                    torch.as_tensor(X_evaluation_mask, dtype=torch.bool),
-                    torch.as_tensor(self.X_pending_evaluation_mask, dtype=torch.bool),
+                    torch.as_tensor(X_evaluation_mask, dtype=torch.bool, device=dev),
+                    torch.as_tensor(self.X_pending_evaluation_mask, dtype=torch.bool, device=dev),
                 ],
                 dim=-2,
             )

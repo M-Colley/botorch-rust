@@ -81,13 +81,39 @@ impl LinearEllipticalSliceSampler {
                 "Provide either covariance_matrix or covariance_root, not both.".into(),
             ));
         }
+        if mean.as_ref().is_some_and(|m| m.len() != d)
+            || covariance_matrix
+                .as_ref()
+                .is_some_and(|c| c.shape() != (d, d))
+            || covariance_root.as_ref().is_some_and(|r| match r {
+                CovarianceRoot::Lower(l) => l.shape() != (d, d),
+                CovarianceRoot::Diagonal(v) => v.len() != d,
+            })
+        {
+            return Err(BotorchError::InvalidArgument(
+                "inconsistent shapes of the mean and the covariance".into(),
+            ));
+        }
         let mut az = a.clone();
         let mut bz = b.clone();
         let mut mean = mean;
         let mut cov = covariance_matrix;
         let mut root = covariance_root;
         let mut fixed = None;
-        if let Some(fixed_indices) = fixed_indices {
+        if let Some(mut fixed_indices) = fixed_indices {
+            if fixed_indices.iter().any(|&i| i >= d) {
+                return Err(BotorchError::InvalidArgument(format!(
+                    "fixed_indices cannot exceed dimension {d}"
+                )));
+            }
+            fixed_indices.sort_unstable();
+            let orig_len = fixed_indices.len();
+            fixed_indices.dedup();
+            if fixed_indices.len() != orig_len {
+                return Err(BotorchError::InvalidArgument(
+                    "fixed_indices must be unique".into(),
+                ));
+            }
             // A dense root must be diagonal.
             if let Some(CovarianceRoot::Lower(l)) = &root {
                 let is_diag =

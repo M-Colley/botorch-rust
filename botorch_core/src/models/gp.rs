@@ -1296,6 +1296,11 @@ impl SingleTaskGP {
         Ok(&self.cache()?.chol)
     }
 
+    /// The cached `(K(X, X) + noise)⁻¹ (y_tf - μ)` solve of the training set.
+    pub(crate) fn train_alpha(&self) -> Result<&Vector> {
+        Ok(&self.cache()?.alpha)
+    }
+
     /// Leave-one-out means and variances at the training points, in the
     /// transformed outcome space, without refitting hyperparameters.
     ///
@@ -1432,6 +1437,84 @@ impl SingleTaskGP {
             ObservationNoise::None
         };
         self.posterior_impl(x, noise, TransformMode::Eval)
+    }
+
+    /// [`SingleTaskGP::posterior`] without observation noise together with the
+    /// diagonal noise variances `(Σ_noisy - Σ_noiseless)_ii` added by
+    /// `posterior(x, true)`, computed from a single posterior pass.
+    pub(crate) fn posterior_and_noise_diag(&self, x: &Matrix) -> Result<(Posterior, Vec<f64>)> {
+        let xt = self.transform_inputs_mode(x, TransformMode::Eval)?;
+        let cache = self.cache()?;
+        let q = xt.nrows();
+        let xs = cache.kernel.prepare(&xt)?;
+        let kxs = cache.kernel.cross(&xs, &cache.train_scaled);
+        let mut cov_tf = cache.kernel.symmetric(&xs);
+        let mean_tf = (&kxs * &cache.alpha).add_scalar(self.constant());
+        let mut v = kxs.transpose();
+        cache.chol.solve_lower_mut(&mut v);
+        cov_tf.gemm_tr(-1.0, &v, &v, 1.0);
+        let diagonal: Vec<f64> = cov_tf.diagonal().iter().copied().collect();
+        let noise_tf = self.observation_noise_diagonal(&xt, &diagonal);
+        let (aff, samples) = self.outcome_parts(&xt)?;
+        let noise_diag: Vec<f64> = (0..q)
+            .map(|i| {
+                let s = aff.scale(i);
+                let noisy = s * (diagonal[i] + noise_tf[i]) * s;
+                let noiseless = s * diagonal[i] * s;
+                noisy - noiseless
+            })
+            .collect();
+        let (mean, cov) = match aff {
+            PointAffine::Constant(mu, sd) => {
+                (mean_tf.map(|m| mu + sd * m), cov_tf.map(|c| sd * c * sd))
+            }
+            PointAffine::PerPoint(_) => (
+                Vector::from_fn(q, |i, _| {
+                    let (o, s) = aff.at(i);
+                    o + s * mean_tf[i]
+                }),
+                Matrix::from_fn(q, q, |i, j| aff.scale(i) * cov_tf[(i, j)] * aff.scale(j)),
+            ),
+        };
+        Ok((
+            Posterior::single_output(mean, cov)
+                .with_sample_transform(SampleTransform::new(vec![samples], q)),
+            noise_diag,
+        ))
+    }
+
+    /// The diagonal `(Σ_noisy - Σ_noiseless)_ii` added by `posterior(x, true)`
+    /// in `O(q n)` marginal time without forming the `q × q` covariance matrix.
+    pub(crate) fn noise_diagonal(&self, x: &Matrix) -> Result<Vector> {
+        let xt = self.transform_inputs_mode(x, TransformMode::Eval)?;
+        let cache = self.cache()?;
+        let q = xt.nrows();
+        let xs = cache.kernel.prepare(&xt)?;
+        let (aff, _) = self.outcome_parts(&xt)?;
+        if self.sparse_outlier_noise.is_none() {
+            let mut v = cache.kernel.cross(&xs, &cache.train_scaled).transpose();
+            cache.chol.solve_lower_mut(&mut v);
+            let n_tf = self.observation_noise_transformed();
+            return Ok(Vector::from_fn(q, |i, _| {
+                let vi = v.column(i);
+                let var_tf = cache.kernel.diag(&xs, i) - vi.dot(&vi);
+                let s = aff.scale(i);
+                s * (var_tf + n_tf) * s - s * var_tf * s
+            }));
+        }
+        let mut v = cache.kernel.cross(&xs, &cache.train_scaled).transpose();
+        cache.chol.solve_lower_mut(&mut v);
+        let var_tf: Vec<f64> = (0..q)
+            .map(|i| {
+                let vi = v.column(i);
+                cache.kernel.diag(&xs, i) - vi.dot(&vi)
+            })
+            .collect();
+        let noise_tf = self.observation_noise_diagonal(&xt, &var_tf);
+        Ok(Vector::from_fn(q, |i, _| {
+            let s = aff.scale(i);
+            s * (var_tf[i] + noise_tf[i]) * s - s * var_tf[i] * s
+        }))
     }
 
     /// [`SingleTaskGP::posterior`] with the input transform in `mode` and
@@ -1579,11 +1662,12 @@ impl SingleTaskGP {
         let (k, dk) = cache.kernel.cross_with_grad(&xs, 0, &cache.train_scaled);
         let mean_tf = self.constant() + k.dot(&cache.alpha);
         let dmean_tf = dk.tr_mul(&cache.alpha);
-        let v = cache.chol.solve_lower_vec(&k);
+        let mut v = k;
+        cache.chol.solve_lower_vec_mut(&mut v);
         let (kdiag, dkdiag) = cache.kernel.diag_with_grad(&xs, 0);
         let var_tf = kdiag - v.dot(&v);
-        let w = cache.chol.solve_lower_transpose_vec(&v);
-        let mut dvar_tf = dk.tr_mul(&w) * -2.0;
+        cache.chol.solve_lower_transpose_vec_mut(&mut v);
+        let mut dvar_tf = dk.tr_mul(&v) * -2.0;
         if let Some(g) = dkdiag {
             dvar_tf += g;
         }
@@ -1782,12 +1866,17 @@ impl SingleTaskGP {
         let mut mean = Vector::zeros(b);
         let mut var = Vector::zeros(b);
         let mut var_tf = vec![0.0; b];
+        let mut v = kxs.transpose();
+        let c = self.constant();
         for i in 0..b {
             let (mu, sd) = aff.at(i);
-            let k = kxs.row(i).transpose();
-            mean[i] = mu + sd * (self.constant() + k.dot(&cache.alpha));
-            let v = cache.chol.solve_lower_vec(&k);
-            var_tf[i] = cache.kernel.diag(&xs, i) - v.dot(&v);
+            mean[i] = mu + sd * (c + v.column(i).dot(&cache.alpha));
+        }
+        cache.chol.solve_lower_mut(&mut v);
+        for i in 0..b {
+            let (_, sd) = aff.at(i);
+            let vi = v.column(i);
+            var_tf[i] = cache.kernel.diag(&xs, i) - vi.dot(&vi);
             var[i] = sd * sd * var_tf[i];
         }
         if observation_noise {

@@ -103,8 +103,9 @@ class EnsembleModel(Model):
         if is_torch_tensor(kwargs.get("observation_noise")):
             raise UnsupportedError("Ensemble models do not support observation noise.")
         values = self._forward(X)
-        if hasattr(self, "outcome_transform"):
-            values, _ = self.outcome_transform.untransform(values, X=X)
+        outcome_tf = getattr(self, "outcome_transform", None)
+        if outcome_tf is not None:
+            values, _ = outcome_tf.untransform(values, X=X)
         if output_indices is not None:
             values = values[..., output_indices]
         posterior = EnsemblePosterior(values=values, weights=self.ensemble_weights)

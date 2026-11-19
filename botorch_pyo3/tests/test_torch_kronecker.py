@@ -176,6 +176,7 @@ def test_training_query_parameter_first_and_mixed_second_gradients(device):
 def test_matheron_base_layout_actual_joint_sample_law_and_second_derivatives(
     device, observation_noise
 ):
+    torch.manual_seed(0)
     X, Y, Q = data(device)
     X.requires_grad_()
     Y.requires_grad_()

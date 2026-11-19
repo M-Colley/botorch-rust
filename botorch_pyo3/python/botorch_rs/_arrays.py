@@ -105,12 +105,20 @@ def kind_from_dtype(dtype: Any = None, device: Any = None) -> ArrayKind:
     been imported (BoTorch's default ``dtype=torch.double``), else lists.
     """
     torch = _torch()
+    norm_dev = torch.device(device) if torch is not None and isinstance(device, str) else device
     if dtype is None:
         if torch is not None:
-            return ArrayKind("torch", torch.float64, device)
+            return ArrayKind("torch", torch.float64, norm_dev)
         return LIST
+    if (
+        torch is not None
+        and isinstance(dtype, str)
+        and dtype in ("float64", "double", "float32", "float")
+    ):
+        tdtype = getattr(torch, dtype)
+        return ArrayKind("torch", tdtype, norm_dev)
     if torch is not None and isinstance(dtype, torch.dtype):
-        return ArrayKind("torch", dtype if dtype.is_floating_point else None, device)
+        return ArrayKind("torch", dtype if dtype.is_floating_point else None, norm_dev)
     np = _numpy()
     if np is not None:
         try:
@@ -233,7 +241,8 @@ def from_flat(data: Sequence[float], shape: Sequence[int], kind: ArrayKind) -> A
         # torch was imported for the input, so this is normally a dict lookup.
         torch = _torch() or importlib.import_module("torch")
         dtype = kind.dtype or torch.float64
-        device = kind.device if kind.device is not None and kind.device.type != "cpu" else None
+        dev = torch.device(kind.device) if isinstance(kind.device, str) else kind.device
+        device = dev if dev is not None and dev.type != "cpu" else None
         if isinstance(data, list):
             values: list[Any] = data
         elif isinstance(data, array):
@@ -274,8 +283,9 @@ def bool_array(data: Sequence[bool] | bytes, shape: Sequence[int], kind: ArrayKi
             t = torch.frombuffer(bytearray(data), dtype=torch.uint8).reshape(shape) != 0
         else:
             t = torch.tensor([bool(v) for v in data], dtype=torch.bool).reshape(shape)
-        if kind.device is not None and kind.device.type != "cpu":
-            t = t.to(kind.device)
+        dev = torch.device(kind.device) if isinstance(kind.device, str) else kind.device
+        if dev is not None and dev.type != "cpu":
+            t = t.to(dev)
         return t
     if kind.lib == "numpy":
         np = _numpy() or importlib.import_module("numpy")
@@ -310,6 +320,8 @@ def as_float(x: Any, name: str) -> float:
 
 def shape_of(x: Any) -> tuple[int, ...]:
     """The shape of an array or nested list."""
+    if is_torch_tensor(x) or _is_numpy(x):
+        return tuple(int(s) for s in x.shape)
     return to_flat(x)[1]
 
 

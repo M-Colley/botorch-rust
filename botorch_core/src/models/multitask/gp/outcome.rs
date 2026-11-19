@@ -35,7 +35,7 @@ impl MultiTaskGP {
         self.train_y = raw_y;
         self.train_yvar = raw_variance;
         self.outcome_transform = Some(transform);
-        self.cache = OnceLock::new();
+        self.cache = OnceLock::new().into();
         Ok(())
     }
 }

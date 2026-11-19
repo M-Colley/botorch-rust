@@ -139,6 +139,8 @@ def recording_numpyro(rec: Recording, fixed_warping: bool = False) -> Iterator[R
         for cls in (fb.MaternPyroModel, fb.SaasPyroModel, fb.LinearPyroModel)
     }
     orig_warp = fb.PyroModel._warp_jax
+    orig_compute_dists = fb.compute_dists
+    orig_mt_compute_dists = getattr(fbmt, "compute_dists", None)
     orig_load = {
         cls: cls.__dict__["load_mcmc_samples"]
         for cls in (fb.AbstractFullyBayesianSingleTaskGP, fbmt.SaasFullyBayesianMultiTaskGP)
@@ -177,6 +179,15 @@ def recording_numpyro(rec: Recording, fixed_warping: bool = False) -> Iterator[R
         warped = 1 - (1 - X_sub**c1) ** c0
         return X.at[:, indices].set(warped)
 
+    def compute_dists_exact(X: Any, lengthscale: Any) -> Any:
+        # Materialize `X / lengthscale` before pairwise subtraction so XLA
+        # (>= JAX 0.11) does not fuse one broadcast arm as `X * (1 / l)` and
+        # make diagonal `scaled_X[i] - scaled_X[i]` nonzero for tiny `l`.
+        scaled_X = jax.lax.optimization_barrier(X / lengthscale)
+        diff = jnp.expand_dims(scaled_X, -2) - jnp.expand_dims(scaled_X, -3)
+        sq_dists = jnp.sum(diff**2, axis=-1)
+        return jnp.sqrt(jnp.maximum(sq_dists, 1e-30))
+
     hmc_mod.random = hmc_util.random = RandomProxy()
     hmc_mod.HMC.init, hmc_mod.HMC.sample = init, sample
     for cls in orig_post:
@@ -185,6 +196,9 @@ def recording_numpyro(rec: Recording, fixed_warping: bool = False) -> Iterator[R
         cls.load_mcmc_samples = make_load(cls)
     if fixed_warping:
         fb.PyroModel._warp_jax = warp_fixed
+        fb.compute_dists = compute_dists_exact
+        if orig_mt_compute_dists is not None:
+            fbmt.compute_dists = compute_dists_exact
     try:
         yield rec
     finally:
@@ -193,6 +207,9 @@ def recording_numpyro(rec: Recording, fixed_warping: bool = False) -> Iterator[R
         for cls, fn in orig_post.items():
             cls.postprocess_mcmc_samples = fn
         fb.PyroModel._warp_jax = orig_warp
+        fb.compute_dists = orig_compute_dists
+        if orig_mt_compute_dists is not None:
+            fbmt.compute_dists = orig_mt_compute_dists
         for cls, fn in orig_load.items():
             cls.load_mcmc_samples = fn
 

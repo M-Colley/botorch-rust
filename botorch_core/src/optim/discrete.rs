@@ -84,9 +84,8 @@ fn is_avoided(x: &[f64], avoid: &[Vec<f64>]) -> bool {
 /// parallel.
 fn point_values(acq_function: &dyn AcquisitionFunction, xs: &[Vec<f64>]) -> Result<Vec<f64>> {
     let d = acq_function.dim();
-    xs.par_iter()
-        .map(|x| acq_function.forward(&Matrix::from_row_slice(1, d, x)))
-        .collect()
+    let sets: Vec<Matrix> = xs.iter().map(|x| Matrix::from_row_slice(1, d, x)).collect();
+    acq_function.forward_many(&sets)
 }
 
 /// Appends `rows` to the base pending points.
@@ -392,6 +391,9 @@ pub fn optimize_acqf_discrete_local_search<R: Rng + ?Sized>(
     return_acq_values: bool,
     rng: &mut R,
 ) -> Result<DiscreteResult> {
+    if q == 0 {
+        return Err(BotorchError::InvalidArgument("q must be positive".into()));
+    }
     let dim = discrete_choices.len();
     if dim != acq_function.dim() {
         return Err(BotorchError::DimensionMismatch(format!(

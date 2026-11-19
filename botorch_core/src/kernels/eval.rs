@@ -940,6 +940,9 @@ fn build_node(spec: &KernelNode, cur: &mut Cursor<'_>, parent_dim: usize) -> Res
             };
             finite(&offset, "offset")?;
             finite(&c1, "first-order coefficients")?;
+            if let Some(ref c2) = c2 {
+                finite(c2, "second-order coefficients")?;
+            }
             let base = &spec.children()[0];
             let KernelType::Stationary(kind) = base.kind() else {
                 return Err(BotorchError::Unsupported(
@@ -1210,6 +1213,37 @@ impl Node {
                     kid.training_nan(&local, n, k, grad, out);
                 }
             }
+            NodeKind::Heterogeneous {
+                task_feature,
+                binary_map,
+                spatial,
+                combinatorial,
+                use_combinatorial,
+            } => {
+                for child in spatial {
+                    child.training_nan(&local, n, k, grad, out);
+                }
+                if *use_combinatorial {
+                    let count = spatial.len();
+                    let mut binary = Vec::with_capacity(n * count);
+                    let mut ok = true;
+                    for i in 0..n {
+                        let value = local[i * k + task_feature];
+                        if !value.is_finite()
+                            || value < 0.0
+                            || value.fract() != 0.0
+                            || value >= binary_map.len() as f64
+                        {
+                            ok = false;
+                            break;
+                        }
+                        binary.extend(binary_map[value as usize].iter().map(|&v| f64::from(v)));
+                    }
+                    if ok {
+                        combinatorial.training_nan(&binary, n, count, grad, out);
+                    }
+                }
+            }
             NodeKind::Ltf {
                 nonfid,
                 unbiased,
@@ -1242,6 +1276,16 @@ impl Node {
     fn visit_index<F: FnMut(&IndexState) -> Result<()>>(&self, f: &mut F) -> Result<()> {
         match &self.kind {
             NodeKind::Index(st) => f(st),
+            NodeKind::Heterogeneous {
+                spatial,
+                combinatorial,
+                ..
+            } => {
+                for child in spatial {
+                    child.visit_index(f)?;
+                }
+                combinatorial.visit_index(f)
+            }
             NodeKind::Ltf {
                 unbiased, biased, ..
             } => {
@@ -1640,6 +1684,24 @@ impl Node {
                 }
                 v
             }
+            NodeKind::Heterogeneous {
+                binary_map,
+                spatial,
+                combinatorial,
+                use_combinatorial,
+                ..
+            } => {
+                let mask = &binary_map[a.aux[i] as usize];
+                let mut value = if *use_combinatorial {
+                    combinatorial.diag_mode(&a.kids[spatial.len()], i)
+                } else {
+                    0.0
+                };
+                for (c, child) in spatial.iter().enumerate() {
+                    value += child.diag_mode(&a.kids[c], i) * f64::from(mask[c]);
+                }
+                value
+            }
             NodeKind::Ltf {
                 fid,
                 power,
@@ -1678,6 +1740,50 @@ impl Node {
     fn diag_mode_grad(&self, a: &NodePrep, i: usize) -> (f64, Vector) {
         let k = self.k;
         match &self.kind {
+            NodeKind::Heterogeneous {
+                binary_map,
+                spatial,
+                combinatorial,
+                use_combinatorial,
+                ..
+            } => {
+                let mask = &binary_map[a.aux[i] as usize];
+                let mut v = if *use_combinatorial {
+                    combinatorial.diag_mode(&a.kids[spatial.len()], i)
+                } else {
+                    0.0
+                };
+                let mut g = Vector::zeros(k);
+                for (c, child) in spatial.iter().enumerate() {
+                    let gate = f64::from(mask[c]);
+                    let (vc, gc) = child.diag_mode_grad(&a.kids[c], i);
+                    v += vc * gate;
+                    g += scatter_vec(child, gc, k) * gate;
+                }
+                (v, g)
+            }
+            NodeKind::Ltf {
+                fid,
+                nonfid,
+                power,
+                unbiased,
+                biased,
+            } => {
+                let (ku, gu) = unbiased.diag_mode_grad(&a.kids[0], i);
+                let (kb, gb) = biased.diag_mode_grad(&a.kids[1], i);
+                let gu = scatter_vec(unbiased, gu, nonfid.len());
+                let gb = scatter_vec(biased, gb, nonfid.len());
+                let x = a.row(i);
+                let (bias, dbias, _) = ltf_bias(x, x, fid, *power);
+                let mut g = Vector::zeros(k);
+                for (c, &m) in nonfid.iter().enumerate() {
+                    g[m] = gu[c] + bias * gb[c];
+                }
+                for (f, &m) in fid.iter().enumerate() {
+                    g[m] = 2.0 * dbias[f] * kb;
+                }
+                (ku + bias * kb, g)
+            }
             NodeKind::Bnn { w, b, depth, .. } => {
                 // v₀ = w ‖x‖²/k + b, v_{l+1} = w v_l / 2 + b.
                 let mut v = w * a.aux[i] / k as f64 + b;
@@ -1739,6 +1845,44 @@ impl Node {
     fn contract_diag_mode(&self, a: &NodePrep, w: &[f64], out: &mut [f64]) {
         let off = self.off;
         match &self.kind {
+            NodeKind::Heterogeneous {
+                binary_map,
+                spatial,
+                combinatorial,
+                use_combinatorial,
+                ..
+            } => {
+                for (c, child) in spatial.iter().enumerate() {
+                    let wc: Vec<f64> = w
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &wi)| wi * f64::from(binary_map[a.aux[i] as usize][c]))
+                        .collect();
+                    child.contract_diag_mode(&a.kids[c], &wc, out);
+                }
+                if *use_combinatorial {
+                    combinatorial.contract_diag_mode(&a.kids[spatial.len()], w, out);
+                }
+            }
+            NodeKind::Ltf {
+                fid,
+                power,
+                unbiased,
+                biased,
+                ..
+            } => {
+                let mut gp = 0.0;
+                let mut wb = Vec::with_capacity(w.len());
+                for (i, &wi) in w.iter().enumerate() {
+                    let x = a.row(i);
+                    let (bias, _, dp) = ltf_bias(x, x, fid, *power);
+                    gp += wi * dp * biased.diag_mode(&a.kids[1], i);
+                    wb.push(wi * bias);
+                }
+                out[off] += gp;
+                unbiased.contract_diag_mode(&a.kids[0], w, out);
+                biased.contract_diag_mode(&a.kids[1], &wb, out);
+            }
             NodeKind::Bnn {
                 w: wv, b, depth, ..
             } => {
@@ -2494,6 +2638,16 @@ fn index_prior(
 /// correlation matrix that is not positive definite.
 pub fn lkj_covariance_log_prob(b: &Matrix, eta: f64, sd_prior: &Prior) -> Result<(f64, Matrix)> {
     let n = b.nrows();
+    if !b.is_square() || n == 0 {
+        return Err(BotorchError::InvalidArgument(
+            "Covariance matrix must be non-empty and square".into(),
+        ));
+    }
+    if !eta.is_finite() || eta <= 0.0 {
+        return Err(BotorchError::InvalidArgument(
+            "LKJ concentration parameter eta must be positive and finite".into(),
+        ));
+    }
     let mut sd = vec![0.0; n];
     for (s, v) in sd.iter_mut().enumerate() {
         let var = b[(s, s)];
@@ -2502,9 +2656,19 @@ pub fn lkj_covariance_log_prob(b: &Matrix, eta: f64, sd_prior: &Prior) -> Result
                 "Variance(s) cannot be negative".into(),
             ));
         }
+        if var == 0.0 || !var.is_finite() {
+            return Err(BotorchError::InvalidArgument(
+                "Input is not a valid correlation matrix".into(),
+            ));
+        }
         *v = var.sqrt();
     }
     let r = Matrix::from_fn(n, n, |i, j| (1.0 / sd[i]) * b[(i, j)] * (1.0 / sd[j]));
+    if r.iter().any(|v| !v.is_finite()) {
+        return Err(BotorchError::InvalidArgument(
+            "Input is not a valid correlation matrix".into(),
+        ));
+    }
     let chol = r.clone().cholesky().ok_or_else(|| {
         BotorchError::InvalidArgument("Input is not a valid correlation matrix".into())
     })?;

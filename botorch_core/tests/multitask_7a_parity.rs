@@ -713,11 +713,14 @@ fn multitask_gp_matches_botorch() {
         let names = gp.parameter_names();
         let mut off = 0;
         let mut default_err = 0.0f64;
+        let raw_params = gp.raw_parameters();
         for (n, size) in &names {
             if !n.contains("covar_factor") && !n.ends_with(".raw_var") {
-                for i in off..off + size {
-                    default_err =
-                        default_err.max((gp.raw_parameters()[i] - c.default_raw[i]).abs());
+                for (&r, &d) in raw_params.as_slice()[off..off + size]
+                    .iter()
+                    .zip(&c.default_raw[off..off + size])
+                {
+                    default_err = default_err.max((r - d).abs());
                 }
             }
             off += size;
@@ -1088,10 +1091,14 @@ fn kronecker_multitask_gp_matches_botorch() {
         // Default raw parameters, except the random factors.
         let mut off = 0;
         let mut err = 0.0f64;
+        let raw_params = gp.raw_parameters();
         for (n, size) in gp.parameter_names() {
             if !n.ends_with("covar_factor") && !n.ends_with(".raw_var") {
-                for i in off..off + size {
-                    err = err.max((gp.raw_parameters()[i] - c.default_raw[i]).abs());
+                for (&r, &d) in raw_params.as_slice()[off..off + size]
+                    .iter()
+                    .zip(&c.default_raw[off..off + size])
+                {
+                    err = err.max((r - d).abs());
                 }
             }
             off += size;

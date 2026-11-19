@@ -64,7 +64,16 @@ fn optimize_mixed_q1(
         } else {
             r.restarts
                 .iter()
-                .map(|x| (x.candidates.clone(), x.acq_value))
+                .map(|x| {
+                    (
+                        x.candidates.clone(),
+                        if x.feasible {
+                            x.acq_value
+                        } else {
+                            f64::NEG_INFINITY
+                        },
+                    )
+                })
                 .collect()
         };
         let mut top = 0;

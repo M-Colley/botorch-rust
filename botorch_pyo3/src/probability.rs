@@ -5,6 +5,8 @@
 //! sampler, the transforms of `botorch.sampling.qmc`, PyTorch's seeded CPU
 //! generator and the null space of equality constraints.
 
+use std::sync::Mutex;
+
 use botorch_core::models::pairwise_gp::detect_duplicates;
 use botorch_core::test_functions::single_objective::{
     default_max_step_size, round_nearest, TrajectoryConfig,
@@ -145,13 +147,19 @@ fn percentile_py<'py>(
 
 /// The state of a batch of `MVNXPB` solvers (`mvnxpbState`), exchanged with
 /// the Python class.
-#[pyclass(name = "MvnxpbState", module = "botorch_rs._botorch_rs")]
+#[pyclass(frozen, name = "MvnxpbState", module = "botorch_rs._botorch_rs")]
 pub struct PyMvnxpbState {
-    inner: MvnxpbState,
+    inner: Mutex<MvnxpbState>,
 }
 
 fn opt_values<'py>(py: Python<'py>, v: &Option<Vec<f64>>) -> PyResult<Option<Bound<'py, PyAny>>> {
     v.as_ref().map(|v| float_values(py, v)).transpose()
+}
+
+impl PyMvnxpbState {
+    fn with<T>(&self, f: impl FnOnce(&MvnxpbState) -> T) -> T {
+        f(&self.inner.lock().unwrap_or_else(|e| e.into_inner()))
+    }
 }
 
 #[pymethods]
@@ -189,88 +197,100 @@ impl PyMvnxpbState {
             log_prob_extra: log_prob_extra.map(|e| e.0),
         };
         inner.validate().into_py_result()?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner: Mutex::new(inner),
+        })
     }
 
     /// BoTorch's `MVNXPB(covariance_matrix, bounds)` for `batch` problems.
     #[staticmethod]
     fn standardized(cov: Floats, bounds: Floats, batch: usize, n: usize) -> PyResult<Self> {
         Ok(Self {
-            inner: MvnxpbState::new(&cov.0, &bounds.0, batch, n).into_py_result()?,
+            inner: Mutex::new(MvnxpbState::new(&cov.0, &bounds.0, batch, n).into_py_result()?),
         })
     }
 
     #[getter]
     fn n(&self) -> usize {
-        self.inner.n
+        self.with(|s| s.n)
     }
     #[getter]
     fn batch(&self) -> usize {
-        self.inner.batch
+        self.with(|s| s.batch)
     }
     #[getter]
     fn step(&self) -> usize {
-        self.inner.step
+        self.with(|s| s.step)
     }
     #[getter]
     fn pc_step(&self) -> usize {
-        self.inner.pc_step
+        self.with(|s| s.pc_step)
     }
     #[getter]
     fn perm(&self) -> Vec<i64> {
-        self.inner.perm.clone()
+        self.with(|s| s.perm.clone())
     }
     #[getter]
     fn pc_perm(&self) -> Vec<i64> {
-        self.inner.pc_perm.clone()
+        self.with(|s| s.pc_perm.clone())
     }
     #[getter]
     fn bounds<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        float_values(py, &self.inner.bounds)
+        self.with(|s| float_values(py, &s.bounds))
     }
     #[getter]
     fn tril<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        float_values(py, &self.inner.tril)
+        self.with(|s| float_values(py, &s.tril))
     }
     #[getter]
     fn diag<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
-        opt_values(py, &self.inner.diag)
+        self.with(|s| opt_values(py, &s.diag))
     }
     #[getter]
     fn plug_ins<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        float_values(py, &self.inner.plug_ins)
+        self.with(|s| float_values(py, &s.plug_ins))
     }
     #[getter]
     fn log_prob<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        float_values(py, &self.inner.log_prob)
+        self.with(|s| float_values(py, &s.log_prob))
     }
     #[getter]
     fn log_prob_extra<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
-        opt_values(py, &self.inner.log_prob_extra)
+        self.with(|s| opt_values(py, &s.log_prob_extra))
     }
 
     /// `solve(num_steps, eps)`: runs the solver in place; returns the log
     /// probabilities.
     #[pyo3(signature = (num_steps=None, eps=1e-10))]
     fn solve<'py>(
-        &mut self,
+        &self,
         py: Python<'py>,
         num_steps: Option<usize>,
         eps: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let state = &mut self.inner;
-        let lp = threads::run(py, || state.solve(num_steps, eps)).into_py_result()?;
+        let inner = &self.inner;
+        let lp = threads::run(py, || {
+            inner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .solve(num_steps, eps)
+        })
+        .into_py_result()?;
         float_values(py, &lp)
     }
 
     /// `select_pivot()`: the GGE pivot of every member.
     fn select_pivot(&self) -> Vec<usize> {
-        self.inner.select_pivot()
+        self.with(MvnxpbState::select_pivot)
     }
 
     /// `pivot_(pivot)`: swaps the variables at `step` and `pivot` in place.
-    fn pivot(&mut self, pivot: Vec<usize>) -> PyResult<()> {
-        self.inner.pivot(&pivot).into_py_result()
+    fn pivot(&self, pivot: Vec<usize>) -> PyResult<()> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pivot(&pivot)
+            .into_py_result()
     }
 
     /// `augment(cov, bounds, cross, m, ...)`: the augmented state and
@@ -288,9 +308,9 @@ impl PyMvnxpbState {
         jitter: Option<f64>,
         max_tries: Option<usize>,
     ) -> PyResult<(Self, bool)> {
-        let state = &self.inner;
-        let (inner, recovered) = threads::run(py, || {
-            state.augment(
+        let inner = &self.inner;
+        let (next, recovered) = threads::run(py, || {
+            inner.lock().unwrap_or_else(|e| e.into_inner()).augment(
                 &cov.0,
                 &bounds.0,
                 &cross.0,
@@ -301,7 +321,12 @@ impl PyMvnxpbState {
             )
         })
         .into_py_result()?;
-        Ok((Self { inner }, recovered))
+        Ok((
+            Self {
+                inner: Mutex::new(next),
+            },
+            recovered,
+        ))
     }
 }
 
@@ -447,11 +472,18 @@ fn augment_cholesky_py(
 
 /// The linear elliptical slice sampler (`LinearEllipticalSliceSampler`).
 #[pyclass(
+    frozen,
     name = "LinearEllipticalSliceSampler",
     module = "botorch_rs._botorch_rs"
 )]
 pub struct PyLinearEllipticalSliceSampler {
-    inner: LinearEllipticalSliceSampler,
+    inner: Mutex<LinearEllipticalSliceSampler>,
+}
+
+impl PyLinearEllipticalSliceSampler {
+    fn with<T>(&self, f: impl FnOnce(&LinearEllipticalSliceSampler) -> T) -> T {
+        f(&self.inner.lock().unwrap_or_else(|e| e.into_inner()))
+    }
 }
 
 #[pymethods]
@@ -495,40 +527,44 @@ impl PyLinearEllipticalSliceSampler {
             single_precision,
         )
         .into_py_result()?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner: Mutex::new(inner),
+        })
     }
 
     /// `(k, num_chains)`: the shape of the directions of a step.
     #[getter]
     fn draw_shape(&self) -> (usize, usize) {
-        (self.inner.free_dim(), self.inner.num_chains())
+        self.with(|s| (s.free_dim(), s.num_chains()))
     }
 
     #[getter]
     fn lifetime_samples(&self) -> usize {
-        self.inner.lifetime_samples()
+        self.with(LinearEllipticalSliceSampler::lifetime_samples)
     }
 
     /// The current points (`d x num_chains`).
     #[getter]
     fn x(&self) -> ArrayBuf {
-        matrix_out(self.inner.current()).into()
+        self.with(|s| matrix_out(s.current()).into())
     }
 
     /// The current standardized points (`k x num_chains`).
     #[getter]
     fn z(&self) -> ArrayBuf {
-        matrix_out(self.inner.current_standardized()).into()
+        self.with(|s| matrix_out(s.current_standardized()).into())
     }
 
     /// The standardized constraints `(A_z, b_z)`.
     #[getter]
     fn standardized(&self) -> (ArrayBuf, ArrayBuf) {
-        let (a, b) = self.inner.standardized_constraints();
-        (
-            matrix_out(a).into(),
-            ArrayBuf(b.as_slice().to_vec(), vec![b.len(), 1]),
-        )
+        self.with(|s| {
+            let (a, b) = s.standardized_constraints();
+            (
+                matrix_out(a).into(),
+                ArrayBuf(b.as_slice().to_vec(), vec![b.len(), 1]),
+            )
+        })
     }
 
     /// `steps` steps with the directions `nu` (`steps x k x num_chains`) and
@@ -537,7 +573,7 @@ impl PyLinearEllipticalSliceSampler {
     /// (`num_kept x d x num_chains`).
     #[pyo3(signature = (nu, u, steps, keep, check_feasibility=false))]
     fn run(
-        &mut self,
+        &self,
         py: Python<'_>,
         nu: Floats,
         u: Floats,
@@ -545,12 +581,13 @@ impl PyLinearEllipticalSliceSampler {
         keep: usize,
         check_feasibility: bool,
     ) -> PyResult<ArrayBuf> {
-        let (k, c) = (self.inner.free_dim(), self.inner.num_chains());
+        let (k, c, d) = self.with(|s| (s.free_dim(), s.num_chains(), s.current().nrows()));
         if nu.0.len() != steps * k * c || u.0.len() != steps * c || keep == 0 {
             return Err(dimension_error("draws of the wrong shape"));
         }
-        let sampler = &mut self.inner;
+        let inner = &self.inner;
         let out = threads::run(py, || {
+            let mut sampler = inner.lock().unwrap_or_else(|e| e.into_inner());
             let mut out = Vec::new();
             let mut kept = 0;
             for s in 0..steps {
@@ -564,7 +601,6 @@ impl PyLinearEllipticalSliceSampler {
             Ok::<_, botorch_core::BotorchError>((out, kept))
         })
         .into_py_result()?;
-        let d = self.inner.current().nrows();
         Ok(ArrayBuf(out.0, vec![out.1, d, c]))
     }
 
@@ -572,12 +608,14 @@ impl PyLinearEllipticalSliceSampler {
     /// num_chains`): `m x 2 num_chains` (alpha, then beta; BoTorch's
     /// `_find_intersection_angles` concatenated along the last dimension).
     fn arc_ends(&self, nu: Floats) -> PyResult<ArrayBuf> {
-        let (k, c) = (self.inner.free_dim(), self.inner.num_chains());
+        let (k, c) = self.draw_shape();
         if nu.0.len() != k * c {
             return Err(dimension_error("a direction of the wrong shape"));
         }
         let dir = Matrix::from_row_slice(k, c, &nu.0);
-        let (alpha, beta) = self.inner.intersection_angles(&dir).into_py_result()?;
+        let (alpha, beta) = self
+            .with(|s| s.intersection_angles(&dir))
+            .into_py_result()?;
         let m = alpha.nrows();
         let mut out = Vec::with_capacity(2 * m * c);
         for r in 0..m {
@@ -590,9 +628,8 @@ impl PyLinearEllipticalSliceSampler {
     /// Whether the columns of `points` (`d x M`) are feasible.
     #[pyo3(signature = (points, transformed=false))]
     fn is_feasible(&self, points: Array, transformed: bool) -> PyResult<Vec<bool>> {
-        Ok(self
-            .inner
-            .is_feasible(&points.matrix("points")?, transformed))
+        let pts = points.matrix("points")?;
+        Ok(self.with(|s| s.is_feasible(&pts, transformed)))
     }
 }
 
@@ -647,11 +684,10 @@ fn mvn_qmc_project_py(
 }
 
 /// Persistent Sobol state for the QMC engines when torch is unavailable.
-#[pyclass(name = "SobolEngine", module = "botorch_rs._botorch_rs")]
+#[pyclass(frozen, name = "SobolEngine", module = "botorch_rs._botorch_rs")]
 struct PySobolEngine {
     inner: SobolEngine,
-    #[pyo3(get)]
-    num_generated: usize,
+    num_generated: Mutex<usize>,
 }
 
 #[pymethods]
@@ -661,8 +697,13 @@ impl PySobolEngine {
     fn new(dimension: usize, seed: Option<u64>) -> PyResult<Self> {
         Ok(Self {
             inner: SobolEngine::new(dimension, seed).into_py_result()?,
-            num_generated: 0,
+            num_generated: Mutex::new(0),
         })
+    }
+
+    #[getter]
+    fn num_generated(&self) -> usize {
+        *self.num_generated.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     #[getter]
@@ -670,10 +711,16 @@ impl PySobolEngine {
         self.inner.seed()
     }
 
-    fn draw(&mut self, py: Python<'_>, n: usize) -> PyResult<ArrayBuf> {
-        let points =
-            threads::run(py, || self.inner.draw(n, self.num_generated)).into_py_result()?;
-        self.num_generated += n;
+    fn draw(&self, py: Python<'_>, n: usize) -> PyResult<ArrayBuf> {
+        let inner = &self.inner;
+        let gen_lock = &self.num_generated;
+        let points = threads::run(py, || {
+            let mut g = gen_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let pts = inner.draw(n, *g)?;
+            *g += n;
+            Ok::<_, botorch_core::BotorchError>(pts)
+        })
+        .into_py_result()?;
         Ok(matrix_out(&points).into())
     }
 }

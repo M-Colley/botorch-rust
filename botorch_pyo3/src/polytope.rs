@@ -104,7 +104,12 @@ pub fn find_interior_point_py(
             };
             Some((ae, vector(&be, "b_eq")?))
         }
-        _ => None,
+        (None, None) => None,
+        _ => {
+            return Err(crate::errors::value_error(
+                "A_eq and b_eq must both be given or both be None",
+            ))
+        }
     };
     let x = find_interior_point(&a, &b, eq.as_ref().map(|(m, v)| (m, v))).into_py_result()?;
     Ok(x.as_slice().to_vec())

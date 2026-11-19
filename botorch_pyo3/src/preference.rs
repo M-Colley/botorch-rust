@@ -55,6 +55,7 @@ fn likelihood_of(name: &str) -> PyResult<PairwiseLikelihood> {
 /// Comparisons from a float array of indices (`... x m x 2`), per batch
 /// element.
 fn comparisons_of(c: &Array, n: usize, batch: usize) -> PyResult<Vec<Vec<(usize, usize)>>> {
+    c.validate("comparisons")?;
     if c.1.last() != Some(&2) || c.1.len() < 2 {
         return Err(dimension_error(format!(
             "comparisons must have shape `batch_shape x m x 2`, got {:?}",
@@ -75,6 +76,11 @@ fn comparisons_of(c: &Array, n: usize, batch: usize) -> PyResult<Vec<Vec<(usize,
             let mut pair = [0usize; 2];
             for (j, p) in pair.iter_mut().enumerate() {
                 let x = c.0[(b * m + k) * 2 + j];
+                if !x.is_finite() {
+                    return Err(value_error(format!(
+                        "comparison indices must be finite, got {x}"
+                    )));
+                }
                 // torch's `.long()` truncates; negative indices are out of
                 // range for `scatter_`.
                 let i = x.trunc();
@@ -666,18 +672,39 @@ impl PyPairwiseGP {
     }
 
     /// Sets the warm start (BoTorch's `_x0`; `None` forces a fresh start).
-    fn set_x0(&self, x0: Option<Vec<f64>>) {
+    fn set_x0(&self, x0: Option<Vec<f64>>) -> PyResult<()> {
         let mut inner = self.get();
         match &mut inner {
-            Inner::Single(m) => m.set_warm_start(x0),
+            Inner::Single(m) => {
+                if let Some(v) = &x0 {
+                    let n = m.num_datapoints();
+                    if v.len() != n {
+                        return Err(dimension_error(format!(
+                            "x0 must have {n} values, got {}",
+                            v.len()
+                        )));
+                    }
+                }
+                m.set_warm_start(x0);
+            }
             Inner::Batched(b) => {
                 let n = b.elements()[0].num_datapoints();
+                let total = b.elements().len() * n;
+                if let Some(v) = &x0 {
+                    if v.len() != total {
+                        return Err(dimension_error(format!(
+                            "x0 must have {total} values, got {}",
+                            v.len()
+                        )));
+                    }
+                }
                 for (k, e) in b.elements_mut().iter_mut().enumerate() {
                     e.set_warm_start(x0.as_ref().map(|v| v[k * n..(k + 1) * n].to_vec()));
                 }
             }
         }
         self.set(inner);
+        Ok(())
     }
 
     /// `likelihood_hess` (`batch x n x n`).
@@ -830,28 +857,31 @@ impl PyPairwiseGP {
         let (xbatch, xs) = x.batches("X")?;
         let nx = xs[0].nrows();
         let comps = comparisons_of(&y, nx, b)?;
+        let mbatch = inner.batch_shape();
+        let shape = broadcast_shapes(&mbatch, &xbatch)
+            .and_then(|s| broadcast_shapes(&s, &ybatch))
+            .ok_or_else(|| {
+                dimension_error(format!(
+                    "batch shapes of model ({mbatch:?}), X ({xbatch:?}) and Y ({ybatch:?}) are not broadcastable"
+                ))
+            })?;
+        let im = broadcast_indices(&mbatch, &shape);
+        let ix = broadcast_indices(&xbatch, &shape);
+        let iy = broadcast_indices(&ybatch, &shape);
         let out = threads::run(py, || -> botorch_core::Result<Inner> {
-            let mut out = match (&inner, ybatch.is_empty() && xbatch.is_empty()) {
+            let mut out = match (&inner, shape.is_empty()) {
                 (Inner::Single(m), true) => {
                     Inner::Single(m.with_observations(&xs[0], &comps[0], false)?)
                 }
                 _ => {
-                    // Batch mode: every element of Y's batch, with the
-                    // model's (and X's) batch elements broadcast.
+                    // Batch mode: broadcast model, X, and Y batch shapes.
                     let model_els = inner.elements();
-                    let nb = model_els.len();
-                    let xb = xs.len();
-                    let shape = if ybatch.is_empty() {
-                        xbatch.clone()
-                    } else {
-                        ybatch.clone()
-                    };
-                    let total: usize = shape.iter().product();
+                    let total = im.len();
                     let mut els = Vec::with_capacity(total);
                     for k in 0..total {
-                        let base = model_els[if nb == 1 { 0 } else { k % nb }];
-                        let xk = &xs[if xb == 1 { 0 } else { k % xb }];
-                        let ck = &comps[if comps.len() == 1 { 0 } else { k }];
+                        let base = model_els[im[k]];
+                        let xk = &xs[ix[k]];
+                        let ck = &comps[iy[k]];
                         els.push(base.with_observations(xk, ck, true)?);
                     }
                     let (raw, maps) = match &inner {
@@ -861,7 +891,7 @@ impl PyPairwiseGP {
                         ),
                         Inner::Batched(m) => (m.raw_parameters().to_vec(), m.param_map().to_vec()),
                     };
-                    let maps = (0..total).map(|k| maps[k % nb].clone()).collect();
+                    let maps = (0..total).map(|k| maps[im[k]].clone()).collect();
                     Inner::Batched(BatchedPairwiseGP::from_elements_with_mapping(
                         shape,
                         els,

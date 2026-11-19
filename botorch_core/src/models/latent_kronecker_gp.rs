@@ -70,10 +70,11 @@ pub struct LatentKroneckerGP {
     mean_indices: [Option<usize>; 2],
     kernel_ranges: [Range<usize>; 2],
     raw: Vec<f64>,
-    cache: OnceLock<std::result::Result<Backend, BotorchError>>,
-    masked_cholesky: OnceLock<std::result::Result<CholeskyFactor, BotorchError>>,
+    cache: Arc<OnceLock<std::result::Result<Backend, BotorchError>>>,
+    dense_complete: Arc<OnceLock<std::result::Result<SingleTaskGP, BotorchError>>>,
+    masked_cholesky: Arc<OnceLock<std::result::Result<CholeskyFactor, BotorchError>>>,
     iterative: Option<IterativeOptions>,
-    iterative_covariance: OnceLock<std::result::Result<Matrix, BotorchError>>,
+    iterative_covariance: Arc<OnceLock<std::result::Result<Matrix, BotorchError>>>,
     iteration_limit: Arc<AtomicBool>,
 }
 
@@ -198,10 +199,11 @@ impl LatentKroneckerGP {
             mean_indices,
             kernel_ranges,
             raw,
-            cache: OnceLock::new(),
-            masked_cholesky: OnceLock::new(),
+            cache: Arc::new(OnceLock::new()),
+            dense_complete: Arc::new(OnceLock::new()),
+            masked_cholesky: Arc::new(OnceLock::new()),
             iterative: None,
-            iterative_covariance: OnceLock::new(),
+            iterative_covariance: Arc::new(OnceLock::new()),
             iteration_limit: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -243,9 +245,10 @@ impl LatentKroneckerGP {
             ));
         }
         self.raw = raw.to_vec();
-        self.cache = OnceLock::new();
-        self.masked_cholesky = OnceLock::new();
-        self.iterative_covariance = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
+        self.dense_complete = Arc::new(OnceLock::new());
+        self.masked_cholesky = Arc::new(OnceLock::new());
+        self.iterative_covariance = Arc::new(OnceLock::new());
         self.iteration_limit = Arc::new(AtomicBool::new(false));
         Ok(())
     }
@@ -371,6 +374,12 @@ impl LatentKroneckerGP {
     fn backend(&self) -> Result<&Backend> {
         self.cache
             .get_or_init(|| self.backend_at(&self.raw))
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+    fn dense_complete(&self) -> Result<&SingleTaskGP> {
+        self.dense_complete
+            .get_or_init(|| self.dense(&self.raw))
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -522,7 +531,7 @@ impl LatentKroneckerGP {
             }
             Backend::Masked(model) => model.posterior(&cartesian_inputs(&xt, t), false)?,
             Backend::Full(_) => self
-                .dense(&self.raw)?
+                .dense_complete()?
                 .posterior(&cartesian_inputs(&xt, t), false)?,
         };
         let (offset, scale) = self.affine();
@@ -540,13 +549,9 @@ impl LatentKroneckerGP {
         }
         let xt = self.transformed(x)?;
         let cartesian = cartesian_inputs(&xt, t);
-        let dense;
         let model = match self.backend()? {
             Backend::Masked(model) => model.as_ref(),
-            Backend::Full(_) => {
-                dense = self.dense(&self.raw)?;
-                &dense
-            }
+            Backend::Full(_) => self.dense_complete()?,
         };
         let source = model.joint_posterior_with_grad(&cartesian)?;
         let q = x.nrows();

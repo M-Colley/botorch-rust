@@ -23,7 +23,8 @@
 )]
 
 use std::slice;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub(crate) fn nlopt_function_raw_callback<F: Func<T>, T>(
     n: ::core::ffi::c_uint,
@@ -238,34 +239,8 @@ unsafe fn nlopt_time_seed() -> ::core::ffi::c_ulong {
 }
 
 unsafe fn nlopt_seconds() -> ::core::ffi::c_double {
-    unsafe {
-        // static mut start_inited: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
-        // static mut start: ::core::ffi::timeval = ::core::ffi::timeval {
-        //     tv_sec: 0,
-        //     tv_usec: 0,
-        // };
-        // let mut tv: ::core::ffi::timeval = ::core::ffi::timeval {
-        //     tv_sec: 0,
-        //     tv_usec: 0,
-        // };
-        // if start_inited == 0 {
-        //     start_inited = 1 as ::core::ffi::c_int;
-        //     ::core::ffi::gettimeofday(&mut start, 0 as *mut ::core::ffi::timezone);
-        // }
-        // ::core::ffi::gettimeofday(&mut tv, 0 as *mut ::core::ffi::timezone);
-        // return (tv.tv_sec - start.tv_sec) as ::core::ffi::c_double
-        //     + 1.0e-6f64 * (tv.tv_usec - start.tv_usec) as ::core::ffi::c_double;
-        static mut start_inited: bool = false;
-        static mut start: SystemTime = UNIX_EPOCH;
-        if !start_inited {
-            start_inited = true;
-            start = SystemTime::now();
-        }
-        start
-            .duration_since(UNIX_EPOCH)
-            .expect("Time flies")
-            .as_secs_f64()
-    }
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
 unsafe fn sc(
     mut x: ::core::ffi::c_double,
@@ -3566,8 +3541,6 @@ pub(crate) unsafe fn slsqp(
 ) {
     let mut a_dim1: ::core::ffi::c_int = 0;
     let mut a_offset: ::core::ffi::c_int = 0;
-    let mut i__1: ::core::ffi::c_int = 0;
-    let mut i__2: ::core::ffi::c_int = 0;
     let mut n1: ::core::ffi::c_int = 0;
     let mut il: ::core::ffi::c_int = 0;
     let mut im: ::core::ffi::c_int = 0;
@@ -3577,7 +3550,6 @@ pub(crate) unsafe fn slsqp(
     let mut iv: ::core::ffi::c_int = 0;
     let mut iw: ::core::ffi::c_int = 0;
     let mut ix: ::core::ffi::c_int = 0;
-    let mut mineq: ::core::ffi::c_int = 0;
     c__ = c__.offset(-1);
     a_dim1 = *la;
     a_offset = 1 as ::core::ffi::c_int + a_dim1;
@@ -3588,32 +3560,28 @@ pub(crate) unsafe fn slsqp(
     x = x.offset(-1);
     w = w.offset(-1);
     jw = jw.offset(-1);
+    if *n < 0 || *m < 0 || *meq < 0 || *meq > *m || *la < (*m).max(1) {
+        *mode = 10_010;
+        return;
+    }
+    if *meq > *n {
+        if *mode == 0 {
+            *iter = 1;
+        }
+        *mode = 2;
+        return;
+    }
+    let Some((req_w, req_jw)) =
+        checked_work_lengths(*m as usize, *meq as usize, *la as usize, *n as usize)
+    else {
+        *mode = 10_010;
+        return;
+    };
     n1 = *n + 1 as ::core::ffi::c_int;
-    mineq = *m - *meq + n1 + n1;
-    il = (n1 * 3 as ::core::ffi::c_int + *m) * (n1 + 1 as ::core::ffi::c_int)
-        + (n1 - *meq + 1 as ::core::ffi::c_int) * (mineq + 2 as ::core::ffi::c_int)
-        + (mineq << 1 as ::core::ffi::c_int)
-        + (n1 + mineq) * (n1 - *meq)
-        + (*meq << 1 as ::core::ffi::c_int)
-        + n1 * *n / 2 as ::core::ffi::c_int
-        + (*m << 1 as ::core::ffi::c_int)
-        + *n * 3 as ::core::ffi::c_int
-        + (n1 << 2 as ::core::ffi::c_int)
-        + 1 as ::core::ffi::c_int;
-    i__1 = mineq;
-    i__2 = n1 - *meq;
-    im = if i__1 >= i__2 { i__1 } else { i__2 };
+    il = req_w;
+    im = req_jw;
     if *l_w__ < il || *l_jw__ < im {
-        *mode = (if 10 as ::core::ffi::c_int >= il {
-            10 as ::core::ffi::c_int
-        } else {
-            il
-        }) * 1000 as ::core::ffi::c_int;
-        *mode += if 10 as ::core::ffi::c_int >= im {
-            10 as ::core::ffi::c_int
-        } else {
-            im
-        };
+        *mode = il.max(10).saturating_mul(1000).saturating_add(im.max(10));
         return;
     }
     im = 1 as ::core::ffi::c_int;
@@ -3666,6 +3634,47 @@ pub(crate) unsafe fn slsqp(
     );
     (*state).x0 = w.offset(ix as isize) as *mut ::core::ffi::c_double;
 }
+pub(crate) fn checked_work_lengths(
+    m: usize,
+    meq: usize,
+    la: usize,
+    n: usize,
+) -> Option<(i32, i32)> {
+    if meq > m || meq > n {
+        return None;
+    }
+    let la = la.max(m).max(1);
+    let n1 = n.checked_add(1)?;
+    let mineq = (m - meq).checked_add(n1.checked_mul(2)?)?;
+    let rem = n1 - meq;
+    let t1 = n1
+        .checked_mul(3)?
+        .checked_add(m)?
+        .checked_mul(n1.checked_add(1)?)?;
+    let t2 = rem.checked_add(1)?.checked_mul(mineq.checked_add(2)?)?;
+    let t3 = mineq.checked_mul(2)?;
+    let t4 = n1.checked_add(mineq)?.checked_mul(rem)?;
+    let t5 = meq.checked_mul(2)?;
+    let tri = n1.checked_mul(n)? / 2;
+    let tail = la
+        .checked_mul(2)?
+        .checked_add(n.checked_mul(3)?)?
+        .checked_add(n1.checked_mul(4)?)?
+        .checked_add(1)?;
+    let len_w = t1
+        .checked_add(t2)?
+        .checked_add(t3)?
+        .checked_add(t4)?
+        .checked_add(t5)?
+        .checked_add(tri)?
+        .checked_add(tail)?;
+    let len_jw = mineq.max(rem);
+    let _ = la.checked_mul(n1)?;
+    let _ = i32::try_from(la).ok()?;
+    let _ = i32::try_from(n1).ok()?;
+    Some((i32::try_from(len_w).ok()?, i32::try_from(len_jw).ok()?))
+}
+
 pub(crate) unsafe fn length_work(
     mut LEN_W: *mut ::core::ffi::c_int,
     mut LEN_JW: *mut ::core::ffi::c_int,
@@ -3673,20 +3682,19 @@ pub(crate) unsafe fn length_work(
     mut MEQ: ::core::ffi::c_int,
     mut N: ::core::ffi::c_int,
 ) {
-    let mut N1: ::core::ffi::c_int = N + 1 as ::core::ffi::c_int;
-    let mut MINEQ: ::core::ffi::c_int = M - MEQ + N1 + N1;
-    *LEN_W = (3 as ::core::ffi::c_int * N1 + M) * (N1 + 1 as ::core::ffi::c_int)
-        + (N1 - MEQ + 1 as ::core::ffi::c_int) * (MINEQ + 2 as ::core::ffi::c_int)
-        + 2 as ::core::ffi::c_int * MINEQ
-        + (N1 + MINEQ) * (N1 - MEQ)
-        + 2 as ::core::ffi::c_int * MEQ
-        + N1
-        + (N + 1 as ::core::ffi::c_int) * N / 2 as ::core::ffi::c_int
-        + 2 as ::core::ffi::c_int * M
-        + 3 as ::core::ffi::c_int * N
-        + 3 as ::core::ffi::c_int * N1
-        + 1 as ::core::ffi::c_int;
-    *LEN_JW = MINEQ;
+    if M < 0 || MEQ < 0 || N < 0 {
+        *LEN_W = -1;
+        *LEN_JW = -1;
+        return;
+    }
+    let la = M.max(1) as usize;
+    if let Some((w, jw)) = checked_work_lengths(M as usize, MEQ as usize, la, N as usize) {
+        *LEN_W = w;
+        *LEN_JW = jw;
+    } else {
+        *LEN_W = -1;
+        *LEN_JW = -1;
+    }
 }
 
 pub(crate) unsafe fn nlopt_slsqp<U>(
@@ -3770,37 +3778,44 @@ pub(crate) unsafe fn nlopt_slsqp<U>(
     } else {
         nlopt_max_constraint_dim(p, h)
     };
+    let Some(mtot_ptot) = (mtot as usize).checked_add(ptot as usize) else {
+        return NLOPT_OUT_OF_MEMORY;
+    };
+    let (Ok(mpi_checked), Ok(pi_checked), Ok(ni_checked)) = (
+        i32::try_from(mtot_ptot),
+        i32::try_from(ptot),
+        i32::try_from(n),
+    ) else {
+        return NLOPT_OUT_OF_MEMORY;
+    };
+    mpi = mpi_checked;
+    pi = pi_checked;
+    ni = ni_checked;
+    mpi1 = mpi.max(1);
     length_work(&raw mut len_w, &raw mut len_jw, mpi, pi, ni);
-    // work = malloc(
-    //     (::std::mem::size_of::<::core::ffi::c_double>() as ::core::ffi::c_ulong)
-    //         .wrapping_mul(
-    //             (mpi1 as ::core::ffi::c_uint)
-    //                 .wrapping_mul(n.wrapping_add(1 as ::core::ffi::c_int as ::core::ffi::c_uint))
-    //                 .wrapping_add(mpi as ::core::ffi::c_uint)
-    //                 .wrapping_add(n)
-    //                 .wrapping_add(1 as ::core::ffi::c_int as ::core::ffi::c_uint)
-    //                 .wrapping_add(n)
-    //                 .wrapping_add(n)
-    //                 .wrapping_add(max_cdim.wrapping_mul(n))
-    //                 .wrapping_add(len_w as ::core::ffi::c_uint) as ::core::ffi::c_ulong,
-    //         )
-    //         .wrapping_add(
-    //             (::std::mem::size_of::<::core::ffi::c_int>() as ::core::ffi::c_ulong)
-    //                 .wrapping_mul(len_jw as ::core::ffi::c_uint as ::core::ffi::c_ulong),
-    //         ),
-    // ) as *mut ::core::ffi::c_double;
+    if len_w <= 0 || len_jw <= 0 {
+        return NLOPT_OUT_OF_MEMORY;
+    }
 
-    let space_size = (mpi1 as ::core::ffi::c_uint)
-        .wrapping_mul(n.wrapping_add(1 as ::core::ffi::c_int as ::core::ffi::c_uint))
-        .wrapping_add(mpi as ::core::ffi::c_uint)
-        .wrapping_add(n)
-        .wrapping_add(1 as ::core::ffi::c_int as ::core::ffi::c_uint)
-        .wrapping_add(n)
-        .wrapping_add(n)
-        .wrapping_add(max_cdim.wrapping_mul(n))
-        .wrapping_add(len_w as ::core::ffi::c_uint)
-        .wrapping_add(len_jw as ::core::ffi::c_uint); // size_of(::core::ffi::c_double) > size_of(::core::ffi::c_int)
-    let mut space: Vec<::core::ffi::c_double> = vec![0.; usize::try_from(space_size).unwrap()];
+    let n_usize = n as usize;
+    let Some(space_size) = (mpi1 as usize)
+        .checked_mul(n_usize.checked_add(1).unwrap_or(usize::MAX))
+        .and_then(|s| s.checked_add(mpi as usize))
+        .and_then(|s| s.checked_add(n_usize))
+        .and_then(|s| s.checked_add(1))
+        .and_then(|s| s.checked_add(n_usize))
+        .and_then(|s| s.checked_add(n_usize))
+        .and_then(|s| {
+            (max_cdim as usize)
+                .checked_mul(n_usize)
+                .and_then(|mc| s.checked_add(mc))
+        })
+        .and_then(|s| s.checked_add(len_w as usize))
+        .and_then(|s| s.checked_add(len_jw as usize))
+    else {
+        return NLOPT_OUT_OF_MEMORY;
+    };
+    let mut space: Vec<::core::ffi::c_double> = vec![0.; space_size];
     work = space.as_mut_ptr();
 
     if work.is_null() {

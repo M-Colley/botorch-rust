@@ -40,7 +40,10 @@ pub fn float_data(obj: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
             // Only formats in the native byte order (`PyBuffer` itself accepts
             // `>d` on little-endian machines), and not the unaligned dummy
             // pointer of an empty `array.array` (read as a sequence below).
-            if buf.dimensions() == 1 && matches!(buf.format().to_bytes(), b"d" | b"@d" | b"=d") {
+            if buf.dimensions() == 1
+                && buf.is_c_contiguous()
+                && matches!(buf.format().to_bytes(), b"d" | b"@d" | b"=d")
+            {
                 if let Ok(buf) = buf.into_typed::<f64>() {
                     return buf.to_vec(obj.py());
                 }
@@ -137,9 +140,9 @@ impl<'py> IntoPyObject<'py> for BoolBuf {
 }
 
 impl Array {
-    fn validate(&self, name: &str) -> PyResult<()> {
-        let n: usize = self.1.iter().product();
-        if n != self.0.len() {
+    pub(crate) fn validate(&self, name: &str) -> PyResult<()> {
+        let n = self.1.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d));
+        if n != Some(self.0.len()) {
             return Err(dimension_error(format!(
                 "{name}: {} values do not match the shape {:?}",
                 self.0.len(),
@@ -196,6 +199,9 @@ impl Array {
 /// A matrix in row-major order with its shape.
 pub fn matrix_out(m: &Matrix) -> ArrayOut {
     let (r, c) = m.shape();
+    if c <= 1 {
+        return (m.as_slice().to_vec(), vec![r, c]);
+    }
     let mut data = Vec::with_capacity(r * c);
     for i in 0..r {
         data.extend(m.row(i).iter());

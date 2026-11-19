@@ -175,7 +175,7 @@ impl OutcomeConstraints {
                 "Number of provided constraints and number of provided etas do not match.".into(),
             ));
         }
-        if eta.iter().any(|&e| e.is_nan() || e <= 0.0) {
+        if eta.iter().any(|&e| !e.is_finite() || e <= 0.0) {
             return Err(BotorchError::InvalidArgument(
                 "eta must be positive.".into(),
             ));
@@ -303,6 +303,14 @@ impl SmoothedFeasibility {
             ));
         }
         let (n, s) = self.values.shape();
+        if s == 0 {
+            if adjoint.nrows() != n || adjoint.ncols() != 0 {
+                return Err(BotorchError::DimensionMismatch(
+                    "feasibility adjoint must repeat the original MC sample axis".into(),
+                ));
+            }
+            return Ok(Matrix::zeros(self.samples_shape.0, 0));
+        }
         if adjoint.nrows() != n || !adjoint.ncols().is_multiple_of(s) {
             return Err(BotorchError::DimensionMismatch(
                 "feasibility adjoint must repeat the original MC sample axis".into(),

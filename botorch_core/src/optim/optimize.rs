@@ -625,7 +625,7 @@ pub fn optimize_acqf_detailed(
     })
 }
 
-fn check_fixed_features(fixed: &BTreeMap<usize, f64>, bounds: &Matrix) -> Result<()> {
+pub(crate) fn check_fixed_features(fixed: &BTreeMap<usize, f64>, bounds: &Matrix) -> Result<()> {
     let d = bounds.ncols();
     for (&k, &v) in fixed {
         if k >= d {

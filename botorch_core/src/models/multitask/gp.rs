@@ -319,7 +319,7 @@ pub struct MultiTaskGP {
     /// model with learned noise: their noise variances (transformed space).
     point_noise: Vec<Option<f64>>,
     raw: Vector,
-    cache: OnceLock<std::result::Result<Arc<MtCache>, BotorchError>>,
+    cache: Arc<OnceLock<std::result::Result<Arc<MtCache>, BotorchError>>>,
 }
 
 fn check_no_nan(m: &Matrix, what: &str) -> Result<()> {
@@ -510,7 +510,7 @@ impl MultiTaskGP {
             task_kernel,
             point_noise: Vec::new(),
             raw: Vector::from_vec(raw),
-            cache: OnceLock::new(),
+            cache: Arc::new(OnceLock::new()),
         })
     }
 
@@ -697,7 +697,7 @@ impl MultiTaskGP {
     pub fn set_raw_parameters(&mut self, values: &[f64]) -> Result<()> {
         self.check_raw(values)?;
         self.raw = Vector::from_column_slice(values);
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 
@@ -862,15 +862,15 @@ impl MultiTaskGP {
     /// unobserved tasks to the mean of the observed tasks' rows (through the
     /// constraint's inverse transform, which GPyTorch applies to all rows).
     /// A no-op if every task has data.
-    pub fn eval_unobserved_task_factors(&mut self) {
+    pub fn eval_unobserved_task_factors(&mut self) -> bool {
         let unobserved = self.layout.unobserved_task_indices();
         if unobserved.is_empty() {
-            return;
+            return false;
         }
         let observed = self.layout.observed_task_indices();
         let node = self.task_covar_module().clone();
         let Some(fp) = node.params().iter().find(|p| p.name == "raw_covar_factor") else {
-            return;
+            return false;
         };
         let var_len: usize = node
             .params()
@@ -896,10 +896,18 @@ impl MultiTaskGP {
         for &t in &unobserved {
             new[t * r..(t + 1) * r].copy_from_slice(&mean);
         }
+        let mut changed = false;
         for (dst, v) in raw.iter_mut().zip(new) {
-            *dst = fp.inverse_transform(v);
+            let nv = fp.inverse_transform(v);
+            if *dst != nv && !(dst.is_nan() && nv.is_nan()) {
+                *dst = nv;
+                changed = true;
+            }
         }
-        self.cache = OnceLock::new();
+        if changed {
+            self.cache = Arc::new(OnceLock::new());
+        }
+        changed
     }
 
     // ------------------------------------------------------------------
@@ -1628,7 +1636,7 @@ impl MultiTaskGP {
         }
         let n = self.num_train();
         let mut base = self.clone();
-        base.cache = OnceLock::new();
+        base.cache = Arc::new(OnceLock::new());
         base.train_x = vstack(&self.train_x, x);
         base.train_kx = vstack(&self.train_kx, &aug.kx);
         base.train_tasks.extend(aug.tasks.iter().copied());
@@ -1711,7 +1719,7 @@ impl MultiTaskGP {
                     chol: Arc::clone(&chol),
                     alpha,
                 };
-                m.cache = OnceLock::from(Ok(Arc::new(cache)));
+                m.cache = Arc::new(OnceLock::from(Ok(Arc::new(cache))));
                 Ok(m)
             })
             .collect()
@@ -2066,7 +2074,7 @@ mod tests {
         let c = m.condition_on_observations(&xn, &yn, None).unwrap();
         // The same model with the data, without the cached update.
         let mut fresh = c.clone();
-        fresh.cache = OnceLock::new();
+        fresh.cache = Arc::new(OnceLock::new());
         let x = Matrix::from_fn(3, 2, |i, j| 0.1 + 0.25 * (i + j) as f64);
         let a = c.posterior(&x, false).unwrap();
         let b = fresh.posterior(&x, false).unwrap();

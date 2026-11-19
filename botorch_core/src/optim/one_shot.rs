@@ -15,6 +15,7 @@
 use std::sync::Arc;
 
 use rand::{Rng, RngExt};
+use rayon::prelude::*;
 
 use crate::acquisition::knowledge_gradient::QKnowledgeGradient;
 use crate::acquisition::multi_objective::hypervolume_knowledge_gradient::{
@@ -151,6 +152,11 @@ pub fn boltzmann_sample<R: Rng + ?Sized>(
             "cannot sample n_sample <= 0 samples (got {num_samples} samples from {} values)",
             function_values.len()
         )));
+    }
+    if !eta.is_finite() || function_values.iter().any(|v| !v.is_finite()) {
+        return Err(BotorchError::InvalidArgument(
+            "function_values and eta must be finite".into(),
+        ));
     }
     let z = standardize(function_values);
     let mut eta = eta;
@@ -680,7 +686,7 @@ pub(crate) fn gen_value_function_initial_conditions(
         }
         x_rnd.extend(randomized[i * n_random..(i + 1) * n_random].iter().cloned());
         let acq_vals = x_rnd
-            .iter()
+            .par_iter()
             .map(|x| {
                 Ok(acq_function
                     .fantasy_value_and_grad(fantasies, i, x, false)?

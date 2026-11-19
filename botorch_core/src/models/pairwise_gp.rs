@@ -146,17 +146,13 @@ pub fn detect_duplicates(x: &Matrix, rtol: f64, atol: f64) -> Vec<(usize, usize)
     for j in 0..n {
         let mut best = f64::INFINITY;
         let mut arg = 0;
-        for i in 0..n {
+        for i in 0..j {
             let tol = if rtol != 0.0 {
                 atol + rtol * rval[i].max(rval[j])
             } else {
                 atol
             };
-            let dist = if i < j {
-                (0..x.ncols()).fold(0.0f64, |m, k| m.max((x[(i, k)] - x[(j, k)]).abs()))
-            } else {
-                f64::INFINITY
-            };
+            let dist = (0..x.ncols()).fold(0.0f64, |m, k| m.max((x[(i, k)] - x[(j, k)]).abs()));
             let diff = dist - tol;
             // torch's `min(dim)` returns the first minimal index.
             if diff < best {
@@ -328,14 +324,30 @@ fn lu_inverse(a: &Matrix) -> Result<Matrix> {
 /// `torch.logdet(A)` of a general matrix: `log |det A|`, NaN for a negative
 /// determinant.
 fn logdet(a: &Matrix) -> f64 {
+    if a.nrows() == 0 {
+        return 0.0;
+    }
+    if a.iter().any(|v| v.is_nan()) {
+        return f64::NAN;
+    }
     let lu = a.clone().lu();
-    let det_sign = lu.determinant().signum();
     let u = lu.u();
+    let mut neg = lu.p().determinant::<f64>() < 0.0;
     let mut s = 0.0;
     for i in 0..u.nrows() {
-        s += u[(i, i)].abs().ln();
+        let d = u[(i, i)];
+        if d.is_nan() {
+            return f64::NAN;
+        }
+        if d == 0.0 {
+            return f64::NEG_INFINITY;
+        }
+        if d < 0.0 {
+            neg = !neg;
+        }
+        s += d.abs().ln();
     }
-    if det_sign < 0.0 {
+    if neg {
         f64::NAN
     } else {
         s
@@ -2469,5 +2481,35 @@ mod tests {
         assert_eq!(c.datapoints.nrows(), 3);
         assert_eq!(c.comparisons, vec![(0, 1), (0, 2)]);
         assert_eq!(c.indices, vec![0, 1, 0, 2]);
+    }
+
+    #[test]
+    fn logdet_handles_underflow_and_overflow_without_nan() {
+        let small = Matrix::from_diagonal(&Vector::from_element(100, 1e-10));
+        let ld_small = logdet(&small);
+        let expected_small = 100.0 * (1e-10_f64).ln();
+        assert!(
+            (ld_small - expected_small).abs() < 1e-10,
+            "got {ld_small}, expected {expected_small}"
+        );
+
+        let large = Matrix::from_diagonal(&Vector::from_element(100, 1e10));
+        let ld_large = logdet(&large);
+        let expected_large = 100.0 * (1e10_f64).ln();
+        assert!(
+            (ld_large - expected_large).abs() < 1e-10,
+            "got {ld_large}, expected {expected_large}"
+        );
+
+        // Permutation with odd sign and one negative diagonal entry -> positive det,
+        // even when product underflows to 0.0 / -0.0.
+        let mut perm = Matrix::zeros(100, 100);
+        perm[(0, 1)] = 1e-10;
+        perm[(1, 0)] = -1e-10;
+        for i in 2..100 {
+            perm[(i, i)] = 1e-10;
+        }
+        let ld_perm = logdet(&perm);
+        assert!((ld_perm - expected_small).abs() < 1e-10, "got {ld_perm}");
     }
 }

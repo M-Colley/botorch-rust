@@ -384,10 +384,13 @@ pub struct AdaptWindow {
 /// NumPyro's `build_adaptation_schedule` (Stan's windows).
 pub fn build_adaptation_schedule(num_steps: usize) -> Vec<AdaptWindow> {
     let mut schedule = Vec::new();
+    if num_steps == 0 {
+        return schedule;
+    }
     if num_steps < 20 {
         schedule.push(AdaptWindow {
             start: 0,
-            end: num_steps.wrapping_sub(1),
+            end: num_steps - 1,
         });
         return schedule;
     }
@@ -885,6 +888,32 @@ pub fn sample_nuts_with_callback<P: Potential + ?Sized>(
             z0.len()
         )));
     }
+    if options.max_tree_depth.0 == 0
+        || options.max_tree_depth.1 == 0
+        || options.max_tree_depth.0 > 30
+        || options.max_tree_depth.1 > 30
+    {
+        return Err(BotorchError::InvalidArgument(
+            "max_tree_depth must be between 1 and 30".into(),
+        ));
+    }
+    if !options.step_size.is_finite() || options.step_size <= 0.0 {
+        return Err(BotorchError::InvalidArgument(
+            "step_size must be positive and finite".into(),
+        ));
+    }
+    if !options.target_accept_prob.is_finite() || !(0.0..=1.0).contains(&options.target_accept_prob)
+    {
+        return Err(BotorchError::InvalidArgument(
+            "target_accept_prob must be in [0, 1]".into(),
+        ));
+    }
+    let total = options
+        .num_warmup
+        .checked_add(options.num_samples)
+        .ok_or_else(|| {
+            BotorchError::InvalidArgument("total NUTS iterations overflow usize".into())
+        })?;
     let schedule = build_adaptation_schedule(options.num_warmup);
     let num_windows = schedule.len();
     let (mut pe, mut grad) = potential.value_and_grad(z0);
@@ -901,7 +930,6 @@ pub fn sample_nuts_with_callback<P: Potential + ?Sized>(
     // The momentum of `init_kernel` (only used for the initial energy).
     rng.normal(dim)?;
     let num_ckpts = options.max_tree_depth.0.max(options.max_tree_depth.1);
-    let total = options.num_warmup + options.num_samples;
     let mut trace = Vec::with_capacity(total);
     let mut samples = Vec::with_capacity(options.num_samples);
     let mut stopped_at = None;
@@ -928,7 +956,11 @@ pub fn sample_nuts_with_callback<P: Potential + ?Sized>(
             }
             Err(e) => return Err(e),
         };
-        let accept_prob = tree.sum_accept_probs / tree.num_proposals as f64;
+        let accept_prob = if tree.num_proposals > 0 {
+            tree.sum_accept_probs / tree.num_proposals as f64
+        } else {
+            0.0
+        };
         z = tree.z_proposal;
         pe = tree.pe_proposal;
         grad = tree.grad_proposal;

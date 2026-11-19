@@ -390,6 +390,7 @@ pub(super) fn moment_parameter_vjp(
     } else {
         vec![q, mo]
     };
+    adjoint.validate("adjoint")?;
     if adjoint.1 != [bc.shape.as_slice(), &tail].concat() {
         return Err(dimension_error(
             "Posterior adjoint shape does not match its output",
@@ -557,6 +558,7 @@ fn posterior_query_vjp(
         return Err(value_error("Unknown posterior gradient mode"));
     }
     let width = if covariance { q * mo * q * mo } else { q * mo };
+    adjoint.validate("adjoint")?;
     if adjoint.0.len() != bc.x_index.len() * width {
         return Err(dimension_error(
             "Posterior adjoint shape does not match its output",

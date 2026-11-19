@@ -175,19 +175,15 @@ impl SingleTaskGP {
 
     /// LOO optimal variance increments, centered at the model's mean.
     pub fn relevance_expansion_objective(&self) -> Result<Vec<f64>> {
-        let chol = self.train_cholesky()?;
-        let inverse = chol.inverse();
-        let residual = self
-            .transformed_train_targets()
-            .add_scalar(-self.constant());
-        let alpha = chol.solve_vec(&residual);
+        let inverse_diagonal = self.train_cholesky()?.inverse_diagonal();
+        let alpha = self.train_alpha()?;
         let factors = self.sparse_outlier_noise().map_or_else(
             || vec![0.0; self.num_train()],
             |s| s.factors(self.num_train()),
         );
         Ok((0..self.num_train())
             .map(|i| {
-                let variance = 1.0 / inverse[(i, i)];
+                let variance = 1.0 / inverse_diagonal[i];
                 ((alpha[i] * variance).powi(2) - variance - factors[i]).max(0.0)
             })
             .collect())

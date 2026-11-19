@@ -84,7 +84,7 @@ class OrthogonalAdditiveGP(SingleTaskGP):
                 dim=to_flat(train_X, "train_X")[1][-1],
                 second_order=second_order,
                 batch_shape=self.get_batch_dimensions(train_X, train_Y)[1],
-                dtype=getattr(train_X, "dtype", None) or "float64",
+                dtype=getattr(train_X, "dtype", None),
                 device=getattr(train_X, "device", None),
             )
         elif not isinstance(covar_module, OrthogonalAdditiveKernel):

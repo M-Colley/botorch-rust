@@ -53,7 +53,8 @@ class L2Penalty:
 
     def __call__(self, X: Any) -> Any:
         torch = _torch()
-        return torch.linalg.norm((X - self.init_point), ord=2, dim=-1).max(dim=-1).values ** 2
+        p = torch.as_tensor(self.init_point, dtype=X.dtype, device=X.device)
+        return torch.linalg.norm((X - p), ord=2, dim=-1).max(dim=-1).values ** 2
 
 
 class L1Penalty:
@@ -68,7 +69,8 @@ class L1Penalty:
 
     def __call__(self, X: Any) -> Any:
         torch = _torch()
-        return torch.linalg.norm((X - self.init_point), ord=1, dim=-1).max(dim=-1).values
+        p = torch.as_tensor(self.init_point, dtype=X.dtype, device=X.device)
+        return torch.linalg.norm((X - p), ord=1, dim=-1).max(dim=-1).values
 
 
 class GaussianPenalty:
@@ -85,7 +87,8 @@ class GaussianPenalty:
 
     def __call__(self, X: Any) -> Any:
         torch = _torch()
-        sq_diff = torch.linalg.norm((X - self.init_point), ord=2, dim=-1) ** 2
+        p = torch.as_tensor(self.init_point, dtype=X.dtype, device=X.device)
+        sq_diff = torch.linalg.norm((X - p), ord=2, dim=-1) ** 2
         return torch.exp(sq_diff / 2 / self.sigma**2).max(dim=-1).values
 
 
@@ -105,9 +108,11 @@ class GroupLassoPenalty:
         )
 
     def __call__(self, X: Any) -> Any:
+        torch = _torch()
         if X.shape[-2] != 1:
             raise NotImplementedError("group-lasso has not been implemented for q>1 yet.")
-        return group_lasso_regularizer(X=X.squeeze(-2) - self.init_point, groups=self.groups)
+        p = torch.as_tensor(self.init_point, dtype=X.dtype, device=X.device)
+        return group_lasso_regularizer(X=X.squeeze(-2) - p, groups=self.groups)
 
 
 def group_lasso_regularizer(X: Any, groups: list[list[int]]) -> Any:
@@ -132,10 +137,12 @@ def narrow_gaussian(X: Any, a: Any) -> Any:
 def nnz_approx(X: Any, target_point: Any, a: Any) -> Any:
     r"""Differentiable relaxation of ``||X - target_point||_0``:
     ``d - sum_k narrow_gaussian(X_k - target_point_k, a)`` (``n x 1``)."""
+    torch = _torch()
+    tp = torch.as_tensor(target_point, dtype=X.dtype, device=X.device)
     d = X.shape[-1]
-    if d != target_point.shape[-1]:
+    if d != tp.shape[-1]:
         raise ValueError("X and target_point have different shapes.")
-    return d - narrow_gaussian(X - target_point, a).sum(dim=-1, keepdim=True)
+    return d - narrow_gaussian(X - tp, a).sum(dim=-1, keepdim=True)
 
 
 class L0Approximation:
@@ -148,7 +155,8 @@ class L0Approximation:
 
     def __call__(self, X: Any) -> Any:
         torch = _torch()
-        return nnz_approx(X=X, target_point=self.target_point, a=torch.tensor(self.a))
+        a = torch.as_tensor(self.a, dtype=X.dtype, device=X.device)
+        return nnz_approx(X=X, target_point=self.target_point, a=a)
 
 
 class L0PenaltyApprox(L0Approximation):
@@ -176,7 +184,8 @@ class L1PenaltyObjective:
 
     def __call__(self, X: Any) -> Any:
         torch = _torch()
-        return torch.linalg.norm((X - self.init_point), ord=1, dim=-1).unsqueeze(dim=0)
+        p = torch.as_tensor(self.init_point, dtype=X.dtype, device=X.device)
+        return torch.linalg.norm((X - p), ord=1, dim=-1).unsqueeze(dim=0)
 
 
 class L0PenaltyApproxObjective(L0Approximation):

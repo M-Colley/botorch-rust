@@ -48,7 +48,7 @@
 //! then the next parameter; or one shared set).
 
 use std::ops::Range;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use rand::rngs::StdRng;
 
@@ -185,7 +185,7 @@ pub struct SingleTaskVariationalGP {
     options: SingleTaskVariationalGPOptions,
     layout: Layout,
     raw: Vec<f64>,
-    cache: OnceLock<std::result::Result<Vec<OutputCache>, BotorchError>>,
+    cache: Arc<OnceLock<std::result::Result<Vec<OutputCache>, BotorchError>>>,
 }
 
 /// The terms of the ELBO (`combine_terms=False` in GPyTorch): the expected
@@ -401,7 +401,7 @@ impl SingleTaskVariationalGP {
             options,
             layout,
             raw,
-            cache: OnceLock::new(),
+            cache: Arc::new(OnceLock::new()),
         })
     }
 
@@ -458,7 +458,7 @@ impl SingleTaskVariationalGP {
             ));
         }
         self.raw = raw.to_vec();
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 
@@ -466,7 +466,8 @@ impl SingleTaskVariationalGP {
     /// the same), as `init_inducing_points` does.
     ///
     /// # Errors
-    /// [`BotorchError::DimensionMismatch`] for a wrong shape.
+    /// [`BotorchError::DimensionMismatch`] for a wrong shape and
+    /// [`BotorchError::InvalidArgument`] for non-finite values.
     pub fn set_inducing_points(&mut self, z: &Matrix) -> Result<()> {
         let dt = self.transformed_dim();
         if z.shape() != (self.num_inducing, dt) {
@@ -477,6 +478,11 @@ impl SingleTaskVariationalGP {
                 z.ncols()
             )));
         }
+        if z.iter().any(|v| !v.is_finite()) {
+            return Err(BotorchError::InvalidArgument(
+                "inducing points must be finite".into(),
+            ));
+        }
         match self.layout.inducing.clone() {
             Some(r) => {
                 for (k, v) in self.raw[r].iter_mut().enumerate() {
@@ -485,7 +491,7 @@ impl SingleTaskVariationalGP {
             }
             None => self.fixed_inducing = z.clone(),
         }
-        self.cache = OnceLock::new();
+        self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
 

@@ -477,7 +477,7 @@ fn fits_are_independent_per_element() {
     assert_eq!(res.results.len(), 2);
     assert_eq!(res.status, FitStatus::Success);
     assert_eq!(res.message, "Batched L-BFGS-B: 2/2 outputs converged.");
-    for t in 0..2 {
+    for (t, res_t) in res.results.iter().enumerate() {
         let mut single = SingleTaskGP::new(
             x.clone(),
             y.columns(t, 1).into_owned(),
@@ -493,8 +493,8 @@ fn fits_are_independent_per_element() {
             },
         )
         .unwrap();
-        assert_eq!(r.loss, res.results[t].loss);
-        assert_eq!(r.iterations, res.results[t].iterations);
+        assert_eq!(r.loss, res_t.loss);
+        assert_eq!(r.iterations, res_t.iterations);
         assert_eq!(single.raw_parameters(), gp.model(0, t).raw_parameters());
     }
     assert!((res.loss - res.results.iter().map(|r| r.loss).sum::<f64>()).abs() < 1e-15);

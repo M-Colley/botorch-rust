@@ -657,9 +657,9 @@ fn entropy_estimators_match_botorch() {
         let m = c.m;
         let mut lower = Vec::new();
         let mut upper = Vec::new();
-        for k in 0..p {
-            lower.extend(c.hypercell_bounds[k][0].iter().flatten().map(|f| f.0));
-            upper.extend(c.hypercell_bounds[k][1].iter().flatten().map(|f| f.0));
+        for bounds in c.hypercell_bounds.iter().take(p) {
+            lower.extend(bounds[0].iter().flatten().map(|f| f.0));
+            upper.extend(bounds[1].iter().flatten().map(|f| f.0));
         }
         let cells = CellBounds::new(vec![p], j, m, lower, upper).unwrap();
         let name = format!("m{m}");
