@@ -141,10 +141,9 @@ impl InverseCostWeightedUtility {
         let full = self.cost_model.forward(x)?;
         let outputs: Vec<usize> = match x_evaluation_mask {
             Some(mask) => {
-                if mask.shape() != (q, full.ncols()) {
+                if mask.nrows() != q {
                     return Err(BotorchError::DimensionMismatch(format!(
-                        "X_evaluation_mask must have shape ({q}, {}), got {:?}",
-                        full.ncols(),
+                        "X_evaluation_mask must have {q} rows, got {:?}",
                         mask.shape()
                     )));
                 }

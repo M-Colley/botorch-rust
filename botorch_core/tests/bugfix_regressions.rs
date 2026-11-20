@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use botorch_core::acquisition::cost_aware::InverseCostWeightedUtility;
 use botorch_core::acquisition::multi_objective::{
     ExpectedHypervolumeImprovement, QHypervolumeKnowledgeGradient,
     QHypervolumeKnowledgeGradientOptions, QNoisyExpectedHypervolumeImprovement,
@@ -15,7 +16,9 @@ use botorch_core::acquisition::wrappers::{
 use botorch_core::acquisition::{
     AcquisitionFunction, LogExpectedImprovement, QExpectedImprovement,
 };
+use botorch_core::models::cost::{AffineFidelityCostModel, CostModel};
 use botorch_core::models::multitask::{KroneckerMultiTaskGP, MultiTaskGP, MultiTaskGPOptions};
+use botorch_core::models::BoolMatrix;
 use botorch_core::optim::mixed::{get_nearest_neighbors, optimize_acqf_mixed, DiscreteDims};
 use botorch_core::optim::{optimize_acqf, OptimizeAcqfOptions};
 use botorch_core::utils::elementwise::reduce;
@@ -112,7 +115,12 @@ fn model_clones_share_caches_and_eval_unobserved_is_idempotent() {
     raw[0] = 0.05;
     mt.set_raw_parameters(&raw).unwrap();
     assert!(mt.eval_unobserved_task_factors());
-    // Calling a second time must be a no-op and return false.
+    // Calling a second time must be a no-op and return false across all platforms.
+    assert!(!mt.eval_unobserved_task_factors());
+    // Updating raw parameters re-arms unobserved synchronization.
+    raw[0] = 0.25;
+    mt.set_raw_parameters(&raw).unwrap();
+    assert!(mt.eval_unobserved_task_factors());
     assert!(!mt.eval_unobserved_task_factors());
 
     let snap = mt.clone();
@@ -299,4 +307,15 @@ fn ehvi_forward_many_matches_forward_and_log_hvkg_handles_high_current_value() {
         .unwrap();
     let v2 = nehvi.forward(&cand).unwrap();
     assert_ne!(v1, v2);
+
+    // Single-output cost model accepts multi-output evaluation masks selecting output 0.
+    let cost_model: Arc<dyn CostModel> = Arc::new(AffineFidelityCostModel::new(None, 0.1).unwrap());
+    let util = InverseCostWeightedUtility::new(cost_model, true, None, false).unwrap();
+    let x_q = Matrix::from_row_slice(2, 2, &[0.2, 0.5, 0.4, 1.0]);
+    let mask_ok = BoolMatrix::from_row_slice(2, 2, &[true, false, true, false]);
+    let (cost, grad) = util.total_cost(&x_q, Some(&mask_ok), true).unwrap();
+    assert!((cost - 1.7).abs() < 1e-12);
+    assert!(grad.unwrap().iter().all(|v| v.is_finite()));
+    let mask_oob = BoolMatrix::from_row_slice(2, 2, &[false, true, false, true]);
+    assert!(util.total_cost(&x_q, Some(&mask_oob), false).is_err());
 }

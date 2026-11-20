@@ -319,6 +319,7 @@ pub struct MultiTaskGP {
     /// model with learned noise: their noise variances (transformed space).
     point_noise: Vec<Option<f64>>,
     raw: Vector,
+    unobserved_synced: bool,
     cache: Arc<OnceLock<std::result::Result<Arc<MtCache>, BotorchError>>>,
 }
 
@@ -510,6 +511,7 @@ impl MultiTaskGP {
             task_kernel,
             point_noise: Vec::new(),
             raw: Vector::from_vec(raw),
+            unobserved_synced: false,
             cache: Arc::new(OnceLock::new()),
         })
     }
@@ -697,6 +699,7 @@ impl MultiTaskGP {
     pub fn set_raw_parameters(&mut self, values: &[f64]) -> Result<()> {
         self.check_raw(values)?;
         self.raw = Vector::from_column_slice(values);
+        self.unobserved_synced = false;
         self.cache = Arc::new(OnceLock::new());
         Ok(())
     }
@@ -864,7 +867,7 @@ impl MultiTaskGP {
     /// A no-op if every task has data.
     pub fn eval_unobserved_task_factors(&mut self) -> bool {
         let unobserved = self.layout.unobserved_task_indices();
-        if unobserved.is_empty() {
+        if self.unobserved_synced || unobserved.is_empty() {
             return false;
         }
         let observed = self.layout.observed_task_indices();
@@ -896,18 +899,12 @@ impl MultiTaskGP {
         for &t in &unobserved {
             new[t * r..(t + 1) * r].copy_from_slice(&mean);
         }
-        let mut changed = false;
         for (dst, v) in raw.iter_mut().zip(new) {
-            let nv = fp.inverse_transform(v);
-            if *dst != nv && !(dst.is_nan() && nv.is_nan()) {
-                *dst = nv;
-                changed = true;
-            }
+            *dst = fp.inverse_transform(v);
         }
-        if changed {
-            self.cache = Arc::new(OnceLock::new());
-        }
-        changed
+        self.unobserved_synced = true;
+        self.cache = Arc::new(OnceLock::new());
+        true
     }
 
     // ------------------------------------------------------------------
