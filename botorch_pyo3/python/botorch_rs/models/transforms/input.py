@@ -24,7 +24,15 @@ import math
 import sys
 import warnings
 from collections import OrderedDict
-from collections.abc import Callable, ItemsView, Iterator, KeysView, ValuesView
+from collections.abc import (
+    Callable,
+    ItemsView,
+    Iterator,
+    KeysView,
+    Mapping,
+    Sequence,
+    ValuesView,
+)
 from typing import Any, NamedTuple
 
 from botorch_rs import _botorch_rs as _rs
@@ -2444,6 +2452,274 @@ class BatchBroadcastedInputTransform(InputTransform):
         return steps
 
 
+def _gate_weight_and_deriv(u_parent_raw: float, tau: float, kappa: float) -> tuple[float, float]:
+    if u_parent_raw < 0.0:
+        u_p = 0.0
+        clamp_d = 0.0
+    elif u_parent_raw > 1.0:
+        u_p = 1.0
+        clamp_d = 0.0
+    else:
+        u_p = u_parent_raw
+        clamp_d = 1.0
+
+    if kappa > 0.0:
+        sig_0 = 1.0 / (1.0 + math.exp(kappa * tau))
+        sig_1 = 1.0 / (1.0 + math.exp(-kappa * (1.0 - tau)))
+        denom = max(sig_1 - sig_0, 1e-12)
+        z = kappa * (u_p - tau)
+        sig = 1.0 / (1.0 + math.exp(-z)) if z >= 0.0 else math.exp(z) / (1.0 + math.exp(z))
+        raw_w = (sig - sig_0) / denom
+        if raw_w < 0.0:
+            return 0.0, 0.0
+        if raw_w > 1.0:
+            return 1.0, 0.0
+        return raw_w, clamp_d * (kappa * sig * (1.0 - sig) / denom)
+
+    denom = max(1.0 - tau, 1e-12)
+    raw_w = (u_p - tau) / denom
+    if raw_w < 0.0:
+        return 0.0, 0.0
+    if raw_w > 1.0:
+        return 1.0, 0.0
+    return raw_w, clamp_d / denom
+
+
+def _apply_gates_flat(
+    data: Sequence[float],
+    n_rows: int,
+    d: int,
+    ordered_gates: tuple[tuple[int, int, float, float, float], ...],
+) -> list[float]:
+    out = [float(v) for v in data]
+    for r in range(n_rows):
+        base = r * d
+        for child_idx, parent_idx, tau, c0, kappa in ordered_gates:
+            w, _ = _gate_weight_and_deriv(out[base + parent_idx], tau, kappa)
+            u_child = out[base + child_idx]
+            out[base + child_idx] = c0 + w * (u_child - c0)
+    return out
+
+
+def _gates_vjp_flat(
+    data: Sequence[float],
+    n_rows: int,
+    d: int,
+    adjoint: Sequence[float],
+    ordered_gates: tuple[tuple[int, int, float, float, float], ...],
+) -> list[float]:
+    grad = [0.0] * (n_rows * d)
+    for r in range(n_rows):
+        base = r * d
+        row = [float(data[base + j]) for j in range(d)]
+        tape: list[tuple[int, int, float, float, float, float]] = []
+        for child_idx, parent_idx, tau, c0, kappa in ordered_gates:
+            w, dw = _gate_weight_and_deriv(row[parent_idx], tau, kappa)
+            u_child = row[child_idx]
+            tape.append((child_idx, parent_idx, u_child, c0, w, dw))
+            row[child_idx] = c0 + w * (u_child - c0)
+        bar = [float(adjoint[base + j]) for j in range(d)]
+        for child_idx, parent_idx, u_child, c0, w, dw in reversed(tape):
+            bar_c = bar[child_idx]
+            bar[child_idx] = bar_c * w
+            bar[parent_idx] += bar_c * (u_child - c0) * dw
+        for j in range(d):
+            grad[base + j] = bar[j]
+    return grad
+
+
+class _GateFeatureFn:
+    """Pure-Python feature/VJP bridge for native Rust evaluation of
+    :class:`HierarchicalGateTransform` without requiring ``torch`` or ``numpy``."""
+
+    def __init__(
+        self,
+        d: int,
+        ordered_gates: tuple[tuple[int, int, float, float, float], ...],
+    ) -> None:
+        self.d = d
+        self.ordered_gates = ordered_gates
+
+    def __call__(self, X: Any) -> Any:
+        data, shape = _check_flat_matrix(X)
+        n_rows = math.prod(shape[:-1])
+        out = _apply_gates_flat(data, n_rows, self.d, self.ordered_gates)
+        return from_flat(out, (*shape[:-1], 1, self.d), kind_of(X))
+
+    def native_features(self, x: Sequence[float], n: int, k: int) -> tuple[list[float], int, int]:
+        return _apply_gates_flat(x, n, k, self.ordered_gates), 1, self.d
+
+    def native_vjp(
+        self, x: Sequence[float], n: int, k: int, adjoint: Sequence[float]
+    ) -> list[float]:
+        return _gates_vjp_flat(x, n, k, adjoint, self.ordered_gates)
+
+
+class HierarchicalGateTransform(InputTransform):
+    r"""An input transform for conditional / hierarchical feature gating.
+
+    When a parent feature ``X[..., p]`` in ``[0, 1]`` is at or below a
+    threshold ``tau``, its gated child feature ``X[..., c]`` collapses to a
+    neutral anchor ``c_0``:
+
+        ``X'[..., c] = c_0 + g(X[..., p]) * (X[..., c] - c_0)``.
+
+    Multi-level hierarchies (e.g. ``0 -> 1 -> 2``) are validated as a directed
+    acyclic graph (DAG) at initialization and applied in topological
+    parent-before-child order across nested Python lists, NumPy arrays, and
+    PyTorch tensors.
+    """
+
+    def __init__(
+        self,
+        d: int,
+        gates: Mapping[int, int],
+        thresholds: float | Mapping[int, float] = 0.0,
+        neutral_values: float | Mapping[int, float] = 0.0,
+        sharpness: float | Mapping[int, float] = 0.0,
+        transform_on_train: bool = True,
+        transform_on_eval: bool = True,
+        transform_on_fantasize: bool = True,
+    ) -> None:
+        if isinstance(d, bool) or not isinstance(d, int) or d < 2:
+            raise ValueError(f"`d` must be an integer >= 2, got {d!r}.")
+        if not gates:
+            raise ValueError("`gates` must be a non-empty mapping.")
+
+        self.d = d
+        self.transform_on_train = bool(transform_on_train)
+        self.transform_on_eval = bool(transform_on_eval)
+        self.transform_on_fantasize = bool(transform_on_fantasize)
+        self.training = True
+
+        def _resolve_param(
+            spec: float | Mapping[int, float],
+            child: int,
+            name: str,
+            default: float,
+        ) -> float:
+            raw = spec.get(child, default) if isinstance(spec, Mapping) else spec
+            val = float(raw)
+            if not math.isfinite(val):
+                raise ValueError(f"`{name}` for child feature {child} must be finite, got {raw!r}.")
+            return val
+
+        raw_specs: dict[int, tuple[int, float, float, float]] = {}
+        for child_raw, parent_raw in gates.items():
+            if (
+                isinstance(child_raw, bool)
+                or not isinstance(child_raw, int)
+                or isinstance(parent_raw, bool)
+                or not isinstance(parent_raw, int)
+            ):
+                raise ValueError("Gate feature indices must be integers.")
+            if not (0 <= child_raw < d and 0 <= parent_raw < d):
+                raise ValueError(
+                    f"Gate feature indices must lie in [0, {d - 1}], got {child_raw}: {parent_raw}."
+                )
+            if child_raw == parent_raw:
+                raise ValueError(f"Feature {child_raw} cannot be gated by itself.")
+
+            tau = _resolve_param(thresholds, child_raw, "thresholds", 0.0)
+            if tau < 0.0 or tau >= 1.0:
+                raise ValueError(
+                    f"`thresholds` for feature {child_raw} must lie in [0, 1), got {tau}."
+                )
+            c0 = _resolve_param(neutral_values, child_raw, "neutral_values", 0.0)
+            if c0 < 0.0 or c0 > 1.0:
+                raise ValueError(
+                    f"`neutral_values` for feature {child_raw} must lie in [0, 1], got {c0}."
+                )
+            kappa = _resolve_param(sharpness, child_raw, "sharpness", 0.0)
+            if kappa < 0.0:
+                raise ValueError(f"`sharpness` for feature {child_raw} must be >= 0, got {kappa}.")
+            raw_specs[child_raw] = (parent_raw, tau, c0, kappa)
+
+        visit_state: dict[int, int] = {}
+        ordered: list[tuple[int, int, float, float, float]] = []
+
+        def _visit(node: int, trail: list[int]) -> None:
+            st = visit_state.get(node, 0)
+            if st == 2:
+                return
+            if st == 1:
+                cycle = trail[trail.index(node) :] + [node]
+                cycle_str = " -> ".join(str(idx) for idx in cycle)
+                raise ValueError(f"`gates` contains a cycle: {cycle_str}.")
+            visit_state[node] = 1
+            spec = raw_specs.get(node)
+            if spec is not None:
+                parent_idx, tau, c0, kappa = spec
+                if parent_idx in raw_specs:
+                    _visit(parent_idx, trail + [node])
+                ordered.append((node, parent_idx, tau, c0, kappa))
+            visit_state[node] = 2
+
+        for child_idx in sorted(raw_specs):
+            _visit(child_idx, [])
+
+        self._ordered_gates: tuple[tuple[int, int, float, float, float], ...] = tuple(ordered)
+
+    def transform(self, X: Any) -> Any:
+        r"""Apply hierarchical feature gating to normalized inputs ``X``."""
+        if _torch_input.is_tensor(X):
+            import torch
+
+            if X.dim() < 2:
+                raise BotorchTensorDimensionError(
+                    f"`X` must have at least 2 dimensions, got {X.dim()}."
+                )
+            if X.shape[-1] != self.d:
+                raise BotorchTensorDimensionError(
+                    f"`X` must have {self.d} features in its last dimension, got {X.shape[-1]}."
+                )
+            cols = [X[..., j] for j in range(self.d)]
+            for child_idx, parent_idx, tau, c0, kappa in self._ordered_gates:
+                u_parent = cols[parent_idx].clamp(0.0, 1.0)
+                u_child = cols[child_idx]
+                if kappa > 0.0:
+                    sig_0 = 1.0 / (1.0 + math.exp(kappa * tau))
+                    sig_1 = 1.0 / (1.0 + math.exp(-kappa * (1.0 - tau)))
+                    denom = max(sig_1 - sig_0, 1e-12)
+                    weight = ((torch.sigmoid(kappa * (u_parent - tau)) - sig_0) / denom).clamp(
+                        0.0, 1.0
+                    )
+                else:
+                    denom = max(1.0 - tau, 1e-12)
+                    weight = ((u_parent - tau) / denom).clamp(0.0, 1.0)
+                cols[child_idx] = c0 + weight * (u_child - c0)
+            return torch.stack(cols, dim=-1)
+
+        kind = kind_of(X)
+        data, shape = _check_flat_matrix(X)
+        if shape[-1] != self.d:
+            raise BotorchTensorDimensionError(
+                f"`X` must have {self.d} features in its last dimension, got {shape[-1]}."
+            )
+        n_rows = math.prod(shape[:-1])
+        out = _apply_gates_flat(data, n_rows, self.d, self._ordered_gates)
+        return from_flat(out, shape, kind)
+
+    def _state(self) -> Any:
+        return (self.d, self._ordered_gates)
+
+    def _model_steps(self, d: int, prefix: str, batch: int | None) -> list[_Step]:
+        if d != self.d:
+            raise BotorchTensorDimensionError(
+                f"`X` must have {self.d} features in its last dimension, got {d}."
+            )
+        flags = self._flags()
+        fn = _GateFeatureFn(self.d, self._ordered_gates)
+        append_step = _rs.InputStep.append(None, fn, None, None, False, flags).fit(
+            ([0.0] * d, (1, d))
+        )
+        filter_step = _rs.InputStep.filter(list(range(d, 2 * d)), flags)
+        return [
+            _Step(append_step, self.training, prefix, self),
+            _Step(filter_step, self.training, prefix, self),
+        ]
+
+
 # -----------------------------------------------------------------------------
 # Model integration
 # -----------------------------------------------------------------------------
@@ -2566,6 +2842,7 @@ __all__ = [
     "BatchBroadcastedInputTransform",
     "ChainedInputTransform",
     "FilterFeatures",
+    "HierarchicalGateTransform",
     "InputPerturbation",
     "InputStandardize",
     "InputTransform",
