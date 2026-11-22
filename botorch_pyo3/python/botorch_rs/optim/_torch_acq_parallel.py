@@ -55,6 +55,7 @@ def gen_parallel(
 ) -> tuple[Tensor, Tensor]:
     import numpy as np
 
+    from botorch_rs.exceptions.errors import OptimizationGradientError
     from botorch_rs.optim._torch_acq_optim import clamp, fix_features
     from botorch_rs.optim.batched_lbfgs_b import fmin_l_bfgs_b_batched
 
@@ -69,6 +70,8 @@ def gen_parallel(
     n = len(batch)
     free_shape = (batch.shape[-2], len(free))
     current = batch.detach().clone()
+    initial_done = [False] * n
+    last_finite_loss = [0.0] * n
     x0 = batch[..., free].double().cpu().numpy().reshape(n, -1)
     bounds = list(
         zip(
@@ -86,18 +89,37 @@ def gen_parallel(
         )
         updated = current.index_select(0, index).clone()
         updated[..., free] = values
-        current = current.index_copy(0, index, updated).detach()
-        variable = current.clone().requires_grad_(True)
+        trial = current.index_copy(0, index, updated).detach()
+        variable = trial.clone().requires_grad_(True)
         full = variable.squeeze(0) if len(shape) == 2 else variable
         losses = -acquisition(full).reshape(-1)
         if losses.shape != (n,):
             raise ValueError("Parallel acquisition values must have one value per restart.")
         loss = losses.index_select(0, index)
         gradient = torch.autograd.grad(loss.sum(), variable)[0].index_select(0, index)[..., free]
-        return (
-            loss.detach().double().cpu().numpy(),
-            gradient.detach().double().cpu().numpy().reshape(len(batch_indices), -1),
-        )
+        loss_np = loss.detach().double().cpu().numpy().copy()
+        grad_np = gradient.detach().double().cpu().numpy().reshape(len(batch_indices), -1).copy()
+        for j, i in enumerate(batch_indices):
+            if np.isfinite(loss_np[j]) and np.all(np.isfinite(grad_np[j])):
+                initial_done[i] = True
+                last_finite_loss[i] = float(loss_np[j])
+                current[i] = trial[i]
+            elif not initial_done[i]:
+                nan_count = int((~np.isfinite(grad_np[j])).sum())
+                msg = (
+                    f"{nan_count} elements of the {grad_np[j].size} element "
+                    "gradient array `gradf` are non-finite (or objective is non-finite). "
+                    "This often indicates numerical issues."
+                )
+                if batch.dtype != torch.double:
+                    msg += " Consider using `dtype=torch.double`."
+                raise OptimizationGradientError(msg, current_x=vectors[j].copy())
+            else:
+                # Keep `current[i]` at its last valid iterate and supply a steep
+                # finite penalty so L-BFGS-B line search backtracks cleanly.
+                loss_np[j] = max(last_finite_loss[i], 0.0) + 1e30
+                grad_np[j].fill(0.0)
+        return loss_np, grad_np
 
     settings = dict(options)
     ftol = settings.pop("ftol", None)

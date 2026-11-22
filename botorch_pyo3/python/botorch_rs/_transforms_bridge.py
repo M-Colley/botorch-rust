@@ -37,6 +37,9 @@ def features(
 ) -> tuple[FloatData, int, int]:
     """The features ``fn(X, **fkwargs)`` of the points ``X`` (``n x k``),
     flattened from ``n x n_f x d_f``, with ``n_f`` and ``d_f``."""
+    native = getattr(fn, "native_features", None)
+    if native is not None:
+        return native(x, n, k)
     torch = _torch()
     X = from_flat(x, (n, k), _float64())
     with torch.no_grad():
@@ -55,6 +58,9 @@ def features_vjp(
 ) -> FloatData:
     """The vector-Jacobian product of ``fn`` at ``X`` (``n x k``) with the
     adjoint of the features (``n x n_f x d_f``, flattened)."""
+    native = getattr(fn, "native_vjp", None)
+    if native is not None:
+        return native(x, n, k, adjoint)
     torch = _torch()
     X = from_flat(x, (n, k), _float64()).requires_grad_(True)
     with torch.enable_grad():
