@@ -20,11 +20,10 @@ use botorch_core::optim::{
     OneShotInitialConditionOptions, OptimizationMethod, OptimizeAcqfOptions, OptimizeAcqfResult,
     ParameterConstraints, SampleAroundBest, SlsqpOptions, TopnOptions, CONSTRAINT_TOLERANCE,
 };
+use botorch_core::utils::torch_rng::TorchGenerator;
 use botorch_core::Matrix;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use rand::rngs::Xoshiro256PlusPlus;
-use rand::SeedableRng;
 
 use crate::acquisition::PyAcquisitionFunction;
 use crate::arrays::{matrix_out, stack_out, Array, ArrayBuf, ArrayOut, BoolBuf};
@@ -116,7 +115,7 @@ fn native_ic_generator() -> IcGenerator {
     IcGenerator::new(|req| {
         let o = req.options;
         let options = o.initial_condition_options();
-        let mut rng = Xoshiro256PlusPlus::seed_from_u64(o.seed.unwrap_or(0) ^ 0x6963_5f67_656e);
+        let mut rng = TorchGenerator::new(o.seed.unwrap_or(0));
         Ok(gen_batch_initial_conditions(
             req.acq_function,
             req.bounds,
@@ -535,7 +534,7 @@ pub fn gen_batch_initial_conditions_py(
         let seed = options
             .seed
             .unwrap_or_else(botorch_core::utils::sampling::random_seed);
-        let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed ^ 0x6f70_7469_6d69_7a65);
+        let mut rng = TorchGenerator::new(seed);
         gen_batch_initial_conditions_with_fantasies(
             acqf.as_ref(),
             &bounds,

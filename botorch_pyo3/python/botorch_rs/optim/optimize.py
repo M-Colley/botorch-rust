@@ -744,6 +744,32 @@ def optimize_acqf(
         retry_on_optimization_warning,
         ic_gen_kwargs,
     )
+    if (
+        ic_generator is None
+        and ics is None
+        and raw_samples is not None
+        and is_torch_tensor(bounds)
+        and kwargs.get("seed") is None
+        and not kwargs.get("inequality_constraints")
+        and not kwargs.get("equality_constraints")
+        and not kwargs.get("nonlinear_inequality_constraints")
+        and not one_shot
+        and kwargs.get("sample_around_best") is None
+        and not ic_gen_kwargs
+    ):
+        from botorch_rs.optim import initializers
+
+        kwargs["ic_generator"] = _wrap_ic_generator(
+            initializers.gen_batch_initial_conditions,
+            native_acqf,
+            bounds,
+            fixed,
+            options,
+            None,
+            None,
+            {},
+        )
+        kwargs["native_ic_generator"] = False
     candidates, acq_values, restart_x, restart_values, messages = _rs.optimize_acqf(
         native_acqf._rs,
         bounds_flat,

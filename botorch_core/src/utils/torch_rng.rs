@@ -13,7 +13,10 @@
 //! by `at::normal_distribution<double>` (Box–Muller on two uniforms, the
 //! second normal cached in the generator until the next draw or seed).
 
+use std::convert::Infallible;
 use std::f64::consts::PI;
+
+use rand::TryRng;
 
 const N: usize = 624;
 const M: usize = 397;
@@ -144,6 +147,45 @@ impl TorchGenerator {
         }
         data
     }
+
+    /// `torch.multinomial(weights, n, replacement=false)` in double precision:
+    /// draws `n` indices without replacement with probabilities proportional
+    /// to `weights` via PyTorch's exponential race `weights[i] / Exp(1)`.
+    pub fn multinomial_without_replacement(&mut self, weights: &[f64], n: usize) -> Vec<usize> {
+        let mut scores: Vec<(f64, usize)> = weights
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| {
+                let exp_draw = -(1.0 - self.uniform()).ln();
+                let q = if w <= 0.0 { 0.0 } else { w / exp_draw };
+                (q, i)
+            })
+            .collect();
+        scores.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        scores[..n].iter().map(|&(_, i)| i).collect()
+    }
+}
+
+impl TryRng for TorchGenerator {
+    type Error = Infallible;
+
+    #[inline]
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(self.random())
+    }
+
+    #[inline]
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(self.random64())
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        for chunk in dst.chunks_mut(4) {
+            let bytes = self.random().to_le_bytes();
+            chunk.copy_from_slice(&bytes[..chunk.len()]);
+        }
+        Ok(())
+    }
 }
 
 /// Box–Muller on the pairs `(j, j + 8)` of a block of 16 uniforms.
@@ -181,5 +223,22 @@ mod tests {
         assert!(mean.abs() < 0.01 && (var - 1.0).abs() < 0.01);
         let u = g.rand(1000);
         assert!(u.iter().all(|&v| (0.0..1.0).contains(&v)));
+    }
+
+    #[test]
+    fn multinomial_without_replacement_matches_torch_reference() {
+        // Exact reference outputs from `torch.multinomial(w, k, replacement=False, generator=g)`
+        // with `g = torch.Generator().manual_seed(12345)`.
+        let mut g = TorchGenerator::new(12345);
+        let weights = [0.05, 2.5, 0.1, 8.0, 1.2, 0.4, 3.3, 0.01];
+        assert_eq!(
+            g.multinomial_without_replacement(&weights, 5),
+            vec![6, 3, 4, 1, 5]
+        );
+        assert_eq!(
+            g.multinomial_without_replacement(&weights, 4),
+            vec![4, 3, 1, 6]
+        );
+        assert!(g.multinomial_without_replacement(&weights, 0).is_empty());
     }
 }

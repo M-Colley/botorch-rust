@@ -39,6 +39,14 @@ def _sampler_seed(seed: int | None) -> int | None:
     return None if seed is None else int(seed)
 
 
+def draw_prune_seed(sampler: Any) -> int | None:
+    """Draw BoTorch's baseline-pruning seed from torch's RNG when unseeded."""
+    torch = sys.modules.get("torch")
+    if torch is not None and (sampler is None or not getattr(sampler, "_explicit_seed", False)):
+        return int(torch.randint(0, 1_000_000, (1,)).item())
+    return None
+
+
 def _uses_tensor_protocol(posterior: Any) -> bool:
     """Recognize the public Torch posterior protocol without private markers.
 
@@ -100,6 +108,7 @@ class MCSampler:
             if sample_shape is None:
                 raise TypeError("MCSampler requires sample_shape.")
         self.sample_shape = _sample_shape(sample_shape)
+        self._explicit_seed = seed is not None
         if seed is None:
             torch = sys.modules.get("torch")
             if torch is None:
@@ -109,6 +118,8 @@ class MCSampler:
             else:
                 seed = int(torch.randint(0, 1000000, (1,)).item())
         self.seed = int(seed)
+        if not self._explicit_seed:
+            self._explicit_seed = False
         self.base_samples = None
 
     def __getstate__(self) -> dict[str, Any]:
@@ -298,6 +309,7 @@ class NormalMCSampler(MCSampler):
     @seed.setter
     def seed(self, value: int) -> None:
         self._seed = int(value)
+        self._explicit_seed = True
 
     def forward(self, posterior: Any) -> Any:
         if _uses_tensor_protocol(posterior):
@@ -451,6 +463,7 @@ class SobolQMCNormalSampler(NormalMCSampler):
 
     def __init__(self, sample_shape: Any, seed: int | None = None) -> None:
         self.sample_shape = _sample_shape(sample_shape)
+        self._explicit_seed = seed is not None
         self._rs = _rs.SobolQMCNormalSampler(math.prod(self.sample_shape), _sampler_seed(seed))
         self._base_samples: Any = None
 
@@ -461,6 +474,7 @@ class SobolQMCNormalSampler(NormalMCSampler):
 
     @seed.setter
     def seed(self, value: int) -> None:
+        self._explicit_seed = True
         previous = self.__dict__.get("_rs")
         if previous is None:
             self._seed = int(value)
@@ -593,6 +607,7 @@ class IIDNormalSampler(NormalMCSampler):
         if kwargs:
             raise UnsupportedError(f"Unsupported keyword arguments: {sorted(kwargs)}.")
         self.sample_shape = _sample_shape(sample_shape)
+        explicit = seed is not None
         if seed is None:
             import importlib
             import random
@@ -604,6 +619,7 @@ class IIDNormalSampler(NormalMCSampler):
             else:
                 seed = int(torch.randint(0, 1000000, (1,)).item())
         self.seed = int(seed)
+        self._explicit_seed = explicit
         self.base_samples: Any = None
         self._base_shape: tuple[int, ...] | None = None
         self.batch_range_override: tuple[int, int] | None = None
@@ -616,6 +632,7 @@ class IIDNormalSampler(NormalMCSampler):
     @seed.setter
     def seed(self, value: int) -> None:
         self._seed = int(value)
+        self._explicit_seed = True
 
     def _draw(self, shape: tuple[int, ...], kind: Any) -> list[float]:
         # torch.randn(shape, dtype=torch.float64) after torch.manual_seed(seed).

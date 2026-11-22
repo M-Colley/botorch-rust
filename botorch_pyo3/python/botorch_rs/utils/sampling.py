@@ -1,8 +1,10 @@
 """Quasi-random and polytope sampling (``botorch.utils.sampling``).
 
-The Sobol points come from an Owen-scrambled Sobol sequence (Burley's
-hash-based scrambling, Joe-Kuo direction numbers): for a given seed they
-differ from torch's ``SobolEngine``, with the same distribution.
+``draw_sobol_samples`` and ``draw_sobol_normal_samples`` reproduce PyTorch's
+scrambled ``SobolEngine`` (30-bit Joe-Kuo D(6) direction numbers with
+Matousek's linear matrix scramble and digital shift from PyTorch's MT19937
+generator) up to 21,201 dimensions, matching BoTorch both for explicit
+``seed`` values and under ``torch.manual_seed`` when ``seed=None``.
 
 The polytope samplers (``get_polytope_samples``,
 ``HitAndRunPolytopeSampler``, ``sample_polytope``) implement BoTorch's
@@ -11,10 +13,9 @@ their null space, an interior point from a linear program); their random
 streams differ from torch's for the same seed, with the same distribution.
 
 ``sample_simplex`` and ``sample_hypersphere`` apply BoTorch's transformations
-(sorted spacings of uniform numbers, normalized normal vectors) to i.i.d.
-numbers from a seeded Xoshiro256++ generator or, with ``qmc=True``, to the
-scrambled Sobol sequence above; for the same seed the samples differ from
-BoTorch's, with the same distribution.
+(sorted spacings of uniform numbers, normalized normal vectors), using
+torch's global generator for unseeded torch outputs and a seeded Xoshiro256++
+generator (or the scrambled Sobol sequence with ``qmc=True``) otherwise.
 """
 
 from __future__ import annotations
@@ -52,6 +53,26 @@ def draw_sobol_samples(
     an array of shape ``n x batch_shape x q x d`` of the type of ``bounds``."""
     batch = tuple(int(b) for b in batch_shape) if batch_shape is not None else ()
     nb = math.prod(batch)
+    if seed is None and is_torch_tensor(bounds):
+        import torch
+
+        bflat, bshape = to_flat(bounds, "bounds")
+        d = bshape[-1] if len(bshape) == 2 and bshape[0] == 2 else 0
+        if (
+            d > 0
+            and int(q) > 0
+            and int(q) * d <= torch.quasirandom.SobolEngine.MAXDIM
+            and 0 <= n * nb <= 65536
+            and all(math.isfinite(v) for v in bflat)
+            and all(bflat[k] <= bflat[d + k] for k in range(d))
+        ):
+            bounds_cpu = bounds.cpu()
+            engine = torch.quasirandom.SobolEngine(int(q) * d, scramble=True, seed=None)
+            raw = engine.draw(nb * int(n), dtype=bounds.dtype).view(*batch, int(n), int(q), d)
+            raw = raw.to(device=bounds.device)
+            if batch:
+                raw = raw.permute(-3, *range(len(batch)), -2, -1)
+            return bounds_cpu.to(device=bounds.device)[0] + raw * (bounds[1] - bounds[0])
     data, shape = _rs.draw_sobol_samples(
         to_flat(bounds, "bounds"), n * nb, int(q), None if seed is None else int(seed)
     )
@@ -77,9 +98,24 @@ def draw_sobol_normal_samples(
 ) -> Any:
     r"""``n x d`` quasi-random standard-normal samples (inverse transform of a
     scrambled Sobol sequence)."""
+    kind = kind_from_dtype(dtype, device)
+    torch = sys.modules.get("torch")
+    if (
+        torch is not None
+        and kind.lib == "torch"
+        and 1 <= int(d) <= torch.quasirandom.SobolEngine.MAXDIM
+        and 0 <= int(n) <= 65536
+        and (seed is None or kind.dtype == torch.float32)
+    ):
+        from botorch_rs.sampling.qmc import NormalQMCEngine
+
+        samples = NormalQMCEngine(d=int(d), seed=seed, inv_transform=True).draw(
+            int(n), dtype=kind.dtype
+        )
+        return samples.to(device=kind.device) if kind.device is not None else samples
     return from_pair(
         _rs.draw_sobol_normal_samples(int(d), int(n), None if seed is None else int(seed)),
-        kind_from_dtype(dtype, device),
+        kind,
     )
 
 
@@ -521,9 +557,27 @@ def sample_hypersphere(
         An ``n x d`` array of uniform samples from the d-hypersphere (``+-1``
         for ``d = 1``).
     """
+    kind = kind_from_dtype(dtype, device)
+    torch = sys.modules.get("torch")
+    if seed is None and torch is not None and kind.lib == "torch" and int(d) >= 1 and int(n) >= 0:
+        d_i, n_i = int(d), int(n)
+        dt = kind.dtype if kind.dtype is not None else torch.get_default_dtype()
+        if d_i == 1:
+            rnd = torch.randint(0, 2, (n_i, 1), dtype=dt)
+            out = 2 * rnd - 1
+            return out.to(device=kind.device) if kind.device is not None else out
+        if qmc and d_i <= torch.quasirandom.SobolEngine.MAXDIM and n_i <= 65536:
+            rnd = draw_sobol_normal_samples(d=d_i, n=n_i, dtype=dt, seed=None)
+        elif not qmc:
+            rnd = torch.randn(n_i, d_i, dtype=dt)
+        else:
+            rnd = None
+        if rnd is not None:
+            samples = rnd / torch.linalg.norm(rnd, dim=-1, keepdim=True)
+            return samples.to(device=kind.device) if kind.device is not None else samples
     return from_pair(
         _rs.sample_hypersphere(int(d), int(n), bool(qmc), _seed(seed)),
-        kind_from_dtype(dtype, device),
+        kind,
     )
 
 
@@ -549,9 +603,32 @@ def sample_simplex(
     Returns:
         An ``n x d`` array of uniform samples from the d-simplex.
     """
+    kind = kind_from_dtype(dtype, device)
+    torch = sys.modules.get("torch")
+    if seed is None and torch is not None and kind.lib == "torch" and int(d) >= 1 and int(n) >= 0:
+        d_i, n_i = int(d), int(n)
+        dt = kind.dtype if kind.dtype is not None else torch.get_default_dtype()
+        if d_i == 1:
+            return torch.ones(n_i, 1, device=kind.device, dtype=dt)
+        if qmc and d_i - 1 <= torch.quasirandom.SobolEngine.MAXDIM and n_i <= 65536:
+            rnd = torch.quasirandom.SobolEngine(d_i - 1, scramble=True, seed=None).draw(
+                n_i, dtype=dt
+            )
+        elif not qmc:
+            rnd = torch.rand(n_i, d_i - 1, dtype=dt)
+        else:
+            rnd = None
+        if rnd is not None:
+            srnd, _ = torch.sort(rnd, dim=-1)
+            zeros = torch.zeros(n_i, 1, dtype=dt)
+            ones = torch.ones(n_i, 1, dtype=dt)
+            srnd = torch.cat([zeros, srnd, ones], dim=-1)
+            if kind.device is not None:
+                srnd = srnd.to(kind.device)
+            return srnd[..., 1:] - srnd[..., :-1]
     return from_pair(
         _rs.sample_simplex(int(d), int(n), bool(qmc), _seed(seed)),
-        kind_from_dtype(dtype, device),
+        kind,
     )
 
 

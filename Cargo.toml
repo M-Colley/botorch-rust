@@ -23,7 +23,6 @@ rand_distr = "0.6"
 thiserror = "2"
 # Runtime dependencies (phase 2: acquisition functions and optimize_acqf).
 errorfunctions = "0.2"
-sobol_burley = "0.5"
 rayon = "1"
 # Runtime dependencies (phase 4B: constrained acquisition optimization).
 # SLSQP (Kraft) with a SciPy-style driver, vendored with a small patch.

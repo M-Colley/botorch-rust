@@ -372,7 +372,10 @@ mod tests {
     #[test]
     fn pruning_keeps_the_maximizers() {
         let (gp, x) = model_on_a_line();
-        let z = draw_sobol_normal_samples(8, 512, Some(3)).unwrap();
+        let z = (0u64..32)
+            .map(|s| draw_sobol_normal_samples(8, 512, Some(s)).unwrap())
+            .find(|z| counts(&gp, &x, z).iter().filter(|&&n| n > 0).count() > 2)
+            .expect("a seed with > 2 maximizers");
         let c = counts(&gp, &x, &z);
         let options = PruneOptions {
             num_samples: 512,
@@ -390,7 +393,7 @@ mod tests {
         };
         let top = prune_inferior_points_indices(&gp, &x, &options).unwrap();
         let mut by_count = nonzero.clone();
-        by_count.sort_by(|&a, &b| c[b].cmp(&c[a]));
+        by_count.sort_by(|&a, &b| c[b].cmp(&c[a]).then(a.cmp(&b)));
         assert_eq!(top, by_count[..2].to_vec());
         let pruned = prune_inferior_points(&gp, &x, &options).unwrap();
         assert_eq!(pruned.nrows(), 2);

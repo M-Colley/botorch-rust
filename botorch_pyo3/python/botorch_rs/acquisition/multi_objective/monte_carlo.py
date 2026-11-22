@@ -18,7 +18,7 @@ from botorch_rs.acquisition.multi_objective.base import (
 )
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import legacy_ei_numerics_warning
-from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler
+from botorch_rs.sampling.normal import NormalMCSampler, SobolQMCNormalSampler, draw_prune_seed
 from botorch_rs.sampling.stochastic_samplers import ForkedRNGSampler, StochasticSampler
 from botorch_rs.utils.multi_objective.hypervolume import (
     NoisyExpectedHypervolumeMixin,
@@ -166,6 +166,7 @@ class _NEHVIBase(NoisyExpectedHypervolumeMixin):
         cache_root: Any,
         tau_relu: float,
         tau_max: float,
+        prune_seed: int | None = None,
     ) -> None:
         ref = ref_point_arg(ref_point)
         if len(ref) < 2:
@@ -190,6 +191,8 @@ class _NEHVIBase(NoisyExpectedHypervolumeMixin):
         self.incremental_nehvi = incremental_nehvi
         self._cache_root = _cache_root_arg(cache_root)
         self.fat = fat
+        if prune_seed is None:
+            prune_seed = (self.sampler.seed ^ _PRUNE_SEED_SALT) & 0xFFFFFFFFFFFFFFFF
         self._rs, self._rs_nehvi = _rs.q_noisy_expected_hypervolume_improvement(
             log,
             self._rs_model,
@@ -201,7 +204,7 @@ class _NEHVIBase(NoisyExpectedHypervolumeMixin):
             fat=fat_bool(fat),
             prune_baseline=bool(prune_baseline),
             prune_num_samples=_PRUNE_SAMPLES,
-            prune_seed=(self.sampler.seed ^ _PRUNE_SEED_SALT) & 0xFFFFFFFFFFFFFFFF,
+            prune_seed=prune_seed,
             alpha=float(alpha),
             cache_pending=bool(cache_pending),
             max_iep=int(max_iep),
@@ -256,6 +259,7 @@ class qNoisyExpectedHypervolumeImprovement(_NEHVIBase, qExpectedHypervolumeImpro
     ) -> None:
         legacy_ei_numerics_warning(legacy_name=type(self).__name__)
         check_unsupported(marginalize_dim=marginalize_dim)
+        prune_seed = draw_prune_seed(sampler) if prune_baseline else None
         MultiObjectiveMCAcquisitionFunction.__init__(
             self, model, sampler, objective, constraints, eta
         )
@@ -275,6 +279,7 @@ class qNoisyExpectedHypervolumeImprovement(_NEHVIBase, qExpectedHypervolumeImpro
             cache_root,
             1e-6,
             1e-3,
+            prune_seed=prune_seed,
         )
 
 

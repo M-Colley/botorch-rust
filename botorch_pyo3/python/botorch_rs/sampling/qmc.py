@@ -2,11 +2,11 @@ r"""
 Quasi Monte-Carlo sampling from Normal distributions (``botorch.sampling.qmc``).
 
 The uniform points come from torch's scrambled ``SobolEngine`` if torch has
-been imported (so that samples equal BoTorch's for the same seed), else from
-botorch_rs's scrambled Sobol sequence (Owen scrambling; same distribution,
-different points). The Box-Muller and inverse transforms and the root of the
-covariance (Cholesky, or the eigendecomposition for a singular covariance)
-are computed in Rust.
+been imported, else from botorch_rs's ``SobolEngine``, which reproduces
+PyTorch's 30-bit Joe-Kuo D(6) + Matousek-scrambled Sobol sequence up to
+21,201 dimensions without requiring torch. The Box-Muller and inverse
+transforms and the root of the covariance (Cholesky, or the
+eigendecomposition for a singular covariance) are computed in Rust.
 
 References:
 

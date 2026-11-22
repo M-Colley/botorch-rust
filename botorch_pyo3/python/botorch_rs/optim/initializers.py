@@ -198,10 +198,40 @@ def gen_batch_initial_conditions(
             "Currently only finite values in `bounds` are supported "
             "for generating initial conditions for optimization."
         )
+    opts = initializer_options(options)
+    if (
+        is_torch_tensor(bounds)
+        and opts.get("seed") is None
+        and not inequality_constraints
+        and not equality_constraints
+        and not opts.get("sample_around_best")
+        and len(bounds_flat[1]) == 2
+        and bounds_flat[1][0] == 2
+        and d > 0
+        and int(q) > 0
+        and int(num_restarts) > 0
+        and int(raw_samples) >= int(num_restarts)
+        and all(math.isfinite(v) for v in bounds_flat[0])
+        and all(bounds_flat[0][k] <= bounds_flat[0][d + k] for k in range(d))
+    ):
+        from botorch_rs.optim._torch_acq_initializers import gen_initial_conditions
+
+        torch_opts = dict(opts)
+        if "batch_limit" in torch_opts:
+            torch_opts["init_batch_limit"] = torch_opts["batch_limit"]
+        return gen_initial_conditions(
+            acq_function,
+            bounds,
+            int(q),
+            int(num_restarts),
+            int(raw_samples),
+            fixed_features,
+            torch_opts,
+            fixed_X_fantasies=fixed_X_fantasies,
+        )
     fixed = None
     if fixed_features:
         fixed = {int(k) % d: as_float(v, f"fixed_features[{k}]") for k, v in fixed_features.items()}
-    opts = initializer_options(options)
     selection = _selection_options(acq_function, opts, d, equality_constraints)
     for key in (
         "nonnegative",

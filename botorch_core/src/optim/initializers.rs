@@ -32,38 +32,45 @@ pub const DEFAULT_ETA: f64 = 1.0;
 pub const DEFAULT_ALPHA: f64 = 1e-4;
 
 /// Indices drawn without replacement with probabilities proportional to
-/// `weights` (in order of drawing, like `torch.multinomial(weights, n)`).
+/// `weights` via PyTorch's exponential race `weights / Exp(1)`
+/// (`torch.multinomial(weights, n, replacement=False)`).
 fn weighted_sample_without_replacement<R: Rng + ?Sized>(
     weights: &[f64],
     n: usize,
     rng: &mut R,
 ) -> Vec<usize> {
-    let mut w = weights.to_vec();
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        let total: f64 = w.iter().sum();
-        let mut pick = None;
-        if total > 0.0 && total.is_finite() {
-            let mut u = rng.random::<f64>() * total;
-            for (i, &wi) in w.iter().enumerate() {
-                if wi > 0.0 {
-                    pick = Some(i);
-                    if u < wi {
-                        break;
-                    }
-                    u -= wi;
-                }
-            }
-        }
-        // All remaining weights are zero: fall back to a uniform draw.
-        let i = pick.unwrap_or_else(|| {
-            let remaining: Vec<usize> = (0..w.len()).filter(|i| !out.contains(i)).collect();
-            remaining[rng.random_range(0..remaining.len())]
-        });
-        out.push(i);
-        w[i] = 0.0;
+    let total: f64 = weights.iter().filter(|&&w| w > 0.0).sum();
+    if !(total > 0.0 && total.is_finite()) {
+        return random_subset(weights.len(), n, rng);
     }
-    out
+    let positive_count = weights.iter().filter(|&&w| w > 0.0).count();
+    if positive_count < n {
+        let mut out: Vec<usize> = (0..weights.len()).filter(|&i| weights[i] > 0.0).collect();
+        let remaining: Vec<usize> = (0..weights.len()).filter(|&i| weights[i] <= 0.0).collect();
+        for j in random_subset(remaining.len(), n - positive_count, rng) {
+            out.push(remaining[j]);
+        }
+        return out;
+    }
+    let inv_2p53 = 1.0 / ((1u64 << 53) as f64);
+    let mut scores: Vec<(f64, usize)> = weights
+        .iter()
+        .enumerate()
+        .map(|(i, &w)| {
+            let u = ((rng.next_u64() & ((1u64 << 53) - 1)) as f64) * inv_2p53;
+            let exp_draw = -(1.0 - u).ln();
+            let q = if w <= 0.0 {
+                f64::NEG_INFINITY
+            } else if exp_draw == 0.0 {
+                f64::INFINITY
+            } else {
+                w / exp_draw
+            };
+            (q, i)
+        })
+        .collect();
+    scores.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scores[..n].iter().map(|&(_, i)| i).collect()
 }
 
 /// The first `n` elements of a uniformly random permutation of `0..len`.

@@ -190,9 +190,10 @@ class LCEMGP(MultiTaskGP):
       learned plus fixed. BoTorch sizes it for the learned dimensions only,
       which fails with a ``context_emb_feature``.
 
-    Learned embeddings are initialized from ``N(0, 1)`` with botorch_rs's
-    generator, seeded with the keyword-only ``seed`` (random if ``None``);
-    BoTorch draws them from torch's global generator. Set them with
+    For torch tensor inputs with ``seed=None``, learned embeddings are drawn
+    from torch's global generator matching BoTorch's ``LCEMGP`` initialization;
+    passing the keyword-only ``seed`` (or non-torch inputs) initializes from
+    ``N(0, 1)`` with botorch_rs's generator. Weights can also be set with
     ``model.emb_layers[i].weight = ...`` or
     ``model.initialize(**{"emb_layers.0.weight": ...})``.
 
@@ -391,6 +392,30 @@ class LCEMGP(MultiTaskGP):
         covar._bind(_KernelSlot(self, "data", "covar_module"))  # type: ignore[arg-type]
         self.covar_module: Kernel = covar
         self.emb_layers = [Embedding(self, i, n, e) for i, (n, e) in enumerate(self.emb_dims)]
+        if seed is None and kind.lib == "torch":
+            torch = sys.modules.get("torch")
+            if torch is not None:
+                # Match BoTorch's MultiTaskGP + LCEMGP RNG draws under torch.manual_seed:
+                # PositiveIndexKernel draws `raw_var` and `raw_covar_factor`, followed by
+                # `nn.Embedding(n, e, max_norm=1.0)` for each categorical context column.
+                torch.randn(self.num_tasks)
+                torch.rand(self.num_tasks, self.num_tasks)
+                if not provided_embedding:
+                    for emb in self.emb_layers:
+                        w = torch.nn.Embedding(
+                            emb.num_embeddings, emb.embedding_dim, max_norm=1.0
+                        ).weight.detach()
+                        emb.weight = w.to(dtype=torch.float64)
+                else:
+                    cat = to_flat(self.context_cat_feature)
+                    cols = cat[1][1] if len(cat[1]) == 2 else 1
+                    rows = cat[1][0] if len(cat[1]) == 2 else self.num_tasks
+                    dims = (
+                        [int(e) for e in embs_dim_list] if embs_dim_list is not None else [1] * cols
+                    )
+                    for j, e_dim in enumerate(dims):
+                        col_vals = {int(cat[0][r * cols + j]) for r in range(rows)}
+                        torch.nn.Embedding(len(col_vals), e_dim, max_norm=1.0)
         task_kernel = RBFKernel(
             ard_num_dims=rs.embedding_dim,
             lengthscale_constraint=Interval(0.0, 2.0, transform=None, initial_value=1.0),

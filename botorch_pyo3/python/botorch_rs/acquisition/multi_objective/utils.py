@@ -13,7 +13,7 @@ import warnings
 from typing import Any
 
 from botorch_rs import _botorch_rs as _rs
-from botorch_rs._arrays import from_flat, from_pair, kind_of, to_flat
+from botorch_rs._arrays import from_flat, from_pair, is_torch_tensor, kind_of, to_flat
 from botorch_rs.acquisition.acquisition import check_unsupported, is_acquisition_model
 from botorch_rs.acquisition.multi_objective.base import ref_point_arg
 from botorch_rs.acquisition.multi_objective.objective import mo_objective_arg
@@ -131,6 +131,8 @@ def prune_inferior_points_multi_objective(
     cons, _ = constraints_arg(constraints, 1e-3)
     handle = model._acquisition_model(None)
     base_samples = None
+    if sampler is None and is_torch_tensor(X) and n > 0:
+        sampler = SobolQMCNormalSampler(sample_shape=(int(num_samples),))
     if sampler is not None:
         if not isinstance(sampler, NormalMCSampler):
             raise UnsupportedError(

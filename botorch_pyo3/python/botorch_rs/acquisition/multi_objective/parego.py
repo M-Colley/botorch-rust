@@ -16,7 +16,7 @@ from botorch_rs.acquisition.multi_objective.base import (
 )
 from botorch_rs.acquisition.objective import GenericMCObjective
 from botorch_rs.exceptions.errors import UnsupportedError
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import SobolQMCNormalSampler, draw_prune_seed
 from botorch_rs.utils.multi_objective.scalarization import ChebyshevScalarization
 
 # Salts of the seeds of the random weights and of the baseline pruning,
@@ -69,17 +69,41 @@ class qLogNParEGO(qLogNoisyExpectedImprovement, MultiObjectiveMCAcquisitionFunct
         *,
         _y_baseline: Any = None,
     ) -> None:
-        MultiObjectiveMCAcquisitionFunction.__init__(
-            self, model, sampler, objective, constraints, eta
-        )
         baseline = to_flat(X_baseline, "X_baseline")
         self._baseline_kind = kind_of(X_baseline)
-        pending = pending_arg(X_pending, self._rs_model.dim)
-        if X_pending is not None:
-            self._pending_kind = kind_of(X_pending)
         weights = None
         if scalarization_weights is not None:
             weights = [float(w) for w in to_flat(scalarization_weights, "weights")[0]]
+        elif (
+            self._baseline_kind.lib == "torch"
+            and (sampler is None or not getattr(sampler, "_explicit_seed", False))
+            and not hasattr(model, "_ensemble_members")
+        ):
+            import sys
+
+            torch = sys.modules.get("torch")
+            if torch is not None:
+                from botorch_rs.acquisition.multi_objective.objective import (
+                    IdentityMCMultiOutputObjective,
+                )
+                from botorch_rs.utils.sampling import sample_simplex
+
+                obj_probe = objective if objective is not None else IdentityMCMultiOutputObjective()
+                with torch.no_grad():
+                    y_base_probe = obj_probe(model.posterior(X_baseline).mean)
+                w_tensor = sample_simplex(
+                    d=int(y_base_probe.shape[-1]),
+                    device=X_baseline.device,
+                    dtype=X_baseline.dtype,
+                ).view(-1)
+                weights = [float(w) for w in to_flat(w_tensor, "weights")[0]]
+        prune_seed = draw_prune_seed(sampler) if prune_baseline else None
+        MultiObjectiveMCAcquisitionFunction.__init__(
+            self, model, sampler, objective, constraints, eta
+        )
+        pending = pending_arg(X_pending, self._rs_model.dim)
+        if X_pending is not None:
+            self._pending_kind = kind_of(X_pending)
         self.fat = fat
         self.prune_baseline = prune_baseline
         from botorch_rs.acquisition.monte_carlo import _CACHE_ROOT_MESSAGE, supports_cache_root
@@ -97,6 +121,8 @@ class qLogNParEGO(qLogNoisyExpectedImprovement, MultiObjectiveMCAcquisitionFunct
         self.incremental = incremental
         self._warned_infeasible = False
         seed = self.sampler.seed
+        if prune_seed is None:
+            prune_seed = (seed ^ _PRUNE_SEED_SALT) & 0xFFFFFFFFFFFFFFFF
         self._rs, w, y_baseline = _rs.q_log_nparego(
             self._rs_model,
             baseline,
@@ -109,7 +135,7 @@ class qLogNParEGO(qLogNoisyExpectedImprovement, MultiObjectiveMCAcquisitionFunct
             prune_baseline=bool(prune_baseline),
             cache_root=self._cache_root,
             prune_num_samples=_PRUNE_SAMPLES,
-            prune_seed=(seed ^ _PRUNE_SEED_SALT) & 0xFFFFFFFFFFFFFFFF,
+            prune_seed=prune_seed,
             tau_relu=float(tau_relu),
             tau_max=float(tau_max),
             incremental=bool(incremental),

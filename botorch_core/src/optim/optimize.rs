@@ -36,8 +36,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rand::rngs::Xoshiro256PlusPlus;
-use rand::SeedableRng;
 use rayon::prelude::*;
 
 use crate::acquisition::AcquisitionFunction;
@@ -56,6 +54,7 @@ use crate::optim::slsqp::{
     clamp_to_bounds, gen_candidates_slsqp, project_to_feasible_space, SlsqpOptions,
 };
 use crate::utils::sampling::{check_bounds, random_seed};
+use crate::utils::torch_rng::TorchGenerator;
 use crate::Matrix;
 
 /// Default maximum number of L-BFGS-B iterations per restart
@@ -518,7 +517,7 @@ pub fn optimize_acqf_detailed(
         ));
     }
     let seed = options.seed.unwrap_or_else(random_seed);
-    let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed ^ 0x6f70_7469_6d69_7a65);
+    let mut rng = TorchGenerator::new(seed);
     let joint_options = OptimizeAcqfOptions {
         seed: Some(seed),
         ..options.clone()
@@ -650,7 +649,7 @@ fn optimize_batch(
     num_restarts: usize,
     raw_samples: usize,
     options: &OptimizeAcqfOptions,
-    rng: &mut Xoshiro256PlusPlus,
+    rng: &mut TorchGenerator,
 ) -> Result<OptimizeAcqfResult> {
     let d = bounds.ncols();
     let constrained = !options.constraints.is_empty();
@@ -677,75 +676,74 @@ fn optimize_batch(
     let ic_options = options.initial_condition_options();
     let generate = raw_samples > 0 && required > 0;
     let mut warnings = Vec::new();
-    let make_ics =
-        |rng: &mut Xoshiro256PlusPlus, warnings: &mut Vec<String>| -> Result<Vec<Matrix>> {
-            let mut ics = provided.clone();
-            if generate {
-                let generated = match &options.ic_generator {
-                    Some(generator) => {
-                        let request = IcRequest {
-                            acq_function,
-                            bounds,
-                            q,
-                            num_restarts: required,
-                            raw_samples,
-                            options,
-                        };
-                        let ics = (generator.0)(&request)?;
-                        for ic in &ics {
-                            if ic.shape() != (q_opt, d) {
-                                return Err(BotorchError::DimensionMismatch(format!(
-                                    "the ic_generator returned a {}x{} initial condition, \
+    let make_ics = |rng: &mut TorchGenerator, warnings: &mut Vec<String>| -> Result<Vec<Matrix>> {
+        let mut ics = provided.clone();
+        if generate {
+            let generated = match &options.ic_generator {
+                Some(generator) => {
+                    let request = IcRequest {
+                        acq_function,
+                        bounds,
+                        q,
+                        num_restarts: required,
+                        raw_samples,
+                        options,
+                    };
+                    let ics = (generator.0)(&request)?;
+                    for ic in &ics {
+                        if ic.shape() != (q_opt, d) {
+                            return Err(BotorchError::DimensionMismatch(format!(
+                                "the ic_generator returned a {}x{} initial condition, \
                                      expected {q_opt} x {d}",
-                                    ic.nrows(),
-                                    ic.ncols()
-                                )));
-                            }
+                                ic.nrows(),
+                                ic.ncols()
+                            )));
                         }
-                        ics
                     }
-                    None if one_shot.is_some() => {
-                        let os = one_shot.expect("one-shot acquisition function");
-                        let (ics, ws) = os.gen_one_shot_initial_conditions(
-                            bounds,
-                            q,
-                            required,
-                            raw_samples,
-                            options,
-                            &mut *rng,
-                        )?;
-                        warnings.extend(ws);
-                        ics
-                    }
-                    None => {
-                        let (generated, fallback) = gen_batch_initial_conditions(
-                            acq_function,
-                            bounds,
-                            q,
-                            required,
-                            raw_samples,
-                            &ic_options,
-                            rng,
-                        )?;
-                        if fallback {
-                            warnings.push(
-                                "Unable to find non-zero acquisition function values - initial \
+                    ics
+                }
+                None if one_shot.is_some() => {
+                    let os = one_shot.expect("one-shot acquisition function");
+                    let (ics, ws) = os.gen_one_shot_initial_conditions(
+                        bounds,
+                        q,
+                        required,
+                        raw_samples,
+                        options,
+                        &mut *rng,
+                    )?;
+                    warnings.extend(ws);
+                    ics
+                }
+                None => {
+                    let (generated, fallback) = gen_batch_initial_conditions(
+                        acq_function,
+                        bounds,
+                        q,
+                        required,
+                        raw_samples,
+                        &ic_options,
+                        rng,
+                    )?;
+                    if fallback {
+                        warnings.push(
+                            "Unable to find non-zero acquisition function values - initial \
                                  conditions are being selected randomly."
-                                    .into(),
-                            );
-                        }
-                        generated
+                                .into(),
+                        );
                     }
-                };
-                ics.extend(generated);
-            }
-            if ics.is_empty() {
-                return Err(BotorchError::InvalidArgument(
-                    "Either `batch_initial_conditions` or `raw_samples` must be set.".into(),
-                ));
-            }
-            Ok(ics)
-        };
+                    generated
+                }
+            };
+            ics.extend(generated);
+        }
+        if ics.is_empty() {
+            return Err(BotorchError::InvalidArgument(
+                "Either `batch_initial_conditions` or `raw_samples` must be set.".into(),
+            ));
+        }
+        Ok(ics)
+    };
     let run = |ics: &[Matrix]| -> Result<(Vec<RestartResult>, Vec<String>)> {
         generate_candidates(acq_function, bounds, ics, num_restarts, use_slsqp, options)
     };

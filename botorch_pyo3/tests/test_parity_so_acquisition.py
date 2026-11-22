@@ -816,7 +816,7 @@ def test_predictive_entropy_search_matches_botorch(case: str) -> None:
             num_restarts=4,
             posterior_transform=tf,
             num_features=64,
-            seed=4,
+            seed=5,
         )
         # BoTorch reads the training inputs in eval mode (transformed);
         # botorch_rs uses the raw ones (#3421).

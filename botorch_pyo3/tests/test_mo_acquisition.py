@@ -130,7 +130,23 @@ def test_shapes_and_pending_points(name: str, kind: str, model: SingleTaskGP) ->
     with pytest.raises(BotorchTensorDimensionError):
         acqf.set_X_pending(as_kind([[0.3, 0.3, 0.3]], kind))
     constructed = make(name, model, kind, X_pending=pending)
-    assert_close(constructed(as_kind(SETS, kind)), with_pending, rtol=1e-10, atol=1e-12)
+    assert all(math.isfinite(v) for v in flatten(constructed(as_kind(SETS, kind))))
+    if name in NOISY:
+        # With PyTorch's SobolEngine, initializing incremental NEHVI directly over
+        # B + P draws a single (n_b + n_p)*m SobolEngine (matching BoTorch), whereas
+        # appending via set_X_pending keeps the n_b*m baseline base samples (#3392).
+        # Without CBD caching (`max_iep >= len(pending)`), both paths are identical.
+        uncached = make(name, model, kind, max_iep=2)
+        uncached.set_X_pending(pending)
+        constructed_uncached = make(name, model, kind, X_pending=pending, max_iep=2)
+        assert_close(
+            constructed_uncached(as_kind(SETS, kind)),
+            uncached(as_kind(SETS, kind)),
+            rtol=1e-10,
+            atol=1e-12,
+        )
+    else:
+        assert_close(constructed(as_kind(SETS, kind)), with_pending, rtol=1e-10, atol=1e-12)
 
 
 def test_log_variants_are_the_logarithms(model: SingleTaskGP) -> None:

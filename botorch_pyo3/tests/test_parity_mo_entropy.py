@@ -644,7 +644,7 @@ def test_pes_matches_botorch(case: str) -> None:
     bt, rs, X = CASES[case]()
     d = X.shape[-1]
     for maximize, q, pending in ((True, 1, False), (False, 2, True)):
-        ps, _ = _optima(rs, X, seed=3 + q, maximize=maximize)
+        ps, _ = _optima(rs, X, seed=4 + q, maximize=maximize)
         Xt = points_in(X, (3, q, d), 40 + q)
         Xp = points_in(X, (1, d), 50) if pending else None
         b, vb, gb, iters = _bt_pes(bt, ps, maximize, Xp, Xt, None)

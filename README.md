@@ -1678,10 +1678,11 @@ graphs and supplied module callbacks are preserved.
     it one lengthscale per embedding dimension (learned and fixed).
   - **Per-task noise** is looked up by task index, not raw task value
     (meta-pytorch/botorch#3396); identical for task values `0..K-1`.
-  - **Embedding initialization.** botorch-rust draws learned embeddings from
-    `N(0, 1)` with its own generator, seeded by the keyword-only `seed`
-    (random if `None`); BoTorch uses torch's global generator. Setting the
-    weights (`model.emb_layers[0].weight = W` or `initialize`) reproduces any
+  - **Embedding initialization.** For torch tensor inputs with `seed=None`,
+    learned embeddings are drawn from torch's global generator matching
+    BoTorch's `LCEMGP`; passing the keyword-only `seed` (or non-torch inputs)
+    draws from `N(0, 1)` with botorch-rust's generator. Setting the weights
+    (`model.emb_layers[0].weight = W` or `initialize`) also reproduces any
     BoTorch model.
   - **Sigmoid `Interval`s** compute raw initial values in float32 like
     GPyTorch, but torch's float32 `log` is not correctly rounded, so they can
@@ -1702,15 +1703,17 @@ graphs and supplied module callbacks are preserved.
   Results that are not computed from an array (a test function's `bounds`,
   `draw_sobol_normal_samples`) are float64 tensors if torch has been imported
   and lists otherwise; pass `dtype=` (a torch or NumPy dtype) to choose.
-- **Random numbers.** Quasi-random points come from an Owen-scrambled Sobol
-  sequence (`sobol_burley`), not torch's `SobolEngine`: for the same seed, raw
-  samples and MC base samples differ from BoTorch's (with the same
-  distribution); explicit `sampler.base_samples` reproduce BoTorch exactly.
-  `torch.manual_seed` does not seed botorch-rust: use `options={"seed": ...}` in
-  `optimize_acqf` (which also seeds the random choice of initial conditions)
-  and `SobolQMCNormalSampler(..., seed=...)`. qLogNEI prunes its baseline with
-  a seed derived from its sampler's seed, so whole BO loops are reproducible.
-  `posterior.rsample` and test-function noise do use the caller's library
+- **Random numbers.** Scrambled Sobol points (`draw_sobol_samples`,
+  `draw_sobol_normal_samples`, `SobolQMCNormalSampler`) and Boltzmann
+  multinomial selection (`gen_batch_initial_conditions`, `optimize_acqf`)
+  reproduce PyTorch's `SobolEngine` (30-bit Joe–Kuo D(6) direction numbers with
+  Matoušek scrambling) and `torch.multinomial` both for explicit `seed` /
+  `options={"seed": ...}` values and under `torch.manual_seed` on torch
+  tensors. When `sampler` is explicitly seeded, `prune_baseline` derives its
+  seed deterministically from `sampler.seed` so loops are reproducible across
+  lists, NumPy arrays and torch tensors; when unseeded with torch loaded, it
+  draws from torch's global generator in BoTorch's order.
+  `posterior.rsample` and test-function noise also use the caller's library
   (torch, NumPy) random number generator.
 - **Python floats.** `best_f`, `beta`, `tau`, the constraint temperatures
   `eta`, `infeasible_cost` and the bounds of the constrained EI are used as
@@ -1857,10 +1860,12 @@ graphs and supplied module callbacks are preserved.
     `cache_root=False` samples the joint posterior. Both agree with BoTorch's
     corresponding paths. qLogNParEGO, like qLogNEI, always uses the joint
     computation.
-  - **Random numbers.** `prune_baseline` and qLogNParEGO's default
-    scalarization weights draw from botorch-rust's generator, seeded from the
-    sampler's seed. BoTorch uses torch's global generator. Explicit
-    `scalarization_weights` reproduce BoTorch exactly.
+  - **Random numbers.** When unseeded with torch tensors, `prune_baseline` and
+    qLogNParEGO's default `scalarization_weights` draw from torch's global
+    generator in BoTorch's order; when `sampler` is explicitly seeded (or on
+    non-torch inputs), they draw deterministically from botorch-rust's
+    generator seeded from `sampler.seed`. Explicit `scalarization_weights` also
+    reproduce BoTorch directly.
   - **Non-incremental qLogNEHVI** returns `log(NEHVI + prev_nehvi)`. The
     improvement of cached pending points, `prev_nehvi`, is exact only to
     rounding, about 1e-15 of the hypervolume. Where candidates add nothing,
@@ -2052,8 +2057,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 MIT (see `LICENSE`). `botorch_core/src/lbfgsb.rs` is a port of L-BFGS-B 3.0
 (Zhu, Byrd, Lu, Nocedal, Morales; C version by S. Becker), distributed under
 the BSD 3-clause license whose notice is retained in that file. Quasi-random
-numbers use the `sobol_burley` crate (Burley's hash-based Owen scrambling with
-Joe–Kuo direction numbers).
+Sobol numbers use the Joe–Kuo D(6) direction numbers (S. Joe and F. Y. Kuo,
+ACM TOMS 34(2), 2008, 3-clause BSD).
 
 ## Acknowledgements and citation
 

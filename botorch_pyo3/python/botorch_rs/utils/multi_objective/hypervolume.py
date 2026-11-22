@@ -243,7 +243,6 @@ class NoisyExpectedHypervolumeMixin:
 
     _rs_nehvi: Any
     _baseline_kind: Any
-    _default_sample_shape = (512,)
     sampler: Any
 
     def get_posterior_samples(self: Any, posterior: Any) -> Any:
@@ -254,7 +253,8 @@ class NoisyExpectedHypervolumeMixin:
 
     @property
     def sample_shape(self: Any) -> Any:
-        return self._default_sample_shape if self.sampler is None else self.sampler.sample_shape
+        default = getattr(self, "_default_sample_shape", (512,))
+        return default if self.sampler is None else self.sampler.sample_shape
 
     def set_X_pending(self: Any, X_pending: Any = None) -> None:
         """Update pending points through the native acquisition and its caches."""

@@ -25,7 +25,7 @@ from botorch_rs.acquisition.objective import (
 )
 from botorch_rs.exceptions.errors import BotorchError, BotorchTensorDimensionError
 from botorch_rs.exceptions.warnings import BotorchWarning
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import SobolQMCNormalSampler, draw_prune_seed
 
 #: Default temperature of the smooth ReLU.
 TAU_RELU = 1e-6
@@ -241,6 +241,7 @@ class qLogNoisyExpectedImprovement(LogImprovementMCAcquisitionFunction):
         check_unsupported(marginalize_dim=marginalize_dim)
         _check_log_objective(objective)
         check_constrained_objective(objective, constraints)
+        prune_seed = draw_prune_seed(sampler) if prune_baseline else None
         super().__init__(model, sampler, objective, posterior_transform, None)
         baseline = to_flat(X_baseline, "X_baseline")
         if len(baseline[1]) != 2:
@@ -278,6 +279,8 @@ class qLogNoisyExpectedImprovement(LogImprovementMCAcquisitionFunction):
             if lower_bound_points is None
             else to_flat(lower_bound_points, "lower_bound_points")
         )
+        if prune_seed is None:
+            prune_seed = (self.sampler.seed ^ _PRUNE_SEED_SALT) & 0xFFFFFFFFFFFFFFFF
         self._rs = _rs.AcquisitionFunction.q_log_noisy_expected_improvement(
             self._rs_model,
             baseline,
@@ -288,7 +291,7 @@ class qLogNoisyExpectedImprovement(LogImprovementMCAcquisitionFunction):
             cache_root=self._cache_root,
             prune_num_samples=_PRUNE_SAMPLES,
             prune_max_frac=1.0,
-            prune_seed=(self.sampler.seed ^ _PRUNE_SEED_SALT) & 0xFFFFFFFFFFFFFFFF,
+            prune_seed=prune_seed,
             tau_max=scalar_arg(tau_max, "tau_max"),
             tau_relu=scalar_arg(tau_relu, "tau_relu"),
             incremental=bool(incremental),

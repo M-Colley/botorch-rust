@@ -179,6 +179,10 @@ def initialize_q_batch_topn(
 
 
 def _nonnegative(acquisition: Any) -> bool:
+    from botorch_rs.optim.initializers import is_nonnegative
+
+    if is_nonnegative(acquisition):
+        return True
     # Tensor variants inherit the corresponding public acquisition class.
     from botorch_rs.acquisition import analytic, monte_carlo
     from botorch_rs.acquisition.multi_objective import analytic as mo_analytic
@@ -366,7 +370,8 @@ def gen_initial_conditions(
             if not any(issubclass(w.category, BadInitialCandidatesWarning) for w in caught):
                 return selected
     warnings.warn(
-        "Unable to find useful acquisition values; initial conditions are selected randomly.",
+        "Unable to find non-zero acquisition function values - initial conditions "
+        "are being selected randomly.",
         BadInitialCandidatesWarning,
         stacklevel=3,
     )

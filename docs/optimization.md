@@ -49,14 +49,16 @@ with rollback and native prior resampling ([scope and tests](fit-attempts.md)).
 
 ## Deviations from BoTorch (migration notes)
 
-- **Random numbers.** Raw samples, initial-condition selection, lattice
-  points, starting points of the alternating optimizer, spray points and
-  perturbations come from botorch_rs's generator (`options["seed"]` or a
-  keyword-only `seed`), not torch's global generator. The pure-Python
-  helpers (`initialize_q_batch*`, `MaxPosteriorSampling`,
-  `BoltzmannSampling`) use torch's generator when torch is importable, so the
-  same `torch.manual_seed` gives BoTorch's draws. Module-level hooks
-  (`_gen_batch_initial_conditions_local_search`, `generate_starting_points`)
+- **Random numbers.** Scrambled Sobol raw samples and Boltzmann initial-condition
+  selection (`draw_sobol_samples`, `gen_batch_initial_conditions`, unconstrained
+  `optimize_acqf`), the pure-Python helpers (`initialize_q_batch*`,
+  `MaxPosteriorSampling`, `BoltzmannSampling`) and `sample_simplex` /
+  `sample_hypersphere` match PyTorch's `SobolEngine` and `torch.multinomial`
+  under `torch.manual_seed` on torch tensors (and for explicit `options["seed"]`
+  in `gen_batch_initial_conditions` / `optimize_acqf`). Lattice points, starting
+  points of the alternating optimizer, spray points and polytope samplers use
+  botorch_rs's generator (`options["seed"]` or keyword-only `seed`). Module-level
+  hooks (`_gen_batch_initial_conditions_local_search`, `generate_starting_points`)
   replaced by the user are honored, as in BoTorch.
 - **Initialization options do not change the L-BFGS-B path.**
   `n_thinning`, `topn`, `sample_around_best_*` and the other

@@ -372,6 +372,8 @@ def prune_inferior_points(
     n = flat[1][0] if flat[1] else 0
     handle = model._acquisition_model(posterior_transform)
     base_samples = None
+    if sampler is None and is_torch_tensor(X) and n > 0:
+        sampler = SobolQMCNormalSampler(sample_shape=(int(num_samples),))
     if sampler is not None:
         if not isinstance(sampler, NormalMCSampler):
             raise UnsupportedError(

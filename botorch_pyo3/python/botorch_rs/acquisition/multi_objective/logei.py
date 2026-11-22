@@ -22,7 +22,7 @@ from botorch_rs.acquisition.multi_objective.base import (
     fat_bool,
 )
 from botorch_rs.acquisition.multi_objective.monte_carlo import _EHVIBase, _NEHVIBase
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import SobolQMCNormalSampler, draw_prune_seed
 from botorch_rs.utils.multi_objective.hypervolume import SubsetIndexCachingMixin
 
 
@@ -128,6 +128,7 @@ class qLogNoisyExpectedHypervolumeImprovement(_NEHVIBase, qLogExpectedHypervolum
     ) -> None:
         check_unsupported(marginalize_dim=marginalize_dim)
         fat_ = fat_bool(fat)
+        prune_seed = draw_prune_seed(sampler) if prune_baseline else None
         MultiObjectiveMCAcquisitionFunction.__init__(
             self, model, sampler, objective, constraints, eta
         )
@@ -149,6 +150,7 @@ class qLogNoisyExpectedHypervolumeImprovement(_NEHVIBase, qLogExpectedHypervolum
             cache_root,
             tau_relu,
             tau_max,
+            prune_seed=prune_seed,
         )
         self.fat = fat
 

@@ -255,9 +255,10 @@ fn optimization_method_selection() {
     let acqf = LogExpectedImprovement::new(m, best_f, true).unwrap();
     let b = bounds();
     // SLSQP without constraints optimizes within the bounds and reaches the
-    // L-BFGS-B optimum.
+    // L-BFGS-B optimum when restarts run independently (`batch_limit = 1`).
     let slsqp = OptimizeAcqfOptions {
         method: OptimizationMethod::Slsqp,
+        batch_limit: Some(1),
         ..seeded(5)
     };
     let (xs, vs) = optimize_acqf(&acqf, &b, 1, 6, 128, &slsqp).unwrap();

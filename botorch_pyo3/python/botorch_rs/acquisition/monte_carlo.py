@@ -36,7 +36,7 @@ from botorch_rs.acquisition.objective import (
 )
 from botorch_rs.exceptions.errors import UnsupportedError
 from botorch_rs.exceptions.warnings import legacy_ei_numerics_warning
-from botorch_rs.sampling.normal import SobolQMCNormalSampler
+from botorch_rs.sampling.normal import SobolQMCNormalSampler, draw_prune_seed
 from botorch_rs.sampling.stochastic_samplers import mc_sampler_arg
 
 #: BoTorch's default number of MC samples.
@@ -752,6 +752,7 @@ class qNoisyExpectedImprovement(SampleReducingMCAcquisitionFunction):
         legacy_ei_numerics_warning(legacy_name=type(self).__name__)
         check_unsupported(marginalize_dim=marginalize_dim)
         check_constrained_objective(objective, constraints)
+        prune_seed = draw_prune_seed(sampler) if prune_baseline else None
         super().__init__(model, sampler, objective, posterior_transform, X_pending)
         requested_cache_root = cache_root
         if cache_root is None:
@@ -778,6 +779,8 @@ class qNoisyExpectedImprovement(SampleReducingMCAcquisitionFunction):
             if lower_bound_points is None
             else to_flat(lower_bound_points, "lower_bound_points")
         )
+        if prune_seed is None:
+            prune_seed = (self.sampler.seed ^ _PRUNE_SEED_SALT) & 0xFFFFFFFFFFFFFFFF
         self._rs, self._state = _rs.q_noisy_expected_improvement(
             self._rs_model,
             baseline,
@@ -788,7 +791,7 @@ class qNoisyExpectedImprovement(SampleReducingMCAcquisitionFunction):
             objective_batch_shape=self._objective_batch_shape,
             prune_num_samples=_PRUNE_SAMPLES,
             prune_max_frac=1.0,
-            prune_seed=(self.sampler.seed ^ _PRUNE_SEED_SALT) & 0xFFFFFFFFFFFFFFFF,
+            prune_seed=prune_seed,
             cache_root=self._cache_root,
             lower_bound_points=lb,
             **kwargs,
